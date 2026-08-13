@@ -171,6 +171,7 @@ pub struct DewRenderer {
     list: DisplayList,
     pointer: PointerRouter,
     root: Option<Box<dyn DewNode>>,
+    theme: Option<theme::ThemePalette>,
 }
 
 impl core::fmt::Debug for DewRenderer {
@@ -206,6 +207,7 @@ impl DewRenderer {
             list: DisplayList::new(),
             pointer: PointerRouter::default(),
             root: None,
+            theme: None,
         }
     }
 
@@ -226,8 +228,15 @@ impl DewRenderer {
         width: f64,
         height: f64,
     ) -> DisplayList {
+        self.theme = Some(theme::ThemePalette::new(env, self.signals()));
         self.root = Some(build_node(self, view, env, 0));
         self.refresh_tree(width, height)
+    }
+
+    pub(crate) fn theme(&self) -> &theme::ThemePalette {
+        self.theme
+            .as_ref()
+            .expect("Dew theme palette requires an initialized retained root")
     }
 
     /// Re-layouts and re-renders the retained root without evaluating bodies.
@@ -400,6 +409,7 @@ fn build_unmeasured_node(
                 .downcast::<Str>()
                 .expect("dew Str downcast must match its type id"),
             cache: RefCell::new(TextLayoutCache::default()),
+            env: env.clone(),
         });
     }
     if type_id == TypeId::of::<Native<Spacer>>() {
@@ -679,29 +689,34 @@ struct TextNode {
 
 impl DewNode for TextNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        let foreground = theme::foreground(&self.env);
         let revision = self.content.revision();
         let mut cache = self.cache.borrow_mut();
-        let ((width, height), outcome) =
-            cache.measure(revision, TextLayoutKey::foreground(proposal.width), || {
+        let ((width, height), outcome) = cache.measure(
+            revision,
+            TextLayoutKey::new(proposal.width, foreground),
+            || {
                 state.borrow_mut().build_styled_layout(
                     &self.content.get(),
                     &self.env,
                     proposal.width,
-                    theme::FOREGROUND,
+                    foreground,
                 )
-            });
+            },
+        );
         let dimensions = ViewDimensions::new(Size::new(width, height));
         state.borrow_mut().record_layout(outcome);
         dimensions
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        let foreground = renderer.theme().foreground();
         let revision = self.content.revision();
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         let outcome = self.cache.borrow_mut().emit(
             revision,
-            TextLayoutKey::foreground(max_width),
+            TextLayoutKey::new(max_width, foreground),
             transform,
             &mut renderer.list,
             || {
@@ -709,7 +724,7 @@ impl DewNode for TextNode {
                     &self.content.get(),
                     &self.env,
                     max_width,
-                    theme::FOREGROUND,
+                    foreground,
                 )
             },
         );
@@ -720,16 +735,18 @@ impl DewNode for TextNode {
 struct StrNode {
     value: Str,
     cache: RefCell<TextLayoutCache>,
+    env: Environment,
 }
 
 impl DewNode for StrNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        let foreground = theme::foreground(&self.env);
         let mut cache = self.cache.borrow_mut();
         let ((width, height), outcome) =
-            cache.measure(0, TextLayoutKey::foreground(proposal.width), || {
+            cache.measure(0, TextLayoutKey::new(proposal.width, foreground), || {
                 state
                     .borrow_mut()
-                    .build_plain_layout(&self.value, proposal.width)
+                    .build_plain_layout(&self.value, proposal.width, foreground)
             });
         let dimensions = ViewDimensions::new(Size::new(width, height));
         state.borrow_mut().record_layout(outcome);
@@ -737,18 +754,19 @@ impl DewNode for StrNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        let foreground = renderer.theme().foreground();
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         let outcome = self.cache.borrow_mut().emit(
             0,
-            TextLayoutKey::foreground(max_width),
+            TextLayoutKey::new(max_width, foreground),
             transform,
             &mut renderer.list,
             || {
                 renderer
                     .state
                     .borrow_mut()
-                    .build_plain_layout(&self.value, max_width)
+                    .build_plain_layout(&self.value, max_width, foreground)
             },
         );
         renderer.state.borrow_mut().record_layout(outcome);

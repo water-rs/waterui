@@ -1,4 +1,4 @@
-use nami::Signal;
+use nami::{Signal, impl_constant};
 use waterui_core::{Environment, resolve::Resolvable};
 
 use super::{ResolvedColor, Srgb, linear_to_srgb, p3_to_linear_srgb, srgb_to_linear};
@@ -16,6 +16,8 @@ pub struct P3 {
     /// Blue component (0.0 to 1.0)
     pub blue: f32,
 }
+
+impl_constant!(P3);
 
 impl P3 {
     /// Creates a new P3 color from red, green, and blue components.

@@ -10,7 +10,6 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal, build_node};
 use crate::text::DewState;
-use crate::theme;
 use crate::views::{child_in_rect, to_f32};
 
 const BAR_HEIGHT: f64 = 4.0;
@@ -92,10 +91,12 @@ impl DewNode for ProgressNode {
         let bar_top = bounds.y0 + label_height + if label_height > 0.0 { BAR_SPACING } else { 0.0 };
         let track = Rect::new(bounds.x0, bar_top, bounds.x1, bar_top + BAR_HEIGHT);
         let radius = BAR_HEIGHT / 2.0;
+        let track_color = renderer.theme().track();
+        let accent = renderer.theme().accent();
         renderer.list_mut().fill(
             &RoundedRect::from_rect(track, radius),
             ctx.transform,
-            theme::TRACK,
+            track_color,
         );
         let fill = Rect::new(
             track.x0,
@@ -109,7 +110,7 @@ impl DewNode for ProgressNode {
         renderer.list_mut().fill(
             &RoundedRect::from_rect(track, radius),
             ctx.transform,
-            theme::ACCENT,
+            accent,
         );
         renderer.list_mut().pop_clip();
         let value_label_size = self

@@ -14,7 +14,6 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal, build_node};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
-use crate::theme;
 use crate::views::{LabelText, child_in_rect, to_f32};
 
 const TRACK_HEIGHT: f64 = 4.0;
@@ -263,10 +262,14 @@ impl SliderNode {
             );
             renderer.register_pointer_target(hit, self.pointer.clone());
         }
+        let track_color = renderer.theme().track();
+        let accent = renderer.theme().accent();
+        let thumb_color = renderer.theme().thumb();
+        let border_color = renderer.theme().border();
         renderer.list_mut().fill(
             &RoundedRect::from_rect(track, track_radius),
             ctx.transform,
-            theme::TRACK,
+            track_color,
         );
         let fill = Rect::new(
             geometry.left,
@@ -280,18 +283,16 @@ impl SliderNode {
         renderer.list_mut().fill(
             &RoundedRect::from_rect(track, track_radius),
             ctx.transform,
-            theme::ACCENT,
+            accent,
         );
         renderer.list_mut().pop_clip();
         let thumb = Circle::new((geometry.fill_x, geometry.center_y), THUMB_RADIUS);
-        renderer
-            .list_mut()
-            .fill(&thumb, ctx.transform, theme::THUMB);
+        renderer.list_mut().fill(&thumb, ctx.transform, thumb_color);
         renderer.list_mut().stroke(
             &thumb,
             ctx.transform,
             Stroke::new(THUMB_BORDER),
-            theme::BORDER,
+            border_color,
         );
     }
 }

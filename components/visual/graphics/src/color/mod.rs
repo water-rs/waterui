@@ -300,11 +300,15 @@ impl ResolvedColor {
     #[must_use]
     pub fn lerp(self, other: Self, factor: f32) -> Self {
         let t = factor.clamp(0.0, 1.0);
+        let first = self.linear_with_headroom();
+        let second = other.linear_with_headroom();
+        let headroom = lerp(self.headroom, other.headroom, t);
+        let scale = 1.0 + headroom;
         Self {
-            red: lerp(self.red, other.red, t),
-            green: lerp(self.green, other.green, t),
-            blue: lerp(self.blue, other.blue, t),
-            headroom: lerp(self.headroom, other.headroom, t),
+            red: lerp(first[0], second[0], t) / scale,
+            green: lerp(first[1], second[1], t) / scale,
+            blue: lerp(first[2], second[2], t) / scale,
+            headroom,
             opacity: lerp(self.opacity, other.opacity, t),
         }
     }
@@ -1143,5 +1147,20 @@ mod tests {
         assert!(approx_eq(mid.red, 0.5, EPSILON));
         assert!(approx_eq(mid.green, 0.5, EPSILON));
         assert!(approx_eq(mid.blue, 0.5, EPSILON));
+    }
+
+    #[test]
+    fn color_mixing_interpolates_hdr_output_light() {
+        let first = ResolvedColor::default();
+        let second = ResolvedColor {
+            red: 1.0,
+            headroom: 1.0,
+            ..ResolvedColor::default()
+        };
+
+        let midpoint = first.lerp(second, 0.5);
+
+        assert!(approx_eq(midpoint.linear_with_headroom()[0], 1.0, EPSILON));
+        assert!(approx_eq(midpoint.headroom, 0.5, EPSILON));
     }
 }

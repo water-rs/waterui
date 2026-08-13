@@ -12,7 +12,6 @@ use waterui_text::styled::StyledStr;
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
-use crate::theme;
 use crate::views::{LabelText, emit_styled_text, to_f32};
 
 /// Side length of each square stepper button.
@@ -193,13 +192,14 @@ fn render(
     let value_x0 = (controls_x0 - VALUE_SPACING - f64::from(value_width)).max(bounds.x0);
     let value_rect = Rect::new(value_x0, bounds.y0, controls_x0 - VALUE_SPACING, bounds.y1);
     if value_rect.width() > 0.0 {
+        let muted_foreground = renderer.theme().muted_foreground();
         emit_styled_text(
             renderer,
             ctx,
             value_rect,
             styled_value,
             env,
-            theme::MUTED_FOREGROUND,
+            muted_foreground,
         );
     }
 
@@ -232,16 +232,19 @@ fn render(
 }
 
 fn draw_button(renderer: &mut DewRenderer, ctx: RenderContext, rect: Rect, plus: bool) {
+    let surface = renderer.theme().surface();
+    let border = renderer.theme().border();
+    let foreground = renderer.theme().foreground();
     renderer.list_mut().fill(
         &RoundedRect::from_rect(rect, CORNER_RADIUS),
         ctx.transform,
-        theme::SURFACE,
+        surface,
     );
     renderer.list_mut().stroke(
         &RoundedRect::from_rect(rect, CORNER_RADIUS),
         ctx.transform,
         Stroke::new(BUTTON_BORDER),
-        theme::BORDER,
+        border,
     );
     let center = rect.center();
     let icon_stroke = Stroke::new(ICON_STROKE);
@@ -252,7 +255,7 @@ fn draw_button(renderer: &mut DewRenderer, ctx: RenderContext, rect: Rect, plus:
         ),
         ctx.transform,
         icon_stroke.clone(),
-        theme::FOREGROUND,
+        foreground,
     );
     if plus {
         renderer.list_mut().stroke(
@@ -262,7 +265,7 @@ fn draw_button(renderer: &mut DewRenderer, ctx: RenderContext, rect: Rect, plus:
             ),
             ctx.transform,
             icon_stroke,
-            theme::FOREGROUND,
+            foreground,
         );
     }
 }

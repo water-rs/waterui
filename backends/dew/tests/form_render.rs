@@ -152,7 +152,8 @@ fn form_scene_contains_expected_widget_commands() {
             matches!(
                 placed.command(),
                 DrawCommand::FillPath { brush: peniko::Brush::Solid(color), .. }
-                    if *color == theme::ACCENT
+                    if color.components.iter().zip(theme::ACCENT.components)
+                        .all(|(actual, expected)| (actual - expected).abs() < 1.0e-6)
             )
         })
         .count();

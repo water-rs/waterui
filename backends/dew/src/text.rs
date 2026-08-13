@@ -111,11 +111,8 @@ pub(crate) struct TextLayoutKey {
 
 impl TextLayoutKey {
     /// A key for text painted in the theme foreground.
-    pub(crate) const fn foreground(max_width: Option<f32>) -> Self {
-        Self {
-            max_width,
-            brush: theme::FOREGROUND,
-        }
+    pub(crate) const fn new(max_width: Option<f32>, brush: peniko::Color) -> Self {
+        Self { max_width, brush }
     }
 }
 
@@ -360,14 +357,13 @@ impl DewState {
         &mut self,
         text: &str,
         max_width: Option<f32>,
+        brush: peniko::Color,
     ) -> parley::Layout<[u8; 4]> {
         self.assert_has_fonts();
         let mut builder = self
             .layout_cx
             .ranged_builder(&mut self.font_cx, text, 1.0, true);
-        builder.push_default(parley::StyleProperty::Brush(peniko_to_rgba8(
-            theme::FOREGROUND,
-        )));
+        builder.push_default(parley::StyleProperty::Brush(peniko_to_rgba8(brush)));
         builder.push_default(parley::StyleProperty::FontSize(PLAIN_FONT_SIZE));
         let mut layout = builder.build(text);
         layout.break_all_lines(max_width);
@@ -436,7 +432,7 @@ impl DewState {
         env: &Environment,
         max_width: Option<f32>,
     ) -> (f32, f32) {
-        let layout = self.build_styled_layout(styled, env, max_width, theme::FOREGROUND);
+        let layout = self.build_styled_layout(styled, env, max_width, theme::foreground(env));
         (layout.width(), layout.height())
     }
 }
@@ -758,10 +754,10 @@ mod tests {
             parley::Layout::new()
         };
 
-        cache.measure(0, TextLayoutKey::foreground(Some(120.0)), build);
-        cache.measure(0, TextLayoutKey::foreground(Some(120.0)), build);
-        cache.measure(0, TextLayoutKey::foreground(Some(80.0)), build);
-        cache.measure(1, TextLayoutKey::foreground(Some(120.0)), build);
+        cache.measure(0, TextLayoutKey::new(Some(120.0), theme::FOREGROUND), build);
+        cache.measure(0, TextLayoutKey::new(Some(120.0), theme::FOREGROUND), build);
+        cache.measure(0, TextLayoutKey::new(Some(80.0), theme::FOREGROUND), build);
+        cache.measure(1, TextLayoutKey::new(Some(120.0), theme::FOREGROUND), build);
 
         assert_eq!(builds.get(), 3);
     }

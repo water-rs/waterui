@@ -1,4 +1,4 @@
-use nami::Signal;
+use nami::{Signal, impl_constant};
 use waterui_core::{Environment, resolve::Resolvable};
 
 use super::{ResolvedColor, Srgb, linear_to_srgb, oklch_to_linear_srgb};
@@ -16,6 +16,8 @@ pub struct Oklch {
     /// Hue angle in degrees.
     pub hue: f32,
 }
+
+impl_constant!(Oklch);
 
 impl Oklch {
     /// Creates a new OKLCH color from its lightness, chroma, and hue
