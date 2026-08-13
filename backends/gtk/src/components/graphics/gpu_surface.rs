@@ -39,7 +39,7 @@ use waterui_graphics::gpu_surface::{
 };
 
 use crate::component::GtkComponent;
-use crate::renderer::GtkRenderer;
+use crate::renderer::{CSS_CLASS_DYNAMIC_RANGE_HDR, CSS_CLASS_DYNAMIC_RANGE_SDR, GtkRenderer};
 
 #[cfg(not(target_os = "linux"))]
 compile_error!(
@@ -541,17 +541,16 @@ fn init_wgpu_if_needed(
             st.msaa_max_samples,
         )
     };
+    let prefers_hdr = prefers_hdr_explicit.or_else(|| inherited_hdr_preference(area));
     let format_is_hdr = matches!(
         format,
         wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
     );
-    if let Some(requested_hdr) = prefers_hdr_explicit {
-        assert!(
-            requested_hdr == format_is_hdr,
-            "GpuSurface(GL): requested {} surface but GtkGLArea default framebuffer is {:?} ({}).",
-            if requested_hdr { "HDR" } else { "SDR" },
-            format,
-            if format_is_hdr { "HDR" } else { "SDR" }
+    if let Some(requested_hdr) = prefers_hdr.filter(|requested| *requested != format_is_hdr) {
+        tracing::debug!(
+            requested_hdr,
+            ?format,
+            "GTK compositor selected a framebuffer that differs from the requested dynamic range"
         );
     }
     tracing::debug!(
@@ -639,6 +638,20 @@ fn init_wgpu_if_needed(
             area_clone.queue_render();
         },
     });
+}
+
+fn inherited_hdr_preference(area: &gtk4::GLArea) -> Option<bool> {
+    let mut current = area.clone().upcast::<Widget>().parent();
+    while let Some(widget) = current {
+        if widget.has_css_class(CSS_CLASS_DYNAMIC_RANGE_HDR) {
+            return Some(true);
+        }
+        if widget.has_css_class(CSS_CLASS_DYNAMIC_RANGE_SDR) {
+            return Some(false);
+        }
+        current = widget.parent();
+    }
+    None
 }
 
 fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
