@@ -26,6 +26,15 @@ use super::hub::EventHub;
 /// Shortest interval between two backtrace captures.
 const BACKTRACE_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Reads the current instant.
+///
+/// The probe's rate limit and its window are both expressed in wall time, so the
+/// clock is a parameter rather than a call to [`Instant::now`] scattered through
+/// the code. Production passes the real clock; a test passes one it advances by
+/// hand, and so exercises the limit instead of racing it — a loaded machine can
+/// take longer to run ten samples than the interval those samples are testing.
+type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
 /// Maximum stack frames reported for a stall.
 const BACKTRACE_DEPTH: usize = 24;
 
@@ -34,6 +43,7 @@ pub(super) struct TaskProbe {
     hub: Arc<EventHub>,
     window: Duration,
     stall_ratio: f64,
+    clock: Clock,
     state: Mutex<ProbeState>,
 }
 
@@ -58,12 +68,19 @@ struct Totals {
 impl TaskProbe {
     /// Creates a probe publishing to `hub` once per `window`.
     pub(super) fn new(hub: Arc<EventHub>, window: Duration, stall_ratio: f64) -> Self {
+        Self::with_clock(hub, window, stall_ratio, Arc::new(Instant::now))
+    }
+
+    /// Creates a probe reading time from `clock`.
+    fn with_clock(hub: Arc<EventHub>, window: Duration, stall_ratio: f64, clock: Clock) -> Self {
+        let started = clock();
         Self {
             hub,
             window,
             stall_ratio,
+            clock,
             state: Mutex::new(ProbeState {
-                window_started: Instant::now(),
+                window_started: started,
                 last_backtrace: None,
                 totals: HashMap::new(),
                 budget_us: 0,
@@ -111,8 +128,12 @@ impl RuntimeProbe for TaskProbe {
             totals.over_budget = totals.over_budget.saturating_add(1);
         }
 
-        let stall = self.stall_for(&mut state, sample, wall_us, budget_us);
-        let window = (state.window_started.elapsed() >= self.window).then(|| flush(&mut state));
+        // One reading per sample: the stall check and the window check describe the
+        // same moment, and taking the clock twice would let them disagree.
+        let now = (self.clock)();
+        let stall = self.stall_for(&mut state, sample, wall_us, budget_us, now);
+        let window = (now.duration_since(state.window_started) >= self.window)
+            .then(|| flush(&mut state, now));
         drop(state);
 
         // Publishing outside the lock keeps a slow socket from serialising the
@@ -134,6 +155,7 @@ impl TaskProbe {
         sample: &TaskPollSample,
         wall_us: u64,
         budget_us: u32,
+        now: Instant,
     ) -> Option<StallSample> {
         let budget_secs = sample.frame_budget.as_secs_f64();
         if budget_secs <= 0.0 {
@@ -144,7 +166,6 @@ impl TaskProbe {
             return None;
         }
 
-        let now = Instant::now();
         let may_capture = state
             .last_backtrace
             .is_none_or(|last| now.duration_since(last) >= BACKTRACE_INTERVAL);
@@ -171,9 +192,9 @@ impl TaskProbe {
 }
 
 /// Drains the accumulated window, most expensive task first.
-fn flush(state: &mut ProbeState) -> TaskWindow {
-    let elapsed = state.window_started.elapsed();
-    state.window_started = Instant::now();
+fn flush(state: &mut ProbeState, now: Instant) -> TaskWindow {
+    let elapsed = now.duration_since(state.window_started);
+    state.window_started = now;
 
     let mut tasks: Vec<TaskAggregate> = state
         .totals
@@ -220,9 +241,9 @@ fn saturating_u32(value: u64) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::hub::EventHub, TaskProbe};
-    use std::sync::Arc;
-    use std::time::Duration;
+    use super::{super::hub::EventHub, BACKTRACE_INTERVAL, Clock, TaskProbe};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
     use waterui_inspector_protocol::{ChannelSet, InspectorEvent};
 
     use crate::task::{RuntimeProbe, TaskPollSample};
@@ -278,13 +299,57 @@ mod tests {
         assert!(receiver.is_empty());
     }
 
+    /// A clock the test advances by hand.
+    ///
+    /// The rate limit is a wall-time rule, so testing it against the real clock
+    /// means racing it: capturing a stack is expensive, and a loaded machine can
+    /// take longer to run the samples than the interval under test.
+    #[derive(Clone)]
+    struct TestClock {
+        base: Instant,
+        offset: Arc<Mutex<Duration>>,
+    }
+
+    impl TestClock {
+        fn new() -> Self {
+            Self {
+                base: Instant::now(),
+                offset: Arc::new(Mutex::new(Duration::ZERO)),
+            }
+        }
+
+        /// The `Clock` the probe reads.
+        fn source(&self) -> Clock {
+            let clock = self.clone();
+            Arc::new(move || {
+                clock.base
+                    + *clock
+                        .offset
+                        .lock()
+                        .expect("test clock mutex poisoned")
+            })
+        }
+
+        fn advance(&self, by: Duration) {
+            *self.offset.lock().expect("test clock mutex poisoned") += by;
+        }
+    }
+
     /// Back-to-back stalls must not each pay for a stack capture.
     #[test]
     fn backtrace_capture_is_rate_limited() {
         let (hub, receiver) = EventHub::new();
         hub.set_subscribed(ChannelSet::TASKS);
-        let probe = TaskProbe::new(Arc::clone(&hub), Duration::from_secs(3600), 0.9);
+        let clock = TestClock::new();
+        let probe = TaskProbe::with_clock(
+            Arc::clone(&hub),
+            Duration::from_secs(3600),
+            0.9,
+            clock.source(),
+        );
 
+        // Time does not move, so every stall after the first is inside the
+        // interval no matter how long the loop actually takes to run.
         for _ in 0..10 {
             probe.on_poll_sample(&sample(50_000));
         }
@@ -304,5 +369,38 @@ mod tests {
 
         assert_eq!(stalls, 10, "every stall is still reported");
         assert_eq!(with_backtrace, 1, "only the first one pays for a stack");
+    }
+
+    /// Once the interval has genuinely elapsed, the next stall captures again.
+    #[test]
+    fn a_stall_after_the_interval_captures_again() {
+        let (hub, receiver) = EventHub::new();
+        hub.set_subscribed(ChannelSet::TASKS);
+        let clock = TestClock::new();
+        let probe = TaskProbe::with_clock(
+            Arc::clone(&hub),
+            Duration::from_secs(3600),
+            0.9,
+            clock.source(),
+        );
+
+        probe.on_poll_sample(&sample(50_000));
+        clock.advance(BACKTRACE_INTERVAL);
+        probe.on_poll_sample(&sample(50_000));
+
+        let mut with_backtrace = 0_usize;
+        while let Ok(dispatch) = receiver.try_recv() {
+            if let super::super::hub::Dispatch::Event(envelope) = dispatch
+                && let InspectorEvent::Stall(stall) = envelope.event
+                && !stall.backtrace.is_empty()
+            {
+                with_backtrace += 1;
+            }
+        }
+
+        assert_eq!(
+            with_backtrace, 2,
+            "a stall a full interval later must pay for its own stack"
+        );
     }
 }
