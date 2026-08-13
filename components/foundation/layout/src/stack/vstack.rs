@@ -177,13 +177,13 @@ impl Layout for VStackLayout {
             .iter()
             .any(ChildMeasurement::stretches_main_axis);
 
-        // Height: sum of children that don't stretch on main axis (vertically) + spacing
-        // (axis-expanding components like TextField report their intrinsic height here)
-        let non_stretch_height: f32 = measurements
-            .iter()
-            .filter(|m| !m.stretches_main_axis())
-            .map(|m| m.size().height)
-            .sum();
+        // Height: every child's measured height plus spacing. Children that
+        // stretch are included: measured under this same proposal a stretcher
+        // reports what it actually needs — nothing for a spacer, its content
+        // for a list or a scroll view. Leaving them out makes a column that
+        // holds, say, a header above a list report only the header's height,
+        // and the list is then handed nothing to draw in.
+        let content_height: f32 = measurements.iter().map(|m| m.size().height).sum();
 
         let spacing = self.spacing.get();
         let total_spacing = if children.len() > 1 {
@@ -192,7 +192,9 @@ impl Layout for VStackLayout {
             0.0
         };
 
-        let intrinsic_height = non_stretch_height + total_spacing;
+        let intrinsic_height = content_height + total_spacing;
+        // Only a column that has something able to grow accepts an offer larger
+        // than its content; a content-sized column keeps its own height.
         let final_height = if has_main_axis_stretch {
             proposal.height.unwrap_or(intrinsic_height)
         } else {
@@ -532,6 +534,65 @@ mod tests {
 
         assert!((size.width - 100.0).abs() < f32::EPSILON); // max width
         assert!((size.height - 80.0).abs() < f32::EPSILON); // 30 + 10 + 40
+    }
+
+    /// A column holding a header above something that grows — a list, a scroll
+    /// view — must report the height of both. Reporting only the header's makes
+    /// an unconstrained parent hand the column that much and the list draws
+    /// nothing at all.
+    #[test]
+    fn a_column_counts_a_growing_child_in_its_intrinsic_height() {
+        let layout = VStackLayout {
+            alignment: HorizontalAlignment::Leading,
+            spacing: Computed::constant(0.0),
+        };
+
+        let mut header = MockSubView {
+            size: Size::new(100.0, 30.0),
+            stretch_axis: StretchAxis::None,
+        };
+        // A list measures its content and also accepts more room if offered.
+        let mut list = MockSubView {
+            size: Size::new(100.0, 200.0),
+            stretch_axis: StretchAxis::Both,
+        };
+        let children: Vec<&dyn SubView> = vec![&mut header, &mut list];
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+
+        assert!(
+            (size.height - 230.0).abs() < f32::EPSILON,
+            "the column dropped its growing child from its own height: got {}, want 230",
+            size.height
+        );
+    }
+
+    /// A spacer contributes nothing, so counting growing children must not
+    /// inflate a column that merely holds one.
+    #[test]
+    fn a_spacer_adds_nothing_to_the_intrinsic_height() {
+        let layout = VStackLayout {
+            alignment: HorizontalAlignment::Leading,
+            spacing: Computed::constant(0.0),
+        };
+
+        let mut row = MockSubView {
+            size: Size::new(100.0, 30.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let mut spacer = MockSubView {
+            size: Size::zero(),
+            stretch_axis: StretchAxis::Both,
+        };
+        let children: Vec<&dyn SubView> = vec![&mut row, &mut spacer];
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+
+        assert!(
+            (size.height - 30.0).abs() < f32::EPSILON,
+            "a spacer changed the column's intrinsic height: got {}, want 30",
+            size.height
+        );
     }
 
     #[test]

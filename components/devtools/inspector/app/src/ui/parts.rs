@@ -28,20 +28,13 @@ pub fn status_dot(live: Computed<bool>) -> impl View {
 )]
 pub fn metric(label: impl Into<Str>, value: Computed<Str>) -> impl View {
     let label = label.into();
-    // The height is explicit because a stack sharing a row with a greedy
-    // sibling (a chart, above all) otherwise allocates its other children no
-    // height at all and they draw on top of each other.
     vstack((
         text!("{value}").headline(),
         text!("{label}").caption().foreground(MutedForeground),
     ))
     .alignment(HorizontalAlignment::Leading)
     .spacing(2.0)
-    .height(METRIC_HEIGHT)
 }
-
-/// Height of one labelled figure.
-pub const METRIC_HEIGHT: f32 = 46.0;
 
 /// The number shown against a section in the sidebar.
 pub fn count_badge(section: Section, model: &Model) -> impl View {
