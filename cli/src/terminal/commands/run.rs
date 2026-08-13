@@ -691,6 +691,17 @@ async fn build_run_config(shell: &Shell, args: &Args) -> BuildRunConfig {
     }
     run_options.set_native_logs(args.native_logs);
 
+    // A launched application has no working directory worth the name — a macOS
+    // app gets `/` — so anything it starts on the developer's behalf cannot find
+    // the project it came from. Telling it where it came from is what lets
+    // "inspect this element" open an inspector built against this project.
+    if let Ok(project_path) = crate::project_path::canonicalize(&args.path) {
+        run_options.insert_env_var(
+            String::from("WATERUI_PROJECT_DIR"),
+            project_path.display().to_string(),
+        );
+    }
+
     BuildRunConfig {
         run_options,
         sccache_path,

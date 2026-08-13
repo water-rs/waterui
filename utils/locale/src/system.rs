@@ -34,11 +34,16 @@ impl RuntimeLocaleState {
     }
 }
 
+/// The binding every locale-aware view reads.
+///
+/// Reading the system locale is not the same as subscribing to changes in it:
+/// this hands back the current value and needs nothing but the calling thread,
+/// so it is safe before an event loop exists. Delivering later changes does
+/// need one, and is started separately by [`start_system_listener`].
 pub fn runtime_locale_binding() -> Binding<Locale> {
     RUNTIME_LOCALE_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
         if let Some(existing) = slot.as_mut() {
-            ensure_listener_registered(existing);
             return existing.binding.clone();
         }
 
@@ -48,17 +53,40 @@ pub fn runtime_locale_binding() -> Binding<Locale> {
         regional::start_auto_refresh_default();
 
         let initial = locale_from_tag(regional::current_settings().locale_tag());
-        let mut state = RuntimeLocaleState {
+        let state = RuntimeLocaleState {
             binding: Binding::custom(Container::new(initial)),
             listener: None,
         };
-        ensure_listener_registered(&mut state);
 
         let binding = state.binding.clone();
         *slot = Some(state);
 
         binding
     })
+}
+
+/// Starts delivering system locale changes into the locale binding.
+///
+/// Called by whoever owns the main loop, once it has installed that loop's
+/// `LocalExecutor` — the listener hands changes to the binding through a
+/// mailbox, and a mailbox needs somewhere to run its pump. Calling it before an
+/// executor exists panics with "Local executor not set"; calling it twice does
+/// nothing the second time.
+pub fn start_system_listener() {
+    RUNTIME_LOCALE_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let state = slot.get_or_insert_with(|| {
+            #[cfg(not(target_os = "macos"))]
+            regional::start_auto_refresh_default();
+
+            let initial = locale_from_tag(regional::current_settings().locale_tag());
+            RuntimeLocaleState {
+                binding: Binding::custom(Container::new(initial)),
+                listener: None,
+            }
+        });
+        ensure_listener_registered(state);
+    });
 }
 
 fn locale_from_tag(tag: &str) -> Locale {

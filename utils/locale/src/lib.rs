@@ -60,6 +60,15 @@ pub fn layout_direction_computed(
         .computed()
 }
 
+/// Starts delivering system locale changes to locale-aware views.
+///
+/// A backend calls this once, after installing the `LocalExecutor` of the loop
+/// it owns. Reading the locale works without it; only *changing* with the
+/// system needs a running loop to deliver the change.
+pub fn start_system_locale_listener() {
+    system::start_system_listener();
+}
+
 #[doc(hidden)]
 /// Clears the current thread's cached runtime locale binding before an executor shuts down.
 pub fn shutdown_current_thread_runtime_locale_state() {

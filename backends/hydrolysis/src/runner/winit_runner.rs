@@ -139,6 +139,10 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
             .as_ref()
             .map(waterui::inspector::InspectorRuntime::runtime_probe),
     ));
+
+    // Locale changes reach views through a mailbox, whose pump needs the
+    // executor installed just above.
+    waterui_locale::start_system_locale_listener();
     // The reactive graph is thread-confined, so its observer is installed here,
     // on the thread that owns the event loop, and lives as long as the loop.
     let (windows, _menu_bar, env) = app.into_parts();

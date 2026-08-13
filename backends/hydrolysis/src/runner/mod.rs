@@ -85,7 +85,7 @@ use crate::time::Instant;
 
 fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    waterui::inspector::maybe_init_from_env()
+    waterui::inspector::maybe_init_from_env("hydrolysis")
 }
 
 /// Physical pixels per logical pixel for offscreen rendering, from
@@ -166,6 +166,10 @@ pub fn run(app: App) {
         local_executor.clone(),
         inspector_probe,
     ));
+
+    // Locale changes reach views through a mailbox, whose pump needs the
+    // executor installed just above.
+    waterui_locale::start_system_locale_listener();
     let (windows, _menu_bar, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
     waterui::inspector::install(&mut env, inspector);

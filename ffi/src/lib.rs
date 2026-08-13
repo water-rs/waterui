@@ -268,7 +268,11 @@ unsafe fn __init_impl() -> Option<waterui::inspector::InspectorRuntime> {
         native_executor::android::register_android_main_thread()
             .expect("Failed to register Android main thread");
     }
-    let inspector = waterui::inspector::maybe_init_from_env();
+    let inspector = waterui::inspector::maybe_init_from_env(if cfg!(target_os = "android") {
+        "android"
+    } else {
+        "apple"
+    });
 
     #[cfg(feature = "std")]
     {
@@ -299,6 +303,10 @@ unsafe fn __init_impl() -> Option<waterui::inspector::InspectorRuntime> {
             .as_ref()
             .map(waterui::inspector::InspectorRuntime::runtime_probe),
     ));
+
+    // Locale changes reach views through a mailbox, whose pump needs the
+    // executor installed just above.
+    waterui_locale::start_system_locale_listener();
 
     inspector
 }

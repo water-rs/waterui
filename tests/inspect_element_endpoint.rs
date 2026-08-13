@@ -66,7 +66,7 @@ fn next_select(socket: &mut TcpStream) -> NodeId {
 /// An inspector that is already attached is told to reveal the node at once.
 #[test]
 fn an_attached_inspector_is_told_which_node_to_reveal() {
-    let inspector = init_with_config(config()).expect("the endpoint binds");
+    let inspector = init_with_config(config(), "test").expect("the endpoint binds");
     let mut socket = attach(inspector.endpoint().addr);
 
     inspector.inspect_node(NodeId(42));
@@ -78,7 +78,7 @@ fn an_attached_inspector_is_told_which_node_to_reveal() {
 /// node has to wait for it. Without this the window opens on nothing.
 #[test]
 fn a_node_asked_for_before_anyone_attached_is_delivered_on_arrival() {
-    let inspector = init_with_config(config()).expect("the endpoint binds");
+    let inspector = init_with_config(config(), "test").expect("the endpoint binds");
 
     inspector.inspect_node(NodeId(7));
 
