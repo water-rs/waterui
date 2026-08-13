@@ -2020,3 +2020,112 @@ fn render_path_text_layout_has_lines() {
     );
     assert!(layout.lines().next().is_some(), "layout must have lines");
 }
+
+/// The three-point probe contract every `SubView` owes the layout algorithm.
+///
+/// Stacks derive how far a child may shrink, and how far it wants to grow, by
+/// measuring it at zero, at nothing, and at infinity. Those answers are only
+/// useful if `min <= ideal <= max` holds for every view, so this pins the
+/// contract across a representative spread of leaves and containers rather than
+/// leaving each to be discovered when a layout looks wrong.
+///
+/// This covers the Rust-side realization. The native backends answer the same
+/// three proposals through their own `sizeThatFits`/`onMeasure`, and owe the
+/// same invariant; verifying that needs a test in each of those languages.
+#[test]
+fn every_view_answers_the_three_point_probe_consistently() {
+    use core::cell::RefCell;
+
+    let env = test_environment();
+
+    let cases: Vec<(&str, AnyView)> = vec![
+        ("text", AnyView::new(text("probe"))),
+        ("empty", AnyView::new(())),
+        ("spacer", AnyView::new(waterui_layout::spacer())),
+        ("divider", AnyView::new(Divider)),
+        ("fixed frame", AnyView::new(().size(40.0, 20.0))),
+        (
+            "min-width frame",
+            AnyView::new(().size(40.0, 20.0).min_width(60.0)),
+        ),
+        (
+            "max-width frame",
+            AnyView::new(().size(40.0, 20.0).max_width(100.0)),
+        ),
+        (
+            "greedy frame",
+            AnyView::new(().size(40.0, 20.0).max_width(f32::INFINITY)),
+        ),
+        ("button", AnyView::new(button("Tap"))),
+        (
+            "hstack",
+            AnyView::new(hstack((text("a"), text("bb"), text("ccc")))),
+        ),
+        (
+            "vstack",
+            AnyView::new(vstack((text("a"), text("bb"), text("ccc")))),
+        ),
+        ("zstack", AnyView::new(zstack((text("a"), text("bb"))))),
+    ];
+
+    for (name, view) in cases {
+        // The layout path measures normalized views, so the contract is about
+        // those, not about raw bodies.
+        let view = normalize_layout_view(view, &env);
+        let mut state = HydroState::default();
+        let cell = RefCell::new(&mut state);
+        let subview = HydroSubview::from_view(&view, &cell, &env);
+
+        let ideal = subview.measure(ProposalSize::UNSPECIFIED).size;
+
+        // Probe one axis at a time, leaving the other unspecified. This is the
+        // shape the window uses to derive its resize limits, and it is stricter
+        // than probing both at once: constraining only one axis must not make the
+        // other axis's answer travel backwards.
+        let min_width = subview
+            .measure(ProposalSize::new(Some(0.0), None))
+            .size
+            .width;
+        let min_height = subview
+            .measure(ProposalSize::new(None, Some(0.0)))
+            .size
+            .height;
+        let max_width = subview
+            .measure(ProposalSize::new(Some(f32::INFINITY), None))
+            .size
+            .width;
+        let max_height = subview
+            .measure(ProposalSize::new(None, Some(f32::INFINITY)))
+            .size
+            .height;
+
+        for (axis, min, ideal, max) in [
+            ("width", min_width, ideal.width, max_width),
+            ("height", min_height, ideal.height, max_height),
+        ] {
+            assert!(
+                min.is_finite() && min >= 0.0,
+                "{name}: the {axis} minimum must be a finite, non-negative extent, got {min}"
+            );
+            assert!(
+                ideal.is_finite() && ideal >= 0.0,
+                "{name}: the {axis} ideal must be a finite, non-negative extent, got {ideal}"
+            );
+            assert!(
+                !max.is_nan() && max >= 0.0,
+                "{name}: the {axis} maximum must be non-negative (infinity means unbounded), \
+                 got {max}"
+            );
+            assert!(
+                min <= ideal + 0.001,
+                "{name}: the {axis} minimum ({min}) must not exceed the ideal ({ideal}); a \
+                 stack would compress it below a size it cannot take"
+            );
+            assert!(
+                ideal <= max + 0.001,
+                "{name}: the {axis} ideal ({ideal}) must not exceed the maximum ({max}); a \
+                 stack would grow it past a size it cannot take"
+            );
+        }
+    }
+}

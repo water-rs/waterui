@@ -607,6 +607,19 @@ pub trait SubView {
     /// - `ProposalSize::new(Some(0.0), None)` - minimum width
     /// - `ProposalSize::new(Some(f32::INFINITY), None)` - maximum width
     /// - `ProposalSize::new(Some(200.0), None)` - constrained width
+    ///
+    /// # The three-point contract
+    ///
+    /// Containers work out how far a child may shrink, and how far it wants to
+    /// grow, from those first three answers, so on each axis they must satisfy
+    /// `min <= ideal <= max`. Every extent is finite and non-negative, except a
+    /// maximum, where `f32::INFINITY` means unbounded — that is how a view says
+    /// it will take whatever it is offered.
+    ///
+    /// Breaking this is not a local error: a minimum above the ideal makes a
+    /// stack compress a child past a size it cannot take, and an ideal above the
+    /// maximum makes it stretch one past a size it cannot take. Both surface as
+    /// a misplaced layout somewhere else entirely.
     #[must_use]
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions;
 
