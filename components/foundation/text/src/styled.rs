@@ -656,6 +656,14 @@ impl Display for StyledStr {
 
 impl_constant!(Style, StyledStr);
 
+/// Whether `character` only tells the bidi algorithm what to do.
+///
+/// Covers the isolates and embeddings — the marks a formatter inserts around
+/// interpolated values — and not the text itself.
+const fn is_bidi_control(character: char) -> bool {
+    matches!(character, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,12 +710,4 @@ mod tests {
         assert!(StyledStr::plain("abc").is_plain());
         assert!(!StyledStr::plain("abc").italic(true).is_plain());
     }
-}
-
-/// Whether `character` only tells the bidi algorithm what to do.
-///
-/// Covers the isolates and embeddings — the marks a formatter inserts around
-/// interpolated values — and not the text itself.
-const fn is_bidi_control(character: char) -> bool {
-    matches!(character, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }

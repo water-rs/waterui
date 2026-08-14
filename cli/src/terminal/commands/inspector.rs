@@ -63,16 +63,15 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     // An address given explicitly wins; otherwise the running application is
     // asked where it is, which is what makes attaching a single command.
-    let (target, token) = match args.target {
-        Some(target) => (
+    let (target, token) = if let Some(target) = args.target {
+        (
             target.parse::<SocketAddr>()?,
             args.token.unwrap_or_else(generate_session_token),
-        ),
-        None => {
-            let found = discover(shell)?;
-            note!(shell, "Attaching to {} (pid {})", found.app_name, found.pid);
-            (found.addr, args.token.unwrap_or(found.token))
-        }
+        )
+    } else {
+        let found = discover(shell)?;
+        note!(shell, "Attaching to {} (pid {})", found.app_name, found.pid);
+        (found.addr, args.token.unwrap_or(found.token))
     };
 
     note!(shell, "Target runtime endpoint: {}", target);
