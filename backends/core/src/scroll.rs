@@ -78,6 +78,23 @@ struct ScrollState {
 }
 
 impl ScrollHandle {
+    /// Creates an inert scroll handle that ignores all scroll events.
+    /// Used for views that want to receive scroll events through
+    /// `register_scroll_target` without actually scrolling content.
+    #[must_use]
+    pub fn new_disabled() -> Self {
+        Self {
+            state: Rc::new(RefCell::new(ScrollState::new(
+                Axis::Vertical,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ))),
+            generation: 1,
+        }
+    }
+
     /// Creates the state owned by one semantic scroll view.
     #[must_use]
     pub fn new(

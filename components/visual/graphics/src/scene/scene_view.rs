@@ -16,6 +16,9 @@ pub struct SceneViewMergeToParent;
 /// Callback used by scene content to request another frame.
 pub type SceneInvalidator = Rc<dyn Fn()>;
 
+/// Callback for scroll events on scene content. Receives (dx, dy) in logical pixels.
+pub type SceneScrollHandler = Rc<dyn Fn(f32, f32)>;
+
 /// Object-safe scene producer for `SceneView`.
 pub trait SceneContent: 'static {
     /// Build commands into the provided scene.
@@ -25,6 +28,17 @@ pub trait SceneContent: 'static {
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
+
+    /// Installs a scroll handler called when the backend receives a scroll event
+    /// targeting this scene. The handler receives (dx, dy) in logical pixels.
+    /// Default implementation does nothing.
+    fn set_scroll_handler(&mut self, _handler: SceneScrollHandler) {}
+
+    /// Returns the currently installed scroll handler, if any.
+    /// Default implementation returns `None`.
+    fn get_scroll_handler(&self) -> Option<SceneScrollHandler> {
+        None
+    }
 }
 
 /// A view that renders scene content either directly (backend) or via `GpuSurface`.

@@ -92,7 +92,9 @@ use kurbo::Shape as _;
 
 use crate::conversions::{point_to_kurbo, rect_to_kurbo, resolved_color_to_peniko};
 use crate::state::{DrawingState, FillStyle, StrokeStyle};
-use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::{
+    Scene2D, SceneContent, SceneInvalidator, SceneScrollHandler, SceneView,
+};
 
 /// A canvas for 2D vector graphics rendering.
 ///
@@ -100,6 +102,7 @@ use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
 /// [`DrawingContext`] to draw shapes, paths, and text.
 pub struct Canvas {
     draw_fn: Box<dyn FnMut(&mut DrawingContext)>,
+    scroll_handler: Option<SceneScrollHandler>,
 }
 
 impl fmt::Debug for Canvas {
@@ -129,6 +132,7 @@ impl Canvas {
     {
         Self {
             draw_fn: Box::new(draw),
+            scroll_handler: None,
         }
     }
 
@@ -149,6 +153,14 @@ impl Canvas {
             draw(ctx, signal.get());
         })
     }
+
+    /// Attaches a scroll handler that receives (dx, dy) from mouse wheel events.
+    /// The handler is called on the main thread during scroll event processing.
+    #[must_use]
+    pub fn with_scroll_handler(mut self, handler: SceneScrollHandler) -> Self {
+        self.scroll_handler = Some(handler);
+        self
+    }
 }
 
 impl waterui_core::View for Canvas {
@@ -159,6 +171,7 @@ impl waterui_core::View for Canvas {
             pending_redraw: Rc::new(Cell::new(false)),
             active_guards: Vec::new(),
             text_engine: TextEngine::default(),
+            scroll_handler: self.scroll_handler,
         })
     }
 
@@ -1191,6 +1204,7 @@ struct CanvasContent {
     pending_redraw: Rc<Cell<bool>>,
     active_guards: Vec<Box<dyn Any>>,
     text_engine: TextEngine,
+    scroll_handler: Option<SceneScrollHandler>,
 }
 
 impl SceneContent for CanvasContent {
@@ -1219,6 +1233,14 @@ impl SceneContent for CanvasContent {
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
         self.invalidator = invalidator;
+    }
+
+    fn set_scroll_handler(&mut self, handler: SceneScrollHandler) {
+        self.scroll_handler = Some(handler);
+    }
+
+    fn get_scroll_handler(&self) -> Option<SceneScrollHandler> {
+        self.scroll_handler.clone()
     }
 }
 

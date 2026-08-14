@@ -265,6 +265,18 @@ impl RenderNode {
                 emit_graphics_image_accessibility(renderer, ctx, env);
                 #[cfg(feature = "accessibility")]
                 renderer.pop_accessibility_owner();
+                // Register scroll target if a handler is set
+                if let Some(handler) = &node.scroll_handler {
+                    let handler = Rc::clone(handler);
+                    renderer.register_scroll_target(
+                        transformed_rect(ctx.hit_transform, ctx.bounds),
+                        crate::scroll::ScrollHandle::new_disabled(),
+                        move |dx, dy, _is_line_delta| {
+                            handler(dx, dy);
+                            false
+                        },
+                    );
+                }
                 let mut scene = vello::Scene::new();
                 // Scope `scene2d` so its `&mut scene` borrow ends before `&scene` is
                 // appended below.
