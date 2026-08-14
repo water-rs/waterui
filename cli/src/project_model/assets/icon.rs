@@ -229,6 +229,65 @@ pub fn encode_macos_icns(source: &IconSource) -> eyre::Result<Vec<u8>> {
     Ok(encoded)
 }
 
+/// Pixel sizes embedded in a Windows `.ico` resource. ICO stores dimensions
+/// in a byte, so 256 is the largest representable size.
+const WINDOWS_ICO_SIZES: &[u32] = &[16, 24, 32, 48, 64, 128, 256];
+
+/// Pixel sizes installed into the freedesktop hicolor icon theme.
+pub const LINUX_HICOLOR_SIZES: &[u32] = &[16, 24, 32, 48, 64, 128, 256, 512];
+
+/// Side length of the staged runtime window icon.
+pub const WINDOW_ICON_SIZE: u32 = 256;
+
+/// Encodes a multi-size Windows `.ico` for embedding into the packaged
+/// executable's resources.
+///
+/// # Errors
+///
+/// Fails when rendering or ICO encoding fails.
+pub fn encode_windows_ico(source: &IconSource) -> eyre::Result<Vec<u8>> {
+    let mut frames = Vec::new();
+    for &size in WINDOWS_ICO_SIZES {
+        let rendered = source.render(size)?;
+        frames.push(
+            image::codecs::ico::IcoFrame::as_png(
+                rendered.as_raw(),
+                size,
+                size,
+                image::ExtendedColorType::Rgba8,
+            )
+            .map_err(|error| eyre::eyre!("Failed to build {size}px ICO frame: {error}"))?,
+        );
+    }
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::codecs::ico::IcoEncoder::new(&mut encoded)
+        .encode_images(&frames)
+        .map_err(|error| eyre::eyre!("Failed to encode ICO resource: {error}"))?;
+    Ok(encoded.into_inner())
+}
+
+/// Encodes an image as PNG bytes.
+///
+/// # Errors
+///
+/// Fails when PNG encoding fails.
+pub fn encode_png(image: &image::RgbaImage) -> eyre::Result<Vec<u8>> {
+    use image::ImageEncoder as _;
+    let mut png = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new_with_quality(
+        &mut png,
+        image::codecs::png::CompressionType::Best,
+        image::codecs::png::FilterType::Adaptive,
+    );
+    encoder.write_image(
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        image::ExtendedColorType::Rgba8,
+    )?;
+    Ok(png)
+}
+
 /// Renders the Android adaptive-icon foreground layer.
 ///
 /// When the icon's background color is known, the icon content (everything
@@ -532,6 +591,17 @@ mod tests {
             image::Rgba([255, 255, 255, 255]),
             "the whole artwork, background included, sits in the visible square"
         );
+    }
+
+    #[test]
+    fn windows_ico_encodes_multi_size_frames() {
+        let logo = IconSource::default_logo();
+        let encoded = encode_windows_ico(&logo).expect("ico must encode");
+        let decoded = image::load_from_memory_with_format(&encoded, image::ImageFormat::Ico)
+            .expect("encoded ico must decode");
+        // The image crate surfaces the largest frame; 256 is the ICO ceiling.
+        assert_eq!(decoded.width(), 256);
+        assert_eq!(decoded.height(), 256);
     }
 
     #[test]

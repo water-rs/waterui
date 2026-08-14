@@ -58,6 +58,7 @@ mod url;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub use bundle::{
     AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFileAsset, VideoAsset,
+    WINDOW_ICON_FILE, bundle_root,
 };
 pub use data::Data;
 pub use error::AssetError;
