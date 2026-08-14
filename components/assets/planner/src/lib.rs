@@ -14,7 +14,7 @@ use walkdir::WalkDir;
 use waterui_assets::AssetKind;
 
 /// Theme color overrides discovered from asset metadata.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThemeConfig {
     /// Window or page background color.
     #[serde(default, skip_serializing_if = "Option::is_none")]

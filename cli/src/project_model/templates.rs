@@ -893,6 +893,7 @@ impl Esp32CargoTomlTemplate {
 }
 
 define_scaffold_templates! {
+    AssetsReadmeTemplate => (Root, "src/templates/assets_readme.md.tpl"),
     AppleProjectTemplate => (Apple, "src/templates/apple/AppName.xcodeproj/project.pbxproj.tpl"),
     AppleAppTemplate => (Apple, "src/templates/apple/AppName/AppNameApp.swift.tpl"),
     AppleBuildScriptTemplate => (Apple, "src/templates/apple/build-rust.sh.tpl"),
@@ -3028,10 +3029,14 @@ pub mod root {
         generate_cargo_toml(base_dir, ctx).await?;
 
         let assets_readme = format!("{assets_dir}/README.md");
+        // The WaterUI logo is the starting app icon; the planner picks up any
+        // root-level `Icon.*` asset, so replacing the file rebrands the app.
+        let assets_icon = format!("{assets_dir}/Icon.svg");
         let templates = ROOT_TEMPLATES
             .iter()
             .map(|(template, dest)| (*template, (*dest).to_string()))
-            .chain(core::iter::once(("assets_readme.md.tpl", assets_readme)));
+            .chain(core::iter::once(("assets_readme.md.tpl", assets_readme)))
+            .chain(core::iter::once(("icon.svg", assets_icon)));
 
         // Process remaining templates
         for (template_name, dest) in templates {
