@@ -291,6 +291,31 @@ impl StyledStr {
         self.chunks.is_empty()
     }
 
+    /// The text as a reader should hear it, without bidi formatting controls.
+    ///
+    /// Interpolated values are wrapped in directional isolates so that a
+    /// right-to-left value cannot reorder the text around it. That is a
+    /// rendering concern: the characters are invisible, but they are still
+    /// characters, and an accessibility label carrying them is neither what a
+    /// screen reader should announce nor what a caller comparing text expects.
+    ///
+    /// Use this wherever text becomes semantics; use [`Self::to_plain`] where
+    /// the exact content matters, such as the value of a text field the user
+    /// typed into.
+    #[must_use]
+    pub fn to_semantic(&self) -> Str {
+        let plain = self.to_plain();
+        if plain.chars().any(is_bidi_control) {
+            return Str::from(
+                plain
+                    .chars()
+                    .filter(|character| !is_bidi_control(*character))
+                    .collect::<String>(),
+            );
+        }
+        plain
+    }
+
     /// Converts the attributed string into its plain representation.
     #[must_use]
     pub fn to_plain(&self) -> Str {
@@ -677,4 +702,12 @@ mod tests {
         assert!(StyledStr::plain("abc").is_plain());
         assert!(!StyledStr::plain("abc").italic(true).is_plain());
     }
+}
+
+/// Whether `character` only tells the bidi algorithm what to do.
+///
+/// Covers the isolates and embeddings — the marks a formatter inserts around
+/// interpolated values — and not the text itself.
+const fn is_bidi_control(character: char) -> bool {
+    matches!(character, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
