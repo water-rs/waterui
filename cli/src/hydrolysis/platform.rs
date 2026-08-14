@@ -413,6 +413,20 @@ pub async fn package_hydrolysis(
     synchronize_shared_runtime(runtime_dir, shared_libraries.as_ref(), &platform.triple()).await?;
     browser_runtime::stage(runtime_plan, platform, profile_directory, runtime_dir).await?;
 
+    if platform == TargetPlatform::Linux {
+        let executable_name = final_binary_path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or_else(|| eyre::eyre!("Hydrolysis binary has no valid executable name"))?;
+        crate::platforming::linux_share::write_linux_share_material(
+            project,
+            &project.manifest().package.name,
+            executable_name,
+            &backend_path.join("dist/share"),
+        )
+        .await?;
+    }
+
     Ok(Artifact::new(
         project.bundle_identifier(),
         final_binary_path,
@@ -533,6 +547,14 @@ async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::
     let resources_dir = backend_path.join("resources");
     fs::create_dir_all(&resources_dir).await?;
     assets::stage_project_assets_for_gtk(project, &resources_dir).await?;
+
+    // The generated crate's build script embeds this into the executable's
+    // resources when targeting Windows.
+    fs::write(
+        backend_path.join("app-icon.ico"),
+        assets::project_windows_ico(project)?,
+    )
+    .await?;
 
     let mut font_declarations = assets::scan_fonts(project).await?;
     font_declarations.extend(assets::hydrolysis_default_font_declarations());

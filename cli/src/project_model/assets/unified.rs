@@ -11,7 +11,8 @@ use waterui_assets::AssetKind;
 use waterui_assets_planner::{AssetRole, BundleManifest, PlannedAsset, ThemeConfig, plan_bundle};
 
 use super::icon::{
-    IconSource, encode_macos_icns, hex_color, render_android_foreground, render_apple_icon,
+    IconSource, LINUX_HICOLOR_SIZES, WINDOW_ICON_SIZE, encode_macos_icns, encode_png, hex_color,
+    render_android_foreground, render_apple_icon,
 };
 use crate::project::Project;
 
@@ -101,14 +102,51 @@ pub fn macos_icns(project: &Project) -> eyre::Result<Vec<u8>> {
     encode_macos_icns(&icon)
 }
 
+/// Renders the project's Windows `.ico` app icon for embedding into the
+/// packaged executable.
+///
+/// # Errors
+///
+/// Fails when the icon asset cannot be loaded or rendered.
+pub fn windows_ico(project: &Project) -> eyre::Result<Vec<u8>> {
+    let manifest = build_manifest(project)?;
+    let icon = load_project_icon(&manifest)?;
+    super::icon::encode_windows_ico(&icon)
+}
+
 pub async fn stage_for_gtk(project: &Project, resources_dir: &Path) -> eyre::Result<()> {
     let manifest = build_manifest(project)?;
     let assets_dest = resources_dir.join(ASSET_ROOT_DIR);
     reset_dir(&assets_dest).await?;
     copy_manifest_assets(&manifest, &assets_dest).await?;
     write_manifest_stamp(&manifest, &assets_dest).await?;
+
+    // Self-drawn desktop backends read this at startup to set the runtime
+    // window icon (taskbars on X11 and Windows show it; macOS uses the
+    // bundle's icns instead).
+    let icon = load_project_icon(&manifest)?;
+    write_png(
+        &icon.render(WINDOW_ICON_SIZE)?,
+        &assets_dest.join(waterui_assets::WINDOW_ICON_FILE),
+    )
+    .await?;
+
     remove_file_if_exists(resources_dir.join("resources.gresource")).await?;
     remove_file_if_exists(resources_dir.join("resources.gresource.xml")).await?;
+    Ok(())
+}
+
+/// Installs the app icon into a freedesktop hicolor icon-theme tree rooted at
+/// `icons_root`, named after the bundle identifier so desktop entries and
+/// GTK icon-name lookup resolve it.
+pub async fn stage_hicolor_icons(project: &Project, icons_root: &Path) -> eyre::Result<()> {
+    let manifest = build_manifest(project)?;
+    let icon = load_project_icon(&manifest)?;
+    let name = format!("{}.png", project.bundle_identifier());
+    for &size in LINUX_HICOLOR_SIZES {
+        let dir = icons_root.join(format!("hicolor/{size}x{size}/apps"));
+        write_png(&icon.render(size)?, &dir.join(&name)).await?;
+    }
     Ok(())
 }
 
@@ -624,19 +662,7 @@ async fn write_png(image: &image::RgbaImage, path: &Path) -> eyre::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    let mut png = Vec::new();
-    let encoder = image::codecs::png::PngEncoder::new_with_quality(
-        &mut png,
-        image::codecs::png::CompressionType::Best,
-        image::codecs::png::FilterType::Adaptive,
-    );
-    encoder.write_image(
-        image.as_raw(),
-        image.width(),
-        image.height(),
-        image::ExtendedColorType::Rgba8,
-    )?;
-    fs::write(path, png).await?;
+    fs::write(path, encode_png(image)?).await?;
     Ok(())
 }
 

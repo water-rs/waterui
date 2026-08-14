@@ -13,6 +13,9 @@ categories.workspace = true
 
 [dependencies]
 waterui-core.workspace = true
+waterui-assets.workspace = true
+# Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG).
+png = "0.18"
 waterui = { version = "0.2.1", path = "../..", default-features = false, features = ["gpu", "inspector"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

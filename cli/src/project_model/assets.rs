@@ -816,6 +816,16 @@ pub fn project_macos_icns(project: &Project) -> eyre::Result<Vec<u8>> {
     unified::macos_icns(project)
 }
 
+/// Render the project's Windows `.ico` app icon for resource embedding.
+pub fn project_windows_ico(project: &Project) -> eyre::Result<Vec<u8>> {
+    unified::windows_ico(project)
+}
+
+/// Install the app icon into a hicolor icon-theme tree for Linux desktops.
+pub async fn stage_hicolor_icons(project: &Project, icons_root: &Path) -> eyre::Result<()> {
+    unified::stage_hicolor_icons(project, icons_root).await
+}
+
 /// Stage project assets for GTK4 packaging (resources + gresource bundle).
 pub async fn stage_project_assets_for_gtk(
     project: &Project,

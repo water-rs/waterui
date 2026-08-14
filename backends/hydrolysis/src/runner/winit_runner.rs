@@ -188,8 +188,10 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::default(),
     ));
+    let window_icon = load_staged_window_icon();
     let mut runner = WinitRunner {
         env,
+        window_icon,
         pending_windows: windows
             .into_iter()
             .map(PendingWindow::application)
@@ -214,6 +216,10 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
 
 struct WinitRunner {
     env: Environment,
+    /// Taskbar/window icon staged by the water CLI next to the asset bundle.
+    /// X11 and Windows honor it; macOS uses the bundle's icns and Wayland
+    /// resolves icons through the desktop entry instead.
+    window_icon: Option<winit::window::Icon>,
     pending_windows: Vec<PendingWindow>,
     pending_window_queue: Rc<RefCell<Vec<PendingWindow>>>,
     windows: HashMap<WindowId, RuntimeWindow<WinitWindow>>,
@@ -226,13 +232,64 @@ struct WinitRunner {
     render_diagnostics_config: RenderDiagnosticsConfig,
 }
 
+/// Loads the window icon the water CLI stages into the asset bundle root.
+///
+/// Absence is a legitimate state (bare `cargo run`, tests, previews without
+/// staging); a present-but-undecodable icon is reported and skipped.
+fn load_staged_window_icon() -> Option<winit::window::Icon> {
+    let root = waterui_assets::bundle_root().ok()?;
+    let path = root.join(waterui_assets::WINDOW_ICON_FILE);
+    let file = std::fs::File::open(&path).ok()?;
+    let decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let mut reader = match decoder.read_info() {
+        Ok(reader) => reader,
+        Err(error) => {
+            tracing::warn!(
+                "staged window icon {} is not decodable: {error}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    let mut pixels = vec![0; reader.output_buffer_size()?];
+    let info = match reader.next_frame(&mut pixels) {
+        Ok(info) => info,
+        Err(error) => {
+            tracing::warn!(
+                "staged window icon {} is not decodable: {error}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        tracing::warn!(
+            "staged window icon {} must be 8-bit RGBA, got {:?}/{:?}",
+            path.display(),
+            info.color_type,
+            info.bit_depth
+        );
+        return None;
+    }
+    pixels.truncate(info.buffer_size());
+    match winit::window::Icon::from_rgba(pixels, info.width, info.height) {
+        Ok(icon) => Some(icon),
+        Err(error) => {
+            tracing::warn!("staged window icon {} is unusable: {error}", path.display());
+            None
+        }
+    }
+}
+
 fn native_window_attributes(
     window: &Window,
     env: &Environment,
     activates: bool,
+    icon: Option<winit::window::Icon>,
 ) -> winit::window::WindowAttributes {
     let frame = window.frame.get();
     NativeWindow::default_attributes()
+        .with_window_icon(icon)
         .with_title(window.title.get().as_str())
         .with_resizable(window.resizable)
         .with_visible(false)
@@ -287,7 +344,8 @@ impl WinitRunner {
         pending: PendingWindow,
     ) -> (RuntimeWindow<WinitWindow>, Option<AccessKitAdapter>) {
         let PendingWindow { window, activates } = pending;
-        let attributes = native_window_attributes(&window, &self.env, activates);
+        let attributes =
+            native_window_attributes(&window, &self.env, activates, self.window_icon.clone());
 
         let native_window = Arc::new(
             event_loop
@@ -580,7 +638,7 @@ mod tests {
         let window = Window::new("", binding(WindowState::Normal), || ());
         let env = Environment::new();
 
-        assert!(native_window_attributes(&window, &env, true).active);
+        assert!(native_window_attributes(&window, &env, true, None).active);
         assert!(!native_window_attributes(&window, &env, false).active);
     }
 }

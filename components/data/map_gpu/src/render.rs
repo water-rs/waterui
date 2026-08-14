@@ -2925,7 +2925,7 @@ fn shade_dem_tile(
                 horizontal,
                 shadow,
                 highlight,
-            )
+            );
         });
     #[cfg(target_arch = "wasm32")]
     pixels
@@ -2944,7 +2944,7 @@ fn shade_dem_tile(
                 horizontal,
                 shadow,
                 highlight,
-            )
+            );
         });
     pixels
 }

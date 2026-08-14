@@ -272,6 +272,7 @@ async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::
 
     // Stage project assets using platform-native conventions.
     assets::stage_project_assets_for_gtk(project, &resources_dir).await?;
+    assets::stage_hicolor_icons(project, &resources_dir.join("icons")).await?;
 
     // Scan and resolve dependency fonts
     let font_declarations = assets::scan_fonts(project).await?;

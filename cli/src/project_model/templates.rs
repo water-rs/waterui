@@ -2152,6 +2152,12 @@ struct GeneratedCargoManifest<T> {
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
     features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, T>,
+    #[serde(
+        rename = "build-dependencies",
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        default
+    )]
+    build_dependencies: std::collections::BTreeMap<String, T>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
     target: std::collections::BTreeMap<String, GeneratedTargetSection<T>>,
     workspace: GeneratedWorkspaceSection,
@@ -2539,6 +2545,12 @@ pub mod hydrolysis {
                 ("waterui-preview-test-mode".to_string(), Vec::new()),
             ]),
             dependencies: cargo_dependencies(ctx),
+            // The build script embeds the staged Windows icon resource; the
+            // crate is a no-op on every other target.
+            build_dependencies: BTreeMap::from([(
+                "winresource".to_string(),
+                GeneratedDependencyValue::Simple("0.1".to_string()),
+            )]),
             target: cargo_target_dependencies(ctx),
             workspace: GeneratedWorkspaceSection {},
         }
@@ -3075,6 +3087,7 @@ pub mod root {
                 vec!["waterui/dynamic_linking".to_string()],
             )]),
             dependencies: BTreeMap::from([("waterui".to_string(), waterui_dependency.clone())]),
+            build_dependencies: BTreeMap::new(),
             target: native_target_section(waterui_dependency),
             workspace: GeneratedWorkspaceSection {},
         };

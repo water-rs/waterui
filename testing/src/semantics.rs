@@ -213,6 +213,10 @@ fn accesskit_rect_to_node_bounds(rect: AccessibilityRect) -> NodeBounds {
 
 /// Immutable accessibility node snapshot used by assertions and queries.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors independent accessibility attributes reported by the platform tree"
+)]
 pub struct NodeSnapshot {
     pub(crate) id: NodeId,
     pub(crate) role: Role,
