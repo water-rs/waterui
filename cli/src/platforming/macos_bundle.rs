@@ -50,7 +50,9 @@ pub struct MacOsUsageDescription {
 
 /// Package a compiled binary as a macOS `.app` bundle.
 ///
-/// `resources_dir` is optional and copied to `Contents/Resources` when present.
+/// `resources_dir` is optional and copied to `Contents/Resources` when
+/// present. `icns` is the encoded app-icon family, written as
+/// `Contents/Resources/AppIcon.icns` and referenced from `Info.plist`.
 ///
 /// # Errors
 /// Returns an error if the binary is missing, template rendering fails, or bundle files cannot be created.
@@ -60,6 +62,7 @@ pub async fn package_binary_as_app(
     app_name: &str,
     usage_descriptions: &[MacOsUsageDescription],
     resources_dir: Option<&Path>,
+    icns: &[u8],
     output_root: &Path,
 ) -> eyre::Result<PathBuf> {
     if !binary_path.exists() {
@@ -98,6 +101,8 @@ pub async fn package_binary_as_app(
     {
         copy_dir(src_resources, &bundle_resources_dir).await?;
     }
+
+    fs::write(bundle_resources_dir.join("AppIcon.icns"), icns).await?;
 
     let plist = InfoPlistTemplate {
         bundle_identifier: bundle_id,
@@ -339,6 +344,39 @@ mod tests {
             first_codesigning_identity("     0 valid identities found\n"),
             None
         );
+    }
+
+    #[test]
+    fn packaged_app_carries_icon_and_plist_references() {
+        smol::block_on(async {
+            let temporary = tempfile::tempdir().expect("temporary directory must be available");
+            let binary = temporary.path().join("demo");
+            std::fs::write(&binary, b"demo").expect("fake executable must be written");
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+                .expect("fake executable must be executable");
+
+            let app = super::package_binary_as_app(
+                &binary,
+                "dev.waterui.demo",
+                "Demo",
+                &[],
+                None,
+                b"fake-icns-bytes",
+                temporary.path(),
+            )
+            .await
+            .expect("bundle must package");
+
+            assert_eq!(
+                std::fs::read(app.join("Contents/Resources/AppIcon.icns"))
+                    .expect("bundle must contain the icon family"),
+                b"fake-icns-bytes"
+            );
+            let plist = std::fs::read_to_string(app.join("Contents/Info.plist"))
+                .expect("bundle plist must be readable");
+            assert!(plist.contains("<key>CFBundleIconFile</key>"));
+            assert!(plist.contains("<key>CFBundleIconName</key>"));
+        });
     }
 
     #[test]

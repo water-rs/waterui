@@ -811,6 +811,11 @@ pub async fn stage_project_assets_for_android(
     unified::stage_for_android(project, backend_path).await
 }
 
+/// Render the project's macOS `.icns` app icon for hand-assembled bundles.
+pub fn project_macos_icns(project: &Project) -> eyre::Result<Vec<u8>> {
+    unified::macos_icns(project)
+}
+
 /// Stage project assets for GTK4 packaging (resources + gresource bundle).
 pub async fn stage_project_assets_for_gtk(
     project: &Project,
