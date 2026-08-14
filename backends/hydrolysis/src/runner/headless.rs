@@ -379,10 +379,6 @@ impl HeadlessRuntime {
             let Some(update) = popup.renderer.take_accessibility_tree_update() else {
                 continue;
             };
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "a window count never approaches u64 range"
-            )]
             let offset = (index as u64 + 1) * WINDOW_ID_STRIDE;
             for (id, mut node) in update.nodes {
                 let children: Vec<_> = node
