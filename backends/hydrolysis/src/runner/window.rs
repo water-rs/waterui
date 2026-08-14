@@ -50,8 +50,9 @@ pub(super) fn probe_accessibility_runtime() -> bool {
 /// The work scheduled for the next pump of a window.
 ///
 /// The retained tree distinguishes a visual re-encode from a layout refresh. A
-/// transform/opacity animation only re-samples animated values and re-encodes the
-/// scene; reactive content, structural patches, and resize also run layout.
+/// transform/opacity animation or a scroll-offset change only re-samples visual
+/// state and re-encodes the scene; reactive content, structural patches, and
+/// resize also run layout.
 ///
 /// `Refresh` has precedence over `Reencode`, so a geometry-affecting update can
 /// never be lost when it races with an animation tick.
@@ -268,8 +269,9 @@ impl FrameProfile {
 }
 
 /// Wakes the platform window after an input event: structural rebuilds and pending
-/// reactive patches refresh the retained tree; purely visual changes re-present the
-/// existing scene.
+/// reactive patches refresh the retained tree; a transform-level change (a scroll
+/// offset, a scrollbar drag) re-encodes it at its existing placements; purely
+/// visual changes re-present the existing scene.
 pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     changed: bool,
@@ -278,25 +280,15 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
         return;
     }
     if runtime.renderer.take_rebuild_request() || runtime.renderer.has_patch_request() {
+        // A pending re-encode is subsumed by the refresh; consume it so it does
+        // not schedule a stale extra frame later.
+        let _ = runtime.renderer.take_reencode_request();
         runtime.request_refresh();
+    } else if runtime.renderer.take_reencode_request() {
+        runtime.request_reencode();
     } else {
         runtime.renderer.request_redraw();
     }
-    runtime.platform.request_redraw();
-}
-
-/// Wakes the platform window after a discrete scroll event. Wheel steps can affect
-/// lazy-stack visibility, so they refresh layout; smooth inertial ticks use the
-/// visual-only path once that refresh establishes the latest placements.
-pub(super) fn schedule_scroll_refresh<P: PlatformWindow>(
-    runtime: &mut RuntimeWindow<P>,
-    changed: bool,
-) {
-    if !changed {
-        return;
-    }
-    let _ = runtime.renderer.take_rebuild_request();
-    runtime.request_refresh();
     runtime.platform.request_redraw();
 }
 
@@ -431,6 +423,15 @@ fn reencode_window_scene<P: PlatformWindow>(
         "hydrolysis runner: retained render tree vanished during visual re-encode"
     );
     phases.scene_dispatch += reencode_started_at.elapsed();
+    // A re-encode moves content under a static pointer (scroll offsets above
+    // all), so hover must be re-evaluated exactly like after a layout refresh:
+    // the widget now under the cursor gains its hover chrome, the one that
+    // scrolled away loses it.
+    if let Some((x, y)) = runtime.pointer_position
+        && runtime.renderer.sync_pointer_hover_state(x, y, env)
+    {
+        runtime.renderer.request_redraw();
+    }
 }
 
 /// Builds the retained window tree from the app's `body()`. Runs exactly once per
@@ -498,6 +499,9 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
     let renderer_requested_rebuild = runtime.renderer.take_rebuild_request();
     if renderer_requested_rebuild {
         runtime.request_refresh();
+    }
+    if runtime.renderer.take_reencode_request() {
+        runtime.request_reencode();
     }
 
     let mut built = false;
@@ -586,6 +590,9 @@ pub(super) fn pump_window_semantics<P: PlatformWindow>(
 
     if runtime.renderer.take_rebuild_request() {
         runtime.request_refresh();
+    }
+    if runtime.renderer.take_reencode_request() {
+        runtime.request_reencode();
     }
     let work_pending = runtime.mode.is_pending()
         || runtime.renderer.has_patch_request()
@@ -1206,7 +1213,7 @@ where
                     changed,
                     "runner dispatched input event"
                 );
-                schedule_scroll_refresh(runtime, changed);
+                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::TrackpadPan {
                 x,
@@ -1389,6 +1396,12 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     }
     if runtime.renderer.take_rebuild_request() {
         runtime.request_refresh();
+    }
+    // A transform-level change (scroll offset, scrollbar drag) recorded outside
+    // input dispatch composites through the visual re-encode path.
+    if runtime.renderer.take_reencode_request() {
+        runtime.request_reencode();
+        runtime.platform.request_redraw();
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
     #[cfg(any(hydrolysis_cef_webview, feature = "chromium"))]

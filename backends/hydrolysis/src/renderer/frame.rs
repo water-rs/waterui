@@ -391,6 +391,17 @@ impl HydrolysisRenderer {
         self.signals.take_redraw_request()
     }
 
+    /// A transform-level visual value outside the reactive graph moved (a
+    /// scroll offset, a scrollbar drag): the retained tree must be re-encoded
+    /// at the placements the last layout computed.
+    pub fn request_reencode(&self) {
+        self.signals.request_reencode();
+    }
+
+    pub fn take_reencode_request(&self) -> bool {
+        self.signals.take_reencode_request()
+    }
+
     pub fn request_rebuild(&self) {
         self.signals.request_rebuild();
     }
@@ -433,6 +444,7 @@ impl HydrolysisRenderer {
     #[must_use]
     pub fn has_scheduled_semantic_work(&self) -> bool {
         self.signals.has_patch_request()
+            || self.signals.has_reencode_request()
             || self.signals.has_rebuild_request()
             || self.signals.has_next_frame_rebuild_request()
             || self.animations_active()

@@ -2,7 +2,7 @@ use super::headless::HeadlessPlatformWindow;
 use super::{
     RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
     handle_input_events, pump_window_semantics, schedule_animation_update,
-    schedule_redraw_or_refresh, schedule_scroll_refresh, surface_error_requires_reconfigure,
+    schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
 use crate::platform::{
     InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError, SurfaceFrame, SurfaceProvider,
@@ -61,15 +61,20 @@ fn changed_reactive_input_refreshes_retained_tree() {
 }
 
 #[test]
-fn changed_scroll_input_schedules_frame_and_wakes_platform_window() {
+fn changed_scroll_input_schedules_reencode_and_wakes_platform_window() {
     let mut runtime = test_runtime_window();
     runtime.clear_frame_mode();
 
-    // Scrolling re-composites the retained frame via a refresh (the first pump
-    // builds the tree if it does not exist yet).
-    schedule_scroll_refresh(&mut runtime, true);
+    // A consumed scroll records a re-encode request; the runner composites the
+    // retained frame at the new offset without scheduling layout.
+    runtime.renderer.request_reencode();
+    schedule_redraw_or_refresh(&mut runtime, true);
 
     assert!(runtime.mode.is_pending());
+    assert!(
+        !runtime.mode.needs_layout(),
+        "a scroll offset change must not schedule layout"
+    );
     assert!(
         runtime.platform.take_redraw_request(),
         "scroll input must wake the platform event loop for the next frame"

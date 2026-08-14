@@ -1,6 +1,8 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::{AccessibilityActionTarget, HydrolysisRenderer};
-use crate::renderer::{HydroNativeView, HydroState, WidgetRenderContext, measure_view_intrinsic};
+use crate::renderer::{
+    HydroNativeView, HydroState, WidgetRenderContext, measure_view_intrinsic, transformed_rect,
+};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -11,6 +13,16 @@ use waterui_core::layout::Size as LayoutSize;
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollView};
 
 use crate::widgets::widget_theme;
+
+/// Width of the grabbable scrollbar gutter along the viewport edge, in logical
+/// pixels. Wider than the drawn thumb so the bar is comfortable to pick up.
+const SCROLL_INDICATOR_GUTTER: f64 = 12.0;
+/// Drawn thumb thickness at rest.
+const SCROLL_INDICATOR_THICKNESS: f64 = 2.5;
+/// Drawn thumb thickness while the thumb is being dragged.
+const SCROLL_INDICATOR_DRAG_THICKNESS: f64 = 6.5;
+/// Inset of the thumb from the viewport edge.
+const SCROLL_INDICATOR_EDGE_INSET: f64 = 1.5;
 
 impl HydroNativeView for Native<ScrollView> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
@@ -69,56 +81,190 @@ pub(crate) fn register_scroll_accessibility_node(
     );
 }
 
+/// Geometry of one scroll indicator along its track: where the thumb starts,
+/// its extent, and how far it can travel. `None` when the content does not
+/// overflow the viewport on that axis.
+struct IndicatorGeometry {
+    thumb_offset: f64,
+    thumb_extent: f64,
+    travel: f64,
+}
+
+fn indicator_geometry(
+    track: f64,
+    viewport_extent: f64,
+    content_extent: f64,
+    max_offset: f64,
+    offset: f64,
+) -> Option<IndicatorGeometry> {
+    if max_offset <= 0.0 {
+        return None;
+    }
+    let min_thumb = track.min(12.0);
+    let thumb_extent = (track * (viewport_extent / content_extent)).clamp(min_thumb, track);
+    let travel = track - thumb_extent;
+    let progress = offset / max_offset;
+    Some(IndicatorGeometry {
+        thumb_offset: travel * progress,
+        thumb_extent,
+        travel,
+    })
+}
+
+/// Draws the scroll indicators for `metrics` and registers their gutters as
+/// draggable scrollbar targets: pressing the thumb drags it, pressing the track
+/// jumps the thumb to the pointer and keeps dragging. The thumb draws widened
+/// while it owns a drag; a drag schedules re-encode frames only, never layout.
 pub(crate) fn draw_scroll_indicators(
     ctx: &mut WidgetRenderContext<'_>,
     env: &Environment,
     viewport: vello::kurbo::Rect,
     metrics: crate::scroll::ScrollMetrics,
     axis: ScrollAxis,
+    handle: &crate::scroll::ScrollHandle,
 ) {
+    let key = handle.cache_key();
+    let dragging = ctx.renderer_mut().scrollbar_drag_active(key);
+    let thickness = if dragging {
+        SCROLL_INDICATOR_DRAG_THICKNESS
+    } else {
+        SCROLL_INDICATOR_THICKNESS
+    };
     let theme = widget_theme(env);
-    let mut draw = ctx.draw_context();
-    match axis {
-        ScrollAxis::Vertical | ScrollAxis::All if metrics.max_y > 0.0 => {
-            let track_height = viewport.height();
-            let min_thumb_height = track_height.min(12.0);
-            let thumb_height = (track_height * (metrics.viewport_height / metrics.content_height))
-                .clamp(min_thumb_height, track_height);
-            let travel = track_height - thumb_height;
-            let progress = metrics.offset_y / metrics.max_y;
-            let thumb_y = viewport.y0 + travel * progress;
+    let vertical = matches!(axis, ScrollAxis::Vertical | ScrollAxis::All)
+        .then(|| {
+            indicator_geometry(
+                viewport.height(),
+                metrics.viewport_height,
+                metrics.content_height,
+                metrics.max_y,
+                metrics.offset_y,
+            )
+        })
+        .flatten();
+    let horizontal = matches!(axis, ScrollAxis::Horizontal | ScrollAxis::All)
+        .then(|| {
+            indicator_geometry(
+                viewport.width(),
+                metrics.viewport_width,
+                metrics.content_width,
+                metrics.max_x,
+                metrics.offset_x,
+            )
+        })
+        .flatten();
+
+    {
+        let mut draw = ctx.draw_context();
+        if let Some(geometry) = &vertical {
+            let thumb_y = viewport.y0 + geometry.thumb_offset;
             theme.draw_scroll_indicator(
                 &mut draw,
                 vello::kurbo::Rect::new(
-                    viewport.x1 - 4.0,
+                    viewport.x1 - SCROLL_INDICATOR_EDGE_INSET - thickness,
                     thumb_y,
-                    viewport.x1 - 1.5,
-                    thumb_y + thumb_height,
+                    viewport.x1 - SCROLL_INDICATOR_EDGE_INSET,
+                    thumb_y + geometry.thumb_extent,
                 ),
             );
         }
-        _ => {}
-    }
-
-    match axis {
-        ScrollAxis::Horizontal | ScrollAxis::All if metrics.max_x > 0.0 => {
-            let track_width = viewport.width();
-            let min_thumb_width = track_width.min(12.0);
-            let thumb_width = (track_width * (metrics.viewport_width / metrics.content_width))
-                .clamp(min_thumb_width, track_width);
-            let travel = track_width - thumb_width;
-            let progress = metrics.offset_x / metrics.max_x;
-            let thumb_x = viewport.x0 + travel * progress;
+        if let Some(geometry) = &horizontal {
+            let thumb_x = viewport.x0 + geometry.thumb_offset;
             theme.draw_scroll_indicator(
                 &mut draw,
                 vello::kurbo::Rect::new(
                     thumb_x,
-                    viewport.y1 - 4.0,
-                    thumb_x + thumb_width,
-                    viewport.y1 - 1.5,
+                    viewport.y1 - SCROLL_INDICATOR_EDGE_INSET - thickness,
+                    thumb_x + geometry.thumb_extent,
+                    viewport.y1 - SCROLL_INDICATOR_EDGE_INSET,
                 ),
             );
         }
-        _ => {}
+    }
+
+    let hit_transform = ctx.hit_transform;
+    if vertical.is_some_and(|geometry| geometry.travel > 0.0) {
+        let gutter = transformed_rect(
+            hit_transform,
+            vello::kurbo::Rect::new(
+                viewport.x1 - SCROLL_INDICATOR_GUTTER,
+                viewport.y0,
+                viewport.x1,
+                viewport.y1,
+            ),
+        );
+        let handle = handle.clone();
+        ctx.renderer_mut()
+            .register_scrollbar_drag_target(gutter, move |renderer, point, _env| {
+                let metrics = handle.metrics();
+                let Some(geometry) = indicator_geometry(
+                    gutter.height(),
+                    metrics.viewport_height,
+                    metrics.content_height,
+                    metrics.max_y,
+                    metrics.offset_y,
+                ) else {
+                    return false;
+                };
+                if geometry.travel <= 0.0 {
+                    return false;
+                }
+                let pointer = point.y - gutter.y0;
+                let grab = renderer.scrollbar_drag_grab(key).unwrap_or_else(|| {
+                    let grab = if pointer >= geometry.thumb_offset
+                        && pointer <= geometry.thumb_offset + geometry.thumb_extent
+                    {
+                        pointer - geometry.thumb_offset
+                    } else {
+                        geometry.thumb_extent / 2.0
+                    };
+                    renderer.begin_scrollbar_drag(key, grab);
+                    grab
+                });
+                let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_y;
+                handle.scroll_to(metrics.offset_x, target)
+            });
+    }
+    if horizontal.is_some_and(|geometry| geometry.travel > 0.0) {
+        let gutter = transformed_rect(
+            hit_transform,
+            vello::kurbo::Rect::new(
+                viewport.x0,
+                viewport.y1 - SCROLL_INDICATOR_GUTTER,
+                viewport.x1,
+                viewport.y1,
+            ),
+        );
+        let handle = handle.clone();
+        ctx.renderer_mut()
+            .register_scrollbar_drag_target(gutter, move |renderer, point, _env| {
+                let metrics = handle.metrics();
+                let Some(geometry) = indicator_geometry(
+                    gutter.width(),
+                    metrics.viewport_width,
+                    metrics.content_width,
+                    metrics.max_x,
+                    metrics.offset_x,
+                ) else {
+                    return false;
+                };
+                if geometry.travel <= 0.0 {
+                    return false;
+                }
+                let pointer = point.x - gutter.x0;
+                let grab = renderer.scrollbar_drag_grab(key).unwrap_or_else(|| {
+                    let grab = if pointer >= geometry.thumb_offset
+                        && pointer <= geometry.thumb_offset + geometry.thumb_extent
+                    {
+                        pointer - geometry.thumb_offset
+                    } else {
+                        geometry.thumb_extent / 2.0
+                    };
+                    renderer.begin_scrollbar_drag(key, grab);
+                    grab
+                });
+                let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_x;
+                handle.scroll_to(target, metrics.offset_y)
+            });
     }
 }
