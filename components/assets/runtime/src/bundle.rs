@@ -274,6 +274,24 @@ impl FontAsset {
     }
 }
 
+/// File name of the window icon the CLI stages into the bundle root for
+/// self-drawn desktop backends. Dot-prefixed so it can never collide with a
+/// project asset's logical path.
+pub const WINDOW_ICON_FILE: &str = ".window-icon.png";
+
+/// Resolves the root directory of the staged asset bundle.
+///
+/// Honors `WATERUI_ASSETS_ROOT`, then probes executable-relative locations
+/// used by packaged applications. Backends use this to find bundle-adjacent
+/// resources such as the staged window icon.
+///
+/// # Errors
+///
+/// Fails when no staged bundle can be located.
+pub fn bundle_root() -> Result<PathBuf, AssetError> {
+    assets_root()
+}
+
 fn assets_root() -> Result<PathBuf, AssetError> {
     if let Some(root) = env::var_os(ASSETS_ENV) {
         return Ok(PathBuf::from(root));

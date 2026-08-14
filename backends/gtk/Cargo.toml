@@ -38,6 +38,7 @@ executor-core.workspace = true
 native-executor.workspace = true
 
 gtk4 = { workspace = true, features = ["v4_12"] }
+waterui-assets.workspace = true
 gdk4 = { workspace = true, features = ["v4_12"] }
 glib.workspace = true
 cairo-rs.workspace = true

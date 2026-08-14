@@ -70,6 +70,32 @@ pub fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRunti
     inspector
 }
 
+/// Makes the staged application icon resolvable through GTK icon-name
+/// lookup.
+///
+/// The water CLI installs a hicolor icon tree named after the application id
+/// next to the staged asset bundle; adding that tree to the display's icon
+/// theme search path and using the id as the default window icon name lets
+/// GTK pick the right size everywhere the icon appears. Without a staged
+/// bundle (bare `cargo run`, tests) the theme simply has no icon with that
+/// name and GTK falls back to its generic window icon.
+fn install_app_icon(app_id: &str) {
+    gtk4::Window::set_default_icon_name(app_id);
+    let Ok(bundle_root) = waterui_assets::bundle_root() else {
+        return;
+    };
+    let Some(resources_root) = bundle_root.parent() else {
+        return;
+    };
+    let icons_dir = resources_root.join("icons");
+    if !icons_dir.is_dir() {
+        return;
+    }
+    if let Some(display) = gtk4::gdk::Display::default() {
+        gtk4::IconTheme::for_display(&display).add_search_path(icons_dir);
+    }
+}
+
 /// GTK4 application wrapper for `WaterUI`.
 #[derive(Debug)]
 pub struct GtkApp {
@@ -120,6 +146,9 @@ impl GtkApp {
         let cef_pump_started = Rc::new(Cell::new(false));
 
         self.app.connect_activate(move |app| {
+            if let Some(app_id) = app.application_id() {
+                install_app_icon(app_id.as_str());
+            }
             let inspector = init_main_thread_executors();
             #[cfg(any(feature = "webview-cef", feature = "chromium"))]
             if !cef_pump_started.replace(true) {

@@ -10,7 +10,7 @@
   </p>
 </div>
 
-WaterUI is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: UIKit and AppKit on Apple, Android Views on Android, GTK4 on Linux. Where no native toolkit fits there are two self-drawn renderers: Hydrolysis draws on the GPU through Vello, and Dew is a CPU renderer frugal enough for microcontrollers.
+`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, Android Views on Android, GTK4 on Linux. Where no native toolkit fits there are two self-drawn renderers: Hydrolysis draws on the GPU through Vello, and Dew is a CPU renderer frugal enough for microcontrollers.
 
 State is plain values. Put mutable state in a `Binding`, derive from it with `Computed`, and hand those to views. When a value changes, the views that read it update. There is no virtual tree to diff, and changing one string never rebuilds the subtree around it.
 
@@ -82,7 +82,7 @@ water run --platform ios
 
 `Water.toml` holds package metadata, enabled backends, permissions, and theming. Add or remove a backend later with `water backend`.
 
-To give the app an icon, drop a square `Icon.svg` or `Icon.png` into `assets/`. The CLI renders every platform format from that one file: full-bleed squares for iOS, the rounded-rect shape for macOS, and adaptive icon layers for Android, so the artwork survives each platform's mask. New projects start with the WaterUI logo there until you replace it.
+To give the app an icon, drop a square `Icon.svg` or `Icon.png` into `assets/`. The CLI renders every platform format from that one file: full-bleed squares for iOS, the rounded-rect shape for macOS, and adaptive icon layers for Android, so the artwork survives each platform's mask. New projects start with the `WaterUI` logo there until you replace it.
 
 ## State
 
@@ -132,7 +132,7 @@ One thing to know early: `watch` replaces the subtree it wraps, losing any state
 
 | Target | Backend | Renders through |
 | --- | --- | --- |
-| iOS and macOS | Apple | UIKit / AppKit |
+| iOS and macOS | Apple | `UIKit` / `AppKit` |
 | Android | Android | Android Views |
 | Linux | GTK4 | GTK4 widgets |
 | macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Vello) |
