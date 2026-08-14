@@ -3800,6 +3800,68 @@ typedef struct Binding_Secure WuiBinding_Secure;
 typedef struct Binding_Id WuiBinding_Id;
 
 /**
+ * One node of a backend's accessibility tree, as it crosses the boundary.
+ *
+ * Strings are borrowed for the duration of the call: the runtime copies what
+ * it keeps, so a backend can build these from whatever it already has without
+ * handing over ownership.
+ */
+typedef struct WuiInspectorNode {
+  /**
+   * Identifier, stable for as long as the node exists.
+   */
+  uint64_t id;
+  /**
+   * Role, lowercase, as the platform names it.
+   */
+  struct WuiStr role;
+  /**
+   * Accessibility label; empty when the node has none.
+   */
+  struct WuiStr label;
+  /**
+   * Current value; empty when the node has none.
+   */
+  struct WuiStr value;
+  /**
+   * Whether `bounds` holds a rectangle.
+   */
+  bool has_bounds;
+  /**
+   * Layout rectangle in window coordinates, when `has_bounds`.
+   */
+  float bounds[4];
+  /**
+   * Whether the node accepts interaction.
+   */
+  bool enabled;
+  /**
+   * Whether the node is hidden from assistive technology.
+   */
+  bool hidden;
+  /**
+   * Whether the node is selected.
+   */
+  bool selected;
+  /**
+   * Whether `checked` means anything for this node.
+   */
+  bool has_checked;
+  /**
+   * Toggle state, when `has_checked`.
+   */
+  bool checked;
+  /**
+   * Children, in order.
+   */
+  const uint64_t *children;
+  /**
+   * Number of children.
+   */
+  uintptr_t children_len;
+} WuiInspectorNode;
+
+/**
  * FFI-owned wrapper around a [`waterui::Computed`] signal.
  *
  * Opaque to native code; accessed only through the `waterui_read_computed_*`,
@@ -8388,6 +8450,38 @@ void waterui_inspector_inspect_node(const struct WuiEnv *env, uint64_t node);
  * `env` must be a valid environment handle that stays alive for this call.
  */
 bool waterui_inspector_is_available(const struct WuiEnv *env);
+
+/**
+ * Whether anything is watching the accessibility tree.
+ *
+ * A backend walks its view hierarchy only when the answer is yes: with no
+ * inspector attached the tree costs nothing, which is the whole point of
+ * asking before building it.
+ *
+ * # Safety
+ *
+ * `env` must be a valid environment handle that stays alive for this call.
+ */
+bool waterui_inspector_wants_tree(const struct WuiEnv *env);
+
+/**
+ * Publishes a backend's accessibility tree to the inspector.
+ *
+ * The whole tree each time: the runtime turns it into a delta, so a backend
+ * does not have to track what changed.
+ *
+ * # Safety
+ *
+ * `env` must be a valid environment handle. `nodes` must point to `len`
+ * initialised nodes, whose strings and children arrays stay valid for the
+ * duration of the call.
+ */
+void waterui_inspector_publish_tree(const struct WuiEnv *env,
+                                    uint64_t root,
+                                    bool has_focus,
+                                    uint64_t focus,
+                                    const struct WuiInspectorNode *nodes,
+                                    uintptr_t len);
 
 /**
  * Reads the current value from a computed

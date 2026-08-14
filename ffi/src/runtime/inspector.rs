@@ -63,3 +63,135 @@ pub unsafe extern "C" fn waterui_inspector_is_available(env: *const WuiEnv) -> b
     let env = unsafe { crate::borrow_ffi(env) };
     env.get::<waterui::inspector::InspectorRuntime>().is_some()
 }
+
+/// One node of a backend's accessibility tree, as it crosses the boundary.
+///
+/// Strings are borrowed for the duration of the call: the runtime copies what
+/// it keeps, so a backend can build these from whatever it already has without
+/// handing over ownership.
+#[repr(C)]
+pub struct WuiInspectorNode {
+    /// Identifier, stable for as long as the node exists.
+    pub id: u64,
+    /// Role, lowercase, as the platform names it.
+    pub role: crate::WuiStr,
+    /// Accessibility label; empty when the node has none.
+    pub label: crate::WuiStr,
+    /// Current value; empty when the node has none.
+    pub value: crate::WuiStr,
+    /// Whether `bounds` holds a rectangle.
+    pub has_bounds: bool,
+    /// Layout rectangle in window coordinates, when `has_bounds`.
+    pub bounds: [f32; 4],
+    /// Whether the node accepts interaction.
+    pub enabled: bool,
+    /// Whether the node is hidden from assistive technology.
+    pub hidden: bool,
+    /// Whether the node is selected.
+    pub selected: bool,
+    /// Whether `checked` means anything for this node.
+    pub has_checked: bool,
+    /// Toggle state, when `has_checked`.
+    pub checked: bool,
+    /// Children, in order.
+    pub children: *const u64,
+    /// Number of children.
+    pub children_len: usize,
+}
+
+/// Whether anything is watching the accessibility tree.
+///
+/// A backend walks its view hierarchy only when the answer is yes: with no
+/// inspector attached the tree costs nothing, which is the whole point of
+/// asking before building it.
+///
+/// # Safety
+///
+/// `env` must be a valid environment handle that stays alive for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_inspector_wants_tree(env: *const WuiEnv) -> bool {
+    // SAFETY: the caller contract requires `env` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
+    let env = unsafe { crate::borrow_ffi(env) };
+    env.get::<waterui::inspector::TreeRecorder>()
+        .is_some_and(waterui::inspector::TreeRecorder::is_active)
+}
+
+/// Publishes a backend's accessibility tree to the inspector.
+///
+/// The whole tree each time: the runtime turns it into a delta, so a backend
+/// does not have to track what changed.
+///
+/// # Safety
+///
+/// `env` must be a valid environment handle. `nodes` must point to `len`
+/// initialised nodes, whose strings and children arrays stay valid for the
+/// duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_inspector_publish_tree(
+    env: *const WuiEnv,
+    root: u64,
+    has_focus: bool,
+    focus: u64,
+    nodes: *const WuiInspectorNode,
+    len: usize,
+) {
+    use waterui::inspector::protocol::{Bounds, NodeId, NodeState, TreeNode};
+
+    // SAFETY: as above.
+    let env = unsafe { crate::borrow_ffi(env) };
+    let Some(recorder) = env.get::<waterui::inspector::TreeRecorder>() else {
+        return;
+    };
+    if !recorder.is_active() {
+        return;
+    }
+    if nodes.is_null() {
+        return;
+    }
+
+    // SAFETY: the caller contract makes this `len` initialised nodes.
+    let raw = unsafe { core::slice::from_raw_parts(nodes, len) };
+    let projected = raw
+        .iter()
+        .map(|node| {
+            // SAFETY: the caller keeps every string alive for this call.
+            let text = |value: &crate::WuiStr| unsafe { value.as_str() }.to_string();
+            let optional = |value: &crate::WuiStr| {
+                let text = text(value);
+                (!text.is_empty()).then_some(text)
+            };
+            let children = if node.children.is_null() || node.children_len == 0 {
+                Vec::new()
+            } else {
+                // SAFETY: as above, for the children array.
+                unsafe { core::slice::from_raw_parts(node.children, node.children_len) }
+                    .iter()
+                    .map(|id| NodeId(*id))
+                    .collect()
+            };
+            TreeNode {
+                id: NodeId(node.id),
+                role: text(&node.role),
+                label: optional(&node.label),
+                value: optional(&node.value),
+                bounds: node.has_bounds.then(|| Bounds {
+                    x: node.bounds[0],
+                    y: node.bounds[1],
+                    width: node.bounds[2],
+                    height: node.bounds[3],
+                }),
+                state: NodeState {
+                    enabled: node.enabled,
+                    selected: node.selected,
+                    checked: node.has_checked.then_some(node.checked),
+                    expanded: None,
+                    hidden: node.hidden,
+                },
+                children,
+            }
+        })
+        .collect();
+
+    recorder.record_snapshot(NodeId(root), has_focus.then_some(NodeId(focus)), projected);
+}
