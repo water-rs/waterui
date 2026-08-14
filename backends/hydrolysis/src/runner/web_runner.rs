@@ -261,6 +261,11 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
         ));
         // The reactive graph is thread-confined, so its observer is installed
         // here, on the thread that owns the loop, and lives as long as it does.
+        #[cfg(feature = "inspector-signals")]
+        let _signal_scope = inspector
+            .as_ref()
+            .map(waterui::inspector::InspectorRuntime::observe_signals);
+
         let (windows, _menu_bar, env) = app.into_parts();
         let mut windows = windows.into_iter();
         let window = windows
