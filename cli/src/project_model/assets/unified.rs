@@ -10,7 +10,9 @@ use smol::fs;
 use waterui_assets::AssetKind;
 use waterui_assets_planner::{AssetRole, BundleManifest, PlannedAsset, ThemeConfig, plan_bundle};
 
-use super::icon::{IconSource, hex_color, render_android_foreground, render_apple_icon};
+use super::icon::{
+    IconSource, encode_macos_icns, hex_color, render_android_foreground, render_apple_icon,
+};
 use crate::project::Project;
 
 const ASSET_ROOT_DIR: &str = "waterui_assets";
@@ -85,6 +87,18 @@ pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::
     write_android_icon_resources(&icon, icon_background, backend_path).await?;
 
     Ok(())
+}
+
+/// Renders the project's macOS `.icns` app icon for hand-assembled bundles
+/// (self-drawn backends that do not go through an Xcode asset catalog).
+///
+/// # Errors
+///
+/// Fails when the icon asset cannot be loaded or rendered.
+pub fn macos_icns(project: &Project) -> eyre::Result<Vec<u8>> {
+    let manifest = build_manifest(project)?;
+    let icon = load_project_icon(&manifest)?;
+    encode_macos_icns(&icon)
 }
 
 pub async fn stage_for_gtk(project: &Project, resources_dir: &Path) -> eyre::Result<()> {

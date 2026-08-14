@@ -199,6 +199,36 @@ pub fn render_apple_icon(
     Ok(canvas)
 }
 
+/// Pixel sizes carried by a macOS `.icns` icon family.
+const MACOS_ICNS_SIZES: &[u32] = &[16, 32, 64, 128, 256, 512, 1024];
+
+/// Encodes the macOS icon family (`.icns`) for hand-assembled app bundles,
+/// using the same inset rounded-rectangle shape as the asset-catalog `mac`
+/// idiom.
+///
+/// # Errors
+///
+/// Fails when rendering fails or the icon family cannot be encoded.
+pub fn encode_macos_icns(source: &IconSource) -> eyre::Result<Vec<u8>> {
+    let mut family = icns::IconFamily::new();
+    for &size in MACOS_ICNS_SIZES {
+        let rendered = render_apple_icon(source, "mac", size)?;
+        let image =
+            icns::Image::from_data(icns::PixelFormat::RGBA, size, size, rendered.into_raw())
+                .map_err(|error| {
+                    eyre::eyre!("Failed to build {size}x{size} icns image: {error}")
+                })?;
+        family.add_icon(&image).map_err(|error| {
+            eyre::eyre!("Failed to add {size}x{size} icon to icns family: {error}")
+        })?;
+    }
+    let mut encoded = Vec::new();
+    family
+        .write(&mut encoded)
+        .map_err(|error| eyre::eyre!("Failed to encode icns icon family: {error}"))?;
+    Ok(encoded)
+}
+
 /// Renders the Android adaptive-icon foreground layer.
 ///
 /// When the icon's background color is known, the icon content (everything
@@ -502,6 +532,23 @@ mod tests {
             image::Rgba([255, 255, 255, 255]),
             "the whole artwork, background included, sits in the visible square"
         );
+    }
+
+    #[test]
+    fn macos_icns_encodes_all_family_sizes() {
+        let logo = IconSource::default_logo();
+        let encoded = encode_macos_icns(&logo).expect("icns must encode");
+        let family = icns::IconFamily::read(std::io::Cursor::new(&encoded))
+            .expect("encoded icns must parse back");
+        for &size in MACOS_ICNS_SIZES {
+            assert!(
+                family
+                    .available_icons()
+                    .iter()
+                    .any(|icon| icon.pixel_width() == size),
+                "icns family is missing the {size}px entry"
+            );
+        }
     }
 
     /// Exports the icon formats generated from the bundled logo so they can
