@@ -428,6 +428,10 @@ water preview my_view            # preview #[preview] function
 water run --logs debug           # with debug output
 ```
 
+App icon: put a square `Icon.svg` or `Icon.png` at the root of `assets/`. The
+CLI generates every platform format from it (iOS full-bleed, macOS rounded
+rect, Android adaptive layers). New projects start with the WaterUI logo.
+
 ## Preview System
 
 Use the `#[preview]` macro to enable instant view previews:
