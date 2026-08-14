@@ -365,6 +365,7 @@ impl RenderNode {
                     viewport_rect,
                     metrics,
                     node.axis,
+                    &handle,
                 );
             }
             RenderNode::LazyStack(node) => node.flush(renderer, ctx, env),

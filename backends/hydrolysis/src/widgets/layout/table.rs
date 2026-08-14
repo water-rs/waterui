@@ -530,7 +530,7 @@ pub(crate) fn render_table_parts(
         handle.clone(),
         move |dx, dy, is_line_delta| handle_for_input.apply_scroll_delta(dx, dy, is_line_delta),
     );
-    draw_scroll_indicators(ctx, env, viewport, scroll_metrics, ScrollAxis::All);
+    draw_scroll_indicators(ctx, env, viewport, scroll_metrics, ScrollAxis::All, &handle);
 }
 
 /// Render one table cell's content through the per-widget [`VisibleSubviewCache`],

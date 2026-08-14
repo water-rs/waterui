@@ -665,7 +665,7 @@ pub(crate) fn render_list_parts(
         handle.clone(),
         move |dx, dy, is_line_delta| handle_for_input.apply_scroll_delta(dx, dy, is_line_delta),
     );
-    draw_scroll_indicators(ctx, env, viewport, metrics, ScrollAxis::Vertical);
+    draw_scroll_indicators(ctx, env, viewport, metrics, ScrollAxis::Vertical, &handle);
 }
 
 fn list_content_rect(

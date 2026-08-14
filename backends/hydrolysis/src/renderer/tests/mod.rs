@@ -10,6 +10,8 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 mod perf_full_rebuild;
 mod perf_scroll;
 mod retained_scene;
+#[cfg(feature = "accessibility")]
+mod scroll_frames;
 mod tree;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
