@@ -834,7 +834,7 @@ impl TextNode {
         {
             return;
         }
-        let plain = styled.to_plain().to_string();
+        let plain = styled.to_semantic().to_string();
         let default_label = (!plain.is_empty()).then_some(plain);
         let Some(label) = renderer.resolve_accessibility_label(env, default_label) else {
             return;
