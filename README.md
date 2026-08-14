@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/logo.svg" alt="WaterUI logo" width="150" />
   <h1>WaterUI</h1>
-  <p>A Rust UI framework that renders through real native widgets.</p>
+  <p>Bring your app to all platform, learning once and applying anywhere.</p>
   <p>
     <a href="https://crates.io/crates/waterui"><img src="https://img.shields.io/crates/v/waterui.svg" alt="crates.io version" /></a>
     <a href="https://docs.rs/waterui"><img src="https://docs.rs/waterui/badge.svg" alt="docs.rs documentation" /></a>
@@ -137,8 +137,6 @@ One thing to know early: `watch` replaces the subtree it wraps, losing any state
 | Linux | GTK4 | GTK4 widgets |
 | macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Vello) |
 | ESP32-S3 / ESP32-C3 | Dew | Self-drawn, CPU, dirty-region |
-
-A self-drawn renderer is a deliberate choice of backend, never a silent fallback. If a native bridge fails, that's a bug to fix, not a reason to swap renderers at runtime.
 
 ## Status
 
