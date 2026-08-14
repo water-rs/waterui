@@ -747,7 +747,7 @@ impl HydrolysisRenderer {
             .resolve(env)
             .accessibility_label()
             .get()
-            .to_plain();
+            .to_semantic();
         let trimmed = plain.as_str().trim();
         if trimmed.is_empty() {
             None
@@ -778,7 +778,7 @@ impl HydrolysisRenderer {
         }
         if let Some(label) = view.downcast_ref::<SemanticLabel>() {
             let styled = self.read_signal(&label.semantic_text().resolve(&scoped_env).content);
-            return Some(styled.to_plain().to_string());
+            return Some(styled.to_semantic().to_string());
         }
         if let Some(label) = view.downcast_ref::<Str>() {
             return Some(label.as_str().to_owned());
@@ -809,7 +809,7 @@ impl HydrolysisRenderer {
         }
         if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
             let styled = self.read_signal(&text.as_inner().content);
-            return Some(styled.to_plain().to_string());
+            return Some(styled.to_semantic().to_string());
         }
         if let Some(icon) = view.downcast_ref::<Native<SystemIcon>>() {
             return Some(icon.as_inner().name.as_str().to_owned());
