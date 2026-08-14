@@ -4,22 +4,19 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{self, Context};
 use image::ImageEncoder;
-use resvg::{self, tiny_skia, usvg};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use smol::fs;
 use waterui_assets::AssetKind;
 use waterui_assets_planner::{AssetRole, BundleManifest, PlannedAsset, ThemeConfig, plan_bundle};
 
+use super::icon::{IconSource, hex_color, render_android_foreground, render_apple_icon};
 use crate::project::Project;
 
 const ASSET_ROOT_DIR: &str = "waterui_assets";
 const ANDROID_VALUES_DIR: &str = "app/src/main/res/values";
 const ANDROID_VALUES_NIGHT_DIR: &str = "app/src/main/res/values-night";
 const ANDROID_DRAWABLE_DIR: &str = "app/src/main/res/drawable";
-const ANDROID_DEFAULT_LAUNCHER_FOREGROUND_XML: &str = include_str!(
-    "../../templates/android/app/src/main/res/drawable/ic_launcher_foreground.xml.tpl"
-);
 const ANDROID_MIPMAP_DIRS: &[(&str, u32)] = &[
     ("mipmap-mdpi", 48),
     ("mipmap-hdpi", 72),
@@ -44,19 +41,24 @@ pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result
         .as_ref()
         .and_then(|theme| theme.accent.as_deref());
 
-    if let Some(icon) = manifest
-        .assets
-        .iter()
-        .find(|asset| asset.role == AssetRole::AppIcon)
-    {
-        write_apple_app_icon(icon, &xcassets_dest).await?;
-    } else {
-        write_generated_apple_app_icon(accent, &xcassets_dest).await?;
-    }
-
+    let icon = load_project_icon(&manifest)?;
+    write_apple_app_icon(&icon, &xcassets_dest).await?;
     write_apple_accent_color(accent, &xcassets_dest).await?;
 
     Ok(())
+}
+
+/// Loads the project's `Icon.*` asset, or the bundled `WaterUI` logo when the
+/// project does not provide one.
+fn load_project_icon(manifest: &BundleManifest) -> eyre::Result<IconSource> {
+    manifest
+        .assets
+        .iter()
+        .find(|asset| asset.role == AssetRole::AppIcon)
+        .map_or_else(
+            || Ok(IconSource::default_logo()),
+            |icon| IconSource::load(&icon.source_path),
+        )
 }
 
 pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::Result<()> {
@@ -71,19 +73,16 @@ pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::
     let res_root = backend_path.join("app/src/main/res");
     fs::create_dir_all(&res_root).await?;
 
-    let theme = project.manifest().theme.as_ref();
-    write_android_theme_files(theme, backend_path).await?;
+    let icon = load_project_icon(&manifest)?;
+    let icon_background = icon.edge_color()?;
 
-    if let Some(icon) = manifest
-        .assets
-        .iter()
-        .find(|asset| asset.role == AssetRole::AppIcon)
-    {
-        remove_file_if_exists(res_root.join("drawable/ic_launcher_foreground.xml")).await?;
-        write_android_icon_resources(icon, theme, backend_path).await?;
-    } else {
-        write_default_android_icon_resources(backend_path).await?;
-    }
+    let theme = project.manifest().theme.as_ref();
+    write_android_theme_files(theme, icon_background, backend_path).await?;
+
+    // Older CLI versions staged the foreground as a vector drawable; a PNG
+    // and an XML with the same resource name cannot coexist.
+    remove_file_if_exists(res_root.join("drawable/ic_launcher_foreground.xml")).await?;
+    write_android_icon_resources(&icon, icon_background, backend_path).await?;
 
     Ok(())
 }
@@ -338,23 +337,7 @@ async fn write_apple_root_contents(xcassets_dest: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn write_apple_app_icon(icon: &PlannedAsset, xcassets_dest: &Path) -> eyre::Result<()> {
-    let source = load_icon_image(&icon.source_path)?;
-    write_apple_app_icon_from_source(&source, xcassets_dest).await
-}
-
-async fn write_generated_apple_app_icon(
-    accent: Option<&str>,
-    xcassets_dest: &Path,
-) -> eyre::Result<()> {
-    let source = generate_default_app_icon(accent)?;
-    write_apple_app_icon_from_source(&source, xcassets_dest).await
-}
-
-async fn write_apple_app_icon_from_source(
-    source: &image::DynamicImage,
-    xcassets_dest: &Path,
-) -> eyre::Result<()> {
+async fn write_apple_app_icon(source: &IconSource, xcassets_dest: &Path) -> eyre::Result<()> {
     #[derive(Serialize)]
     struct ImageItem<'a> {
         idiom: &'a str,
@@ -411,9 +394,9 @@ async fn write_apple_app_icon_from_source(
 
     let mut images = Vec::new();
     for (idiom, size, scale, pixels) in specs {
-        let file_name = format!("AppIcon-{size}@{scale}.png");
+        let file_name = format!("AppIcon-{idiom}-{size}@{scale}.png");
         write_png(
-            &source.resize_exact(pixels, pixels, image::imageops::FilterType::Lanczos3),
+            &render_apple_icon(source, idiom, pixels)?,
             &appicon_dir.join(&file_name),
         )
         .await?;
@@ -437,15 +420,14 @@ async fn write_apple_app_icon_from_source(
 }
 
 async fn write_android_icon_resources(
-    icon: &PlannedAsset,
-    _theme: Option<&ThemeConfig>,
+    icon: &IconSource,
+    icon_background: Option<[u8; 3]>,
     backend_path: &Path,
 ) -> eyre::Result<()> {
-    let source = load_icon_image(&icon.source_path)?;
     let drawable_dir = backend_path.join(ANDROID_DRAWABLE_DIR);
     fs::create_dir_all(&drawable_dir).await?;
 
-    let foreground = render_android_foreground(&source);
+    let foreground = render_android_foreground(icon, icon_background)?;
     write_png(
         &foreground,
         &drawable_dir.join("ic_launcher_foreground.png"),
@@ -455,7 +437,7 @@ async fn write_android_icon_resources(
     for (dir, size) in ANDROID_MIPMAP_DIRS {
         let target_dir = backend_path.join("app/src/main/res").join(dir);
         fs::create_dir_all(&target_dir).await?;
-        let icon = source.resize_exact(*size, *size, image::imageops::FilterType::Lanczos3);
+        let icon = icon.render(*size)?;
         write_png(&icon, &target_dir.join("ic_launcher.png")).await?;
         write_png(&icon, &target_dir.join("ic_launcher_round.png")).await?;
     }
@@ -463,63 +445,9 @@ async fn write_android_icon_resources(
     Ok(())
 }
 
-async fn write_default_android_icon_resources(backend_path: &Path) -> eyre::Result<()> {
-    let drawable_dir = backend_path.join(ANDROID_DRAWABLE_DIR);
-    fs::create_dir_all(&drawable_dir).await?;
-    remove_file_if_exists(drawable_dir.join("ic_launcher_foreground.png")).await?;
-    fs::write(
-        drawable_dir.join("ic_launcher_foreground.xml"),
-        ANDROID_DEFAULT_LAUNCHER_FOREGROUND_XML,
-    )
-    .await?;
-
-    for (dir, _) in ANDROID_MIPMAP_DIRS {
-        let target_dir = backend_path.join("app/src/main/res").join(dir);
-        remove_file_if_exists(target_dir.join("ic_launcher.png")).await?;
-        remove_file_if_exists(target_dir.join("ic_launcher_round.png")).await?;
-    }
-
-    Ok(())
-}
-
-fn generate_default_app_icon(accent: Option<&str>) -> eyre::Result<image::DynamicImage> {
-    let [red, green, blue] = parse_rgb(accent.unwrap_or("#0A84FF"))?;
-    let mut image = image::RgbaImage::from_pixel(1024, 1024, image::Rgba([red, green, blue, 255]));
-
-    let circle_radius = 320_i32;
-    let center = 512_i32;
-    for y in 0..1024_i32 {
-        for x in 0..1024_i32 {
-            let dx = x - center;
-            let dy = y - center;
-            if dx * dx + dy * dy <= circle_radius * circle_radius {
-                image.put_pixel(
-                    x.cast_unsigned(),
-                    y.cast_unsigned(),
-                    image::Rgba([255, 255, 255, 235]),
-                );
-            }
-        }
-    }
-
-    Ok(image::DynamicImage::ImageRgba8(image))
-}
-
-fn render_android_foreground(source: &image::DynamicImage) -> image::DynamicImage {
-    let canvas_size = 432_u32;
-    let icon_size = 312_u32;
-    let mut canvas =
-        image::RgbaImage::from_pixel(canvas_size, canvas_size, image::Rgba([0, 0, 0, 0]));
-    let resized = source
-        .resize_exact(icon_size, icon_size, image::imageops::FilterType::Lanczos3)
-        .to_rgba8();
-    let inset = (canvas_size - icon_size) / 2;
-    image::imageops::overlay(&mut canvas, &resized, i64::from(inset), i64::from(inset));
-    image::DynamicImage::ImageRgba8(canvas)
-}
-
 async fn write_android_theme_files(
     theme: Option<&ThemeConfig>,
+    icon_background: Option<[u8; 3]>,
     backend_path: &Path,
 ) -> eyre::Result<()> {
     let values_dir = backend_path.join(ANDROID_VALUES_DIR);
@@ -527,7 +455,7 @@ async fn write_android_theme_files(
     fs::create_dir_all(&values_dir).await?;
     fs::create_dir_all(&values_night_dir).await?;
 
-    let colors_xml = build_android_colors_xml(theme)?;
+    let colors_xml = build_android_colors_xml(theme, icon_background)?;
     let themes_xml = build_android_themes_xml(theme);
     fs::write(values_dir.join("colors.xml"), &colors_xml).await?;
     fs::write(values_dir.join("themes.xml"), &themes_xml).await?;
@@ -535,11 +463,20 @@ async fn write_android_theme_files(
     Ok(())
 }
 
-fn build_android_colors_xml(theme: Option<&ThemeConfig>) -> eyre::Result<String> {
+fn build_android_colors_xml(
+    theme: Option<&ThemeConfig>,
+    icon_background: Option<[u8; 3]>,
+) -> eyre::Result<String> {
     let mut xml = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n");
-    let background = theme
-        .and_then(|value| value.accent.as_deref())
-        .unwrap_or("#0A84FF");
+    // The adaptive-icon background must match the icon's own background so
+    // the two layers join seamlessly; the theme accent only stands in when
+    // no background color can be derived from the icon.
+    let derived = icon_background.map(hex_color);
+    let background = derived.as_deref().unwrap_or_else(|| {
+        theme
+            .and_then(|value| value.accent.as_deref())
+            .unwrap_or("#0A84FF")
+    });
     validate_hex_color(background)?;
     let _ = writeln!(
         &mut xml,
@@ -669,90 +606,10 @@ fn component_string(value: u8) -> String {
     format!("{:.6}", f32::from(value) / 255.0)
 }
 
-fn load_icon_image(path: &Path) -> eyre::Result<image::DynamicImage> {
-    if path
-        .extension()
-        .and_then(OsStr::to_str)
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
-    {
-        return load_svg_icon_image(path);
-    }
-
-    let image = image::open(path)
-        .wrap_err_with(|| format!("Failed to decode app icon source '{}'", path.display()))?;
-    ensure_square_icon_dimensions(path, image.width(), image.height())?;
-    Ok(image)
-}
-
-fn load_svg_icon_image(path: &Path) -> eyre::Result<image::DynamicImage> {
-    let svg_data = std::fs::read(path)
-        .wrap_err_with(|| format!("Failed to read SVG app icon source '{}'", path.display()))?;
-    let mut options = usvg::Options {
-        resources_dir: std::fs::canonicalize(path)
-            .ok()
-            .and_then(|absolute| absolute.parent().map(Path::to_path_buf)),
-        ..usvg::Options::default()
-    };
-    options.fontdb_mut().load_system_fonts();
-
-    let tree = usvg::Tree::from_data(&svg_data, &options).map_err(|error| {
-        eyre::eyre!(
-            "Failed to parse SVG app icon source '{}': {error}",
-            path.display()
-        )
-    })?;
-    let size = tree.size();
-    if (size.width() - size.height()).abs() > f32::EPSILON {
-        eyre::bail!(
-            "App icon source '{}' must be square, got {}x{}",
-            path.display(),
-            size.width(),
-            size.height()
-        );
-    }
-
-    let raster_size = size.to_int_size();
-    let mut pixmap =
-        tiny_skia::Pixmap::new(raster_size.width(), raster_size.height()).ok_or_else(|| {
-            eyre::eyre!(
-                "Failed to allocate raster surface for SVG app icon '{}'",
-                path.display()
-            )
-        })?;
-    resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
-    let png = pixmap.encode_png().map_err(|error| {
-        eyre::eyre!(
-            "Failed to encode rasterized SVG app icon '{}': {error}",
-            path.display()
-        )
-    })?;
-    let image = image::load_from_memory(&png).map_err(|error| {
-        eyre::eyre!(
-            "Failed to decode rasterized SVG app icon '{}': {error}",
-            path.display()
-        )
-    })?;
-    ensure_square_icon_dimensions(path, image.width(), image.height())?;
-    Ok(image)
-}
-
-fn ensure_square_icon_dimensions(path: &Path, width: u32, height: u32) -> eyre::Result<()> {
-    if width != height {
-        eyre::bail!(
-            "App icon source '{}' must be square, got {}x{}",
-            path.display(),
-            width,
-            height
-        );
-    }
-    Ok(())
-}
-
-async fn write_png(image: &image::DynamicImage, path: &Path) -> eyre::Result<()> {
+async fn write_png(image: &image::RgbaImage, path: &Path) -> eyre::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    let rgba = image.to_rgba8();
     let mut png = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new_with_quality(
         &mut png,
@@ -760,9 +617,9 @@ async fn write_png(image: &image::DynamicImage, path: &Path) -> eyre::Result<()>
         image::codecs::png::FilterType::Adaptive,
     );
     encoder.write_image(
-        rgba.as_raw(),
-        rgba.width(),
-        rgba.height(),
+        image.as_raw(),
+        image.width(),
+        image.height(),
         image::ExtendedColorType::Rgba8,
     )?;
     fs::write(path, png).await?;
@@ -774,63 +631,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn write_default_android_icon_resources_restores_vector_foreground() {
+    fn android_icon_resources_write_launcher_pngs() {
         smol::block_on(async {
             let tempdir = tempfile::tempdir().expect("failed to create tempdir");
             let backend_path = tempdir.path();
-            let drawable_dir = backend_path.join(ANDROID_DRAWABLE_DIR);
-            fs::create_dir_all(&drawable_dir)
+
+            let icon = IconSource::default_logo();
+            let background = icon.edge_color().expect("edge probe must render");
+            write_android_icon_resources(&icon, background, backend_path)
                 .await
-                .expect("failed to create drawable dir");
-            fs::write(drawable_dir.join("ic_launcher_foreground.png"), b"stale")
-                .await
-                .expect("failed to create stale foreground png");
+                .expect("failed to write android icon resources");
 
-            for (dir, _) in ANDROID_MIPMAP_DIRS {
-                let target_dir = backend_path.join("app/src/main/res").join(dir);
-                fs::create_dir_all(&target_dir)
-                    .await
-                    .expect("failed to create mipmap dir");
-                fs::write(target_dir.join("ic_launcher.png"), b"stale")
-                    .await
-                    .expect("failed to create stale launcher png");
-                fs::write(target_dir.join("ic_launcher_round.png"), b"stale")
-                    .await
-                    .expect("failed to create stale round launcher png");
-            }
+            let foreground = backend_path
+                .join(ANDROID_DRAWABLE_DIR)
+                .join("ic_launcher_foreground.png");
+            let decoded = image::open(&foreground).expect("foreground must be a decodable png");
+            assert_eq!(decoded.width(), decoded.height());
 
-            write_default_android_icon_resources(backend_path)
-                .await
-                .expect("failed to write default android icon resources");
-
-            assert_eq!(
-                fs::read_to_string(drawable_dir.join("ic_launcher_foreground.xml"))
-                    .await
-                    .expect("failed to read foreground xml"),
-                ANDROID_DEFAULT_LAUNCHER_FOREGROUND_XML
-            );
-            assert!(
-                fs::metadata(drawable_dir.join("ic_launcher_foreground.png"))
-                    .await
-                    .is_err(),
-                "stale foreground png should be removed"
-            );
-
-            for (dir, _) in ANDROID_MIPMAP_DIRS {
-                let target_dir = backend_path.join("app/src/main/res").join(dir);
-                assert!(
-                    fs::metadata(target_dir.join("ic_launcher.png"))
-                        .await
-                        .is_err(),
-                    "stale launcher png should be removed from {dir}"
-                );
-                assert!(
-                    fs::metadata(target_dir.join("ic_launcher_round.png"))
-                        .await
-                        .is_err(),
-                    "stale round launcher png should be removed from {dir}"
-                );
+            for (dir, size) in ANDROID_MIPMAP_DIRS {
+                let launcher = backend_path
+                    .join("app/src/main/res")
+                    .join(dir)
+                    .join("ic_launcher.png");
+                let decoded = image::open(&launcher).expect("launcher must be a decodable png");
+                assert_eq!(decoded.width(), *size, "wrong launcher size in {dir}");
             }
         });
+    }
+
+    #[test]
+    fn colors_xml_uses_derived_icon_background_over_accent() {
+        let theme = ThemeConfig {
+            accent: Some("#0A84FF".to_string()),
+            ..ThemeConfig::default()
+        };
+        let xml = build_android_colors_xml(Some(&theme), Some([255, 255, 255]))
+            .expect("colors xml must build");
+        assert!(
+            xml.contains("<color name=\"ic_launcher_background\">#FFFFFF</color>"),
+            "derived icon background must win over the accent color:\n{xml}"
+        );
+
+        let xml = build_android_colors_xml(Some(&theme), None).expect("colors xml must build");
+        assert!(
+            xml.contains("<color name=\"ic_launcher_background\">#0A84FF</color>"),
+            "accent must remain the launcher background when none can be derived:\n{xml}"
+        );
     }
 }
