@@ -15,7 +15,7 @@ use crate::WuiEnv;
 /// # Safety
 ///
 /// `env_ptr` must be an environment handle the runtime is keeping alive.
-unsafe fn environment<'a>(env_ptr: jlong) -> Option<&'a waterui::Environment> {
+unsafe fn environment<'a>(env_ptr: jlong) -> Option<&'a WuiEnv> {
     let pointer = env_ptr as *const WuiEnv;
     if pointer.is_null() {
         return None;
