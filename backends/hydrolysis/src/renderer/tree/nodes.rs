@@ -562,6 +562,9 @@ pub(crate) struct SceneViewNode {
     /// inputs in `build_scene`). `RefCell` because `build_scene` needs `&mut` but
     /// `flush` takes `&self`.
     pub(super) content: RefCell<Box<dyn waterui_graphics::SceneContent>>,
+    /// Scroll handler registered by the backend, called when a scroll event
+    /// targets this scene view. The handler receives (dx, dy) in logical pixels.
+    pub(super) scroll_handler: Option<waterui_graphics::SceneScrollHandler>,
 }
 
 /// An embedded `GpuSurface` leaf that OWNS its `EmbeddedGpuSurfaceRuntime`

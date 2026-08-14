@@ -104,7 +104,7 @@ pub use image_generator::{
 };
 
 #[cfg(feature = "gpu")]
-pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent};
+pub use scene_view::{SceneContent, SceneInvalidator, SceneScrollHandler, SceneView, SceneViewMergeToParent};
 #[cfg(feature = "gpu")]
 pub use scene2d::Scene2D;
 #[cfg(feature = "gpu")]

@@ -820,13 +820,20 @@ impl RenderNode {
     ) -> RenderNode {
         let mut content = scene_view.into_inner().into_content();
         let signals = renderer.signals.clone();
+        let scroll_handler: Option<waterui_graphics::SceneScrollHandler> = {
+            // Use the content's own scroll handler (set by e.g. Canvas::with_scroll_handler).
+            // If the content has none, return None and no scroll target is registered.
+            content.get_scroll_handler()
+        };
+        let sig = signals.clone();
         content.set_invalidator(Some(Rc::new(move || {
-            signals.request_refresh();
+            sig.request_refresh();
         })));
         RenderNode::SceneView(Box::new(SceneViewNode {
             #[cfg(feature = "accessibility")]
             accessibility_identity: Rc::new(()),
             content: RefCell::new(content),
+            scroll_handler,
         }))
     }
 

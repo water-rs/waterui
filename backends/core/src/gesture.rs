@@ -172,6 +172,10 @@ impl GestureBinding {
         }
     }
 
+    fn gesture(&self) -> &Gesture {
+        &self.gesture
+    }
+
     fn input(&mut self, input: GestureInput, env: &Environment, bounds: kurbo::Rect) -> bool {
         let detection = self.detector.input(input);
         let Some(payload) = detection.recognized else {
@@ -251,9 +255,25 @@ pub struct GestureEngine {
 
 impl GestureEngine {
     /// Removes all registered targets; called at the begin of a structural
-    /// rebuild before targets are re-registered.
+    /// rebuild before targets are re-registered. Preserves active recognizer
+    /// state so multi-frame gestures (drag, long-press) survive the rebuild.
     pub fn clear_targets(&mut self) {
-        self.targets.clear();
+        let active = core::mem::take(&mut self.active_recognizers);
+        self.targets = active
+            .iter()
+            .map(|t| {
+                GestureTarget {
+                    bounds: t.bounds,
+                    depth: t.depth,
+                    order: t.order,
+                    group_id: t.group_id,
+                    recognizer: Rc::clone(&t.recognizer),
+                }
+            })
+            .collect();
+        // Restore active recognizers — target list now holds them, so
+        // `is_recognizer_live` will pass after re-registration.
+        self.active_recognizers = active;
     }
 
     /// Returns the number of currently registered targets; used as a
@@ -287,6 +307,10 @@ impl GestureEngine {
     /// Registers a fresh gesture target: builds the recognizer state machine
     /// for `gesture` and binds it to `action` at the given hit-test bounds
     /// (window coordinates, logical pixels) and priority coordinates.
+    ///
+    /// If the target was already registered (same gesture + group_id), the
+    /// existing recognizer state machine is reused — this preserves multi-frame
+    /// gesture progress across structural rebuilds.
     pub fn register_target(
         &mut self,
         bounds: kurbo::Rect,
@@ -296,6 +320,16 @@ impl GestureEngine {
         order: usize,
         group_id: usize,
     ) {
+        // Try to reuse an existing target with the same gesture + group_id.
+        // This preserves the recognizer state machine (drag offset, long-press
+        // timer, etc.) across frame rebuilds.
+        if let Some(pos) = self.targets.iter().position(|t| {
+            t.group_id == group_id && t.recognizer.borrow().gesture == gesture
+        }) {
+            let existing = &self.targets[pos];
+            self.targets[pos] = existing.with_bounds_depth_and_group(bounds, depth, group_id);
+            return;
+        }
         self.register_target_recognizer(
             bounds,
             depth,
