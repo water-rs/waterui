@@ -76,6 +76,7 @@ roxmltree = "0.21"            # Android SDK repository XML parsing
 fs_extra = "1.3"
 askama = "0.16"
 resvg = "0.47.0"
+icns = "0.3"  # macOS .icns encoding for self-drawn backend app bundles
 ttf-parser = "0.25"
 ignore = "0.4"
 remove_dir_all = "1.0"

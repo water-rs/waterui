@@ -457,12 +457,14 @@ async fn package_hydrolysis_macos(
                 })
         })
         .collect::<Vec<_>>();
+    let icns = assets::project_macos_icns(project)?;
     let app_path = package_binary_as_app(
         binary_path,
         project.bundle_identifier(),
         &app_name,
         &usage_descriptions,
         Some(&backend_path.join("resources")),
+        &icns,
         &dist_dir,
     )
     .await?;
