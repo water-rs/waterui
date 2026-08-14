@@ -1,7 +1,7 @@
 <div align="center">
+  <img src="docs/logo.svg" alt="WaterUI logo" width="150" />
   <h1>WaterUI</h1>
-  <p><strong>Native-first, fine-grained reactive UI for Rust.</strong></p>
-  <img src="https://assets.waterui.dev/images/logo.png" alt="WaterUI logo" width="150" />
+  <p>A Rust UI framework that renders through real native widgets.</p>
   <p>
     <a href="https://crates.io/crates/waterui"><img src="https://img.shields.io/crates/v/waterui.svg" alt="crates.io version" /></a>
     <a href="https://docs.rs/waterui"><img src="https://docs.rs/waterui/badge.svg" alt="docs.rs documentation" /></a>
@@ -10,34 +10,20 @@
   </p>
 </div>
 
-`WaterUI` lets you describe an application once in Rust and realize it through the backend that fits each platform. It bridges semantic components to `UIKit`/`AppKit`, Android View, and GTK4 where suitable native primitives exist, and provides purpose-built shared renderers for platforms or components that need a portable realization.
+WaterUI is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: UIKit and AppKit on Apple, Android Views on Android, GTK4 on Linux. Where no native toolkit fits there are two self-drawn renderers: Hydrolysis draws on the GPU through Vello, and Dew is a CPU renderer frugal enough for microcontrollers.
 
-The framework is built around four ideas:
+State is plain values. Put mutable state in a `Binding`, derive from it with `Computed`, and hand those to views. When a value changes, the views that read it update. There is no virtual tree to diff, and changing one string never rebuilds the subtree around it.
 
-- **Native first.** A button, text field, list, or other semantic component uses the platform's canonical UI model when the platform provides one.
-- **Precise reactivity.** `Binding`, `Computed`, and signal-aware component inputs update the affected value or semantic object without rebuilding an unrelated subtree.
-- **One development tool.** The `water` CLI creates projects, manages platform support code, runs applications, inspects toolchains, and renders previews.
-- **Portable rendering where it belongs.** Hydrolysis is the GPU renderer for high-end and web targets; Dew is the dirty-area CPU renderer for constrained devices.
-
-## Quick start
-
-Install the CLI:
+## Getting started
 
 ```bash
 cargo install waterui-cli
-```
-
-Create a playground and run it on the current host:
-
-```bash
-water create my-playground --mode playground
-cd my-playground
+water create counter --mode playground
+cd counter
 water run
 ```
 
-Playground mode keeps the project focused on application code. `water run`, `water package`, and `water preview` create and manage native support projects outside the source tree when they are needed.
-
-Edit `src/lib.rs`:
+A playground is a plain Rust crate; the CLI keeps native projects out of your source tree and manages them on demand. `src/lib.rs` looks like this:
 
 ```rust,ignore
 use waterui::app::App;
@@ -61,33 +47,32 @@ pub fn app(env: Environment) -> App {
 }
 ```
 
-That is the complete user-owned entry point. The application crate depends on `waterui`; it does **not** declare `waterui-ffi` or call `waterui_ffi::export!()`. The CLI owns the generated FFI companion and backend integration.
+That's the whole entry point. The app crate depends on `waterui` and nothing else; FFI glue and backend projects are generated and owned by the CLI.
 
-Run a specific target when needed:
+`water run` targets the current host by default. To run somewhere else:
 
 ```bash
-water run --platform macos
 water run --platform ios
 water run --platform android
 water run --platform linux
 ```
 
-Use `water doctor` to check the toolchain required by a target and `water devices` to see available devices and simulators.
+`water doctor` tells you what's missing from a toolchain, and `water devices` lists simulators and connected devices.
 
-## Preview a view
+## Previews
 
-The `#[preview]` attribute makes a view directly addressable by the preview system:
+Any function marked `#[preview]` can be rendered to an image without launching the app:
 
 ```bash
 water preview main --output preview.png
 water preview main --frame 800x600 --output preview.png
 ```
 
-Preview uses a native support application for Apple and Android targets, or Hydrolysis for direct offscreen rendering. The same preview surface also supports semantic interaction tests and GPU performance measurements through `water preview test` and `water preview perf`.
+The same surface drives `water preview test` for semantic interaction tests and `water preview perf` for GPU measurements.
 
-## Build a standalone app
+## Shipping a real app
 
-Playgrounds are best for iteration. App mode creates platform projects that belong to the application and can be customized, signed, and packaged:
+Playgrounds are for iteration. App mode generates platform projects that belong to you, so they can be customized, signed, and packaged:
 
 ```bash
 water create my-app --backends apple,android
@@ -95,40 +80,13 @@ cd my-app
 water run --platform ios
 ```
 
-Other backend configurations include:
+`Water.toml` holds package metadata, enabled backends, permissions, and theming. Add or remove a backend later with `water backend`.
 
-```bash
-water create linux-app --backends gtk4
-water create hydrolysis-app --backends hydrolysis
-water create esp32-app --backends esp32
-```
+To give the app an icon, drop a square `Icon.svg` or `Icon.png` into `assets/`. The CLI renders every platform format from that one file: full-bleed squares for iOS, the rounded-rect shape for macOS, and adaptive icon layers for Android, so the artwork survives each platform's mask. New projects start with the WaterUI logo there until you replace it.
 
-The generated `Water.toml` is the source of truth for package metadata, enabled backends, permissions, themes, and an optional local `waterui_path`. Add or remove an app backend with `water backend`.
+## State
 
-## Programming model
-
-### Views are semantic values
-
-Every component implements `View`. Layouts and modifiers compose those values into a tree:
-
-```rust
-use waterui::prelude::*;
-
-fn profile_header() -> impl View {
-    hstack((
-        text("Ada").bold(),
-        spacer(),
-        button("Edit"),
-    ))
-    .padding()
-}
-```
-
-Components keep their semantic identity while styles choose their presentation. For example, a `Toggle`, `Picker`, or `List` remains the same component when its visual style changes.
-
-### State flows through signals
-
-Use `Binding<T>` for mutable state and `Computed<T>` for derived state. Pass them into signal-aware APIs so only their dependents update:
+`Binding<T>` is mutable state, `Computed<T>` is derived state. Signal-aware APIs take either, and only their readers update:
 
 ```rust
 use waterui::prelude::slider::slider;
@@ -145,13 +103,9 @@ fn progress_editor() -> impl View {
 }
 ```
 
-Use reactive collections with `ForEach` or `List` when membership changes. `watch` is reserved for an intentional structural replacement; it is not the routine way to update text, control values, styles, or collection items.
-
-Field-backed collection identity can be derived. For a fixed set of items, pass
-an array directly instead of allocating a `Vec`:
+Collections work the same way. Give `List` or `ForEach` a reactive collection of `Identifiable` items and membership changes are diffed by id:
 
 ```rust
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::Identifiable;
 
@@ -160,105 +114,47 @@ struct Contact {
     #[id]
     id: u64,
     name: &'static str,
-    role: &'static str,
 }
 
 fn contacts() -> impl View {
     let contacts = [
-        Contact {
-            id: 1,
-            name: "Alice Chen",
-            role: "Software Engineer",
-        },
-        Contact {
-            id: 2,
-            name: "Bob Smith",
-            role: "Product Manager",
-        },
-        Contact {
-            id: 3,
-            name: "Carol Williams",
-            role: "Designer",
-        },
+        Contact { id: 1, name: "Alice Chen" },
+        Contact { id: 2, name: "Bob Smith" },
     ];
 
-    List::for_each(contacts, |contact| {
-        ListItem::new(
-            vstack((
-                text(contact.name).headline(),
-                text(contact.role).sub_headline().foreground(MutedForeground),
-            ))
-            .padding_with(EdgeInsets::symmetric(12.0, 16.0)),
-        )
-    })
+    List::for_each(contacts, |contact| ListItem::new(text(contact.name)))
 }
 ```
 
-### Environment carries application context
+One thing to know early: `watch` replaces the subtree it wraps, losing any state inside it. It exists for intentional structural swaps. For routine updates, pass signals into components and let the framework do the precise thing.
 
-`Environment` propagates themes, locale data, services, and backend capabilities through the tree:
+## Backends
 
-```rust,ignore
-use waterui::app::App;
-use waterui::prelude::*;
-
-pub fn app(mut env: Environment) -> App {
-    env.install(Theme::new().color_scheme(ColorScheme::Dark));
-    App::new(main, env)
-}
-```
-
-Backends consume shared theme slots, so ordinary view code receives platform-correct foreground, background, surface, border, accent, and font defaults.
-
-## Rendering backends
-
-`WaterUI` separates component semantics from their realization:
-
-| Target | Backend | Realization |
+| Target | Backend | Renders through |
 | --- | --- | --- |
-| iOS and macOS | Apple | `UIKit` and `AppKit` |
-| Android | Android | Android View |
+| iOS and macOS | Apple | UIKit / AppKit |
+| Android | Android | Android Views |
 | Linux | GTK4 | GTK4 widgets |
-| macOS, Linux, Windows, and web | Hydrolysis | Self-drawn GPU renderer |
-| ESP32-S3 and ESP32-C3 | Dew | Dirty-area CPU renderer |
+| macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Vello) |
+| ESP32-S3 / ESP32-C3 | Dew | Self-drawn, CPU, dirty-region |
 
-A shared renderer is a deliberate backend, not a silent fallback for a failed native path. Components without a suitable platform primitive use their shared realization directly.
+A self-drawn renderer is a deliberate choice of backend, never a silent fallback. If a native bridge fails, that's a bug to fix, not a reason to swap renderers at runtime.
 
-## Crate features
+## Status
 
-The `waterui` crate exposes feature-granular capabilities so applications only link what they use.
-
-Default crate features:
-
-- `gpu`
-- `assets`
-- `media` and `video`
-- `flow-markdown`
-
-Opt-in capabilities:
-
-- `webview`
-- `chart`
-- `barcode`
-- `map`
-- `particle`
-- `navigation-restoration`
-
-Generated projects select the features appropriate for their configured targets. The `all` feature is available for development and broad integration testing.
+Pre-1.0. The API still moves, and we break it on purpose when a better shape is found. Apple and Android backends are the most complete; Hydrolysis is close behind; GTK4 and Dew are younger. If you hit a wall, an issue with a small reproduction is genuinely useful.
 
 ## Examples
 
-The repository includes focused examples built with the same public API:
-
-- [Gallery](examples/gallery/) — a broad component showcase
+- [Gallery](examples/gallery/) — broad component showcase
 - [Form](examples/form/) — derived forms and reactive field projection
 - [Navigation](examples/navigation/) — stacks, tabs, and navigation state
-- [Flow Markdown](examples/flow_markdown/) — incrementally rendered streaming Markdown
-- [Map](examples/map/) — map semantics and platform realization
+- [Flow Markdown](examples/flow_markdown/) — streaming Markdown rendering
+- [Map](examples/map/) — map component across platform realizations
 - [Video player](examples/video_player/) — playback state and controls
-- [Filter](examples/filter/) — GPU image filters and visual gallery export
+- [Filter](examples/filter/) — GPU image filters
 
-From this repository, install the development CLI and run an example with its local `waterui_path`:
+To run one from a checkout:
 
 ```bash
 cargo install --path cli
@@ -266,18 +162,15 @@ cd examples/gallery
 water run --platform macos
 ```
 
-## Repository map
+## Repository layout
 
-- [`core/`](core/) — view, environment, accessibility, layout contracts, and reactive integration
-- [`components/foundation/`](components/foundation/) — layouts, text, controls, forms, navigation, shapes, and icons
-- [`components/visual/`](components/visual/) — graphics, images, canvas, SVG, and filters
-- [`components/multimedia/`](components/multimedia/) — media and video
-- [`components/data/`](components/data/) — charts and maps
-- [`backends/`](backends/) — Apple, Android, GTK4, Hydrolysis, Dew, and backend contracts
+- [`core/`](core/) — `View`, `Environment`, layout contracts, reactive integration
+- [`components/`](components/) — layouts, text, controls, forms, navigation, media, charts, and friends
+- [`backends/`](backends/) — Apple, Android, GTK4, Hydrolysis, Dew
 - [`cli/`](cli/) — the `water` command and project generators
-- [`ffi/`](ffi/) — backend-facing integration used by generated companion crates
-- [`testing/`](testing/) — semantic UI testing through the `WaterUI` accessibility tree
-- [`examples/`](examples/) — runnable applications and previews
+- [`ffi/`](ffi/) — the C ABI backends talk through
+- [`testing/`](testing/) — semantic UI testing over the accessibility tree
+- [`examples/`](examples/) — runnable applications
 
 ## Documentation
 
@@ -288,10 +181,8 @@ water run --platform macos
 
 ## Contributing
 
-Contributions target the `dev` branch; `main` is reserved for releases. Open an issue before starting a substantial change so the API and architecture can be discussed first. Read [AGENTS.md](AGENTS.md) before making repository changes.
-
-AI-assisted contributions are welcome when a human understands and reviews the result. Fully autonomous pull requests without human review are not accepted.
+Target the `dev` branch; `main` is for releases. For anything substantial, open an issue first so the design can be discussed before you sink time into it. AI-assisted contributions are welcome as long as a human understands and reviews the result; fully autonomous pull requests are not accepted.
 
 ## License
 
-`WaterUI` is available under either the [Apache License 2.0](LICENSE-APACHE) or the [MIT License](LICENSE-MIT).
+MIT or Apache 2.0, at your option. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
