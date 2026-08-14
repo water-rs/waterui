@@ -145,6 +145,11 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
     waterui_locale::start_system_locale_listener();
     // The reactive graph is thread-confined, so its observer is installed here,
     // on the thread that owns the event loop, and lives as long as the loop.
+    #[cfg(feature = "inspector-signals")]
+    let _signal_scope = inspector
+        .as_ref()
+        .map(waterui::inspector::InspectorRuntime::observe_signals);
+
     let (windows, _menu_bar, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
     waterui::inspector::install(&mut env, inspector);
