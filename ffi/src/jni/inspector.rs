@@ -82,3 +82,21 @@ pub extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_inspectNode<'lo
     )]
     inspector.inspect_node(waterui::inspector::protocol::NodeId(node as u64));
 }
+
+/// Whether anything is watching the accessibility tree.
+///
+/// Android walks its view hierarchy only when the answer is yes.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_wantsTree<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    env_ptr: jlong,
+) -> jboolean {
+    // SAFETY: the Kotlin caller passes the handle the runtime holds for the
+    // lifetime of the application.
+    let wants = unsafe { environment(env_ptr) }.is_some_and(|env| {
+        env.get::<waterui::inspector::TreeRecorder>()
+            .is_some_and(waterui::inspector::TreeRecorder::is_active)
+    });
+    jboolean::from(wants)
+}
