@@ -66,6 +66,20 @@ pub(crate) struct PointerTarget {
     pub(crate) keyboard_step: Option<KeyboardStepAction>,
     pub(crate) keyboard_focusable: bool,
     pub(crate) modal: bool,
+    /// A drag over this target moves transform-level visual state only (a
+    /// scrollbar thumb): its changes schedule a re-encode, not a layout
+    /// refresh.
+    pub(crate) visual_only_drag: bool,
+}
+
+/// An in-flight scrollbar-thumb drag: which scroll slot owns it (the handle's
+/// cache key) and where inside the thumb the pointer grabbed it, in hit-space
+/// pixels along the scroll axis. Held on [`HitTestState`] rather than in the
+/// drag closure so a mid-drag re-registration continues seamlessly.
+#[derive(Clone, Copy)]
+pub(crate) struct ScrollbarDrag {
+    pub(crate) key: usize,
+    pub(crate) grab: f64,
 }
 
 #[derive(Clone)]
@@ -144,6 +158,11 @@ pub(crate) struct HitTestState {
     pub(crate) modal_interaction: Option<ModalInteraction>,
     pub(crate) active_pointer_drag_target: Option<PointerAction>,
     pub(crate) active_pointer_drag_signature: Option<(usize, usize)>,
+    /// Whether the active pointer drag moves transform-level visual state only
+    /// (see [`PointerTarget::visual_only_drag`]).
+    pub(crate) active_pointer_drag_visual_only: bool,
+    /// The in-flight scrollbar-thumb drag, if any.
+    pub(crate) active_scrollbar_drag: Option<ScrollbarDrag>,
     pub(crate) cursor_targets: Vec<CursorTarget>,
     pub(crate) hover_targets: Vec<HoverTarget>,
     pub(crate) drop_targets: Vec<DropTarget>,
@@ -405,6 +424,7 @@ impl HydrolysisRenderer {
         let Some(point) = pointer else {
             self.hit_test.active_pointer_drag_target = None;
             self.hit_test.active_pointer_drag_signature = None;
+            self.clear_scrollbar_drag();
             return;
         };
         let mut indices: Vec<usize> = self
@@ -429,6 +449,7 @@ impl HydrolysisRenderer {
         } else {
             self.hit_test.active_pointer_drag_target = None;
             self.hit_test.active_pointer_drag_signature = None;
+            self.clear_scrollbar_drag();
         }
     }
 
@@ -467,6 +488,7 @@ impl HydrolysisRenderer {
         let mut visual_changed = false;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        self.clear_scrollbar_drag();
         self.hit_test.active_pointer_target = None;
         self.hit_test.pending_pointer_press = None;
         self.hit_test.active_press_bounds = None;
@@ -690,11 +712,16 @@ impl HydrolysisRenderer {
             if target.captures_drag {
                 let changed = (target.action.borrow_mut())(self, point, env);
                 if changed {
-                    self.request_refresh();
+                    if target.visual_only_drag {
+                        self.request_reencode();
+                    } else {
+                        self.request_refresh();
+                    }
                     refresh_requested = true;
                 }
                 self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
                 self.hit_test.active_pointer_drag_signature = Some((target.depth, target.order));
+                self.hit_test.active_pointer_drag_visual_only = target.visual_only_drag;
                 return refresh_requested || visual_changed || changed;
             }
             if target.press_slot.is_some() {
@@ -806,6 +833,7 @@ impl HydrolysisRenderer {
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        self.clear_scrollbar_drag();
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
@@ -883,7 +911,11 @@ impl HydrolysisRenderer {
         if let Some(action) = self.hit_test.active_pointer_drag_target.clone() {
             let pointer_drag_changed = (action.borrow_mut())(self, point, env);
             if pointer_drag_changed {
-                self.request_refresh();
+                if self.hit_test.active_pointer_drag_visual_only {
+                    self.request_reencode();
+                } else {
+                    self.request_refresh();
+                }
             }
             drag_changed |= pointer_drag_changed;
             refresh_requested |= pointer_drag_changed;
@@ -1195,6 +1227,7 @@ impl HydrolysisRenderer {
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
+        self.clear_scrollbar_drag();
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_browser_target = None;
         self.hit_test.active_pointer = None;
@@ -1244,6 +1277,11 @@ impl HydrolysisRenderer {
             if target.bounds.contains(point) {
                 let changed = (target.action.borrow_mut())(dx, dy, is_line_delta);
                 if changed {
+                    // A scroll offset is transform-level state outside the
+                    // reactive graph: the retained tree must re-encode at the
+                    // new offset (scene, hit-test geometry, accessibility),
+                    // but its placements are unchanged — no layout.
+                    self.request_reencode();
                     self.dismiss_active_text_context_menu();
                     self.dismiss_active_popup_menu();
                 }
@@ -1334,7 +1372,58 @@ impl HydrolysisRenderer {
             keyboard_step: None,
             keyboard_focusable: false,
             modal,
+            visual_only_drag: false,
         });
+    }
+
+    /// Registers a scrollbar-gutter drag target: it captures the press like any
+    /// drag target, but its changes are transform-level (a scroll offset), so
+    /// they schedule a re-encode instead of a layout refresh.
+    pub(crate) fn register_scrollbar_drag_target<F>(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        action: F,
+    ) where
+        F: 'static + FnMut(&mut HydrolysisRenderer, vello::kurbo::Point, &Environment) -> bool,
+    {
+        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
+            return;
+        }
+        let order = self.hit_test.next_hit_test_order();
+        self.hit_test.pointer_targets.push(PointerTarget {
+            bounds,
+            captures_drag: true,
+            depth: self.render_depth,
+            order,
+            press_slot: None,
+            interaction: None,
+            action: Rc::new(RefCell::new(action)),
+            keyboard_step: None,
+            keyboard_focusable: false,
+            modal: false,
+            visual_only_drag: true,
+        });
+    }
+
+    /// The grab offset of the in-flight scrollbar drag owned by `key`, if any.
+    pub(crate) fn scrollbar_drag_grab(&self, key: usize) -> Option<f64> {
+        self.hit_test
+            .active_scrollbar_drag
+            .filter(|drag| drag.key == key)
+            .map(|drag| drag.grab)
+    }
+
+    /// Records the start of a scrollbar-thumb drag for the scroll slot `key`.
+    pub(crate) fn begin_scrollbar_drag(&mut self, key: usize, grab: f64) {
+        self.hit_test.active_scrollbar_drag = Some(ScrollbarDrag { key, grab });
+    }
+
+    /// Whether the scroll slot `key` currently owns a scrollbar-thumb drag
+    /// (drawn with a widened thumb).
+    pub(crate) fn scrollbar_drag_active(&self, key: usize) -> bool {
+        self.hit_test
+            .active_scrollbar_drag
+            .is_some_and(|drag| drag.key == key)
     }
 
     pub(crate) fn register_draggable_target(
@@ -1549,6 +1638,7 @@ impl HydrolysisRenderer {
             keyboard_step: None,
             keyboard_focusable,
             modal,
+            visual_only_drag: false,
         });
     }
 
@@ -1579,6 +1669,7 @@ impl HydrolysisRenderer {
             keyboard_step: Some(Rc::new(RefCell::new(keyboard_step))),
             keyboard_focusable: true,
             modal,
+            visual_only_drag: false,
         });
     }
 
@@ -1594,7 +1685,17 @@ impl HydrolysisRenderer {
         if !alive {
             self.hit_test.active_pointer_drag_target = None;
             self.hit_test.active_pointer_drag_signature = None;
+            self.clear_scrollbar_drag();
         }
+    }
+
+    /// Ends any in-flight scrollbar-thumb drag; the thumb draws widened while
+    /// dragged, so ending one schedules a re-encode to restore it.
+    fn clear_scrollbar_drag(&mut self) {
+        if self.hit_test.active_scrollbar_drag.take().is_some() {
+            self.request_reencode();
+        }
+        self.hit_test.active_pointer_drag_visual_only = false;
     }
 
     pub(crate) fn register_cursor_target(

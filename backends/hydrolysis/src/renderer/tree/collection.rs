@@ -678,6 +678,7 @@ impl LazyStackNode {
         };
         self.ensure_estimate(&mut renderer.state, cross);
         self.prepare_extent_index(count);
+        let total_extent_before = self.extent_index.borrow().total_extent();
         self.item_cache.borrow_mut().begin_frame();
         let visible = renderer
             .lazy
@@ -747,5 +748,14 @@ impl LazyStackNode {
             }
         }
         self.item_cache.borrow_mut().end_frame();
+        // Materializing entering rows replaced their estimates with measured
+        // extents. If that moved the container's total extent, the scroll
+        // extents the last layout negotiated are stale: escalate to one layout
+        // pass. Uniform rows never trigger this, so a steady scroll stays on
+        // the re-encode path.
+        let total_extent_after = self.extent_index.borrow().total_extent();
+        if (total_extent_after - total_extent_before).abs() > 0.5 {
+            renderer.request_refresh();
+        }
     }
 }
