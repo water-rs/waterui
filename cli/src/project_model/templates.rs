@@ -1707,6 +1707,7 @@ mod tests {
         // to carry this themselves.
         assert_eq!(dev["debug"].as_integer(), Some(1));
         assert_eq!(dev["package"]["*"]["debug"].as_bool(), Some(false));
+        assert_eq!(dev["package"]["*"]["opt-level"].as_integer(), Some(2));
     }
 
     #[test]
@@ -1947,6 +1948,13 @@ struct SupportDependencyDetail {
 /// and none of which anyone steps through — the `WaterUI` runtime is a dependency of
 /// these crates, not the code under debug.
 ///
+/// Dependencies are also compiled with optimizations: the rendering stack
+/// (vello, wgpu, parley) is a dependency of every generated crate and sits on
+/// every frame's hot path, and at `opt-level` 0 its per-frame encode-and-submit
+/// alone costs several milliseconds — a debug `water run` visibly drops frames
+/// while scrolling. The generated crate itself stays unoptimized and fully
+/// debuggable.
+///
 /// Line tables are kept for the generated crate itself so panics still resolve to
 /// file and line.
 fn generated_dev_profile() -> cargo_toml::Profiles {
@@ -1956,6 +1964,7 @@ fn generated_dev_profile() -> cargo_toml::Profiles {
     };
     let mut dependency_override = toml::value::Table::new();
     dependency_override.insert("debug".to_string(), toml::Value::Boolean(false));
+    dependency_override.insert("opt-level".to_string(), toml::Value::Integer(2));
     dev.package
         .insert("*".to_string(), toml::Value::Table(dependency_override));
 
@@ -1963,6 +1972,15 @@ fn generated_dev_profile() -> cargo_toml::Profiles {
         dev: Some(dev),
         ..Default::default()
     }
+}
+
+/// Serialized form of [`generated_dev_profile`], hashed into support-app
+/// template fingerprints: the scaffold `Cargo.toml` is generated
+/// programmatically rather than from an embedded template file, so cached
+/// scaffolds (preview/inspector support apps) would otherwise keep a stale
+/// profile when the generated section changes.
+fn generated_dev_profile_fingerprint() -> String {
+    toml::to_string(&generated_dev_profile()).expect("generated dev profile must serialize to TOML")
 }
 
 async fn write_support_cargo_toml(
@@ -2149,6 +2167,13 @@ struct GeneratedCargoManifest<T> {
     lib: GeneratedLibSection,
     #[serde(rename = "bin", skip_serializing_if = "Vec::is_empty", default)]
     bins: Vec<GeneratedBinSection>,
+    /// Every generated crate declares `[workspace]` and therefore inherits no
+    /// profile from the repository or the user's project — see
+    /// [`generated_dev_profile`] for why the dev profile has to be carried
+    /// here. Backend scaffolds that omitted this built the entire rendering
+    /// stack at `opt-level` 0 with full debug info, which is what made debug
+    /// `water run` drop frames.
+    profile: cargo_toml::Profiles,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
     features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, T>,
@@ -2540,6 +2565,7 @@ pub mod hydrolysis {
             package,
             lib: super::generated_lib(&["cdylib", "rlib"]),
             bins,
+            profile: super::generated_dev_profile(),
             features: BTreeMap::from([
                 ("waterui-preview-mode".to_string(), Vec::new()),
                 ("waterui-preview-test-mode".to_string(), Vec::new()),
@@ -3082,6 +3108,7 @@ pub mod root {
             package: super::generated_package(ctx.crate_name.as_str(), vec![ctx.author.clone()]),
             lib: super::generated_lib(&["lib"]),
             bins: Vec::new(),
+            profile: super::generated_dev_profile(),
             features: BTreeMap::from([(
                 "dev".to_string(),
                 vec!["waterui/dynamic_linking".to_string()],
@@ -3133,7 +3160,9 @@ pub mod preview {
         dependency_path, dependency_version, embedded, io, scaffold_dir, write_support_cargo_toml,
     };
 
-    /// Hash of embedded preview template files.
+    /// Hash of embedded preview template files and the programmatically
+    /// generated scaffold inputs (the dev profile written into every generated
+    /// `Cargo.toml`), so a change to either regenerates cached support apps.
     #[must_use]
     pub fn template_fingerprint() -> String {
         use sha2::Digest as _;
@@ -3149,6 +3178,7 @@ pub mod preview {
                 dirs_to_process.push(subdir);
             }
         }
+        hasher.update(super::generated_dev_profile_fingerprint().as_bytes());
         hex::encode(hasher.finalize())
     }
 
@@ -3450,7 +3480,8 @@ pub mod inspector {
         write_support_cargo_toml,
     };
 
-    /// Hash of embedded inspector template files.
+    /// Hash of embedded inspector template files and the programmatically
+    /// generated scaffold inputs (see `generated_dev_profile_fingerprint`).
     #[must_use]
     pub fn template_fingerprint() -> String {
         use sha2::Digest as _;
@@ -3466,6 +3497,7 @@ pub mod inspector {
                 dirs_to_process.push(subdir);
             }
         }
+        hasher.update(super::generated_dev_profile_fingerprint().as_bytes());
         hex::encode(hasher.finalize())
     }
 

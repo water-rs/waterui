@@ -82,7 +82,7 @@ fn run_perf(perf: &PerfRunConfig, width: f32, height: f32) {
 fn profile_perf(
     path: &std::path::Path,
     frequency: i32,
-    builder: waterui_testing::UiBuilder<fn(&mut waterui::env::Environment)>,
+    builder: waterui_testing::UiBuilder,
 ) -> waterui_testing::PerfReport {
     let guard = pprof::ProfilerGuard::new(frequency)
         .unwrap_or_else(|error| panic!("hydrolysis preview perf: failed to start profiler: {error}"));
