@@ -813,8 +813,21 @@ async fn list_conflicting_macos_app_pids(
         else {
             continue;
         };
-        if read_macos_bundle_identifier(&app_path).await? == launch.bundle_id {
-            pids.insert(process.pid);
+        // A running process whose bundle can no longer be identified (its
+        // build directory was deleted after launch) cannot be an instance of
+        // the bundle being launched; it must not fail this launch.
+        match read_macos_bundle_identifier(&app_path).await {
+            Ok(bundle_id) if bundle_id == launch.bundle_id => {
+                pids.insert(process.pid);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::debug!(
+                    pid = process.pid,
+                    path = %app_path.display(),
+                    "Skipping running app with unreadable bundle: {error:?}"
+                );
+            }
         }
     }
 
