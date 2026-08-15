@@ -1,14 +1,12 @@
 //! Build system
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     path::{Path, PathBuf},
 };
 
-use color_eyre::eyre::{self, Context as _, bail};
+use color_eyre::eyre::{self, bail};
 use futures::StreamExt as _;
-use sha2::Digest as _;
 use smol::{process::Command, unblock};
 use target_lexicon::{Environment, OperatingSystem, Triple};
 
@@ -90,120 +88,6 @@ pub enum RustLinkage {
     SharedRuntime,
 }
 
-#[derive(Debug, Clone)]
-struct ResolvedRuntimeNode {
-    features: Vec<String>,
-    dependencies: Vec<String>,
-}
-
-/// Resolve a stable fingerprint for the shared `WaterUI` runtime selected by a Cargo build.
-///
-/// The fingerprint includes the complete resolved dependency subtree rooted at
-/// `waterui-dylib`, its unified feature set, and the build target. Projects with
-/// the same runtime graph can therefore share Cargo artifacts without allowing
-/// incompatible runtime variants to overwrite each other.
-///
-/// # Errors
-/// Returns an error when Cargo metadata cannot be resolved or does not contain
-/// exactly one active `waterui-dylib` package and its complete dependency graph.
-pub async fn shared_rust_runtime_fingerprint(
-    manifest_path: &Path,
-    build_features: &[String],
-    triple: &Triple,
-) -> eyre::Result<String> {
-    let manifest_path = manifest_path.to_path_buf();
-    let build_features = build_features.to_vec();
-    let target = triple.to_string();
-    let metadata_target = target.clone();
-    let metadata = unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command
-            .manifest_path(&manifest_path)
-            .features(cargo_metadata::CargoOpt::SomeFeatures(build_features))
-            .other_options(vec!["--filter-platform".to_string(), metadata_target]);
-        command.exec()
-    })
-    .await
-    .wrap_err("Failed to resolve Cargo metadata for the shared WaterUI runtime")?;
-
-    let resolve = metadata.resolve.as_ref().ok_or_else(|| {
-        eyre::eyre!("Cargo metadata omitted the dependency graph for the shared WaterUI runtime")
-    })?;
-    let active_package_ids = resolve
-        .nodes
-        .iter()
-        .map(|node| node.id.to_string())
-        .collect::<BTreeSet<_>>();
-    let runtime_ids = metadata
-        .packages
-        .iter()
-        .filter(|package| package.name == "waterui-dylib")
-        .map(|package| package.id.to_string())
-        .filter(|id| active_package_ids.contains(id))
-        .collect::<Vec<_>>();
-    let runtime_id = match runtime_ids.as_slice() {
-        [runtime_id] => runtime_id,
-        [] => {
-            bail!("Development feature did not resolve an active `waterui-dylib` package");
-        }
-        _ => {
-            bail!(
-                "Development feature resolved multiple `waterui-dylib` packages; the shared runtime must be unique"
-            );
-        }
-    };
-
-    let graph = resolve
-        .nodes
-        .iter()
-        .map(|node| {
-            (
-                node.id.to_string(),
-                ResolvedRuntimeNode {
-                    features: node.features.iter().map(ToString::to_string).collect(),
-                    dependencies: node.dependencies.iter().map(ToString::to_string).collect(),
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    fingerprint_resolved_runtime_graph(runtime_id, &target, &graph)
-}
-
-fn fingerprint_resolved_runtime_graph(
-    runtime_id: &str,
-    target: &str,
-    graph: &BTreeMap<String, ResolvedRuntimeNode>,
-) -> eyre::Result<String> {
-    let mut pending = vec![runtime_id.to_string()];
-    let mut visited = BTreeSet::new();
-    let mut units = Vec::new();
-
-    while let Some(package_id) = pending.pop() {
-        if !visited.insert(package_id.clone()) {
-            continue;
-        }
-        let node = graph.get(&package_id).ok_or_else(|| {
-            eyre::eyre!("Cargo metadata omitted runtime dependency node `{package_id}`")
-        })?;
-        let mut features = node.features.clone();
-        features.sort_unstable();
-        features.dedup();
-        units.push(format!("{package_id}|{}", features.join(",")));
-        pending.extend(node.dependencies.iter().cloned());
-    }
-
-    units.sort_unstable();
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(target.as_bytes());
-    hasher.update(b"\n");
-    for unit in units {
-        hasher.update(unit.as_bytes());
-        hasher.update(b"\n");
-    }
-    Ok(hex::encode(hasher.finalize()))
-}
-
 /// Configure a Cargo invocation that compiles one of `WaterUI`'s generated crates.
 ///
 /// Incremental compilation is off for every one of these builds, unconditionally.
@@ -215,35 +99,12 @@ fn fingerprint_resolved_runtime_graph(
 /// and the module fails to `dlopen` on a missing generic instantiation.
 ///
 /// The choice is unconditional precisely so it cannot depend on an environmental accident
-/// such as whether a machine has `sccache` installed. Little is given up: these crates
-/// build into runtime-fingerprinted target directories that rotate whenever the dependency
-/// graph moves, so incremental state rarely survives to be reused — while an `sccache`
-/// entry, which requires incremental to be off, does.
+/// such as whether a machine has `sccache` installed. Little is given up: every generated
+/// backend builds into one shared target directory where Cargo already reuses each unit's
+/// compiled artifact across backends and feature variants — while an `sccache` entry,
+/// which requires incremental to be off, covers what that sharing cannot.
 pub fn configure_generated_crate_compilation(command: &mut Command) {
     command.env("CARGO_INCREMENTAL", "0");
-}
-
-/// Configure a Cargo command for the selected Rust linkage model.
-pub fn configure_cargo_linkage(
-    command: &mut Command,
-    linkage: RustLinkage,
-    development_feature: &str,
-    loader_search_path: Option<&str>,
-) {
-    if linkage == RustLinkage::Static {
-        return;
-    }
-
-    command.args(["--features", development_feature]);
-    let mut rustflags = std::env::var_os("RUSTFLAGS").unwrap_or_default();
-    if !rustflags.is_empty() {
-        rustflags.push(" ");
-    }
-    rustflags.push("-Cprefer-dynamic -Crpath");
-    if let Some(path) = loader_search_path {
-        rustflags.push(format!(" -Clink-arg=-Wl,-rpath,{path}"));
-    }
-    command.env("RUSTFLAGS", rustflags);
 }
 
 /// Dynamic Rust libraries required by a shared-runtime development build.
@@ -424,6 +285,15 @@ pub struct RustBuild {
     crate_type_override: Option<String>,
     /// Extra rustc flags to append via `RUSTFLAGS`.
     rustc_flags: Vec<String>,
+    /// Rustc flags that apply to the final crate only, via `cargo rustc -- <flags>`.
+    ///
+    /// `RUSTFLAGS` is hashed into every dependency unit's fingerprint, so a flag that
+    /// only matters when linking the final artifact — an `-rpath` link argument, say —
+    /// must not go through [`Self::with_rustc_flag`]: two builds sharing one target
+    /// directory that disagree about `RUSTFLAGS` invalidate each other's entire
+    /// dependency graph. Trailing `cargo rustc` arguments reach only the selected
+    /// target's own compilation and leave dependency fingerprints alone.
+    final_rustc_args: Vec<String>,
     /// Extra environment variables to set for the cargo build process.
     envs: Vec<(String, OsString)>,
 }
@@ -544,6 +414,7 @@ impl RustBuild {
             features: Vec::new(),
             crate_type_override: None,
             rustc_flags: Vec::new(),
+            final_rustc_args: Vec::new(),
             envs: Vec::new(),
         }
     }
@@ -594,11 +465,48 @@ impl RustBuild {
         self
     }
 
+    /// Add a rustc flag that applies to the final crate only.
+    ///
+    /// The flag is passed as a trailing `cargo rustc` argument instead of through
+    /// `RUSTFLAGS`, so dependency unit fingerprints stay identical across builds that
+    /// differ only in how their final artifact links. See the field documentation on
+    /// `final_rustc_args` for why link arguments must take this route.
+    #[must_use]
+    pub fn with_final_rustc_arg(mut self, flag: impl Into<String>) -> Self {
+        self.final_rustc_args.push(flag.into());
+        self
+    }
+
     /// Prefer dynamic Rust dependencies and emit loader search paths for them.
     #[must_use]
     pub fn with_preferred_dynamic_linking(self) -> Self {
         self.with_rustc_flag("-Cprefer-dynamic")
             .with_rustc_flag("-Crpath")
+    }
+
+    /// Configure this build for the selected Rust runtime linkage.
+    ///
+    /// A shared-runtime development build enables the project's `dev` feature (which
+    /// resolves the shared `waterui-dylib` runtime), prefers dynamic linking, and —
+    /// when the platform's loader needs one — embeds a loader search path into the
+    /// final artifact only. A static packaging build needs none of this.
+    #[must_use]
+    pub fn with_linkage(
+        self,
+        linkage: RustLinkage,
+        development_feature: &str,
+        loader_search_path: Option<&str>,
+    ) -> Self {
+        if linkage == RustLinkage::Static {
+            return self;
+        }
+        let build = self
+            .with_feature(development_feature)
+            .with_preferred_dynamic_linking();
+        match loader_search_path {
+            Some(path) => build.with_final_rustc_arg(format!("-Clink-arg=-Wl,-rpath,{path}")),
+            None => build,
+        }
     }
 
     /// Override the library crate type passed to `rustc`.
@@ -708,7 +616,12 @@ impl RustBuild {
         let output_dir = self
             .build_inner(release, CargoTarget::Binary(binary_name))
             .await?;
-        let binary_path = output_dir.join(binary_name);
+        let binary_file_name = if self.triple.operating_system == OperatingSystem::Windows {
+            format!("{binary_name}.exe")
+        } else {
+            binary_name.to_string()
+        };
+        let binary_path = output_dir.join(binary_file_name);
         if !binary_path.is_file() {
             return Err(RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -820,7 +733,8 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
             None
         };
         let mut cmd = Command::new("cargo");
-        let cargo_subcommand = if crate_type_override.is_some() {
+        let cargo_subcommand = if crate_type_override.is_some() || !self.final_rustc_args.is_empty()
+        {
             "rustc"
         } else {
             "build"
@@ -881,8 +795,12 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
             cmd = cmd.args(["--features", &self.features.join(",")]);
         }
 
-        if let Some(crate_type) = crate_type_override {
-            cmd = cmd.arg("--").arg("--crate-type").arg(crate_type);
+        if crate_type_override.is_some() || !self.final_rustc_args.is_empty() {
+            cmd = cmd.arg("--");
+            if let Some(crate_type) = crate_type_override {
+                cmd = cmd.arg("--crate-type").arg(crate_type);
+            }
+            cmd = cmd.args(&self.final_rustc_args);
         }
 
         let output = cmd
@@ -1043,11 +961,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BuildOptions, CargoTarget, ResolvedRuntimeNode, RustDynamicLibraries, RustLinkage,
-        dynamic_library_file_name, fingerprint_resolved_runtime_graph, lib_extension_for_triple,
-        resolve_rust_standard_library_in,
+        BuildOptions, CargoTarget, RustDynamicLibraries, RustLinkage, dynamic_library_file_name,
+        lib_extension_for_triple, resolve_rust_standard_library_in,
     };
-    use std::collections::BTreeMap;
 
     fn triple(value: &str) -> Triple {
         value.parse().expect("test target triple must parse")
@@ -1108,101 +1024,6 @@ mod tests {
         );
         assert!(BuildOptions::development(true).is_release());
         assert!(BuildOptions::packaging(true).is_release());
-    }
-
-    #[test]
-    fn shared_runtime_fingerprint_ignores_unrelated_application_nodes() {
-        let runtime = "path+file:///waterui/utils/dylib#waterui-dylib@0.2.1";
-        let internal = "path+file:///waterui/src#waterui-internal@0.2.1";
-        let app = "path+file:///apps/menu#menu-example@0.1.0";
-        let mut graph = BTreeMap::from([
-            (
-                runtime.to_string(),
-                ResolvedRuntimeNode {
-                    features: vec!["gpu".to_string(), "assets".to_string()],
-                    dependencies: vec![internal.to_string()],
-                },
-            ),
-            (
-                internal.to_string(),
-                ResolvedRuntimeNode {
-                    features: vec!["gpu".to_string()],
-                    dependencies: Vec::new(),
-                },
-            ),
-        ]);
-        let expected = fingerprint_resolved_runtime_graph(runtime, "aarch64-apple-darwin", &graph)
-            .expect("runtime fingerprint");
-        graph.insert(
-            app.to_string(),
-            ResolvedRuntimeNode {
-                features: vec!["dev".to_string()],
-                dependencies: vec![runtime.to_string()],
-            },
-        );
-
-        assert_eq!(
-            fingerprint_resolved_runtime_graph(runtime, "aarch64-apple-darwin", &graph)
-                .expect("runtime fingerprint with unrelated app"),
-            expected
-        );
-    }
-
-    #[test]
-    fn shared_runtime_fingerprint_separates_features_dependencies_and_targets() {
-        let runtime = "registry+https://github.com/rust-lang/crates.io-index#waterui-dylib@0.2.1";
-        let dependency = "registry+https://github.com/rust-lang/crates.io-index#wgpu@29.0.4";
-        let graph = BTreeMap::from([
-            (
-                runtime.to_string(),
-                ResolvedRuntimeNode {
-                    features: vec!["gpu".to_string()],
-                    dependencies: vec![dependency.to_string()],
-                },
-            ),
-            (
-                dependency.to_string(),
-                ResolvedRuntimeNode {
-                    features: Vec::new(),
-                    dependencies: Vec::new(),
-                },
-            ),
-        ]);
-        let base = fingerprint_resolved_runtime_graph(runtime, "aarch64-apple-darwin", &graph)
-            .expect("base runtime fingerprint");
-        assert_ne!(
-            fingerprint_resolved_runtime_graph(runtime, "x86_64-unknown-linux-gnu", &graph)
-                .expect("target runtime fingerprint"),
-            base
-        );
-
-        let mut changed_features = graph.clone();
-        changed_features
-            .get_mut(runtime)
-            .expect("runtime node")
-            .features
-            .push("media".to_string());
-        assert_ne!(
-            fingerprint_resolved_runtime_graph(runtime, "aarch64-apple-darwin", &changed_features)
-                .expect("feature runtime fingerprint"),
-            base
-        );
-
-        let mut changed_dependency = graph;
-        changed_dependency
-            .get_mut(dependency)
-            .expect("dependency node")
-            .features
-            .push("metal".to_string());
-        assert_ne!(
-            fingerprint_resolved_runtime_graph(
-                runtime,
-                "aarch64-apple-darwin",
-                &changed_dependency
-            )
-            .expect("dependency runtime fingerprint"),
-            base
-        );
     }
 
     #[test]

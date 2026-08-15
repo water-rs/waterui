@@ -9,6 +9,7 @@ use futures::StreamExt;
 #[cfg(target_os = "macos")]
 use jiff::Timestamp;
 
+use super::detect_sccache_path;
 use crate::shell::Shell;
 use crate::toolchain_checks;
 use crate::{error, header, line, note, success, warn};
@@ -39,8 +40,6 @@ use waterui_cli::{
     },
     platform::{PackageOptions, TargetPlatform as LibTargetPlatform},
     project::Project,
-    toolchain::sccache::Sccache,
-    utils::sccache_install_hint,
 };
 
 #[cfg(target_os = "macos")]
@@ -378,20 +377,6 @@ const fn resolve_platform(platform_override: Option<TargetPlatform>) -> TargetPl
     }
 }
 
-fn sccache_allowed() -> bool {
-    if let Some(value) = std::env::var_os("WATERUI_DISABLE_SCCACHE") {
-        let value = value.to_string_lossy().trim().to_ascii_lowercase();
-        if matches!(value.as_str(), "1" | "true" | "yes" | "on") {
-            return false;
-        }
-    }
-    // Respect explicit wrapper from caller (e.g. passthrough wrapper in constrained envs).
-    if std::env::var_os("RUSTC_WRAPPER").is_some() {
-        return false;
-    }
-    true
-}
-
 /// Run the run command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let context = prepare_run_context(shell, &args).await?;
@@ -706,29 +691,6 @@ async fn build_run_config(shell: &Shell, args: &Args) -> BuildRunConfig {
         run_options,
         sccache_path,
     }
-}
-
-async fn detect_sccache_path(shell: &Shell) -> Option<PathBuf> {
-    if !sccache_allowed() {
-        note!(
-            shell,
-            "Skipping sccache (explicit wrapper or WATERUI_DISABLE_SCCACHE is set)"
-        );
-        return None;
-    }
-
-    let sccache = Sccache;
-    sccache.path().await.map_or_else(
-        |_| {
-            warn!(
-                shell,
-                "sccache not found. Build efficiency may be reduced. Install with: {}",
-                sccache_install_hint()
-            );
-            None
-        },
-        Some,
-    )
 }
 
 #[cfg(target_os = "macos")]
