@@ -20,11 +20,13 @@ const VALID_DUAL_PLURAL_FIELDS: &[&str] = &["one_one", "one_other", "other_one",
 
 fn waterui_crate_path() -> std::result::Result<TokenStream2, TokenStream2> {
     if current_package_name().as_deref() == Some("waterui-internal") {
-        return Ok(quote!(crate));
+        return Ok(own_crate_path("waterui-internal"));
     }
 
     match crate_name("waterui") {
-        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
+        Ok(FoundCrate::Itself) => Ok(own_crate_path(
+            current_package_name().as_deref().unwrap_or("waterui"),
+        )),
         Ok(FoundCrate::Name(name)) => {
             let ident = Ident::new(&name, Span::call_site());
             Ok(quote!(::#ident))
@@ -33,6 +35,24 @@ fn waterui_crate_path() -> std::result::Result<TokenStream2, TokenStream2> {
             compile_error!("`text!` requires the `waterui` crate as a dependency (it may be renamed; Cargo.toml must include it).");
         }),
     }
+}
+
+/// How the crate being compiled refers to itself.
+///
+/// Normally that is `crate`, but a doctest is compiled as its own crate that
+/// merely *depends* on the one it documents, so `crate` there names the example
+/// and every path the macro expands to goes missing. The documented crate is an
+/// ordinary dependency of that example, so it is named outright instead.
+///
+/// `UNSTABLE_RUSTDOC_TEST_PATH` is set only by rustdoc when it compiles a
+/// doctest, which is what makes it the tell; the surrounding package is
+/// otherwise indistinguishable from a normal build.
+fn own_crate_path(package: &str) -> TokenStream2 {
+    if std::env::var_os("UNSTABLE_RUSTDOC_TEST_PATH").is_none() {
+        return quote!(crate);
+    }
+    let ident = Ident::new(&package.replace('-', "_"), Span::call_site());
+    quote!(::#ident)
 }
 
 fn current_package_name() -> Option<String> {
