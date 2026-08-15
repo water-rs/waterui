@@ -44,6 +44,35 @@ pub struct AppleBackend {
     pub backend_path: Option<String>,
 }
 
+/// What this project's built application bundle is called.
+///
+/// Deliberately not the scheme. The scheme is a fixed handle the CLI drives the
+/// Xcode project with — every playground shares one, which is what lets one set
+/// of commands build any of them — while the product name is the one a person
+/// reads. macOS takes `CFBundleName`, and with it the menu bar, the Dock and
+/// Force Quit, from `PRODUCT_NAME`, so a project that leaves the two equal
+/// announces itself as the scaffold's target rather than as itself.
+///
+/// The scaffold writes this same name into `PRODUCT_NAME`, so this is also
+/// where the built bundle is found afterwards; the two must agree.
+///
+/// # Errors
+///
+/// Returns an error when the name cannot be a bundle's: empty, or containing a
+/// path separator that would place the bundle somewhere else entirely.
+pub fn apple_product_name(project: &Project) -> Result<&str, eyre::Report> {
+    let name = project.manifest().package.name.as_str();
+    if name.is_empty() {
+        eyre::bail!("This project has no name; `package.name` in Water.toml names the application");
+    }
+    if name.contains(std::path::MAIN_SEPARATOR) || name.contains('/') {
+        eyre::bail!(
+            "The project name {name:?} contains a path separator, so it cannot name an application bundle"
+        );
+    }
+    Ok(name)
+}
+
 impl AppleBackend {
     /// Create a new Apple backend configuration with the given scheme.
     #[must_use]

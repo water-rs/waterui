@@ -451,7 +451,7 @@ impl PreviewAppClient {
                 Ok(response) => Ok(response),
                 Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                     bail!(
-                        "Preview app connection closed unexpectedly (the preview process likely crashed). Check crash logs in ~/Library/Logs/DiagnosticReports/WaterUIApp-*.ips"
+                        "Preview app connection closed unexpectedly (the preview process likely crashed). Check crash logs in ~/Library/Logs/DiagnosticReports/, filed under the preview application's own name"
                     );
                 }
                 Err(err) => Err(err).wrap_err("Failed to receive response"),

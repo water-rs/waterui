@@ -20,7 +20,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		D018675E2E6C7BBB00802E96 /* {{ ctx.app_name }}.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = {{ ctx.app_name }}.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D018675E2E6C7BBB00802E96 /* {{ ctx.app_display_name }}.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "{{ ctx.app_display_name }}.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -64,7 +64,7 @@
 		D018675F2E6C7BBB00802E96 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				D018675E2E6C7BBB00802E96 /* {{ ctx.app_name }}.app */,
+				D018675E2E6C7BBB00802E96 /* {{ ctx.app_display_name }}.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -108,8 +108,8 @@
                 D01867802E6C82CA00802E96 /* WaterUICefWebView */,
 {% endif %}
             );
-            productName = "{{ ctx.app_name }}";
-            productReference = D018675E2E6C7BBB00802E96 /* {{ ctx.app_name }}.app */;
+            productName = "{{ ctx.app_display_name }}";
+            productReference = D018675E2E6C7BBB00802E96 /* {{ ctx.app_display_name }}.app */;
             productType = "com.apple.product-type.application";
         };
 /* End PBXNativeTarget section */
@@ -329,6 +329,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "{{ ctx.app_display_name }}";
 				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = {{ ctx.macos_lsuielement() }};
 				"INFOPLIST_KEY_NSPrincipalClass[sdk=macosx*]" = NSApplication;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -349,7 +350,7 @@
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = "-lc++ -framework VideoToolbox";
 				PRODUCT_BUNDLE_IDENTIFIER = {{ ctx.bundle_identifier }};
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "{{ ctx.app_display_name }}";
 				REGISTER_APP_GROUPS = YES;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
 				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
@@ -390,6 +391,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "{{ ctx.app_display_name }}";
 				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = {{ ctx.macos_lsuielement() }};
 				"INFOPLIST_KEY_NSPrincipalClass[sdk=macosx*]" = NSApplication;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -410,7 +412,7 @@
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = "-lc++ -framework VideoToolbox";
 				PRODUCT_BUNDLE_IDENTIFIER = {{ ctx.bundle_identifier }};
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "{{ ctx.app_display_name }}";
 				REGISTER_APP_GROUPS = YES;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
 				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
