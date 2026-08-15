@@ -158,6 +158,15 @@ all = [
     "navigation-restoration",
 ]
 
+[dev-dependencies]
+# Every doc example in this crate is written the way an application writes it —
+# `use waterui::…` — because these docs are re-exported through that facade and
+# are read there. A doctest compiles as a crate of its own, so it needs the
+# facade linked or none of the examples resolve, which is what left them
+# uncompiled. A dev-dependency is allowed to point back at a crate that depends
+# on this one; only a cycle among normal dependencies is refused.
+waterui = { path = "..", features = ["all"] }
+
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
