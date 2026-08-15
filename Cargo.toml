@@ -286,8 +286,14 @@ debug = "line-tables-only"
 
 # Dependencies are debugged even more rarely than they are stepped into, and the
 # graph carries wgpu, vello and parley — the bulk of the debug info by far.
+# They are, however, on every frame's hot path: at opt-level 0 the vello/wgpu
+# encode-and-submit alone costs several milliseconds per frame and a debug
+# `water run` visibly drops frames while scrolling. Optimizing dependencies
+# keeps workspace crates fully debuggable while the rendering stack runs at
+# real speed, and sccache still caches the results (non-incremental).
 [profile.dev.package."*"]
 debug = false
+opt-level = 2
 
 [profile.release]
 lto = true
