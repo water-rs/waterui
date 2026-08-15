@@ -15,6 +15,11 @@ const SNACKBAR_MIN_WIDTH: f32 = 288.0;
 const SNACKBAR_MAX_WIDTH: f32 = 568.0;
 const SNACKBAR_ACTION_TRAILING_PADDING: f32 = 8.0;
 const SNACKBAR_SINGLE_LINE_HEIGHT: f32 = 48.0;
+/// `IconButtonTokens.IconSize` — the size Compose draws `Icons.Filled.Close` at
+/// in the snackbar's `dismissAction` slot.
+const SNACKBAR_CLOSE_ICON_SIZE: f32 = 24.0;
+/// `IconButtonTokens.StateLayerSize` — the size Compose's `IconButton` measures.
+const SNACKBAR_CLOSE_STATE_LAYER_SIZE: f32 = 40.0;
 const SNACKBAR_CORNER_RADIUS: f32 = 4.0;
 const SNACKBAR_CLIP_RADIUS: f32 = 0.08;
 const SNACKBAR_MOTION_OFFSET_Y: f32 = 20.0;
@@ -35,6 +40,8 @@ pub fn theme(_colors: &MaterialColorScheme) -> SnackbarTheme {
         min_width: SNACKBAR_MIN_WIDTH,
         max_width: SNACKBAR_MAX_WIDTH,
         action_trailing_padding: SNACKBAR_ACTION_TRAILING_PADDING,
+        close_icon_size: SNACKBAR_CLOSE_ICON_SIZE,
+        close_state_layer_size: SNACKBAR_CLOSE_STATE_LAYER_SIZE,
         single_line_min_height: SNACKBAR_SINGLE_LINE_HEIGHT,
         corner_radius: SNACKBAR_CORNER_RADIUS,
         clip_radius: SNACKBAR_CLIP_RADIUS,

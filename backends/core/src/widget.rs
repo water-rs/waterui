@@ -1380,6 +1380,21 @@ pub trait WidgetTheme {
         _state: WidgetInteractionState,
     ) {
     }
+    /// Draw the background revealed behind a row that is being swiped away.
+    ///
+    /// `progress` runs `0.0..=1.0` toward the dismiss threshold, and
+    /// `toward_start` is `true` while the row travels toward the leading edge,
+    /// so a theme can anchor its icon on the side the row is uncovering.
+    fn draw_list_swipe_dismiss_background(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _progress: f64,
+        _toward_start: bool,
+    ) {
+    }
+    /// Draw the lifted treatment for a row being dragged to a new position.
+    fn draw_list_row_lifted(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _elevation: f64) {}
     /// Draw a list separator.
     fn draw_list_separator(&self, draw: &mut dyn DrawContext, bounds: Rect);
 
