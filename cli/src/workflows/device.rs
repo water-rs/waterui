@@ -106,6 +106,22 @@ impl RunOptions {
         self.env_vars.insert(key, value);
     }
 
+    /// Tells the application which project it came from and what it is called.
+    ///
+    /// A launched application knows neither. It has no working directory worth
+    /// the name — a macOS bundle gets `/` — so nothing it starts on the
+    /// developer's behalf could find the project, and nothing inside `WaterUI`
+    /// knows the name the project gave itself, which is why a window with no
+    /// title of its own has to be told what to fall back to.
+    pub fn describe_project(&mut self, project: &crate::project::Project) {
+        self.insert_env_var(
+            String::from("WATERUI_PROJECT_DIR"),
+            project.root().display().to_string(),
+        );
+        let name = project.manifest().package.name.clone();
+        self.insert_env_var(String::from("WATERUI_APP_NAME"), name);
+    }
+
     /// Get an iterator over the environment variables
     pub fn env_vars(&self) -> impl Iterator<Item = (&str, &str)> {
         self.env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str()))

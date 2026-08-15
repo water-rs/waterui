@@ -44,8 +44,6 @@ use waterui_cli::{
 
 #[cfg(target_os = "macos")]
 use waterui_cli::debug;
-#[cfg(target_os = "macos")]
-use waterui_cli::project::PackageType;
 
 #[cfg(target_os = "macos")]
 struct CrashReportContext {
@@ -69,22 +67,9 @@ impl CrashReportContext {
         let device_identifier = whoami::hostname()
             .map_err(|e| color_eyre::eyre::eyre!("Failed to determine hostname: {e}"))?;
 
-        let process_name = match project.manifest().package.package_type {
-            PackageType::Playground => "WaterUIApp".to_string(),
-            PackageType::App => {
-                // Match Apple backend naming: convert crate name to UpperCamel for app name.
-                project
-                    .crate_name()
-                    .split('-')
-                    .map(|s| {
-                        let mut chars = s.chars();
-                        chars.next().map_or_else(String::new, |first| {
-                            first.to_uppercase().chain(chars).collect()
-                        })
-                    })
-                    .collect::<String>()
-            }
-        };
+        // A crash report is filed under the executable's name, which is the
+        // Xcode product name — the same one the bundle is built under.
+        let process_name = waterui_cli::apple::backend::apple_product_name(project)?.to_string();
 
         Ok(Some(Self {
             started_at: Timestamp::now(),
@@ -398,7 +383,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         args.device.as_deref(),
     )
     .await?;
-    let config = build_run_config(shell, &args).await;
+    let config = build_run_config(shell, &args, &context.project).await;
 
     #[cfg(target_os = "macos")]
     let mut crash_ctx =
@@ -668,24 +653,14 @@ async fn select_run_device(
     })
 }
 
-async fn build_run_config(shell: &Shell, args: &Args) -> BuildRunConfig {
+async fn build_run_config(shell: &Shell, args: &Args, project: &Project) -> BuildRunConfig {
     let sccache_path = detect_sccache_path(shell).await;
     let mut run_options = RunOptions::new();
     if let Some(level) = args.logs.map(LogLevel::from) {
         run_options.set_log_level(level);
     }
     run_options.set_native_logs(args.native_logs);
-
-    // A launched application has no working directory worth the name — a macOS
-    // app gets `/` — so anything it starts on the developer's behalf cannot find
-    // the project it came from. Telling it where it came from is what lets
-    // "inspect this element" open an inspector built against this project.
-    if let Ok(project_path) = crate::project_path::canonicalize(&args.path) {
-        run_options.insert_env_var(
-            String::from("WATERUI_PROJECT_DIR"),
-            project_path.display().to_string(),
-        );
-    }
+    run_options.describe_project(project);
 
     BuildRunConfig {
         run_options,
