@@ -153,7 +153,6 @@ pub async fn render_preview_with_hydrolysis(
         TargetPlatform::MacOS,
         "debug",
         RustLinkage::SharedRuntime,
-        &[HYDROLYSIS_PREVIEW_FEATURE],
     )
     .await?;
     stage_hydrolysis_shared_runtime(&binary_path, TargetPlatform::MacOS).await?;
@@ -208,7 +207,6 @@ pub async fn test_preview_with_hydrolysis(
         TargetPlatform::MacOS,
         "debug",
         RustLinkage::SharedRuntime,
-        &[HYDROLYSIS_PREVIEW_TEST_FEATURE],
     )
     .await?;
     stage_hydrolysis_shared_runtime(&binary_path, TargetPlatform::MacOS).await?;

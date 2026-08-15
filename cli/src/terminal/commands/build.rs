@@ -154,7 +154,7 @@ async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<BuildContex
     }
 
     let project = ensure_generated_backend_ready(shell, &project_path, project, backend).await?;
-    let build_options = build_options(args, backend);
+    let build_options = build_options(shell, args, backend).await;
 
     Ok(BuildContext {
         project,
@@ -263,11 +263,15 @@ where
     Ok(project)
 }
 
-fn build_options(args: &Args, backend: TargetBackend) -> BuildOptions {
+async fn build_options(shell: &Shell, args: &Args, backend: TargetBackend) -> BuildOptions {
     let mut build_options = args.output_dir.as_ref().map_or_else(
         || BuildOptions::development(args.release),
         |output_dir| BuildOptions::development(args.release).with_output_dir(output_dir),
     );
+
+    if let Some(sccache_path) = super::detect_sccache_path(shell).await {
+        build_options = build_options.with_sccache(sccache_path);
+    }
 
     if backend == TargetBackend::Apple
         && let Some(triple) = apple_target_triple_override(args.platform, args.arch)

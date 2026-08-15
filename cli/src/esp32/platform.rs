@@ -228,7 +228,7 @@ fn command_failure_details(output: &std::process::Output) -> String {
 pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Result<PathBuf> {
     let backend_path = project.backend_path::<Esp32Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
-    let backend_target_dir = project.backend_target_dir("esp32").await?;
+    let backend_target_dir = project.toolchain_target_dir("esp32").await?;
 
     if !cargo_toml.exists() {
         bail!(
@@ -279,7 +279,7 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
 /// Returns an error if neither the canonical nor underscored firmware binary can be found.
 pub async fn built_esp32_binary_path(project: &Project, profile: &str) -> eyre::Result<PathBuf> {
     let target_dir = project
-        .backend_target_dir("esp32")
+        .toolchain_target_dir("esp32")
         .await?
         .join(esp32_target_triple(project)?)
         .join(profile);
@@ -530,7 +530,7 @@ pub async fn package_esp32(project: &Project, options: PackageOptions) -> eyre::
 pub async fn clean_esp32(project: &Project) -> eyre::Result<()> {
     let backend_path = project.backend_path::<Esp32Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
-    let backend_target_dir = project.backend_target_dir("esp32").await?;
+    let backend_target_dir = project.toolchain_target_dir("esp32").await?;
 
     if !cargo_toml.exists() {
         return Ok(());

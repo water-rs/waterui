@@ -4,8 +4,9 @@ use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre;
 use futures::FutureExt as _;
 use futures::future::{BoxFuture, Shared};
-use sha2::Digest as _;
 use tracing::info;
+
+use crate::build::RustLinkage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenMode {
@@ -154,85 +155,62 @@ impl Project {
             .map_err(|error| eyre::eyre!(error))
     }
 
-    /// Get backend-specific target directory under the project's resolved Cargo target directory.
+    /// Resolve the Cargo target directory every generated backend crate builds into.
     ///
-    /// This keeps generated backend builds inside the user-controlled target tree.
+    /// Generated backends need an explicit target directory, because the default one
+    /// would land inside the managed build cache next to the generated sources — and
+    /// those sources are deleted and regenerated whenever the CLI's scaffold templates
+    /// change. Compiled artifacts do not become stale for that reason, so keeping them
+    /// there meant one CLI upgrade discarded the compiled dependency graph of every
+    /// project on the machine.
+    ///
+    /// One directory serves every backend, platform, and feature set of a linkage:
+    /// Cargo already keys each compiled unit by target triple, resolved features, and
+    /// profile, so switching backends only rebuilds the units the two graphs do not
+    /// share — measured on an example app, over 80% of the Apple FFI graph resolves
+    /// identically to the Hydrolysis graph and is reused as-is. Builds must therefore
+    /// agree on everything Cargo hashes into every unit — pass an explicit `--target`
+    /// and keep final-artifact link flags out of `RUSTFLAGS` (see
+    /// `RustBuild::with_final_rustc_arg`) — or two variants sharing this directory
+    /// re-fingerprint each other's entire dependency graph on every switch.
+    ///
+    /// Linkage is the one axis Cargo cannot separate: shared-runtime development
+    /// builds carry `-Cprefer-dynamic -Crpath` in `RUSTFLAGS` and static packaging
+    /// builds carry none, so each linkage keeps its own directory instead of the two
+    /// variants invalidating each other whenever a developer alternates `water run`
+    /// and `water package`.
     ///
     /// # Errors
     ///
     /// Returns an error when Cargo metadata cannot resolve the project target directory.
-    pub async fn backend_target_dir(&self, backend_name: &str) -> eyre::Result<PathBuf> {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(self.root.display().to_string().as_bytes());
-        let digest = hex::encode(hasher.finalize());
-        let project_fingerprint = &digest[..12];
+    pub async fn water_target_dir(&self, linkage: RustLinkage) -> eyre::Result<PathBuf> {
+        let variant = match linkage {
+            RustLinkage::SharedRuntime => "shared",
+            RustLinkage::Static => "static",
+        };
         Ok(self
             .target_dir()
             .await?
             .join("water-backends")
-            .join(format!("{backend_name}-{project_fingerprint}")))
+            .join(variant))
     }
 
-    /// Get a shared-runtime target directory for compatible backend builds.
+    /// Resolve an isolated target directory for a backend built by a different Rust
+    /// toolchain.
     ///
-    /// Projects that resolve to the same Cargo target directory and the same
-    /// runtime dependency fingerprint reuse one backend target. The runtime
-    /// fingerprint must represent the complete runtime dependency graph so
-    /// incompatible feature or dependency variants remain isolated.
-    ///
-    /// Callers describe their runtime graph in whatever form suits them — a hex
-    /// digest, or a readable `package@version:git:sha|features=…|graph=…` string —
-    /// so the fingerprint is condensed here rather than interpolated directly. A
-    /// descriptive fingerprint reached ~250 characters and the resulting directory
-    /// failed to create with `File name too long`.
+    /// Cargo hashes the compiler into every unit fingerprint, so a backend that pins
+    /// its own toolchain (ESP32's Espressif Rust fork) would invalidate the host
+    /// units of [`Self::water_target_dir`] on every switch if it shared the directory.
     ///
     /// # Errors
     ///
     /// Returns an error when Cargo metadata cannot resolve the project target directory.
-    pub async fn shared_backend_target_dir(
-        &self,
-        backend_name: &str,
-        runtime_fingerprint: &str,
-    ) -> eyre::Result<PathBuf> {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(runtime_fingerprint.as_bytes());
-        let digest = hex::encode(hasher.finalize());
-        let runtime_slug = &digest[..32];
+    pub async fn toolchain_target_dir(&self, toolchain: &str) -> eyre::Result<PathBuf> {
         Ok(self
             .target_dir()
             .await?
             .join("water-backends")
-            .join(format!("{backend_name}-runtime-{runtime_slug}")))
-    }
-
-    /// Resolve the Cargo target directory a generated backend crate must build into.
-    ///
-    /// Every generated backend needs an explicit target directory, because the
-    /// default one would land inside the managed build cache next to the generated
-    /// sources — and those sources are deleted and regenerated whenever the CLI's
-    /// scaffold templates change. Compiled artifacts do not become stale for that
-    /// reason, so keeping them there meant one CLI upgrade discarded the compiled
-    /// dependency graph of every project on the machine.
-    ///
-    /// A shared-runtime build passes its runtime fingerprint and shares one
-    /// directory with every project that resolves the same runtime graph; anything
-    /// else stays isolated per project.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when Cargo metadata cannot resolve the project target directory.
-    pub async fn backend_build_target_dir(
-        &self,
-        backend_name: &str,
-        runtime_fingerprint: Option<&str>,
-    ) -> eyre::Result<PathBuf> {
-        match runtime_fingerprint {
-            Some(fingerprint) => {
-                self.shared_backend_target_dir(backend_name, fingerprint)
-                    .await
-            }
-            None => self.backend_target_dir(backend_name).await,
-        }
+            .join(toolchain))
     }
 
     /// Get the backends configured for the project.
@@ -510,6 +488,14 @@ impl Project {
 
         if self.is_playground() {
             crate::water_dir::remove_project_build_cache(self.root()).await?;
+            // A playground's Cargo target directory is the user's own (often a
+            // workspace-wide one), so only the CLI-owned `water-backends` subtree
+            // is removed — including target directories older CLI layouts left
+            // behind — never the user's other compiled artifacts.
+            let water_backends_root = self.target_dir().await?.join("water-backends");
+            if water_backends_root.exists() {
+                smol::fs::remove_dir_all(&water_backends_root).await?;
+            }
             return Ok(());
         }
 
@@ -1709,41 +1695,6 @@ pub enum PackageType {
     /// A playground project for quick experimentation.
     /// Platform projects are created in a temporary directory.
     Playground,
-}
-
-#[cfg(test)]
-mod shared_target_dir_tests {
-    use sha2::Digest as _;
-
-    /// Mirrors the slug `Project::shared_backend_target_dir` builds.
-    fn runtime_slug(runtime_fingerprint: &str) -> String {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(runtime_fingerprint.as_bytes());
-        hex::encode(hasher.finalize())[..32].to_string()
-    }
-
-    #[test]
-    fn descriptive_fingerprints_produce_a_short_directory_name() {
-        // The preview launcher describes its runtime this way; interpolating it
-        // directly produced a ~250 character directory that would not create.
-        let descriptive = "waterui-core@0.2.0:git:6875cfd947e461a5d066aec67d46f9b648a236b5\
-            |features=assets,default,dynamic_linking,gpu,media,video\
-            |graph=ac1a8d5b7c7b12b71812fc33dff21008dc49ee687ddc208a52807d8065cabe3c\
-            |profile=WATERUI_PREVIEW_MODE=1";
-
-        let slug = runtime_slug(descriptive);
-
-        assert_eq!(slug.len(), 32);
-        assert!(slug.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn different_runtime_graphs_do_not_share_a_directory() {
-        assert_ne!(
-            runtime_slug("features=gpu"),
-            runtime_slug("features=gpu,media")
-        );
-    }
 }
 
 #[cfg(test)]
