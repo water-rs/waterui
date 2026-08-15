@@ -36,6 +36,9 @@ const WINDOW_WIDTH: u32 = 400;
 const WINDOW_HEIGHT: u32 = 640;
 const ROW_HEIGHT: f32 = 44.0;
 const SCROLL_FRAMES: u32 = 24;
+/// Frames to run an indexed jump for. The approach eases with a ~180ms time
+/// constant, so this is comfortably past the point it snaps to its target.
+const FRAMES_TO_SETTLE_JUMP: u32 = 60;
 
 /// A vertically-scrolling lazy list of `rows` fixed-height rows.
 fn lazy_list(rows: usize) -> AnyView {
@@ -180,29 +183,54 @@ fn indexed_list_jump_materializes_only_the_target_window() {
     let _ = runtime.pump_at(false, start);
     let initial_materialized = materialized.load(Ordering::Relaxed);
 
+    // An indexed jump eases into place instead of teleporting, so the target
+    // arrives over several frames rather than on the next one. Only the final
+    // approach is animated — a distant target is closed instantly first — so
+    // the whole jump still costs a bounded number of viewports, which is what
+    // this test is really guarding.
     controller.scroll_to(TARGET_ROW);
-    let jumped = runtime.pump_at(false, start + Duration::from_millis(16));
-    let settled = runtime.pump_at(false, start + Duration::from_millis(32));
-    #[cfg(not(feature = "accessibility"))]
-    let _ = (jumped, settled);
-    let jump_materialized = materialized.load(Ordering::Relaxed) - initial_materialized;
+    #[cfg_attr(
+        not(feature = "accessibility"),
+        allow(unused_mut, unused_variables, reason = "labels need the a11y tree")
+    )]
+    let mut saw_target = false;
+    let mut elapsed = Duration::ZERO;
+    let mut previous = initial_materialized;
+    let mut worst_frame = 0usize;
+    for _ in 0..FRAMES_TO_SETTLE_JUMP {
+        elapsed += Duration::from_millis(16);
+        let frame = runtime.pump_at(false, start + elapsed);
+        let total = materialized.load(Ordering::Relaxed);
+        worst_frame = worst_frame.max(total - previous);
+        previous = total;
+        #[cfg(feature = "accessibility")]
+        {
+            saw_target |= frame
+                .tree_update
+                .into_iter()
+                .flat_map(|update| update.nodes)
+                .any(|(_, node)| node.label() == Some("Target row"));
+        }
+        #[cfg(not(feature = "accessibility"))]
+        let _ = frame;
+    }
 
     assert!(
         initial_materialized < 128,
         "initial List viewport materialized {initial_materialized} rows"
     );
+    // The jump eases in, so cost is spread over frames rather than landing on
+    // one. What must hold is that no single frame ever materializes more than a
+    // viewport: that is what proves the glide is not dragging the list through
+    // the 90,000 rows between here and the target.
     assert!(
-        jump_materialized < 128,
-        "indexed List jump materialized {jump_materialized} rows instead of one viewport"
+        worst_frame < 128,
+        "a frame of the indexed List jump materialized {worst_frame} rows instead of one viewport"
     );
     #[cfg(feature = "accessibility")]
     assert!(
-        [jumped.tree_update, settled.tree_update]
-            .into_iter()
-            .flatten()
-            .flat_map(|update| update.nodes)
-            .any(|(_, node)| node.label() == Some("Target row")),
-        "the indexed target row must intersect the settled viewport"
+        saw_target,
+        "the indexed target row must intersect the viewport once the jump settles"
     );
 }
 

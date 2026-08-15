@@ -1,6 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::gesture::GestureTarget;
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
@@ -14,6 +15,8 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 use waterui::component::list::{ListConfig, Move};
+use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
+use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::{Id as RawId, SelfId};
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::Views;
@@ -33,6 +36,85 @@ struct ListViewportAnchor {
     id: ListItemId,
     index: usize,
     offset_within_row: f64,
+}
+
+/// Fraction of the row's width a swipe must cross to dismiss on release.
+/// Compose's `SwipeToDismissBoxDefaults.positionalThreshold` is
+/// `{ distance -> distance * 0.5f }`.
+const SWIPE_DISMISS_POSITIONAL_THRESHOLD: f64 = 0.5;
+
+/// Time constant (seconds) of the exponential spring-back when a swipe is
+/// released short of the threshold, and of the settle after a committed
+/// dismiss. Matches the feel of the smooth-scroll approach used elsewhere.
+const SWIPE_SETTLE_TAU: f64 = 0.09;
+
+/// Offset below which a settling swipe snaps to rest and stops requesting
+/// frames.
+const SWIPE_SETTLE_EPSILON: f64 = 0.5;
+
+/// Elevation handed to the theme while a row is lifted for reordering. Material
+/// raises a dragged list item to level 3.
+const REORDER_LIFT_ELEVATION: f64 = 3.0;
+
+/// How much of a programmatic jump is animated, in viewports. Anything further
+/// is closed instantly first, so the glide stays legible and a jump across a
+/// huge dataset cannot materialize every viewport it would otherwise cross.
+const MAX_ANIMATED_JUMP_VIEWPORTS: f64 = 1.0;
+
+/// Distance the pointer must travel before a row drag is recognized, matching
+/// Android's `ViewConfiguration` touch slop. Without it a row could not be
+/// tapped at all: every press would immediately read as a swipe.
+const ROW_DRAG_SLOP: f32 = 8.0;
+
+/// This frame's identity and geometry for one row, shared with that row's
+/// retained gesture recognizers.
+#[derive(Clone, Copy)]
+struct RowBinding {
+    /// The row's current position in the collection.
+    index: usize,
+    /// Row width, against which the swipe-dismiss threshold is measured.
+    width: f64,
+    /// Row height, the slot size a reorder drag steps by.
+    height: f64,
+    /// Collection length, clamping where a reorder can land.
+    total_rows: usize,
+}
+
+impl RowBinding {
+    /// Stand-in stored when a row's binding cell is created; every registration
+    /// path overwrites it with real geometry in the same frame.
+    const PLACEHOLDER: Self = Self {
+        index: 0,
+        width: 0.0,
+        height: 0.0,
+        total_rows: 0,
+    };
+}
+
+/// A row being swiped horizontally, or springing back after release.
+#[derive(Clone, Copy)]
+struct RowSwipe {
+    id: ListItemId,
+    /// Current horizontal displacement of the row content, in logical pixels.
+    offset: f64,
+    /// Set once the pointer is released: the offset is then eased to `target`
+    /// instead of tracking the pointer.
+    settling: bool,
+    /// Where a settling swipe is heading — `0.0` to spring back, or off-screen
+    /// once the dismiss is committed.
+    target: f64,
+}
+
+/// A row lifted by its move handle and dragged to a new position.
+#[derive(Clone, Copy)]
+struct RowReorder {
+    id: ListItemId,
+    /// Index the row occupied when the drag began.
+    from: usize,
+    /// Index the row would land on if released now.
+    to: usize,
+    /// Vertical displacement from the row's resting position.
+    dy: f64,
 }
 
 /// Retained state for a list `Widget` node: the consumed config plus a per-widget
@@ -68,8 +150,32 @@ pub(crate) struct ListRenderState {
     /// A backend move action keeps the viewport's index fixed for the next
     /// membership reconcile so the moved row visibly changes position.
     preserve_anchor_index_once: Cell<bool>,
+    /// Gesture recognizers for the visible rows, keyed by stable row id.
+    ///
+    /// The engine clears its target list every frame, so a recognizer that was
+    /// only ever built by `register_target` would forget an in-flight drag on
+    /// the very next frame. Retaining the target here and re-registering it at
+    /// the row's fresh bounds keeps the state machine alive across frames,
+    /// which is what makes a swipe or a reorder drag survive scrolling.
+    row_gestures: RefCell<std::collections::HashMap<ListItemId, RowGestures>>,
+    /// The row currently being swiped, or springing back after release.
+    swipe: Rc<Cell<Option<RowSwipe>>>,
+    /// The row currently lifted for reordering.
+    reorder: Rc<Cell<Option<RowReorder>>>,
+    /// Last frame time a settling swipe was advanced at.
+    swipe_last_tick: Cell<Option<crate::time::Instant>>,
     /// Collection membership watcher.
     _guard: BoxWatcherGuard,
+}
+
+/// Retained gesture targets for one row, plus the live binding they read.
+struct RowGestures {
+    /// This frame's index and geometry for the row.
+    binding: Rc<Cell<RowBinding>>,
+    /// Horizontal swipe-to-dismiss over the whole row.
+    swipe: Option<GestureTarget>,
+    /// Vertical reorder drag on the row's move handle.
+    reorder: Option<GestureTarget>,
 }
 
 impl ListRenderState {
@@ -92,7 +198,68 @@ impl ListRenderState {
             viewport_anchor: Cell::new(None),
             pending_membership_offset: Cell::new(None),
             preserve_anchor_index_once: Cell::new(false),
+            row_gestures: RefCell::new(std::collections::HashMap::new()),
+            swipe: Rc::new(Cell::new(None)),
+            reorder: Rc::new(Cell::new(None)),
+            swipe_last_tick: Cell::new(None),
             _guard: guard,
+        }
+    }
+
+    /// Eases a released swipe toward its resting or dismissed position and
+    /// reports whether more frames are needed. A swipe still tracking the
+    /// pointer is left alone — only a `settling` one is driven here.
+    fn advance_swipe_settle(&self, now: crate::time::Instant) -> bool {
+        let Some(mut swipe) = self.swipe.get() else {
+            self.swipe_last_tick.set(None);
+            return false;
+        };
+        if !swipe.settling {
+            // The pointer owns the offset; restart the clock so the first
+            // settle step after release measures from release, not from press.
+            self.swipe_last_tick.set(None);
+            return false;
+        }
+        let dt = self
+            .swipe_last_tick
+            .get()
+            .map_or(0.0, |last| now.duration_since(last).as_secs_f64());
+        self.swipe_last_tick.set(Some(now));
+        let blend = 1.0 - (-dt / SWIPE_SETTLE_TAU).exp();
+        swipe.offset = (swipe.target - swipe.offset).mul_add(blend, swipe.offset);
+        if (swipe.target - swipe.offset).abs() < SWIPE_SETTLE_EPSILON {
+            self.swipe.set(None);
+            self.swipe_last_tick.set(None);
+            return false;
+        }
+        self.swipe.set(Some(swipe));
+        true
+    }
+
+    /// Horizontal displacement to draw row `id` at, if it is the swiped row.
+    fn swipe_offset_for(&self, id: ListItemId) -> f64 {
+        self.swipe
+            .get()
+            .filter(|swipe| swipe.id == id)
+            .map_or(0.0, |swipe| swipe.offset)
+    }
+
+    /// Vertical displacement to draw the row at `index` at, given any lifted
+    /// row. The lifted row follows the pointer; every row between its origin
+    /// and its prospective destination slides one slot to make room.
+    fn reorder_offset_for(&self, index: usize, id: ListItemId, row_height: f64) -> f64 {
+        let Some(reorder) = self.reorder.get() else {
+            return 0.0;
+        };
+        if reorder.id == id {
+            return reorder.dy;
+        }
+        if reorder.to > reorder.from && index > reorder.from && index <= reorder.to {
+            -row_height
+        } else if reorder.to < reorder.from && index >= reorder.to && index < reorder.from {
+            row_height
+        } else {
+            0.0
         }
     }
 
@@ -181,8 +348,24 @@ impl ListRenderState {
             index < row_count,
             "List scroll target {index} exceeds collection length {row_count}"
         );
+        // Ease toward the row rather than teleporting. Re-issuing the target
+        // every frame is what keeps a virtualized jump accurate: rows measured
+        // while the glide passes over them move `offset_of(index)`, so the
+        // destination is refined until the animation actually settles.
         let offset = self.extent_index.borrow().offset_of(index);
-        let _ = handle.scroll_to(0.0, offset);
+        let metrics = handle.metrics();
+        let reachable = metrics.viewport_height * MAX_ANIMATED_JUMP_VIEWPORTS;
+        let distance = offset - metrics.offset_y;
+        if distance.abs() > reachable {
+            // A jump across a 100k-row dataset must not be animated the whole
+            // way: gliding over it would materialize every viewport in between
+            // and read as a blur anyway. Close the gap instantly to just short
+            // of the target, then animate only the final approach — the same
+            // shape as `LinearSmoothScroller` on a distant target.
+            let approach = offset - reachable.copysign(distance);
+            let _ = handle.scroll_to(0.0, approach);
+        }
+        let _ = handle.scroll_to_animated(0.0, offset);
         let extent_index = self.extent_index.borrow();
         let Some(extent) = extent_index.measured(index) else {
             return;
@@ -191,7 +374,8 @@ impl ListRenderState {
         let row_start = extent_index.offset_of(index);
         let row_end = row_start + extent;
         let viewport_end = metrics.offset_y + metrics.viewport_height;
-        if row_end > metrics.offset_y && row_start < viewport_end {
+        let row_visible = row_end > metrics.offset_y && row_start < viewport_end;
+        if row_visible && !handle.is_smooth_scrolling() {
             self.applied_scroll_generation.set(pending_generation);
             self.pending_scroll.set(None);
         }
@@ -417,9 +601,23 @@ pub(crate) fn render_list_parts(
     let has_delete = state.borrow().config.on_delete.is_some();
     let has_move = state.borrow().config.on_move.is_some();
     let total_rows = row_count;
+    // A released swipe eases home (or off-screen) on the redraw cadence; keep
+    // frames coming while it is still travelling.
+    let now = ctx.renderer_mut().frame_instant();
+    if state.borrow().advance_swipe_settle(now) {
+        ctx.renderer_mut().request_refresh();
+    }
+    // One hit-test group for every row gesture in this list, so a swipe on one
+    // row and a reorder drag on another can never both claim the same pointer.
+    let gesture_group = ctx.renderer_mut().allocate_gesture_group_id();
     // Begin a fresh frame for the per-row content sub-view cache: only rows touched
     // in the visible loop below survive `end_frame`, preserving virtualization.
     state.borrow().item_cache.borrow_mut().begin_frame();
+    // Resting geometry for the whole visible window is resolved before anything
+    // is painted. A lifted row has to be drawn last so it floats over the rows
+    // it travels past, so draw order can no longer be the order the vertical
+    // cursor advances in.
+    let mut rows = Vec::with_capacity(window.end.saturating_sub(window.start));
     let mut y = viewport.y0 - metrics.offset_y + window.leading_offset;
     for index in window.start..window.end {
         let row_env = env.clone();
@@ -427,9 +625,6 @@ pub(crate) fn render_list_parts(
         let row_id = contents
             .get_id(index)
             .unwrap_or_else(|| panic!("hydrolysis List item {index} has no stable id"));
-        let row_interaction_base = (i32::from(*row_id) as u32 as usize)
-            .checked_mul(3)
-            .expect("hydrolysis List interaction identity overflow");
         let row_height = {
             let cached_extent = state.borrow().extent_index.borrow().measured(index);
             if let Some(extent) = cached_extent {
@@ -444,21 +639,96 @@ pub(crate) fn render_list_parts(
                 extent
             }
         };
-        let row_rect = vello::kurbo::Rect::new(viewport.x0, y, viewport.x1, y + row_height);
+        rows.push((index, row_id, item, y, row_height));
         y += row_height;
-        if row_rect.y1 <= viewport.y0 || row_rect.y0 >= viewport.y1 {
+    }
+    let lifted_id = state.borrow().reorder.get().map(|reorder| reorder.id);
+    if let Some(lifted_id) = lifted_id
+        && let Some(position) = rows.iter().position(|(_, id, ..)| *id == lifted_id)
+    {
+        let lifted_row = rows.remove(position);
+        rows.push(lifted_row);
+    }
+    let visible_ids: Vec<ListItemId> = rows.iter().map(|(_, id, ..)| *id).collect();
+
+    for (index, row_id, item, resting_y, row_height) in rows {
+        let row_env = env.clone();
+        let row_interaction_base = (i32::from(*row_id) as u32 as usize)
+            .checked_mul(3)
+            .expect("hydrolysis List interaction identity overflow");
+        let reorder_dy = state.borrow().reorder_offset_for(index, row_id, row_height);
+        let swipe_dx = state.borrow().swipe_offset_for(row_id);
+        // Where the row's slot is (the gap it occupies in the list), before the
+        // row itself is displaced sideways by a swipe.
+        let slot_rect = vello::kurbo::Rect::new(
+            viewport.x0,
+            resting_y + reorder_dy,
+            viewport.x1,
+            resting_y + reorder_dy + row_height,
+        );
+        if slot_rect.y1 <= viewport.y0 || slot_rect.y0 >= viewport.y1 {
             continue;
         }
         {
             let theme = widget_theme(env);
             let mut draw = ctx.draw_context();
+            if swipe_dx != 0.0 {
+                let threshold =
+                    (slot_rect.width() * SWIPE_DISMISS_POSITIONAL_THRESHOLD).max(f64::EPSILON);
+                let progress = (swipe_dx.abs() / threshold).clamp(0.0, 1.0);
+                theme.draw_list_swipe_dismiss_background(
+                    &mut draw,
+                    slot_rect,
+                    progress,
+                    swipe_dx < 0.0,
+                );
+            }
+        }
+        // Everything the row draws — its background, controls and content —
+        // rides the swipe displacement; only the revealed dismiss background
+        // stays anchored to the slot.
+        let row_rect = slot_rect + vello::kurbo::Vec2::new(swipe_dx, 0.0);
+        {
+            let theme = widget_theme(env);
+            let mut draw = ctx.draw_context();
             theme.draw_list_row_background(&mut draw, row_rect, index % 2 == 1);
+            if lifted_id == Some(row_id) {
+                theme.draw_list_row_lifted(&mut draw, row_rect, REORDER_LIFT_ELEVATION);
+            }
         }
 
         let deletable = ctx.renderer_mut().read_signal(&item.deletable);
         let content_size = measure_view_intrinsic(&item.content, ctx.state_mut(), &row_env);
         let mut content_rect = list_content_rect(row_rect, list_metrics, content_size);
         let mut trailing_x = row_rect.x1 - 8.0;
+
+        // Refreshed before either recognizer runs this frame, so an in-flight
+        // drag always sees the row's current index and size.
+        let row_binding = refresh_row_binding(
+            state,
+            row_id,
+            RowBinding {
+                index,
+                width: slot_rect.width(),
+                height: row_height,
+                total_rows,
+            },
+        );
+
+        // Swipe-to-dismiss covers the whole row and is available whenever the
+        // list can delete, matching Material's `SwipeToDismissBox` rather than
+        // being gated behind edit mode.
+        if has_delete && deletable {
+            register_row_swipe_gesture(
+                ctx,
+                state,
+                gesture_group,
+                row_id,
+                Rc::clone(&row_binding),
+                slot_rect,
+                &row_env,
+            );
+        }
 
         if editing && has_move {
             let control_width = list_metrics.move_control_width;
@@ -471,6 +741,18 @@ pub(crate) fn render_list_parts(
                 row_rect.y0 + vertical_inset + control_height,
             );
             trailing_x -= control_width + list_metrics.trailing_control_spacing;
+            // The handle is also the reorder grip: dragging it lifts the row.
+            // The tap targets below stay, so the same control still offers
+            // discrete one-step moves for pointer and keyboard users.
+            register_row_reorder_gesture(
+                ctx,
+                state,
+                gesture_group,
+                row_id,
+                Rc::clone(&row_binding),
+                control_rect,
+                &row_env,
+            );
             let up_rect = vello::kurbo::Rect::new(
                 control_rect.x0,
                 control_rect.y0,
@@ -634,6 +916,14 @@ pub(crate) fn render_list_parts(
     }
     // Evict content sub-views for rows no longer in the visible window.
     state.borrow().item_cache.borrow_mut().end_frame();
+    // Retained gesture recognizers follow the same virtualization rule: a row
+    // that scrolled out has no in-flight gesture worth remembering, and keeping
+    // one per row would defeat the point of a 100k-row lazy list.
+    state
+        .borrow()
+        .row_gestures
+        .borrow_mut()
+        .retain(|id, _| visible_ids.contains(id));
 
     if state.borrow().pending_scroll.get().is_some() {
         let content_height = state
@@ -666,6 +956,265 @@ pub(crate) fn render_list_parts(
         move |dx, dy, is_line_delta| handle_for_input.apply_scroll_delta(dx, dy, is_line_delta),
     );
     draw_scroll_indicators(ctx, env, viewport, metrics, ScrollAxis::Vertical, &handle);
+}
+
+/// Ensures row `row_id` has a retained gesture binding and refreshes it with
+/// this frame's geometry.
+///
+/// The binding is what lets a recognizer outlive the frame that built it: the
+/// closures read the row's *current* index and size through this cell, so a
+/// drag still in flight after a reorder or a deletion acts on where the row is
+/// now rather than on the index captured when the recognizer was created.
+fn refresh_row_binding(
+    state: &Rc<RefCell<ListRenderState>>,
+    row_id: ListItemId,
+    binding: RowBinding,
+) -> Rc<Cell<RowBinding>> {
+    let state_ref = state.borrow();
+    let mut gestures = state_ref.row_gestures.borrow_mut();
+    let row = gestures.entry(row_id).or_insert_with(RowGestures::empty);
+    row.binding.set(binding);
+    Rc::clone(&row.binding)
+}
+
+/// Registers `gesture` for one row, reusing the recognizer retained from an
+/// earlier frame when there is one.
+///
+/// Building a fresh recognizer every frame would reset the state machine mid-
+/// drag, so a swipe would stall the moment the list re-rendered. `slot` names
+/// which of the row's two gestures this is.
+fn register_row_gesture(
+    ctx: &mut WidgetRenderContext<'_>,
+    state: &Rc<RefCell<ListRenderState>>,
+    group: usize,
+    row_id: ListItemId,
+    bounds: vello::kurbo::Rect,
+    slot: RowGestureSlot,
+    build: impl FnOnce() -> (Gesture, BoxedAction<()>),
+) {
+    let hit_bounds = transformed_rect(ctx.hit_transform, bounds);
+    let retained = {
+        let state_ref = state.borrow();
+        let gestures = state_ref.row_gestures.borrow();
+        gestures.get(&row_id).and_then(|row| slot.get(row).cloned())
+    };
+    if let Some(target) = retained {
+        ctx.renderer_mut()
+            .register_retained_gesture_target(&target, hit_bounds, group);
+        return;
+    }
+    let (gesture, action) = build();
+    let Some(target) = ctx
+        .renderer_mut()
+        .register_gesture_target(hit_bounds, group, gesture, action)
+    else {
+        return;
+    };
+    let state_ref = state.borrow();
+    let mut gestures = state_ref.row_gestures.borrow_mut();
+    let row = gestures.entry(row_id).or_insert_with(RowGestures::empty);
+    slot.set(row, target);
+}
+
+/// Swipe-to-dismiss across a whole row, committing `on_delete` once the row
+/// travels past Material's positional threshold.
+fn register_row_swipe_gesture(
+    ctx: &mut WidgetRenderContext<'_>,
+    state: &Rc<RefCell<ListRenderState>>,
+    group: usize,
+    row_id: ListItemId,
+    binding: Rc<Cell<RowBinding>>,
+    bounds: vello::kurbo::Rect,
+    row_env: &Environment,
+) {
+    let owner = Rc::clone(state);
+    let action_env = row_env.clone();
+    register_row_gesture(
+        ctx,
+        state,
+        group,
+        row_id,
+        bounds,
+        RowGestureSlot::Swipe,
+        || {
+            let action: BoxedAction<()> = boxed_action(move |env: Environment| {
+                let event = drag_event(&env);
+                let offset = f64::from(event.translation.x);
+                let row = binding.get();
+                let list = owner.borrow();
+                match event.phase {
+                    GesturePhase::Started | GesturePhase::Updated => {
+                        list.swipe.set(Some(RowSwipe {
+                            id: row_id,
+                            offset,
+                            settling: false,
+                            target: 0.0,
+                        }));
+                    }
+                    GesturePhase::Ended => {
+                        let threshold = row.width * SWIPE_DISMISS_POSITIONAL_THRESHOLD;
+                        if offset.abs() >= threshold {
+                            list.swipe.set(None);
+                            if let Some(delete) = list.config.on_delete.as_ref() {
+                                (delete)(&action_env, row.index);
+                            }
+                        } else {
+                            // Short of the threshold the row springs back instead
+                            // of committing, exactly as `SwipeToDismissBox` does.
+                            list.swipe.set(Some(RowSwipe {
+                                id: row_id,
+                                offset,
+                                settling: true,
+                                target: 0.0,
+                            }));
+                        }
+                    }
+                    GesturePhase::Cancelled => {
+                        list.swipe.set(Some(RowSwipe {
+                            id: row_id,
+                            offset,
+                            settling: true,
+                            target: 0.0,
+                        }));
+                    }
+                }
+            });
+            (Gesture::Drag(DragGesture::new(ROW_DRAG_SLOP)), action)
+        },
+    );
+}
+
+/// Vertical reorder drag on a row's move handle, committing `on_move` on
+/// release.
+fn register_row_reorder_gesture(
+    ctx: &mut WidgetRenderContext<'_>,
+    state: &Rc<RefCell<ListRenderState>>,
+    group: usize,
+    row_id: ListItemId,
+    binding: Rc<Cell<RowBinding>>,
+    bounds: vello::kurbo::Rect,
+    row_env: &Environment,
+) {
+    let owner = Rc::clone(state);
+    let action_env = row_env.clone();
+    register_row_gesture(
+        ctx,
+        state,
+        group,
+        row_id,
+        bounds,
+        RowGestureSlot::Reorder,
+        || {
+            let action: BoxedAction<()> = boxed_action(move |env: Environment| {
+                let event = drag_event(&env);
+                let dy = f64::from(event.translation.y);
+                let row = binding.get();
+                // How many whole slots the pointer has travelled. Rows are
+                // measured individually, but a drag only ever crosses its
+                // neighbours one at a time, so stepping by the dragged row's
+                // own height tracks the pointer closely enough to feel direct.
+                let step = if row.height > 0.0 {
+                    (dy / row.height).round()
+                } else {
+                    0.0
+                };
+                let to = reorder_destination(row.index, step, row.total_rows);
+                let list = owner.borrow();
+                match event.phase {
+                    GesturePhase::Started | GesturePhase::Updated => {
+                        list.reorder.set(Some(RowReorder {
+                            id: row_id,
+                            from: row.index,
+                            to,
+                            dy,
+                        }));
+                    }
+                    GesturePhase::Ended => {
+                        list.reorder.set(None);
+                        if to != row.index {
+                            list.preserve_anchor_index_once.set(true);
+                            if let Some(action) = list.config.on_move.as_ref() {
+                                (action)(&action_env, Move::new(row.index, to));
+                            }
+                            if !list.rows_dirty.get() {
+                                list.preserve_anchor_index_once.set(false);
+                            }
+                        }
+                    }
+                    GesturePhase::Cancelled => {
+                        list.reorder.set(None);
+                    }
+                }
+            });
+            (Gesture::Drag(DragGesture::new(ROW_DRAG_SLOP)), action)
+        },
+    );
+}
+
+/// Clamps a slot step from `index` into the collection's index range.
+fn reorder_destination(index: usize, step: f64, total_rows: usize) -> usize {
+    if total_rows == 0 {
+        return 0;
+    }
+    let last = total_rows - 1;
+    if step >= 0.0 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "step is a whole non-negative slot count, clamped into range below"
+        )]
+        let forward = step as usize;
+        index.saturating_add(forward).min(last)
+    } else {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the negated step is a whole non-negative slot count"
+        )]
+        let backward = (-step) as usize;
+        index.saturating_sub(backward)
+    }
+}
+
+/// Reads the drag payload the gesture engine layered into the action's
+/// environment.
+fn drag_event(env: &Environment) -> DragEvent {
+    env.get::<DragEvent>()
+        .expect("hydrolysis list drag action is missing its DragEvent")
+        .clone()
+}
+
+/// Which of a row's two retained recognizers is being addressed.
+#[derive(Clone, Copy)]
+enum RowGestureSlot {
+    Swipe,
+    Reorder,
+}
+
+impl RowGestureSlot {
+    const fn get(self, row: &RowGestures) -> Option<&GestureTarget> {
+        match self {
+            Self::Swipe => row.swipe.as_ref(),
+            Self::Reorder => row.reorder.as_ref(),
+        }
+    }
+
+    fn set(self, row: &mut RowGestures, target: GestureTarget) {
+        match self {
+            Self::Swipe => row.swipe = Some(target),
+            Self::Reorder => row.reorder = Some(target),
+        }
+    }
+}
+
+impl RowGestures {
+    fn empty() -> Self {
+        Self {
+            binding: Rc::new(Cell::new(RowBinding::PLACEHOLDER)),
+            swipe: None,
+            reorder: None,
+        }
+    }
 }
 
 fn list_content_rect(
