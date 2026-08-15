@@ -1,11 +1,13 @@
 //! Scroll-input frame economy.
 //!
-//! A scroll offset change is a transform-level visual update: the frame it
-//! schedules must re-encode the retained tree (updating the presented offset,
-//! hit-test geometry, and the accessibility tree) without paying layout, and
-//! must never present the previous frame's scene unchanged. These tests drive
-//! the real runner input path (`handle_input_events` → frame pump) headlessly
-//! and read the flushed accessibility tree as the observable output.
+//! A scroll offset change schedules the one per-frame pass — patch, layout,
+//! re-encode — and must present the new offset (scene, hit-test geometry,
+//! accessibility tree) on the very frame that consumed it, never the previous
+//! frame's scene unchanged. Layout runs every frame, but over an unchanged
+//! tree it must be pure cache replay: no re-measurement and no window
+//! rebuild. These tests drive the real runner input path
+//! (`handle_input_events` → frame pump) headlessly and read the flushed
+//! accessibility tree as the observable output.
 
 use core::time::Duration;
 use std::time::Instant;
@@ -55,7 +57,7 @@ fn scroll_y(result: &crate::HeadlessPumpResult) -> f64 {
 }
 
 #[test]
-fn trackpad_pan_re_encodes_the_presented_offset_without_layout() {
+fn trackpad_pan_presents_the_new_offset_without_re_measuring() {
     let mut runtime = runtime();
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -81,7 +83,7 @@ fn trackpad_pan_re_encodes_the_presented_offset_without_layout() {
             panned.profile.counters.measurement_cache_misses,
         ),
         (0, 0),
-        "a pan over non-lazy content is a visual re-encode and must not measure"
+        "a pan over an unchanged tree must be pure cache replay and not re-measure"
     );
     assert_eq!(
         panned.profile.counters.rebuild_iterations, 0,
@@ -90,7 +92,7 @@ fn trackpad_pan_re_encodes_the_presented_offset_without_layout() {
 }
 
 #[test]
-fn wheel_ticks_glide_without_layout() {
+fn wheel_ticks_glide_without_re_measuring() {
     let mut runtime = runtime();
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -111,7 +113,7 @@ fn wheel_ticks_glide_without_layout() {
                 result.profile.counters.measurement_cache_misses,
             ),
             (0, 0),
-            "wheel glide frame {frame} over non-lazy content must not measure"
+            "wheel glide frame {frame} over an unchanged tree must not re-measure"
         );
         if let Some(update) = &result.tree_update
             && let Some(offset) = update.nodes.iter().find_map(|(_, node)| node.scroll_y())
@@ -228,7 +230,7 @@ fn scrollbar_gutter_drag_maps_track_position_to_offset() {
             dragged.profile.counters.measurement_cache_misses,
         ),
         (0, 0),
-        "a scrollbar drag is a visual re-encode and must not measure"
+        "a scrollbar drag over an unchanged tree must not re-measure"
     );
 
     runtime.push_input_event(InputEvent::PointerUp {
@@ -244,4 +246,38 @@ fn scrollbar_gutter_drag_maps_track_position_to_offset() {
         offset < 0.5,
         "releasing the thumb must keep the dragged offset (got {offset})"
     );
+}
+
+#[test]
+fn momentum_tail_presents_every_consumed_delta() {
+    // A trackpad momentum tail is a stream of pixel deltas that decay toward
+    // zero while staying well above the scroll epsilon. Every one of them must
+    // reach the screen on the frame that consumed it: a tail whose small
+    // deltas accumulate silently and surface later as a jump is exactly the
+    // "momentum end feels janky" defect class.
+    let mut runtime = runtime();
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    let mut velocity = 30.0_f32;
+    let mut expected = 0.0_f64;
+    for frame in 1..=120_u64 {
+        velocity *= 0.95;
+        let dy = velocity.max(0.05);
+        runtime.push_input_event(InputEvent::TrackpadPan {
+            x: WINDOW_WIDTH as f32 / 2.0,
+            y: WINDOW_HEIGHT as f32 / 2.0,
+            dx: 0.0,
+            dy: -dy,
+            phase: TouchPhase::Moved,
+        });
+        expected += f64::from(dy);
+        let result = runtime.pump_at(false, start + Duration::from_millis(frame * 8));
+        let presented = scroll_y(&result);
+        assert!(
+            (presented - expected).abs() < 0.1,
+            "momentum frame {frame} must present the accumulated offset \
+             (got {presented}, want {expected}, delta this frame {dy})"
+        );
+    }
 }
