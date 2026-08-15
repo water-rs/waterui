@@ -374,14 +374,17 @@ impl HydrolysisRenderer {
         env: &Environment,
         max_lines: Option<usize>,
     ) {
-        let layout = Self::build_text_layout(
-            state,
-            styled,
-            alignment,
-            env,
+        let input = resolve_text_layout_input(&styled, alignment, env);
+        let fragment = state.text.glyph_scene_with(
+            &input,
             Some(ctx.bounds.width() as f32),
+            max_lines,
+            |layout, fragment| Self::encode_text_layout(fragment, layout, max_lines),
         );
-        Self::draw_text_layout(scene, ctx, &layout, max_lines);
+        scene.append(
+            &fragment,
+            Some(ctx.transform * vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))),
+        );
     }
 
     pub(crate) fn render_styled_text_single_line_centered(
@@ -391,8 +394,8 @@ impl HydrolysisRenderer {
         styled: StyledStr,
         env: &Environment,
     ) {
-        let layout =
-            Self::build_text_layout(state, styled, HorizontalAlignment::Leading, env, None);
+        let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
+        let layout = state.text.shape(&input, None);
         let Some(line) = layout.lines().next() else {
             return;
         };
@@ -401,24 +404,28 @@ impl HydrolysisRenderer {
         let height = f64::from(metrics.line_height);
         let x = ((ctx.bounds.width() - width) * 0.5).max(0.0);
         let y = ((ctx.bounds.height() - height) * 0.5).max(0.0);
-        let child_ctx = ctx.child(
-            vello::kurbo::Affine::translate((x, y)),
-            vello::kurbo::Rect::new(0.0, 0.0, width, height),
+        let fragment = state
+            .text
+            .glyph_scene_with(&input, None, Some(1), |layout, fragment| {
+                Self::encode_text_layout(fragment, layout, Some(1));
+            });
+        scene.append(
+            &fragment,
+            Some(ctx.transform * vello::kurbo::Affine::translate((x, y))),
         );
-        Self::draw_text_layout(scene, child_ctx, &layout, Some(1));
     }
 
-    fn draw_text_layout(
+    /// Encode `layout`'s glyph runs into `scene` at the local origin. The
+    /// caller positions the result by appending it under a transform, which is
+    /// what makes the encoded fragment reusable across frames.
+    fn encode_text_layout(
         scene: &mut vello::Scene,
-        ctx: RenderContext,
         layout: &parley::Layout<[u8; 4]>,
         max_lines: Option<usize>,
     ) {
         if layout.is_empty() {
             return;
         }
-        let text_transform =
-            ctx.transform * vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         for (index, line) in layout.lines().enumerate() {
             if max_lines.is_some_and(|limit| index >= limit) {
                 break;
@@ -442,7 +449,6 @@ impl HydrolysisRenderer {
                     let glyph_run_builder = scene
                         .draw_glyphs(run.font())
                         .brush(brush)
-                        .transform(text_transform)
                         .font_size(run.font_size());
                     if normalized_coords.is_empty() {
                         glyph_run_builder.draw(vello::peniko::Fill::NonZero, glyphs);
@@ -462,9 +468,9 @@ impl HydrolysisRenderer {
         alignment: HorizontalAlignment,
         env: &Environment,
         max_width: Option<f32>,
-    ) -> parley::Layout<[u8; 4]> {
+    ) -> Arc<parley::Layout<[u8; 4]>> {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        state.text.shape_owned(&input, max_width)
+        state.text.shape(&input, max_width)
     }
 
     pub(crate) fn measure_text_dimensions(
