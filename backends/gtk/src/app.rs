@@ -201,7 +201,7 @@ impl GtkApp {
             .into_iter()
             .next()
             .expect("GtkApp::run_app requires at least one window");
-        let title = main_window.title.clone();
+        let title = main_window.display_title();
         let background = main_window.background.clone();
         let content = main_window.content;
         #[cfg(any(

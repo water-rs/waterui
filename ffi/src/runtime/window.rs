@@ -255,12 +255,17 @@ impl IntoFFI for Window {
 
     fn into_ffi(self) -> Self::FFI {
         let content = self.build_content();
+        // Resolved before the window is taken apart, because it reads the
+        // declared title alongside the application's name.
+        let title = self.display_title();
         // Apple consumes the toolbar as native window chrome. Other backends,
         // including Android, drop the Rust view without allocating an FFI handle.
         let toolbar = toolbar_into_ffi(self.toolbar);
 
         WuiWindow {
-            title: self.title.into_ffi(),
+            // Every backend is handed the title to show, not the raw
+            // declaration, so none of them repeats the rule.
+            title: title.into_ffi(),
             closable: self.closable,
             resizable: self.resizable,
             frame: self.frame.into_ffi(),

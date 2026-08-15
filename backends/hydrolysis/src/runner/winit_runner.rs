@@ -290,7 +290,7 @@ fn native_window_attributes(
     let frame = window.frame.get();
     NativeWindow::default_attributes()
         .with_window_icon(icon)
-        .with_title(window.title.get().as_str())
+        .with_title(window.display_title().get().as_str())
         .with_resizable(window.resizable)
         .with_visible(false)
         .with_active(activates)

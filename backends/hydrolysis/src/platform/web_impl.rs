@@ -223,7 +223,7 @@ impl PlatformWindow for BrowserWindow {
     }
 
     fn apply_properties(&mut self, window: &WuiWindow) {
-        self.document.set_title(window.title.get().as_str());
+        self.document.set_title(window.display_title().get().as_str());
 
         match window.state.get() {
             WindowState::Normal => {

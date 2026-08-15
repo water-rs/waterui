@@ -22,15 +22,31 @@ pub struct App {
     pub env: Environment,
 }
 
+/// What this application is called, or empty when nothing said.
+///
+/// An application is named by whoever launches it: the `water` CLI passes the
+/// name the project gave itself, which is the same name its bundle carries.
+/// Nothing inside `WaterUI` can know it, so a build started by other means —
+/// a bundle opened directly, a test harness — reports nothing and leaves the
+/// question to the platform, which for a bundle can answer it.
+#[must_use]
+pub fn application_name() -> Str {
+    std::env::var("WATERUI_APP_NAME").map_or_else(|_| Str::default(), Str::from)
+}
+
 impl App {
     /// Create a new application with the given main content view and environment.
     ///
     /// The application's main window opens immediately (state is initialized
     /// to [`WindowState::Normal`](crate::window::WindowState::Normal) rather than the type's `default()`, which is
     /// `Closed`).
+    ///
+    /// The window is given no title of its own, which is what an empty title
+    /// means: it is shown under the application's own name, which the platform
+    /// knows and this does not. Use [`Window::title`] to say something else.
     pub fn new(content: impl ViewBuilder, env: Environment) -> Self {
         let state = nami::binding(crate::window::WindowState::Normal);
-        Self::new_with_windows([Window::new("WaterUI App", state, content)], env)
+        Self::new_with_windows([Window::new("", state, content)], env)
     }
 
     /// Create a new application with the given windows and environment.

@@ -1904,7 +1904,7 @@ mod winit_impl {
         }
 
         fn apply_properties(&mut self, window: &waterui::window::Window) {
-            self.window.set_title(window.title.get().as_str());
+            self.window.set_title(window.display_title().get().as_str());
             self.window.set_resizable(window.resizable);
             self.window.set_decorations(!matches!(
                 window.style,
