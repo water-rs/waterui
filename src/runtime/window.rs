@@ -21,13 +21,14 @@
 
 use std::{fmt::Debug, rc::Rc};
 
-use nami::{Binding, Computed, impl_constant, signal::IntoComputed};
+use nami::{Binding, Computed, SignalExt as _, impl_constant, signal::IntoComputed};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View};
 use waterui_graphics::Color;
 use waterui_layout::{Point, Rect, Size};
 use waterui_str::Str;
 
+use crate::app::application_name;
 use crate::{
     ViewExt,
     background::{Material, MaterialBackground},
@@ -347,6 +348,31 @@ impl Window {
     pub fn title(mut self, title: impl IntoComputed<Str>) -> Self {
         self.title = title.into_computed();
         self
+    }
+
+    /// The title to put on the window, which is what a backend should show.
+    ///
+    /// A window that declares no title of its own — an empty one — is shown
+    /// under the application's name, so that an application which never says
+    /// what its window is called is still named after itself rather than after
+    /// the framework. This is resolved here rather than in each backend so that
+    /// every one of them titles a window the same way.
+    ///
+    /// The name is empty when nothing told the application what it is called,
+    /// which leaves the decision to the platform: a bundle knows its own name
+    /// and keeps whatever it had.
+    #[must_use]
+    pub fn display_title(&self) -> Computed<Str> {
+        let application = application_name();
+        self.title
+            .map(move |declared| {
+                if declared.is_empty() {
+                    application.clone()
+                } else {
+                    declared
+                }
+            })
+            .into_computed()
     }
 
     /// Get a handle to control the window after showing it.
