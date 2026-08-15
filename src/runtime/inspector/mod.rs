@@ -123,8 +123,7 @@ impl InspectorServerConfig {
                 parse_env("WATERUI_INSPECTOR_TASK_WINDOW_MS")?.unwrap_or(DEFAULT_TASK_WINDOW_MS),
             ),
             stall_ratio: parse_env("WATERUI_INSPECTOR_STALL_RATIO")?.unwrap_or(DEFAULT_STALL_RATIO),
-            app_name: std::env::var("WATERUI_INSPECTOR_APP_NAME")
-                .unwrap_or_else(|_| String::from("WaterUI application")),
+            app_name: advertised_application_name(),
         }))
     }
 
@@ -149,9 +148,22 @@ impl InspectorServerConfig {
             token: generate_token(),
             task_window: Duration::from_millis(DEFAULT_TASK_WINDOW_MS),
             stall_ratio: DEFAULT_STALL_RATIO,
-            app_name: std::env::var("WATERUI_INSPECTOR_APP_NAME")
-                .unwrap_or_else(|_| String::from("WaterUI application")),
+            app_name: advertised_application_name(),
         })
+    }
+}
+
+/// The name this application is listed under when it advertises itself.
+///
+/// The launcher is what knows it; a build started by other means has nothing to
+/// give, and is said to be unnamed rather than being given a name that would
+/// look like every other application's in the list.
+fn advertised_application_name() -> String {
+    let name = crate::app::application_name();
+    if name.is_empty() {
+        String::from("Unnamed WaterUI application")
+    } else {
+        name.to_string()
     }
 }
 
@@ -255,6 +267,11 @@ impl InspectorRuntime {
     pub fn inspect_node(&self, node: waterui_inspector_protocol::NodeId) {
         self.hub.select_node(node);
         if self.hub.has_clients() {
+            tracing::debug!(
+                target: "waterui::inspector",
+                node = node.0,
+                "Revealing a node in the attached inspector"
+            );
             return;
         }
         self.launch_inspector();
@@ -266,6 +283,10 @@ impl InspectorRuntime {
     /// "inspect this element" gesture wants.
     pub fn open(&self) {
         if self.hub.has_clients() {
+            tracing::debug!(
+                target: "waterui::inspector",
+                "An inspector is already attached; nothing to open"
+            );
             return;
         }
         self.launch_inspector();
@@ -312,19 +333,64 @@ impl InspectorRuntime {
             command.arg("--path").arg(project);
         }
 
-        let launched = command.spawn();
+        let addr = self.endpoint.addr;
+        let token = self.endpoint.token.clone();
 
-        match launched {
-            Ok(_) => tracing::info!(
-                target: "waterui::inspector",
-                inspector_addr = %self.endpoint.addr,
-                "Launching the inspector"
-            ),
+        // A launched application's streams do not reach whoever started it, so
+        // anything the CLI says about a failure is lost unless it is captured
+        // here and reported through the log the developer is already reading.
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        match command.spawn() {
+            Ok(child) => {
+                tracing::info!(
+                    target: "waterui::inspector",
+                    inspector_addr = %addr,
+                    "Launching the inspector"
+                );
+                // The inspector is built before it can be shown, which takes long
+                // enough that a gesture looks ignored while it happens, and it can
+                // fail. Dropping the handle would leave both invisible — and leave
+                // the child unreaped — so its exit is waited for and reported.
+                let waited = thread::Builder::new()
+                    .name(String::from("waterui-inspector-launch"))
+                    .spawn(move || match child.wait_with_output() {
+                        Ok(output) if output.status.success() => tracing::info!(
+                            target: "waterui::inspector",
+                            inspector_addr = %addr,
+                            "The inspector exited"
+                        ),
+                        Ok(output) => tracing::error!(
+                            target: "waterui::inspector",
+                            status = %output.status,
+                            inspector_addr = %addr,
+                            token = %token,
+                            stderr = %String::from_utf8_lossy(&output.stderr).trim_end(),
+                            stdout = %String::from_utf8_lossy(&output.stdout).trim_end(),
+                            "`water inspector` failed"
+                        ),
+                        Err(error) => tracing::error!(
+                            target: "waterui::inspector",
+                            error = %error,
+                            inspector_addr = %addr,
+                            "Lost track of the inspector process"
+                        ),
+                    });
+                if let Err(error) = waited {
+                    tracing::warn!(
+                        target: "waterui::inspector",
+                        error = %error,
+                        "Could not watch the inspector process; it is still starting"
+                    );
+                }
+            }
             Err(error) => tracing::warn!(
                 target: "waterui::inspector",
                 error = %error,
-                inspector_addr = %self.endpoint.addr,
-                token = %self.endpoint.token,
+                inspector_addr = %addr,
+                token = %token,
                 "Could not launch `water inspector`; attach manually"
             ),
         }
