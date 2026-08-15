@@ -51,6 +51,22 @@ pub(crate) struct TextMeasureService {
     /// registered resource fonts) plus a fresh layout context, then returned for
     /// the next call rather than rebuilt.
     scratch: Mutex<Option<TextShapingScratch>>,
+    /// Encoded glyph scenes, keyed by the shaped layout's identity plus the
+    /// draw-time line limit. The render path redraws every text leaf on every
+    /// frame (whole-scene re-encode), and re-emitting glyph runs — font
+    /// resolution, per-glyph iteration, run encoding — dominates a text leaf's
+    /// flush cost. A fragment is encoded once at the local origin and appended
+    /// under the frame's transform, so a scrolled or animated frame pays one
+    /// encoding copy per text instead of a full glyph-run walk.
+    scene_cache: Mutex<LruCache<TextSceneCacheKey, Arc<vello::Scene>>>,
+}
+
+/// Cache identity for an encoded glyph scene: the shaped layout it draws plus
+/// the line limit applied while drawing.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct TextSceneCacheKey {
+    layout: TextLayoutCacheKey,
+    max_lines: Option<usize>,
 }
 
 /// Owned, mutable shaping scratch for one in-flight shape call.
@@ -68,6 +84,10 @@ impl TextMeasureService {
                     .expect("text layout cache capacity must be non-zero"),
             )),
             scratch: Mutex::new(None),
+            scene_cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(TEXT_LAYOUT_CACHE_CAPACITY)
+                    .expect("text scene cache capacity must be non-zero"),
+            )),
         }
     }
 
@@ -82,6 +102,10 @@ impl TextMeasureService {
             .get_mut()
             .expect("text layout cache mutex must not be poisoned")
             .clear();
+        self.scene_cache
+            .get_mut()
+            .expect("text scene cache mutex must not be poisoned")
+            .clear();
         *self
             .scratch
             .get_mut()
@@ -91,9 +115,8 @@ impl TextMeasureService {
 
     /// Shape `input` into a parley layout, reusing the shared cache.
     ///
-    /// The layout is shared rather than copied: measurement only reads it, and
-    /// copying glyph runs on every probe is the bulk of a cache hit's cost. Call
-    /// [`Self::shape_owned`] when the caller needs its own layout to mutate.
+    /// The layout is shared rather than copied: every consumer only reads it,
+    /// and copying glyph runs on every probe is the bulk of a cache hit's cost.
     pub(crate) fn shape(
         &self,
         input: &ResolvedTextLayoutInput,
@@ -124,13 +147,39 @@ impl TextMeasureService {
         layout
     }
 
-    /// Shape `input` into a layout the caller owns outright.
-    pub(crate) fn shape_owned(
+    /// The encoded glyph scene for `input` at `max_width`, drawn with at most
+    /// `max_lines` lines, at the local origin (identity transform). A miss
+    /// shapes through [`Self::shape`] and encodes once via `encode`; a hit
+    /// returns the shared fragment so the caller only pays a transformed
+    /// append into the frame's scene.
+    pub(crate) fn glyph_scene_with(
         &self,
         input: &ResolvedTextLayoutInput,
         max_width: Option<f32>,
-    ) -> parley::Layout<[u8; 4]> {
-        (*self.shape(input, max_width)).clone()
+        max_lines: Option<usize>,
+        encode: impl FnOnce(&parley::Layout<[u8; 4]>, &mut vello::Scene),
+    ) -> Arc<vello::Scene> {
+        let key = TextSceneCacheKey {
+            layout: input.cache_key(max_width),
+            max_lines,
+        };
+        if let Some(scene) = self
+            .scene_cache
+            .lock()
+            .expect("text scene cache mutex must not be poisoned")
+            .get(&key)
+        {
+            return Arc::clone(scene);
+        }
+        let layout = self.shape(input, max_width);
+        let mut scene = vello::Scene::new();
+        encode(&layout, &mut scene);
+        let scene = Arc::new(scene);
+        self.scene_cache
+            .lock()
+            .expect("text scene cache mutex must not be poisoned")
+            .put(key, Arc::clone(&scene));
+        scene
     }
 
     fn checkout_scratch(&self) -> TextShapingScratch {

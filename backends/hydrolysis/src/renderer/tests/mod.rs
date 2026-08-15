@@ -330,7 +330,7 @@ fn text_input_target(
         text_bounds: Rect::ZERO,
         text_clip_bounds: Rect::ZERO,
         content_alpha: 1.0,
-        layout: parley::Layout::default(),
+        layout: std::sync::Arc::new(parley::Layout::default()),
         purpose: TextInputPurpose::Normal,
         depth: 0,
         order: 0,
