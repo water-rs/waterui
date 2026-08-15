@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use askama::Template;
 use color_eyre::eyre::{self, Context, bail};
 use smol::fs;
-use target_lexicon::{Architecture, Triple};
+use target_lexicon::Architecture;
 use tracing::{debug, info};
 
 #[cfg(target_os = "macos")]
@@ -23,9 +23,7 @@ use crate::{
     apple::backend::AppleBackend,
     apple::dynamic_runtime,
     assets::{self, ResolvedFont},
-    build::{
-        BuildOptions, RustBuild, RustDynamicLibraries, RustLinkage, shared_rust_runtime_fingerprint,
-    },
+    build::{BuildOptions, RustBuild, RustDynamicLibraries, RustLinkage},
     device::Artifact,
     platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::{BrowserRuntimePlan, Project, ResolvedWebViewBackend},
@@ -126,11 +124,6 @@ async fn remove_superseded_host_library(
 }
 
 /// Cargo features an Apple FFI build resolves its dependency graph with.
-///
-/// A shared-runtime target directory is keyed by the runtime graph these features
-/// resolve, so this list is the single source of truth for both the build and the
-/// fingerprint. Deriving the fingerprint from a shorter list would let projects with
-/// different capabilities share one directory and rebuild each other's artifacts away.
 async fn apple_ffi_build_features(
     project: &Project,
     browser_runtime: BrowserRuntimePlan,
@@ -148,33 +141,6 @@ async fn apple_ffi_build_features(
         features.push("dev".to_string());
     }
     Ok(features)
-}
-
-/// Resolve the Cargo target directory the Apple FFI crate builds into.
-///
-/// Building and packaging must agree on this path, so both go through here rather
-/// than each re-deriving it. `features` are the ones the build itself passes to
-/// Cargo, as produced by [`apple_ffi_build_features`].
-async fn apple_ffi_target_dir(
-    project: &Project,
-    triple: &Triple,
-    linkage: RustLinkage,
-    features: &[String],
-) -> eyre::Result<PathBuf> {
-    let runtime_fingerprint = match linkage {
-        RustLinkage::SharedRuntime => Some(
-            shared_rust_runtime_fingerprint(
-                &project.ffi_crate_path().join("Cargo.toml"),
-                features,
-                triple,
-            )
-            .await?,
-        ),
-        RustLinkage::Static => None,
-    };
-    project
-        .backend_build_target_dir("apple", runtime_fingerprint.as_deref())
-        .await
 }
 
 /// Build Rust library for an Apple platform.
@@ -219,14 +185,12 @@ pub async fn build_rust_lib(
     if options.linkage() == RustLinkage::SharedRuntime {
         build = build.with_preferred_dynamic_linking();
     }
-    let target_dir =
-        apple_ffi_target_dir(project, &triple, options.linkage(), build.features()).await?;
-    build = build.with_target_dir(target_dir);
+    build = build.with_target_dir(project.water_target_dir(options.linkage()).await?);
     let lib_dir = build.build_lib(options.is_release()).await?;
     if browser_runtime_plan.requires_cef() {
         build
             .clone()
-            .with_rustc_flag("-Clink-arg=-Wl,-rpath,@executable_path/../Frameworks")
+            .with_final_rustc_arg("-Clink-arg=-Wl,-rpath,@executable_path/../Frameworks")
             .build_binary("waterui-cef-helper", options.is_release())
             .await?;
     }
@@ -626,9 +590,8 @@ pub async fn package_apple(
     } else {
         RustLinkage::Static
     };
-    let build_features = apple_ffi_build_features(project, browser_runtime_plan, linkage).await?;
     let lib_dir = RustBuild::new(project.ffi_crate_path(), triple.clone())
-        .with_target_dir(apple_ffi_target_dir(project, &triple, linkage, &build_features).await?)
+        .with_target_dir(project.water_target_dir(linkage).await?)
         .lib_output_dir(!options.is_debug())
         .await
         .wrap_err("Failed to resolve native FFI crate target directory")?;

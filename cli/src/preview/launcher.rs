@@ -24,7 +24,7 @@ use super::protocol::PreviewRuntimePlatform;
 use super::protocol::PreviewTcpConfig;
 
 use crate::apple::dynamic_runtime;
-use crate::build::RustBuild;
+use crate::build::{RustBuild, RustLinkage};
 use crate::device::{Device, DeviceEvent, Local, LogLevel, RunOptions, Running};
 use crate::platform::TargetPlatform;
 use crate::project::Project;
@@ -239,15 +239,12 @@ async fn build_preview_dylib(
     // The preview wrapper crate lives in the managed build cache, whose generated
     // sources are regenerated whenever the CLI's scaffold templates move. Building
     // into Cargo's default directory would put the compiled dependency graph inside
-    // that regenerated tree, so point it at the runtime-keyed target directory every
-    // project with the same runtime graph shares.
+    // that regenerated tree, so point it at the shared target directory every
+    // generated backend of this project builds into. Preview always links the
+    // shared runtime dynamically, so it lives in the shared-linkage directory.
     let mut rust_build = link_mode
         .configure_build(RustBuild::new(&preview_crate_path, target.triple()))
-        .with_target_dir(
-            project
-                .backend_build_target_dir("preview", Some(runtime_fingerprint))
-                .await?,
-        );
+        .with_target_dir(project.water_target_dir(RustLinkage::SharedRuntime).await?);
     let dylib_path_start = Instant::now();
     let expected_path = rust_build
         .dylib_path(preview_crate_name.as_str(), false)

@@ -148,10 +148,15 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Packagi
     let project =
         ensure_packaging_backend_generated(shell, &project_path, project, backend).await?;
 
+    let mut build_options = BuildOptions::packaging(args.release);
+    if let Some(sccache_path) = super::detect_sccache_path(shell).await {
+        build_options = build_options.with_sccache(sccache_path);
+    }
+
     Ok(PackagingContext {
         project,
         backend,
-        build_options: BuildOptions::packaging(args.release),
+        build_options,
     })
 }
 

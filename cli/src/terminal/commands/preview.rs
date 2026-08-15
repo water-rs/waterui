@@ -14,7 +14,7 @@ use syn::{Attribute, Item};
 
 use crate::shell::Shell;
 use crate::toolchain_checks;
-use crate::{error, header, note, success, warn};
+use crate::{error, header, note, success};
 use waterui_cli::preview::perf_report::{
     PreviewPerfBudget, PreviewPerfReport, bytes_label, enforce_perf_budget, micros_label,
     parse_preview_perf_output, resource_summary, write_preview_perf_html, write_preview_perf_json,
@@ -28,8 +28,6 @@ use waterui_cli::preview::{
     PreviewSession, launch_preview_session, render_preview_with_hydrolysis,
     test_preview_with_hydrolysis,
 };
-use waterui_cli::toolchain::sccache::Sccache;
-use waterui_cli::utils::sccache_install_hint;
 
 /// Target platform for preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -73,7 +71,7 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
         "`water preview test`",
     )
     .await?;
-    let sccache_path = resolve_sccache_path(shell).await;
+    let sccache_path = super::detect_sccache_path(shell).await;
 
     for target in targets {
         header!(shell, "Preview test: {}", target.display_name());
@@ -136,7 +134,7 @@ async fn run_preview_perf(shell: &Shell, args: PreviewPerfArgs) -> Result<()> {
         "`water preview perf`",
     )
     .await?;
-    let sccache_path = resolve_sccache_path(shell).await;
+    let sccache_path = super::detect_sccache_path(shell).await;
     let format_output = args.output.clone();
     let flamegraph_path =
         resolve_preview_perf_flamegraph_path(args.all, format_output.as_deref(), args.flamegraph);
@@ -522,18 +520,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     check_toolchain_for_backend(platform, backend).await?;
 
     // Detect sccache for compilation caching
-    let sccache = Sccache;
-    let sccache_path = sccache.path().await.map_or_else(
-        |_| {
-            warn!(
-                shell,
-                "sccache not found. Build efficiency may be reduced. Install with: {}",
-                sccache_install_hint()
-            );
-            None
-        },
-        Some,
-    );
+    let sccache_path = super::detect_sccache_path(shell).await;
 
     if backend == CliPreviewBackend::Hydrolysis {
         let scenario = load_hydrolysis_scenario(args.scenario.as_deref(), args.output_dir).await?;
@@ -1151,21 +1138,6 @@ async fn open_preview_perf_html(path: &Path) -> Result<()> {
         bail!("failed to open HTML report {}: {status}", path.display());
     }
     Ok(())
-}
-
-async fn resolve_sccache_path(shell: &Shell) -> Option<PathBuf> {
-    let sccache = Sccache;
-    sccache.path().await.map_or_else(
-        |_| {
-            warn!(
-                shell,
-                "sccache not found. Build efficiency may be reduced. Install with: {}",
-                sccache_install_hint()
-            );
-            None
-        },
-        Some,
-    )
 }
 
 fn emit_child_output(shell: &Shell, output: &str) {
