@@ -56,10 +56,12 @@ const SWIPE_SETTLE_EPSILON: f64 = 0.5;
 /// raises a dragged list item to level 3.
 const REORDER_LIFT_ELEVATION: f64 = 3.0;
 
-/// How much of a programmatic jump is animated, in viewports. Anything further
-/// is closed instantly first, so the glide stays legible and a jump across a
-/// huge dataset cannot materialize every viewport it would otherwise cross.
-const MAX_ANIMATED_JUMP_VIEWPORTS: f64 = 1.0;
+/// Rows a programmatic jump animates over. A target further away than this is
+/// closed instantly first and only the last stretch is animated, so the glide
+/// stays legible and cannot drag the list through a whole dataset. This is
+/// Compose's `NumberOfItemsToTeleport`, the same bound `animateScrollToItem`
+/// applies.
+const ROWS_BEFORE_JUMP_TELEPORT: usize = 100;
 
 /// Distance the pointer must travel before a row drag is recognized, matching
 /// Android's `ViewConfiguration` touch slop. Without it a row could not be
@@ -354,15 +356,23 @@ impl ListRenderState {
         // destination is refined until the animation actually settles.
         let offset = self.extent_index.borrow().offset_of(index);
         let metrics = handle.metrics();
-        let reachable = metrics.viewport_height * MAX_ANIMATED_JUMP_VIEWPORTS;
-        let distance = offset - metrics.offset_y;
-        if distance.abs() > reachable {
-            // A jump across a 100k-row dataset must not be animated the whole
-            // way: gliding over it would materialize every viewport in between
-            // and read as a blur anyway. Close the gap instantly to just short
-            // of the target, then animate only the final approach — the same
-            // shape as `LinearSmoothScroller` on a distant target.
-            let approach = offset - reachable.copysign(distance);
+        let current = self
+            .extent_index
+            .borrow()
+            .visible_window(metrics.offset_y, metrics.offset_y + metrics.viewport_height)
+            .start;
+        if index.abs_diff(current) > ROWS_BEFORE_JUMP_TELEPORT {
+            // Animating the whole way across a 100k-row dataset would drag the
+            // list through every viewport between here and there, and read as a
+            // blur regardless. Compose solves this the same way: its
+            // `animateScrollToItem` snaps to within `NumberOfItemsToTeleport`
+            // items of the target and animates only that final stretch.
+            let approach_index = if index > current {
+                index - ROWS_BEFORE_JUMP_TELEPORT
+            } else {
+                index + ROWS_BEFORE_JUMP_TELEPORT
+            };
+            let approach = self.extent_index.borrow().offset_of(approach_index);
             let _ = handle.scroll_to(0.0, approach);
         }
         let _ = handle.scroll_to_animated(0.0, offset);
@@ -383,6 +393,9 @@ impl ListRenderState {
 
     fn apply_membership_anchor(&self, handle: &ScrollHandle) {
         if let Some(offset) = self.pending_membership_offset.take() {
+            // Re-anchoring after a delete or move keeps the viewport where the
+            // user left it; that is a correction, not a journey, so it lands
+            // immediately rather than gliding.
             let _ = handle.scroll_to(0.0, offset);
         }
     }
