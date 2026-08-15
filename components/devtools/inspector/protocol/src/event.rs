@@ -92,9 +92,8 @@ impl FrameSample {
 pub enum FrameKind {
     /// Nothing to show; no work was done.
     Idle,
-    /// Visual state changed but layout did not; the tree was re-encoded only.
-    Reencode,
-    /// The retained tree was laid out again and re-encoded.
+    /// The retained tree was patched, laid out, and re-encoded — the full
+    /// per-frame pass every awake frame runs.
     Refresh,
 }
 
@@ -104,7 +103,6 @@ impl FrameKind {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Idle => "idle",
-            Self::Reencode => "reencode",
             Self::Refresh => "refresh",
         }
     }

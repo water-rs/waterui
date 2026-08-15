@@ -383,23 +383,16 @@ impl HydrolysisRenderer {
         self.signals.request_redraw();
     }
 
-    pub(crate) fn request_refresh(&self) {
+    /// Schedules a full frame: every awake frame re-reads signals, runs
+    /// layout, and re-encodes the retained tree. Reactive updates and visual
+    /// values outside the reactive graph (a scroll offset, a scrollbar drag)
+    /// share this one path.
+    pub fn request_refresh(&self) {
         self.signals.request_refresh();
     }
 
     pub fn take_redraw_request(&self) -> bool {
         self.signals.take_redraw_request()
-    }
-
-    /// A transform-level visual value outside the reactive graph moved (a
-    /// scroll offset, a scrollbar drag): the retained tree must be re-encoded
-    /// at the placements the last layout computed.
-    pub fn request_reencode(&self) {
-        self.signals.request_reencode();
-    }
-
-    pub fn take_reencode_request(&self) -> bool {
-        self.signals.take_reencode_request()
     }
 
     pub fn request_rebuild(&self) {
@@ -444,7 +437,6 @@ impl HydrolysisRenderer {
     #[must_use]
     pub fn has_scheduled_semantic_work(&self) -> bool {
         self.signals.has_patch_request()
-            || self.signals.has_reencode_request()
             || self.signals.has_rebuild_request()
             || self.signals.has_next_frame_rebuild_request()
             || self.animations_active()

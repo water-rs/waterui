@@ -66,10 +66,6 @@ pub(crate) struct PointerTarget {
     pub(crate) keyboard_step: Option<KeyboardStepAction>,
     pub(crate) keyboard_focusable: bool,
     pub(crate) modal: bool,
-    /// A drag over this target moves transform-level visual state only (a
-    /// scrollbar thumb): its changes schedule a re-encode, not a layout
-    /// refresh.
-    pub(crate) visual_only_drag: bool,
 }
 
 /// An in-flight scrollbar-thumb drag: which scroll slot owns it (the handle's
@@ -158,9 +154,6 @@ pub(crate) struct HitTestState {
     pub(crate) modal_interaction: Option<ModalInteraction>,
     pub(crate) active_pointer_drag_target: Option<PointerAction>,
     pub(crate) active_pointer_drag_signature: Option<(usize, usize)>,
-    /// Whether the active pointer drag moves transform-level visual state only
-    /// (see [`PointerTarget::visual_only_drag`]).
-    pub(crate) active_pointer_drag_visual_only: bool,
     /// The in-flight scrollbar-thumb drag, if any.
     pub(crate) active_scrollbar_drag: Option<ScrollbarDrag>,
     pub(crate) cursor_targets: Vec<CursorTarget>,
@@ -712,16 +705,11 @@ impl HydrolysisRenderer {
             if target.captures_drag {
                 let changed = (target.action.borrow_mut())(self, point, env);
                 if changed {
-                    if target.visual_only_drag {
-                        self.request_reencode();
-                    } else {
-                        self.request_refresh();
-                    }
+                    self.request_refresh();
                     refresh_requested = true;
                 }
                 self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
                 self.hit_test.active_pointer_drag_signature = Some((target.depth, target.order));
-                self.hit_test.active_pointer_drag_visual_only = target.visual_only_drag;
                 return refresh_requested || visual_changed || changed;
             }
             if target.press_slot.is_some() {
@@ -911,11 +899,7 @@ impl HydrolysisRenderer {
         if let Some(action) = self.hit_test.active_pointer_drag_target.clone() {
             let pointer_drag_changed = (action.borrow_mut())(self, point, env);
             if pointer_drag_changed {
-                if self.hit_test.active_pointer_drag_visual_only {
-                    self.request_reencode();
-                } else {
-                    self.request_refresh();
-                }
+                self.request_refresh();
             }
             drag_changed |= pointer_drag_changed;
             refresh_requested |= pointer_drag_changed;
@@ -1281,7 +1265,7 @@ impl HydrolysisRenderer {
                     // reactive graph: the retained tree must re-encode at the
                     // new offset (scene, hit-test geometry, accessibility),
                     // but its placements are unchanged — no layout.
-                    self.request_reencode();
+                    self.request_refresh();
                     self.dismiss_active_text_context_menu();
                     self.dismiss_active_popup_menu();
                 }
@@ -1372,7 +1356,6 @@ impl HydrolysisRenderer {
             keyboard_step: None,
             keyboard_focusable: false,
             modal,
-            visual_only_drag: false,
         });
     }
 
@@ -1401,7 +1384,6 @@ impl HydrolysisRenderer {
             keyboard_step: None,
             keyboard_focusable: false,
             modal: false,
-            visual_only_drag: true,
         });
     }
 
@@ -1638,7 +1620,6 @@ impl HydrolysisRenderer {
             keyboard_step: None,
             keyboard_focusable,
             modal,
-            visual_only_drag: false,
         });
     }
 
@@ -1669,7 +1650,6 @@ impl HydrolysisRenderer {
             keyboard_step: Some(Rc::new(RefCell::new(keyboard_step))),
             keyboard_focusable: true,
             modal,
-            visual_only_drag: false,
         });
     }
 
@@ -1693,9 +1673,8 @@ impl HydrolysisRenderer {
     /// dragged, so ending one schedules a re-encode to restore it.
     fn clear_scrollbar_drag(&mut self) {
         if self.hit_test.active_scrollbar_drag.take().is_some() {
-            self.request_reencode();
+            self.request_refresh();
         }
-        self.hit_test.active_pointer_drag_visual_only = false;
     }
 
     pub(crate) fn register_cursor_target(

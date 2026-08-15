@@ -14,13 +14,11 @@ use crate::time::Instant;
 /// the requests. All state is main-thread-local by design.
 ///
 /// Request kinds, from cheapest to most expensive:
-/// - *redraw*: re-present the existing scene (animation tick, caret blink).
-/// - *reencode*: re-encode the retained tree without patching or layout — a
-///   transform-level visual state such as a scroll offset moved, so the encoded
-///   scene, hit-test geometry, and accessibility offsets must be re-emitted at
-///   placements the last layout already computed.
-/// - *patch*: re-dispatch only the dirty `Dynamic` nodes and re-composite the
-///   retained window frame (fine-grained reactive update).
+/// - *redraw*: re-present the existing scene (window expose, re-present glue).
+/// - *patch/refresh*: re-dispatch any dirty `Dynamic` nodes, then run the
+///   always-on full pass — every awake frame re-reads signals, runs layout,
+///   and re-encodes the retained tree, so any content change (a reactive
+///   value, a scroll offset, a scrollbar drag) takes this path.
 /// - *rebuild*: structural rebuild — re-dispatch the whole window view tree.
 #[derive(Clone, Debug)]
 pub struct FrameSignals {
@@ -30,10 +28,6 @@ pub struct FrameSignals {
 #[derive(Debug)]
 struct FrameSignalsInner {
     redraw_requested: Cell<bool>,
-    /// Set when a transform-level visual value outside the reactive graph
-    /// changed (a scroll offset, a scrollbar drag): the retained tree must be
-    /// re-encoded at its existing placements, without patching or layout.
-    reencode_requested: Cell<bool>,
     rebuild_requested: Cell<bool>,
     next_frame_rebuild_requested: Cell<bool>,
     /// Set when a `Dynamic` node's content changed and can be patched in
@@ -63,7 +57,6 @@ impl FrameSignals {
         Self {
             inner: Rc::new(FrameSignalsInner {
                 redraw_requested: Cell::new(false),
-                reencode_requested: Cell::new(false),
                 rebuild_requested: Cell::new(false),
                 next_frame_rebuild_requested: Cell::new(false),
                 patch_requested: Cell::new(false),
@@ -89,27 +82,6 @@ impl FrameSignals {
     #[must_use]
     pub fn take_redraw_request(&self) -> bool {
         self.inner.redraw_requested.replace(false)
-    }
-
-    /// Requests a visual re-encode of the retained tree on the next frame: a
-    /// transform-level value outside the reactive graph moved (a scroll offset,
-    /// a scrollbar drag). The tree re-emits its scene, hit-test targets, and
-    /// accessibility offsets at the placements the last layout computed —
-    /// no patch, no layout.
-    pub fn request_reencode(&self) {
-        self.inner.reencode_requested.set(true);
-    }
-
-    /// Consumes the pending re-encode request, returning whether one was set.
-    #[must_use]
-    pub fn take_reencode_request(&self) -> bool {
-        self.inner.reencode_requested.replace(false)
-    }
-
-    /// Returns whether a re-encode is pending, without consuming the request.
-    #[must_use]
-    pub fn has_reencode_request(&self) -> bool {
-        self.inner.reencode_requested.get()
     }
 
     /// Requests a re-flush of the retained render tree on the next frame: a
@@ -309,16 +281,6 @@ mod tests {
         assert!(!signals.take_redraw_request());
         assert!(!signals.take_rebuild_request());
         assert!(!signals.has_rebuild_request());
-    }
-
-    #[test]
-    fn reencode_requests_are_consumed_once() {
-        let signals = signals();
-        signals.request_reencode();
-        assert!(signals.has_reencode_request());
-        assert!(signals.take_reencode_request());
-        assert!(!signals.take_reencode_request());
-        assert!(!signals.has_reencode_request());
     }
 
     #[test]

@@ -16,18 +16,6 @@ use waterui_backend_core::widget::TextCaretMotion;
 use waterui_core::{Environment, binding};
 
 #[test]
-fn changed_redraw_only_input_wakes_platform_window() {
-    let mut runtime = test_runtime_window();
-    runtime.clear_frame_mode();
-
-    schedule_redraw_or_refresh(&mut runtime, true);
-
-    assert!(!runtime.mode.is_pending());
-    assert!(runtime.renderer.take_redraw_request());
-    assert!(runtime.platform.take_redraw_request());
-}
-
-#[test]
 fn changed_rebuild_input_wakes_platform_window() {
     let mut runtime = test_runtime_window();
     runtime.clear_frame_mode();
@@ -61,19 +49,18 @@ fn changed_reactive_input_refreshes_retained_tree() {
 }
 
 #[test]
-fn changed_scroll_input_schedules_reencode_and_wakes_platform_window() {
+fn changed_scroll_input_schedules_a_full_frame_and_wakes_platform_window() {
     let mut runtime = test_runtime_window();
     runtime.clear_frame_mode();
 
-    // A consumed scroll records a re-encode request; the runner composites the
-    // retained frame at the new offset without scheduling layout.
-    runtime.renderer.request_reencode();
+    // A consumed scroll schedules the one per-frame pass — patch, layout,
+    // re-encode — like every other content change.
     schedule_redraw_or_refresh(&mut runtime, true);
 
     assert!(runtime.mode.is_pending());
     assert!(
-        !runtime.mode.needs_layout(),
-        "a scroll offset change must not schedule layout"
+        runtime.mode.needs_layout(),
+        "every awake frame runs the full pass, layout included"
     );
     assert!(
         runtime.platform.take_redraw_request(),
@@ -82,7 +69,7 @@ fn changed_scroll_input_schedules_reencode_and_wakes_platform_window() {
 }
 
 #[test]
-fn animation_ticks_schedule_reencode_and_refresh_keeps_precedence() {
+fn animation_ticks_schedule_full_frames() {
     let mut runtime = test_runtime_window();
     runtime.clear_frame_mode();
 
@@ -90,16 +77,8 @@ fn animation_ticks_schedule_reencode_and_refresh_keeps_precedence() {
 
     assert!(runtime.mode.is_pending());
     assert!(
-        !runtime.mode.needs_layout(),
-        "a steady-state animation tick must not schedule layout"
-    );
-
-    runtime.request_refresh();
-    schedule_animation_update(&mut runtime, true);
-
-    assert!(
         runtime.mode.needs_layout(),
-        "a pending geometry refresh must not be downgraded by an animation tick"
+        "an animation tick schedules the same full frame as any content change"
     );
 }
 
