@@ -612,12 +612,15 @@ pub async fn package_apple(
     };
     let products_dir = derived_data.join("Build/Products").join(&products_config);
     fs::create_dir_all(&products_dir).await?;
-    let app_path = products_dir.join(format!("{}.app", backend.scheme));
+    // The bundle is named after the project, not after the scheme, so that
+    // macOS shows the application's own name rather than the scaffold's.
+    let product_name = crate::apple::backend::apple_product_name(project)?;
+    let app_path = products_dir.join(format!("{product_name}.app"));
 
     #[cfg(target_os = "macos")]
     if platform == TargetPlatform::MacOS {
         browser_runtime::remove_macos_app(&app_path.join("Contents")).await?;
-        remove_cef_helper_apps(&app_path, &backend.scheme).await?;
+        remove_cef_helper_apps(&app_path, product_name).await?;
     }
 
     let dest_lib = products_dir.join(host_library.linked_file_name());
@@ -746,7 +749,7 @@ pub async fn package_apple(
             &app_path.join("Contents"),
         )
         .await?;
-        let main_binary = app_path.join("Contents/MacOS").join(&backend.scheme);
+        let main_binary = app_path.join("Contents/MacOS").join(product_name);
         let helper_binary = lib_dir.join("waterui-cef-helper");
         package_cef_helper_app(
             &app_path,
