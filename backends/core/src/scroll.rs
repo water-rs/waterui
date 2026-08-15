@@ -14,14 +14,19 @@ use waterui_layout::scroll::Axis;
 const SCROLL_EPSILON: f64 = 0.000_01;
 /// Logical pixels one wheel/accessibility "line" scrolls.
 pub const SCROLL_LINE_STEP: f64 = 40.0;
-/// Time constant (seconds) of the exponential approach that smooths discrete
-/// wheel ticks toward their accumulated target: ~63% of the remaining gap per
-/// τ, visually settled (>95%) after ~3τ ≈ 180ms — the smooth-wheel feel of
-/// browsers and native lists instead of an instant 40px teleport per tick.
-const WHEEL_SMOOTHING_TAU: f64 = 0.06;
-/// Remaining gap below which a smoothed wheel scroll snaps to its target and
-/// the animation ends.
-const WHEEL_SETTLE_EPSILON: f64 = 0.1;
+/// Time constant (seconds) of the exponential approach that eases the offset
+/// toward a smooth-scroll target: ~63% of the remaining gap per τ, visually
+/// settled (>95%) after ~3τ ≈ 180ms — the smooth-wheel feel of browsers and
+/// native lists instead of an instant 40px teleport per tick.
+const SMOOTH_SCROLL_TAU: f64 = 0.06;
+/// Time constant (seconds) for an animated programmatic jump
+/// ([`ScrollHandle::scroll_to_animated`]). Slower than a wheel tick because a
+/// jump can cross the whole content: at τ = 0.06 a 100k-row leap reads as a
+/// teleport, while ~3τ ≈ 540ms keeps the motion legible without dragging.
+const SMOOTH_JUMP_TAU: f64 = 0.18;
+/// Remaining gap below which a smoothed scroll snaps to its target and the
+/// animation ends.
+const SMOOTH_SCROLL_SETTLE_EPSILON: f64 = 0.1;
 
 /// Cloneable reference to one scroll view's offset state, valid for the
 /// layout generation it was bound against.
@@ -66,15 +71,19 @@ struct ScrollState {
     content_height: f64,
     offset_x: f64,
     offset_y: f64,
-    /// Accumulated smooth-wheel destination per axis. Discrete wheel ticks
-    /// (line deltas) retarget these instead of moving the offset directly;
-    /// [`ScrollState::tick_smooth_scroll`] then eases the offset toward them
-    /// frame by frame. Trackpad pixel deltas cancel them — direct
-    /// manipulation (with the OS's own momentum stream) always wins.
-    wheel_target_x: Option<f64>,
-    wheel_target_y: Option<f64>,
+    /// Smooth-scroll destination per axis. Discrete wheel ticks (line deltas)
+    /// and animated programmatic jumps retarget these instead of moving the
+    /// offset directly; [`ScrollState::tick_smooth_scroll`] then eases the
+    /// offset toward them frame by frame. Trackpad pixel deltas and
+    /// [`ScrollState::scroll_to`] cancel them — direct manipulation (with the
+    /// OS's own momentum stream) always wins.
+    smooth_target_x: Option<f64>,
+    smooth_target_y: Option<f64>,
     /// Last smooth-scroll tick, for a frame-rate-independent blend factor.
-    wheel_last_tick: Option<Instant>,
+    smooth_last_tick: Option<Instant>,
+    /// Time constant of the in-flight approach. A wheel glide and a programmatic
+    /// jump ease at different rates, so whoever sets the target sets the pace.
+    smooth_tau: f64,
 }
 
 impl ScrollHandle {
@@ -171,11 +180,11 @@ impl ScrollHandle {
     pub fn is_smooth_scrolling(&self) -> bool {
         let state = self.state.borrow();
         state.generation == self.generation
-            && (state.wheel_target_x.is_some() || state.wheel_target_y.is_some())
+            && (state.smooth_target_x.is_some() || state.smooth_target_y.is_some())
     }
 
     /// Jumps immediately to an absolute content offset, clamped to the current
-    /// scrollable extents. Any in-flight wheel animation is cancelled.
+    /// scrollable extents. Any in-flight smooth scroll is cancelled.
     #[must_use]
     pub fn scroll_to(&self, x: f64, y: f64) -> bool {
         let mut state = self.state.borrow_mut();
@@ -183,6 +192,20 @@ impl ScrollHandle {
             return false;
         }
         state.scroll_to(x, y)
+    }
+
+    /// Eases toward an absolute content offset instead of snapping to it, and
+    /// returns whether more animation frames are needed. The glide is advanced
+    /// by [`Self::tick_smooth_scroll`], the same pump that drives wheel
+    /// smoothing, so a caller only has to keep issuing the target. Stale handles
+    /// are inert.
+    #[must_use]
+    pub fn scroll_to_animated(&self, x: f64, y: f64) -> bool {
+        let mut state = self.state.borrow_mut();
+        if state.generation != self.generation {
+            return false;
+        }
+        state.scroll_to_animated(x, y)
     }
 }
 
@@ -203,9 +226,10 @@ impl ScrollState {
             content_height,
             offset_x: 0.0,
             offset_y: 0.0,
-            wheel_target_x: None,
-            wheel_target_y: None,
-            wheel_last_tick: None,
+            smooth_target_x: None,
+            smooth_target_y: None,
+            smooth_last_tick: None,
+            smooth_tau: SMOOTH_SCROLL_TAU,
         };
         state.clamp_offsets();
         state
@@ -249,12 +273,12 @@ impl ScrollState {
     )]
     fn apply_scroll_delta(&mut self, dx: f64, dy: f64, is_line_delta: bool) -> bool {
         if is_line_delta {
-            return self.retarget_wheel(dx * SCROLL_LINE_STEP, dy * SCROLL_LINE_STEP);
+            return self.retarget_smooth_scroll(dx * SCROLL_LINE_STEP, dy * SCROLL_LINE_STEP);
         }
         // Pixel deltas are direct manipulation (trackpads deliver their own
         // OS momentum stream); they cancel any in-flight smooth-wheel target.
-        self.wheel_target_x = None;
-        self.wheel_target_y = None;
+        self.smooth_target_x = None;
+        self.smooth_target_y = None;
         let metrics = self.metrics();
         let old_x = self.offset_x;
         let old_y = self.offset_y;
@@ -281,9 +305,9 @@ impl ScrollState {
         let metrics = self.metrics();
         let old_x = self.offset_x;
         let old_y = self.offset_y;
-        self.wheel_target_x = None;
-        self.wheel_target_y = None;
-        self.wheel_last_tick = None;
+        self.smooth_target_x = None;
+        self.smooth_target_y = None;
+        self.smooth_last_tick = None;
         match self.axis {
             Axis::Horizontal => {
                 self.offset_x = clamp_scroll_offset(x, metrics.max_x);
@@ -300,6 +324,31 @@ impl ScrollState {
         value_changed(old_x, self.offset_x) || value_changed(old_y, self.offset_y)
     }
 
+    /// Retargets the smooth-scroll animation at an absolute content offset and
+    /// reports whether frames are still needed to reach it. Re-issuing the same
+    /// target while a jump is in flight simply refines it rather than
+    /// restarting, which is what lets a list keep correcting its destination as
+    /// more row extents get measured.
+    fn scroll_to_animated(&mut self, x: f64, y: f64) -> bool {
+        let metrics = self.metrics();
+        self.smooth_tau = SMOOTH_JUMP_TAU;
+        match self.axis {
+            Axis::Horizontal => {
+                self.smooth_target_x = Some(clamp_scroll_offset(x, metrics.max_x));
+            }
+            Axis::Vertical => {
+                self.smooth_target_y = Some(clamp_scroll_offset(y, metrics.max_y));
+            }
+            Axis::All => {
+                self.smooth_target_x = Some(clamp_scroll_offset(x, metrics.max_x));
+                self.smooth_target_y = Some(clamp_scroll_offset(y, metrics.max_y));
+            }
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        }
+        self.settle_reached_smooth_targets();
+        self.smooth_target_x.is_some() || self.smooth_target_y.is_some()
+    }
+
     /// Accumulates a discrete wheel tick into the smooth-scroll targets and
     /// reports whether an animation toward them is (still) needed. Successive
     /// ticks retarget the same animation, so fast wheel spins add up instead
@@ -308,53 +357,54 @@ impl ScrollState {
         clippy::similar_names,
         reason = "`scaled_dx`/`scaled_dy` are conventional 2D scroll-delta names"
     )]
-    fn retarget_wheel(&mut self, scaled_dx: f64, scaled_dy: f64) -> bool {
+    fn retarget_smooth_scroll(&mut self, scaled_dx: f64, scaled_dy: f64) -> bool {
         let metrics = self.metrics();
+        self.smooth_tau = SMOOTH_SCROLL_TAU;
         match self.axis {
             Axis::Horizontal => {
-                let target = self.wheel_target_x.unwrap_or(self.offset_x);
-                self.wheel_target_x = Some(clamp_scroll_offset(target - scaled_dx, metrics.max_x));
+                let target = self.smooth_target_x.unwrap_or(self.offset_x);
+                self.smooth_target_x = Some(clamp_scroll_offset(target - scaled_dx, metrics.max_x));
             }
             Axis::Vertical => {
-                let target = self.wheel_target_y.unwrap_or(self.offset_y);
-                self.wheel_target_y = Some(clamp_scroll_offset(target - scaled_dy, metrics.max_y));
+                let target = self.smooth_target_y.unwrap_or(self.offset_y);
+                self.smooth_target_y = Some(clamp_scroll_offset(target - scaled_dy, metrics.max_y));
             }
             Axis::All => {
-                let target_x = self.wheel_target_x.unwrap_or(self.offset_x);
-                self.wheel_target_x =
+                let target_x = self.smooth_target_x.unwrap_or(self.offset_x);
+                self.smooth_target_x =
                     Some(clamp_scroll_offset(target_x - scaled_dx, metrics.max_x));
-                let target_y = self.wheel_target_y.unwrap_or(self.offset_y);
-                self.wheel_target_y =
+                let target_y = self.smooth_target_y.unwrap_or(self.offset_y);
+                self.smooth_target_y =
                     Some(clamp_scroll_offset(target_y - scaled_dy, metrics.max_y));
             }
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         }
-        self.settle_reached_wheel_targets();
-        self.wheel_target_x.is_some() || self.wheel_target_y.is_some()
+        self.settle_reached_smooth_targets();
+        self.smooth_target_x.is_some() || self.smooth_target_y.is_some()
     }
 
     /// Advances the smoothed wheel offsets toward their targets with a
     /// frame-rate-independent exponential approach and returns whether the
     /// animation still needs more frames.
     fn tick_smooth_scroll(&mut self, now: Instant) -> bool {
-        if self.wheel_target_x.is_none() && self.wheel_target_y.is_none() {
-            self.wheel_last_tick = None;
+        if self.smooth_target_x.is_none() && self.smooth_target_y.is_none() {
+            self.smooth_last_tick = None;
             return false;
         }
         let dt = self
-            .wheel_last_tick
+            .smooth_last_tick
             .map_or(0.0, |last| now.duration_since(last).as_secs_f64());
-        self.wheel_last_tick = Some(now);
-        let blend = 1.0 - (-dt / WHEEL_SMOOTHING_TAU).exp();
-        if let Some(target) = self.wheel_target_x {
+        self.smooth_last_tick = Some(now);
+        let blend = 1.0 - (-dt / self.smooth_tau).exp();
+        if let Some(target) = self.smooth_target_x {
             self.offset_x = (target - self.offset_x).mul_add(blend, self.offset_x);
         }
-        if let Some(target) = self.wheel_target_y {
+        if let Some(target) = self.smooth_target_y {
             self.offset_y = (target - self.offset_y).mul_add(blend, self.offset_y);
         }
-        self.settle_reached_wheel_targets();
-        if self.wheel_target_x.is_none() && self.wheel_target_y.is_none() {
-            self.wheel_last_tick = None;
+        self.settle_reached_smooth_targets();
+        if self.smooth_target_x.is_none() && self.smooth_target_y.is_none() {
+            self.smooth_last_tick = None;
             return false;
         }
         true
@@ -362,18 +412,18 @@ impl ScrollState {
 
     /// Snaps offsets that are within the settle epsilon of their wheel target
     /// and clears the finished targets.
-    fn settle_reached_wheel_targets(&mut self) {
-        if let Some(target) = self.wheel_target_x
-            && (target - self.offset_x).abs() < WHEEL_SETTLE_EPSILON
+    fn settle_reached_smooth_targets(&mut self) {
+        if let Some(target) = self.smooth_target_x
+            && (target - self.offset_x).abs() < SMOOTH_SCROLL_SETTLE_EPSILON
         {
             self.offset_x = target;
-            self.wheel_target_x = None;
+            self.smooth_target_x = None;
         }
-        if let Some(target) = self.wheel_target_y
-            && (target - self.offset_y).abs() < WHEEL_SETTLE_EPSILON
+        if let Some(target) = self.smooth_target_y
+            && (target - self.offset_y).abs() < SMOOTH_SCROLL_SETTLE_EPSILON
         {
             self.offset_y = target;
-            self.wheel_target_y = None;
+            self.smooth_target_y = None;
         }
     }
 
@@ -381,11 +431,11 @@ impl ScrollState {
         let metrics = self.metrics();
         self.offset_x = clamp_scroll_offset(self.offset_x, metrics.max_x);
         self.offset_y = clamp_scroll_offset(self.offset_y, metrics.max_y);
-        self.wheel_target_x = self
-            .wheel_target_x
+        self.smooth_target_x = self
+            .smooth_target_x
             .map(|target| clamp_scroll_offset(target, metrics.max_x));
-        self.wheel_target_y = self
-            .wheel_target_y
+        self.smooth_target_y = self
+            .smooth_target_y
             .map(|target| clamp_scroll_offset(target, metrics.max_y));
     }
 
@@ -469,6 +519,58 @@ mod tests {
         }
         assert!(!active, "smooth wheel scroll must settle");
         assert_eq!(handle.metrics().offset_y, 80.0);
+    }
+
+    #[test]
+    fn animated_jump_eases_instead_of_teleporting() {
+        let handle = vertical_handle();
+        let start = Instant::now();
+
+        // Arming the jump must not move the offset: that is the whole
+        // difference from `scroll_to`, which lands on the target immediately.
+        assert!(handle.scroll_to_animated(0.0, 200.0));
+        assert_eq!(handle.metrics().offset_y, 0.0);
+
+        // The first tick only starts the clock.
+        assert!(handle.tick_smooth_scroll(start));
+        assert_eq!(handle.metrics().offset_y, 0.0);
+
+        // Partway through the approach the offset is strictly between the
+        // start and the destination — an instant jump would already be at 200.
+        let mid = start + Duration::from_millis(120);
+        assert!(handle.tick_smooth_scroll(mid));
+        let midpoint = handle.metrics().offset_y;
+        assert!(
+            midpoint > 0.0 && midpoint < 200.0,
+            "animated jump should be in flight at 120ms, was at {midpoint}"
+        );
+
+        let mut now = mid;
+        let mut active = true;
+        for _ in 0..600 {
+            now += Duration::from_millis(8);
+            active = handle.tick_smooth_scroll(now);
+            if !active {
+                break;
+            }
+        }
+        assert!(!active, "animated jump must settle");
+        assert_eq!(handle.metrics().offset_y, 200.0);
+    }
+
+    #[test]
+    fn immediate_scroll_to_cancels_an_in_flight_jump() {
+        let handle = vertical_handle();
+        let start = Instant::now();
+        assert!(handle.scroll_to_animated(0.0, 200.0));
+        assert!(handle.tick_smooth_scroll(start));
+        assert!(handle.is_smooth_scrolling());
+
+        assert!(handle.scroll_to(0.0, 50.0));
+        assert_eq!(handle.metrics().offset_y, 50.0);
+        assert!(!handle.is_smooth_scrolling());
+        assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(8)));
+        assert_eq!(handle.metrics().offset_y, 50.0);
     }
 
     #[test]

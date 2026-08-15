@@ -287,6 +287,10 @@ impl GestureEngine {
     /// Registers a fresh gesture target: builds the recognizer state machine
     /// for `gesture` and binds it to `action` at the given hit-test bounds
     /// (window coordinates, logical pixels) and priority coordinates.
+    ///
+    /// Returns the registered target so a caller that owns retained state can
+    /// keep it and re-register the same recognizer on later frames via
+    /// [`Self::register_existing_target`], preserving in-flight recognition.
     pub fn register_target(
         &mut self,
         bounds: kurbo::Rect,
@@ -295,14 +299,14 @@ impl GestureEngine {
         depth: usize,
         order: usize,
         group_id: usize,
-    ) {
+    ) -> GestureTarget {
         self.register_target_recognizer(
             bounds,
             depth,
             order,
             group_id,
             Rc::new(RefCell::new(GestureBinding::new(gesture, action))),
-        );
+        )
     }
 
     fn register_target_recognizer(
@@ -312,14 +316,16 @@ impl GestureEngine {
         order: usize,
         group_id: usize,
         recognizer: GestureRecognizerHandle,
-    ) {
-        self.targets.push(GestureTarget {
+    ) -> GestureTarget {
+        let target = GestureTarget {
             bounds,
             depth,
             order,
             group_id,
             recognizer,
-        });
+        };
+        self.targets.push(target.clone());
+        target
     }
 
     /// Re-registers a previously captured target, preserving its recognizer

@@ -28,6 +28,7 @@ pub mod segmented_button;
 pub mod tooltip;
 
 mod controls;
+mod icon_paths;
 mod icons;
 mod layout;
 mod navigation;
@@ -875,6 +876,20 @@ impl WidgetTheme for MaterialTheme {
         state: WidgetInteractionState,
     ) {
         list::draw_delete_control_state_layer(&self.colors(), draw, bounds, state);
+    }
+
+    fn draw_list_swipe_dismiss_background(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        progress: f64,
+        toward_start: bool,
+    ) {
+        list::draw_swipe_dismiss_background(&self.colors(), draw, bounds, progress, toward_start);
+    }
+
+    fn draw_list_row_lifted(&self, draw: &mut dyn DrawContext, bounds: Rect, elevation: f64) {
+        list::draw_row_lifted(&self.colors(), draw, bounds, elevation);
     }
 
     fn draw_list_separator(&self, draw: &mut dyn DrawContext, bounds: Rect) {

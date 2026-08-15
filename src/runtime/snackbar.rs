@@ -37,7 +37,7 @@ use core::time::Duration;
 use executor_core::spawn_local;
 use nami::Binding;
 use nami::collection::List;
-use waterui_controls::{ButtonStyle, button, label};
+use waterui_controls::{Button, ButtonStyle, button, label};
 use waterui_core::animation::Animation;
 use waterui_core::extract::State;
 use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, shared_action};
@@ -56,7 +56,7 @@ use waterui_text::{font::Font, text::text};
 
 use crate::AnyView;
 use crate::ViewExt;
-use crate::shape::{RoundedRectangle, ShapeExt};
+use crate::shape::{FilledShape, Path, RoundedRectangle, ShapeExt};
 use crate::style::{Shadow, Vector};
 use waterui_graphics::color::Color;
 
@@ -68,16 +68,65 @@ const MAX_VISIBLE_SNACKBARS: usize = 3;
 /// Vertical gap between stacked snackbars, in logical units.
 const SNACKBAR_STACK_GAP: f32 = 8.0;
 
-/// Glyph for the optional close button (Material `closeable`). The multiplication
-/// sign (U+00D7) reads as a close "×" and, unlike the Dingbats heavy cross
-/// (U+2715), is present in essentially every system font, so it never renders as
-/// a missing-glyph box.
-const SNACKBAR_CLOSE_GLYPH: &str = "\u{00d7}";
+/// The grid the close-icon geometry below is authored on, matching the 24dp
+/// viewport every Material icon is drawn in.
+const CLOSE_ICON_GRID: f32 = 24.0;
 
-/// Point size for the close glyph. Larger than the supporting text so the "×"
-/// reads as a real M3 close-icon affordance (its ~24dp icon) rather than tiny
-/// punctuation.
-const SNACKBAR_CLOSE_GLYPH_SIZE: f32 = 22.0;
+/// Outline of Material's filled `close` icon on the [`CLOSE_ICON_GRID`], as the
+/// twelve corners of the two crossed bars. This is the geometry Compose draws for
+/// `Icons.Filled.Close`, which is what `androidx.compose.material3`'s snackbar
+/// puts in its `dismissAction` slot.
+///
+/// Drawing the real icon rather than a text glyph is what makes the affordance
+/// read at its intended size: a font's multiplication sign inks barely half its
+/// point size, so the previous 22pt "×" rendered as a ~10pt mark.
+const CLOSE_ICON_OUTLINE: [(f32, f32); 12] = [
+    (19.0, 6.41),
+    (17.59, 5.0),
+    (12.0, 10.59),
+    (6.41, 5.0),
+    (5.0, 6.41),
+    (10.59, 12.0),
+    (5.0, 17.59),
+    (6.41, 19.0),
+    (12.0, 13.41),
+    (17.59, 19.0),
+    (19.0, 17.59),
+    (13.41, 12.0),
+];
+
+/// Builds the close icon as a unit-square path, so it scales with whatever frame
+/// the theme sizes it into.
+fn close_icon_path() -> Path {
+    let mut corners = CLOSE_ICON_OUTLINE
+        .into_iter()
+        .map(|(x, y)| (x / CLOSE_ICON_GRID, y / CLOSE_ICON_GRID));
+    let (start_x, start_y) = corners
+        .next()
+        .expect("close icon outline is a non-empty constant");
+    corners
+        .fold(Path::new().move_to(start_x, start_y), |path, (x, y)| {
+            path.line_to(x, y)
+        })
+        .close()
+}
+
+/// The close affordance's visual: the icon drawn at `icon_size`, centered in the
+/// `box_size` square that carries the button's hit area.
+#[derive(Debug, Clone)]
+struct CloseIcon {
+    color: Color,
+    icon_size: f32,
+    box_size: f32,
+}
+
+impl View for CloseIcon {
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        FilledShape::new(close_icon_path(), self.color)
+            .size(self.icon_size, self.icon_size)
+            .size(self.box_size, self.box_size)
+    }
+}
 
 /// Theme tokens used by the snackbar overlay.
 #[derive(Debug, Clone)]
@@ -104,6 +153,17 @@ pub struct SnackbarTheme {
     pub max_width: f32,
     /// Trailing padding when an action button is present.
     pub action_trailing_padding: f32,
+    /// Drawn size of the close icon (Material icons are drawn at 24dp).
+    pub close_icon_size: f32,
+    /// Box the close icon is centered in, which is also its hit area.
+    ///
+    /// This is Compose's `IconButtonTokens.StateLayerSize`, the size an
+    /// `IconButton` actually *measures*. Compose then widens only the touch area
+    /// to 48dp via `minimumInteractiveComponentSize()`, which does not affect
+    /// layout; `WaterUI` has no equivalent yet, so hit area is layout size here.
+    /// Sizing this box to 48dp instead would push a single-line snackbar to 72dp
+    /// tall, well past Material's 48dp.
+    pub close_state_layer_size: f32,
     /// Minimum height for single-line snackbars.
     pub single_line_min_height: f32,
     /// Container corner radius in logical units for shadows.
@@ -144,6 +204,8 @@ impl Default for SnackbarTheme {
             min_width: 288.0,
             max_width: 568.0,
             action_trailing_padding: 8.0,
+            close_icon_size: 24.0,
+            close_state_layer_size: 40.0,
             single_line_min_height: 48.0,
             corner_radius: 4.0,
             clip_radius: 0.08,
@@ -724,17 +786,18 @@ impl StackedSnackbarView {
         });
 
         // Optional trailing close button (M3 `closeable`): dismisses on tap.
+        // The icon is drawn at `close_icon_size`, centered in the larger
+        // `close_state_layer_size` box that carries the hit area.
         let close_button = snackbar.closeable.then(|| {
             let manager = manager.clone();
-            button(
-                text(SNACKBAR_CLOSE_GLYPH)
-                    .font(
-                        theme
-                            .supporting_text_font
-                            .clone()
-                            .size(SNACKBAR_CLOSE_GLYPH_SIZE),
-                    )
-                    .color(theme.supporting_text_color.clone()),
+            Button::new(
+                label("Close")
+                    .icon(CloseIcon {
+                        color: theme.supporting_text_color.clone(),
+                        icon_size: theme.close_icon_size,
+                        box_size: theme.close_state_layer_size,
+                    })
+                    .icon_only(),
             )
             .style(ButtonStyle::Borderless)
             .action(move |_env: waterui_core::Environment| {

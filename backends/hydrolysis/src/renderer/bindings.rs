@@ -172,28 +172,46 @@ impl HydrolysisRenderer {
         self.sync_active_pointer_drag_target_after_layout(pointer);
     }
 
-    pub(super) fn register_gesture_target(
+    pub(crate) fn register_gesture_target(
         &mut self,
         bounds: vello::kurbo::Rect,
         group_id: usize,
         gesture: Gesture,
         action: BoxedAction<()>,
-    ) {
+    ) -> Option<crate::gesture::GestureTarget> {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
+            return None;
         }
         let order = self.hit_test.next_hit_test_order();
-        self.gesture_engine.register_target(
+        Some(self.gesture_engine.register_target(
             bounds,
             gesture,
             action,
             self.render_depth,
             order,
             group_id,
+        ))
+    }
+
+    /// Re-registers a gesture target a widget retained from an earlier frame,
+    /// at that row's current bounds. The recognizer state machine is shared, so
+    /// a drag that began before this frame keeps running instead of being
+    /// forgotten when the engine's per-frame target list is rebuilt.
+    pub(crate) fn register_retained_gesture_target(
+        &mut self,
+        target: &crate::gesture::GestureTarget,
+        bounds: vello::kurbo::Rect,
+        group_id: usize,
+    ) {
+        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
+            return;
+        }
+        self.gesture_engine.register_existing_target(
+            target.with_bounds_depth_and_group(bounds, self.render_depth, group_id),
         );
     }
 
-    pub(super) fn allocate_gesture_group_id(&mut self) -> usize {
+    pub(crate) fn allocate_gesture_group_id(&mut self) -> usize {
         let group_id = self.next_gesture_group_id;
         self.next_gesture_group_id = self
             .next_gesture_group_id

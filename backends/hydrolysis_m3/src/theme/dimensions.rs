@@ -128,11 +128,13 @@ pub const LIST_HORIZONTAL_INSET: f64 = 16.0;
 pub const LIST_VERTICAL_INSET: f64 = 10.0;
 pub const LIST_DIVIDER_LEADING_INSET: f64 = 16.0;
 pub const LIST_DIVIDER_TRAILING_INSET: f64 = 16.0;
-pub const LIST_MOVE_CONTROL_WIDTH: f64 = 20.0;
-pub const LIST_DELETE_CONTROL_WIDTH: f64 = 26.0;
-pub const LIST_TRAILING_CONTROL_SPACING: f64 = 6.0;
-pub const LIST_TRAILING_CONTROL_VERTICAL_INSET: f64 = 6.0;
-pub const LIST_CONTROL_CORNER_RADIUS: f64 = 5.0;
+/// Hit box for the reorder grip: Material's 48dp minimum touch target,
+/// holding a 24dp `drag_handle` icon.
+pub const LIST_MOVE_CONTROL_WIDTH: f64 = 48.0;
+/// Hit box for the delete affordance, sized like the grip beside it.
+pub const LIST_DELETE_CONTROL_WIDTH: f64 = 48.0;
+pub const LIST_TRAILING_CONTROL_SPACING: f64 = 8.0;
+pub const LIST_TRAILING_CONTROL_VERTICAL_INSET: f64 = 4.0;
 pub const TABLE_MIN_COLUMN_WIDTH: f64 = 72.0;
 pub const TABLE_CELL_HORIZONTAL_PADDING: f64 = 32.0;
 pub const TABLE_CELL_VERTICAL_INSET: f64 = 16.0;
