@@ -49,6 +49,10 @@ impl Advertisement {
 
     /// Writes this advertisement and returns where it was written.
     ///
+    /// Files left behind by processes that are gone are swept first. An
+    /// application that is killed never runs its shutdown, so without this the
+    /// directory grows for as long as nothing happens to read it.
+    ///
     /// # Errors
     ///
     /// Returns an I/O error when the directory cannot be created or the file
@@ -56,6 +60,7 @@ impl Advertisement {
     pub fn publish(&self) -> io::Result<PathBuf> {
         let directory = directory();
         fs::create_dir_all(&directory)?;
+        let _ = list();
         let path = directory.join(file_name(self.pid));
         let body = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
         fs::write(&path, body)?;
@@ -218,6 +223,31 @@ mod tests {
         assert!(
             list().expect("the directory is readable").is_empty(),
             "a stale advertisement was reported as live"
+        );
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn publishing_sweeps_advertisements_left_by_dead_processes() {
+        let directory = std::env::temp_dir().join(format!(
+            "waterui-inspector-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        // SAFETY: as above.
+        unsafe { std::env::set_var("WATERUI_INSPECTOR_DISCOVERY_DIR", &directory) };
+
+        let dead = advertisement(u32::MAX);
+        dead.publish().expect("publishing writes the file");
+
+        advertisement(std::process::id())
+            .publish()
+            .expect("publishing writes the file");
+
+        assert!(
+            !directory.join(file_name(u32::MAX)).exists(),
+            "publishing left a dead process's file on disk"
         );
 
         let _ = fs::remove_dir_all(&directory);

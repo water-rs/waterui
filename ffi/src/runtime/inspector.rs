@@ -25,6 +25,13 @@ pub unsafe extern "C" fn waterui_inspector_open(env: *const WuiEnv) {
     // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
     let Some(inspector) = env.get::<waterui::inspector::InspectorRuntime>() else {
+        // Silence here is the worst answer: the gesture is only offered when
+        // `waterui_inspector_is_available` said yes, so reaching this means the
+        // two disagree about which environment they were asked about.
+        tracing::warn!(
+            target: "waterui::inspector",
+            "Asked to open the inspector in an environment that has no endpoint"
+        );
         return;
     };
     inspector.open();
@@ -44,6 +51,12 @@ pub unsafe extern "C" fn waterui_inspector_inspect_node(env: *const WuiEnv, node
     // SAFETY: as above.
     let env = unsafe { crate::borrow_ffi(env) };
     let Some(inspector) = env.get::<waterui::inspector::InspectorRuntime>() else {
+        // As above: an ignored request to inspect looks like a broken gesture.
+        tracing::warn!(
+            target: "waterui::inspector",
+            node,
+            "Asked to inspect a node in an environment that has no endpoint"
+        );
         return;
     };
     inspector.inspect_node(waterui::inspector::protocol::NodeId(node));

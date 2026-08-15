@@ -119,20 +119,43 @@ where
     if result.status.success() {
         Ok(String::from_utf8_lossy(&result.stdout).to_string())
     } else {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        let stdout = String::from_utf8_lossy(&result.stdout);
-        let output = if !stderr.is_empty() {
-            format!("\nstderr:\n{stderr}")
-        } else if !stdout.is_empty() {
-            format!("\nstdout:\n{stdout}")
-        } else {
-            String::new()
-        };
         let name_display = name_ref.to_string_lossy();
         Err(eyre::eyre!(
-            "Command {name_display} failed with status {}{output}",
+            "Command {name_display} failed with status {}{}{}",
             result.status,
+            format_failure_stream("stderr", &result.stderr),
+            format_failure_stream("stdout", &result.stdout),
         ))
+    }
+}
+
+/// Number of trailing lines reported from each captured stream when a command fails.
+const MAX_REPORTED_OUTPUT_LINES: usize = 200;
+
+/// Render one captured stream for a command-failure report.
+///
+/// Both streams are always reported: build tools do not agree on which one carries
+/// diagnostics, and `xcodebuild` in particular writes compiler and linker errors to
+/// stdout while stdout is also where its progress noise goes. Only the tail is shown,
+/// because that is where the failure is, and the number of elided lines is stated
+/// rather than silently dropped.
+fn format_failure_stream(label: &str, bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let lines: Vec<&str> = trimmed.lines().collect();
+    let elided = lines.len().saturating_sub(MAX_REPORTED_OUTPUT_LINES);
+    let body = lines[elided..].join("\n");
+    if elided == 0 {
+        format!("\n{label}:\n{body}")
+    } else {
+        format!(
+            "\n{label} (last {MAX_REPORTED_OUTPUT_LINES} of {} lines):\n{body}",
+            lines.len()
+        )
     }
 }
 
