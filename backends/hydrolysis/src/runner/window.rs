@@ -49,19 +49,14 @@ pub(super) fn probe_accessibility_runtime() -> bool {
 
 /// The work scheduled for the next pump of a window.
 ///
-/// The retained tree distinguishes a visual re-encode from a layout refresh. A
-/// transform/opacity animation or a scroll-offset change only re-samples visual
-/// state and re-encodes the scene; reactive content, structural patches, and
-/// resize also run layout.
-///
-/// `Refresh` has precedence over `Reencode`, so a geometry-affecting update can
-/// never be lost when it races with an animation tick.
+/// Every awake frame runs the full pass — apply pending patches, re-read
+/// reactive inputs, run layout, re-encode the retained tree — game-engine
+/// style. There is no cheaper "skip layout" frame kind: layout runs every
+/// frame so the presented scene can never be stale against it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum FrameMode {
     /// Nothing scheduled.
     Idle,
-    /// Re-sample visual state and re-encode the retained tree without layout.
-    Reencode,
     /// Refresh the retained window tree on the next pump (building it first if this
     /// renderer has not built it yet).
     Refresh,
@@ -116,14 +111,6 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
         self.mode = FrameMode::Refresh;
     }
 
-    /// Schedules a visual-only retained-tree re-encode unless a layout refresh is
-    /// already pending.
-    pub(super) fn request_reencode(&mut self) {
-        if matches!(self.mode, FrameMode::Idle) {
-            self.mode = FrameMode::Reencode;
-        }
-    }
-
     pub(super) fn clear_frame_mode(&mut self) {
         self.mode = FrameMode::Idle;
     }
@@ -172,9 +159,9 @@ pub(super) fn schedule_animation_update<P: PlatformWindow>(
     if !animations_active {
         return;
     }
-    // Every animated scalar is re-sampled in the render tree's node flush. Its
-    // geometry is layout-transparent, so animation ticks must not re-run layout.
-    runtime.request_reencode();
+    // Every animated scalar is re-sampled in the render tree's node flush; the
+    // tick schedules a full frame like every other content change.
+    runtime.request_refresh();
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,10 +255,9 @@ impl FrameProfile {
     }
 }
 
-/// Wakes the platform window after an input event: structural rebuilds and pending
-/// reactive patches refresh the retained tree; a transform-level change (a scroll
-/// offset, a scrollbar drag) re-encodes it at its existing placements; purely
-/// visual changes re-present the existing scene.
+/// Wakes the platform window after an input event: any content change —
+/// structural rebuild, reactive patch, scroll offset, scrollbar drag — runs a
+/// full refresh frame; only a no-op event falls through to a bare re-present.
 pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     changed: bool,
@@ -279,16 +265,10 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     if !changed {
         return;
     }
-    if runtime.renderer.take_rebuild_request() || runtime.renderer.has_patch_request() {
-        // A pending re-encode is subsumed by the refresh; consume it so it does
-        // not schedule a stale extra frame later.
-        let _ = runtime.renderer.take_reencode_request();
-        runtime.request_refresh();
-    } else if runtime.renderer.take_reencode_request() {
-        runtime.request_reencode();
-    } else {
-        runtime.renderer.request_redraw();
-    }
+    // A pending renderer-side rebuild request is subsumed by the refresh;
+    // consume it so it does not schedule a stale extra frame later.
+    let _ = runtime.renderer.take_rebuild_request();
+    runtime.request_refresh();
     runtime.platform.request_redraw();
 }
 
@@ -399,41 +379,6 @@ fn refresh_window_scene<P: PlatformWindow>(
     }
 }
 
-/// Re-encodes the retained window tree without patching or layout. This is the
-/// steady-state animation path: transforms, opacity, navigation motion, and smooth
-/// scroll offsets are sampled against placements computed by the latest refresh.
-fn reencode_window_scene<P: PlatformWindow>(
-    runtime: &mut RuntimeWindow<P>,
-    env: &Environment,
-    phases: &mut FramePhases,
-) {
-    let reencode_started_at = Instant::now();
-    let scale_factor = runtime.platform.scale_factor();
-    let (width, height) = runtime.platform.surface().size();
-    let bounds = create_bounds(width, height, scale_factor);
-    let transform = vello::kurbo::Affine::scale(scale_factor);
-    let encoded = runtime.renderer.reencode_window_tree(
-        env,
-        bounds,
-        transform,
-        vello::kurbo::Affine::IDENTITY,
-    );
-    assert!(
-        encoded,
-        "hydrolysis runner: retained render tree vanished during visual re-encode"
-    );
-    phases.scene_dispatch += reencode_started_at.elapsed();
-    // A re-encode moves content under a static pointer (scroll offsets above
-    // all), so hover must be re-evaluated exactly like after a layout refresh:
-    // the widget now under the cursor gains its hover chrome, the one that
-    // scrolled away loses it.
-    if let Some((x, y)) = runtime.pointer_position
-        && runtime.renderer.sync_pointer_hover_state(x, y, env)
-    {
-        runtime.renderer.request_redraw();
-    }
-}
-
 /// Builds the retained window tree from the app's `body()`. Runs exactly once per
 /// renderer lifetime — every later frame updates the retained tree instead.
 fn build_window_scene<P: PlatformWindow>(
@@ -500,15 +445,12 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
     if renderer_requested_rebuild {
         runtime.request_refresh();
     }
-    if runtime.renderer.take_reencode_request() {
-        runtime.request_reencode();
-    }
 
     let mut built = false;
     let mut flushed = false;
     match runtime.mode {
         FrameMode::Idle => {}
-        FrameMode::Reencode | FrameMode::Refresh if !runtime.renderer.has_render_tree() => {
+        FrameMode::Refresh if !runtime.renderer.has_render_tree() => {
             build_window_scene(
                 runtime,
                 env,
@@ -540,11 +482,6 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
             if refresh_after_build {
                 refresh_window_scene(runtime, env, &mut phases);
             }
-        }
-        FrameMode::Reencode => {
-            reencode_window_scene(runtime, env, &mut phases);
-            runtime.clear_frame_mode();
-            flushed = true;
         }
         FrameMode::Refresh => {
             refresh_window_scene(runtime, env, &mut phases);
@@ -591,40 +528,28 @@ pub(super) fn pump_window_semantics<P: PlatformWindow>(
     if runtime.renderer.take_rebuild_request() {
         runtime.request_refresh();
     }
-    if runtime.renderer.take_reencode_request() {
-        runtime.request_reencode();
-    }
     let work_pending = runtime.mode.is_pending()
         || runtime.renderer.has_patch_request()
         || runtime.renderer.take_redraw_request();
     if !work_pending {
         return false;
     }
-    // Semantic mode has no GPU present, but replay-driven changes (re-sampled
-    // transforms, patched dynamic nodes, redraw-only scalar updates) still move
-    // the accessibility tree, which the render tree emits during `flush`. Re-flush
-    // the retained tree so semantics stay in sync; if no tree exists yet, the pump
-    // below builds it first.
+    // Semantic mode has no GPU present, but content changes still move the
+    // accessibility tree, which the render tree emits during `flush`. Re-flush
+    // the retained tree — patch, layout, and re-encode, the same full pass as a
+    // rendered frame — so semantics stay in sync; if no tree exists yet, the
+    // pump below builds it first.
     if runtime.renderer.has_render_tree() {
         let scale_factor = runtime.platform.scale_factor();
         let (width, height) = runtime.platform.surface().size();
         let bounds = create_bounds(width, height, scale_factor);
         let transform = vello::kurbo::Affine::scale(scale_factor);
-        let flushed = if runtime.mode.needs_layout() || runtime.renderer.has_patch_request() {
-            runtime.renderer.flush_window_tree(
-                env,
-                bounds,
-                transform,
-                vello::kurbo::Affine::IDENTITY,
-            )
-        } else {
-            runtime.renderer.reencode_window_tree(
-                env,
-                bounds,
-                transform,
-                vello::kurbo::Affine::IDENTITY,
-            )
-        };
+        let flushed = runtime.renderer.flush_window_tree(
+            env,
+            bounds,
+            transform,
+            vello::kurbo::Affine::IDENTITY,
+        );
         assert!(
             flushed,
             "hydrolysis runner: retained render tree vanished during semantics pump"
@@ -1028,9 +953,12 @@ fn refresh_pending_input_geometry<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
 ) {
-    let geometry_pending = runtime.mode.needs_layout()
-        || runtime.renderer.has_patch_request()
-        || runtime.renderer.has_rebuild_request();
+    // A scheduled frame (`mode == Refresh`) alone does not make hit-test
+    // geometry stale: every awake frame ends with a full layout, so geometry
+    // only lags behind an *unapplied* content change — a pending reactive
+    // patch or structural rebuild.
+    let geometry_pending =
+        runtime.renderer.has_patch_request() || runtime.renderer.has_rebuild_request();
     if !geometry_pending || !runtime.renderer.has_render_tree() {
         return;
     }
@@ -1371,13 +1299,13 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         runtime.platform.request_redraw();
     }
     if runtime.renderer.handle_gesture_tick(now, env) {
-        runtime.request_reencode();
+        runtime.request_refresh();
     }
     // Smoothed wheel scrolling eases offsets toward their targets per frame;
-    // while any scroll view is still gliding, keep re-encoding on the redraw
-    // cadence.
+    // while any scroll view is still gliding, keep running full frames on the
+    // redraw cadence.
     if runtime.renderer.tick_smooth_scrolls(now) {
-        runtime.request_reencode();
+        runtime.request_refresh();
     }
     let animations_active = runtime.renderer.advance_animations();
     schedule_animation_update(runtime, animations_active);
@@ -1396,12 +1324,6 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     }
     if runtime.renderer.take_rebuild_request() {
         runtime.request_refresh();
-    }
-    // A transform-level change (scroll offset, scrollbar drag) recorded outside
-    // input dispatch composites through the visual re-encode path.
-    if runtime.renderer.take_reencode_request() {
-        runtime.request_reencode();
-        runtime.platform.request_redraw();
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
     #[cfg(any(hydrolysis_cef_webview, feature = "chromium"))]

@@ -90,11 +90,7 @@ fn preview_frames(model: &Model) {
         let steady = 2_400 + (index % 12) * 90;
         let total = if index == 96 { 19_800 } else { steady };
         model.apply_frame(FrameSample {
-            kind: if index % 3 == 0 {
-                FrameKind::Refresh
-            } else {
-                FrameKind::Reencode
-            },
+            kind: FrameKind::Refresh,
             layout_us: total / 3,
             encode_us: total / 3,
             present_us: total / 3,
@@ -241,10 +237,7 @@ fn preview_node(
         value: None,
         bounds: Some(Bounds {
             x: 16.0,
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "fixture ids are single digits"
-            )]
+            #[expect(clippy::cast_precision_loss, reason = "fixture ids are single digits")]
             y: 24.0 * id as f32,
             width: 320.0,
             height: 40.0,

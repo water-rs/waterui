@@ -59,7 +59,6 @@ pub(super) fn publish_frame(
 const fn frame_kind(mode: FrameMode) -> FrameKind {
     match mode {
         FrameMode::Idle => FrameKind::Idle,
-        FrameMode::Reencode => FrameKind::Reencode,
         FrameMode::Refresh => FrameKind::Refresh,
     }
 }

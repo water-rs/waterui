@@ -1,7 +1,6 @@
 //! The window-level entry points: build-or-patch the retained window tree
-//! ([`HydrolysisRenderer::capture_window_tree`]) and the per-frame refresh
-//! pumps ([`HydrolysisRenderer::flush_window_tree`] and
-//! [`HydrolysisRenderer::reencode_window_tree`]), plus [`RenderNode::patch`].
+//! ([`HydrolysisRenderer::capture_window_tree`]) and the per-frame pass
+//! ([`HydrolysisRenderer::flush_window_tree`]), plus [`RenderNode::patch`].
 
 use super::*;
 
@@ -132,12 +131,6 @@ impl RenderNode {
     }
 }
 
-#[derive(Clone, Copy)]
-enum WindowTreeUpdate {
-    Reencode,
-    Refresh,
-}
-
 impl HydrolysisRenderer {
     /// Build the retained tree before its first sized frame. Embedded GPU hosts
     /// use this during async setup so every statically reachable `GpuSurface`
@@ -189,51 +182,14 @@ impl HydrolysisRenderer {
 
     /// Apply pending structural changes, run layout, and re-encode the retained
     /// window tree without rebuilding it. Returns `false` if no tree is built.
+    /// This is the one per-frame pass: every awake frame patches, lays out, and
+    /// re-encodes, so the presented scene can never go stale against layout.
     pub fn flush_window_tree(
         &mut self,
         env: &Environment,
         bounds: vello::kurbo::Rect,
         transform: vello::kurbo::Affine,
         hit_transform: vello::kurbo::Affine,
-    ) -> bool {
-        self.update_window_tree(
-            env,
-            bounds,
-            transform,
-            hit_transform,
-            WindowTreeUpdate::Refresh,
-        )
-    }
-
-    /// Re-encode the retained window tree without patching or layout.
-    ///
-    /// Animated opacity and transforms are layout-transparent. Once their target
-    /// change has passed through a normal refresh, subsequent animation ticks only
-    /// need to sample the animation controller and emit the scene at the placements
-    /// already cached on the retained nodes.
-    pub fn reencode_window_tree(
-        &mut self,
-        env: &Environment,
-        bounds: vello::kurbo::Rect,
-        transform: vello::kurbo::Affine,
-        hit_transform: vello::kurbo::Affine,
-    ) -> bool {
-        self.update_window_tree(
-            env,
-            bounds,
-            transform,
-            hit_transform,
-            WindowTreeUpdate::Reencode,
-        )
-    }
-
-    fn update_window_tree(
-        &mut self,
-        env: &Environment,
-        bounds: vello::kurbo::Rect,
-        transform: vello::kurbo::Affine,
-        hit_transform: vello::kurbo::Affine,
-        update: WindowTreeUpdate,
     ) -> bool {
         let Some(mut tree) = self.render_tree.take() else {
             return false;
@@ -249,28 +205,19 @@ impl HydrolysisRenderer {
         self.hit_test.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
-        // Only a refresh consumes structural work. A visual re-encode leaves it
-        // pending so the runner's rebuild request promotes the next pump to Refresh.
-        let structural_change = match update {
-            WindowTreeUpdate::Reencode => false,
-            WindowTreeUpdate::Refresh => {
-                // Fold in a structural patch a widget-owned sub-view applied during
-                // the previous frame's flush (mid-flush, past that frame's
-                // bookkeeping window).
-                self.take_subview_structural_change() | tree.patch(self)
-            }
-        };
+        // Fold in a structural patch a widget-owned sub-view applied during
+        // the previous frame's flush (mid-flush, past that frame's
+        // bookkeeping window).
+        let structural_change = self.take_subview_structural_change() | tree.patch(self);
         if structural_change {
             self.animation_controller.begin_rebuild_frame();
         }
         self.reset_scene();
         self.begin_redraw_frame();
-        if matches!(update, WindowTreeUpdate::Refresh) {
-            // Geometry-affecting reactive values must reflow the retained tree and
-            // renegotiate content-derived window limits.
-            let size = Size::new(bounds.width() as f32, bounds.height() as f32);
-            tree.layout(self, env, size);
-        }
+        // Layout runs every frame: geometry can never go stale against the
+        // scene encoded right after it.
+        let size = Size::new(bounds.width() as f32, bounds.height() as f32);
+        tree.layout(self, env, size);
         let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
         tree.flush(self, ctx, env);
         // The overlay-mode text context menu re-encodes with the frame it floats
