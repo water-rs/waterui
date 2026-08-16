@@ -1292,7 +1292,18 @@ pub trait WidgetTheme {
     /// Return progress indicator metrics.
     fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics;
     /// Draw the linear progress track.
-    fn draw_progress_linear_track(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    ///
+    /// `active_end` is the x the active indicator reaches, or `None` while the
+    /// indicator is indeterminate. Material's Expressive linear indicator leaves
+    /// a gap between the active bar and the track and marks the track's end with
+    /// a stop indicator, so the track cannot be drawn without knowing where the
+    /// active portion stops.
+    fn draw_progress_linear_track(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        active_end: Option<f64>,
+    );
     /// Draw the linear progress fill.
     fn draw_progress_linear_fill(&self, draw: &mut dyn DrawContext, bounds: Rect);
     /// Draw the linear indeterminate progress indicator.
@@ -1304,12 +1315,18 @@ pub trait WidgetTheme {
         four_color: bool,
     );
     /// Draw the circular progress track.
+    ///
+    /// `active_turns` is how much of the circle the active arc covers (`0.0..=1.0`),
+    /// or `None` while the indicator is indeterminate. As with the linear bar,
+    /// Material's Expressive circular indicator separates track from indicator by
+    /// `TrackActiveSpace`, so the track needs to know where the active arc ends.
     fn draw_progress_circular_track(
         &self,
         draw: &mut dyn DrawContext,
         center: Point,
         radius: f64,
         width: f64,
+        active_turns: Option<f64>,
     );
     /// Draw the circular progress fill path.
     fn draw_progress_circular_fill(&self, draw: &mut dyn DrawContext, path: &BezPath, width: f64);

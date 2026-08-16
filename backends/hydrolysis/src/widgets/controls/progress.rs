@@ -210,11 +210,9 @@ pub(crate) fn render_progress_parts(
                 ctx.bounds.x1 - metrics.bar_horizontal_inset,
                 bar_y + metrics.bar_height,
             );
-            {
-                let mut draw = ctx.draw_context();
-                theme.draw_progress_linear_track(&mut draw, bar_rect);
-            }
-            if finite {
+            // The track leaves a gap around the active indicator, so where the
+            // indicator ends has to be resolved before the track is drawn.
+            let fill_rect = finite.then(|| {
                 let animated = if let Some(identity) = value_identity {
                     ctx.renderer_mut().sample_widget_scalar_target(
                         AnimationKey::scalar_with_discriminator(
@@ -227,12 +225,22 @@ pub(crate) fn render_progress_parts(
                 } else {
                     clamped
                 };
-                let fill_rect = vello::kurbo::Rect::new(
+                vello::kurbo::Rect::new(
                     bar_rect.x0,
                     bar_rect.y0,
                     bar_rect.x0 + bar_rect.width() * f64::from(animated.clamp(0.0, 1.0)),
                     bar_rect.y1,
+                )
+            });
+            {
+                let mut draw = ctx.draw_context();
+                theme.draw_progress_linear_track(
+                    &mut draw,
+                    bar_rect,
+                    fill_rect.map(|rect| rect.x1),
                 );
+            }
+            if let Some(fill_rect) = fill_rect {
                 let mut draw = ctx.draw_context();
                 theme.draw_progress_linear_fill(&mut draw, fill_rect);
             } else {
@@ -287,7 +295,13 @@ pub(crate) fn render_progress_parts(
                 };
                 let arc = circle_arc_path(center, radius, -FRAC_PI_2, TAU * f64::from(animated));
                 let mut draw = ctx.draw_context();
-                theme.draw_progress_circular_track(&mut draw, center, radius, stroke_width);
+                theme.draw_progress_circular_track(
+                    &mut draw,
+                    center,
+                    radius,
+                    stroke_width,
+                    Some(f64::from(animated)),
+                );
                 theme.draw_progress_circular_fill(&mut draw, &arc, stroke_width);
             } else {
                 let elapsed = ctx
