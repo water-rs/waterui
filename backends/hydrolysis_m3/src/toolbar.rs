@@ -180,7 +180,7 @@ where
                 DOCKED_HORIZONTAL_SPACE,
             ))
             .height(CONTAINER_HEIGHT)
-            .max_width(f32::MAX)
+            .max_width(f32::INFINITY)
             .foreground(OnSurface)
             .background(SurfaceContainer)
             .a11y_role(AccessibilityRole::Group)

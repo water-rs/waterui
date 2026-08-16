@@ -61,7 +61,7 @@ where
             MaterialElevationLevel::LEVEL2,
             waterui::component::hstack(self.tabs)
                 .height(NAVIGATION_BAR_CONTAINER_HEIGHT)
-                .max_width(f32::MAX)
+                .max_width(f32::INFINITY)
                 .background(Surface),
         )
         .a11y_label("Navigation")
@@ -152,7 +152,7 @@ where
             label_color,
         )
         .min_width(NAVIGATION_BAR_ITEM_MIN_WIDTH)
-        .max_width(f32::MAX)
+        .max_width(f32::INFINITY)
         .height(NAVIGATION_BAR_CONTAINER_HEIGHT)
         .padding_with(EdgeInsets::new(
             NAVIGATION_BAR_ITEM_TOP_PADDING,

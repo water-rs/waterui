@@ -283,7 +283,7 @@ where
         };
 
         content
-            .max_width(f32::MAX)
+            .max_width(f32::INFINITY)
             .on_tap(move |env: Environment| action(&env))
             .a11y_label(accessibility_label)
             .a11y_role(AccessibilityRole::Tab)

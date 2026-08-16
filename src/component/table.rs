@@ -299,7 +299,7 @@ impl Signal for TableRowCountSignal {
 
 fn build_table_header(columns: Computed<Vec<TableColumn>>) -> impl View {
     HStack::for_each(SignalCollection::new(columns), |column: TableColumn| {
-        column.label().bold().max_width(f32::MAX)
+        column.label().bold().max_width(f32::INFINITY)
     })
 }
 
@@ -315,8 +315,8 @@ fn build_table_rows(columns: Computed<Vec<TableColumn>>) -> impl View {
                 SignalCollection::new(columns.clone()),
                 move |column: TableColumn| {
                     column.rows().get_view(row).map_or_else(
-                        || Text::new("").max_width(f32::MAX),
-                        |text| text.max_width(f32::MAX),
+                        || Text::new("").max_width(f32::INFINITY),
+                        |text| text.max_width(f32::INFINITY),
                     )
                 },
             );
@@ -351,7 +351,7 @@ impl View for DefaultTableView {
         let visible = columns.map(|columns| !columns.is_empty());
         vstack((
             build_table_header(columns.clone()),
-            Grey.height(1.0).max_width(f32::MAX),
+            Grey.height(1.0).max_width(f32::INFINITY),
             build_table_rows(columns),
         ))
         .alignment(HorizontalAlignment::Leading)
