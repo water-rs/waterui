@@ -14,6 +14,7 @@ pub mod dialog;
 pub mod drag_handle;
 pub mod elevation;
 pub mod fab;
+pub mod fab_menu;
 pub mod icon_button;
 pub mod material_badge;
 pub mod material_card;
@@ -73,6 +74,7 @@ pub use fab::{
     ExtendedFab, Fab, FabSize, FabSizeTokens, FabVariantTokens, PrimaryFab, SecondaryFab,
     SurfaceFab, TertiaryFab, extended_fab, fab,
 };
+pub use fab_menu::{FabMenuItem, FloatingActionButtonMenu, fab_menu, fab_menu_item};
 pub use icon_button::{
     FilledIconButton, FilledTonalIconButton, IconButton, IconButtonSize, IconButtonSizeTokens,
     IconButtonVariantTokens, OutlinedIconButton, SelectedOutlinedIconButton,

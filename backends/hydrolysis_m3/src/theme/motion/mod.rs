@@ -131,6 +131,25 @@ pub fn navigation_drawer(
     )
 }
 
+/// Floating-action-button menu expansion.
+///
+/// Compose drives the stagger with `MotionSchemeKeyTokens.SlowEffects` and the
+/// per-item fade with `FastEffects`; this is the one progress both are derived
+/// from, so a single signal carries the whole expansion.
+pub fn fab_menu(
+    expanded: Computed<bool>,
+    collapsed_value: f32,
+    expanded_value: f32,
+) -> impl Signal<Output = f32> {
+    dialog_property(
+        expanded,
+        collapsed_value,
+        expanded_value,
+        material_standard(duration::LONG_2),
+        material_standard(duration::SHORT_4),
+    )
+}
+
 /// MDUI modal navigation-drawer scrim motion.
 pub fn navigation_drawer_scrim(
     opened: Computed<bool>,
