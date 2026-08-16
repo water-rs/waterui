@@ -124,10 +124,21 @@ async fn remove_superseded_host_library(
 }
 
 /// Cargo features an Apple FFI build resolves its dependency graph with.
-async fn apple_ffi_build_features(
+/// The `waterui-ffi` features an Apple runtime is compiled with.
+///
+/// Anything loaded into that runtime has to be compiled with the same set. Cargo
+/// unifies features per build and folds the result into the `-C metadata` hash it
+/// mangles into every symbol, so a module that enables one feature more or fewer
+/// than its host links against a runtime whose symbols no longer match. Both
+/// callers derive the set here rather than each listing it, so the two cannot
+/// drift apart.
+///
+/// # Errors
+///
+/// Returns an error when the project's enabled capabilities cannot be resolved.
+pub(crate) async fn apple_ffi_dependency_features(
     project: &Project,
     browser_runtime: BrowserRuntimePlan,
-    linkage: RustLinkage,
 ) -> eyre::Result<Vec<String>> {
     let mut features = vec!["waterui-ffi/c-api".to_string()];
     features.extend(crate::project_model::assets::capability_ffi_features(project).await?);
@@ -137,6 +148,15 @@ async fn apple_ffi_build_features(
     if matches!(browser_runtime.webview, Some(ResolvedWebViewBackend::Cef)) {
         features.push("waterui-ffi/webview-cef".to_string());
     }
+    Ok(features)
+}
+
+async fn apple_ffi_build_features(
+    project: &Project,
+    browser_runtime: BrowserRuntimePlan,
+    linkage: RustLinkage,
+) -> eyre::Result<Vec<String>> {
+    let mut features = apple_ffi_dependency_features(project, browser_runtime).await?;
     if linkage == RustLinkage::SharedRuntime {
         features.push("dev".to_string());
     }
@@ -222,7 +242,12 @@ pub async fn build_rust_lib(
     Ok(lib_dir)
 }
 
-async fn apple_deployment_target(
+/// Resolve the deployment-target environment variable an Apple build must carry.
+///
+/// # Errors
+///
+/// Returns an error when the Xcode project does not define exactly one value.
+pub(crate) async fn apple_deployment_target(
     project: &Project,
     platform: TargetPlatform,
 ) -> eyre::Result<(&'static str, String)> {

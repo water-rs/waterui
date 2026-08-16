@@ -241,8 +241,8 @@ impl Project {
 
     /// Get the crate root path used to build preview dylibs.
     #[must_use]
-    pub fn preview_dylib_crate_path(&self) -> PathBuf {
-        self.preview_ffi_crate_path()
+    pub fn preview_dylib_crate_path(&self, workspace_root: &Path) -> PathBuf {
+        self.preview_ffi_crate_path(workspace_root)
     }
 
     /// Get the crate name used to build preview dylibs.
@@ -313,10 +313,21 @@ impl Project {
         self.managed_backends_root.join("ffi")
     }
 
-    /// Get the full path to the managed preview-only companion crate.
+    /// Directory name this project's preview module occupies inside a workspace.
     #[must_use]
-    pub fn preview_ffi_crate_path(&self) -> PathBuf {
-        self.managed_backends_root.join("preview_ffi")
+    pub fn preview_module_member_path(&self) -> PathBuf {
+        Path::new(crate::templates::PREVIEW_MODULES_DIR).join(self.preview_ffi_crate_name().to_string())
+    }
+
+    /// Get the full path to the managed preview-only companion crate.
+    ///
+    /// The crate lives inside the support runtime's workspace rather than this
+    /// project's build cache, because a preview module and the runtime it is
+    /// loaded into must come out of one Cargo resolution to agree on the
+    /// `-C metadata` hash mangled into every symbol.
+    #[must_use]
+    pub fn preview_ffi_crate_path(&self, workspace_root: &Path) -> PathBuf {
+        workspace_root.join(self.preview_module_member_path())
     }
 
     /// Get the relative path to the managed native FFI companion crate from project root.
@@ -675,9 +686,15 @@ impl Project {
             .map_err(crate::backend::FailToInitBackend::Io)
     }
 
-    async fn scaffold_preview_ffi_companion(
+    /// Scaffold this project's preview module inside `workspace_root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generated crate cannot be written.
+    pub async fn scaffold_preview_ffi_companion(
         &self,
-    ) -> Result<(), crate::backend::FailToInitBackend> {
+        workspace_root: &Path,
+    ) -> Result<PathBuf, crate::backend::FailToInitBackend> {
         let manifest = self.manifest();
         let app_name = manifest
             .package
@@ -687,16 +704,14 @@ impl Project {
             .collect::<String>();
         let ctx =
             TemplateContext::for_project_manifest(manifest, self.crate_name().clone(), app_name)
-                .with_backend_project_path(self.preview_ffi_crate_path())
+                .with_backend_project_path(self.preview_ffi_crate_path(workspace_root))
                 .with_project_root_path(self.root.clone());
 
-        templates::preview_ffi::scaffold(
-            &self.preview_ffi_crate_path(),
-            &ctx,
-            &self.preview_ffi_crate_name(),
-        )
-        .await
-        .map_err(crate::backend::FailToInitBackend::Io)
+        let crate_path = self.preview_ffi_crate_path(workspace_root);
+        templates::preview_ffi::scaffold(&crate_path, &ctx, &self.preview_ffi_crate_name())
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
+        Ok(crate_path)
     }
 
     async fn remove_ffi_companion_if_unused(&self) -> eyre::Result<()> {
@@ -1217,19 +1232,6 @@ impl Project {
                 path = %project.root.display(),
                 elapsed_ms = ffi_companion_start.elapsed().as_millis(),
                 "Project::open refreshed native ffi companion"
-            );
-        }
-
-        if !skip_backend_init && (is_playground || open_mode == OpenMode::PreviewBuild) {
-            let preview_wrapper_start = std::time::Instant::now();
-            project
-                .scaffold_preview_ffi_companion()
-                .await
-                .map_err(FailToOpenProject::BackendInit)?;
-            info!(
-                path = %project.root.display(),
-                elapsed_ms = preview_wrapper_start.elapsed().as_millis(),
-                "Project::open scaffolded preview wrapper"
             );
         }
 
