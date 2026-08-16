@@ -1,6 +1,6 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
-    RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
+    FrameMode, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
     handle_input_events, pump_window_semantics, render_window, schedule_animation_update,
     schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
@@ -43,7 +43,7 @@ fn changed_reactive_input_refreshes_retained_tree() {
     schedule_redraw_or_refresh(&mut runtime, true);
 
     assert!(
-        runtime.mode.needs_layout(),
+        runtime.mode == FrameMode::Refresh,
         "a pending reactive patch must be sampled before presenting the next frame"
     );
     assert!(
@@ -63,7 +63,7 @@ fn changed_scroll_input_schedules_a_full_frame_and_wakes_platform_window() {
 
     assert!(runtime.mode.is_pending());
     assert!(
-        runtime.mode.needs_layout(),
+        runtime.mode == FrameMode::Refresh,
         "every awake frame runs the full pass, layout included"
     );
     assert!(
@@ -81,7 +81,7 @@ fn animation_ticks_schedule_full_frames() {
 
     assert!(runtime.mode.is_pending());
     assert!(
-        runtime.mode.needs_layout(),
+        runtime.mode == FrameMode::Refresh,
         "an animation tick schedules the same full frame as any content change"
     );
 }

@@ -66,10 +66,6 @@ impl FrameMode {
     pub(super) const fn is_pending(self) -> bool {
         !matches!(self, FrameMode::Idle)
     }
-
-    pub(super) const fn needs_layout(self) -> bool {
-        matches!(self, FrameMode::Refresh)
-    }
 }
 
 pub(super) struct RuntimeWindow<P: PlatformWindow> {
