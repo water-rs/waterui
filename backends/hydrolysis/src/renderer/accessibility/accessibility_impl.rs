@@ -37,6 +37,38 @@ impl ScopedAccessibilityIdentifier {
     }
 }
 
+/// The identity of one `.a11y_label()` / `.a11y_role()` scope.
+///
+/// Naming metadata is nearest-consumer: whichever node ends up *representing* the
+/// wrapped view owns its role and label, and nothing below may say the same thing
+/// again. A control registers its own node and so claims the scope; a composed
+/// container has no such node and synthesizes one instead (see
+/// [`HydrolysisRenderer::begin_accessibility_container`]). The claim is what tells
+/// those two apart — both see the identical environment, so the container can only
+/// know whether it is the view's representative by asking whether anything above it
+/// already was.
+#[cfg(feature = "accessibility")]
+#[derive(Clone)]
+pub(crate) struct ScopedAccessibilitySemantics {
+    identity: Rc<()>,
+}
+
+#[cfg(feature = "accessibility")]
+impl MetadataKey for ScopedAccessibilitySemantics {}
+
+#[cfg(feature = "accessibility")]
+impl ScopedAccessibilitySemantics {
+    pub(crate) fn new() -> Self {
+        Self {
+            identity: Rc::new(()),
+        }
+    }
+
+    fn key(&self) -> usize {
+        Rc::as_ptr(&self.identity) as usize
+    }
+}
+
 #[cfg(feature = "accessibility")]
 pub(crate) const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
 #[cfg(feature = "accessibility")]
@@ -116,6 +148,9 @@ pub(crate) struct AccessibilityBuilder {
     pub(crate) parent_stack: Vec<AccessibilityNodeId>,
     pub(crate) suppression_depth: usize,
     pub(crate) consumed_identifier_scopes: BTreeSet<usize>,
+    /// Naming scopes ([`ScopedAccessibilitySemantics`]) already claimed by a node
+    /// this flush, keyed by scope identity.
+    consumed_semantics_scopes: BTreeSet<usize>,
     pub(crate) pending_tree_update: Option<AccessibilityTreeUpdate>,
 }
 
@@ -139,6 +174,7 @@ impl Default for AccessibilityBuilder {
             parent_stack: Vec::new(),
             suppression_depth: 0,
             consumed_identifier_scopes: BTreeSet::new(),
+            consumed_semantics_scopes: BTreeSet::new(),
             pending_tree_update: None,
         }
     }
@@ -165,6 +201,7 @@ impl AccessibilityBuilder {
         self.parent_stack.clear();
         self.suppression_depth = 0;
         self.consumed_identifier_scopes.clear();
+        self.consumed_semantics_scopes.clear();
     }
 
     pub(crate) fn begin_rebuild_frame(&mut self) {
@@ -309,6 +346,12 @@ impl AccessibilityBuilder {
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
             return None;
         }
+        // This node represents the view the enclosing naming scope wraps, so it
+        // owns that role and label; a container below must not emit a second node
+        // repeating them.
+        if let Some(scope) = env.get::<ScopedAccessibilitySemantics>() {
+            self.consumed_semantics_scopes.insert(scope.key());
+        }
         self.apply_state(env, &mut node);
         node.set_text_direction(
             if waterui_core::layout::layout_direction(env)
@@ -349,6 +392,13 @@ impl AccessibilityBuilder {
         Some(node_id)
     }
 
+    /// Whether the naming scope `env` sits in was already claimed this flush by a
+    /// node representing the wrapped view.
+    fn semantics_scope_is_claimed(&self, env: &Environment) -> bool {
+        env.get::<ScopedAccessibilitySemantics>()
+            .is_some_and(|scope| self.consumed_semantics_scopes.contains(&scope.key()))
+    }
+
     pub(crate) fn finalize_tree_update(&mut self) {
         self.node_ids
             .retain(|key, _| self.active_node_keys.contains(key));
@@ -372,21 +422,40 @@ impl AccessibilityBuilder {
 }
 
 #[cfg(feature = "accessibility")]
-pub(crate) struct AccessibilityGroupScope {
+pub(crate) struct AccessibilityContainerScope {
     parent_pushed: bool,
     suppression_pushed: bool,
 }
 
 #[cfg(feature = "accessibility")]
-pub(crate) fn accessibility_group_child_environment(env: &Environment) -> Option<Environment> {
-    if !matches!(
-        env.get::<AccessibilityRole>(),
-        Some(AccessibilityRole::Group)
-    ) {
+impl AccessibilityContainerScope {
+    /// A scope that emitted no node and suppressed nothing: the container is not
+    /// this view's representative, so it only shields its children.
+    const INERT: Self = Self {
+        parent_pushed: false,
+        suppression_pushed: false,
+    };
+}
+
+/// The environment a container hands its children when the container itself
+/// carries accessibility naming metadata.
+///
+/// `Some` means the container is a candidate for its own node: the semantics name
+/// the container, not each leaf inside it, so they are stripped from the child
+/// environment. Without that strip a `.a11y_label("Navigation")` on a bar reached
+/// every tab under it and the tree announced "Navigation" once per tab instead of
+/// once for the bar.
+#[cfg(feature = "accessibility")]
+pub(crate) fn accessibility_container_child_environment(env: &Environment) -> Option<Environment> {
+    // A role or a label names the container. Identifier/hidden/state metadata are
+    // subtree-scoped and name nothing on their own, so they never make a bare
+    // container into a semantic node.
+    if env.get::<AccessibilityRole>().is_none() && env.get::<AccessibilityLabel>().is_none() {
         return None;
     }
 
     let mut child_env = env.clone();
+    child_env.remove::<ScopedAccessibilitySemantics>();
     child_env.remove::<ScopedAccessibilityIdentifier>();
     child_env.remove::<AccessibilityLabel>();
     child_env.remove::<AccessibilityRole>();
@@ -596,18 +665,27 @@ impl HydrolysisRenderer {
         self.accessibility.pop_suppression();
     }
 
+    /// Open the accessibility scope of a container view that carries naming
+    /// metadata, emitting the node that represents the container itself.
+    ///
+    /// A composed container — a navigation bar's stack, a card, a toolbar — has no
+    /// leaf standing for the whole, so `.a11y_role(TabList)` / `.a11y_label(..)` on
+    /// it would otherwise reach only the leaves inside and the container would
+    /// announce nothing. Assistive technology then cannot tell that the tabs belong
+    /// together, which is exactly what a tab list exists to say.
+    ///
+    /// The caller must have determined the container carries those semantics
+    /// ([`accessibility_container_child_environment`] returned `Some`), and must
+    /// flush its children under that returned environment.
     #[cfg(feature = "accessibility")]
-    pub(crate) fn begin_accessibility_group(
+    pub(crate) fn begin_accessibility_container(
         &mut self,
         bounds: vello::kurbo::Rect,
         env: &Environment,
-    ) -> AccessibilityGroupScope {
-        assert!(
-            matches!(
-                env.get::<AccessibilityRole>(),
-                Some(AccessibilityRole::Group)
-            ),
-            "hydrolysis accessibility group scope requires the Group role"
+    ) -> AccessibilityContainerScope {
+        debug_assert!(
+            accessibility_container_child_environment(env).is_some(),
+            "hydrolysis accessibility container scope requires a role or a label"
         );
 
         if env
@@ -615,13 +693,23 @@ impl HydrolysisRenderer {
             .is_some_and(AccessibilityHidden::is_hidden)
         {
             self.push_accessibility_suppression();
-            return AccessibilityGroupScope {
+            return AccessibilityContainerScope {
                 parent_pushed: false,
                 suppression_pushed: true,
             };
         }
 
-        let mut node = AccessibilityNode::new(AccessibilityNodeRole::Group);
+        // A control that already registered its own node under this scope is the
+        // view's representative and owns the role and label. The containers
+        // composing its chrome sit below and must stay silent, or every button
+        // would answer to its own name twice.
+        if self.accessibility.semantics_scope_is_claimed(env) {
+            return AccessibilityContainerScope::INERT;
+        }
+
+        let mut node = AccessibilityNode::new(
+            self.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
+        );
         if let Some(label) = self.resolve_accessibility_label(env, None) {
             node.set_label(label);
         }
@@ -633,27 +721,34 @@ impl HydrolysisRenderer {
             .is_some_and(AccessibilityChildren::excludes_descendants);
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
             self.push_accessibility_suppression();
-            return AccessibilityGroupScope {
+            return AccessibilityContainerScope {
                 parent_pushed: false,
                 suppression_pushed: true,
             };
         }
-        let node_id = self
-            .register_accessibility_node(node, bounds, env, None)
-            .expect("positive accessibility group bounds must register a node");
+        let Some(node_id) = self.register_accessibility_node(node, bounds, env, None) else {
+            // Bounds are positive and the scope is unclaimed, so registration can
+            // only have declined because the whole subtree is suppressed — where
+            // the children emit nothing either, leaving no node to parent them to.
+            assert!(
+                self.accessibility.suppression_depth > 0,
+                "hydrolysis accessibility container at positive bounds must register a node"
+            );
+            return AccessibilityContainerScope::INERT;
+        };
         self.accessibility.parent_stack.push(node_id);
         let suppression_pushed = state_hidden || excludes_descendants;
         if suppression_pushed {
             self.push_accessibility_suppression();
         }
-        AccessibilityGroupScope {
+        AccessibilityContainerScope {
             parent_pushed: true,
             suppression_pushed,
         }
     }
 
     #[cfg(feature = "accessibility")]
-    pub(crate) fn end_accessibility_group(&mut self, scope: AccessibilityGroupScope) {
+    pub(crate) fn end_accessibility_container(&mut self, scope: AccessibilityContainerScope) {
         if scope.suppression_pushed {
             self.pop_accessibility_suppression();
         }
@@ -661,7 +756,7 @@ impl HydrolysisRenderer {
             self.accessibility
                 .parent_stack
                 .pop()
-                .expect("hydrolysis accessibility group parent stack underflow");
+                .expect("hydrolysis accessibility container parent stack underflow");
         }
     }
 

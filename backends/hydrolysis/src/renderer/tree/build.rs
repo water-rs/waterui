@@ -49,7 +49,7 @@ impl RenderNode {
                     signals.request_refresh();
                 }));
                 #[cfg(feature = "accessibility")]
-                let accessibility_child_env = accessibility_group_child_environment(env);
+                let accessibility_child_env = accessibility_container_child_environment(env);
                 #[cfg(feature = "accessibility")]
                 let child_env = accessibility_child_env.as_ref().unwrap_or(env);
                 #[cfg(not(feature = "accessibility"))]
@@ -170,8 +170,10 @@ impl RenderNode {
         // models them as an `Env` node carrying the extended environment — the Text
         // node and a11y emission read these from env every flush, and the wrapped
         // (possibly reactive) content stays live instead of freezing in `Captured`.
+        // The two *naming* wrappers additionally carry a scope identity, so a
+        // container that no control spoke for can emit the node naming itself.
         let view = match view.downcast::<IgnorableMetadata<AccessibilityLabel>>() {
-            Ok(meta) => return RenderNode::build_env_scoped(*meta, env, renderer),
+            Ok(meta) => return RenderNode::build_naming_scoped(*meta, env, renderer),
             Err(view) => view,
         };
         let view = match view.downcast::<IgnorableMetadata<AccessibilityIdentifier>>() {
@@ -194,7 +196,7 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<IgnorableMetadata<AccessibilityRole>>() {
-            Ok(meta) => return RenderNode::build_env_scoped(*meta, env, renderer),
+            Ok(meta) => return RenderNode::build_naming_scoped(*meta, env, renderer),
             Err(view) => view,
         };
         let view = match view.downcast::<IgnorableMetadata<AccessibilityHidden>>() {
@@ -739,6 +741,25 @@ impl RenderNode {
         RenderNode::Env(Box::new(EnvNode { env: scoped, child }))
     }
 
+    /// Build the `Env` node for naming metadata (`.a11y_label()` / `.a11y_role()`).
+    ///
+    /// Same scoping as [`RenderNode::build_env_scoped`], plus the scope identity
+    /// that lets the node representing this view claim the name — see
+    /// [`a11y_naming_scoped_env`].
+    fn build_naming_scoped<T: MetadataKey + Clone + 'static>(
+        meta: IgnorableMetadata<T>,
+        env: &Environment,
+        renderer: &mut HydrolysisRenderer,
+    ) -> RenderNode {
+        let IgnorableMetadata { content, value } = meta;
+        #[cfg(feature = "accessibility")]
+        let scoped = a11y_naming_scoped_env(env, &value);
+        #[cfg(not(feature = "accessibility"))]
+        let scoped = a11y_scoped_env(env, &value);
+        let child = RenderNode::build(content, &scoped, renderer);
+        RenderNode::Env(Box::new(EnvNode { env: scoped, child }))
+    }
+
     /// Build a retained reactive collection (non-virtualized): materialize every
     /// current item keyed by id and subscribe to membership changes (a change marks
     /// it dirty and schedules a refresh, which reconciles by id).
@@ -759,6 +780,16 @@ impl RenderNode {
                 signals.mark_collection_dirty(key, 0);
             }
         });
+        // A collection carrying accessibility naming metadata is a container like
+        // any other: it emits the node naming itself, and its items are built and
+        // flushed under the shielded environment so the name is not repeated on
+        // every item.
+        #[cfg(feature = "accessibility")]
+        let item_env = accessibility_container_child_environment(env);
+        #[cfg(feature = "accessibility")]
+        let accessibility_container_env = item_env.as_ref().map(|_| env.clone());
+        #[cfg(feature = "accessibility")]
+        let env = item_env.as_ref().unwrap_or(env);
         let len = views.len().get();
         // The initial membership renders at rest — only items added or removed
         // by a *later* change animate (`reconcile` marks phases).
@@ -781,6 +812,10 @@ impl RenderNode {
             layout,
             views,
             env: env.clone(),
+            #[cfg(feature = "accessibility")]
+            accessibility_identity: Rc::new(()),
+            #[cfg(feature = "accessibility")]
+            accessibility_container_env,
             entries,
             placed: Vec::new(),
             transition,
@@ -812,10 +847,22 @@ impl RenderNode {
         });
         let signals = renderer.signals.clone();
         let direction_guard = axis.direction().watch(move |_| signals.request_refresh());
+        // As for [`RenderNode::build_collection`]: naming metadata names the stack,
+        // and its rows are materialized under the shielded environment.
+        #[cfg(feature = "accessibility")]
+        let item_env = accessibility_container_child_environment(env);
+        #[cfg(feature = "accessibility")]
+        let accessibility_container_env = item_env.as_ref().map(|_| env.clone());
+        #[cfg(feature = "accessibility")]
+        let env = item_env.as_ref().unwrap_or(env);
         RenderNode::LazyStack(Box::new(LazyStackNode {
             axis,
             views,
             env: env.clone(),
+            #[cfg(feature = "accessibility")]
+            accessibility_identity: Rc::new(()),
+            #[cfg(feature = "accessibility")]
+            accessibility_container_env,
             extent_index: RefCell::new(VirtualExtentIndex::default()),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
             visible_range: RefCell::new(0..0),
