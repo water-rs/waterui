@@ -67,6 +67,10 @@ impl FrameMode {
         !matches!(self, FrameMode::Idle)
     }
 
+    /// Whether this frame relayouts the retained tree, which every non-idle
+    /// frame now does. Kept for the runner tests, which assert on the scheduled
+    /// frame's kind directly.
+    #[cfg(test)]
     pub(super) const fn needs_layout(self) -> bool {
         matches!(self, FrameMode::Refresh)
     }
