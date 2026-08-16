@@ -990,7 +990,7 @@ pub(crate) fn measure_slider_intrinsic(
     let min_label_size = measure_view_intrinsic(&slider.min_value_label, state, env);
     let max_label_size = measure_view_intrinsic(&slider.max_value_label, state, env);
 
-    let control_row_height = (metrics.thumb_radius * 2.0)
+    let control_row_height = metrics.handle_height
         .max(f64::from(min_label_size.height))
         .max(f64::from(max_label_size.height));
     let label_height = f64::from(label_size.height);

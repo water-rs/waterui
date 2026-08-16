@@ -84,11 +84,20 @@ pub const SLIDER_HORIZONTAL_INSET: f64 = 20.0;
 pub const SLIDER_HORIZONTAL_SPACING: f64 = 8.0;
 pub const SLIDER_VERTICAL_SPACING: f64 = 6.0;
 pub const SLIDER_MIN_TRACK_WIDTH: f64 = 72.0;
-pub const SLIDER_TRACK_HEIGHT: f64 = 4.0;
-pub const SLIDER_HANDLE_WIDTH: f64 = 20.0;
-pub const SLIDER_PRESSED_HANDLE_WIDTH: f64 = 20.0;
-pub const SLIDER_HANDLE_HEIGHT: f64 = 20.0;
-pub const SLIDER_STATE_LAYER_RADIUS: f64 = 20.0;
+/// `SliderTokens.InactiveTrackHeight` / `ActiveTrackHeight`. The Expressive
+/// slider's track is a thick bar, not the 4dp hairline of earlier Material.
+pub const SLIDER_TRACK_HEIGHT: f64 = 16.0;
+/// `SliderTokens.HandleWidth` — a narrow vertical bar, not a circular thumb.
+pub const SLIDER_HANDLE_WIDTH: f64 = 4.0;
+/// `SliderTokens.PressedHandleWidth`: the handle narrows under the finger.
+pub const SLIDER_PRESSED_HANDLE_WIDTH: f64 = 2.0;
+/// `SliderTokens.HandleHeight` — the handle stands taller than the track.
+pub const SLIDER_HANDLE_HEIGHT: f64 = 44.0;
+/// `SliderTokens.ActiveHandlePadding`: the gap the track leaves on each side of
+/// the handle, so the bar never runs into it.
+pub const SLIDER_HANDLE_PADDING: f64 = 6.0;
+/// `SliderTokens.StopIndicatorSize`: the dot marking the track's far end.
+pub const SLIDER_STOP_INDICATOR_SIZE: f64 = 4.0;
 
 pub const PROGRESS_LINEAR_LABEL_HEIGHT: f64 = 18.0;
 pub const PROGRESS_LINEAR_BAR_TOP_OFFSET: f64 = 10.0;

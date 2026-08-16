@@ -1621,7 +1621,8 @@ impl WidgetTheme for MinimalTestTheme {
             vertical_spacing: 6.0,
             min_track_width: 72.0,
             track_height: 6.0,
-            thumb_radius: 9.0,
+            handle_width: 4.0,
+            handle_height: 44.0,
         }
     }
 
