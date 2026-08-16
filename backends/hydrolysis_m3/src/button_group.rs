@@ -12,10 +12,16 @@ use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::color::Color;
 use waterui::gesture::{DragEvent, DragGesture, GesturePhase};
 use waterui::layout::padding::EdgeInsets;
+use waterui::layout::{
+    Layout, LayoutInvalidationCallback, Point, ProposalSize, Rect, Size, SubView,
+    container::FixedContainer,
+};
 use waterui::prelude::dynamic::watch;
-use waterui::reactive::{SignalExt as _, binding, zip};
+use waterui::reactive::watcher::BoxWatcherGuard;
+use waterui::reactive::{Signal as _, SignalExt as _, binding, zip};
 use waterui::shape::{ShapeExt as _, UnevenRoundedRectangle};
-use waterui::{Binding, Environment, View, ViewExt as _};
+use waterui::{AnyView, Binding, Environment, View, ViewExt as _};
+use waterui_controls::button::Button;
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::handler::{BoxedAction, Handler, boxed_action};
 
@@ -280,12 +286,339 @@ pub const fn connected_button_group() -> ConnectedButtonGroup {
     ConnectedButtonGroup::new()
 }
 
+// ---------------------------------------------------------------------------
+// Standard (spaced) button group
+// ---------------------------------------------------------------------------
+
+/// `ButtonGroupSmallTokens.BetweenSpace`.
+const GROUP_BETWEEN_SPACE: f32 = 12.0;
+/// `ButtonGroupDefaults.ExpandedRatio`: a pressed button reaches for 15% of its
+/// own width, split evenly across its two sides.
+const GROUP_EXPANDED_RATIO: f32 = 0.15;
+
+/// One button in a [`ButtonGroup`].
+pub struct GroupButton {
+    label: Label,
+    action: BoxedAction<()>,
+    compression_limit: f32,
+}
+
+impl Debug for GroupButton {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupButton")
+            .field("label", &self.label)
+            .field("compression_limit", &self.compression_limit)
+            .finish_non_exhaustive()
+    }
+}
+
+impl GroupButton {
+    /// Creates a button for a group.
+    #[must_use]
+    pub fn new<F, Args>(label: impl IntoLabel, action: F) -> Self
+    where
+        F: Handler<Args, ()> + 'static,
+    {
+        Self {
+            label: label.into_label(),
+            action: Box::new(boxed_action(action)),
+            compression_limit: SEGMENT_HORIZONTAL_SPACE,
+        }
+    }
+
+    /// Caps how far a neighbour's press may squeeze this button.
+    ///
+    /// Compose defaults this to `0.dp`, which makes the whole interaction inert
+    /// — nothing can give, so nothing can grow. The default here is the button's
+    /// own horizontal content space, which is the room it actually has to lose.
+    #[must_use]
+    pub const fn compression_limit(mut self, limit: f32) -> Self {
+        self.compression_limit = limit;
+        self
+    }
+}
+
+/// Creates a button for a [`ButtonGroup`].
+#[must_use]
+pub fn group_button<F, Args>(label: impl IntoLabel, action: F) -> GroupButton
+where
+    F: Handler<Args, ()> + 'static,
+{
+    GroupButton::new(label, action)
+}
+
+/// A Material Design 3 button group.
+///
+/// Unlike a [`ConnectedButtonGroup`], the buttons stand apart and each keeps its
+/// own shape. What binds them is the press: holding one widens it into the room
+/// its neighbours give up, so the row reads as a single elastic strip.
+#[derive(Debug)]
+pub struct ButtonGroup {
+    buttons: Vec<GroupButton>,
+}
+
+impl ButtonGroup {
+    /// Creates an empty group.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            buttons: Vec::new(),
+        }
+    }
+
+    /// Adds a button.
+    #[must_use]
+    pub fn button(mut self, button: GroupButton) -> Self {
+        self.buttons.push(button);
+        self
+    }
+
+    /// Adds several buttons.
+    #[must_use]
+    pub fn buttons(mut self, buttons: impl IntoIterator<Item = GroupButton>) -> Self {
+        self.buttons.extend(buttons);
+        self
+    }
+}
+
+impl Default for ButtonGroup {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl View for ButtonGroup {
+    fn body(self, _env: &Environment) -> impl View {
+        // The group owns one press flag per button. They are the layout's
+        // inputs, so they belong to the group rather than to the buttons: a
+        // press changes three widths, not one.
+        let pressed: Vec<Binding<bool>> = self.buttons.iter().map(|_| binding(false)).collect();
+        let limits: Vec<f32> = self
+            .buttons
+            .iter()
+            .map(|button| button.compression_limit)
+            .collect();
+        let layout = ButtonGroupLayout {
+            pressed: pressed.clone(),
+            limits,
+        };
+        let children = self
+            .buttons
+            .into_iter()
+            .zip(pressed)
+            .map(|(button, pressed)| {
+                let mut action = button.action;
+                AnyView::new(
+                    // A group button keeps the default filled-tonal chrome:
+                    // the press widens its container, so it needs one.
+                    Button::new(button.label)
+                        .gesture(DragGesture::new(0.0), move |env: Environment| {
+                            let phase = env
+                                .get::<DragEvent>()
+                                .expect("group button gesture is missing its DragEvent")
+                                .phase;
+                            pressed.set(matches!(
+                                phase,
+                                GesturePhase::Started | GesturePhase::Updated
+                            ));
+                        })
+                        .on_tap(move |env: Environment| action(&env)),
+                )
+            })
+            .collect::<Vec<_>>();
+        FixedContainer::from_parts(Box::new(layout), children).a11y_role(AccessibilityRole::Group)
+    }
+}
+
+/// Creates a Material Design 3 button group.
+#[must_use]
+pub const fn button_group() -> ButtonGroup {
+    ButtonGroup::new()
+}
+
+/// `ButtonGroupMeasurePolicy`: a pressed button grows by exactly the width its
+/// neighbours give up, so the row's total width never changes.
+///
+/// A pressed button reaches for `ExpandedRatio * width / 2` on each side, capped
+/// by what that side's neighbour is willing to lose and by how wide the
+/// neighbour is at all. A button at either end has only one neighbour and so
+/// grows by half as much.
+struct ButtonGroupLayout {
+    pressed: Vec<Binding<bool>>,
+    limits: Vec<f32>,
+}
+
+impl Debug for ButtonGroupLayout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ButtonGroupLayout")
+            .field("buttons", &self.pressed.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ButtonGroupLayout {
+    /// The intrinsic width of every child, before any press moves them.
+    fn resting_widths(children: &[&dyn SubView]) -> Vec<f32> {
+        children
+            .iter()
+            .map(|child| child.measure(ProposalSize::UNSPECIFIED).size.width)
+            .collect()
+    }
+
+    /// Applies the press expansion to `widths` in place.
+    fn expand(&self, widths: &mut [f32]) {
+        let count = widths.len();
+        for index in 0..count {
+            if !self.pressed[index].get() {
+                continue;
+            }
+            let reach = GROUP_EXPANDED_RATIO * widths[index] / 2.0;
+            let mut growth = 0.0;
+            for neighbour in [
+                index.checked_sub(1),
+                (index + 1 < count).then_some(index + 1),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let limit = self.limits[neighbour];
+                let taken = reach.min(limit).min(widths[neighbour]).max(0.0);
+                widths[neighbour] -= taken;
+                growth += taken;
+            }
+            widths[index] += growth;
+        }
+    }
+
+    /// The height the row stands at: the tallest child, floored by the tokens.
+    fn row_height(children: &[&dyn SubView]) -> f32 {
+        children
+            .iter()
+            .map(|child| child.measure(ProposalSize::UNSPECIFIED).size.height)
+            .fold(CONTAINER_HEIGHT, f32::max)
+    }
+}
+
+impl Layout for ButtonGroupLayout {
+    fn size_that_fits(&self, _proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
+        let widths = Self::resting_widths(children);
+        // A press only moves width between children, so the row measures the
+        // same whether or not one is held.
+        let gap_count = u16::try_from(children.len().saturating_sub(1))
+            .expect("a button group holds a sane number of buttons");
+        let gaps = GROUP_BETWEEN_SPACE * f32::from(gap_count);
+        Size::new(
+            widths.iter().sum::<f32>() + gaps,
+            Self::row_height(children),
+        )
+    }
+
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+        let mut widths = Self::resting_widths(children);
+        self.expand(&mut widths);
+        let height = Self::row_height(children).min(bounds.height());
+        let top = (bounds.height() - height).mul_add(0.5, bounds.y());
+        let mut x = bounds.x();
+        widths
+            .into_iter()
+            .map(|width| {
+                let frame = Rect::new(Point::new(x, top), Size::new(width, height));
+                x += width + GROUP_BETWEEN_SPACE;
+                frame
+            })
+            .collect()
+    }
+
+    fn watch_invalidation(&self, invalidate: LayoutInvalidationCallback) -> Vec<BoxWatcherGuard> {
+        // Press state is a layout input here, not a paint one: it decides how
+        // wide each button is, so a press has to re-run layout.
+        self.pressed
+            .iter()
+            .map(|pressed| {
+                let invalidate = invalidate.clone();
+                pressed.watch(move |_| invalidate())
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        BETWEEN_SPACE, CONTAINER_HEIGHT, INNER_CORNER_RADIUS, OUTER_CORNER_RADIUS,
+        BETWEEN_SPACE, ButtonGroupLayout, CONTAINER_HEIGHT, GROUP_BETWEEN_SPACE,
+        GROUP_EXPANDED_RATIO, INNER_CORNER_RADIUS, OUTER_CORNER_RADIUS,
         PRESSED_INNER_CORNER_RADIUS, SegmentPosition, inner_radius, normalized,
     };
+    use waterui::reactive::binding;
+
+    /// Builds a layout over `widths.len()` buttons, with `pressed` held down.
+    fn layout(limits: &[f32], pressed: Option<usize>) -> ButtonGroupLayout {
+        ButtonGroupLayout {
+            pressed: limits
+                .iter()
+                .enumerate()
+                .map(|(index, _)| binding(Some(index) == pressed))
+                .collect(),
+            limits: limits.to_vec(),
+        }
+    }
+
+    /// Values from `androidx.compose.material3.tokens.ButtonGroupSmallTokens`
+    /// and `ButtonGroupDefaults`.
+    #[test]
+    fn button_group_tokens_match_compose_button_group_defaults() {
+        assert_eq!(GROUP_BETWEEN_SPACE, 12.0);
+        assert_eq!(GROUP_EXPANDED_RATIO, 0.15);
+    }
+
+    /// A held middle button takes from both neighbours, and the row's total
+    /// width is unchanged — the press moves space, it does not create it.
+    #[test]
+    fn a_pressed_middle_button_grows_by_what_both_neighbours_give_up() {
+        let mut widths = [100.0, 100.0, 100.0];
+        let before: f32 = widths.iter().sum();
+        layout(&[16.0, 16.0, 16.0], Some(1)).expand(&mut widths);
+
+        // reach = 0.15 * 100 / 2 = 7.5, under the 16dp limit, so both sides
+        // give 7.5 and the pressed button grows by 15.
+        assert_eq!(widths[0], 92.5);
+        assert_eq!(widths[1], 115.0);
+        assert_eq!(widths[2], 92.5);
+        assert_eq!(widths.iter().sum::<f32>(), before);
+    }
+
+    /// A button at either end has one neighbour, so it grows by half as much.
+    #[test]
+    fn a_pressed_end_button_only_leans_on_the_neighbour_it_has() {
+        let mut widths = [100.0, 100.0, 100.0];
+        layout(&[16.0, 16.0, 16.0], Some(0)).expand(&mut widths);
+
+        assert_eq!(widths[0], 107.5);
+        assert_eq!(widths[1], 92.5);
+        assert_eq!(widths[2], 100.0);
+    }
+
+    /// A neighbour never gives up more than its compression limit, however wide
+    /// the pressed button is.
+    #[test]
+    fn a_neighbours_compression_limit_caps_what_it_gives_up() {
+        let mut widths = [100.0, 400.0, 100.0];
+        // reach is 0.15 * 400 / 2 = 30, well past the 4dp the neighbours allow.
+        layout(&[4.0, 4.0, 4.0], Some(1)).expand(&mut widths);
+
+        assert_eq!(widths[0], 96.0);
+        assert_eq!(widths[1], 408.0);
+        assert_eq!(widths[2], 96.0);
+    }
+
+    /// With nothing held, every button keeps the width it measured at.
+    #[test]
+    fn an_untouched_group_leaves_every_width_alone() {
+        let mut widths = [80.0, 120.0];
+        layout(&[16.0, 16.0], None).expand(&mut widths);
+
+        assert_eq!(widths, [80.0, 120.0]);
+    }
 
     /// Values from `ConnectedButtonGroupSmallTokens`.
     #[test]
