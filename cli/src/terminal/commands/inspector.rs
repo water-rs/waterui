@@ -103,17 +103,20 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 /// Ambiguity is reported rather than guessed at: attaching to the wrong
 /// application is more confusing than being asked which one.
 fn discover(shell: &Shell) -> Result<waterui_inspector_protocol::discovery::Advertisement> {
-    use color_eyre::eyre::{bail, eyre};
+    use color_eyre::eyre::eyre;
 
     let mut found = waterui_inspector_protocol::discovery::list()
         .map_err(|error| eyre!("could not read advertised inspector endpoints: {error}"))?;
 
     match found.len() {
-        0 => bail!(
+        // This match produces the result, so each arm yields one rather than
+        // returning early: `bail!` expands to a `return ...;`, and a macro
+        // ending in a semicolon is not an expression.
+        0 => Err(eyre!(
             "no running WaterUI debug build was found.\n\
              Start one, or pass --target host:port for an application on another \
              machine or device."
-        ),
+        )),
         1 => Ok(found.remove(0)),
         _ => {
             for advertisement in &found {
@@ -125,7 +128,9 @@ fn discover(shell: &Shell) -> Result<waterui_inspector_protocol::discovery::Adve
                     advertisement.addr
                 );
             }
-            bail!("several debug builds are running; pass --target host:port to choose one")
+            Err(eyre!(
+                "several debug builds are running; pass --target host:port to choose one"
+            ))
         }
     }
 }
@@ -138,7 +143,7 @@ fn discover(shell: &Shell) -> Result<waterui_inspector_protocol::discovery::Adve
 /// application publishes its token, so it can be looked up; one on a device
 /// cannot be, and that is said plainly instead.
 fn token_for(addr: SocketAddr) -> Result<String> {
-    use color_eyre::eyre::{bail, eyre};
+    use color_eyre::eyre::eyre;
 
     let found = waterui_inspector_protocol::discovery::list()
         .map_err(|error| eyre!("could not read advertised inspector endpoints: {error}"))?;
@@ -152,11 +157,11 @@ fn token_for(addr: SocketAddr) -> Result<String> {
         .map(|advertisement| advertisement.token)
         .map_or_else(
             || {
-                bail!(
+                Err(eyre!(
                     "no application on this machine advertises {addr}.\n\
                      Pass --token with the token it printed at startup, which is how \
                      to attach to an application on another machine or device."
-                )
+                ))
             },
             Ok,
         )
