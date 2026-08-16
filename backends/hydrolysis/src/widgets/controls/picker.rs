@@ -24,7 +24,9 @@ use waterui_text::styled::StyledStr;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility_activation_point;
 use crate::renderer::local_interaction_state;
-use crate::widgets::util::{widget_disabled, widget_theme};
+#[cfg(feature = "accessibility")]
+use crate::widgets::util::widget_disabled;
+use crate::widgets::util::widget_theme;
 use waterui_backend_core::widget::PickerMetrics;
 
 impl HydroNativeView for Native<PickerConfig> {

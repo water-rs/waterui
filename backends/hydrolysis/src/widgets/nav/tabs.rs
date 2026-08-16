@@ -17,7 +17,9 @@ use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::widgets::{util::widget_disabled, widget_theme};
+#[cfg(feature = "accessibility")]
+use crate::widgets::util::widget_disabled;
+use crate::widgets::widget_theme;
 
 /// The retained render state of one tab. Its `label` is a move-only `AnyView`, so
 /// it is held as a [`RetainedSubview`] built once and re-flushed each frame; its
