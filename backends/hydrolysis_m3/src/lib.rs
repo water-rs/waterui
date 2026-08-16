@@ -26,6 +26,7 @@ pub mod material_snackbar;
 pub mod material_tabs;
 pub mod navigation_bar;
 pub mod navigation_drawer;
+pub mod navigation_rail;
 pub mod segmented_button;
 pub mod tooltip;
 
@@ -102,6 +103,9 @@ pub use material_tabs::{MaterialTab, MaterialTabs, material_tab, material_tabs};
 pub use navigation_bar::{NavigationBar, NavigationTab, navigation_bar, navigation_tab};
 pub use navigation_drawer::{
     NavigationDrawer, NavigationDrawerItem, navigation_drawer, navigation_drawer_item,
+};
+pub use navigation_rail::{
+    NavigationRail, NavigationRailItem, NavigationRailLayout, navigation_rail, navigation_rail_item,
 };
 pub use segmented_button::{
     OutlinedSegmentedButton, OutlinedSegmentedButtonSet, SegmentedButtonShape,
