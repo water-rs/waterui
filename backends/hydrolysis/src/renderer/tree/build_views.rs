@@ -181,7 +181,7 @@ impl RenderNode {
     /// through `read_signal` so a tab change schedules a frame and the active
     /// content/indicator updates. Stretch is `Both` (read from the config).
     pub(super) fn build_tabs(
-        tabs: Tabs,
+        tabs: TabsLayout,
         env: &Environment,
         renderer: &mut HydrolysisRenderer,
     ) -> RenderNode {

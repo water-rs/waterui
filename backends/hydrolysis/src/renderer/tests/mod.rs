@@ -31,7 +31,7 @@ use waterui_layout::{Divider, scroll};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
-use waterui_navigation::tab::{Tab, Tabs};
+use waterui_navigation::tab::{Tab, TabsLayout};
 
 use crate::engine::{Brush, DrawContext, WidgetTheme};
 use crate::platform::PlatformWindow as _;
@@ -1021,7 +1021,7 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
     let color = Binding::container(Color::srgb(0, 0, 0));
     let first = Id::try_from(1).expect("non-zero tab id");
     let second = Id::try_from(2).expect("non-zero tab id");
-    let tabs = Tabs::new(
+    let tabs = TabsLayout::new(
         Binding::container(first),
         vec![
             Tab::new(first, "First tab", || {
@@ -1782,6 +1782,8 @@ impl WidgetTheme for MinimalTestTheme {
             delete_control_width: 26.0,
             trailing_control_spacing: 6.0,
             trailing_control_vertical_inset: 6.0,
+            section_header_height: 48.0,
+            section_footer_height: 40.0,
         }
     }
 

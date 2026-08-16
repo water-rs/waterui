@@ -54,7 +54,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<NavigationView>);
         $macro!(Native<NavigationSplitLayout>);
         $macro!(Native<NavigationStack<(), ()>>);
-        $macro!(Native<Tabs>);
+        $macro!(Native<TabsLayout>);
         $macro!(Native<BadgeConfig>);
         $macro!(Native<ListConfig>);
         $macro!(Native<TableConfig>);

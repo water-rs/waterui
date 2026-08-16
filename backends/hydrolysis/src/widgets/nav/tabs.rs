@@ -12,12 +12,14 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 use nami::Binding;
-use waterui::navigation::tab::{NativeTabStyle, Tabs};
+use waterui::navigation::tab::{NativeTabStyle, TabsLayout};
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::widgets::{util::widget_disabled, widget_theme};
+#[cfg(feature = "accessibility")]
+use crate::widgets::util::widget_disabled;
+use crate::widgets::widget_theme;
 
 /// The retained render state of one tab. Its `label` is a move-only `AnyView`, so
 /// it is held as a [`RetainedSubview`] built once and re-flushed each frame; its
@@ -30,7 +32,7 @@ struct TabRenderState {
     enabled: nami::Computed<bool>,
 }
 
-/// The retained render state of a `Tabs` container. The selection `Binding` and tab
+/// The retained render state of a `TabsLayout` container. The selection `Binding` and tab
 /// native style are kept by value; each tab is a [`TabRenderState`].
 pub(crate) struct TabsRenderState {
     selection: Binding<Id>,
@@ -39,12 +41,12 @@ pub(crate) struct TabsRenderState {
 }
 
 impl TabsRenderState {
-    pub(crate) fn from_tabs(tabs: Tabs) -> Self {
+    pub(crate) fn from_tabs(tabs: TabsLayout) -> Self {
         assert!(
             !(tabs.tabs.is_empty()),
             "hydrolysis Tabs requires at least one tab"
         );
-        // `Tabs` is `#[non_exhaustive]`, so access fields rather than destructuring.
+        // `TabsLayout` is `#[non_exhaustive]`, so access fields rather than destructuring.
         let selection = tabs.selection;
         let style = tabs.style;
         let tabs = tabs
@@ -81,7 +83,7 @@ impl TabsRenderState {
     }
 }
 
-impl HydroNativeView for Native<Tabs> {
+impl HydroNativeView for Native<TabsLayout> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         measure_tabs_intrinsic(view.as_inner(), state, env)
     }
@@ -323,6 +325,10 @@ pub(crate) fn render_tabs_parts(
             // `dispatch_in_rect_without_accessibility`).
             #[cfg(feature = "accessibility")]
             ctx.renderer_mut().push_accessibility_suppression();
+            // A tab gets an equal share of the bar and no more. Without this a
+            // long label drew straight over its neighbour and off the edge of
+            // the bar, since the label lays out at its natural width.
+            ctx.push_layer_rect(1.0, button_rect);
             let render_ctx = ctx.render_context();
             state.borrow_mut().tabs[index].label.flush_in_rect(
                 ctx.renderer_mut(),
@@ -330,6 +336,7 @@ pub(crate) fn render_tabs_parts(
                 env,
                 label_rect,
             );
+            ctx.pop_layer();
             #[cfg(feature = "accessibility")]
             ctx.renderer_mut().pop_accessibility_suppression();
         }

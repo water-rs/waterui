@@ -807,6 +807,10 @@ pub struct ListMetrics {
     pub trailing_control_spacing: f64,
     /// Vertical inset for trailing row affordances.
     pub trailing_control_vertical_inset: f64,
+    /// Height reserved above a row that opens a titled section.
+    pub section_header_height: f64,
+    /// Height reserved below the last row of a section that has a footer.
+    pub section_footer_height: f64,
 }
 
 /// Row metrics for lists.
@@ -890,6 +894,7 @@ impl ListMetrics {
         row: ListRowMetrics,
         divider: ListDividerMetrics,
         trailing_controls: ListTrailingControlMetrics,
+        sections: ListSectionMetrics,
     ) -> Self {
         Self {
             one_line_row_height: row.one_line_row_height,
@@ -901,6 +906,28 @@ impl ListMetrics {
             delete_control_width: trailing_controls.delete_width,
             trailing_control_spacing: trailing_controls.spacing,
             trailing_control_vertical_inset: trailing_controls.vertical_inset,
+            section_header_height: sections.header_height,
+            section_footer_height: sections.footer_height,
+        }
+    }
+}
+
+/// Section chrome metrics for lists.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListSectionMetrics {
+    /// Height reserved above a row that opens a titled section.
+    pub header_height: f64,
+    /// Height reserved below the last row of a section that has a footer.
+    pub footer_height: f64,
+}
+
+impl ListSectionMetrics {
+    /// Create list section chrome metrics.
+    #[must_use]
+    pub const fn new(header_height: f64, footer_height: f64) -> Self {
+        Self {
+            header_height,
+            footer_height,
         }
     }
 }

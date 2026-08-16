@@ -609,7 +609,7 @@ pub(crate) fn measure_owned_navigation_view_intrinsic(
 }
 
 pub(crate) fn measure_tabs_intrinsic(
-    tabs: &Tabs,
+    tabs: &TabsLayout,
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
@@ -738,7 +738,29 @@ pub(crate) fn measure_list_intrinsic(
     if editing && list.on_delete.is_some() {
         row_width += metrics.delete_control_width + metrics.trailing_control_spacing;
     }
-    let total_height = row_height * row_count as f64;
+    // Section chrome is part of the list's own height. Walking every marker is
+    // bounded here because only static section content sets `uses_sections`; a
+    // virtualized `List::for_each` never does.
+    let mut section_height = 0.0;
+    if list.uses_sections {
+        for index in 0..row_count {
+            let Some(section) = list
+                .contents
+                .get_view(index)
+                .and_then(|item| item.section.clone())
+            else {
+                continue;
+            };
+            if section.label.is_some() {
+                section_height += metrics.section_header_height;
+            }
+            if section.footer.is_some() {
+                section_height += metrics.section_footer_height;
+            }
+        }
+    }
+
+    let total_height = row_height * row_count as f64 + section_height;
     let max_width = row_width.max(metrics.horizontal_inset * 2.0);
 
     LayoutSize::new(max_width as f32, total_height as f32)

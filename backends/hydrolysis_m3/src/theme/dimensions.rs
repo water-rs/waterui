@@ -133,6 +133,11 @@ pub const LIST_DELETE_CONTROL_WIDTH: f64 = 26.0;
 pub const LIST_TRAILING_CONTROL_SPACING: f64 = 6.0;
 pub const LIST_TRAILING_CONTROL_VERTICAL_INSET: f64 = 6.0;
 pub const LIST_CONTROL_CORNER_RADIUS: f64 = 5.0;
+/// Material list subheader line (`md.sys.list.subheader`), a 48dp band.
+pub const LIST_SECTION_HEADER_HEIGHT: f64 = 48.0;
+/// Supporting text closing a section, on the same 40dp rhythm as a one-line
+/// supporting paragraph.
+pub const LIST_SECTION_FOOTER_HEIGHT: f64 = 40.0;
 pub const TABLE_MIN_COLUMN_WIDTH: f64 = 72.0;
 pub const TABLE_CELL_HORIZONTAL_PADDING: f64 = 32.0;
 pub const TABLE_CELL_VERTICAL_INSET: f64 = 16.0;
