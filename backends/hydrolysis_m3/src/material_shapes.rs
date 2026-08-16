@@ -12,19 +12,17 @@
 //! interpolate by interpolating those radii, and the result stays rotationally
 //! aligned instead of drifting the way arc-length matching does.
 //!
-//! This exists for Material's loading indicator, which is not built yet. Two
-//! things still stand in the way, and neither is this geometry:
+//! This exists for Material's loading indicator, which is not built yet: the
+//! indicator needs a per-frame clock, and in this codebase only backend widgets
+//! have one — a composed view cannot tick itself, so the indicator has to
+//! become a semantic component the renderer drives. The geometry is not what
+//! stands in the way.
 //!
-//! The indicator needs a per-frame clock, and in this codebase only backend
-//! widgets have one — a composed view cannot tick itself, so the indicator has
-//! to become a semantic component the renderer drives.
-//!
-//! Three of its seven silhouettes (`Cookie9Sided`, `Sunny`, `Oval`) are built from
-//! parameters Compose documents, and [`RoundedPolygon`] makes them exactly. The
-//! other four come from control points fed through `customPolygon`'s repetition
-//! and mirroring, which is not published; reconstructing it produced a valid
-//! pentagon but an outline for `Pill` that does not close. Those four need the
-//! real `androidx.graphics.shapes` algorithm rather than a guess at it.
+//! Three of its seven silhouettes (`Cookie9Sided`, `Sunny`, `Oval`) are built
+//! from parameters Compose documents, and [`RoundedPolygon`] makes them
+//! exactly. The other four come from control points fed through
+//! `MaterialShapes.kt`'s `customPolygon`, whose repetition and mirroring
+//! [`RoundedPolygon::repeated`] reproduces.
 
 use vello::kurbo::{BezPath, Point, Vec2};
 
@@ -99,37 +97,65 @@ impl RoundedPolygon {
         Self { vertices }
     }
 
-    /// Repeats `base` around the centre `reps` times, optionally mirroring each
-    /// repetition so it is symmetric about its own axis.
+    /// Repeats `base` around the centre, optionally mirroring alternate
+    /// sections so each pair is symmetric.
     ///
-    /// This reconstructs `customPolygon(points, reps, mirroring)`. The control
-    /// points are Compose's; how a repetition is mirrored is inferred, since
-    /// that part of `androidx.graphics.shapes` is not published as tokens.
-    #[must_use]
+    /// This is `MaterialShapes.kt`'s `doRepeat`. Without mirroring the base
+    /// points are simply rotated `reps` times.
+    ///
+    /// Mirroring works in polar terms and keeps each point's distance from the
+    /// centre, moving only its angle. There are twice as many sections; an even
+    /// one lays the base angles down turned by its own share, and an odd one
+    /// walks them back reflected about the first point's angle. That reflection
+    /// maps the first point onto the one the previous section started from, so
+    /// the odd section drops it — a repeated vertex has no edges to round
+    /// between and would notch the outline.
     #[allow(
         clippy::cast_precision_loss,
         reason = "repetition counts are small and exact in f64"
     )]
+    #[must_use]
     pub fn repeated(base: &[RoundedVertex], reps: usize, mirroring: bool) -> Self {
-        let sector = core::f64::consts::TAU / reps as f64;
-        // A mirrored repetition is symmetric about the axis through its first
-        // point, and that point is shared rather than repeated. Reflecting
-        // about the sector's mid-line instead folds the outline through itself
-        // and leaves rays from the centre missing it entirely.
-        let base_axis = base
-            .first()
-            .map_or(0.0, |vertex| vertex.offset.y.atan2(vertex.offset.x));
-        let mut vertices = Vec::with_capacity(base.len() * reps * if mirroring { 2 } else { 1 });
-        for rep in 0..reps {
-            let rotation = sector * rep as f64;
-            for vertex in base {
-                push_unique(&mut vertices, rotate(*vertex, rotation));
-            }
-            if mirroring {
-                let axis = rotation + base_axis;
-                for vertex in base.iter().rev() {
-                    push_unique(&mut vertices, reflect(rotate(*vertex, rotation), axis));
+        if !mirroring {
+            let sector = core::f64::consts::TAU / reps as f64;
+            let vertices = (0..reps)
+                .flat_map(|rep| {
+                    let rotation = sector * rep as f64;
+                    base.iter().map(move |vertex| rotate(*vertex, rotation))
+                })
+                .collect();
+            return Self { vertices };
+        }
+
+        let angles: Vec<f64> = base
+            .iter()
+            .map(|vertex| vertex.offset.y.atan2(vertex.offset.x))
+            .collect();
+        let distances: Vec<f64> = base.iter().map(|vertex| vertex.offset.hypot()).collect();
+        let sections = reps * 2;
+        let sector = core::f64::consts::TAU / sections as f64;
+        let mut vertices = Vec::with_capacity(base.len() * sections);
+        for section in 0..sections {
+            let forwards = section % 2 == 0;
+            for index in 0..base.len() {
+                let point = if forwards {
+                    index
+                } else {
+                    base.len() - 1 - index
+                };
+                if point == 0 && !forwards {
+                    continue;
                 }
+                let within = if forwards {
+                    angles[point]
+                } else {
+                    2.0f64.mul_add(angles[0], sector - angles[point])
+                };
+                let angle = sector.mul_add(section as f64, within);
+                vertices.push(RoundedVertex {
+                    offset: Vec2::new(angle.cos(), angle.sin()) * distances[point],
+                    rounding: base[point].rounding,
+                });
             }
         }
         Self { vertices }
@@ -200,6 +226,90 @@ impl RoundedPolygon {
     }
 }
 
+/// The seven shapes Material's loading indicator cycles through, in Compose's
+/// order, each sampled into the shared index space [`morph`] needs.
+///
+/// `Cookie9Sided`, `Sunny` and `Oval` come from parameters Compose documents.
+/// The rest are its published control points fed through [`RoundedPolygon::repeated`].
+///
+/// Each shape is normalized to reach the same distance at its widest, as
+/// `MaterialShapes` does with `RoundedPolygon.normalized()`. Their control
+/// points are authored at whatever scale suited each shape, so without this the
+/// sequence would swell and shrink as it morphed from one to the next.
+#[must_use]
+pub fn material_shape_sequence() -> Vec<Vec<f64>> {
+    material_shape_polygons()
+        .iter()
+        .map(RoundedPolygon::radii)
+        .map(|radii| normalized(&radii))
+        .collect()
+}
+
+/// The seven polygons themselves, before they are sampled into radii.
+fn material_shape_polygons() -> Vec<RoundedPolygon> {
+    // Compose authors these around a centre of (0.5, 0.5); they are stated here
+    // relative to the centre instead, so a shape is its own radius function.
+    let soft_burst = RoundedPolygon::repeated(
+        &[
+            RoundedVertex::new(-0.307, -0.223, 0.053),
+            RoundedVertex::new(-0.324, -0.445, 0.053),
+        ],
+        10,
+        false,
+    );
+    let cookie_9_sided = RoundedPolygon::star(9, 0.8, 0.5).rotated(-core::f64::consts::FRAC_PI_2);
+    let pentagon = RoundedPolygon::repeated(
+        &[
+            RoundedVertex::new(0.0, -0.509, 0.172),
+            RoundedVertex::new(0.530, -0.135, 0.164),
+            RoundedVertex::new(0.328, 0.470, 0.169),
+        ],
+        1,
+        true,
+    );
+    let pill = RoundedPolygon::repeated(
+        &[
+            RoundedVertex::new(0.461, -0.461, 0.426),
+            RoundedVertex::new(0.501, -0.072, 0.0),
+            RoundedVertex::new(0.500, 0.109, 1.0),
+        ],
+        2,
+        true,
+    );
+    let sunny = RoundedPolygon::star(8, 0.8, 0.15);
+    let cookie_4_sided = RoundedPolygon::repeated(
+        &[
+            RoundedVertex::new(0.737, 0.736, 0.258),
+            RoundedVertex::new(0.0, 0.418, 0.233),
+        ],
+        4,
+        false,
+    );
+    let oval = RoundedPolygon::circle()
+        .scaled_y(0.64)
+        .rotated(-core::f64::consts::FRAC_PI_4);
+
+    vec![
+        soft_burst,
+        cookie_9_sided,
+        pentagon,
+        pill,
+        sunny,
+        cookie_4_sided,
+        oval,
+    ]
+}
+
+/// Scales a shape's radii so its widest reach is exactly one.
+fn normalized(radii: &[f64]) -> Vec<f64> {
+    let widest = radii.iter().copied().fold(f64::MIN, f64::max);
+    assert!(
+        widest > 0.0,
+        "a shape with no extent cannot be normalized: it collapsed to a point"
+    );
+    radii.iter().map(|radius| radius / widest).collect()
+}
+
 /// Interpolates between two shapes' radii.
 #[must_use]
 pub fn morph(from: &[f64], to: &[f64], progress: f64) -> Vec<f64> {
@@ -233,20 +343,6 @@ pub fn radii_to_path(radii: &[f64], centre: Point, scale: f64) -> BezPath {
     path
 }
 
-/// Appends a vertex unless it lands on the one already there.
-///
-/// A mirrored repetition reflects its own first point onto itself, and a
-/// duplicated vertex has no edges to round between, which puts a notch in the
-/// outline.
-fn push_unique(vertices: &mut Vec<RoundedVertex>, vertex: RoundedVertex) {
-    const TOLERANCE: f64 = 1e-6;
-    let duplicate = |other: &RoundedVertex| (other.offset - vertex.offset).hypot() < TOLERANCE;
-    if vertices.last().is_some_and(duplicate) || vertices.first().is_some_and(duplicate) {
-        return;
-    }
-    vertices.push(vertex);
-}
-
 fn rotate(vertex: RoundedVertex, radians: f64) -> RoundedVertex {
     let (sin, cos) = radians.sin_cos();
     RoundedVertex {
@@ -254,17 +350,6 @@ fn rotate(vertex: RoundedVertex, radians: f64) -> RoundedVertex {
             vertex.offset.x.mul_add(cos, -(vertex.offset.y * sin)),
             vertex.offset.x.mul_add(sin, vertex.offset.y * cos),
         ),
-        rounding: vertex.rounding,
-    }
-}
-
-/// Reflects a vertex about the line through the centre at `axis` radians.
-fn reflect(vertex: RoundedVertex, axis: f64) -> RoundedVertex {
-    let angle = vertex.offset.y.atan2(vertex.offset.x);
-    let length = vertex.offset.hypot();
-    let mirrored = 2.0f64.mul_add(axis, -angle);
-    RoundedVertex {
-        offset: Vec2::new(mirrored.cos() * length, mirrored.sin() * length),
         rounding: vertex.rounding,
     }
 }
@@ -382,7 +467,76 @@ fn radius_at(outline: &[Point], angle: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{RoundedPolygon, SAMPLE_COUNT, morph};
+    use super::{
+        RoundedPolygon, RoundedVertex, SAMPLE_COUNT, material_shape_polygons,
+        material_shape_sequence, morph,
+    };
+
+    /// The angles of a polygon's vertices, in degrees, unwrapped so the walk
+    /// reads as one pass around the centre rather than jumping at ±180°.
+    fn unwrapped_degrees(polygon: &RoundedPolygon) -> Vec<f64> {
+        let mut previous = f64::NEG_INFINITY;
+        polygon
+            .vertices
+            .iter()
+            .map(|vertex| {
+                let degrees = vertex.offset.y.atan2(vertex.offset.x).to_degrees();
+                // Lift each angle above the previous one so the walk reads as
+                // one pass rather than wrapping at ±180°.
+                let turns = ((previous - degrees) / 360.0).ceil().max(0.0);
+                let degrees = 360.0f64.mul_add(turns, degrees);
+                previous = degrees;
+                degrees
+            })
+            .collect()
+    }
+
+    /// `doRepeat`'s mirrored branch, checked against the angles Compose's own
+    /// arithmetic produces for `pentagon()`.
+    ///
+    /// Its first point sits at -90°, so each mirrored section reflects about
+    /// the vertical, so the base angles -90, -14.3 and 55.1 come back as 124.9
+    /// and 194.3 — the reflection of the first is dropped because it lands on
+    /// that first point again.
+    #[test]
+    fn a_mirrored_repetition_reflects_about_the_first_points_angle() {
+        let pentagon = RoundedPolygon::repeated(
+            &[
+                RoundedVertex::new(0.0, -0.509, 0.172),
+                RoundedVertex::new(0.530, -0.135, 0.164),
+                RoundedVertex::new(0.328, 0.470, 0.169),
+            ],
+            1,
+            true,
+        );
+        let expected = [-90.0, -14.30, 55.10, 124.90, 194.30];
+        let actual = unwrapped_degrees(&pentagon);
+        assert_eq!(actual.len(), expected.len(), "pentagon has five corners");
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 0.05,
+                "vertex angle was {actual}°, expected {expected}°"
+            );
+        }
+    }
+
+    /// Every polygon walks its vertices once around the centre, in order.
+    ///
+    /// This is what makes a shape a radius function, and it is the property a
+    /// misordered repetition breaks: reflecting a two-repetition shape the
+    /// wrong way still yields a closed outline of the right vertex count, but
+    /// one that doubles back on itself and reads as a bowtie.
+    #[test]
+    fn every_polygon_walks_its_vertices_once_around_the_centre() {
+        for (index, polygon) in material_shape_polygons().iter().enumerate() {
+            let degrees = unwrapped_degrees(polygon);
+            let sweep = degrees.last().expect("a polygon has vertices") - degrees[0];
+            assert!(
+                sweep < 360.0,
+                "shape {index} doubles back: its vertices sweep {sweep}°"
+            );
+        }
+    }
 
     /// A circle is the same distance from its centre whichever way you look.
     #[test]
@@ -425,6 +579,78 @@ mod tests {
             "the unscaled axis should reach further: {across} vs {along}"
         );
         assert!((along - 0.64).abs() < 0.02, "scaled axis was {along}");
+    }
+
+    /// Compose cycles seven shapes, and the morph only works because they all
+    /// sample into the same index space.
+    #[test]
+    fn the_loading_sequence_is_seven_shapes_sharing_one_sample_space() {
+        let shapes = material_shape_sequence();
+        assert_eq!(shapes.len(), 7);
+        for shape in &shapes {
+            assert_eq!(shape.len(), SAMPLE_COUNT);
+        }
+    }
+
+    /// Every shape closes and has real extent: a ray from the centre finds the
+    /// outline whichever way it looks, and never past the unit radius. An
+    /// outline that failed to close reads as a zero radius at some angle.
+    #[test]
+    fn every_loading_shape_is_closed_and_bounded() {
+        for (index, shape) in material_shape_sequence().iter().enumerate() {
+            let max = shape.iter().copied().fold(f64::MIN, f64::max);
+            let min = shape.iter().copied().fold(f64::MAX, f64::min);
+            assert!(max > 0.3, "shape {index} collapsed: max radius {max}");
+            assert!(max <= 1.05, "shape {index} exceeded the unit radius: {max}");
+            assert!(
+                min > 0.0,
+                "shape {index} does not close: zero radius somewhere"
+            );
+        }
+    }
+
+    /// Every shape reaches exactly as far as every other.
+    ///
+    /// The control points are authored at whatever scale suited each shape —
+    /// the pentagon's sit around 0.51 from centre while the stars' reach 1.0 —
+    /// so an un-normalized sequence swells and shrinks as it morphs. Nothing
+    /// else here would catch that: each shape on its own is closed, bounded and
+    /// different from its neighbour, which is exactly what a pulsing sequence
+    /// looks like to those tests.
+    #[test]
+    fn every_loading_shape_reaches_the_same_distance_at_its_widest() {
+        for (index, shape) in material_shape_sequence().iter().enumerate() {
+            let widest = shape.iter().copied().fold(f64::MIN, f64::max);
+            assert!(
+                (widest - 1.0).abs() < 1e-9,
+                "shape {index} reaches {widest} at its widest, not 1"
+            );
+        }
+    }
+
+    /// Consecutive shapes differ, or the cycle would visibly stall on a beat.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the divisor is SAMPLE_COUNT, which is 180"
+    )]
+    #[test]
+    fn consecutive_loading_shapes_actually_differ() {
+        let shapes = material_shape_sequence();
+        for index in 0..shapes.len() {
+            let current = &shapes[index];
+            let next = &shapes[(index + 1) % shapes.len()];
+            let difference: f64 = current
+                .iter()
+                .zip(next)
+                .map(|(a, b)| (a - b).abs())
+                .sum::<f64>()
+                / current.len() as f64;
+            assert!(
+                difference > 0.01,
+                "shapes {index} and {} are nearly identical: {difference}",
+                (index + 1) % shapes.len()
+            );
+        }
     }
 
     /// A morph starts at one shape, ends at the other, and stays between them.
