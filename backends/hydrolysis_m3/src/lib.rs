@@ -28,6 +28,7 @@ pub mod navigation_bar;
 pub mod navigation_drawer;
 pub mod navigation_rail;
 pub mod segmented_button;
+pub mod toolbar;
 pub mod tooltip;
 
 mod controls;
@@ -122,6 +123,9 @@ pub use theme::colors::{
 /// this theme's component motion is built from, re-exported so app and backend
 /// code can animate on the same scale instead of re-deriving the numbers.
 pub use theme::motion::tokens as motion_tokens;
+pub use toolbar::{
+    DockedToolbar, FloatingToolbar, FloatingToolbarStyle, docked_toolbar, floating_toolbar,
+};
 pub use tooltip::{PlainTooltip, RichTooltip, TooltipAnchor, plain_tooltip, rich_tooltip};
 
 #[derive(Debug, Clone)]
