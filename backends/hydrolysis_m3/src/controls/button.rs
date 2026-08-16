@@ -1,5 +1,5 @@
 use crate::dimensions::{
-    BUTTON_CONTAINER_RADIUS, BUTTON_LINK_HORIZONTAL_PADDING, BUTTON_LINK_UNDERLINE_BOTTOM_INSET,
+    BUTTON_LINK_HORIZONTAL_PADDING, BUTTON_LINK_UNDERLINE_BOTTOM_INSET,
     BUTTON_LINK_UNDERLINE_THICKNESS, BUTTON_LINK_VERTICAL_PADDING, BUTTON_MIN_WIDTH,
     BUTTON_TEXT_VERTICAL_PADDING, button_size_tokens,
 };
@@ -54,6 +54,15 @@ pub fn label_color(colors: &MaterialColorScheme, style: ButtonStyle, disabled: b
     }
 }
 
+/// A button container is `CornerFull` at every size in the tokens, so its
+/// corner radius is half its height rather than a fixed number of dp. Reading
+/// it off the bounds keeps a large or extra-large button a capsule, and keeps a
+/// button stretched to fill a taller row — a navigation drawer line, say —
+/// rounded to match whatever it is sitting on.
+fn container_radius(bounds: vello::kurbo::Rect) -> f64 {
+    bounds.height() / 2.0
+}
+
 pub fn draw_chrome(
     colors: &MaterialColorScheme,
     draw: &mut dyn DrawContext,
@@ -72,7 +81,7 @@ pub fn draw_chrome(
             } else {
                 colors.secondary_container.peniko()
             };
-            draw.fill_rounded_rect(bounds, BUTTON_CONTAINER_RADIUS.into(), &Brush::from(fill));
+            draw.fill_rounded_rect(bounds, container_radius(bounds).into(), &Brush::from(fill));
         }
         ButtonStyle::Bordered => {
             let border = if state.disabled {
@@ -84,7 +93,7 @@ pub fn draw_chrome(
             };
             draw.stroke_rounded_rect(
                 bounds,
-                BUTTON_CONTAINER_RADIUS.into(),
+                container_radius(bounds).into(),
                 &Brush::from(border),
                 1.0,
             );
@@ -95,7 +104,7 @@ pub fn draw_chrome(
             } else {
                 colors.primary.peniko()
             };
-            draw.fill_rounded_rect(bounds, BUTTON_CONTAINER_RADIUS.into(), &Brush::from(fill));
+            draw.fill_rounded_rect(bounds, container_radius(bounds).into(), &Brush::from(fill));
         }
         ButtonStyle::Link => {
             let underline = if state.disabled {
@@ -132,15 +141,15 @@ pub fn draw_state_layer(
         | ButtonStyle::Borderless => colors.primary.peniko(),
         _ => panic!("hydrolysis ButtonStyle variant is not implemented"),
     };
-    state_layer::draw_bounded(draw, bounds, BUTTON_CONTAINER_RADIUS.into(), color, state);
+    state_layer::draw_bounded(draw, bounds, container_radius(bounds).into(), color, state);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{draw_chrome, metrics};
     use crate::dimensions::{
-        BUTTON_CONTAINER_RADIUS, BUTTON_EXTRA_LARGE, BUTTON_EXTRA_SMALL, BUTTON_LARGE,
-        BUTTON_MEDIUM, BUTTON_MIN_WIDTH, BUTTON_SMALL, BUTTON_TEXT_VERTICAL_PADDING,
+        BUTTON_EXTRA_LARGE, BUTTON_EXTRA_SMALL, BUTTON_LARGE, BUTTON_MEDIUM, BUTTON_MIN_WIDTH,
+        BUTTON_SMALL, BUTTON_TEXT_VERTICAL_PADDING,
     };
     use crate::{Brush, DrawContext, MaterialColorScheme};
     use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
@@ -231,8 +240,18 @@ mod tests {
         }
         // ButtonSmallTokens.ContainerHeight
         assert_eq!(BUTTON_SMALL.container_height, 40.0);
-        // BaselineButtonTokens.ContainerShapeRound is CornerFull
-        assert_eq!(BUTTON_CONTAINER_RADIUS, BUTTON_SMALL.container_height / 2.0);
+        // BaselineButtonTokens.ContainerShapeRound is CornerFull, so every size
+        // is a capsule and the radius follows the container's own height.
+        for size in [
+            BUTTON_EXTRA_SMALL,
+            BUTTON_SMALL,
+            BUTTON_MEDIUM,
+            BUTTON_LARGE,
+            BUTTON_EXTRA_LARGE,
+        ] {
+            let bounds = Rect::new(0.0, 0.0, 200.0, size.container_height);
+            assert_eq!(super::container_radius(bounds), size.container_height / 2.0);
+        }
         // ButtonDefaults.MinWidth
         assert_eq!(BUTTON_MIN_WIDTH, 58.0);
         // BaselineButtonTokens.LeadingSpace / TrailingSpace, which is what

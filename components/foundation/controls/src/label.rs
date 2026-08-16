@@ -122,6 +122,18 @@ impl Label {
     pub const fn display_mode_preference(&self) -> LabelDisplayMode {
         self.display_mode
     }
+
+    /// Whether this label's visible content is an arbitrary view rather than
+    /// semantic text and an optional icon.
+    ///
+    /// A backend needs this to tell the two apart, because the display mode
+    /// cannot: custom content carries no icon, so it always resolves to
+    /// [`LabelDisplayMode::TitleOnly`], and a backend that reads that as "just
+    /// draw the text" would silently discard the view it was given.
+    #[must_use]
+    pub const fn has_custom_content(&self) -> bool {
+        matches!(self.content, LabelContent::Custom { .. })
+    }
 }
 
 /// Emits `label_style(LabelDisplayMode)` and `hide_label()` builders on a
