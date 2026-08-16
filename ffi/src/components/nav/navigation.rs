@@ -10,7 +10,8 @@ use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_graphics::color::ResolvedColor;
-use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
+use crate::WuiSystemIcon;
+use waterui_navigation::tab::{NativeTabStyle, Tab, TabIcon, TabsLayout};
 use waterui_navigation::{
     Bar, ColumnWidth, CustomNavigationController, NativeNavigationSplitStyle,
     NativeNavigationTransition, NavigationController, NavigationDestinationState, NavigationSearch,
@@ -670,6 +671,18 @@ pub struct WuiTab {
 
     /// Reactive enabled state.
     pub enabled: *mut WuiComputed<bool>,
+
+    /// The tab's icon as a platform symbol, or null.
+    ///
+    /// A backend that knows the symbol should prefer this: it renders at the
+    /// size and weight the platform's own chrome calls for.
+    pub system_icon: *mut WuiSystemIcon,
+
+    /// The tab's icon as a view to render, or null.
+    ///
+    /// Set when the icon is not a platform symbol — a packaged icon set, say.
+    /// A backend whose tab item takes an image has to rasterize this itself.
+    pub icon: *mut WuiAnyView,
 }
 
 /// Creates a navigation view from tab content.
@@ -699,6 +712,14 @@ pub unsafe extern "C" fn waterui_tab_content(
 impl IntoFFI for Tab<Id> {
     type FFI = WuiTab;
     fn into_ffi(self) -> Self::FFI {
+        let (system_icon, icon) = match self.icon {
+            Some(TabIcon::System(icon)) => (
+                Box::into_raw(Box::new(icon.into_ffi())),
+                core::ptr::null_mut(),
+            ),
+            Some(TabIcon::View(view)) => (core::ptr::null_mut(), view.build().into_ffi()),
+            None => (core::ptr::null_mut(), core::ptr::null_mut()),
+        };
         let id_i32 = i32::from(self.id);
         let id = u64::try_from(id_i32)
             .expect("tab id must be positive when converting to FFI u64 identifier");
@@ -708,6 +729,8 @@ impl IntoFFI for Tab<Id> {
             content: self.content.into_ffi(),
             badge: self.badge.map_or(core::ptr::null_mut(), IntoFFI::into_ffi),
             enabled: self.enabled.into_ffi(),
+            system_icon,
+            icon,
         }
     }
 }
