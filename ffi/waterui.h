@@ -5938,6 +5938,20 @@ typedef struct WuiTab {
    * Reactive enabled state.
    */
   WuiComputed_bool *enabled;
+  /**
+   * The tab's icon as a platform symbol, or null.
+   *
+   * A backend that knows the symbol should prefer this: it renders at the
+   * size and weight the platform's own chrome calls for.
+   */
+  struct WuiSystemIcon *system_icon;
+  /**
+   * The tab's icon as a view to render, or null.
+   *
+   * Set when the icon is not a platform symbol — a packaged icon set, say.
+   * A backend whose tab item takes an image has to rasterize this itself.
+   */
+  struct WuiAnyView *icon;
 } WuiTab;
 
 /**

@@ -2,8 +2,11 @@
 
 use alloc::vec::Vec;
 
+use core::fmt::Debug;
+
 use nami::{Binding, Computed, SignalExt as _};
 use waterui_controls::IntoLabel;
+use waterui_icon::SystemIcon;
 use waterui_core::{
     AnyView, Environment, IntoSignal, Str, View,
     handler::{AnyViewBuilder, ViewBuilder},
@@ -88,12 +91,37 @@ pub mod tab_style {
     }
 }
 
+/// A tab's icon, kept apart from its title.
+///
+/// A native tab bar item is an image next to a title rather than one composed
+/// view, so the icon has to reach the backend on its own. The two forms are not
+/// interchangeable: a platform that recognizes the symbol renders it at whatever
+/// size and weight its chrome calls for, while a view has to be rasterized at a
+/// chosen size.
+pub enum TabIcon {
+    /// A symbol the platform knows by name.
+    System(SystemIcon),
+    /// A view the backend renders itself.
+    View(AnyViewBuilder<AnyView>),
+}
+
+impl Debug for TabIcon {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::System(icon) => f.debug_tuple("System").field(icon).finish(),
+            Self::View(_) => f.write_str("View"),
+        }
+    }
+}
+
 /// One stable native tab.
 pub struct Tab<T> {
     /// Stable tab identifier.
     pub id: T,
     /// Semantic tab label.
     pub label: AnyView,
+    /// The label's icon, lifted out so native chrome can place it itself.
+    pub icon: Option<TabIcon>,
     /// Stable lazily built tab root.
     pub content: AnyViewBuilder<NavigationView>,
     /// Optional reactive badge count.
@@ -111,9 +139,18 @@ impl<T> Tab<T> {
         label: impl IntoLabel,
         content: impl ViewBuilder<Output = NavigationView>,
     ) -> Self {
+        let label = label.into_label();
+        // Lift the icon out before the label is erased: a tab bar item wants it
+        // separately, and once this is an `AnyView` nothing can tell which part
+        // of it was the icon.
+        let icon = label.semantic_icon().map_or_else(
+            || label.icon_view().map(TabIcon::View),
+            |icon| Some(TabIcon::System(icon)),
+        );
         Self {
             id,
-            label: AnyView::new(label.into_label()),
+            label: AnyView::new(label),
+            icon,
             content: AnyViewBuilder::new(content),
             badge: None,
             enabled: Computed::constant(true),
@@ -158,6 +195,7 @@ impl<T> Tab<T> {
         Tab {
             id,
             label: self.label,
+            icon: self.icon,
             content: self.content,
             badge: self.badge,
             enabled: self.enabled,
@@ -237,10 +275,11 @@ impl<T: Ord + Clone + 'static> Tabs<T> {
         self.style = style.into_native();
         self
     }
-}
 
-impl<T: Ord + Clone + 'static> View for Tabs<T> {
-    fn body(self, _env: &Environment) -> impl View {
+    /// Erases tab identity into the container the native backends consume.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_layout(self) -> TabsLayout {
         let mapping = Mapping::new();
         let tabs = self
             .items
@@ -255,6 +294,12 @@ impl<T: Ord + Clone + 'static> View for Tabs<T> {
             tabs,
             style: self.style,
         }
+    }
+}
+
+impl<T: Ord + Clone + 'static> View for Tabs<T> {
+    fn body(self, _env: &Environment) -> impl View {
+        self.into_layout()
     }
 
     fn stretch_axis(&self) -> StretchAxis {

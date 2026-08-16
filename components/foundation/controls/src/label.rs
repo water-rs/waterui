@@ -601,6 +601,21 @@ impl Label {
         }
     }
 
+    /// Returns the label's icon as a view builder, whatever kind it is.
+    ///
+    /// Chrome that hosts an icon apart from its title — a tab bar item is an
+    /// image plus a title, not one composed view — needs the icon on its own.
+    /// Ask [`Self::semantic_icon`] first: a platform that recognizes the symbol
+    /// draws it natively at any size, while this is a view the host has to
+    /// render for itself.
+    #[must_use]
+    pub fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
+        match &self.content {
+            LabelContent::Semantic { icon, .. } => icon.as_ref().map(|icon| icon.view.clone()),
+            LabelContent::Custom { .. } => None,
+        }
+    }
+
     const fn has_icon(&self) -> bool {
         match &self.content {
             LabelContent::Semantic { icon, .. } => icon.is_some(),
