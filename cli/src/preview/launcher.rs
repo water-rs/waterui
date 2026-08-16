@@ -1077,7 +1077,15 @@ fn preview_support_path() -> Result<PathBuf> {
 /// support application is scaffolded: resolving the runtime's requirements reads
 /// the module's own Cargo metadata.
 async fn preview_support_ffi_crate_path() -> Result<PathBuf> {
-    Ok(crate::water_dir::project_build_cache_dir(&preview_support_path()?)
+    // The support application's root has to exist before its build-cache path can
+    // be derived, because deriving it canonicalizes the root. On the very first
+    // preview nothing has scaffolded it yet, and an empty directory is exactly
+    // what the scaffolder expects to find.
+    let support_path = preview_support_path()?;
+    smol::fs::create_dir_all(&support_path)
+        .await
+        .wrap_err("Failed to create the preview support application directory")?;
+    Ok(crate::water_dir::project_build_cache_dir(&support_path)
         .await?
         .join("ffi"))
 }
@@ -1089,15 +1097,7 @@ async fn preview_support_ffi_crate_path() -> Result<PathBuf> {
 /// member of a workspace, so a stale one whose project has since moved or been
 /// deleted breaks the build of an unrelated preview.
 async fn scaffold_preview_module(project: &Project) -> Result<PathBuf> {
-    // Refresh the support runtime first when it already exists: opening it rewrites
-    // the generated FFI manifest that roots this workspace, and a module written
-    // under a root that does not yet declare it is rejected outright by Cargo.
     let support_path = preview_support_path()?;
-    if support_path.join("Water.toml").is_file() {
-        Project::open(&support_path)
-            .await
-            .wrap_err("Failed to open the preview support project")?;
-    }
     let workspace_root = preview_support_ffi_crate_path().await?;
     let modules_root = workspace_root.join(crate::templates::PREVIEW_MODULES_DIR);
     let crate_path = project.preview_dylib_crate_path(&workspace_root);
@@ -1112,10 +1112,21 @@ async fn scaffold_preview_module(project: &Project) -> Result<PathBuf> {
             }
         }
     }
-    project
+    let crate_path = project
         .scaffold_preview_ffi_companion(&workspace_root)
         .await
-        .wrap_err("Failed to scaffold the preview module")
+        .wrap_err("Failed to scaffold the preview module")?;
+
+    // Then refresh the support runtime, so the manifest that roots this workspace
+    // is rewritten with the module now on disk. A module under a root that does
+    // not declare it is rejected outright by Cargo, and the root lists whichever
+    // modules it finds — so it has to be written after, never before.
+    if support_path.join("Water.toml").is_file() {
+        Project::open(&support_path)
+            .await
+            .wrap_err("Failed to open the preview support project")?;
+    }
+    Ok(crate_path)
 }
 
 /// Ensure the preview support app exists and matches the current project requirements.
