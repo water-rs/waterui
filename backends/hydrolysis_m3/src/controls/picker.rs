@@ -486,7 +486,12 @@ mod tests {
         );
 
         assert_eq!(draw.circle_fills.len(), 1);
-        assert!((draw.circle_fills[0].0 - PICKER_RADIO_INNER_DOT_RADIUS * 0.4).abs() < 0.000_001);
+        assert!(
+            PICKER_RADIO_INNER_DOT_RADIUS
+                .mul_add(-0.4, draw.circle_fills[0].0)
+                .abs()
+                < 0.000_001
+        );
         assert_eq!(
             draw.circle_fills[0].1,
             colors.primary.peniko().with_alpha(0.25)

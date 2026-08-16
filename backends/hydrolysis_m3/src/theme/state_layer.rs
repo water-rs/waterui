@@ -6,12 +6,14 @@ use vello::peniko::Color;
 /// targets still produce a ripple at least this wide.
 const RIPPLE_MINIMUM_DIAMETER: f64 = 48.0;
 
-/// MD3 hover state-layer opacity token (8%).
-const HOVER_STATE_LAYER_OPACITY: f32 = 0.08;
-/// MD3 focus state-layer opacity token (12%).
-const FOCUS_STATE_LAYER_OPACITY: f32 = 0.12;
-/// MD3 pressed state-layer opacity token (12%).
-const PRESSED_STATE_LAYER_OPACITY: f32 = 0.12;
+/// `StateTokens.HoverStateLayerOpacity`.
+pub const HOVER_STATE_LAYER_OPACITY: f32 = 0.08;
+/// `StateTokens.FocusStateLayerOpacity`.
+pub const FOCUS_STATE_LAYER_OPACITY: f32 = 0.1;
+/// `StateTokens.PressedStateLayerOpacity`.
+pub const PRESSED_STATE_LAYER_OPACITY: f32 = 0.1;
+/// `StateTokens.DraggedStateLayerOpacity`.
+pub const DRAGGED_STATE_LAYER_OPACITY: f32 = 0.16;
 
 /// The dominant resting state-layer opacity for `state`: the renderer-sampled
 /// animated value when one is in flight, otherwise the MD3 token for the
@@ -173,7 +175,7 @@ pub fn draw_unbounded_circle(
 
 #[cfg(test)]
 mod tests {
-    use super::{RIPPLE_MINIMUM_DIAMETER, ripple_diameter};
+    use super::{PRESSED_STATE_LAYER_OPACITY, RIPPLE_MINIMUM_DIAMETER, ripple_diameter};
     use crate::{
         Brush, DrawContext, PressWave, PressWaves, WidgetInteractionState, theme::state_layer,
     };
@@ -342,8 +344,12 @@ mod tests {
             .expect("static pressed state must fill a press layer");
         assert_eq!(circle.center, Point::new(50.0, 20.0));
         assert!(
-            matches!(circle.brush, RecordedBrush::Solid(alpha) if (alpha - 0.12).abs() < 1e-6),
-            "synthesized wave uses the MD3 pressed token"
+            matches!(
+                circle.brush,
+                RecordedBrush::Solid(alpha)
+                    if (alpha - PRESSED_STATE_LAYER_OPACITY).abs() < 1e-6
+            ),
+            "synthesized wave uses StateTokens.PressedStateLayerOpacity"
         );
     }
 

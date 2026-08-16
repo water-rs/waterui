@@ -16,6 +16,7 @@ use waterui_backend_core::widget::{
 };
 
 use super::dimensions::NAVIGATION_SHARED_AXIS_SLIDE_DISTANCE;
+use super::state_layer;
 use tokens::{duration, easing, motion};
 
 /// The MD3 standard easing curve over `duration`.
@@ -44,10 +45,10 @@ const RIPPLE_TOUCH_DELAY: Duration = Duration::from_millis(70);
 /// `minimum_press_duration` equals the grow duration.
 pub const fn interaction() -> InteractionMotion {
     InteractionMotion {
-        hover_opacity: 0.08,
-        focus_opacity: 0.12,
-        pressed_opacity: 0.12,
-        dragged_opacity: 0.16,
+        hover_opacity: state_layer::HOVER_STATE_LAYER_OPACITY,
+        focus_opacity: state_layer::FOCUS_STATE_LAYER_OPACITY,
+        pressed_opacity: state_layer::PRESSED_STATE_LAYER_OPACITY,
+        dragged_opacity: state_layer::DRAGGED_STATE_LAYER_OPACITY,
         hover_enter: material_standard(RIPPLE_STATE_LAYER_FADE),
         hover_exit: material_standard(RIPPLE_STATE_LAYER_FADE),
         focus_enter: material_standard(RIPPLE_STATE_LAYER_FADE),
@@ -294,9 +295,10 @@ mod tests {
     fn state_layer_motion_uses_the_ripple_timings_and_material_opacities() {
         let motion_spec = interaction();
 
+        // androidx.compose.material3.tokens.StateTokens
         assert_eq!(motion_spec.hover_opacity, 0.08);
-        assert_eq!(motion_spec.focus_opacity, 0.12);
-        assert_eq!(motion_spec.pressed_opacity, 0.12);
+        assert_eq!(motion_spec.focus_opacity, 0.1);
+        assert_eq!(motion_spec.pressed_opacity, 0.1);
         assert_eq!(motion_spec.dragged_opacity, 0.16);
 
         for cross_fade in [
