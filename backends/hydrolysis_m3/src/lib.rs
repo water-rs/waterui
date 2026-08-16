@@ -67,13 +67,14 @@ pub use chip::{
 pub use dialog::{Dialog, DialogAction, dialog, dialog_action};
 pub use elevation::{MaterialElevation, MaterialElevationLevel, material_elevation};
 pub use fab::{
-    ExtendedFab, Fab, FabVariantTokens, PrimaryFab, SecondaryFab, SurfaceFab, TertiaryFab,
-    extended_fab, fab,
+    ExtendedFab, Fab, FabSize, FabSizeTokens, FabVariantTokens, PrimaryFab, SecondaryFab,
+    SurfaceFab, TertiaryFab, extended_fab, fab,
 };
 pub use icon_button::{
-    FilledIconButton, FilledTonalIconButton, IconButton, IconButtonVariantTokens,
-    OutlinedIconButton, SelectedOutlinedIconButton, SelectedStandardIconButton, StandardIconButton,
-    filled_icon_button, filled_tonal_icon_button, icon_button, outlined_icon_button,
+    FilledIconButton, FilledTonalIconButton, IconButton, IconButtonSize, IconButtonSizeTokens,
+    IconButtonVariantTokens, OutlinedIconButton, SelectedOutlinedIconButton,
+    SelectedStandardIconButton, StandardIconButton, filled_icon_button, filled_tonal_icon_button,
+    icon_button, outlined_icon_button,
 };
 pub use material_badge::{MaterialBadge, material_badge};
 pub use material_card::{MaterialCard, material_card};
