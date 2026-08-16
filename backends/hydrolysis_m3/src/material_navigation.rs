@@ -55,7 +55,7 @@ mod tests {
     use crate::navigation_chrome::metrics;
 
     #[test]
-    fn material_top_app_bar_tokens_match_material_web_v0_192() {
+    fn material_top_app_bar_tokens_match_compose_app_bar_tokens() {
         let metrics = metrics();
 
         assert_eq!(metrics.inline_bar_height, 64.0);

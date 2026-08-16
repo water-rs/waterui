@@ -69,7 +69,7 @@ mod tests {
     use crate::layout::badge::metrics;
 
     #[test]
-    fn material_badge_tokens_match_material_web_v0_192() {
+    fn material_badge_tokens_match_compose_badge_tokens() {
         let metrics = metrics();
 
         assert_eq!(metrics.small_size, 6.0);

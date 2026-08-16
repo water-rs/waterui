@@ -471,7 +471,7 @@ mod tests {
     use core::time::Duration;
 
     #[test]
-    fn plain_tooltip_tokens_match_mdui_2_1_5() {
+    fn plain_tooltip_tokens_match_compose_plain_tooltip_tokens() {
         assert_eq!(PLAIN_TOOLTIP_CONTAINER_HEIGHT, 24.0);
         assert_eq!(PLAIN_TOOLTIP_CONTAINER_SHAPE, 4.0);
         assert_eq!(PLAIN_TOOLTIP_TOP_SPACE, 4.0);
@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn rich_tooltip_tokens_match_mdui_2_1_5() {
+    fn rich_tooltip_tokens_match_compose_rich_tooltip_tokens() {
         assert_eq!(RICH_TOOLTIP_CONTAINER_SHAPE, 12.0);
         assert_eq!(RICH_TOOLTIP_MAX_WIDTH, 312.0);
         assert_eq!(RICH_TOOLTIP_HORIZONTAL_PADDING, 16.0);

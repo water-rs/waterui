@@ -91,7 +91,7 @@ mod tests {
     use waterui::widget::CardStyle;
 
     #[test]
-    fn material_card_tokens_match_mdui_2_1_5_cards() {
+    fn material_card_tokens_match_compose_card_tokens() {
         let theme = crate::layout::card::theme(&MaterialTheme::new().colors());
 
         assert_eq!(theme.default_style, CardStyle::Filled);

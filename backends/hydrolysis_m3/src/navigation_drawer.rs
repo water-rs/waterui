@@ -350,7 +350,7 @@ mod tests {
     };
 
     #[test]
-    fn navigation_drawer_tokens_match_mdui_2_1_5() {
+    fn navigation_drawer_tokens_match_compose_navigation_drawer_tokens() {
         assert_eq!(NAVIGATION_DRAWER_CONTAINER_WIDTH, 360.0);
         assert_eq!(NAVIGATION_DRAWER_CONTAINER_SHAPE, 16.0);
         assert_eq!(NAVIGATION_DRAWER_MODAL_MAX_VIEWPORT_FRACTION, 0.8);
