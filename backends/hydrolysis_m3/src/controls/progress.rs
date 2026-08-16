@@ -15,11 +15,21 @@ use waterui::animation::Animation;
 
 /// `LinearAnimationDuration` in Compose's `ProgressIndicator.kt`.
 const LINEAR_INDETERMINATE_CYCLE: Duration = Duration::from_millis(1_750);
-const CIRCULAR_ARC_DURATION: Duration = Duration::from_millis(1_333);
-const CIRCULAR_CYCLE_DURATION: Duration = Duration::from_millis(5_332);
-const CIRCULAR_LINEAR_ROTATE_DURATION_SECS: f64 = 1.333 * 360.0 / 306.0;
-const CIRCULAR_MIN_SWEEP_DEGREES: f64 = 10.0;
-const CIRCULAR_MAX_SWEEP_DEGREES: f64 = 270.0;
+/// `CircularAnimationProgressDuration`: one full indeterminate cycle.
+const CIRCULAR_CYCLE_DURATION: Duration = Duration::from_millis(6_000);
+/// `CircularAnimationAdditionalRotationDuration`: how long each 90-degree
+/// kick of the additional rotation takes.
+const CIRCULAR_ADDITIONAL_ROTATION_DURATION: Duration = Duration::from_millis(300);
+/// `CircularAnimationAdditionalRotationDelay`: the spacing between those kicks.
+const CIRCULAR_ADDITIONAL_ROTATION_DELAY: Duration = Duration::from_millis(1_500);
+/// `CircularGlobalRotationDegreesTarget`: three turns per cycle, linear.
+const CIRCULAR_GLOBAL_ROTATION_DEGREES: f64 = 1_080.0;
+/// `CircularAdditionalRotationDegreesTarget`, reached in four 90-degree steps.
+const CIRCULAR_ADDITIONAL_ROTATION_DEGREES: f64 = 360.0;
+/// `CircularIndeterminateMinProgress`: the shortest the arc gets.
+const CIRCULAR_INDETERMINATE_MIN_PROGRESS: f64 = 0.1;
+/// `CircularIndeterminateMaxProgress`: the longest it grows to, half a cycle in.
+const CIRCULAR_INDETERMINATE_MAX_PROGRESS: f64 = 0.87;
 
 #[derive(Debug, Clone, Copy)]
 struct Segment {
@@ -389,29 +399,60 @@ fn progress_phase(value: f64) -> f32 {
         .expect("progress phase must be representable as f32")
 }
 
+/// The indeterminate arc's start angle and sweep, following Compose's
+/// `CircularProgressIndicator`.
+///
+/// Three animations run over one 6s cycle and compose into the motion: a linear
+/// global rotation of three full turns, an additional rotation that kicks
+/// through four 90-degree steps spaced 1.5s apart, and a progress value that
+/// grows the arc from 10% to 87% of the circle by mid-cycle and back. The two
+/// rotations are summed, exactly as Compose's `rotate(globalRotation +
+/// additionalRotation)` does, and the sweep is `progress * 360`.
 fn circular_indeterminate_arc(elapsed: Duration) -> (f64, f64) {
-    let arc_phase = cycle_phase(elapsed, CIRCULAR_ARC_DURATION);
-    let arc_ease = if arc_phase <= 0.5 {
-        f64::from(
-            Animation::bezier(Duration::from_millis(1), 0.4, 0.0, 0.2, 1.0)
-                .progress(Duration::from_secs_f64(arc_phase * 2.0 / 1_000.0)),
-        )
-    } else {
-        1.0 - f64::from(
-            Animation::bezier(Duration::from_millis(1), 0.4, 0.0, 0.2, 1.0)
-                .progress(Duration::from_secs_f64((arc_phase - 0.5) * 2.0 / 1_000.0)),
-        )
-    };
-    let sweep_degrees = (CIRCULAR_MAX_SWEEP_DEGREES - CIRCULAR_MIN_SWEEP_DEGREES)
-        .mul_add(arc_ease, CIRCULAR_MIN_SWEEP_DEGREES);
-    let rotate_arc_degrees = cycle_phase(elapsed, CIRCULAR_CYCLE_DURATION) * 1080.0;
-    let linear_rotate_degrees = (elapsed.as_secs_f64() % CIRCULAR_LINEAR_ROTATE_DURATION_SECS)
-        / CIRCULAR_LINEAR_ROTATE_DURATION_SECS
-        * 360.0;
+    let cycle = cycle_phase(elapsed, CIRCULAR_CYCLE_DURATION);
+    let global_rotation = cycle * CIRCULAR_GLOBAL_ROTATION_DEGREES;
+    let additional_rotation = circular_additional_rotation(cycle);
+    let progress = circular_indeterminate_progress(cycle);
     (
-        -FRAC_PI_2 + (rotate_arc_degrees + linear_rotate_degrees).to_radians(),
-        sweep_degrees.to_radians(),
+        -FRAC_PI_2 + (global_rotation + additional_rotation).to_radians(),
+        (progress * 360.0).to_radians(),
     )
+}
+
+/// The additional rotation at `cycle`: four 90-degree steps, each eased with
+/// the emphasized-decelerate curve and held until the next one begins.
+fn circular_additional_rotation(cycle: f64) -> f64 {
+    const STEPS: f64 = 4.0;
+    let cycle_secs = CIRCULAR_CYCLE_DURATION.as_secs_f64();
+    let delay_secs = CIRCULAR_ADDITIONAL_ROTATION_DELAY.as_secs_f64();
+    let step_secs = CIRCULAR_ADDITIONAL_ROTATION_DURATION.as_secs_f64();
+    let elapsed_secs = cycle * cycle_secs;
+    let completed = (elapsed_secs / delay_secs).floor().min(STEPS);
+    let into_step = completed.mul_add(-delay_secs, elapsed_secs);
+    let step_progress = if step_secs > 0.0 {
+        (into_step / step_secs).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let eased = f64::from(
+        crate::theme::motion::tokens::easing::EMPHASIZED_DECELERATE
+            .ease(progress_phase(step_progress)),
+    );
+    (completed + eased).min(STEPS) / STEPS * CIRCULAR_ADDITIONAL_ROTATION_DEGREES
+}
+
+/// The arc length at `cycle`: growing to `CircularIndeterminateMaxProgress` by
+/// mid-cycle, then shrinking back to `CircularIndeterminateMinProgress`.
+fn circular_indeterminate_progress(cycle: f64) -> f64 {
+    let span = CIRCULAR_INDETERMINATE_MAX_PROGRESS - CIRCULAR_INDETERMINATE_MIN_PROGRESS;
+    let half = if cycle <= 0.5 {
+        cycle * 2.0
+    } else {
+        (1.0 - cycle) * 2.0
+    };
+    let eased =
+        f64::from(crate::theme::motion::tokens::easing::STANDARD.ease(progress_phase(half)));
+    span.mul_add(eased, CIRCULAR_INDETERMINATE_MIN_PROGRESS)
 }
 
 fn circle_arc_path(center: Point, radius: f64, start_angle: f64, sweep: f64) -> BezPath {
@@ -446,6 +487,92 @@ mod tests {
         PROGRESS_CIRCULAR_TRACK_ACTIVE_SPACE, PROGRESS_LINEAR_STOP_SIZE,
         PROGRESS_LINEAR_TRACK_ACTIVE_SPACE,
     };
+
+    /// The indeterminate circular motion follows Compose's
+    /// `CircularProgressIndicator`: a 6s cycle whose arc grows from
+    /// `CircularIndeterminateMinProgress` to `CircularIndeterminateMaxProgress`
+    /// at the halfway point and shrinks back.
+    #[test]
+    fn circular_indeterminate_sweep_follows_the_compose_cycle() {
+        use super::{
+            CIRCULAR_CYCLE_DURATION, CIRCULAR_INDETERMINATE_MAX_PROGRESS,
+            CIRCULAR_INDETERMINATE_MIN_PROGRESS, circular_indeterminate_arc,
+        };
+        use core::time::Duration;
+
+        let sweep_turns = |at: Duration| circular_indeterminate_arc(at).1 / core::f64::consts::TAU;
+
+        let start = sweep_turns(Duration::ZERO);
+        assert!(
+            (start - CIRCULAR_INDETERMINATE_MIN_PROGRESS).abs() < 1e-6,
+            "the cycle starts at the minimum arc, was {start}"
+        );
+
+        let middle = sweep_turns(CIRCULAR_CYCLE_DURATION / 2);
+        assert!(
+            (middle - CIRCULAR_INDETERMINATE_MAX_PROGRESS).abs() < 1e-6,
+            "the arc peaks at the half cycle, was {middle}"
+        );
+
+        // The cycle is closed: it ends where it began, so a repeat does not jump.
+        let end = sweep_turns(CIRCULAR_CYCLE_DURATION);
+        assert!(
+            (end - CIRCULAR_INDETERMINATE_MIN_PROGRESS).abs() < 1e-6,
+            "the cycle returns to the minimum arc, was {end}"
+        );
+
+        // Never inverted or past a full turn at any point in the cycle.
+        for step in 0..=120 {
+            let at = CIRCULAR_CYCLE_DURATION.mul_f64(f64::from(step) / 120.0);
+            let turns = sweep_turns(at);
+            assert!(
+                (CIRCULAR_INDETERMINATE_MIN_PROGRESS - 1e-6
+                    ..=CIRCULAR_INDETERMINATE_MAX_PROGRESS + 1e-6)
+                    .contains(&turns),
+                "sweep left its range at {at:?}: {turns}"
+            );
+        }
+    }
+
+    /// The additional rotation reaches a full turn by the end of the cycle, in
+    /// four 90-degree steps.
+    #[test]
+    fn circular_additional_rotation_completes_a_turn_in_four_steps() {
+        use super::{CIRCULAR_ADDITIONAL_ROTATION_DEGREES, circular_additional_rotation};
+
+        assert!(circular_additional_rotation(0.0).abs() < 1e-6);
+        assert!(
+            (circular_additional_rotation(1.0) - CIRCULAR_ADDITIONAL_ROTATION_DEGREES).abs() < 1e-6,
+            "a full cycle turns the arc once more"
+        );
+        // Compose's keyframes ramp each step over 300ms and then hold it until
+        // the next 1.5s boundary: 90 at 300ms, still 90 at 1.4s, 180 at 1.8s.
+        let first_step = circular_additional_rotation(300.0 / 6_000.0);
+        assert!(
+            (first_step - 90.0).abs() < 1e-6,
+            "the first step completes at 300ms, was {first_step}"
+        );
+        let holding = circular_additional_rotation(1_400.0 / 6_000.0);
+        assert!(
+            (holding - 90.0).abs() < 1e-6,
+            "the step holds until the next delay boundary, was {holding}"
+        );
+        let second_step = circular_additional_rotation(1_800.0 / 6_000.0);
+        assert!(
+            (second_step - 180.0).abs() < 1e-6,
+            "the second step completes at 1.8s, was {second_step}"
+        );
+        // Monotonic: the arc never rotates backwards.
+        let mut previous = 0.0_f64;
+        for step in 0..=200 {
+            let value = circular_additional_rotation(f64::from(step) / 200.0);
+            assert!(
+                value >= previous - 1e-9,
+                "rotation went backwards at {step}"
+            );
+            previous = value;
+        }
+    }
 
     /// Values from `androidx.compose.material3.tokens`
     /// `LinearProgressIndicatorTokens` and `CircularProgressIndicatorTokens`.
