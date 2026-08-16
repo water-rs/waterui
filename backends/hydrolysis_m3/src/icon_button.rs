@@ -28,6 +28,61 @@ const ICON_BUTTON_ICON_SIZE: f32 = 24.0;
 const ICON_BUTTON_TOUCH_TARGET_SIZE: f32 = 48.0;
 const ICON_BUTTON_OUTLINE_WIDTH: f32 = 1.0;
 
+/// The geometry of one icon-button size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IconButtonSizeTokens {
+    /// The box the button occupies, which is also its hit area.
+    pub container: f32,
+    /// The state layer drawn inside that box.
+    pub state_layer: f32,
+    /// `IconSize`.
+    pub icon: f32,
+    /// `OutlinedOutlineWidth`.
+    pub outline_width: f32,
+}
+
+/// How large an icon button is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum IconButtonSize {
+    /// The standard icon button: a 40dp state layer inside the 48dp target.
+    #[default]
+    Small,
+    /// `MediumIconButtonTokens`.
+    Medium,
+    /// `LargeIconButtonTokens`.
+    Large,
+}
+
+impl IconButtonSize {
+    /// The token set for this size.
+    #[must_use]
+    pub const fn tokens(self) -> IconButtonSizeTokens {
+        match self {
+            Self::Small => IconButtonSizeTokens {
+                container: ICON_BUTTON_TOUCH_TARGET_SIZE,
+                state_layer: ICON_BUTTON_STATE_LAYER_SIZE,
+                icon: ICON_BUTTON_ICON_SIZE,
+                outline_width: ICON_BUTTON_OUTLINE_WIDTH,
+            },
+            // MediumIconButtonTokens. At this size the container *is* the
+            // state layer — it is already well past the 48dp minimum.
+            Self::Medium => IconButtonSizeTokens {
+                container: 56.0,
+                state_layer: 56.0,
+                icon: 24.0,
+                outline_width: 1.0,
+            },
+            // LargeIconButtonTokens.
+            Self::Large => IconButtonSizeTokens {
+                container: 96.0,
+                state_layer: 96.0,
+                icon: 32.0,
+                outline_width: 2.0,
+            },
+        }
+    }
+}
+
 /// Color token set for an icon button variant.
 pub trait IconButtonVariantTokens: Default + 'static {
     /// Container color.
@@ -142,6 +197,7 @@ pub struct IconButton<Content, Action = fn(&Environment), Tokens = StandardIconB
     accessibility_label: Str,
     content: Content,
     action: Action,
+    size: IconButtonSize,
     tokens: PhantomData<Tokens>,
 }
 
@@ -161,6 +217,7 @@ impl<Content> IconButton<Content, fn(&Environment), StandardIconButton> {
             accessibility_label: accessibility_label.into(),
             content,
             action: noop,
+            size: IconButtonSize::default(),
             tokens: PhantomData,
         }
     }
@@ -202,8 +259,16 @@ impl<Content, Action, Tokens> IconButton<Content, Action, Tokens> {
             accessibility_label: self.accessibility_label,
             content: self.content,
             action: self.action,
+            size: self.size,
             tokens: PhantomData,
         }
+    }
+
+    /// Sets how large the icon button is drawn.
+    #[must_use]
+    pub const fn size(mut self, size: IconButtonSize) -> Self {
+        self.size = size;
+        self
     }
 
     /// Sets the action performed when the icon button is tapped.
@@ -216,6 +281,7 @@ impl<Content, Action, Tokens> IconButton<Content, Action, Tokens> {
             accessibility_label: self.accessibility_label,
             content: self.content,
             action: boxed_action(action),
+            size: self.size,
             tokens: PhantomData,
         }
     }
@@ -229,25 +295,26 @@ where
 {
     fn body(self, _env: &Environment) -> impl View {
         let mut action = self.action;
+        let size = self.size.tokens();
 
         self.content
             .foreground(Tokens::icon_color())
-            .size(ICON_BUTTON_ICON_SIZE, ICON_BUTTON_ICON_SIZE)
-            .padding_with((ICON_BUTTON_STATE_LAYER_SIZE - ICON_BUTTON_ICON_SIZE) * 0.5)
-            .size(ICON_BUTTON_STATE_LAYER_SIZE, ICON_BUTTON_STATE_LAYER_SIZE)
+            .size(size.icon, size.icon)
+            .padding_with((size.state_layer - size.icon) * 0.5)
+            .size(size.state_layer, size.state_layer)
             .background(Circle.fill(Tokens::container_color()))
             .border_with(
                 Border::new(Tokens::outline_color(), Tokens::outline_width())
-                    .corner_radius(ICON_BUTTON_STATE_LAYER_SIZE * 0.5),
+                    .corner_radius(size.state_layer * 0.5),
             )
-            .size(ICON_BUTTON_TOUCH_TARGET_SIZE, ICON_BUTTON_TOUCH_TARGET_SIZE)
+            .size(size.container, size.container)
             .on_tap(move |env: Environment| action(&env))
             .a11y_label(self.accessibility_label)
             .a11y_role(AccessibilityRole::Button)
             .a11y_children(AccessibilityChildren::ExcludeDescendants)
             .install(interaction_style(
                 Tokens::icon_color(),
-                f64::from(ICON_BUTTON_STATE_LAYER_SIZE * 0.5),
+                f64::from(size.state_layer * 0.5),
             ))
     }
 }
@@ -306,8 +373,37 @@ where
 mod tests {
     use super::{
         ICON_BUTTON_ICON_SIZE, ICON_BUTTON_OUTLINE_WIDTH, ICON_BUTTON_STATE_LAYER_SIZE,
-        IconButtonVariantTokens, OutlinedIconButton,
+        IconButtonSize, IconButtonVariantTokens, OutlinedIconButton,
     };
+
+    /// `MediumIconButtonTokens` and `LargeIconButtonTokens`. Past the small
+    /// size the container has outgrown the 48dp minimum, so the state layer
+    /// fills it rather than sitting inside a larger touch target.
+    #[test]
+    fn icon_button_size_scale_matches_compose_icon_button_tokens() {
+        let small = IconButtonSize::Small.tokens();
+        assert_eq!(small.container, 48.0);
+        assert_eq!(small.state_layer, 40.0);
+        assert_eq!(small.icon, 24.0);
+
+        let medium = IconButtonSize::Medium.tokens();
+        assert_eq!(medium.container, 56.0);
+        assert_eq!(medium.icon, 24.0);
+        assert_eq!(medium.outline_width, 1.0);
+
+        let large = IconButtonSize::Large.tokens();
+        assert_eq!(large.container, 96.0);
+        assert_eq!(large.icon, 32.0);
+        assert_eq!(large.outline_width, 2.0);
+
+        // Every size clears the 48dp minimum touch target, and no state layer
+        // ever spills outside the box that receives the taps.
+        for size in [small, medium, large] {
+            assert!(size.container >= 48.0);
+            assert!(size.state_layer <= size.container);
+            assert!(size.icon < size.state_layer);
+        }
+    }
 
     #[test]
     fn icon_button_tokens_match_compose_icon_button_tokens() {
