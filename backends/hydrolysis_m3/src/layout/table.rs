@@ -60,7 +60,10 @@ mod tests {
     };
 
     #[test]
-    fn table_metrics_match_material_web_latest_tokens() {
+    /// Compose Material 3 ships no table component, so these metrics have no
+    /// upstream token to match. They follow the Material data-table spec's
+    /// 56dp header / 52dp row rhythm and are `WaterUI`'s own choice.
+    fn table_metrics_are_waterui_specific() {
         let metrics = metrics();
 
         assert_eq!(metrics.min_column_width, TABLE_MIN_COLUMN_WIDTH);

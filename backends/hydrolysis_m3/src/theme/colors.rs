@@ -602,7 +602,7 @@ mod tests {
     };
 
     #[test]
-    fn baseline_light_matches_material_web_dynamic_color_tokens() {
+    fn baseline_light_matches_compose_color_light_tokens() {
         let scheme = MaterialColorScheme::baseline_light();
 
         assert_eq!(scheme.primary.argb(), Argb::from_rgb(0x67, 0x50, 0xa4));
