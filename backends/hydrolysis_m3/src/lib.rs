@@ -36,6 +36,7 @@ mod controls;
 mod icon_paths;
 mod icons;
 mod layout;
+pub mod material_shapes;
 mod navigation;
 mod semantics;
 pub mod split_button;
