@@ -21,7 +21,7 @@ mod tests {
     use crate::MaterialTheme;
 
     #[test]
-    fn material_snackbar_tokens_match_mdui_2_1_5() {
+    fn material_snackbar_tokens_match_compose_snackbar_tokens() {
         let theme = crate::layout::snackbar::theme(&MaterialTheme::new().colors());
 
         assert_eq!(theme.single_line_min_height, 48.0);

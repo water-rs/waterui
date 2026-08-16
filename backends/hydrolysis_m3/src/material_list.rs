@@ -256,7 +256,7 @@ mod tests {
     use crate::dimensions::{LIST_ONE_LINE_ROW_HEIGHT, LIST_VERTICAL_INSET};
 
     #[test]
-    fn material_list_tokens_match_material_web_v0_192() {
+    fn material_list_tokens_match_compose_list_tokens() {
         assert_eq!(LIST_CONTAINER_TOP_SPACE, 8.0);
         assert_eq!(LIST_CONTAINER_BOTTOM_SPACE, 8.0);
         assert_eq!(LIST_ONE_LINE_ROW_HEIGHT, 56.0);

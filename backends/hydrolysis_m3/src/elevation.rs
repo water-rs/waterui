@@ -135,6 +135,41 @@ impl ElevationTokens {
     }
 }
 
+/// One of the two shadows Material casts at an elevation level, resolved into
+/// the colour, offset and blur a theme hands to the renderer.
+#[derive(Debug, Clone)]
+pub(crate) struct LevelShadow {
+    /// Shadow colour, already carrying the level's opacity.
+    pub color: waterui::color::Color,
+    /// Vertical offset.
+    pub offset_y: f32,
+    /// Blur radius.
+    pub radius: f32,
+}
+
+/// The key and ambient shadows for `level`.
+///
+/// Components name their Compose elevation token — `SnackbarTokens
+/// .ContainerElevation` is `Level3`, `ElevatedCardTokens` is `Level1` — and take
+/// the numbers from here, so the elevation scale exists in exactly one place.
+pub(crate) fn shadows_for_level(level: MaterialElevationLevel) -> (LevelShadow, LevelShadow) {
+    let tokens = ElevationTokens::for_level(level);
+    (
+        LevelShadow {
+            color: Shadow.with_opacity(tokens.key.opacity(KEY_OPACITY)).into(),
+            offset_y: tokens.key.y,
+            radius: tokens.key.blur,
+        },
+        LevelShadow {
+            color: Shadow
+                .with_opacity(tokens.ambient.opacity(AMBIENT_OPACITY))
+                .into(),
+            offset_y: tokens.ambient.y,
+            radius: tokens.ambient.blur,
+        },
+    )
+}
+
 pub(crate) fn apply_to_floating_style(style: &mut FloatingStyle, level: MaterialElevationLevel) {
     let tokens = ElevationTokens::for_level(level);
     style.key_shadow_color = Shadow.with_opacity(tokens.key.opacity(KEY_OPACITY)).into();
@@ -174,7 +209,7 @@ mod tests {
     };
 
     #[test]
-    fn elevation_levels_match_mdui_2_1_5() {
+    fn elevation_levels_match_compose_elevation_tokens() {
         assert_eq!(KEY_OPACITY, 0.19);
         assert_eq!(AMBIENT_OPACITY, 0.039);
         assert_eq!(KEY_SHADOWS[0].opacity(KEY_OPACITY), 0.0);

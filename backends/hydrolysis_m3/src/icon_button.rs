@@ -310,13 +310,13 @@ mod tests {
     };
 
     #[test]
-    fn icon_button_tokens_match_material_web_v0_192() {
+    fn icon_button_tokens_match_compose_icon_button_tokens() {
         assert_eq!(ICON_BUTTON_STATE_LAYER_SIZE, 40.0);
         assert_eq!(ICON_BUTTON_ICON_SIZE, 24.0);
     }
 
     #[test]
-    fn outlined_icon_button_tokens_match_material_web_v0_192() {
+    fn outlined_icon_button_tokens_match_compose_icon_button_tokens() {
         assert_eq!(
             OutlinedIconButton::outline_width(),
             ICON_BUTTON_OUTLINE_WIDTH

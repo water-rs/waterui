@@ -4,7 +4,8 @@ use waterui::animation::Animation;
 use waterui::prelude::EdgeInsets;
 use waterui::snackbar::SnackbarTheme;
 
-use crate::color::{InverseOnSurface, InversePrimary, InverseSurface, Shadow};
+use crate::color::{InverseOnSurface, InversePrimary, InverseSurface};
+use crate::elevation::MaterialElevationLevel;
 use crate::theme::{colors::MaterialColorScheme, typography};
 
 const SNACKBAR_HORIZONTAL_PADDING: f32 = 16.0;
@@ -25,6 +26,8 @@ const SNACKBAR_CLIP_RADIUS: f32 = 0.08;
 const SNACKBAR_MOTION_OFFSET_Y: f32 = 20.0;
 
 pub fn theme(_colors: &MaterialColorScheme) -> SnackbarTheme {
+    // `SnackbarTokens.ContainerElevation` is `ElevationTokens.Level3`.
+    let (key, ambient) = crate::elevation::shadows_for_level(MaterialElevationLevel::LEVEL3);
     SnackbarTheme {
         container_color: InverseSurface.into(),
         supporting_text_color: InverseOnSurface.into(),
@@ -45,12 +48,12 @@ pub fn theme(_colors: &MaterialColorScheme) -> SnackbarTheme {
         single_line_min_height: SNACKBAR_SINGLE_LINE_HEIGHT,
         corner_radius: SNACKBAR_CORNER_RADIUS,
         clip_radius: SNACKBAR_CLIP_RADIUS,
-        shadow_color: Shadow.with_opacity(0.19).into(),
-        shadow_radius: 5.0,
-        shadow_offset_y: 1.25,
-        ambient_shadow_color: Shadow.with_opacity(0.039).into(),
-        ambient_shadow_radius: 1.5,
-        ambient_shadow_offset_y: 0.3333,
+        shadow_color: key.color,
+        shadow_radius: key.radius,
+        shadow_offset_y: key.offset_y,
+        ambient_shadow_color: ambient.color,
+        ambient_shadow_radius: ambient.radius,
+        ambient_shadow_offset_y: ambient.offset_y,
         motion_offset_y: SNACKBAR_MOTION_OFFSET_Y,
         enter_animation: Animation::bezier(Duration::from_millis(250), 0.0, 0.0, 0.0, 1.0),
         exit_animation: Animation::bezier(Duration::from_millis(250), 0.0, 0.0, 0.0, 1.0),
@@ -67,7 +70,7 @@ mod tests {
     use waterui::animation::Animation;
 
     #[test]
-    fn snackbar_theme_matches_mdui_2_1_5_tokens() {
+    fn snackbar_theme_matches_compose_snackbar_tokens() {
         let theme = theme(&MaterialTheme::new().colors());
 
         assert_eq!(theme.content_padding.leading(), SNACKBAR_HORIZONTAL_PADDING);

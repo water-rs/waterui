@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn segmented_metrics_match_material_web_latest_tokens() {
+    fn segmented_metrics_match_compose_segmented_button_tokens() {
         let metrics = segmented_metrics();
 
         assert_eq!(metrics.min_height, PICKER_SEGMENTED_MIN_HEIGHT);

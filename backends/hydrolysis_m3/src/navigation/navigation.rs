@@ -68,7 +68,7 @@ mod tests {
     };
 
     #[test]
-    fn navigation_metrics_match_material_web_latest_app_bar_tokens() {
+    fn navigation_metrics_match_compose_app_bar_tokens() {
         let metrics = metrics();
 
         assert_eq!(

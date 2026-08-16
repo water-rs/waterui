@@ -371,7 +371,7 @@ mod tests {
     };
 
     #[test]
-    fn fab_tokens_match_material_web_v0_192_surface_fab() {
+    fn fab_tokens_match_compose_fab_baseline_tokens() {
         assert_eq!(FAB_CONTAINER_HEIGHT, 56.0);
         assert_eq!(FAB_CONTAINER_WIDTH, 56.0);
         assert_eq!(FAB_CONTAINER_SHAPE, 16.0);
@@ -379,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn extended_fab_tokens_match_material_web_v0_192_primary_extended_fab() {
+    fn extended_fab_tokens_match_compose_extended_fab_tokens() {
         assert_eq!(EXTENDED_FAB_HEIGHT, 56.0);
         assert_eq!(EXTENDED_FAB_SHAPE, 16.0);
         assert_eq!(EXTENDED_FAB_LEADING_SPACE_WITHOUT_ICON, 20.0);

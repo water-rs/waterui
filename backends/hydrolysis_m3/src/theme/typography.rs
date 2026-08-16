@@ -84,7 +84,7 @@ impl Resolvable for BodyLarge {
     type Resolved = ResolvedFont;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        Computed::constant(font(16.0, FontWeight::Normal, 24.0, 0.15))
+        Computed::constant(font(16.0, FontWeight::Normal, 24.0, 0.5))
     }
 }
 
@@ -99,7 +99,7 @@ impl Resolvable for BodyMedium {
     type Resolved = ResolvedFont;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        Computed::constant(font(14.0, FontWeight::Normal, 20.0, 0.25))
+        Computed::constant(font(14.0, FontWeight::Normal, 20.0, 0.2))
     }
 }
 
@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn font_slots_match_mdui_2_1_5_type_scale() {
+    fn font_slots_match_compose_type_scale_tokens() {
         let mut env = Environment::new();
         install_defaults(&mut env);
 
@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn label_large_matches_mdui_2_1_5_label_large() {
+    fn label_large_matches_compose_type_scale() {
         let env = Environment::new();
 
         assert_material_font(
@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn label_medium_matches_mdui_2_1_5_label_medium() {
+    fn label_medium_matches_compose_type_scale() {
         let env = Environment::new();
 
         assert_material_font(
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn label_small_matches_mdui_2_1_5_label_small() {
+    fn label_small_matches_compose_type_scale() {
         let env = Environment::new();
 
         assert_material_font(
@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn body_medium_matches_mdui_2_1_5_body_medium() {
+    fn body_medium_matches_compose_type_scale() {
         let env = Environment::new();
 
         assert_material_font(
@@ -309,12 +309,12 @@ mod tests {
             14.0,
             FontWeight::Normal,
             20.0,
-            0.25,
+            0.2,
         );
     }
 
     #[test]
-    fn body_large_matches_mdui_2_1_5_body_large() {
+    fn body_large_matches_compose_type_scale() {
         let env = Environment::new();
 
         assert_material_font(
@@ -322,12 +322,12 @@ mod tests {
             16.0,
             FontWeight::Normal,
             24.0,
-            0.15,
+            0.5,
         );
     }
 
     #[test]
-    fn body_small_matches_mdui_2_1_5_body_small() {
+    fn body_small_matches_compose_type_scale() {
         let env = Environment::new();
 
         assert_material_font(
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn title_small_matches_mdui_2_1_5_title_small() {
+    fn title_small_matches_compose_type_scale() {
         let env = Environment::new();
 
         assert_material_font(

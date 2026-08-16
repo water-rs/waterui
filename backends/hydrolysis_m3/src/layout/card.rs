@@ -1,7 +1,8 @@
 use waterui::color::Color;
 use waterui::widget::{CardStyle, CardStyleTokens, CardTheme};
 
-use crate::color::{OutlineVariant, Shadow, Surface, SurfaceContainerHighest, SurfaceContainerLow};
+use crate::color::{OutlineVariant, Surface, SurfaceContainerHighest, SurfaceContainerLow};
+use crate::elevation::{LevelShadow, MaterialElevationLevel};
 use crate::theme::colors::MaterialColorScheme;
 
 const CARD_CONTENT_PADDING: f32 = 16.0;
@@ -16,12 +17,21 @@ struct CardShadowTokens {
     offset_y: f32,
 }
 
-const fn shadow(color: Color, radius: f32, offset_y: f32) -> CardShadowTokens {
-    CardShadowTokens {
-        color,
-        radius,
-        offset_y,
+impl From<LevelShadow> for CardShadowTokens {
+    fn from(shadow: LevelShadow) -> Self {
+        Self {
+            color: shadow.color,
+            radius: shadow.radius,
+            offset_y: shadow.offset_y,
+        }
     }
+}
+
+/// The key and ambient shadows a card casts at `level`, named by the Compose
+/// token rather than by the numbers it resolves to.
+fn card_shadows(level: MaterialElevationLevel) -> (CardShadowTokens, CardShadowTokens) {
+    let (key, ambient) = crate::elevation::shadows_for_level(level);
+    (key.into(), ambient.into())
 }
 
 fn tokens(
@@ -50,27 +60,39 @@ pub fn theme(_colors: &MaterialColorScheme) -> CardTheme {
     let transparent_outline: Color = OutlineVariant.with_opacity(0.0).into();
     CardTheme {
         default_style: CardStyle::Filled,
-        elevated: tokens(
-            SurfaceContainerLow.into(),
-            transparent_outline.clone(),
-            0.0,
-            shadow(Shadow.with_opacity(0.19).into(), 1.5, 0.5),
-            shadow(Shadow.with_opacity(0.039).into(), 1.0, 0.0),
-        ),
-        filled: tokens(
-            SurfaceContainerHighest.into(),
-            transparent_outline,
-            0.0,
-            shadow(Shadow.with_opacity(0.0).into(), 0.0, 0.0),
-            shadow(Shadow.with_opacity(0.0).into(), 0.0, 0.0),
-        ),
-        outlined: tokens(
-            Surface.into(),
-            OutlineVariant.into(),
-            CARD_OUTLINE_WIDTH,
-            shadow(Shadow.with_opacity(0.0).into(), 0.0, 0.0),
-            shadow(Shadow.with_opacity(0.0).into(), 0.0, 0.0),
-        ),
+        elevated: {
+            // `ElevatedCardTokens.ContainerElevation` is `ElevationTokens.Level1`.
+            let (key, ambient) = card_shadows(MaterialElevationLevel::LEVEL1);
+            tokens(
+                SurfaceContainerLow.into(),
+                transparent_outline.clone(),
+                0.0,
+                key,
+                ambient,
+            )
+        },
+        filled: {
+            // `FilledCardTokens.ContainerElevation` is `ElevationTokens.Level0`.
+            let (key, ambient) = card_shadows(MaterialElevationLevel::LEVEL0);
+            tokens(
+                SurfaceContainerHighest.into(),
+                transparent_outline,
+                0.0,
+                key,
+                ambient,
+            )
+        },
+        outlined: {
+            // `OutlinedCardTokens.ContainerElevation` is `ElevationTokens.Level0`.
+            let (key, ambient) = card_shadows(MaterialElevationLevel::LEVEL0);
+            tokens(
+                Surface.into(),
+                OutlineVariant.into(),
+                CARD_OUTLINE_WIDTH,
+                key,
+                ambient,
+            )
+        },
         content_padding: CARD_CONTENT_PADDING,
         content_spacing: CARD_CONTENT_SPACING,
     }
@@ -83,7 +105,7 @@ mod tests {
     use waterui::widget::CardStyle;
 
     #[test]
-    fn card_theme_matches_mdui_2_1_5_tokens() {
+    fn card_theme_matches_compose_card_tokens() {
         let theme = theme(&MaterialTheme::new().colors());
 
         assert_eq!(theme.default_style, CardStyle::Filled);

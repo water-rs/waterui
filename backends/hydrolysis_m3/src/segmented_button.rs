@@ -350,7 +350,7 @@ mod tests {
     };
 
     #[test]
-    fn outlined_segmented_button_tokens_match_material_web_v0_192() {
+    fn outlined_segmented_button_tokens_match_compose_segmented_button_tokens() {
         assert_eq!(OUTLINED_SEGMENTED_BUTTON_CONTAINER_HEIGHT, 40.0);
         assert_eq!(OUTLINED_SEGMENTED_BUTTON_CONTAINER_SHAPE, 20.0);
         assert_eq!(OUTLINED_SEGMENTED_BUTTON_OUTLINE_WIDTH, 1.0);
