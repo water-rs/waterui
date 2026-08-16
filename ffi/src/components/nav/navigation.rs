@@ -135,8 +135,10 @@ pub enum WuiNavigationTitleDisplayMode {
     Automatic = 0,
     /// Always use inline (small) title.
     Inline = 1,
+    /// Always use a medium title, between inline and large.
+    Medium = 2,
     /// Always use large title.
-    Large = 2,
+    Large = 3,
 }
 
 impl IntoFFI for NavigationTitleDisplayMode {
@@ -145,6 +147,7 @@ impl IntoFFI for NavigationTitleDisplayMode {
         match self {
             Self::Automatic => WuiNavigationTitleDisplayMode::Automatic,
             Self::Inline => WuiNavigationTitleDisplayMode::Inline,
+            Self::Medium => WuiNavigationTitleDisplayMode::Medium,
             Self::Large => WuiNavigationTitleDisplayMode::Large,
         }
     }
