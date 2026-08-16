@@ -11,6 +11,7 @@
 pub mod chip;
 pub mod color;
 pub mod dialog;
+pub mod drag_handle;
 pub mod elevation;
 pub mod fab;
 pub mod icon_button;
@@ -66,6 +67,7 @@ pub use chip::{
     input_chip, suggestion_chip,
 };
 pub use dialog::{Dialog, DialogAction, dialog, dialog_action};
+pub use drag_handle::{VerticalDragHandle, vertical_drag_handle};
 pub use elevation::{MaterialElevation, MaterialElevationLevel, material_elevation};
 pub use fab::{
     ExtendedFab, Fab, FabSize, FabSizeTokens, FabVariantTokens, PrimaryFab, SecondaryFab,
