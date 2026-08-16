@@ -515,12 +515,22 @@ fn material_navigation_bar_exposes_tab_semantics_and_selection(ui: UiBuilder) {
         )))
     });
 
+    // The bar declares itself a tab list. Without a node for the container the
+    // tabs arrive as loose siblings, and assistive technology cannot tell they are
+    // alternatives to one another — which is what a tab list exists to say.
+    let tab_list = app
+        .query()
+        .role(Role::TAB_LIST)
+        .label("Navigation")
+        .single();
     app.query()
+        .within(&tab_list)
         .role(Role::TAB)
         .label("Home")
         .selected(false)
         .assert_exists();
     app.query()
+        .within(&tab_list)
         .role(Role::TAB)
         .label("Search")
         .selected(true)

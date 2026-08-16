@@ -26,6 +26,22 @@ impl RetainedIdentity {
     pub(crate) const fn address(&self) -> usize {
         self.address
     }
+
+    /// Whether the retained object is still owned by something other than this
+    /// lease.
+    ///
+    /// A renderer map that keys its entries by identity can use this to keep an
+    /// entry alive for exactly as long as the retained tree holds the object,
+    /// rather than for as long as it happens to be rendered. A container that
+    /// renders one child at a time — tabs, a collapsed split column — retains
+    /// every child but flushes only the visible one, so "not flushed this
+    /// frame" does not mean "gone".
+    ///
+    /// This requires that the renderer hold no strong reference to the object
+    /// beyond the single lease stored in the map.
+    pub(crate) fn is_retained_elsewhere(&self) -> bool {
+        Rc::strong_count(&self._owner) > 1
+    }
 }
 
 impl fmt::Debug for RetainedIdentity {

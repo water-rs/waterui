@@ -270,7 +270,7 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
 
             ListItem::new(
                 hstack((
-                    dest.icon().size(18.0, 18.0).tint(dest.icon_color()),
+                    dest.icon().tint(dest.icon_color()).size(18.0, 18.0),
                     text(dest.title()).body().foreground(Foreground),
                     spacer(),
                     text!("{count}").caption().foreground(MutedForeground),
@@ -382,7 +382,7 @@ fn reminder_section(
                     .spacing(2.0),
                     spacer(),
                     when(row.flagged, || {
-                        mdi::flag().size(12.0, 12.0).tint(Srgb::from_hex("#F28A34"))
+                        mdi::flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
                     })
                     .otherwise(|| spacer().width(12.0)),
                 ))

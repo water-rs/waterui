@@ -104,7 +104,7 @@ use waterui::gesture::{Gesture, GestureObserver};
 use waterui::interaction::Hittable;
 use waterui::metadata::context_menu::{ContextMenu, ResolvedContextMenu};
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
-use waterui::navigation::tab::{NativeTabStyle, Tabs};
+use waterui::navigation::tab::{NativeTabStyle, TabsLayout};
 use waterui::navigation::{
     CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
     NavigationToolbarPlacement, NavigationTransaction, NavigationTransitionDestination,

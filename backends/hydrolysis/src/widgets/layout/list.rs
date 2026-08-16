@@ -166,6 +166,12 @@ pub(crate) struct ListRenderState {
     reorder: Rc<Cell<Option<RowReorder>>>,
     /// Last frame time a settling swipe was advanced at.
     swipe_last_tick: Cell<Option<crate::time::Instant>>,
+    /// Per-row section chrome, resolved once per membership change for a list
+    /// whose rows carry section markers.
+    sections: RefCell<Vec<RowSectionChrome>>,
+    /// Row count the resolved chrome was built for, so a list that renders
+    /// before its rows exist re-resolves once they do.
+    sections_resolved_for: Cell<Option<usize>>,
     /// Collection membership watcher.
     _guard: BoxWatcherGuard,
 }
@@ -178,6 +184,41 @@ struct RowGestures {
     swipe: Option<GestureTarget>,
     /// Vertical reorder drag on the row's move handle.
     reorder: Option<GestureTarget>,
+}
+
+/// The section chrome one row is responsible for drawing.
+///
+/// A marker opens a section on the row that carries it, so that row owns the
+/// header. The footer closes the section on a *different* row — the last one
+/// before the next marker — which the draw loop cannot discover on its own
+/// while only part of the list is realized. Resolving both onto rows up front
+/// keeps every row's height a local question again.
+#[derive(Clone, Default)]
+struct RowSectionChrome {
+    header: Option<waterui_core::Str>,
+    footer: Option<waterui_core::Str>,
+}
+
+impl RowSectionChrome {
+    fn header_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
+        if self.header.is_some() {
+            metrics.section_header_height
+        } else {
+            0.0
+        }
+    }
+
+    fn footer_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
+        if self.footer.is_some() {
+            metrics.section_footer_height
+        } else {
+            0.0
+        }
+    }
+
+    fn total_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
+        self.header_height(metrics) + self.footer_height(metrics)
+    }
 }
 
 impl ListRenderState {
@@ -204,6 +245,8 @@ impl ListRenderState {
             swipe: Rc::new(Cell::new(None)),
             reorder: Rc::new(Cell::new(None)),
             swipe_last_tick: Cell::new(None),
+            sections: RefCell::new(Vec::new()),
+            sections_resolved_for: Cell::new(None),
             _guard: guard,
         }
     }
@@ -265,10 +308,62 @@ impl ListRenderState {
         }
     }
 
+    /// Resolves each row's section chrome from the markers the rows carry.
+    ///
+    /// Only a list built from static section content is walked: `uses_sections`
+    /// is false for `List::for_each`, whose rows are virtualized and must never
+    /// all be materialized at once.
+    /// Returns whether the chrome changed, which invalidates row extents: a
+    /// row's height includes the chrome it owns.
+    fn resolve_sections(&self, len: usize, env: &Environment) -> bool {
+        if !self.config.uses_sections {
+            return false;
+        }
+        if self.sections_resolved_for.get() == Some(len) {
+            return false;
+        }
+
+        let mut chrome = vec![RowSectionChrome::default(); len];
+        // The footer of the section a row opens closes on the row before the
+        // next marker, so each marker settles the *previous* section's footer.
+        let mut open_section: Option<(usize, Option<waterui_core::Str>)> = None;
+        for index in 0..len {
+            let item = materialize_list_item(&self.config.contents, index, env);
+            let Some(section) = item.section else {
+                continue;
+            };
+            if let Some((_, footer)) = open_section.take()
+                && index > 0
+            {
+                chrome[index - 1].footer = footer;
+            }
+            chrome[index].header = section.label;
+            open_section = Some((index, section.footer));
+        }
+        if let Some((_, footer)) = open_section
+            && len > 0
+        {
+            chrome[len - 1].footer = footer;
+        }
+
+        *self.sections.borrow_mut() = chrome;
+        self.sections_resolved_for.set(Some(len));
+        true
+    }
+
+    fn section_chrome(&self, index: usize) -> RowSectionChrome {
+        self.sections
+            .borrow()
+            .get(index)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     fn prepare_rows(&self, len: usize, estimate: f64) {
         let dirty = self.rows_dirty.replace(false);
         if dirty || !self.extent_index.borrow().matches(len, estimate, 0.0) {
             self.extent_index.borrow_mut().reset(len, estimate, 0.0);
+            self.sections_resolved_for.set(None);
             let preserve_anchor_index = self.preserve_anchor_index_once.replace(false);
             let membership_offset = self.viewport_anchor.get().and_then(|anchor| {
                 if len == 0 {
@@ -585,6 +680,15 @@ pub(crate) fn render_list_parts(
     state
         .borrow()
         .prepare_rows(row_count, list_metrics.one_line_row_height);
+    if state.borrow().resolve_sections(row_count, env) {
+        // Row extents measured before the chrome was known are short by its
+        // height, so drop them rather than drawing rows into a stale slot.
+        state
+            .borrow()
+            .extent_index
+            .borrow_mut()
+            .reset(row_count, list_metrics.one_line_row_height, 0.0);
+    }
 
     let viewport = ctx.bounds;
     let content_height = state
@@ -636,17 +740,26 @@ pub(crate) fn render_list_parts(
     let mut rows = Vec::with_capacity(window.end.saturating_sub(window.start));
     let mut y = viewport.y0 - metrics.offset_y + window.leading_offset;
     for index in window.start..window.end {
-        let row_env = env.clone();
+        // A list row is its own chrome: a button inside one is a row, not a
+        // filled container floating on a screen. Buttons that picked a style
+        // explicitly keep it.
+        let mut row_env = env.clone();
+        row_env.insert(waterui_controls::button::ButtonStyle::Plain);
+        row_env.insert(crate::widgets::controls::button::ListRowChrome);
         let item = materialize_list_item(&contents, index, &row_env);
         let row_id = contents
             .get_id(index)
             .unwrap_or_else(|| panic!("hydrolysis List item {index} has no stable id"));
+        let chrome = state.borrow().section_chrome(index);
+        // A row's extent covers the section chrome it owns, so scroll offsets,
+        // hit testing, and the visible window all account for it.
         let row_height = {
             let cached_extent = state.borrow().extent_index.borrow().measured(index);
             if let Some(extent) = cached_extent {
                 extent
             } else {
-                let extent = measure_list_item_row_height(&item, ctx.state_mut(), &row_env);
+                let extent = measure_list_item_row_height(&item, ctx.state_mut(), &row_env)
+                    + chrome.total_height(&list_metrics);
                 state
                     .borrow()
                     .extent_index
@@ -672,6 +785,7 @@ pub(crate) fn render_list_parts(
         let row_interaction_base = (i32::from(*row_id) as u32 as usize)
             .checked_mul(3)
             .expect("hydrolysis List interaction identity overflow");
+        let chrome = state.borrow().section_chrome(index);
         let reorder_dy = state.borrow().reorder_offset_for(index, row_id, row_height);
         let swipe_dx = state.borrow().swipe_offset_for(row_id);
         // Where the row's slot is (the gap it occupies in the list), before the
@@ -685,16 +799,27 @@ pub(crate) fn render_list_parts(
         if slot_rect.y1 <= viewport.y0 || slot_rect.y0 >= viewport.y1 {
             continue;
         }
+        let header_height = chrome.header_height(&list_metrics);
+        let footer_height = chrome.footer_height(&list_metrics);
+        // The slot covers the section chrome this row owns; the row itself is
+        // the band left between that header and footer, and only that band
+        // swipes — a section title is not part of the row that carries it.
+        let row_slot = vello::kurbo::Rect::new(
+            slot_rect.x0,
+            slot_rect.y0 + header_height,
+            slot_rect.x1,
+            slot_rect.y1 - footer_height,
+        );
         {
             let theme = widget_theme(env);
             let mut draw = ctx.draw_context();
             if swipe_dx != 0.0 {
                 let threshold =
-                    (slot_rect.width() * SWIPE_DISMISS_POSITIONAL_THRESHOLD).max(f64::EPSILON);
+                    (row_slot.width() * SWIPE_DISMISS_POSITIONAL_THRESHOLD).max(f64::EPSILON);
                 let progress = (swipe_dx.abs() / threshold).clamp(0.0, 1.0);
                 theme.draw_list_swipe_dismiss_background(
                     &mut draw,
-                    slot_rect,
+                    row_slot,
                     progress,
                     swipe_dx < 0.0,
                 );
@@ -703,7 +828,7 @@ pub(crate) fn render_list_parts(
         // Everything the row draws — its background, controls and content —
         // rides the swipe displacement; only the revealed dismiss background
         // stays anchored to the slot.
-        let row_rect = slot_rect + vello::kurbo::Vec2::new(swipe_dx, 0.0);
+        let row_rect = row_slot + vello::kurbo::Vec2::new(swipe_dx, 0.0);
         {
             let theme = widget_theme(env);
             let mut draw = ctx.draw_context();
@@ -711,6 +836,24 @@ pub(crate) fn render_list_parts(
             if lifted_id == Some(row_id) {
                 theme.draw_list_row_lifted(&mut draw, row_rect, REORDER_LIFT_ELEVATION);
             }
+        }
+        if let Some(header) = chrome.header.clone() {
+            let header_rect = vello::kurbo::Rect::new(
+                slot_rect.x0 + list_metrics.horizontal_inset,
+                slot_rect.y0,
+                slot_rect.x1 - list_metrics.horizontal_inset,
+                slot_rect.y0 + header_height,
+            );
+            draw_section_label(ctx, header, header_rect, true, &row_env);
+        }
+        if let Some(footer) = chrome.footer.clone() {
+            let footer_rect = vello::kurbo::Rect::new(
+                slot_rect.x0 + list_metrics.horizontal_inset,
+                slot_rect.y1 - footer_height,
+                slot_rect.x1 - list_metrics.horizontal_inset,
+                slot_rect.y1,
+            );
+            draw_section_label(ctx, footer, footer_rect, false, &row_env);
         }
 
         let deletable = ctx.renderer_mut().read_signal(&item.deletable);
@@ -1231,6 +1374,38 @@ impl RowGestures {
             reorder: None,
         }
     }
+}
+
+/// Draws a section header or footer.
+///
+/// The chrome reads the `MutedForeground` theme token rather than naming a
+/// colour, so a section title matches the platform's own secondary text on
+/// every theme.
+fn draw_section_label(
+    ctx: &mut WidgetRenderContext<'_>,
+    label: waterui_core::Str,
+    bounds: vello::kurbo::Rect,
+    is_header: bool,
+    env: &Environment,
+) {
+    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+        return;
+    }
+    let text = waterui_text::Text::new(label).color(waterui_graphics::color::Color::new(
+        waterui::theme::color::MutedForeground,
+    ));
+    let text = if is_header {
+        text.font(waterui_text::font::Subheadline)
+    } else {
+        text.font(waterui_text::font::Caption)
+    };
+    let styled = ctx.renderer_mut().read_signal(&text.resolve(env).content);
+    ctx.render_styled_text(
+        styled,
+        waterui_layout::stack::HorizontalAlignment::Leading,
+        env,
+        bounds,
+    );
 }
 
 fn list_content_rect(
