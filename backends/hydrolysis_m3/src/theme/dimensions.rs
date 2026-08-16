@@ -79,8 +79,10 @@ pub const PICKER_VERTICAL_INSET: f64 = 8.0;
 pub const PICKER_LABEL_SPACING: f64 = 8.0;
 pub const PICKER_INDICATOR_SPACE: f64 = 18.0;
 pub const PICKER_RADIO_INDICATOR_SIZE: f64 = 20.0;
+/// Compose's `RadioStrokeWidth`.
 pub const PICKER_RADIO_OUTER_RING_WIDTH: f64 = 2.0;
-pub const PICKER_RADIO_INNER_DOT_RADIUS: f64 = 5.0;
+/// Half of Compose's `RadioButtonDotSize` (12dp).
+pub const PICKER_RADIO_INNER_DOT_RADIUS: f64 = 6.0;
 pub const PICKER_RADIO_LABEL_SPACING: f64 = 8.0;
 pub const PICKER_RADIO_ROW_SPACING: f64 = 6.0;
 pub const PICKER_MENU_POPUP_TOP_SPACING: f64 = 4.0;
