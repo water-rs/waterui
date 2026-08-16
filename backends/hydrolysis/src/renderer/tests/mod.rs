@@ -867,6 +867,183 @@ fn capture_root_window<V: waterui_core::View>(
     renderer.finish_rebuild_frame();
 }
 
+/// A composed container carrying a non-`Group` role is a real container in the
+/// accessibility tree: a navigation bar/rail declares itself a tab list so
+/// assistive technology can tell that the tabs inside belong together. Only the
+/// `Group` role synthesized a node before, so every other container role — and
+/// every label on a container — was silently dropped.
+#[cfg(feature = "accessibility")]
+#[test]
+fn container_role_other_than_group_emits_its_own_node() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = hstack((text("Home"), text("Search")))
+        .height(80.0)
+        .background(Color::srgb(0, 0, 255))
+        .a11y_label("Navigation")
+        .a11y_role(AccessibilityRole::TabList);
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("tab-list render must publish an accessibility tree");
+    let tab_lists = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == AccessibilityNodeRole::TabList)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tab_lists.len(),
+        1,
+        "the container must emit exactly one tab-list node"
+    );
+    let (_, tab_list) = tab_lists[0];
+    assert_eq!(tab_list.label(), Some("Navigation"));
+    let child_labels = tab_list
+        .children()
+        .iter()
+        .map(|child_id| {
+            update
+                .nodes
+                .iter()
+                .find_map(|(id, node)| (id == child_id).then(|| node.label()))
+                .flatten()
+                .expect("tab-list child must have a label")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(child_labels, ["Home", "Search"]);
+}
+
+/// A label on a container names the container itself; it must not be pasted onto
+/// every leaf inside it, which announced "Navigation" once per tab.
+#[cfg(feature = "accessibility")]
+#[test]
+fn container_label_without_role_names_the_container_only() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = vstack((text("First"), text("Second"))).a11y_label("Settings");
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("labelled container render must publish an accessibility tree");
+    let labelled = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.label() == Some("Settings"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labelled.len(),
+        1,
+        "only the container may carry the container's label"
+    );
+    let (_, container) = labelled[0];
+    assert_eq!(container.role(), AccessibilityNodeRole::Group);
+    assert_eq!(container.children().len(), 2);
+}
+
+/// A reactive collection is a container too. Rows are how a tab bar, a menu, or a
+/// sidebar is actually written, so a container node that only appeared for fixed
+/// tuple children would still leave every dynamic list unannounced.
+#[cfg(feature = "accessibility")]
+#[test]
+fn lazy_stack_role_emits_the_container_node_over_its_rows() {
+    use nami::collection::List;
+    use waterui_core::id::SelfId;
+    use waterui_layout::stack::VStack;
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let rows: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let view = VStack::for_each(rows, |_: SelfId<u64>| text("Row"))
+        .a11y_label("Rows")
+        .a11y_role(AccessibilityRole::List);
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("collection render must publish an accessibility tree");
+    let (_, list) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == AccessibilityNodeRole::List)
+        .expect("the collection must emit its own list node");
+    assert_eq!(list.label(), Some("Rows"));
+    assert_eq!(list.children().len(), 2, "both rows belong to the list");
+    assert!(
+        update
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Rows") || node.role()
+                == AccessibilityNodeRole::List),
+        "the list's name must not be repeated on its rows"
+    );
+}
+
+/// The non-virtualized collection path (an overlay stack) reaches a different node
+/// kind than the lazy stack, and needs its own container node just the same.
+#[cfg(feature = "accessibility")]
+#[test]
+fn overlay_collection_role_emits_the_container_node() {
+    use nami::collection::List;
+    use waterui_core::id::SelfId;
+    use waterui_layout::stack::ZStack;
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let items: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let view = ZStack::for_each(items, |_: SelfId<u64>| text("Card"))
+        .a11y_label("Cards")
+        .a11y_role(AccessibilityRole::Group);
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("overlay collection render must publish an accessibility tree");
+    let (_, group) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Cards"))
+        .expect("the overlay collection must emit its own node");
+    assert_eq!(group.role(), AccessibilityNodeRole::Group);
+    assert_eq!(group.children().len(), 2);
+}
+
+/// A role on a control decorates the control's own node. The control consumes the
+/// semantics first, so the containers composing its chrome must not emit a second
+/// node carrying the same role and label.
+#[cfg(feature = "accessibility")]
+#[test]
+fn control_consumes_its_role_before_the_containers_inside_it() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = button("Play")
+        .action(|| {})
+        .a11y_label("Play episode")
+        .a11y_role(AccessibilityRole::Link);
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("button render must publish an accessibility tree");
+    let links = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == AccessibilityNodeRole::Link)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        links.len(),
+        1,
+        "the control owns the role; its chrome containers must not repeat it"
+    );
+    assert_eq!(links[0].1.label(), Some("Play episode"));
+}
+
 #[cfg(feature = "accessibility")]
 #[test]
 fn accessibility_group_owns_preserved_child_semantics() {

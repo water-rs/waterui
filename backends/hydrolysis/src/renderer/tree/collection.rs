@@ -147,8 +147,18 @@ pub(crate) struct CollectionNode {
     pub(super) layout: Box<dyn Layout>,
     /// The reactive item collection (`len`/`get_view`/`get_id`, watched).
     pub(super) views: AnyViews<AnyView>,
-    /// Environment captured at build, used to materialize items.
+    /// Environment captured at build, used to materialize items. Already shielded
+    /// when this collection carries accessibility naming metadata — the name
+    /// belongs to the collection, not to every item in it.
     pub(super) env: Environment,
+    /// Stable identity owning this collection's own accessibility node id, so the
+    /// id survives membership changes shifting the sibling ordinals.
+    #[cfg(feature = "accessibility")]
+    pub(super) accessibility_identity: Rc<()>,
+    /// The unshielded environment when this collection carries accessibility
+    /// naming metadata: `Some` means it emits the node naming itself.
+    #[cfg(feature = "accessibility")]
+    pub(super) accessibility_container_env: Option<Environment>,
     /// Current entries in display order, keyed by id so a membership change
     /// keeps unchanged items' nodes (and their in-flight state) and only
     /// builds/drops the delta. With a transition this also holds still-exiting
@@ -174,8 +184,18 @@ pub(crate) struct LazyStackNode {
     pub(super) axis: LazyStackAxisConfig,
     /// The reactive item collection (`len`/`get_view`, watched for membership).
     pub(super) views: AnyViews<AnyView>,
-    /// Environment captured at build, used to materialize and style items.
+    /// Environment captured at build, used to materialize and style items. Already
+    /// shielded when this stack carries accessibility naming metadata — the name
+    /// belongs to the stack, not to every row in it.
     pub(super) env: Environment,
+    /// Stable identity owning this stack's own accessibility node id, so the id
+    /// survives the visible window shifting the sibling ordinals.
+    #[cfg(feature = "accessibility")]
+    pub(super) accessibility_identity: Rc<()>,
+    /// The unshielded environment when this stack carries accessibility naming
+    /// metadata: `Some` means it emits the node naming itself.
+    #[cfg(feature = "accessibility")]
+    pub(super) accessibility_container_env: Option<Environment>,
     /// Indexed measured/estimated extents. Deep jumps resolve through its
     /// Fenwick tree without materializing preceding items.
     pub(super) extent_index: RefCell<VirtualExtentIndex>,
@@ -334,6 +354,14 @@ impl CollectionNode {
     }
 
     pub(super) fn flush(&self, renderer: &mut HydrolysisRenderer, ctx: RenderContext) {
+        #[cfg(feature = "accessibility")]
+        let container_scope = self.accessibility_container_env.as_ref().map(|env| {
+            renderer.push_accessibility_owner(&self.accessibility_identity);
+            let scope = renderer
+                .begin_accessibility_container(transformed_rect(ctx.hit_transform, ctx.bounds), env);
+            renderer.pop_accessibility_owner();
+            scope
+        });
         let axis = self.transition.as_ref().and_then(|runtime| runtime.axis);
         for (entry, rect) in self.entries.iter().zip(self.placed.iter()) {
             let factor = entry.factor;
@@ -356,6 +384,12 @@ impl CollectionNode {
             } else {
                 Self::flush_entry(renderer, entry, child_ctx, &self.env, factor, axis);
             }
+        }
+        #[cfg(feature = "accessibility")]
+        if let Some(container_scope) = container_scope {
+            renderer.push_accessibility_owner(&self.accessibility_identity);
+            renderer.end_accessibility_container(container_scope);
+            renderer.pop_accessibility_owner();
         }
     }
 
@@ -672,6 +706,14 @@ impl LazyStackNode {
         if count == 0 {
             return;
         }
+        #[cfg(feature = "accessibility")]
+        let container_scope = self.accessibility_container_env.as_ref().map(|env| {
+            renderer.push_accessibility_owner(&self.accessibility_identity);
+            let scope = renderer
+                .begin_accessibility_container(transformed_rect(ctx.hit_transform, ctx.bounds), env);
+            renderer.pop_accessibility_owner();
+            scope
+        });
         let cross = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => ctx.bounds.width(),
             LazyStackAxisConfig::Horizontal { .. } => ctx.bounds.height(),
@@ -748,6 +790,12 @@ impl LazyStackNode {
             }
         }
         self.item_cache.borrow_mut().end_frame();
+        #[cfg(feature = "accessibility")]
+        if let Some(container_scope) = container_scope {
+            renderer.push_accessibility_owner(&self.accessibility_identity);
+            renderer.end_accessibility_container(container_scope);
+            renderer.pop_accessibility_owner();
+        }
         // Materializing entering rows replaced their estimates with measured
         // extents. If that moved the container's total extent, the scroll
         // extents the last layout negotiated are stale: escalate to one layout

@@ -51,6 +51,24 @@ pub(crate) fn a11y_scoped_env<T: MetadataKey + Clone + 'static>(
     scoped
 }
 
+/// The `Env` scoping for naming metadata (`.a11y_label()` / `.a11y_role()`).
+///
+/// Alongside the value, the scope carries a [`ScopedAccessibilitySemantics`]
+/// identity so the node that ends up representing the wrapped view can claim it.
+/// A control claims it by registering its own node; a composed container finds it
+/// unclaimed and synthesizes the node naming itself. Nesting two of these (the
+/// usual `.a11y_label(..).a11y_role(..)` pair) is harmless: only the innermost is
+/// visible below, and it is the one every consumer resolves against.
+#[cfg(feature = "accessibility")]
+pub(crate) fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static>(
+    env: &Environment,
+    value: &T,
+) -> Environment {
+    let mut scoped = a11y_scoped_env(env, value);
+    scoped.insert(ScopedAccessibilitySemantics::new());
+    scoped
+}
+
 /// The `Env` scoping for a static [`AccessibilityState`]: a hidden state
 /// suppresses the whole subtree's emission (a constant can never un-hide), and
 /// the state is stored as a constant [`AccessibilityStateSignal`] so emission
