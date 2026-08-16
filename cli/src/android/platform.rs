@@ -622,6 +622,22 @@ async fn resolve_android_sdk_paths() -> eyre::Result<(PathBuf, PathBuf)> {
     Ok((sdk_path, android_jar))
 }
 
+/// The `waterui-ffi` features an Android runtime is compiled with.
+///
+/// See [`crate::apple::platform::apple_ffi_dependency_features`] for why anything
+/// loaded into that runtime must be compiled with the same set.
+///
+/// # Errors
+///
+/// Returns an error when the project's enabled capabilities cannot be resolved.
+pub(crate) async fn android_ffi_dependency_features(
+    project: &Project,
+) -> eyre::Result<Vec<String>> {
+    let mut features = vec!["waterui-ffi/android-jni".to_string()];
+    features.extend(crate::project_model::assets::capability_ffi_features(project).await?);
+    Ok(features)
+}
+
 async fn configure_android_rust_build(
     project: &Project,
     triple: &Triple,
@@ -631,8 +647,7 @@ async fn configure_android_rust_build(
     // Android loads the JNI shared object and nothing else, so build only that crate
     // type instead of also archiving the whole dependency graph into a staticlib.
     let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
-        .with_feature("waterui-ffi/android-jni")
-        .with_features(crate::project_model::assets::capability_ffi_features(project).await?)
+        .with_features(android_ffi_dependency_features(project).await?)
         .with_crate_type_override("cdylib")
         // Devices with 16 KB pages (Pixel 9 class and Play's 2025 requirement)
         // refuse or warn on 4 KB-aligned LOAD segments.

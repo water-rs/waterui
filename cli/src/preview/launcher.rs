@@ -44,7 +44,6 @@ struct PreviewRequirements {
     runtime_features: Vec<String>,
     app_crate_name: crate::project_types::CrateName,
     app_path: PathBuf,
-    dependency_lockfile: PathBuf,
 }
 
 #[derive(Debug)]
@@ -52,7 +51,6 @@ struct ResolvedPreviewMetadata {
     metadata: cargo_metadata::Metadata,
     app_crate_name: crate::project_types::CrateName,
     app_path: PathBuf,
-    dependency_lockfile: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,7 +221,8 @@ async fn build_preview_dylib(
         elapsed_ms = project_open_start.elapsed().as_millis(),
         "Preview opened project"
     );
-    let preview_crate_path = project.preview_dylib_crate_path();
+    let workspace_root = preview_support_ffi_crate_path().await?;
+    let preview_crate_path = project.preview_dylib_crate_path(&workspace_root);
     let preview_crate_name = project.preview_dylib_crate_name();
     let target = match platform {
         PreviewPlatform::Macos => TargetPlatform::MacOS,
@@ -237,14 +236,57 @@ async fn build_preview_dylib(
     ensure_project_dev_feature_for_preview(&project).await?;
 
     // The preview wrapper crate lives in the managed build cache, whose generated
-    // sources are regenerated whenever the CLI's scaffold templates move. Building
-    // into Cargo's default directory would put the compiled dependency graph inside
-    // that regenerated tree, so point it at the shared target directory every
-    // generated backend of this project builds into. Preview always links the
-    // shared runtime dynamically, so it lives in the shared-linkage directory.
+    // sources are regenerated whenever the CLI's scaffold templates move, so its
+    // dependency graph must not be compiled into that regenerated tree.
+    //
+    // It goes into the *support app's* shared target directory rather than this
+    // project's. A preview module is loaded into the support app and resolves
+    // its WaterUI symbols against the runtime that app already has open, so the
+    // two have to be the same build of that runtime — not merely the same
+    // source at the same version. Two target directories mean two independent
+    // compilations, each with its own `-C metadata` and therefore its own hash
+    // in every mangled symbol; the module then fails to `dlopen` against a
+    // runtime whose symbols no longer match, even though every input to both
+    // builds was identical.
+    let support_target_dir = Project::open(&preview_support_path()?)
+        .await
+        .wrap_err("Failed to open preview support project for its target directory")?
+        .water_target_dir(RustLinkage::SharedRuntime)
+        .await?;
     let mut rust_build = link_mode
         .configure_build(RustBuild::new(&preview_crate_path, target.triple()))
-        .with_target_dir(project.water_target_dir(RustLinkage::SharedRuntime).await?);
+        .with_target_dir(support_target_dir);
+
+    // Compile the module exactly as the runtime it is loaded into was compiled.
+    //
+    // Cargo folds both the deployment target and the unified feature set into the
+    // `-C metadata` hash it mangles into every symbol, so a module that disagrees
+    // with its host on either one links against symbols the host does not have.
+    let support_project = Project::open(&preview_support_path()?)
+        .await
+        .wrap_err("Failed to open the preview support project")?;
+    rust_build = if matches!(platform, PreviewPlatform::Android) {
+        rust_build.with_features(
+            crate::android::platform::android_ffi_dependency_features(&support_project).await?,
+        )
+    } else {
+        let browser_runtime = support_project
+            .browser_runtime_plan(target, crate::platform::TargetBackend::Apple)
+            .await?;
+        let (key, value) =
+            crate::apple::platform::apple_deployment_target(&support_project, target)
+                .await
+                .wrap_err("Failed to resolve the preview support deployment target")?;
+        rust_build
+            .with_env(key, value)
+            .with_features(
+                crate::apple::platform::apple_ffi_dependency_features(
+                    &support_project,
+                    browser_runtime,
+                )
+                .await?,
+            )
+    };
     let dylib_path_start = Instant::now();
     let expected_path = rust_build
         .dylib_path(preview_crate_name.as_str(), false)
@@ -577,38 +619,12 @@ async fn open_preview_support_project(requirements: &PreviewRequirements) -> Res
     let project = Project::open(&preview_app_path)
         .await
         .wrap_err("Failed to open preview app project")?;
-    synchronize_preview_dependency_lock(
-        &requirements.dependency_lockfile,
-        &project.ffi_crate_path().join("Cargo.lock"),
-    )
-    .await?;
     info!(
         path = %preview_app_path.display(),
         elapsed_ms = open_start.elapsed().as_millis(),
         "Preview support project opened"
     );
     Ok(project)
-}
-
-async fn synchronize_preview_dependency_lock(source: &Path, destination: &Path) -> Result<()> {
-    let source_contents = smol::fs::read(source).await.wrap_err_with(|| {
-        format!(
-            "Failed to read preview module dependency lockfile {}",
-            source.display()
-        )
-    })?;
-    if smol::fs::read(destination).await.ok().as_deref() == Some(source_contents.as_slice()) {
-        return Ok(());
-    }
-    smol::fs::write(destination, source_contents)
-        .await
-        .wrap_err_with(|| {
-            format!(
-                "Failed to synchronize preview host dependency lockfile {}",
-                destination.display()
-            )
-        })?;
-    Ok(())
 }
 
 async fn launch_preview_app_for_platform(
@@ -1054,6 +1070,54 @@ fn preview_support_path() -> Result<PathBuf> {
     support_app::support_app_path("preview_support")
 }
 
+/// Root of the workspace a preview module joins.
+///
+/// This is the support runtime's generated FFI crate. The path is derived rather
+/// than read from an opened [`Project`] because the module has to exist before the
+/// support application is scaffolded: resolving the runtime's requirements reads
+/// the module's own Cargo metadata.
+async fn preview_support_ffi_crate_path() -> Result<PathBuf> {
+    Ok(crate::water_dir::project_build_cache_dir(&preview_support_path()?)
+        .await?
+        .join("ffi"))
+}
+
+/// Write the project's preview module into the support runtime's workspace.
+///
+/// Only one module lives there at a time. A module left behind by a previously
+/// previewed project would still be a workspace member, and Cargo resolves every
+/// member of a workspace, so a stale one whose project has since moved or been
+/// deleted breaks the build of an unrelated preview.
+async fn scaffold_preview_module(project: &Project) -> Result<PathBuf> {
+    // Refresh the support runtime first when it already exists: opening it rewrites
+    // the generated FFI manifest that roots this workspace, and a module written
+    // under a root that does not yet declare it is rejected outright by Cargo.
+    let support_path = preview_support_path()?;
+    if support_path.join("Water.toml").is_file() {
+        Project::open(&support_path)
+            .await
+            .wrap_err("Failed to open the preview support project")?;
+    }
+    let workspace_root = preview_support_ffi_crate_path().await?;
+    let modules_root = workspace_root.join(crate::templates::PREVIEW_MODULES_DIR);
+    let crate_path = project.preview_dylib_crate_path(&workspace_root);
+    if let Ok(mut entries) = smol::fs::read_dir(&modules_root).await {
+        use smol::stream::StreamExt as _;
+        while let Some(entry) = entries.next().await {
+            let entry = entry.wrap_err("Failed to read preview modules directory")?;
+            if entry.path() != crate_path {
+                smol::fs::remove_dir_all(entry.path())
+                    .await
+                    .wrap_err("Failed to remove a stale preview module")?;
+            }
+        }
+    }
+    project
+        .scaffold_preview_ffi_companion(&workspace_root)
+        .await
+        .wrap_err("Failed to scaffold the preview module")
+}
+
 /// Ensure the preview support app exists and matches the current project requirements.
 async fn ensure_preview_support_app(path: &Path, requirements: &PreviewRequirements) -> Result<()> {
     let desired_signature = preview_signature(requirements);
@@ -1147,7 +1211,6 @@ async fn resolve_preview_requirements(
         &graph_fingerprint,
         &resolved.app_crate_name,
         &resolved.app_path,
-        &resolved.dependency_lockfile,
     )
     .await?
     {
@@ -1180,7 +1243,6 @@ async fn resolve_preview_requirements(
             runtime_features,
             app_crate_name: resolved.app_crate_name,
             app_path: resolved.app_path,
-            dependency_lockfile: resolved.dependency_lockfile,
         });
     } else {
         let source = waterui
@@ -1207,7 +1269,6 @@ async fn resolve_preview_requirements(
         runtime_features,
         app_crate_name: resolved.app_crate_name,
         app_path: resolved.app_path,
-        dependency_lockfile: resolved.dependency_lockfile,
     })
 }
 
@@ -1217,7 +1278,6 @@ async fn resolve_preview_requirements_from_manifest(
     graph_fingerprint: &str,
     app_crate_name: &crate::project_types::CrateName,
     app_path: &Path,
-    dependency_lockfile: &Path,
 ) -> Result<Option<PreviewRequirements>> {
     let manifest_open_start = Instant::now();
     let manifest = crate::project::Manifest::open(project_path.join("Water.toml"))
@@ -1273,7 +1333,6 @@ async fn resolve_preview_requirements_from_manifest(
         runtime_features: runtime_features.to_vec(),
         app_crate_name: app_crate_name.clone(),
         app_path: app_path.to_path_buf(),
-        dependency_lockfile: dependency_lockfile.to_path_buf(),
     }))
 }
 
@@ -1283,7 +1342,9 @@ async fn resolve_preview_metadata(
 ) -> Result<ResolvedPreviewMetadata> {
     let project = Project::open_for_preview_build(project_path).await?;
     ensure_project_dev_feature_for_preview(&project).await?;
-    let manifest_path = project.preview_dylib_crate_path().join("Cargo.toml");
+    let manifest_path = scaffold_preview_module(&project)
+        .await?
+        .join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
     let metadata_start = Instant::now();
@@ -1305,21 +1366,10 @@ async fn resolve_preview_metadata(
         elapsed_ms = metadata_start.elapsed().as_millis(),
         "Preview resolved user project cargo metadata"
     );
-    let dependency_lockfile = manifest_path
-        .parent()
-        .expect("preview wrapper manifest must have a parent directory")
-        .join("Cargo.lock");
-    if !dependency_lockfile.is_file() {
-        bail!(
-            "Cargo metadata did not create the preview dependency lockfile at {}",
-            dependency_lockfile.display()
-        );
-    }
     Ok(ResolvedPreviewMetadata {
         metadata,
         app_crate_name,
         app_path,
-        dependency_lockfile,
     })
 }
 
@@ -1470,7 +1520,7 @@ fn select_unique_package<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{PreviewLinkMode, PreviewPlatform, synchronize_preview_dependency_lock};
+    use super::{PreviewLinkMode, PreviewPlatform};
 
     #[test]
     fn macos_preview_uses_shared_waterui_runtime() {
@@ -1520,25 +1570,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn preview_host_uses_the_module_dependency_lock() {
-        smol::block_on(async {
-            let directory = tempfile::tempdir().expect("temporary preview directories");
-            let source = directory.path().join("module.lock");
-            let destination = directory.path().join("host.lock");
-            std::fs::write(&source, "module dependency resolution")
-                .expect("write module dependency lock");
-            std::fs::write(&destination, "different host resolution")
-                .expect("write host dependency lock");
-
-            synchronize_preview_dependency_lock(&source, &destination)
-                .await
-                .expect("synchronize dependency lock");
-
-            assert_eq!(
-                std::fs::read_to_string(destination).expect("read synchronized dependency lock"),
-                "module dependency resolution"
-            );
-        });
-    }
 }
