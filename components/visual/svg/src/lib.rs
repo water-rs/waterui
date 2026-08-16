@@ -100,8 +100,17 @@ impl Svg {
         self
     }
 
-    /// Sets explicit dimensions for the SVG.
-    pub const fn size(mut self, width: f32, height: f32) -> Self {
+    /// Sets the SVG's own coordinate system — the box its path data is drawn
+    /// in, and the size it asks for when nothing else has an opinion.
+    ///
+    /// This is *not* a layout size. `.size(…)` from `ViewExt` puts the drawing
+    /// in a box of your choosing and scales it to fit; this declares what the
+    /// drawing's coordinates mean, so shrinking it here reframes the artwork
+    /// rather than resizing it. A method named `size` here would shadow
+    /// `ViewExt::size` — an inherent method wins over a trait one — which
+    /// silently turned `icon.size(8.0, 8.0)` into a 24pt drawing crammed into
+    /// an 8pt viewBox, spilling over whatever sat next to it.
+    pub const fn viewbox(mut self, width: f32, height: f32) -> Self {
         self.width = Some(width);
         self.height = Some(height);
         self
@@ -156,10 +165,16 @@ impl Svg {
         ))
     }
 
-    /// Wraps a view in a frame, preserving optional intrinsic size.
+    /// Wraps a view in a frame carrying the SVG's intrinsic size.
+    ///
+    /// The intrinsic size is what the drawing asks for when nothing else has an
+    /// opinion, so it belongs in the frame's *ideal* extent, not its pinned
+    /// one. Pinning it made `.size(…)` on an icon impossible to honour: the
+    /// frame reported the natural size whatever it was offered, and the icon
+    /// drew outside the box it had been given.
     fn frame_view(&self, view: impl View) -> AnyView {
         match (self.width, self.height) {
-            (Some(w), Some(h)) => AnyView::new(Frame::new(view).width(w).height(h)),
+            (Some(w), Some(h)) => AnyView::new(Frame::new(view).ideal_width(w).ideal_height(h)),
             _ => AnyView::new(Frame::new(view)),
         }
     }

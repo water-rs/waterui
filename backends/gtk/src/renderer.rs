@@ -55,7 +55,7 @@ use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-use waterui_navigation::tab::Tabs;
+use waterui_navigation::tab::TabsLayout;
 use waterui_navigation::{
     NavigationSplitLayout, NavigationStack, NavigationTransitionDestination,
     NavigationTransitionSource, NavigationView,
@@ -908,7 +908,7 @@ impl GtkRenderer {
         Self::register_native::<ProgressConfig>(dispatcher);
         Self::register_native::<StepperConfig>(dispatcher);
         Self::register_native::<ScrollView>(dispatcher);
-        Self::register_native::<Tabs>(dispatcher);
+        Self::register_native::<TabsLayout>(dispatcher);
         Self::register_native::<ListConfig>(dispatcher);
         Self::register_native::<SecureFieldConfig>(dispatcher);
         Self::register_native::<PickerConfig>(dispatcher);

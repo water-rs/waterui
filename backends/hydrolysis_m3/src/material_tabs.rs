@@ -4,7 +4,7 @@ use core::fmt::{self, Debug};
 
 use waterui::id::Id;
 use waterui::navigation::NavigationView;
-use waterui::navigation::tab::{Tab as WaterTab, Tabs as WaterTabs, tab_style};
+use waterui::navigation::tab::{Tab as WaterTab, TabsLayout as WaterTabsLayout, tab_style};
 use waterui::{Binding, Environment, View};
 use waterui_controls::label::{IntoLabel, Label};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
@@ -77,7 +77,7 @@ impl View for MaterialTabs {
                 WaterTab::new(tab.id, tab.label, move || content.build())
             })
             .collect();
-        WaterTabs::new(selection, tabs).style(tab_style::tab_bar())
+        WaterTabsLayout::new(selection, tabs).style(tab_style::tab_bar())
     }
 }
 

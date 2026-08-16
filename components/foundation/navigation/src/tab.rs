@@ -5,9 +5,9 @@ use alloc::vec::Vec;
 use nami::{Binding, Computed, SignalExt as _};
 use waterui_controls::IntoLabel;
 use waterui_core::{
-    AnyView, IntoSignal,
+    AnyView, Environment, IntoSignal, Str, View,
     handler::{AnyViewBuilder, ViewBuilder},
-    id::Id,
+    id::{Id, Mapping},
     impl_debug,
     layout::StretchAxis,
     raw_view,
@@ -120,6 +120,25 @@ impl<T> Tab<T> {
         }
     }
 
+    /// Creates a tab whose root supplies its own navigation chrome.
+    ///
+    /// Each tab owns one navigation container — a [`NavigationStack`] or a
+    /// [`NavigationSplitView`] — so pushing inside a tab leaves the other tabs'
+    /// navigation state untouched, and returning to a tab shows it exactly
+    /// where the user left it. The tab page itself contributes no bar; the
+    /// container inside it does.
+    ///
+    /// [`NavigationStack`]: crate::NavigationStack
+    /// [`NavigationSplitView`]: crate::NavigationSplitView
+    pub fn container<B>(id: T, label: impl IntoLabel, content: B) -> Self
+    where
+        B: ViewBuilder,
+    {
+        Self::new(id, label, move || {
+            NavigationView::new(Str::default(), content.build()).navigation_bar_visibility(false)
+        })
+    }
+
     /// Sets a reactive badge count.
     #[must_use]
     pub fn badge(mut self, count: impl IntoSignal<i32> + 'static) -> Self {
@@ -133,12 +152,26 @@ impl<T> Tab<T> {
         self.enabled = enabled.into_signal().computed();
         self
     }
+
+    /// Rewrites the tab identity, keeping every other field.
+    fn with_id<U>(self, id: U) -> Tab<U> {
+        Tab {
+            id,
+            label: self.label,
+            content: self.content,
+            badge: self.badge,
+            enabled: self.enabled,
+        }
+    }
 }
 
-/// Stable native tab container.
+/// Native tab container consumed by platform backends.
+///
+/// The C ABI cannot carry generics, so tab identity is erased to [`Id`] here.
+/// Application code uses [`Tabs`], which keeps the app's own identifier type.
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct Tabs {
+pub struct TabsLayout {
     /// Currently selected tab identifier.
     pub selection: Binding<Id>,
     /// Stable tabs.
@@ -147,8 +180,8 @@ pub struct Tabs {
     pub style: NativeTabStyle,
 }
 
-impl Tabs {
-    /// Creates a tab container.
+impl TabsLayout {
+    /// Creates an erased tab container.
     #[must_use]
     pub const fn new(selection: Binding<Id>, tabs: Vec<Tab<Id>>) -> Self {
         Self {
@@ -166,4 +199,65 @@ impl Tabs {
     }
 }
 
-raw_view!(Tabs, StretchAxis::Both);
+raw_view!(TabsLayout, StretchAxis::Both);
+
+/// Adaptive native tab container keyed by the application's own tab type.
+///
+/// Selection is a caller-owned `Binding<T>`; each [`Tab`] carries a value of the
+/// same type. Identity is erased to [`Id`] only when projecting into
+/// [`TabsLayout`] for the native backends.
+#[must_use]
+pub struct Tabs<T: 'static> {
+    selection: Binding<T>,
+    items: Vec<Tab<T>>,
+    style: NativeTabStyle,
+}
+
+impl<T> core::fmt::Debug for Tabs<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Tabs")
+            .field("tabs", &self.items.len())
+            .field("style", &self.style)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Ord + Clone + 'static> Tabs<T> {
+    /// Creates a tab container driven by a caller-owned selection.
+    pub fn new(selection: &Binding<T>, tabs: Vec<Tab<T>>) -> Self {
+        Self {
+            selection: selection.clone(),
+            items: tabs,
+            style: NativeTabStyle::Automatic,
+        }
+    }
+
+    /// Sets native adaptive tab presentation.
+    pub fn style(mut self, style: impl TabStyle) -> Self {
+        self.style = style.into_native();
+        self
+    }
+}
+
+impl<T: Ord + Clone + 'static> View for Tabs<T> {
+    fn body(self, _env: &Environment) -> impl View {
+        let mapping = Mapping::new();
+        let tabs = self
+            .items
+            .into_iter()
+            .map(|tab| {
+                let id = mapping.to_id(tab.id.clone());
+                tab.with_id(id)
+            })
+            .collect();
+        TabsLayout {
+            selection: mapping.binding(&self.selection),
+            tabs,
+            style: self.style,
+        }
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}

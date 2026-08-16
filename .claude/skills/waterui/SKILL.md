@@ -288,13 +288,47 @@ portable code depend on a cross-platform set instead.
 |----------|------------|
 | Layout | `hstack`, `vstack`, `zstack`, `scroll`, `spacer`, `grid` |
 | Controls | `button`, `toggle`, `Slider`, `Stepper`, `TextField`, `Menu`, `Picker` |
-| Navigation | `NavigationStack`, `NavigationLink`, `NavigationSplitView`, `TabView` |
+| Navigation | `NavigationStack`, `NavigationLink`, `NavigationSplitView`, `Tabs` / `Tab` (see below) |
 | Collections | `List`, `ForEach` (see below) |
 | Overlays | `Snackbar` / `SnackbarManager`, `FullScreenOverlayManager` |
 | Media | `Photo`, `VideoPlayer`, `MediaPicker` |
 | Data | `Chart`, `Map`, `form` (`#[derive(FormBuilder)]`) |
 | Platform | `WebView` |
 | Graphics | `Canvas`, `Barcode::qr()`, `Icon` sets (see Icons) |
+
+### Navigation chrome
+
+Bars, tab strips, and sidebars are *declared*, never drawn by app code — each
+backend projects them into its own platform chrome (`UITabBarController`,
+Android bottom navigation or navigation rail, GTK notebook, …).
+
+`Tabs` is keyed by your own tab type; you never name an `Id`. **Give each tab its
+own navigation container with `Tab::container`** — that is what makes a tab keep
+its pushed pages while you visit another tab:
+
+```rust
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Pane { Inbox, Settings }
+
+let pane = binding(Pane::Inbox);
+
+Tabs::new(&pane, vec![
+    Tab::container(Pane::Inbox, label("Inbox").icon(mdi::inbox()), inbox_stack)
+        .badge(unread_count),
+    Tab::container(Pane::Settings, label("Settings").icon(mdi::cog()), settings_stack),
+])
+.style(tab_style::automatic())   // tab bar on a phone, sidebar on a large window
+```
+
+On a destination, chrome is a modifier rather than a view you compose:
+`.title(…)`, `.large_title()` / `.inline_title()`, `.navigation_subtitle(…)`,
+`.searchable(&query, "Search")`, and `.navigation_toolbar(…)` with *semantic*
+placements (`PrimaryAction`, `TopBarLeading`, `BottomBar`, `Confirmation`,
+`Cancellation`, `Status`) that each platform puts where it puts them. Refuse a
+back gesture with `.navigation_pop_enabled(signal)`, and react to a real one with
+`.on_navigation_pop_attempted(…)`.
+
+`examples/navigation` is the worked example for all of it.
 
 ### Embedded browsers
 

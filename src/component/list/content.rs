@@ -3,9 +3,14 @@
 //! [`ListContent`] mirrors the closed-collection pattern used by `MenuView`
 //! (see `components/controls/src/menu.rs`): every value type the user can
 //! drop into [`crate::component::list::List::content`] explicitly opts in
-//! through this trait. Implementations exist for [`super::ListItem`], the
-//! [`Row`] builder produced by [`row`] / [`detail_row`], [`super::Section`],
-//! tuples up to 15 elements, fixed-size arrays, [`Vec<T>`], and `Option<T>`.
+//! through this trait. Implementations exist for any `Fn() -> ListItem` row
+//! builder, the [`Row`] builder produced by [`row`] / [`detail_row`],
+//! [`super::Section`], tuples up to 15 elements, fixed-size arrays,
+//! [`Vec<T>`], and `Option<T>`.
+//!
+//! Rows are *builders*, not finished [`super::ListItem`] values, because the
+//! list rematerializes a row every time it needs one — write
+//! `|| ListItem::new(…)`, not `ListItem::new(…)`.
 //!
 //! The accumulator design (`collect_items(self, sink)`) lets `Section<C>`
 //! attach its header / footer marker to whichever item the inner content
