@@ -155,14 +155,14 @@ pub use waterui_assets as assets;
 pub use waterui_layout as layout;
 pub use waterui_locale as locale;
 pub use waterui_locale::regional;
-#[doc(inline)]
-pub use waterui_macros::*;
 /// The UI-test attribute, written qualified as `#[waterui::test(...)]`.
 ///
 /// It is `ui_test` inside [`prelude`] so that a glob import of the prelude does
 /// not shadow the built-in `#[test]`; this alias keeps the short spelling at the
 /// path where it is actually written.
 pub use waterui_macros::ui_test as test;
+#[doc(inline)]
+pub use waterui_macros::*;
 #[cfg(feature = "map")]
 pub use waterui_map as map;
 #[cfg(feature = "media")]
@@ -197,6 +197,7 @@ pub use waterui_core::{
     env::{self, Environment},
     event,
     extract::{self, Extractor, State, Use},
+    handler::{self, Handler, HandlerOnce},
     id::{self, Identifiable},
     impl_extractor, raw_view,
     resolve::{self, AnyResolvable, Resolvable},
