@@ -12,7 +12,12 @@ use waterui_graphics::color::Color;
 pub fn metrics(style: ButtonStyle) -> ButtonMetrics {
     match style {
         ButtonStyle::Automatic | ButtonStyle::Bordered | ButtonStyle::BorderedProminent => {
-            ButtonMetrics::new(24.0, 10.0, BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
+            ButtonMetrics::new(
+                BUTTON_TEXT_HORIZONTAL_PADDING,
+                BUTTON_TEXT_VERTICAL_PADDING,
+                BUTTON_MIN_WIDTH,
+                BUTTON_MIN_HEIGHT,
+            )
         }
         ButtonStyle::Plain | ButtonStyle::Borderless => ButtonMetrics::new(
             BUTTON_TEXT_HORIZONTAL_PADDING,
@@ -151,17 +156,29 @@ mod tests {
         assert_eq!(metrics.min_height, BUTTON_MIN_HEIGHT);
     }
 
+    /// Values from `androidx.compose.material3`: `BaselineButtonTokens` for the
+    /// container, `ButtonDefaults` for the minimum size and content padding.
     #[test]
-    fn button_metrics_match_mdui_2_1_5_tokens() {
-        assert_button_metrics(ButtonStyle::Plain, BUTTON_TEXT_HORIZONTAL_PADDING);
-        assert_button_metrics(ButtonStyle::Borderless, BUTTON_TEXT_HORIZONTAL_PADDING);
-        assert_button_metrics(ButtonStyle::Automatic, 24.0);
-        assert_button_metrics(ButtonStyle::Bordered, 24.0);
-        assert_button_metrics(ButtonStyle::BorderedProminent, 24.0);
+    fn button_metrics_match_compose_button_tokens() {
+        for style in [
+            ButtonStyle::Plain,
+            ButtonStyle::Borderless,
+            ButtonStyle::Automatic,
+            ButtonStyle::Bordered,
+            ButtonStyle::BorderedProminent,
+        ] {
+            assert_button_metrics(style, BUTTON_TEXT_HORIZONTAL_PADDING);
+        }
+        // ButtonSmallTokens.ContainerHeight
         assert_eq!(BUTTON_MIN_HEIGHT, 40.0);
-        assert_eq!(BUTTON_CONTAINER_RADIUS, 20.0);
-        assert_eq!(BUTTON_MIN_WIDTH, 48.0);
+        // BaselineButtonTokens.ContainerShapeRound is CornerFull
+        assert_eq!(BUTTON_CONTAINER_RADIUS, BUTTON_MIN_HEIGHT / 2.0);
+        // ButtonDefaults.MinWidth
+        assert_eq!(BUTTON_MIN_WIDTH, 58.0);
+        // BaselineButtonTokens.LeadingSpace / TrailingSpace
         assert_eq!(BUTTON_TEXT_HORIZONTAL_PADDING, 24.0);
+        // ButtonDefaults.ContentPadding vertical
+        assert_eq!(BUTTON_TEXT_VERTICAL_PADDING, 8.0);
     }
 
     #[derive(Default)]
