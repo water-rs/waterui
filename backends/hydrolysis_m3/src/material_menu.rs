@@ -50,7 +50,7 @@ mod tests {
     use crate::layout::menu::text_context_metrics;
 
     #[test]
-    fn material_menu_tokens_match_material_web_v0_192() {
+    fn material_menu_tokens_match_compose_menu_tokens() {
         let metrics = text_context_metrics();
 
         assert_eq!(metrics.row_height, 56.0);

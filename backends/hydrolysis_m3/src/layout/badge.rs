@@ -34,7 +34,7 @@ mod tests {
     use super::metrics;
 
     #[test]
-    fn badge_metrics_match_material_web_v0_192_tokens() {
+    fn badge_metrics_match_compose_badge_tokens() {
         let metrics = metrics();
 
         assert_eq!(metrics.small_size, 6.0);

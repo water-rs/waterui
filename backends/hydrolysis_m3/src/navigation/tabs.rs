@@ -74,7 +74,7 @@ mod tests {
     };
 
     #[test]
-    fn primary_tab_metrics_match_material_web_latest_tokens() {
+    fn primary_tab_metrics_match_compose_primary_navigation_tab_tokens() {
         let metrics = metrics();
 
         assert_eq!(metrics.bar_height, TABS_BAR_HEIGHT);

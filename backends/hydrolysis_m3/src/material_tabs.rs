@@ -105,7 +105,7 @@ mod tests {
     };
 
     #[test]
-    fn material_tabs_tokens_match_material_web_v0_192_primary_tabs() {
+    fn material_tabs_tokens_match_compose_primary_navigation_tab_tokens() {
         assert_eq!(TABS_BAR_HEIGHT, 48.0);
         assert_eq!(TABS_BUTTON_MIN_WIDTH, 48.0);
         assert_eq!(TABS_BUTTON_HORIZONTAL_INSET, 16.0);

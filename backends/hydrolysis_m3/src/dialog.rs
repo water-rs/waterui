@@ -413,7 +413,7 @@ mod tests {
     };
 
     #[test]
-    fn dialog_tokens_match_m3_reference() {
+    fn dialog_tokens_match_compose_dialog_tokens() {
         assert_eq!(DIALOG_CONTAINER_MIN_WIDTH, 280.0);
         assert_eq!(DIALOG_CONTAINER_MAX_WIDTH, 560.0);
         assert_eq!(DIALOG_CONTAINER_MIN_HEIGHT, 140.0);

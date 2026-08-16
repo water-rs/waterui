@@ -464,7 +464,7 @@ mod tests {
     };
 
     #[test]
-    fn assist_chip_tokens_match_material_web_v0_192() {
+    fn assist_chip_tokens_match_compose_assist_chip_tokens() {
         assert_eq!(ASSIST_CHIP_CONTAINER_HEIGHT, 32.0);
         assert_eq!(ASSIST_CHIP_CONTAINER_SHAPE, 8.0);
         assert_eq!(ASSIST_CHIP_OUTLINE_WIDTH, 1.0);
@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_chip_tokens_match_material_web_v0_192() {
+    fn filter_chip_tokens_match_compose_filter_chip_tokens() {
         assert_eq!(FILTER_CHIP_CONTAINER_HEIGHT, 32.0);
         assert_eq!(FILTER_CHIP_CONTAINER_SHAPE, 8.0);
         assert_eq!(FILTER_CHIP_UNSELECTED_OUTLINE_WIDTH, 1.0);
@@ -486,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn input_chip_tokens_match_material_web_v0_192() {
+    fn input_chip_tokens_match_compose_input_chip_tokens() {
         assert_eq!(INPUT_CHIP_CONTAINER_HEIGHT, 32.0);
         assert_eq!(INPUT_CHIP_CONTAINER_SHAPE, 8.0);
         assert_eq!(INPUT_CHIP_UNSELECTED_OUTLINE_WIDTH, 1.0);

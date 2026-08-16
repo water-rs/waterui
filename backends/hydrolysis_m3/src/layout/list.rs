@@ -194,7 +194,7 @@ mod tests {
     };
 
     #[test]
-    fn list_metrics_match_material_web_latest_tokens() {
+    fn list_metrics_match_compose_list_tokens() {
         let metrics = metrics();
 
         assert_eq!(metrics.one_line_row_height, LIST_ONE_LINE_ROW_HEIGHT);

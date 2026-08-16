@@ -19,7 +19,7 @@ mod tests {
     use crate::layout::divider::metrics;
 
     #[test]
-    fn material_divider_tokens_match_material_web_v0_192() {
+    fn material_divider_tokens_match_compose_divider_tokens() {
         let metrics = metrics();
 
         assert_eq!(metrics.thickness, 1.0);

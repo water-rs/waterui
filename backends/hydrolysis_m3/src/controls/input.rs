@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn filled_text_field_metrics_match_material_web_latest_tokens() {
+    fn filled_text_field_metrics_match_compose_filled_text_field_tokens() {
         let metrics = metrics();
 
         assert_eq!(metrics.min_height, INPUT_FIELD_MIN_HEIGHT);
@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn filled_text_field_focus_indicator_matches_material_web_latest_tokens() {
+    fn filled_text_field_focus_indicator_matches_compose_filled_text_field_tokens() {
         let colors = MaterialColorScheme::baseline_light();
         let mut draw = RecordingDrawContext::default();
         draw_field(
