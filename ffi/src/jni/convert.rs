@@ -1581,13 +1581,15 @@ impl ToJavaStruct for crate::components::navigation::WuiTabs {
             let tab_obj = env
                 .new_object(
                     &tab_class,
-                    jni_sig!("(JJJJJ)V"),
+                    jni_sig!("(JJJJJJJ)V"),
                     &[
                         JValue::Long(tab.id as jlong),
                         JValue::Long(tab.label as jlong),
                         JValue::Long(tab.content as jlong),
                         JValue::Long(tab.badge as jlong),
                         JValue::Long(tab.enabled as jlong),
+                        JValue::Long(tab.system_icon as jlong),
+                        JValue::Long(tab.icon as jlong),
                     ],
                 )
                 .expect("Failed to create TabStruct");
