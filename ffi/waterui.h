@@ -593,6 +593,10 @@ typedef enum WuiProgressStyle {
    *Mirrors `ProgressStyle::Circular`.
    */
   WuiProgressStyle_Circular,
+  /**
+   *Mirrors `ProgressStyle::Loading`.
+   */
+  WuiProgressStyle_Loading,
 } WuiProgressStyle;
 
 /**
@@ -984,9 +988,13 @@ typedef enum WuiNavigationTitleDisplayMode {
    */
   WuiNavigationTitleDisplayMode_Inline = 1,
   /**
+   * Always use a medium title, between inline and large.
+   */
+  WuiNavigationTitleDisplayMode_Medium = 2,
+  /**
    * Always use large title.
    */
-  WuiNavigationTitleDisplayMode_Large = 2,
+  WuiNavigationTitleDisplayMode_Large = 3,
 } WuiNavigationTitleDisplayMode;
 
 /**
