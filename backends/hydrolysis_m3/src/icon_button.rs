@@ -16,8 +16,16 @@ use crate::color::{
 };
 use crate::semantics::interaction_style;
 
+/// `IconButtonTokens.StateLayerSize`: the size of the visible state layer.
 const ICON_BUTTON_STATE_LAYER_SIZE: f32 = 40.0;
+/// `IconButtonTokens.IconSize`.
 const ICON_BUTTON_ICON_SIZE: f32 = 24.0;
+/// Compose wraps every icon button in `minimumInteractiveComponentSize()`,
+/// documented as "an overall minimum touch target size of 48 x 48dp, to meet
+/// accessibility guidelines". Compose can expand the touch target without
+/// growing the layout; `WaterUI` has no such split, so the button occupies the
+/// full target and draws its 40dp state layer centered inside.
+const ICON_BUTTON_TOUCH_TARGET_SIZE: f32 = 48.0;
 const ICON_BUTTON_OUTLINE_WIDTH: f32 = 1.0;
 
 /// Color token set for an icon button variant.
@@ -232,6 +240,7 @@ where
                 Border::new(Tokens::outline_color(), Tokens::outline_width())
                     .corner_radius(ICON_BUTTON_STATE_LAYER_SIZE * 0.5),
             )
+            .size(ICON_BUTTON_TOUCH_TARGET_SIZE, ICON_BUTTON_TOUCH_TARGET_SIZE)
             .on_tap(move |env: Environment| action(&env))
             .a11y_label(self.accessibility_label)
             .a11y_role(AccessibilityRole::Button)
