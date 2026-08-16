@@ -25,13 +25,14 @@ pub const TOGGLE_SWITCH_OUTLINE_WIDTH: f64 = 2.0;
 pub const TOGGLE_SWITCH_UNSELECTED_HANDLE_SIZE: f64 = 16.0;
 pub const TOGGLE_SWITCH_SELECTED_HANDLE_SIZE: f64 = 24.0;
 pub const TOGGLE_SWITCH_PRESSED_HANDLE_SIZE: f64 = 28.0;
-/// Gap between the track's left edge and the unselected thumb (mdui `left: 6`
-/// with a 16dp thumb puts the resting center at 14dp).
-pub const TOGGLE_SWITCH_THUMB_UNSELECTED_INSET: f64 = 6.0;
-/// Gap between the track's right edge and the selected thumb (mdui `left: 24`
-/// with a 24dp thumb in a 52dp track puts the resting center 16dp from the
-/// right edge).
-pub const TOGGLE_SWITCH_THUMB_SELECTED_INSET: f64 = 4.0;
+/// Compose's `ThumbPadding`: `(TrackHeight - SelectedHandleWidth) / 2`.
+///
+/// Both rest positions come from this one value. Compose lays the thumb out in
+/// a slot the size of the *selected* handle at either end, and centres the
+/// smaller unselected handle inside that slot, so the thumb never shifts when
+/// it changes size.
+pub const TOGGLE_SWITCH_THUMB_PADDING: f64 =
+    (TOGGLE_SWITCH_HEIGHT - TOGGLE_SWITCH_SELECTED_HANDLE_SIZE) / 2.0;
 /// Size of the thumb icon (mdui switch `checked-icon` font size).
 pub const TOGGLE_SWITCH_ICON_SIZE: f64 = 16.0;
 /// Initial scale of the thumb icon while it transitions in/out (mdui

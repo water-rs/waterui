@@ -3,9 +3,8 @@ use crate::dimensions::{
     TOGGLE_CHECKBOX_SELECTED_SCALE_START, TOGGLE_CHECKBOX_SIZE, TOGGLE_LABEL_SPACING,
     TOGGLE_SWITCH_HEIGHT, TOGGLE_SWITCH_ICON_SCALE_START, TOGGLE_SWITCH_ICON_SIZE,
     TOGGLE_SWITCH_OUTLINE_WIDTH, TOGGLE_SWITCH_PRESSED_HANDLE_SIZE,
-    TOGGLE_SWITCH_SELECTED_HANDLE_SIZE, TOGGLE_SWITCH_THUMB_SELECTED_INSET,
-    TOGGLE_SWITCH_THUMB_UNSELECTED_INSET, TOGGLE_SWITCH_UNSELECTED_HANDLE_SIZE,
-    TOGGLE_SWITCH_WIDTH,
+    TOGGLE_SWITCH_SELECTED_HANDLE_SIZE, TOGGLE_SWITCH_THUMB_PADDING,
+    TOGGLE_SWITCH_UNSELECTED_HANDLE_SIZE, TOGGLE_SWITCH_WIDTH,
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
@@ -29,17 +28,17 @@ pub fn metrics(style: ToggleStyle) -> ToggleMetrics {
     }
 }
 
-/// The switch thumb's center for the given animated `progress`: it slides
-/// between the mdui resting centers — 14dp from the left edge unselected
-/// (`left: 6` + half of the 16dp thumb) and 16dp from the right edge selected
-/// (`left: 24` + half of the 24dp thumb in the 52dp track). Pressing grows the
-/// thumb around this center without moving it.
+/// The switch thumb's center for the given animated `progress`.
+///
+/// Compose reserves a slot the width of the *selected* handle at each end,
+/// inset by `ThumbPadding`, and centres whatever size the thumb currently is
+/// inside it. Both rest centres therefore sit half a selected handle in from
+/// the padding, and growing or shrinking the thumb — on press, or when the
+/// value changes — never moves it sideways.
 fn switch_thumb_center(bounds: Rect, progress: f32) -> Point {
-    let unselected_x = bounds.x0
-        + TOGGLE_SWITCH_THUMB_UNSELECTED_INSET
-        + TOGGLE_SWITCH_UNSELECTED_HANDLE_SIZE / 2.0;
-    let selected_x =
-        bounds.x1 - (TOGGLE_SWITCH_THUMB_SELECTED_INSET + TOGGLE_SWITCH_SELECTED_HANDLE_SIZE / 2.0);
+    let slot_half = TOGGLE_SWITCH_SELECTED_HANDLE_SIZE / 2.0;
+    let unselected_x = bounds.x0 + TOGGLE_SWITCH_THUMB_PADDING + slot_half;
+    let selected_x = bounds.x1 - (TOGGLE_SWITCH_THUMB_PADDING + slot_half);
     Point::new(
         crate::lerp_f64(unselected_x, selected_x, progress),
         bounds.y0 + bounds.height() / 2.0,
@@ -405,9 +404,11 @@ mod tests {
     }
 
     #[test]
-    fn switch_thumb_rests_at_mdui_centers() {
-        // Unselected: left 6 + 16dp thumb → center 14dp. Selected: left 24 +
-        // 24dp thumb → center 36dp (16dp from the right edge of the 52 track).
+    /// Compose's `ThumbPadding` is `(32 - 24) / 2 = 4`, and the thumb sits in a
+    /// 24dp slot at each end regardless of the size it currently draws at. The
+    /// rest centres are therefore 4 + 12 = 16dp from either edge of the 52dp
+    /// track, which is what keeps the thumb still while it changes size.
+    fn switch_thumb_rests_at_compose_centers() {
         let colors = MaterialColorScheme::baseline_light();
         let bounds = Rect::from_origin_size((0.0, 0.0), (52.0, 32.0));
 
@@ -420,7 +421,7 @@ mod tests {
             false,
             WidgetInteractionState::NONE,
         );
-        assert_eq!(unselected.circle_centers, vec![Point::new(14.0, 16.0)]);
+        assert_eq!(unselected.circle_centers, vec![Point::new(16.0, 16.0)]);
 
         let mut selected = RecordingDrawContext::default();
         draw_switch(
