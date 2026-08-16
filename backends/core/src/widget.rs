@@ -665,8 +665,11 @@ pub struct SliderMetrics {
     pub min_track_width: f64,
     /// Track height.
     pub track_height: f64,
-    /// Thumb radius.
-    pub thumb_radius: f64,
+    /// Width of the handle. A theme whose handle is a bar rather than a circle
+    /// sets this independently of [`Self::handle_height`].
+    pub handle_width: f64,
+    /// Height of the handle, which also sets the control row's height.
+    pub handle_height: f64,
 }
 
 impl SliderMetrics {
@@ -678,7 +681,8 @@ impl SliderMetrics {
         vertical_spacing: f64,
         min_track_width: f64,
         track_height: f64,
-        thumb_radius: f64,
+        handle_width: f64,
+        handle_height: f64,
     ) -> Self {
         Self {
             horizontal_inset,
@@ -686,8 +690,16 @@ impl SliderMetrics {
             vertical_spacing,
             min_track_width,
             track_height,
-            thumb_radius,
+            handle_width,
+            handle_height,
         }
+    }
+
+    /// Horizontal room the handle needs beyond each end of the track, so it
+    /// stays inside the control at either extreme.
+    #[must_use]
+    pub const fn handle_overhang(&self) -> f64 {
+        self.handle_width / 2.0
     }
 }
 

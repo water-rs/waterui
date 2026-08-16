@@ -1,10 +1,9 @@
 use crate::dimensions::{
-    SLIDER_HANDLE_HEIGHT, SLIDER_HANDLE_WIDTH, SLIDER_HORIZONTAL_INSET, SLIDER_HORIZONTAL_SPACING,
-    SLIDER_MIN_TRACK_WIDTH, SLIDER_PRESSED_HANDLE_WIDTH, SLIDER_STATE_LAYER_RADIUS,
-    SLIDER_TRACK_HEIGHT, SLIDER_VERTICAL_SPACING,
+    SLIDER_HANDLE_HEIGHT, SLIDER_HANDLE_PADDING, SLIDER_HANDLE_WIDTH, SLIDER_HORIZONTAL_INSET,
+    SLIDER_HORIZONTAL_SPACING, SLIDER_MIN_TRACK_WIDTH, SLIDER_PRESSED_HANDLE_WIDTH,
+    SLIDER_STOP_INDICATOR_SIZE, SLIDER_TRACK_HEIGHT, SLIDER_VERTICAL_SPACING,
 };
 use crate::theme::colors::MaterialColorScheme;
-use crate::theme::state_layer;
 use crate::{Brush, DrawContext, SliderMetrics, WidgetInteractionState};
 
 pub const fn metrics() -> SliderMetrics {
@@ -14,10 +13,17 @@ pub const fn metrics() -> SliderMetrics {
         SLIDER_VERTICAL_SPACING,
         SLIDER_MIN_TRACK_WIDTH,
         SLIDER_TRACK_HEIGHT,
-        SLIDER_HANDLE_HEIGHT / 2.0,
+        SLIDER_HANDLE_WIDTH,
+        SLIDER_HANDLE_HEIGHT,
     )
 }
 
+/// Draws the Expressive slider track: two bars separated by a gap around the
+/// handle, with a stop indicator marking the far end.
+///
+/// Earlier Material ran a single hairline under a circular thumb. Expressive
+/// splits the track at the handle — `ActiveHandlePadding` of clear space on each
+/// side — so the handle reads as sitting *in* the track rather than on top of it.
 pub fn draw_track(
     colors: &MaterialColorScheme,
     draw: &mut dyn DrawContext,
@@ -38,16 +44,45 @@ pub fn draw_track(
             colors.primary.peniko(),
         )
     };
-    draw.fill_rounded_rect(
-        track_rect,
-        (SLIDER_TRACK_HEIGHT / 2.0).into(),
-        &Brush::from(track_color),
+    let radius = (SLIDER_TRACK_HEIGHT / 2.0).into();
+
+    // Inactive remainder, starting clear of the handle.
+    let inactive_start = (fill_rect.x1 + SLIDER_HANDLE_PADDING).min(track_rect.x1);
+    if inactive_start < track_rect.x1 {
+        draw.fill_rounded_rect(
+            vello::kurbo::Rect::new(inactive_start, track_rect.y0, track_rect.x1, track_rect.y1),
+            radius,
+            &Brush::from(track_color),
+        );
+    }
+
+    // Active portion, stopping clear of the handle.
+    let active_end = (fill_rect.x1 - SLIDER_HANDLE_PADDING).max(track_rect.x0);
+    if active_end > track_rect.x0 {
+        draw.fill_rounded_rect(
+            vello::kurbo::Rect::new(track_rect.x0, track_rect.y0, active_end, track_rect.y1),
+            radius,
+            &Brush::from(fill_color),
+        );
+    }
+
+    // Stop indicator: a dot at the track's far end, hidden once the handle
+    // reaches it so the two never overlap.
+    let indicator_center = vello::kurbo::Point::new(
+        track_rect.x1 - SLIDER_HANDLE_PADDING - SLIDER_STOP_INDICATOR_SIZE / 2.0,
+        track_rect.y0 + track_rect.height() / 2.0,
     );
-    draw.fill_rounded_rect(
-        fill_rect,
-        (SLIDER_TRACK_HEIGHT / 2.0).into(),
-        &Brush::from(fill_color),
-    );
+    if indicator_center.x > inactive_start {
+        draw.fill_circle(
+            indicator_center,
+            SLIDER_STOP_INDICATOR_SIZE / 2.0,
+            &Brush::from(if state.disabled {
+                colors.on_surface.peniko_disabled_content()
+            } else {
+                colors.on_secondary_container.peniko()
+            }),
+        );
+    }
 }
 
 pub fn draw_thumb(
@@ -86,20 +121,19 @@ pub fn draw_thumb(
     );
 }
 
-pub fn draw_thumb_state_layer(
-    colors: &MaterialColorScheme,
-    draw: &mut dyn DrawContext,
-    center: vello::kurbo::Point,
+/// The Expressive slider handle has no state layer.
+///
+/// `SliderTokens` carries no `StateLayerSize`: the feedback is the handle
+/// itself narrowing from `HandleWidth` to `PressedHandleWidth` under the
+/// finger. Drawing a ripple here would put a circle around a bar that Material
+/// never shows.
+pub const fn draw_thumb_state_layer(
+    _colors: &MaterialColorScheme,
+    _draw: &mut dyn DrawContext,
+    _center: vello::kurbo::Point,
     _radius: f64,
-    state: WidgetInteractionState,
+    _state: WidgetInteractionState,
 ) {
-    state_layer::draw_unbounded_circle(
-        draw,
-        center,
-        SLIDER_STATE_LAYER_RADIUS,
-        colors.primary.peniko(),
-        state,
-    );
 }
 
 #[cfg(test)]
@@ -108,8 +142,8 @@ mod tests {
 
     use super::{MaterialColorScheme, WidgetInteractionState, draw_thumb, draw_track, metrics};
     use crate::dimensions::{
-        SLIDER_HANDLE_HEIGHT, SLIDER_HANDLE_WIDTH, SLIDER_PRESSED_HANDLE_WIDTH,
-        SLIDER_STATE_LAYER_RADIUS, SLIDER_TRACK_HEIGHT,
+        SLIDER_HANDLE_HEIGHT, SLIDER_HANDLE_PADDING, SLIDER_HANDLE_WIDTH,
+        SLIDER_PRESSED_HANDLE_WIDTH, SLIDER_STOP_INDICATOR_SIZE, SLIDER_TRACK_HEIGHT,
     };
     use crate::{Brush, DrawContext};
 
@@ -158,20 +192,30 @@ mod tests {
         fn pop_transform(&mut self) {}
     }
 
+    /// Values from `androidx.compose.material3.tokens.SliderTokens`.
     #[test]
-    fn slider_metrics_match_mdui_2_1_5_tokens() {
+    fn slider_metrics_match_compose_slider_tokens() {
         let metrics = metrics();
 
         assert_eq!(metrics.track_height, SLIDER_TRACK_HEIGHT);
-        assert_eq!(metrics.thumb_radius, SLIDER_HANDLE_HEIGHT / 2.0);
-        assert_eq!(SLIDER_TRACK_HEIGHT, 4.0);
-        assert_eq!(SLIDER_HANDLE_WIDTH, 20.0);
-        assert_eq!(SLIDER_HANDLE_HEIGHT, 20.0);
-        assert_eq!(SLIDER_STATE_LAYER_RADIUS, 20.0);
+        assert_eq!(metrics.handle_width, SLIDER_HANDLE_WIDTH);
+        assert_eq!(metrics.handle_height, SLIDER_HANDLE_HEIGHT);
+        // InactiveTrackHeight / ActiveTrackHeight
+        assert_eq!(SLIDER_TRACK_HEIGHT, 16.0);
+        // HandleWidth / HandleHeight
+        assert_eq!(SLIDER_HANDLE_WIDTH, 4.0);
+        assert_eq!(SLIDER_HANDLE_HEIGHT, 44.0);
+        // PressedHandleWidth
+        assert_eq!(SLIDER_PRESSED_HANDLE_WIDTH, 2.0);
+        // ActiveHandlePadding
+        assert_eq!(SLIDER_HANDLE_PADDING, 6.0);
+        // StopIndicatorSize
+        assert_eq!(SLIDER_STOP_INDICATOR_SIZE, 4.0);
     }
 
+    /// The Expressive handle is a bar: 4dp wide and 44dp tall, not a circle.
     #[test]
-    fn slider_thumb_draws_mdui_circular_handle() {
+    fn slider_thumb_draws_the_expressive_bar_handle() {
         let mut draw = RecordingDrawContext::default();
         draw_thumb(
             &MaterialColorScheme::baseline_light(),
@@ -187,8 +231,9 @@ mod tests {
         assert_eq!(draw.rounded_fills[0].0.height(), SLIDER_HANDLE_HEIGHT);
     }
 
+    /// Pressing narrows the handle rather than growing a state layer.
     #[test]
-    fn slider_pressed_thumb_keeps_mdui_circular_handle() {
+    fn slider_pressed_thumb_narrows() {
         let mut draw = RecordingDrawContext::default();
         draw_thumb(
             &MaterialColorScheme::baseline_light(),
@@ -278,5 +323,9 @@ mod tests {
             &draw.rounded_fills[1].1,
             Brush::Solid(color) if *color == colors.primary.peniko()
         ));
+        // The track is split around the handle, so the active bar stops short
+        // of the value position by one `ActiveHandlePadding`.
+        assert_eq!(draw.rounded_fills[1].0.x1, 72.0 - SLIDER_HANDLE_PADDING);
+        assert_eq!(draw.rounded_fills[0].0.x0, 72.0 + SLIDER_HANDLE_PADDING);
     }
 }
