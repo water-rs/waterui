@@ -19,7 +19,9 @@ use crate::elevation::{MaterialElevationLevel, material_elevation};
 use crate::semantics::{conditional_color, interaction_style, label_plain_text};
 use crate::theme::typography;
 
-const NAVIGATION_BAR_CONTAINER_HEIGHT: f32 = 80.0;
+/// `NavigationBarTokens.ContainerHeight`. Compose's 80dp value is
+/// `TallContainerHeight`, the opt-in variant, not the default bar.
+const NAVIGATION_BAR_CONTAINER_HEIGHT: f32 = 64.0;
 const NAVIGATION_BAR_ITEM_MIN_WIDTH: f32 = 48.0;
 const NAVIGATION_BAR_ITEM_TOP_PADDING: f32 = 8.0;
 const NAVIGATION_BAR_ITEM_BOTTOM_PADDING: f32 = 12.0;
@@ -240,8 +242,9 @@ mod tests {
     use crate::elevation::MaterialElevationLevel;
 
     #[test]
-    fn navigation_bar_tokens_match_mdui_2_1_5() {
-        assert_eq!(NAVIGATION_BAR_CONTAINER_HEIGHT, 80.0);
+    /// Values from `androidx.compose.material3.tokens.NavigationBarTokens`.
+    fn navigation_bar_tokens_match_compose_navigation_bar_tokens() {
+        assert_eq!(NAVIGATION_BAR_CONTAINER_HEIGHT, 64.0);
         assert_eq!(NAVIGATION_BAR_ITEM_MIN_WIDTH, 48.0);
         assert_eq!(NAVIGATION_BAR_ACTIVE_INDICATOR_WIDTH, 64.0);
         assert_eq!(NAVIGATION_BAR_ACTIVE_INDICATOR_HEIGHT, 32.0);
