@@ -19,7 +19,7 @@ use waterui::prelude::text;
 use waterui::style::FloatingStyle;
 use waterui::{Binding, Color, Computed, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
-use waterui_controls::button::{ButtonStyle, button};
+use waterui_controls::button::{ButtonSize, ButtonStyle, button};
 use waterui_controls::label::{LabelDisplayMode, label};
 use waterui_controls::slider::slider;
 use waterui_controls::toggle::{ToggleStyle, toggle};
@@ -1455,7 +1455,7 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn button_metrics(&self, _style: ButtonStyle) -> ButtonMetrics {
+    fn button_metrics(&self, _style: ButtonStyle, _size: ButtonSize) -> ButtonMetrics {
         ButtonMetrics {
             padding_x: 1.0,
             padding_y: 2.0,
@@ -1825,7 +1825,7 @@ impl WidgetTheme for MinimalTestTheme {
 fn widget_theme_can_be_replaced_in_environment() {
     let env = test_environment();
 
-    let metrics = widget_theme(&env).button_metrics(ButtonStyle::Plain);
+    let metrics = widget_theme(&env).button_metrics(ButtonStyle::Plain, ButtonSize::default());
     assert_eq!(metrics.min_width, 123.0);
     assert_eq!(metrics.min_height, 45.0);
 
