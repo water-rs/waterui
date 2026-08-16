@@ -15,7 +15,9 @@
 use core::time::Duration;
 
 use waterui::Color;
+use waterui::Handler;
 use waterui::Identifiable;
+use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::form::picker::{PickerStyle, picker};
@@ -35,10 +37,24 @@ use waterui::shape::Capsule;
 use waterui_icons_material_icon as mdi;
 
 // Material 3 navigation-drawer metrics (mdui reference: list-item / nav-drawer).
+// Material 3 navigation-drawer metrics (`NavigationDrawerTokens`, plus the
+// drawer's layout spec for internal spacing).
+/// `ActiveIndicatorHeight`.
 const DRAWER_ITEM_HEIGHT: f32 = 56.0;
+/// `IconSize`.
 const DRAWER_ICON_SIZE: f32 = 24.0;
-const DRAWER_ITEM_PADDING: f32 = 16.0;
-const DRAWER_ITEM_INDENT: f32 = 8.0; // control items nest slightly under their header
+/// The drawer's leading space before an item's icon.
+const DRAWER_ITEM_LEADING_SPACE: f32 = 16.0;
+/// The drawer's trailing space after an item's label or badge.
+const DRAWER_ITEM_TRAILING_SPACE: f32 = 24.0;
+/// The gap between an item's icon and its label.
+const DRAWER_ICON_LABEL_SPACING: f32 = 12.0;
+/// A headline names a group; it is shorter than a destination row.
+const DRAWER_HEADLINE_HEIGHT: f32 = 40.0;
+/// Half the difference between `ContainerWidth` (360) and
+/// `ActiveIndicatorWidth` (336): the indicator is the drawer inset by this much
+/// on each side, which is the drawer's own horizontal padding.
+const DRAWER_INDICATOR_INSET: f32 = 12.0;
 
 /// A category grouping in the navigation drawer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,15 +74,6 @@ impl Section {
             Self::Inputs => "Inputs",
             Self::Selection => "Selection",
             Self::Display => "Display",
-        }
-    }
-
-    const fn icon(self) -> fn() -> mdi::Svg {
-        match self {
-            Self::Actions => mdi::cursor_default_click,
-            Self::Inputs => mdi::keyboard,
-            Self::Selection => mdi::checkbox_marked,
-            Self::Display => mdi::view_dashboard,
         }
     }
 }
@@ -255,36 +262,104 @@ fn catalog(
     .placeholder(placeholder)
 }
 
-/// One Material 3 navigation-drawer row: a 56dp line with a leading icon, label,
-/// and optional trailing view, painted on a 28dp-rounded active-indicator pill.
-/// A Material 3 navigation-drawer row shell: a 56dp line holding a leading
-/// tappable target (a [`button`], so the row is a single accessibility node) and
-/// an optional trailing view, on a full-width 28dp-rounded active-indicator pill.
-/// `active` drives the pill's reactive fill (`SurfaceVariant` when selected, else
-/// transparent) on `.background` itself — initial-correct and selection-tracking —
-/// and `.clip` rounds it to the MD3 pill shape.
-fn drawer_row(
-    leading: impl View,
-    trailing: impl View,
+/// One Material 3 navigation-drawer item: a 56dp line with a leading 24dp icon
+/// and label, on a fully-rounded active indicator.
+///
+/// `NavigationDrawerTokens` sizes the indicator 336dp wide inside a 360dp
+/// container, so it is the drawer inset by 12dp on each side — which is the
+/// drawer's own horizontal padding, not something the row adds. Active takes
+/// `SecondaryContainer` with `OnSecondaryContainer` content; inactive sits in
+/// `OnSurfaceVariant`.
+///
+/// The row itself is the tap target, not a button sitting inside it. A drawer
+/// item is a full-width list row with an active indicator, and building it out
+/// of a button gave the wrong result twice over: a button is content-sized, so
+/// only the label was clickable, and it drew its own hover, focus and press
+/// layers inside the row's pill, leaving an indicator nested in an indicator.
+fn drawer_item<F, Args>(
+    title: &'static str,
+    icon: fn() -> mdi::Svg,
     active: Computed<bool>,
-    indent: f32,
-) -> impl View {
-    let selected: Color = SurfaceVariant.into();
+    action: F,
+) -> impl View
+where
+    F: Handler<Args, ()> + 'static,
+    Args: 'static,
+{
+    let indicator: Color = SurfaceVariant.into();
     let clear: Color = waterui::color::Srgb::WHITE.with_opacity(0.0).into();
-    let pill = signal_color(active.select(selected, clear).computed());
-    hstack((leading, spacer(), trailing))
-        .height(DRAWER_ITEM_HEIGHT)
+    let pill = signal_color(active.clone().select(indicator, clear).computed());
+    let active_content: Color = Foreground.into();
+    let resting_content: Color = MutedForeground.into();
+    let content = signal_color(
+        active
+            .clone()
+            .select(active_content, resting_content)
+            .computed(),
+    );
+    let state = active.map(|active| AccessibilityState::new().selected(active));
+    // The row is one accessibility node carrying the title, so its own label
+    // stays out of the tree rather than repeating it.
+    hstack((
+        icon().width(DRAWER_ICON_SIZE).height(DRAWER_ICON_SIZE),
+        text(title),
+        spacer(),
+    ))
+    .spacing(DRAWER_ICON_LABEL_SPACING)
+    .foreground(content)
+    .a11y_hidden(true)
+    .height(DRAWER_ITEM_HEIGHT)
+    .max_width(f32::INFINITY)
+    .padding_with(EdgeInsets::new(
+        0.0,
+        0.0,
+        DRAWER_ITEM_LEADING_SPACE,
+        DRAWER_ITEM_TRAILING_SPACE,
+    ))
+    .background(pill)
+    // `ActiveIndicatorShape` is `CornerFull`, whose caps are half the row
+    // height. `Capsule` says that directly and stays correct at any row
+    // height, where a normalized `RoundedRectangle` radius would not.
+    .clip(Capsule)
+    .on_tap(action)
+    .a11y_role(AccessibilityRole::Button)
+    .a11y_label(title)
+    .a11y_state_signal(state)
+}
+
+/// A Material 3 navigation-drawer headline: the small title that names a group
+/// of destinations.
+///
+/// `HeadlineFont` is `TitleSmall` and a headline is not a destination, so it
+/// carries no icon and no active indicator — that is what separates it from the
+/// items beneath it. This one is tappable because the catalog's groups collapse,
+/// and its chevron says which way that will go.
+fn drawer_headline<F, Args>(title: &'static str, open: Binding<bool>, action: F) -> impl View
+where
+    F: Handler<Args, ()> + 'static,
+    Args: 'static,
+{
+    let muted: Color = MutedForeground.into();
+    let chevron = zstack((
+        mdi::chevron_right().visible(open.clone().map(|open| !open)),
+        mdi::chevron_down().visible(open),
+    ))
+    .width(DRAWER_ICON_SIZE)
+    .height(DRAWER_ICON_SIZE);
+    hstack((text(title).sub_headline(), spacer(), chevron))
+        .foreground(muted)
+        .a11y_hidden(true)
+        .height(DRAWER_HEADLINE_HEIGHT)
+        .max_width(f32::INFINITY)
         .padding_with(EdgeInsets::new(
             0.0,
             0.0,
-            DRAWER_ITEM_PADDING + indent,
-            DRAWER_ITEM_PADDING,
+            DRAWER_ITEM_LEADING_SPACE,
+            DRAWER_ITEM_TRAILING_SPACE,
         ))
-        .background(pill)
-        // MD3's drawer active indicator is fully rounded: a pill, whose caps are
-        // half the row height. `Capsule` says that directly and stays correct at any
-        // row height, where a normalized `RoundedRectangle` radius would not.
-        .clip(Capsule)
+        .on_tap(action)
+        .a11y_role(AccessibilityRole::Button)
+        .a11y_label(title)
 }
 
 /// Sidebar: a fixed title above a reactive collection of drawer rows. Headers
@@ -328,7 +403,7 @@ fn sidebar(
         ))
         .spacing(4.0)
         .alignment(HorizontalAlignment::Leading)
-        .padding_with(EdgeInsets::symmetric(8.0, 12.0)),
+        .padding_with(EdgeInsets::symmetric(8.0, DRAWER_INDICATOR_INSET)),
     )
 }
 
@@ -338,22 +413,12 @@ fn sidebar(
 /// group and reconciles the reactive row collection.
 fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> impl View {
     let section = Section::ALL[group];
-    let muted: Color = MutedForeground.into();
-    let chevron = zstack((
-        mdi::chevron_right().visible(open.clone().map(|o| !o)),
-        mdi::chevron_down().visible(open.clone()),
-    ))
-    .foreground(muted.clone())
-    .width(DRAWER_ICON_SIZE)
-    .height(DRAWER_ICON_SIZE);
-    let header = button(label(section.title()).icon((section.icon())()).leading())
-        .borderless()
-        .action(move |_env: Environment| {
-            let expanded = !open.get();
-            open.set(expanded);
-            set_group_expanded(&rows, group, expanded);
-        });
-    drawer_row(header, chevron, Computed::constant(false), 0.0)
+    let toggled = open.clone();
+    drawer_headline(section.title(), open, move |_env: Environment| {
+        let expanded = !toggled.get();
+        toggled.set(expanded);
+        set_group_expanded(&rows, group, expanded);
+    })
 }
 
 /// A selectable control row, nested under its group header. Tapping selects the
@@ -363,17 +428,19 @@ fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> i
 /// a single accessibility node that survives the reactive collection.
 fn item_row(index: usize, selected: Binding<Option<usize>>) -> impl View {
     let control = &controls()[index];
-    let title = control.title;
-    let icon = control.icon;
     let is_selected = selected
         .clone()
         .map(move |current| current == Some(index))
         .computed();
     let activate = selected.clone();
-    let item = button(label(title).icon(icon()).leading())
-        .borderless()
-        .action(move |_env: Environment| activate.set(Some(index)));
-    drawer_row(item, (), is_selected, DRAWER_ITEM_INDENT)
+    drawer_item(
+        control.title,
+        control.icon,
+        is_selected,
+        move |_env: Environment| {
+            activate.set(Some(index));
+        },
+    )
 }
 
 /// The detail pane for the selected control: its title (in the navigation bar)
@@ -1018,5 +1085,29 @@ mod tests {
             .role(Role::SWITCH)
             .label("Wi-Fi")
             .assert_exists();
+    }
+
+    /// Visual acceptance for the drawer: the selected row's active indicator and
+    /// the Stepper demo's controls, both reviewed by eye.
+    #[ignore = "writes visual acceptance PNG files for direct image review"]
+    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    fn catalog_drawer_and_stepper_render(ui: UiBuilder) {
+        let (selected, groups_open, rows, state) = new_state();
+        let mut app: waterui_testing::OffscreenApp = ui.mount_offscreen(move || {
+            catalog(
+                selected.clone(),
+                groups_open.clone(),
+                rows.clone(),
+                state.clone(),
+            )
+        });
+        app.query().label("Stepper").tap();
+        assert!(
+            app.query()
+                .label_contains("Quantity")
+                .wait_for_existence(Duration::from_secs(3)),
+            "the Stepper demo should render before it is captured"
+        );
+        let _ = app.capture_snapshot("material3-preview", "gallery", "stepper-selected");
     }
 }
