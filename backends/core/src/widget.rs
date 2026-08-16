@@ -3,7 +3,7 @@
 use core::time::Duration;
 use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use nami::signal::IntoComputed;
-use waterui_controls::button::ButtonStyle;
+use waterui_controls::button::{ButtonSize, ButtonStyle};
 use waterui_controls::toggle::ToggleStyle;
 use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
@@ -1039,7 +1039,7 @@ pub trait WidgetTheme {
     fn navigation_motion(&self) -> NavigationMotion;
 
     /// Return metrics for a button style.
-    fn button_metrics(&self, style: ButtonStyle) -> ButtonMetrics;
+    fn button_metrics(&self, style: ButtonStyle, size: ButtonSize) -> ButtonMetrics;
     /// Optional button label foreground override. `disabled` selects the
     /// inactive label color (e.g. Material's on-surface at 38%).
     fn button_label_color(&self, _style: ButtonStyle, _disabled: bool) -> Option<Color> {

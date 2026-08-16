@@ -1,15 +1,110 @@
+/// `ShapeTokens.CornerSmall`.
+pub const SHAPE_CORNER_SMALL: f64 = 8.0;
+/// `ShapeTokens.CornerMedium`.
+pub const SHAPE_CORNER_MEDIUM: f64 = 12.0;
+/// `ShapeTokens.CornerLarge`.
+pub const SHAPE_CORNER_LARGE: f64 = 16.0;
+/// `ShapeTokens.CornerExtraLarge`.
+pub const SHAPE_CORNER_EXTRA_LARGE: f64 = 28.0;
+
+/// The Material 3 Expressive button size scale.
+///
+/// Each entry is one of Compose's `Button*Tokens` objects. Height, padding,
+/// icon size and corner shape all change together, which is why a size is a
+/// token set rather than a height the caller picks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ButtonSizeTokens {
+    /// `ContainerHeight`.
+    pub container_height: f64,
+    /// `LeadingSpace` / `TrailingSpace`.
+    pub horizontal_space: f64,
+    /// `IconSize`.
+    pub icon_size: f64,
+    /// `IconLabelSpace`.
+    pub icon_label_space: f64,
+    /// `ContainerShapeSquare`, the radius a square-shaped button uses.
+    pub square_corner_radius: f64,
+    /// `PressedContainerShape`, which the container morphs to under a press.
+    pub pressed_corner_radius: f64,
+    /// `OutlinedOutlineWidth`.
+    pub outline_width: f64,
+}
+
+/// `ButtonXSmallTokens`.
+pub const BUTTON_EXTRA_SMALL: ButtonSizeTokens = ButtonSizeTokens {
+    container_height: 32.0,
+    horizontal_space: 16.0,
+    icon_size: 20.0,
+    icon_label_space: 8.0,
+    square_corner_radius: SHAPE_CORNER_MEDIUM,
+    pressed_corner_radius: SHAPE_CORNER_SMALL,
+    outline_width: 1.0,
+};
+
+/// `ButtonSmallTokens`, the default size. Its horizontal space comes from
+/// `BaselineButtonTokens`, which is what `ButtonDefaults.ContentPadding` uses.
+pub const BUTTON_SMALL: ButtonSizeTokens = ButtonSizeTokens {
+    container_height: 40.0,
+    horizontal_space: 24.0,
+    icon_size: 20.0,
+    icon_label_space: 8.0,
+    square_corner_radius: SHAPE_CORNER_MEDIUM,
+    pressed_corner_radius: SHAPE_CORNER_SMALL,
+    outline_width: 1.0,
+};
+
+/// `ButtonMediumTokens`.
+pub const BUTTON_MEDIUM: ButtonSizeTokens = ButtonSizeTokens {
+    container_height: 56.0,
+    horizontal_space: 24.0,
+    icon_size: 24.0,
+    icon_label_space: 8.0,
+    square_corner_radius: SHAPE_CORNER_LARGE,
+    pressed_corner_radius: SHAPE_CORNER_MEDIUM,
+    outline_width: 1.0,
+};
+
+/// `ButtonLargeTokens`.
+pub const BUTTON_LARGE: ButtonSizeTokens = ButtonSizeTokens {
+    container_height: 96.0,
+    horizontal_space: 48.0,
+    icon_size: 32.0,
+    icon_label_space: 12.0,
+    square_corner_radius: SHAPE_CORNER_EXTRA_LARGE,
+    pressed_corner_radius: SHAPE_CORNER_LARGE,
+    outline_width: 2.0,
+};
+
+/// `ButtonXLargeTokens`.
+pub const BUTTON_EXTRA_LARGE: ButtonSizeTokens = ButtonSizeTokens {
+    container_height: 136.0,
+    horizontal_space: 64.0,
+    icon_size: 40.0,
+    icon_label_space: 16.0,
+    square_corner_radius: SHAPE_CORNER_EXTRA_LARGE,
+    pressed_corner_radius: SHAPE_CORNER_LARGE,
+    outline_width: 2.0,
+};
+
+/// The token set for `size`.
+#[must_use]
+pub const fn button_size_tokens(size: waterui_controls::button::ButtonSize) -> ButtonSizeTokens {
+    use waterui_controls::button::ButtonSize;
+    match size {
+        ButtonSize::ExtraSmall => BUTTON_EXTRA_SMALL,
+        ButtonSize::Small => BUTTON_SMALL,
+        ButtonSize::Medium => BUTTON_MEDIUM,
+        ButtonSize::Large => BUTTON_LARGE,
+        ButtonSize::ExtraLarge => BUTTON_EXTRA_LARGE,
+        _ => panic!("hydrolysis ButtonSize variant is not implemented"),
+    }
+}
+
 /// `ButtonDefaults.MinWidth`.
 pub const BUTTON_MIN_WIDTH: f64 = 58.0;
-/// `ButtonSmallTokens.ContainerHeight`, which is also `ButtonDefaults
-/// .MinHeight` on a touch pointer. Compose drops to 36dp only when the
-/// platform reports a precision pointer; `WaterUI` has no such signal at theme
-/// level, so the touch-safe height is the default.
-pub const BUTTON_MIN_HEIGHT: f64 = 40.0;
 /// `BaselineButtonTokens.ContainerShapeRound` is `CornerFull`, which on a 40dp
 /// container resolves to half the height.
 pub const BUTTON_CONTAINER_RADIUS: f64 = 20.0;
-/// `BaselineButtonTokens.LeadingSpace` / `TrailingSpace`.
-pub const BUTTON_TEXT_HORIZONTAL_PADDING: f64 = 24.0;
 /// `ButtonDefaults.ContentPadding` vertical.
 pub const BUTTON_TEXT_VERTICAL_PADDING: f64 = 8.0;
 pub const BUTTON_LINK_UNDERLINE_BOTTOM_INSET: f64 = 2.0;

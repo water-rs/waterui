@@ -54,7 +54,7 @@ pub use waterui_backend_core::widget::{
     StepperMetrics, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
     ToggleMetrics, WidgetInteractionState, WidgetTheme,
 };
-use waterui_controls::button::ButtonStyle;
+use waterui_controls::button::{ButtonSize, ButtonStyle};
 use waterui_controls::toggle::ToggleStyle;
 use waterui_core::Environment;
 use waterui_form::picker::PickerStyle;
@@ -417,8 +417,8 @@ impl WidgetTheme for MaterialTheme {
         theme::motion::navigation()
     }
 
-    fn button_metrics(&self, style: ButtonStyle) -> ButtonMetrics {
-        button::metrics(style)
+    fn button_metrics(&self, style: ButtonStyle, size: ButtonSize) -> ButtonMetrics {
+        button::metrics(style, size)
     }
 
     fn button_label_color(&self, style: ButtonStyle, disabled: bool) -> Option<Color> {

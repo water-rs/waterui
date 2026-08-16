@@ -227,6 +227,28 @@ pub enum ButtonStyle {
     BorderedProminent,
 }
 
+/// How large a button is drawn.
+///
+/// Material 3 Expressive scales a button through five sizes that change height,
+/// padding, icon size and corner shape together — not just its height — so the
+/// size is a semantic choice, like the style, rather than a frame the caller
+/// imposes from outside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum ButtonSize {
+    /// The most compact button, for dense rows of actions.
+    ExtraSmall,
+    /// The default size.
+    #[default]
+    Small,
+    /// A roomier button for a screen's main action.
+    Medium,
+    /// A prominent button, large enough to anchor a section.
+    Large,
+    /// The largest button, for hero actions on big surfaces.
+    ExtraLarge,
+}
+
 // ============================================================================
 // Button configuration and view implementation
 // ============================================================================
@@ -253,6 +275,8 @@ pub struct ButtonConfig {
     pub action: BoxedAction<()>,
     /// The visual style of the button.
     pub style: ButtonStyle,
+    /// How large the button is drawn.
+    pub size: ButtonSize,
 }
 
 impl_debug!(ButtonConfig);
@@ -275,6 +299,7 @@ where
         label: button.label,
         action: Box::new(button.action),
         style: button.style,
+        size: button.size,
     }
 }
 
@@ -304,6 +329,7 @@ impl ViewConfiguration for ButtonConfig {
             label: self.label,
             action: self.action,
             style: self.style,
+            size: self.size,
         }
     }
 }
@@ -319,6 +345,7 @@ where
             label: self.label,
             action: Box::new(self.action),
             style: self.style,
+            size: self.size,
         }
     }
 }
@@ -341,6 +368,7 @@ pub struct Button<Action> {
     label: Label,
     action: Action,
     style: ButtonStyle,
+    size: ButtonSize,
 }
 
 impl<Action> Button<Action> {
@@ -355,6 +383,19 @@ impl<Action> Button<Action> {
     pub const fn button_style(&self) -> ButtonStyle {
         self.style
     }
+
+    /// Returns the size this button is drawn at.
+    #[must_use]
+    pub const fn button_size(&self) -> ButtonSize {
+        self.size
+    }
+
+    /// Sets how large the button is drawn.
+    #[must_use]
+    pub const fn size(mut self, size: ButtonSize) -> Self {
+        self.size = size;
+        self
+    }
 }
 
 impl<Action> Debug for Button<Action> {
@@ -362,6 +403,7 @@ impl<Action> Debug for Button<Action> {
         f.debug_struct("Button")
             .field("label", &self.label)
             .field("style", &self.style)
+            .field("size", &self.size)
             .finish_non_exhaustive()
     }
 }
@@ -372,6 +414,7 @@ impl<Action: Clone> Clone for Button<Action> {
             label: self.label.clone(),
             action: self.action.clone(),
             style: self.style,
+            size: self.size,
         }
     }
 }
@@ -398,6 +441,7 @@ impl Button<fn(&Environment)> {
             label,
             action: noop,
             style: ButtonStyle::Automatic,
+            size: ButtonSize::default(),
         }
     }
 }
@@ -478,6 +522,7 @@ impl<Action> Button<Action> {
             label: self.label,
             action: waterui_core::handler::boxed_action(action),
             style: self.style,
+            size: self.size,
         }
     }
 
@@ -522,6 +567,7 @@ where
             label,
             mut action,
             style: _,
+            size: _,
         } = value;
         Self::builder(label).action(move |env: Environment| action(&env))
     }
