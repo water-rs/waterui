@@ -1517,11 +1517,17 @@ mod tests {
 
         assert!(cargo_toml.contains(&format!("path = \"{expected_ffi_path}\"")));
         assert!(cargo_toml.contains("dev = [\"waterui_test/dev\"]"));
-        // This crate roots the workspace preview modules join, so the module and the
-        // runtime it is loaded into share one Cargo resolution.
+        // This crate roots the workspace preview modules join, so a module and the
+        // runtime it is loaded into share one Cargo resolution. With none on disk
+        // the workspace is empty — never a `modules/*` glob, which Cargo reads as
+        // a literal path and rejects when it matches nothing.
         assert!(
-            cargo_toml.contains(&format!("\"{}/*\"", crate::templates::PREVIEW_MODULES_DIR)),
+            cargo_toml.contains("[workspace]"),
             "generated FFI crate must root the preview module workspace"
+        );
+        assert!(
+            !cargo_toml.contains(crate::templates::PREVIEW_MODULES_DIR),
+            "an FFI crate with no preview module on disk must declare no members"
         );
         let manifest = cargo_toml
             .parse::<toml::Table>()
@@ -3071,11 +3077,14 @@ pub mod ffi {
         // must come out of one Cargo resolution: Cargo derives `-C metadata` — which
         // it mangles into every symbol — per workspace, and two workspaces produce
         // runtimes whose symbols cannot resolve against each other even when their
-        // dependency graphs are byte-for-byte identical. The glob keeps the root
-        // independent of which project is being previewed, and matches nothing for
-        // an ordinary application.
+        // dependency graphs are byte-for-byte identical.
+        //
+        // The members are whichever modules are on disk, listed by name rather than
+        // by a `modules/*` glob: Cargo reads a glob that matches nothing as a
+        // literal path and fails on it, and an ordinary application has no modules
+        // at all.
         manifest.workspace = Some(Workspace {
-            members: vec![format!("{}/*", super::PREVIEW_MODULES_DIR)],
+            members: super::preview_module_members(base_dir).await?,
             ..Workspace::default()
         });
 
@@ -3089,6 +3098,33 @@ pub mod ffi {
         write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await?;
         Ok(())
     }
+}
+
+/// The preview modules that live under a generated FFI crate, as member paths.
+///
+/// # Errors
+///
+/// Returns an error when the modules directory exists but cannot be read.
+async fn preview_module_members(ffi_crate_dir: &Path) -> io::Result<Vec<String>> {
+    use smol::stream::StreamExt as _;
+
+    let modules_root = ffi_crate_dir.join(PREVIEW_MODULES_DIR);
+    let mut entries = match fs::read_dir(&modules_root).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut members = Vec::new();
+    while let Some(entry) = entries.next().await {
+        let entry = entry?;
+        if entry.path().join("Cargo.toml").is_file()
+            && let Some(name) = entry.file_name().to_str()
+        {
+            members.push(format!("{PREVIEW_MODULES_DIR}/{name}"));
+        }
+    }
+    members.sort();
+    Ok(members)
 }
 
 /// Directory, relative to the generated FFI crate, that holds preview modules.
