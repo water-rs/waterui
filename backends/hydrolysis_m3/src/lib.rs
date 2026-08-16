@@ -8,6 +8,7 @@
 //! chrome contract from `waterui-backend-core` and does not depend on the
 //! Hydrolysis renderer crate.
 
+pub mod button_group;
 pub mod chip;
 pub mod color;
 pub mod dialog;
@@ -65,6 +66,9 @@ use waterui_core::Environment;
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
 
+pub use button_group::{
+    ConnectedButton, ConnectedButtonGroup, connected_button, connected_button_group,
+};
 pub use chip::{
     AssistChip, FilterChip, InputChip, OutlinedChip, SuggestionChip, assist_chip, filter_chip,
     input_chip, suggestion_chip,
