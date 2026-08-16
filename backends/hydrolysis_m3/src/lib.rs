@@ -58,7 +58,7 @@ pub use waterui_backend_core::widget::{
     ListRowMetrics, ListTrailingControlMetrics, ModalInteraction, NavigationMetrics,
     NavigationMotion, PickerMetrics, PressWave, PressWaves, ProgressIndicatorStyle,
     ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-    StepperMetrics, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
+    StepperEnd, StepperMetrics, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
     ToggleMetrics, WidgetInteractionState, WidgetTheme,
 };
 use waterui_controls::button::{ButtonSize, ButtonStyle};
@@ -68,7 +68,8 @@ use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
 
 pub use button_group::{
-    ConnectedButton, ConnectedButtonGroup, connected_button, connected_button_group,
+    ButtonGroup, ConnectedButton, ConnectedButtonGroup, GroupButton, button_group,
+    connected_button, connected_button_group, group_button,
 };
 pub use chip::{
     AssistChip, FilterChip, InputChip, OutlinedChip, SuggestionChip, assist_chip, filter_chip,
@@ -536,8 +537,14 @@ impl WidgetTheme for MaterialTheme {
         stepper::metrics()
     }
 
-    fn draw_stepper_button(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        stepper::draw_button(&self.colors(), draw, bounds);
+    fn draw_stepper_button(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        end: StepperEnd,
+        state: WidgetInteractionState,
+    ) {
+        stepper::draw_button(&self.colors(), draw, bounds, end, state);
     }
 
     fn draw_stepper_decrement_icon(&self, draw: &mut dyn DrawContext, bounds: Rect) {
@@ -552,9 +559,10 @@ impl WidgetTheme for MaterialTheme {
         &self,
         draw: &mut dyn DrawContext,
         bounds: Rect,
+        end: StepperEnd,
         state: WidgetInteractionState,
     ) {
-        stepper::draw_button_state_layer(&self.colors(), draw, bounds, state);
+        stepper::draw_button_state_layer(&self.colors(), draw, bounds, end, state);
     }
 
     fn input_field_metrics(&self) -> InputFieldMetrics {
@@ -780,6 +788,16 @@ impl WidgetTheme for MaterialTheme {
 
     fn draw_progress_circular_fill(&self, draw: &mut dyn DrawContext, path: &BezPath, width: f64) {
         progress::draw_circular_fill(&self.colors(), draw, path, width);
+    }
+
+    fn draw_progress_loading(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        elapsed: core::time::Duration,
+        four_color: bool,
+    ) {
+        progress::draw_loading(&self.colors(), draw, bounds, elapsed, four_color);
     }
 
     fn draw_progress_circular_indeterminate(
