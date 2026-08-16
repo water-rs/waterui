@@ -120,6 +120,46 @@ pub const fn icon_grid_size() -> f64 {
     ICON_GRID
 }
 
+/// Material `remove`: the minus bar.
+#[must_use]
+pub fn remove(grid: IconGrid) -> BezPath {
+    let mut path = BezPath::new();
+    path.move_to(grid.point(19.0, 13.0));
+    path.line_to(grid.point(5.0, 13.0));
+    path.line_to(grid.point(5.0, 11.0));
+    path.line_to(grid.point(19.0, 11.0));
+    path.close_path();
+    path
+}
+
+/// Material `add`: the plus cross.
+#[must_use]
+pub fn add(grid: IconGrid) -> BezPath {
+    const OUTLINE: [(f64, f64); 12] = [
+        (19.0, 13.0),
+        (13.0, 13.0),
+        (13.0, 19.0),
+        (11.0, 19.0),
+        (11.0, 13.0),
+        (5.0, 13.0),
+        (5.0, 11.0),
+        (11.0, 11.0),
+        (11.0, 5.0),
+        (13.0, 5.0),
+        (13.0, 11.0),
+        (19.0, 11.0),
+    ];
+    let mut path = BezPath::new();
+    let mut corners = OUTLINE.iter();
+    let (x, y) = *corners.next().expect("the plus outline is not empty");
+    path.move_to(grid.point(x, y));
+    for &(x, y) in corners {
+        path.line_to(grid.point(x, y));
+    }
+    path.close_path();
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::{IconGrid, delete, drag_handle};

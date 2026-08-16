@@ -40,7 +40,7 @@ use waterui_backend_core::widget::{
     BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding,
     InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
     PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
-    RadioSelectionMotion, SliderMetrics, StepperMetrics, TableMetrics, TabsMetrics,
+    RadioSelectionMotion, SliderMetrics, StepperEnd, StepperMetrics, TableMetrics, TabsMetrics,
     TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
 };
 use waterui_core::EasingCurve;
@@ -1434,6 +1434,7 @@ impl WidgetTheme for MinimalTestTheme {
             linear_determinate: Animation::bezier(Duration::from_millis(250), 0.4, 0.0, 0.6, 1.0),
             circular_determinate: Animation::bezier(Duration::from_millis(500), 0.0, 0.0, 0.2, 1.0),
             linear_indeterminate_cycle: Duration::from_millis(2_000),
+            loading_cycle: Duration::from_millis(4_666),
             circular_indeterminate_cycle: Duration::from_millis(5_332),
         }
     }
@@ -1514,7 +1515,14 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn draw_stepper_button(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+    fn draw_stepper_button(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _end: StepperEnd,
+        _state: WidgetInteractionState,
+    ) {
+    }
     fn draw_stepper_decrement_icon(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_stepper_increment_icon(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
 
@@ -1646,6 +1654,7 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
         match style {
+            ProgressIndicatorStyle::Loading => ProgressMetrics::loading(48.0, 38.0),
             ProgressIndicatorStyle::Linear => ProgressMetrics {
                 label_height: 18.0,
                 bar_top_offset: 10.0,
@@ -1655,6 +1664,7 @@ impl WidgetTheme for MinimalTestTheme {
                 min_track_width: 72.0,
                 circular_diameter: 0.0,
                 circular_stroke_width: 0.0,
+                loading_indicator_size: 0.0,
             },
             ProgressIndicatorStyle::Circular => ProgressMetrics {
                 label_height: 0.0,
@@ -1665,6 +1675,7 @@ impl WidgetTheme for MinimalTestTheme {
                 min_track_width: 0.0,
                 circular_diameter: 32.0,
                 circular_stroke_width: 5.0,
+                loading_indicator_size: 0.0,
             },
         }
     }
@@ -1701,6 +1712,15 @@ impl WidgetTheme for MinimalTestTheme {
         _width: f64,
     ) {
     }
+    fn draw_progress_loading(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _elapsed: Duration,
+        _four_color: bool,
+    ) {
+    }
+
     fn draw_progress_circular_indeterminate(
         &self,
         _draw: &mut dyn DrawContext,
@@ -1716,8 +1736,10 @@ impl WidgetTheme for MinimalTestTheme {
         NavigationMetrics {
             automatic_bar_height: 64.0,
             inline_bar_height: 64.0,
+            medium_bar_height: 112.0,
             large_bar_height: 152.0,
             inline_title_height: 28.0,
+            medium_title_height: 36.0,
             large_title_height: 36.0,
             title_leading_inset: 16.0,
             title_trailing_inset: 16.0,

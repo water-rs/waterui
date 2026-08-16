@@ -455,6 +455,13 @@ pub struct ProgressMotion {
     pub linear_indeterminate_cycle: Duration,
     /// Full cycle duration for circular indeterminate progress.
     pub circular_indeterminate_cycle: Duration,
+    /// Full cycle duration for the loading indicator.
+    ///
+    /// The indicator runs two beats at once — it morphs on one and rotates on
+    /// another — and they do not divide each other, so this is the period over
+    /// which both come back into phase. It is long, which is the point: the
+    /// animation never visibly repeats.
+    pub loading_cycle: Duration,
 }
 
 /// Motion policy for radio selection indicators.
@@ -528,6 +535,19 @@ impl ToggleMetrics {
             label_spacing,
         }
     }
+}
+
+/// Which of a stepper's two buttons is being drawn.
+///
+/// A stepper is a pair, and Material joins a pair into one silhouette: the two
+/// far ends are fully round while the corners either side of the seam are
+/// tucked in. A theme cannot tell those apart from bounds alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StepperEnd {
+    /// The decrement button, at the leading end.
+    Decrement,
+    /// The increment button, at the trailing end.
+    Increment,
 }
 
 /// Stepper layout metrics.
@@ -718,10 +738,13 @@ pub struct ProgressMetrics {
     pub value_label_top_spacing: f64,
     /// Minimum linear track width.
     pub min_track_width: f64,
-    /// Circular progress diameter.
+    /// Circular progress diameter. For the loading style this is the
+    /// container's side, and `loading_indicator_size` the shape drawn in it.
     pub circular_diameter: f64,
     /// Circular progress stroke width.
     pub circular_stroke_width: f64,
+    /// Side of the morphing shape inside a loading indicator's container.
+    pub loading_indicator_size: f64,
 }
 
 impl ProgressMetrics {
@@ -744,6 +767,7 @@ impl ProgressMetrics {
             min_track_width,
             circular_diameter: 0.0,
             circular_stroke_width: 0.0,
+            loading_indicator_size: 0.0,
         }
     }
 
@@ -759,6 +783,23 @@ impl ProgressMetrics {
             min_track_width: 0.0,
             circular_diameter,
             circular_stroke_width,
+            loading_indicator_size: 0.0,
+        }
+    }
+
+    /// Create loading-indicator layout metrics.
+    #[must_use]
+    pub const fn loading(container_size: f64, indicator_size: f64) -> Self {
+        Self {
+            label_height: 0.0,
+            bar_top_offset: 0.0,
+            bar_height: 0.0,
+            bar_horizontal_inset: 0.0,
+            value_label_top_spacing: 0.0,
+            min_track_width: 0.0,
+            circular_diameter: container_size,
+            circular_stroke_width: 0.0,
+            loading_indicator_size: indicator_size,
         }
     }
 }
@@ -982,10 +1023,14 @@ pub struct NavigationMetrics {
     pub automatic_bar_height: f64,
     /// Inline title-mode bar height.
     pub inline_bar_height: f64,
+    /// Medium title-mode bar height.
+    pub medium_bar_height: f64,
     /// Large title-mode bar height.
     pub large_bar_height: f64,
     /// Navigation title slot height for inline bars.
     pub inline_title_height: f64,
+    /// Navigation title slot height for medium bars.
+    pub medium_title_height: f64,
     /// Navigation title slot height for large bars.
     pub large_title_height: f64,
     /// Title leading inset when no leading bar item is present.
@@ -1132,7 +1177,16 @@ pub trait WidgetTheme {
     /// Return stepper metrics.
     fn stepper_metrics(&self) -> StepperMetrics;
     /// Draw one stepper button.
-    fn draw_stepper_button(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    ///
+    /// `end` says which of the pair this is, because a theme may join them into
+    /// one silhouette whose outer corners differ from the seam between them.
+    fn draw_stepper_button(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        end: StepperEnd,
+        state: WidgetInteractionState,
+    );
     /// Draw a stepper decrement icon.
     fn draw_stepper_decrement_icon(&self, draw: &mut dyn DrawContext, bounds: Rect);
     /// Draw a stepper increment icon.
@@ -1142,6 +1196,7 @@ pub trait WidgetTheme {
         &self,
         _draw: &mut dyn DrawContext,
         _bounds: Rect,
+        _end: StepperEnd,
         _state: WidgetInteractionState,
     ) {
     }
@@ -1330,6 +1385,16 @@ pub trait WidgetTheme {
     );
     /// Draw the circular progress fill path.
     fn draw_progress_circular_fill(&self, draw: &mut dyn DrawContext, path: &BezPath, width: f64);
+    /// Draw the loading indicator at `elapsed` into its cycle.
+    ///
+    /// `bounds` is the container; the theme insets the shape itself.
+    fn draw_progress_loading(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        elapsed: Duration,
+        four_color: bool,
+    );
     /// Draw the circular indeterminate progress indicator.
     fn draw_progress_circular_indeterminate(
         &self,
@@ -1446,4 +1511,6 @@ pub enum ProgressIndicatorStyle {
     Linear,
     /// Circular indicator.
     Circular,
+    /// Material's morphing loading indicator.
+    Loading,
 }
