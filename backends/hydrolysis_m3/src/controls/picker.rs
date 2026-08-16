@@ -404,14 +404,17 @@ mod tests {
     }
 
     #[test]
-    fn radio_metrics_match_material_web_latest_tokens() {
+    /// Values from `androidx.compose.material3.tokens.RadioButtonTokens` and
+    /// the private dimensions in `RadioButton.kt`.
+    fn radio_metrics_match_compose_radio_tokens() {
         let metrics = material_metrics();
 
         assert_eq!(metrics.radio_indicator_size, PICKER_RADIO_INDICATOR_SIZE);
         assert_eq!(metrics.label_spacing, PICKER_LABEL_SPACING);
         assert_eq!(PICKER_RADIO_INDICATOR_SIZE, 20.0);
         assert_eq!(PICKER_RADIO_OUTER_RING_WIDTH, 2.0);
-        assert_eq!(PICKER_RADIO_INNER_DOT_RADIUS, 5.0);
+        // RadioButtonDotSize is 12dp across, so half of it here.
+        assert_eq!(PICKER_RADIO_INNER_DOT_RADIUS, 6.0);
         assert_eq!(metrics.popup_row_height, PICKER_MENU_POPUP_ROW_HEIGHT);
         assert_eq!(metrics.popup_corner_radius, PICKER_MENU_POPUP_CORNER_RADIUS);
         assert_eq!(PICKER_MENU_POPUP_ROW_HEIGHT, 48.0);
@@ -419,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn radio_indicator_draws_material_web_donut_icon() {
+    fn radio_indicator_draws_the_compose_donut_icon() {
         let colors = MaterialColorScheme::baseline_light();
         let center = Point::new(10.0, 10.0);
 
@@ -460,11 +463,11 @@ mod tests {
             selected.circle_strokes,
             vec![(9.0, 2.0, colors.primary.peniko())]
         );
-        assert_eq!(selected.circle_fills, vec![(5.0, colors.primary.peniko())]);
+        assert_eq!(selected.circle_fills, vec![(6.0, colors.primary.peniko())]);
     }
 
     #[test]
-    fn radio_indicator_inner_dot_uses_material_web_scale_and_opacity() {
+    fn radio_indicator_inner_dot_scales_and_fades() {
         let colors = MaterialColorScheme::baseline_light();
         let center = Point::new(10.0, 10.0);
         let mut draw = RecordingDrawContext::default();
@@ -483,7 +486,7 @@ mod tests {
         );
 
         assert_eq!(draw.circle_fills.len(), 1);
-        assert!((draw.circle_fills[0].0 - 2.0).abs() < 0.000_001);
+        assert!((draw.circle_fills[0].0 - PICKER_RADIO_INNER_DOT_RADIUS * 0.4).abs() < 0.000_001);
         assert_eq!(
             draw.circle_fills[0].1,
             colors.primary.peniko().with_alpha(0.25)
@@ -491,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn radio_indicator_outer_ring_color_interpolates_with_material_web_transition() {
+    fn radio_indicator_outer_ring_color_interpolates() {
         let colors = MaterialColorScheme::baseline_light();
         let center = Point::new(10.0, 10.0);
         let mut draw = RecordingDrawContext::default();
