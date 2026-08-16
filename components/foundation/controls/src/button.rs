@@ -227,6 +227,11 @@ pub enum ButtonStyle {
     BorderedProminent,
 }
 
+/// A button style installed on a subtree becomes the default for buttons that
+/// did not pick one, the same way [`LabelDisplayMode`] adapts labels to their
+/// surroundings.
+impl waterui_core::plugin::Plugin for ButtonStyle {}
+
 // ============================================================================
 // Button configuration and view implementation
 // ============================================================================
@@ -263,6 +268,15 @@ impl ButtonConfig {
     #[must_use]
     fn resolve(mut self, env: &Environment) -> Self {
         self.label = self.label.resolve(env);
+        // `Automatic` means "whatever this context calls for". A surrounding
+        // scope can say what that is — a list row wants row-style buttons, not
+        // the filled containers a screen's primary action gets — while an
+        // explicit style on the button still wins.
+        if matches!(self.style, ButtonStyle::Automatic)
+            && let Some(ambient) = env.get::<ButtonStyle>()
+        {
+            self.style = *ambient;
+        }
         self
     }
 }

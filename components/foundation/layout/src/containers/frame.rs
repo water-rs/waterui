@@ -276,6 +276,12 @@ fn frame_child_proposal_axis(
 /// frame stays the size of its content — `.frame(minHeight: 44)` on a label
 /// leaves a 44pt-tall label, rather than a label stretched over whatever height
 /// the parent happened to propose.
+///
+/// An *ideal* extent is the size this axis asks for when nobody proposes one.
+/// It never grows the frame past a proposal, and it must not refuse to shrink
+/// below one either: an ideal that outranked the proposal would be a pin, and
+/// `min`/`max` are how a caller asks for a pin. That distinction is what lets
+/// an icon carry its natural size and still fit the box `.size(…)` gives it.
 #[inline]
 fn frame_resolved_axis(
     parent_proposal: Option<f32>,
@@ -287,6 +293,9 @@ fn frame_resolved_axis(
     let content = ideal.unwrap_or(child_size);
     match (parent_proposal, max) {
         (Some(proposed), Some(_)) => clamp_frame_axis(proposed, min, max),
+        (Some(proposed), None) if ideal.is_some() => {
+            clamp_frame_axis(proposed.min(content), min, max)
+        }
         _ => clamp_frame_axis(content, min, max),
     }
 }
@@ -447,6 +456,55 @@ mod tests {
         // Frame uses ideal dimensions
         assert!((size.width - 100.0).abs() < f32::EPSILON);
         assert!((size.height - 50.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn ideal_size_yields_to_a_smaller_proposal() {
+        // An icon carrying its natural 24pt size, offered 8pt by `.size(8, 8)`.
+        let layout = FrameLayout {
+            ideal_width: Some(Computed::constant(24.0)),
+            ideal_height: Some(Computed::constant(24.0)),
+            ..Default::default()
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(24.0, 24.0),
+        };
+        let children: Vec<&dyn SubView> = vec![&mut child];
+
+        let size = layout.size_that_fits(
+            ProposalSize {
+                width: Some(8.0),
+                height: Some(8.0),
+            },
+            &children,
+        );
+
+        assert!((size.width - 8.0).abs() < f32::EPSILON);
+        assert!((size.height - 8.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn ideal_size_does_not_grow_into_a_larger_proposal() {
+        let layout = FrameLayout {
+            ideal_width: Some(Computed::constant(24.0)),
+            ..Default::default()
+        };
+
+        let mut child = MockSubView {
+            size: Size::new(24.0, 24.0),
+        };
+        let children: Vec<&dyn SubView> = vec![&mut child];
+
+        let size = layout.size_that_fits(
+            ProposalSize {
+                width: Some(400.0),
+                height: None,
+            },
+            &children,
+        );
+
+        assert!((size.width - 24.0).abs() < f32::EPSILON);
     }
 
     #[test]

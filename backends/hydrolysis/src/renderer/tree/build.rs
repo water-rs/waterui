@@ -651,7 +651,7 @@ impl RenderNode {
             }
             Err(view) => view,
         };
-        let view = match view.downcast::<Native<Tabs>>() {
+        let view = match view.downcast::<Native<TabsLayout>>() {
             Ok(tabs) => return RenderNode::build_tabs((*tabs).into_inner(), env, renderer),
             Err(view) => view,
         };

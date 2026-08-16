@@ -92,7 +92,10 @@ pub(crate) type NavigationEvents = Rc<RefCell<Vec<HydroNavigationEvent>>>;
 #[derive(Default)]
 pub(crate) struct NavigationState {
     pub(crate) slots: BTreeMap<NavigationKey, NavigationSlot>,
-    active: BTreeSet<NavigationKey>,
+    /// Addresses bound this frame. Held as plain addresses rather than keys so
+    /// the slot map holds the only strong lease on each retained stack, which
+    /// is what [`NavigationKey::is_retained_elsewhere`] measures.
+    active: BTreeSet<usize>,
 }
 
 /// Stable identity of one retained navigation stack.
@@ -102,6 +105,16 @@ pub(crate) struct NavigationKey(RetainedIdentity);
 impl NavigationKey {
     pub(crate) fn for_rc<T: 'static>(owner: &Rc<T>) -> Self {
         Self(RetainedIdentity::for_rc(owner))
+    }
+
+    pub(crate) fn address(&self) -> usize {
+        self.0.address()
+    }
+
+    /// Whether the retained stack behind this key is still held by the render
+    /// tree.
+    pub(crate) fn is_retained_elsewhere(&self) -> bool {
+        self.0.is_retained_elsewhere()
     }
 }
 
@@ -167,8 +180,16 @@ impl NavigationState {
         self.active.clear();
     }
 
+    /// Drops the slots whose retained stack the render tree no longer holds.
+    ///
+    /// A stack keeps its slot — its pushed path, destination lifecycle state,
+    /// and cached scenes — while it exists but is not being drawn. Tabs render
+    /// only the selected tab, so pruning by "bound this frame" instead would
+    /// destroy every background tab's navigation state and leave the retained
+    /// stack unable to reinstall its root on return.
     pub(crate) fn finish_rebuild_frame(&mut self) {
-        self.slots.retain(|key, _| self.active.contains(key));
+        self.slots
+            .retain(|key, _| self.active.contains(&key.address()) || key.is_retained_elsewhere());
     }
 }
 
@@ -550,7 +571,7 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn bind_navigation_entries(&mut self, key: &NavigationKey) -> NavigationEntries {
-        self.navigation.active.insert(key.clone());
+        self.navigation.active.insert(key.address());
         let slot = self
             .navigation
             .slots

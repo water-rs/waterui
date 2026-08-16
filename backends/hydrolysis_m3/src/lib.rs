@@ -47,7 +47,7 @@ use waterui::theme::{self as waterui_theme, ColorScheme, ColorSettings, Theme};
 pub use waterui_backend_core::widget::{
     BadgeMetrics, Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics,
     InteractionFocusBinding, InteractionMotion, InteractionStyle, ListDividerMetrics, ListMetrics,
-    ListRowMetrics, ListTrailingControlMetrics, ModalInteraction, NavigationMetrics,
+    ListRowMetrics, ListSectionMetrics, ListTrailingControlMetrics, ModalInteraction, NavigationMetrics,
     NavigationMotion, PickerMetrics, PressWave, PressWaves, ProgressIndicatorStyle,
     ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
     StepperMetrics, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,

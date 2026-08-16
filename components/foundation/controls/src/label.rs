@@ -41,7 +41,9 @@
 use core::any::Any;
 use nami::{Binding, Computed, SignalExt};
 use waterui_core::{
-    AnyView, Environment, IntoSignalF32, View, handler::AnyViewBuilder, plugin::Plugin,
+    AnyView, Environment, IntoSignalF32, View,
+    handler::{AnyViewBuilder, ViewBuilder},
+    plugin::Plugin,
 };
 use waterui_icon::SystemIcon;
 use waterui_layout::stack::hstack;
@@ -284,18 +286,24 @@ impl Label {
     /// `content` is the view rendered on screen. For ordinary text labels, use
     /// [`label`] or pass an [`IntoLabel`] value directly to the control.
     ///
+    /// `content` is a builder rather than a value, because the control may
+    /// realize the label more than once — a list row rebuilds it whenever it
+    /// scrolls back into view. Any closure returning a view is a builder, which
+    /// is also what lets modifier chains (`.padding()`, `.clip(…)`, …) be used
+    /// here at all: those wrappers are not `Clone`.
+    ///
     /// ```rust,ignore
     /// let verified = Label::new(
     ///     "Verified account",
-    ///     hstack((text("Account"), verification_badge)),
+    ///     || hstack((text("Account"), verification_badge())),
     /// );
     /// ```
     #[must_use]
-    pub fn new(semantic_text: impl IntoText, content: impl View + Clone) -> Self {
+    pub fn new(semantic_text: impl IntoText, content: impl ViewBuilder) -> Self {
         Self {
             content: LabelContent::Custom {
                 semantic_text: semantic_text.into_text(),
-                view: AnyViewBuilder::new(move || AnyView::new(content.clone())),
+                view: AnyViewBuilder::new(move || AnyView::new(content.build())),
             },
             display_mode: LabelDisplayMode::Automatic,
             accessibility_text: None,
@@ -353,6 +361,11 @@ impl Label {
     /// # Panics
     ///
     /// Panics for [`Label::new`] labels with arbitrary visual content.
+    /// `icon` is a value rather than a builder so a [`SystemIcon`] stays
+    /// recognizable: the semantic identity of an SF Symbol is what lets Apple
+    /// chrome render it natively, and a closure would erase it. Size an icon by
+    /// choosing the icon's own size, or wrap the whole label with
+    /// [`Label::new`], which does take a builder.
     #[must_use]
     pub fn icon(mut self, icon: impl View + Clone) -> Self {
         let system_icon = (&icon as &dyn Any).downcast_ref::<SystemIcon>().cloned();
@@ -540,6 +553,19 @@ impl Label {
         }
     }
 
+    /// Whether this label renders caller-supplied views rather than its own
+    /// text and icon.
+    ///
+    /// A backend that has a fast path for text-only labels must check this
+    /// rather than reading [`Self::display_mode_preference`]: resolving a
+    /// custom-content label against the environment reports
+    /// [`LabelDisplayMode::TitleOnly`] too, since it has no icon, and taking
+    /// the text path for one drops the content it was built to show.
+    #[must_use]
+    pub const fn has_custom_content(&self) -> bool {
+        matches!(self.content, LabelContent::Custom { .. })
+    }
+
     /// Returns the semantic text carried by this label.
     #[must_use = "this borrows the label's text without consuming the label"]
     pub const fn semantic_text(&self) -> &Text {
@@ -705,7 +731,7 @@ mod tests {
     #[test]
     fn arbitrary_content_label_keeps_separate_semantic_text() {
         let env = test_env();
-        let label = super::Label::new("greeting", waterui_text::text("Visual"));
+        let label = super::Label::new("greeting", || waterui_text::text("Visual"));
 
         assert_eq!(semantic_plain(&label, &env), "Hello");
     }
