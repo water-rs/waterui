@@ -1,30 +1,29 @@
 use crate::dimensions::{
     BUTTON_CONTAINER_RADIUS, BUTTON_LINK_HORIZONTAL_PADDING, BUTTON_LINK_UNDERLINE_BOTTOM_INSET,
-    BUTTON_LINK_UNDERLINE_THICKNESS, BUTTON_LINK_VERTICAL_PADDING, BUTTON_MIN_HEIGHT,
-    BUTTON_MIN_WIDTH, BUTTON_TEXT_HORIZONTAL_PADDING, BUTTON_TEXT_VERTICAL_PADDING,
+    BUTTON_LINK_UNDERLINE_THICKNESS, BUTTON_LINK_VERTICAL_PADDING, BUTTON_MIN_WIDTH,
+    BUTTON_TEXT_VERTICAL_PADDING, button_size_tokens,
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
 use crate::{Brush, ButtonMetrics, DrawContext, WidgetInteractionState};
-use waterui_controls::button::ButtonStyle;
+use waterui_controls::button::{ButtonSize, ButtonStyle};
 use waterui_graphics::color::Color;
 
-pub fn metrics(style: ButtonStyle) -> ButtonMetrics {
+pub fn metrics(style: ButtonStyle, size: ButtonSize) -> ButtonMetrics {
+    let tokens = button_size_tokens(size);
     match style {
-        ButtonStyle::Automatic | ButtonStyle::Bordered | ButtonStyle::BorderedProminent => {
-            ButtonMetrics::new(
-                BUTTON_TEXT_HORIZONTAL_PADDING,
-                BUTTON_TEXT_VERTICAL_PADDING,
-                BUTTON_MIN_WIDTH,
-                BUTTON_MIN_HEIGHT,
-            )
-        }
-        ButtonStyle::Plain | ButtonStyle::Borderless => ButtonMetrics::new(
-            BUTTON_TEXT_HORIZONTAL_PADDING,
+        ButtonStyle::Automatic
+        | ButtonStyle::Bordered
+        | ButtonStyle::BorderedProminent
+        | ButtonStyle::Plain
+        | ButtonStyle::Borderless => ButtonMetrics::new(
+            tokens.horizontal_space,
             BUTTON_TEXT_VERTICAL_PADDING,
             BUTTON_MIN_WIDTH,
-            BUTTON_MIN_HEIGHT,
+            tokens.container_height,
         ),
+        // A link has no container, so it takes neither the size scale's
+        // padding nor its minimum box.
         ButtonStyle::Link => ButtonMetrics::new(
             BUTTON_LINK_HORIZONTAL_PADDING,
             BUTTON_LINK_VERTICAL_PADDING,
@@ -140,20 +139,81 @@ pub fn draw_state_layer(
 mod tests {
     use super::{draw_chrome, metrics};
     use crate::dimensions::{
-        BUTTON_CONTAINER_RADIUS, BUTTON_MIN_HEIGHT, BUTTON_MIN_WIDTH,
-        BUTTON_TEXT_HORIZONTAL_PADDING, BUTTON_TEXT_VERTICAL_PADDING,
+        BUTTON_CONTAINER_RADIUS, BUTTON_EXTRA_LARGE, BUTTON_EXTRA_SMALL, BUTTON_LARGE,
+        BUTTON_MEDIUM, BUTTON_MIN_WIDTH, BUTTON_SMALL, BUTTON_TEXT_VERTICAL_PADDING,
     };
     use crate::{Brush, DrawContext, MaterialColorScheme};
     use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
-    use waterui_controls::button::ButtonStyle;
+    use waterui_controls::button::{ButtonSize, ButtonStyle};
 
     fn assert_button_metrics(style: ButtonStyle, expected_padding_x: f64) {
-        let metrics = metrics(style);
+        let metrics = metrics(style, ButtonSize::Small);
 
         assert_eq!(metrics.padding_x, expected_padding_x);
         assert_eq!(metrics.padding_y, BUTTON_TEXT_VERTICAL_PADDING);
         assert_eq!(metrics.min_width, BUTTON_MIN_WIDTH);
-        assert_eq!(metrics.min_height, BUTTON_MIN_HEIGHT);
+        assert_eq!(metrics.min_height, BUTTON_SMALL.container_height);
+    }
+
+    /// The Expressive size scale, from Compose's `ButtonXSmallTokens` through
+    /// `ButtonXLargeTokens`. Height, padding, icon size and corner shape all
+    /// move together, so a size is checked as a whole token set.
+    #[test]
+    fn button_size_scale_matches_compose_button_size_tokens() {
+        // ButtonXSmallTokens
+        assert_eq!(BUTTON_EXTRA_SMALL.container_height, 32.0);
+        assert_eq!(BUTTON_EXTRA_SMALL.horizontal_space, 16.0);
+        assert_eq!(BUTTON_EXTRA_SMALL.icon_size, 20.0);
+        assert_eq!(BUTTON_EXTRA_SMALL.icon_label_space, 8.0);
+        // ButtonSmallTokens
+        assert_eq!(BUTTON_SMALL.container_height, 40.0);
+        assert_eq!(BUTTON_SMALL.icon_size, 20.0);
+        // ButtonMediumTokens
+        assert_eq!(BUTTON_MEDIUM.container_height, 56.0);
+        assert_eq!(BUTTON_MEDIUM.horizontal_space, 24.0);
+        assert_eq!(BUTTON_MEDIUM.icon_size, 24.0);
+        // ButtonLargeTokens
+        assert_eq!(BUTTON_LARGE.container_height, 96.0);
+        assert_eq!(BUTTON_LARGE.horizontal_space, 48.0);
+        assert_eq!(BUTTON_LARGE.icon_size, 32.0);
+        assert_eq!(BUTTON_LARGE.icon_label_space, 12.0);
+        assert_eq!(BUTTON_LARGE.outline_width, 2.0);
+        // ButtonXLargeTokens
+        assert_eq!(BUTTON_EXTRA_LARGE.container_height, 136.0);
+        assert_eq!(BUTTON_EXTRA_LARGE.horizontal_space, 64.0);
+        assert_eq!(BUTTON_EXTRA_LARGE.icon_size, 40.0);
+        assert_eq!(BUTTON_EXTRA_LARGE.icon_label_space, 16.0);
+
+        // The scale is monotonic in every dimension it changes.
+        let scale = [
+            BUTTON_EXTRA_SMALL,
+            BUTTON_SMALL,
+            BUTTON_MEDIUM,
+            BUTTON_LARGE,
+            BUTTON_EXTRA_LARGE,
+        ];
+        for pair in scale.windows(2) {
+            let (smaller, larger) = (pair[0], pair[1]);
+            assert!(larger.container_height > smaller.container_height);
+            assert!(larger.horizontal_space >= smaller.horizontal_space);
+            assert!(larger.icon_size >= smaller.icon_size);
+        }
+    }
+
+    /// A button's measured height follows the size it was given.
+    #[test]
+    fn button_metrics_follow_the_requested_size() {
+        for (size, tokens) in [
+            (ButtonSize::ExtraSmall, BUTTON_EXTRA_SMALL),
+            (ButtonSize::Small, BUTTON_SMALL),
+            (ButtonSize::Medium, BUTTON_MEDIUM),
+            (ButtonSize::Large, BUTTON_LARGE),
+            (ButtonSize::ExtraLarge, BUTTON_EXTRA_LARGE),
+        ] {
+            let metrics = metrics(ButtonStyle::BorderedProminent, size);
+            assert_eq!(metrics.min_height, tokens.container_height, "{size:?}");
+            assert_eq!(metrics.padding_x, tokens.horizontal_space, "{size:?}");
+        }
     }
 
     /// Values from `androidx.compose.material3`: `BaselineButtonTokens` for the
@@ -167,16 +227,17 @@ mod tests {
             ButtonStyle::Bordered,
             ButtonStyle::BorderedProminent,
         ] {
-            assert_button_metrics(style, BUTTON_TEXT_HORIZONTAL_PADDING);
+            assert_button_metrics(style, BUTTON_SMALL.horizontal_space);
         }
         // ButtonSmallTokens.ContainerHeight
-        assert_eq!(BUTTON_MIN_HEIGHT, 40.0);
+        assert_eq!(BUTTON_SMALL.container_height, 40.0);
         // BaselineButtonTokens.ContainerShapeRound is CornerFull
-        assert_eq!(BUTTON_CONTAINER_RADIUS, BUTTON_MIN_HEIGHT / 2.0);
+        assert_eq!(BUTTON_CONTAINER_RADIUS, BUTTON_SMALL.container_height / 2.0);
         // ButtonDefaults.MinWidth
         assert_eq!(BUTTON_MIN_WIDTH, 58.0);
-        // BaselineButtonTokens.LeadingSpace / TrailingSpace
-        assert_eq!(BUTTON_TEXT_HORIZONTAL_PADDING, 24.0);
+        // BaselineButtonTokens.LeadingSpace / TrailingSpace, which is what
+        // `ButtonDefaults.ContentPadding` uses for the default button.
+        assert_eq!(BUTTON_SMALL.horizontal_space, 24.0);
         // ButtonDefaults.ContentPadding vertical
         assert_eq!(BUTTON_TEXT_VERTICAL_PADDING, 8.0);
     }
@@ -232,7 +293,7 @@ mod tests {
         draw_chrome(
             &colors,
             &mut draw,
-            Rect::new(0.0, 0.0, 120.0, BUTTON_MIN_HEIGHT),
+            Rect::new(0.0, 0.0, 120.0, BUTTON_SMALL.container_height),
             ButtonStyle::Bordered,
             crate::WidgetInteractionState {
                 disabled: true,
@@ -292,7 +353,7 @@ mod tests {
         draw_chrome(
             &colors,
             &mut draw,
-            Rect::new(0.0, 0.0, 120.0, BUTTON_MIN_HEIGHT),
+            Rect::new(0.0, 0.0, 120.0, BUTTON_SMALL.container_height),
             ButtonStyle::Bordered,
             crate::WidgetInteractionState::NONE,
         );

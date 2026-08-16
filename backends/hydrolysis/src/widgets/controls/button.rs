@@ -18,7 +18,7 @@ use waterui::ViewExt as _;
 use waterui::floating::FloatingScope;
 use waterui::style::FloatingStyle;
 use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
-use waterui_controls::button::{ButtonConfig, ButtonStyle};
+use waterui_controls::button::{ButtonConfig, ButtonSize, ButtonStyle};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::menu::ResolvedMenu;
 use waterui_core::layout::Point as LayoutPoint;
@@ -175,6 +175,7 @@ pub(crate) fn measure_button_node(
     let metrics = button_metrics(
         theme,
         render_state.config.style,
+        render_state.config.size,
         env.get::<InteractionStyle>(),
         env.get::<FloatingScope>().map(|scope| &scope.0),
     );
@@ -328,7 +329,7 @@ pub(crate) fn measure_menu_node(
     env: &Environment,
 ) -> ViewDimensions {
     let theme = widget_theme(env);
-    let metrics = theme.button_metrics(MENU_TRIGGER_STYLE);
+    let metrics = theme.button_metrics(MENU_TRIGGER_STYLE, ButtonSize::default());
     let label_size = match &state.label {
         MenuLabel::Title(label) => {
             let styled = styled_button_title(theme, MENU_TRIGGER_STYLE, label, env);
@@ -364,6 +365,7 @@ pub(crate) fn render_button_parts(
 ) {
     let theme = widget_theme(env);
     let style = state.borrow().config.style;
+    let size = state.borrow().config.size;
     let interaction_style = env.get::<InteractionStyle>().cloned();
     let floating_style = env.get::<FloatingScope>().map(|scope| scope.0.clone());
     // Subscribe to the (possibly reactive) title so a label change schedules a frame
@@ -396,6 +398,7 @@ pub(crate) fn render_button_parts(
     let metrics = button_metrics(
         theme,
         style,
+        size,
         interaction_style.as_ref(),
         floating_style.as_ref(),
     );
@@ -507,7 +510,7 @@ pub(crate) fn render_menu_parts(
         theme.draw_button_chrome(&mut draw, bounds, style, interaction);
     }
 
-    let metrics = theme.button_metrics(style);
+    let metrics = theme.button_metrics(style, ButtonSize::default());
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
     {
         let mut state = state.borrow_mut();
@@ -563,6 +566,7 @@ pub(crate) fn measure_button_intrinsic(
     let metrics = button_metrics(
         theme,
         button.style,
+        button.size,
         env.get::<InteractionStyle>(),
         env.get::<FloatingScope>().map(|scope| &scope.0),
     );
@@ -576,7 +580,7 @@ pub(crate) fn measure_menu_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let theme = widget_theme(env);
-    let metrics = theme.button_metrics(MENU_TRIGGER_STYLE);
+    let metrics = theme.button_metrics(MENU_TRIGGER_STYLE, ButtonSize::default());
     let label_size = if let Some(label) = menu.label.downcast_ref::<Label>()
         && matches!(label.display_mode_preference(), LabelDisplayMode::TitleOnly)
     {
@@ -624,13 +628,14 @@ fn disabled_aware_label_color(
 fn button_metrics(
     theme: &dyn waterui_backend_core::widget::WidgetTheme,
     style: ButtonStyle,
+    size: ButtonSize,
     interaction_style: Option<&InteractionStyle>,
     floating_style: Option<&FloatingStyle>,
 ) -> ButtonMetrics {
     interaction_style.map_or_else(
         || {
             floating_style.map_or_else(
-                || theme.button_metrics(style),
+                || theme.button_metrics(style, size),
                 |style| {
                     ButtonMetrics::new(
                         style.content_inset_x,

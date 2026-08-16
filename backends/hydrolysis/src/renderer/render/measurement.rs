@@ -990,7 +990,8 @@ pub(crate) fn measure_slider_intrinsic(
     let min_label_size = measure_view_intrinsic(&slider.min_value_label, state, env);
     let max_label_size = measure_view_intrinsic(&slider.max_value_label, state, env);
 
-    let control_row_height = metrics.handle_height
+    let control_row_height = metrics
+        .handle_height
         .max(f64::from(min_label_size.height))
         .max(f64::from(max_label_size.height));
     let label_height = f64::from(label_size.height);
@@ -1066,7 +1067,7 @@ pub(crate) fn measure_button_view_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     let theme = widget_theme(env);
-    let metrics = theme.button_metrics(button.button_style());
+    let metrics = theme.button_metrics(button.button_style(), button.button_size());
     let label_size = measure_label_intrinsic(button.label(), state, env);
     let content_width = f64::from(label_size.width) + metrics.padding_x * 2.0;
     let content_height = f64::from(label_size.height) + metrics.padding_y * 2.0;
