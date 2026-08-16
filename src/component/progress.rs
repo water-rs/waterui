@@ -70,6 +70,15 @@ pub enum ProgressStyle {
     Circular,
     /// A linear bar-style progress indicator.
     Linear,
+    /// Material's loading indicator: a shape that morphs and rotates while work
+    /// is in flight.
+    ///
+    /// This is a style rather than its own component because it is the same
+    /// semantic thing as any other indeterminate indicator — work is happening,
+    /// and how long it will take is unknown. It carries no determinate reading:
+    /// a value set on a loading-style progress is used for accessibility but is
+    /// not drawn, because the indicator has no track to fill.
+    Loading,
 }
 
 configurable!(
@@ -106,7 +115,7 @@ configurable!(
     //   Stretch Axis: `Horizontal` - Expands to fill available width.
     //   Height: Fixed intrinsic (platform-determined track height)
     //
-    // Circular style:
+    // Circular and Loading styles:
     //   Stretch Axis: `None` - Content-sized, does not expand.
     //
     // ═══════════════════════════════════════════════════════════════════════════
@@ -115,7 +124,7 @@ configurable!(
     ProgressConfig,
     |config| match config.style {
         ProgressStyle::Linear => StretchAxis::Horizontal,
-        ProgressStyle::Circular => StretchAxis::None,
+        ProgressStyle::Circular | ProgressStyle::Loading => StretchAxis::None,
     }
 );
 
@@ -228,6 +237,17 @@ impl Progress {
         self.style(ProgressStyle::Linear)
     }
 
+    /// Changes the progress indicator to the platform's loading indicator.
+    ///
+    /// This says "content is on its way", where the circular and linear styles
+    /// report how far along an operation is. Each backend draws its own: the
+    /// Material theme morphs a shape while it turns, and platforms whose
+    /// loading indicator is a spinner draw that.
+    #[must_use]
+    pub const fn loading(self) -> Self {
+        self.style(ProgressStyle::Loading)
+    }
+
     /// Render indeterminate progress with the Material four-color cycle.
     #[must_use]
     pub const fn four_color(mut self) -> Self {
@@ -245,10 +265,10 @@ pub fn progress(value: impl IntoComputed<f64>) -> Progress {
     Progress::new(value)
 }
 
-/// Creates an indeterminate loading indicator displayed as a circular spinner.
+/// Creates the platform's indeterminate loading indicator.
 #[must_use]
 pub fn loading() -> Progress {
-    Progress::infinity().circular()
+    Progress::infinity().loading()
 }
 
 #[cfg(test)]

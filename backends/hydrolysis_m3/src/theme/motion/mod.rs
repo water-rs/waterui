@@ -69,7 +69,7 @@ const PROGRESS_CIRCULAR_DETERMINATE: (f32, f32, f32, f32) = (0.0, 0.0, 0.2, 1.0)
 const PROGRESS_LINEAR_INDETERMINATE_CYCLE: Duration = Duration::from_secs(2);
 const PROGRESS_CIRCULAR_INDETERMINATE_CYCLE: Duration = Duration::from_millis(5_332);
 
-pub const fn progress() -> ProgressMotion {
+pub fn progress() -> ProgressMotion {
     ProgressMotion {
         linear_determinate: Animation::bezier(
             duration::MEDIUM_1,
@@ -87,6 +87,7 @@ pub const fn progress() -> ProgressMotion {
         ),
         linear_indeterminate_cycle: PROGRESS_LINEAR_INDETERMINATE_CYCLE,
         circular_indeterminate_cycle: PROGRESS_CIRCULAR_INDETERMINATE_CYCLE,
+        loading_cycle: crate::controls::progress::loading_cycle(),
     }
 }
 

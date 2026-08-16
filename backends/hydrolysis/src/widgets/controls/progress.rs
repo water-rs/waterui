@@ -125,8 +125,13 @@ pub(crate) fn measure_progress_node(
                 label_height + metrics.bar_top_offset + metrics.bar_height + value_label_height;
             LayoutSize::new(width as f32, height as f32)
         }
-        ProgressStyle::Circular => {
-            let metrics = theme.progress_metrics(ProgressIndicatorStyle::Circular);
+        ProgressStyle::Circular | ProgressStyle::Loading => {
+            let style = if matches!(render_state.style, ProgressStyle::Loading) {
+                ProgressIndicatorStyle::Loading
+            } else {
+                ProgressIndicatorStyle::Circular
+            };
+            let metrics = theme.progress_metrics(style);
             LayoutSize::new(
                 metrics.circular_diameter as f32,
                 metrics.circular_diameter as f32,
@@ -317,6 +322,18 @@ pub(crate) fn render_progress_parts(
                     four_color,
                 );
             }
+        }
+        ProgressStyle::Loading => {
+            // The loading indicator is indeterminate by construction: it has no
+            // track, so there is nothing for a value to fill. A value set on one
+            // still reaches assistive technology through the node above.
+            let motion = theme.progress_motion();
+            let bounds = ctx.bounds;
+            let elapsed = ctx
+                .renderer_mut()
+                .sample_repeating_motion(motion.loading_cycle, node_id);
+            let mut draw = ctx.draw_context();
+            theme.draw_progress_loading(&mut draw, bounds, elapsed, four_color);
         }
         _ => {
             panic!("hydrolysis ProgressStyle variant is not implemented");
