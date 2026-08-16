@@ -375,6 +375,9 @@ impl ListRenderState {
             let approach = self.extent_index.borrow().offset_of(approach_index);
             let _ = handle.scroll_to(0.0, approach);
         }
+        // The pump ticks smooth scrolls before rendering and the present already
+        // wakes the loop, so arming here is enough — the next tick advances the
+        // glide and keeps requesting frames until it settles.
         let _ = handle.scroll_to_animated(0.0, offset);
         let extent_index = self.extent_index.borrow();
         let Some(extent) = extent_index.measured(index) else {

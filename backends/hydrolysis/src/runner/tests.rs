@@ -1,7 +1,7 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
     RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
-    handle_input_events, pump_window_semantics, schedule_animation_update,
+    handle_input_events, pump_window_semantics, render_window, schedule_animation_update,
     schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
 use crate::platform::{
@@ -11,9 +11,13 @@ use crate::renderer::{HydrolysisRenderer, InteractionKey};
 use core::time::Duration;
 use std::rc::Rc;
 use std::time::Instant;
+use waterui::ViewExt as _;
+use waterui::component::list::{List, ListItem};
 use waterui::window::{Window, WindowState};
 use waterui_backend_core::widget::TextCaretMotion;
-use waterui_core::{Environment, binding};
+use waterui_core::id::SelfId;
+use waterui_core::{AnyView, Environment, binding};
+use waterui_layout::scroll::ScrollController;
 
 #[test]
 fn changed_rebuild_input_wakes_platform_window() {
@@ -312,8 +316,16 @@ fn pending_lazy_height_refresh_precedes_scroll_input() {
 }
 
 fn runtime_window_for(window: Window) -> RuntimeWindow<HeadlessPlatformWindow> {
+    runtime_window_sized(window, 16, 16)
+}
+
+fn runtime_window_sized(
+    window: Window,
+    width: u32,
+    height: u32,
+) -> RuntimeWindow<HeadlessPlatformWindow> {
     let mut platform =
-        HeadlessPlatformWindow::new_for_tests(16, 16, wgpu::TextureFormat::Rgba8Unorm);
+        HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
     platform.apply_properties(&window);
     let renderer = {
         let surface = platform.surface();
@@ -330,6 +342,90 @@ fn runtime_window_for(window: Window) -> RuntimeWindow<HeadlessPlatformWindow> {
         },
     )
 }
+
+/// An animated `List` jump must keep the window awake until it settles.
+///
+/// This drives the runtime the way the winit loop does — a frame runs only while
+/// the runtime is still asking to be woken — so a jump that fails to schedule
+/// its own animation frames shows up as the loop going idle almost immediately.
+/// Pumping frames unconditionally cannot see that, because it supplies the very
+/// frames the bug withholds.
+#[test]
+fn an_animated_list_jump_keeps_the_window_awake_until_it_settles() {
+    const ROWS: usize = 200;
+    const TARGET_ROW: usize = 40;
+    /// Hard stop so a runaway loop fails loudly instead of hanging.
+    const MAX_FRAMES: usize = 400;
+
+    let controller = ScrollController::new(0usize);
+    let controller_for_view = controller.clone();
+    let window = Window::new("", binding(WindowState::Normal), move || {
+        let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
+        AnyView::new(
+            List::for_each(rows, |_row| {
+                ListItem::new(().size(160.0, ROW_HEIGHT_FOR_JUMP_TEST))
+            })
+            .scroll_controller(&controller_for_view),
+        )
+    });
+    let mut runtime = runtime_window_sized(window, 160, 320);
+    let env = crate::renderer::tests::test_environment();
+    let mut now = Instant::now();
+
+    // Settle the initial layout, then let the window go idle.
+    let idle_frames = drive_until_idle(&mut runtime, &env, &mut now, MAX_FRAMES);
+    assert!(
+        idle_frames < MAX_FRAMES,
+        "the window never went idle before the jump"
+    );
+
+    controller.scroll_to(TARGET_ROW);
+    // The frame the button press itself produces: the loop is already running an
+    // iteration for that input, and this is where the jump gets armed.
+    now += Duration::from_millis(16);
+    let _ = advance_runtime(&mut runtime, &env, now);
+    render_window(&mut runtime, &env, &mut || false);
+
+    // Everything after this point has to be self-sustaining.
+    let animation_frames = drive_until_idle(&mut runtime, &env, &mut now, MAX_FRAMES);
+
+    assert!(
+        animation_frames < MAX_FRAMES,
+        "the jump never settled: the window stayed awake for {animation_frames} frames"
+    );
+    // The approach eases with a ~180ms time constant, so a real animation spans
+    // many frames. A jump that teleported, or one whose frames were never
+    // scheduled, would idle again almost at once.
+    assert!(
+        animation_frames >= 8,
+        "an animated jump should span many frames; the window went idle after \
+         {animation_frames}, so the jump landed without animating"
+    );
+}
+
+/// Runs frames while the runtime is still asking to be woken, returning how many
+/// it took to go idle. This is the winit loop's rule: no wake request, no frame.
+fn drive_until_idle(
+    runtime: &mut RuntimeWindow<HeadlessPlatformWindow>,
+    env: &Environment,
+    now: &mut Instant,
+    max_frames: usize,
+) -> usize {
+    for frame in 0..max_frames {
+        let wake = runtime.mode.is_pending() | runtime.platform.take_redraw_request();
+        if !wake {
+            return frame;
+        }
+        *now += Duration::from_millis(16);
+        let _ = advance_runtime(runtime, env, *now);
+        render_window(runtime, env, &mut || false);
+    }
+    max_frames
+}
+
+/// Row height used by the jump test; any fixed height works, it only has to be
+/// stable so the target sits a predictable distance away.
+const ROW_HEIGHT_FOR_JUMP_TEST: f32 = 24.0;
 
 fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
     let window = Window::new("", binding(WindowState::Normal), || ());
