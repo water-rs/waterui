@@ -53,14 +53,21 @@ impl ButtonRenderState {
 
     /// Eagerly build the general (non-title) label sub-view, applying the button's
     /// style-specific label styling + theme label color (mirroring the styled-text
-    /// path's `styled_button_label` + `button_label_view`). A `TitleOnly` label
-    /// stays `None` and is rendered as styled text each frame. The measure path has
-    /// no renderer, so the sub-view must be built here at tree-build time.
+    /// path's `styled_button_label` + `button_label_view`). A plain `TitleOnly`
+    /// label stays `None` and is rendered as styled text each frame. The measure
+    /// path has no renderer, so the sub-view must be built here at tree-build time.
+    ///
+    /// A label carrying custom content also resolves to `TitleOnly`, because it
+    /// has no icon — but its content is a view, and rendering its semantic text
+    /// instead would throw that view away. Content kind decides here, not
+    /// display mode.
     pub(crate) fn prebuild_label(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
-        if matches!(
-            self.config.label.display_mode_preference(),
-            LabelDisplayMode::TitleOnly
-        ) {
+        if !self.config.label.has_custom_content()
+            && matches!(
+                self.config.label.display_mode_preference(),
+                LabelDisplayMode::TitleOnly
+            )
+        {
             return;
         }
         let theme = widget_theme(env);
@@ -757,15 +764,16 @@ fn styled_with_default_foreground(styled: StyledStr, color: Color) -> StyledStr 
     out
 }
 
+/// Applies the theme's button label font, which only a semantic label has
+/// anywhere to put: custom content is an arbitrary view and styles itself.
 fn styled_button_label(
     theme: &dyn waterui_backend_core::widget::WidgetTheme,
     style: ButtonStyle,
     label: Label,
 ) -> Label {
-    if let Some(font) = theme.button_label_font(style) {
-        label.font(font)
-    } else {
-        label
+    match theme.button_label_font(style) {
+        Some(font) if !label.has_custom_content() => label.font(font),
+        _ => label,
     }
 }
 

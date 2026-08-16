@@ -102,9 +102,6 @@ pub const fn button_size_tokens(size: waterui_controls::button::ButtonSize) -> B
 
 /// `ButtonDefaults.MinWidth`.
 pub const BUTTON_MIN_WIDTH: f64 = 58.0;
-/// `BaselineButtonTokens.ContainerShapeRound` is `CornerFull`, which on a 40dp
-/// container resolves to half the height.
-pub const BUTTON_CONTAINER_RADIUS: f64 = 20.0;
 /// `ButtonDefaults.ContentPadding` vertical.
 pub const BUTTON_TEXT_VERTICAL_PADDING: f64 = 8.0;
 pub const BUTTON_LINK_UNDERLINE_BOTTOM_INSET: f64 = 2.0;
@@ -142,12 +139,11 @@ pub const TOGGLE_CHECKBOX_SELECTED_SCALE_START: f64 = 0.6;
 pub const STEPPER_BUTTON_MIN_SIZE: f64 = 40.0;
 pub const STEPPER_BUTTON_MAX_SIZE: f64 = 40.0;
 pub const STEPPER_BUTTON_INTRINSIC_SIZE: f64 = 40.0;
-pub const STEPPER_BUTTON_SPACING: f64 = 4.0;
+pub const STEPPER_BUTTON_SPACING: f64 = 2.0;
 pub const STEPPER_LABEL_SPACING: f64 = 8.0;
 pub const STEPPER_ICON_SIZE: f64 = 24.0;
-pub const STEPPER_CONTAINER_RADIUS: f64 = 20.0;
-pub const STEPPER_PRESSED_CONTAINER_RADIUS: f64 = 8.0;
-pub const STEPPER_ICON_STROKE_WIDTH: f64 = 2.0;
+pub const STEPPER_INNER_CORNER_RADIUS: f64 = 8.0;
+pub const STEPPER_PRESSED_INNER_CORNER_RADIUS: f64 = 4.0;
 
 pub const INPUT_LABEL_HEIGHT: f64 = 18.0;
 pub const INPUT_FIELD_MIN_WIDTH: f64 = 72.0;
@@ -231,8 +227,10 @@ pub const DIVIDER_THICKNESS: f64 = 1.0;
 
 pub const NAVIGATION_BAR_AUTOMATIC_HEIGHT: f64 = 64.0;
 pub const NAVIGATION_BAR_INLINE_HEIGHT: f64 = 64.0;
+pub const NAVIGATION_BAR_MEDIUM_HEIGHT: f64 = 112.0;
 pub const NAVIGATION_BAR_LARGE_HEIGHT: f64 = 152.0;
 pub const NAVIGATION_TITLE_INLINE_HEIGHT: f64 = 28.0;
+pub const NAVIGATION_TITLE_MEDIUM_HEIGHT: f64 = 36.0;
 pub const NAVIGATION_TITLE_LARGE_HEIGHT: f64 = 36.0;
 pub const NAVIGATION_TITLE_LEADING_INSET: f64 = 16.0;
 pub const NAVIGATION_TITLE_TRAILING_INSET: f64 = 16.0;
