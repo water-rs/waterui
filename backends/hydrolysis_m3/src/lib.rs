@@ -722,8 +722,13 @@ impl WidgetTheme for MaterialTheme {
         progress::metrics(style)
     }
 
-    fn draw_progress_linear_track(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        progress::draw_linear_track(&self.colors(), draw, bounds);
+    fn draw_progress_linear_track(
+        &self,
+        draw: &mut dyn DrawContext,
+        bounds: Rect,
+        active_end: Option<f64>,
+    ) {
+        progress::draw_linear_track(&self.colors(), draw, bounds, active_end);
     }
 
     fn draw_progress_linear_fill(&self, draw: &mut dyn DrawContext, bounds: Rect) {
@@ -746,8 +751,9 @@ impl WidgetTheme for MaterialTheme {
         center: Point,
         radius: f64,
         width: f64,
+        active_turns: Option<f64>,
     ) {
-        progress::draw_circular_track(&self.colors(), draw, center, radius, width);
+        progress::draw_circular_track(&self.colors(), draw, center, radius, width, active_turns);
     }
 
     fn draw_progress_circular_fill(&self, draw: &mut dyn DrawContext, path: &BezPath, width: f64) {

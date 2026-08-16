@@ -1669,7 +1669,13 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn draw_progress_linear_track(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+    fn draw_progress_linear_track(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        _active_end: Option<f64>,
+    ) {
+    }
     fn draw_progress_linear_fill(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_progress_linear_indeterminate(
         &self,
@@ -1685,6 +1691,7 @@ impl WidgetTheme for MinimalTestTheme {
         _center: Point,
         _radius: f64,
         _width: f64,
+        _active_turns: Option<f64>,
     ) {
     }
     fn draw_progress_circular_fill(

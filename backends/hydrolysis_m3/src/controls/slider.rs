@@ -39,10 +39,7 @@ pub fn draw_track(
             colors.on_surface.peniko_disabled_content(),
         )
     } else {
-        (
-            colors.surface_container_highest.peniko(),
-            colors.primary.peniko(),
-        )
+        (colors.secondary_container.peniko(), colors.primary.peniko())
     };
     let radius = (SLIDER_TRACK_HEIGHT / 2.0).into();
 
@@ -317,7 +314,7 @@ mod tests {
         assert_eq!(draw.rounded_fills.len(), 2);
         assert!(matches!(
             &draw.rounded_fills[0].1,
-            Brush::Solid(color) if *color == colors.surface_container_highest.peniko()
+            Brush::Solid(color) if *color == colors.secondary_container.peniko()
         ));
         assert!(matches!(
             &draw.rounded_fills[1].1,

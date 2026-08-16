@@ -129,7 +129,8 @@ pub fn draw_swipe_dismiss_background(
     let center = Point::new(center_x, bounds.y0 + bounds.height() / 2.0);
     // The glyph grows from a reduced size to full as the swipe approaches its
     // threshold, so crossing it is legible before the finger lifts.
-    let scale = (1.0 - SWIPE_ICON_MIN_SCALE).mul_add(progress.clamp(0.0, 1.0), SWIPE_ICON_MIN_SCALE);
+    let scale =
+        (1.0 - SWIPE_ICON_MIN_SCALE).mul_add(progress.clamp(0.0, 1.0), SWIPE_ICON_MIN_SCALE);
     let grid = IconGrid::centered(center, SWIPE_ICON_SIZE * scale);
     draw.fill_path(
         &icon_paths::delete(grid),

@@ -1,8 +1,9 @@
 use crate::dimensions::{
-    PROGRESS_CIRCULAR_DIAMETER, PROGRESS_CIRCULAR_STROKE_WIDTH, PROGRESS_LINEAR_BAR_HEIGHT,
+    PROGRESS_CIRCULAR_DIAMETER, PROGRESS_CIRCULAR_STROKE_WIDTH,
+    PROGRESS_CIRCULAR_TRACK_ACTIVE_SPACE, PROGRESS_LINEAR_BAR_HEIGHT,
     PROGRESS_LINEAR_BAR_HORIZONTAL_INSET, PROGRESS_LINEAR_BAR_TOP_OFFSET,
-    PROGRESS_LINEAR_LABEL_HEIGHT, PROGRESS_LINEAR_MIN_TRACK_WIDTH,
-    PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING,
+    PROGRESS_LINEAR_LABEL_HEIGHT, PROGRESS_LINEAR_MIN_TRACK_WIDTH, PROGRESS_LINEAR_STOP_SIZE,
+    PROGRESS_LINEAR_TRACK_ACTIVE_SPACE, PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING,
 };
 use crate::theme::colors::MaterialColorScheme;
 use crate::{Brush, DrawContext, ProgressIndicatorStyle, ProgressMetrics, lerp_color};
@@ -12,7 +13,8 @@ use num_traits::ToPrimitive;
 use vello::kurbo::{BezPath, Point, Rect};
 use waterui::animation::Animation;
 
-const LINEAR_INDETERMINATE_CYCLE: Duration = Duration::from_secs(2);
+/// `LinearAnimationDuration` in Compose's `ProgressIndicator.kt`.
+const LINEAR_INDETERMINATE_CYCLE: Duration = Duration::from_millis(1_750);
 const CIRCULAR_ARC_DURATION: Duration = Duration::from_millis(1_333);
 const CIRCULAR_CYCLE_DURATION: Duration = Duration::from_millis(5_332);
 const CIRCULAR_LINEAR_ROTATE_DURATION_SECS: f64 = 1.333 * 360.0 / 306.0;
@@ -131,15 +133,44 @@ pub const fn metrics(style: ProgressIndicatorStyle) -> ProgressMetrics {
     }
 }
 
+/// Draws the linear track: fully rounded, stopping clear of the active
+/// indicator, with a stop indicator at the far end.
+///
+/// Expressive gives the track and indicator `CornerFull` ends and separates
+/// them by `TrackActiveSpace`, so the bar reads as two pieces rather than one
+/// square-ended strip filling from the left.
 pub fn draw_linear_track(
     colors: &MaterialColorScheme,
     draw: &mut dyn DrawContext,
     bounds: vello::kurbo::Rect,
+    active_end: Option<f64>,
 ) {
-    draw.fill_rect(
-        bounds,
-        &Brush::from(colors.surface_container_highest.peniko()),
-    );
+    let radius = (bounds.height() / 2.0).into();
+    let track_color = colors.surface_container_highest.peniko();
+    let start = active_end.map_or(bounds.x0, |end| {
+        (end + PROGRESS_LINEAR_TRACK_ACTIVE_SPACE).min(bounds.x1)
+    });
+    if start < bounds.x1 {
+        draw.fill_rounded_rect(
+            vello::kurbo::Rect::new(start, bounds.y0, bounds.x1, bounds.y1),
+            radius,
+            &Brush::from(track_color),
+        );
+    }
+    // The stop indicator only exists on a determinate bar.
+    if active_end.is_some() {
+        let center = vello::kurbo::Point::new(
+            bounds.x1 - PROGRESS_LINEAR_STOP_SIZE / 2.0,
+            bounds.y0 + bounds.height() / 2.0,
+        );
+        if center.x > start {
+            draw.fill_circle(
+                center,
+                PROGRESS_LINEAR_STOP_SIZE / 2.0,
+                &Brush::from(colors.primary.peniko()),
+            );
+        }
+    }
 }
 
 pub fn draw_linear_fill(
@@ -147,16 +178,64 @@ pub fn draw_linear_fill(
     draw: &mut dyn DrawContext,
     bounds: vello::kurbo::Rect,
 ) {
-    draw.fill_rect(bounds, &Brush::from(colors.primary.peniko()));
+    draw.fill_rounded_rect(
+        bounds,
+        (bounds.height() / 2.0).into(),
+        &Brush::from(colors.primary.peniko()),
+    );
 }
 
+/// Draws the circular track: the arc the active sweep has not covered, held
+/// clear of it by `TrackActiveSpace` at both ends.
+///
+/// The track was previously not drawn at all, so a determinate circular
+/// indicator showed only its active arc against the background. Compose always
+/// draws a track behind the indicator.
 pub fn draw_circular_track(
-    _colors: &MaterialColorScheme,
-    _draw: &mut dyn DrawContext,
-    _center: vello::kurbo::Point,
-    _radius: f64,
-    _width: f64,
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    center: vello::kurbo::Point,
+    radius: f64,
+    width: f64,
+    active_turns: Option<f64>,
 ) {
+    use core::f64::consts::{FRAC_PI_2, TAU};
+    use vello::kurbo::Shape as _;
+
+    let brush = Brush::from(colors.surface_container_highest.peniko());
+    let Some(active_turns) = active_turns else {
+        // Indeterminate: the sweep moves, so the whole ring stays behind it.
+        draw.stroke_path(
+            &vello::kurbo::Arc::new(center, (radius, radius), -FRAC_PI_2, TAU, 0.0).into_path(0.1),
+            &brush,
+            width,
+        );
+        return;
+    };
+
+    // Convert the gap from an arc length into an angle at this radius.
+    let gap = if radius > 0.0 {
+        PROGRESS_CIRCULAR_TRACK_ACTIVE_SPACE / radius
+    } else {
+        0.0
+    };
+    let active = TAU * active_turns.clamp(0.0, 1.0);
+    let sweep = TAU - active - gap * 2.0;
+    if sweep <= 0.0 {
+        return;
+    }
+    draw.stroke_path(
+        &vello::kurbo::Arc::new(
+            center,
+            (radius, radius),
+            -FRAC_PI_2 + active + gap,
+            sweep,
+            0.0,
+        )
+        .into_path(0.1),
+        &brush,
+        width,
+    );
 }
 
 pub fn draw_circular_fill(
@@ -363,15 +442,29 @@ fn circle_arc_path(center: Point, radius: f64, start_angle: f64, sweep: f64) -> 
 #[cfg(test)]
 mod tests {
     use super::{ProgressIndicatorStyle, metrics};
+    use crate::dimensions::{
+        PROGRESS_CIRCULAR_TRACK_ACTIVE_SPACE, PROGRESS_LINEAR_STOP_SIZE,
+        PROGRESS_LINEAR_TRACK_ACTIVE_SPACE,
+    };
 
+    /// Values from `androidx.compose.material3.tokens`
+    /// `LinearProgressIndicatorTokens` and `CircularProgressIndicatorTokens`.
     #[test]
-    fn progress_metrics_match_material_web_v0_192() {
+    fn progress_metrics_match_compose_progress_tokens() {
         let linear = metrics(ProgressIndicatorStyle::Linear);
+        // LinearProgressIndicatorTokens.Height / TrackThickness
         assert_eq!(linear.bar_height, 4.0);
         assert_eq!(linear.min_track_width, 80.0);
 
         let circular = metrics(ProgressIndicatorStyle::Circular);
-        assert_eq!(circular.circular_diameter, 48.0);
+        // CircularProgressIndicatorTokens.Size
+        assert_eq!(circular.circular_diameter, 40.0);
+        // CircularProgressIndicatorTokens.ActiveThickness / TrackThickness
         assert_eq!(circular.circular_stroke_width, 4.0);
+        // TrackActiveSpace on both indicators
+        assert_eq!(PROGRESS_CIRCULAR_TRACK_ACTIVE_SPACE, 4.0);
+        assert_eq!(PROGRESS_LINEAR_TRACK_ACTIVE_SPACE, 4.0);
+        // LinearProgressIndicatorTokens.StopSize
+        assert_eq!(PROGRESS_LINEAR_STOP_SIZE, 4.0);
     }
 }

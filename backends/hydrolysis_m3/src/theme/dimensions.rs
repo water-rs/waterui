@@ -105,8 +105,18 @@ pub const PROGRESS_LINEAR_BAR_HEIGHT: f64 = 4.0;
 pub const PROGRESS_LINEAR_BAR_HORIZONTAL_INSET: f64 = 8.0;
 pub const PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING: f64 = 6.0;
 pub const PROGRESS_LINEAR_MIN_TRACK_WIDTH: f64 = 80.0;
-pub const PROGRESS_CIRCULAR_DIAMETER: f64 = 48.0;
+/// `CircularProgressIndicatorTokens.Size`.
+pub const PROGRESS_CIRCULAR_DIAMETER: f64 = 40.0;
+/// `CircularProgressIndicatorTokens.ActiveThickness` / `TrackThickness`.
 pub const PROGRESS_CIRCULAR_STROKE_WIDTH: f64 = 4.0;
+/// `CircularProgressIndicatorTokens.TrackActiveSpace`: the gap Expressive
+/// leaves between the active arc and the track it runs over.
+pub const PROGRESS_CIRCULAR_TRACK_ACTIVE_SPACE: f64 = 4.0;
+/// `LinearProgressIndicatorTokens.TrackActiveSpace`: the same gap on the
+/// linear bar, which is what makes the indicator read as riding in the track.
+pub const PROGRESS_LINEAR_TRACK_ACTIVE_SPACE: f64 = 4.0;
+/// `LinearProgressIndicatorTokens.StopSize`: the dot marking the bar's end.
+pub const PROGRESS_LINEAR_STOP_SIZE: f64 = 4.0;
 
 pub const DIVIDER_THICKNESS: f64 = 1.0;
 
