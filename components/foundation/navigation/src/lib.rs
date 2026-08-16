@@ -39,11 +39,11 @@ pub use path::{
 };
 pub use router::NavigationRouter;
 pub use search::NavigationSearch;
-pub use tab::{Tab, Tabs, tab_style};
 pub use split::{
     ColumnWidth, NativeNavigationSplitStyle, NavigationSplitColumnVisibility,
     NavigationSplitLayout, NavigationSplitStyle, NavigationSplitView, split_style,
 };
+pub use tab::{Tab, Tabs, tab_style};
 pub use transition::{
     AnyNavigationTransition, NativeNavigationTransition, NavigationTransition,
     NavigationTransitionDestination, NavigationTransitionDirection, NavigationTransitionFrame,
@@ -664,8 +664,13 @@ pub enum NavigationTitleDisplayMode {
     Automatic = 0,
     /// Always use inline (small) title in the navigation bar.
     Inline = 1,
+    /// Always use a medium title, between inline and large.
+    ///
+    /// Material's flexible app bars come in two heights above the small one;
+    /// this is the shorter, where [`Large`](Self::Large) is the taller.
+    Medium = 2,
     /// Always use large title that collapses on scroll.
-    Large = 2,
+    Large = 3,
 }
 
 /// Semantic placement for one native navigation toolbar item.

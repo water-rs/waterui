@@ -84,6 +84,7 @@ fn navigation_base_bar_height_for_display_mode_metrics(
     match display_mode {
         waterui::navigation::NavigationTitleDisplayMode::Automatic => metrics.automatic_bar_height,
         waterui::navigation::NavigationTitleDisplayMode::Inline => metrics.inline_bar_height,
+        waterui::navigation::NavigationTitleDisplayMode::Medium => metrics.medium_bar_height,
         waterui::navigation::NavigationTitleDisplayMode::Large => metrics.large_bar_height,
     }
 }
