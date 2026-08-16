@@ -10,7 +10,7 @@ use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_graphics::color::ResolvedColor;
-use waterui_navigation::tab::{NativeTabStyle, Tab, Tabs};
+use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
 use waterui_navigation::{
     Bar, ColumnWidth, CustomNavigationController, NativeNavigationSplitStyle,
     NativeNavigationTransition, NavigationController, NavigationDestinationState, NavigationSearch,
@@ -712,7 +712,7 @@ impl IntoFFI for Tab<Id> {
     }
 }
 
-impl IntoFFI for Tabs {
+impl IntoFFI for TabsLayout {
     type FFI = WuiTabs;
     fn into_ffi(self) -> Self::FFI {
         WuiTabs {
@@ -724,7 +724,7 @@ impl IntoFFI for Tabs {
 }
 
 // FFI view binding for Tabs
-ffi_view!(Tabs, WuiTabs, tabs);
+ffi_view!(TabsLayout, WuiTabs, tabs);
 
 // =============================================================================
 // Navigation Controller FFI

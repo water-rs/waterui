@@ -69,17 +69,17 @@ fn colored_icons_demo() -> impl View {
         text("Colored Icons").size(18.0),
         hstack((
             mdi::heart()
-                .size(32.0, 32.0)
-                .tint(Color::srgb_hex("#EF4444")),
+                .tint(Color::srgb_hex("#EF4444"))
+                .size(32.0, 32.0),
             lucide::star()
-                .size(32.0, 32.0)
-                .tint(Color::srgb_hex("#F59E0B")),
+                .tint(Color::srgb_hex("#F59E0B"))
+                .size(32.0, 32.0),
             mdi::check_circle()
-                .size(32.0, 32.0)
-                .tint(Color::srgb_hex("#10B981")),
+                .tint(Color::srgb_hex("#10B981"))
+                .size(32.0, 32.0),
             mdi::information()
-                .size(32.0, 32.0)
-                .tint(Color::srgb_hex("#3B82F6")),
+                .tint(Color::srgb_hex("#3B82F6"))
+                .size(32.0, 32.0),
         ))
         .spacing(16.0),
     ))

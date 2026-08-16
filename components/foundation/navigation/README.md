@@ -214,15 +214,25 @@ Apple and Android execute supported transitions through native transition system
 
 ## Tabs
 
-Tabs have stable identifiers and retain each tab root. Badge and enabled state are reactive.
+Tabs are keyed by the application's own tab type and retain each tab root. Badge and enabled state are reactive.
 
 ```rust
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Section {
+    Home,
+    Settings,
+}
+
+let selection = binding(Section::Home);
+
 let tabs = Tabs::new(
-    selection,
+    &selection,
     vec![
-        Tab::new(home_id, "Home", || NavigationView::new("Home", home()))
-            .badge(unread_count),
-        Tab::new(settings_id, "Settings", || {
+        Tab::new(Section::Home, "Home", || {
+            NavigationView::new("Home", home())
+        })
+        .badge(unread_count),
+        Tab::new(Section::Settings, "Settings", || {
             NavigationView::new("Settings", settings())
         })
         .enabled(settings_enabled),
@@ -232,6 +242,8 @@ let tabs = Tabs::new(
 ```
 
 `automatic` selects native tab-bar, sidebar, or navigation-rail presentation from platform and window size. `tab_bar` and `sidebar` request explicit native styles.
+
+`Tabs` erases its identifiers into `TabsLayout`, the `Id`-keyed container the C ABI carries; backends consume `TabsLayout`, application code never names an `Id`.
 
 ## Split navigation
 

@@ -5,13 +5,13 @@ use gtk4::prelude::*;
 use nami::{Signal, SignalExt};
 use waterui_core::id::Id;
 use waterui_core::{Environment, Native};
-use waterui_navigation::tab::{NativeTabStyle, Tabs};
+use waterui_navigation::tab::{NativeTabStyle, TabsLayout};
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
 use crate::util::store_watcher_guard;
 
-impl GtkComponent for Native<Tabs> {
+impl GtkComponent for Native<TabsLayout> {
     /// Renders `WaterUI` `Tabs` as a GTK4 `Notebook`.
     #[allow(
         clippy::cast_possible_truncation,

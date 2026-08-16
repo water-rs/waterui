@@ -62,25 +62,24 @@ impl ButtonRenderState {
     /// instead would throw that view away. Content kind decides here, not
     /// display mode.
     pub(crate) fn prebuild_label(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
-        if !self.config.label.has_custom_content()
-            && matches!(
-                self.config.label.display_mode_preference(),
-                LabelDisplayMode::TitleOnly
-            )
-        {
+        if renders_as_plain_title(&self.config.label) {
             return;
         }
         let theme = widget_theme(env);
         let style = self.config.style;
         let interaction_style = env.get::<InteractionStyle>();
         let floating_style = env.get::<FloatingScope>().map(|scope| &scope.0);
-        let color = disabled_aware_label_color(
-            theme,
-            style,
-            &widget_disabled(env),
-            interaction_style,
-            floating_style,
-        );
+        let color = if env.get::<ListRowChrome>().is_some() {
+            Some(Color::new(waterui::theme::color::Foreground))
+        } else {
+            disabled_aware_label_color(
+                theme,
+                style,
+                &widget_disabled(env),
+                interaction_style,
+                floating_style,
+            )
+        };
         let styled = styled_button_label(theme, style, self.config.label.clone());
         let mut subview = RetainedSubview::new(button_label_view(color, AnyView::new(styled)));
         subview.ensure_built(renderer, env);
@@ -251,7 +250,7 @@ impl MenuRenderState {
             accessibility_label,
         } = menu;
         let label = match label.downcast::<Label>() {
-            Ok(label) if matches!(label.display_mode_preference(), LabelDisplayMode::TitleOnly) => {
+            Ok(label) if renders_as_plain_title(&label) => {
                 MenuLabel::Title(*label)
             }
             Ok(label) => MenuLabel::View(RetainedSubview::new(AnyView::new(*label))),
@@ -433,13 +432,18 @@ pub(crate) fn render_button_parts(
             // Title label: centered styled text rendered fresh each frame,
             // picking the enabled or disabled label color for this frame.
             let mut styled = styled_button_title(theme, style, &state_mut.config.label, env);
-            if let Some(color) = button_label_color(
-                theme,
-                style,
-                disabled,
-                interaction_style.as_ref(),
-                floating_style.as_ref(),
-            ) {
+            let title_color = if env.get::<ListRowChrome>().is_some() {
+                Some(Color::new(waterui::theme::color::Foreground))
+            } else {
+                button_label_color(
+                    theme,
+                    style,
+                    disabled,
+                    interaction_style.as_ref(),
+                    floating_style.as_ref(),
+                )
+            };
+            if let Some(color) = title_color {
                 styled = styled_with_default_foreground(styled, color);
             }
             ctx.render_styled_text_single_line_centered(styled, env, label_target);
@@ -589,7 +593,7 @@ pub(crate) fn measure_menu_intrinsic(
     let theme = widget_theme(env);
     let metrics = theme.button_metrics(MENU_TRIGGER_STYLE, ButtonSize::default());
     let label_size = if let Some(label) = menu.label.downcast_ref::<Label>()
-        && matches!(label.display_mode_preference(), LabelDisplayMode::TitleOnly)
+        && renders_as_plain_title(label)
     {
         let styled = styled_button_title(theme, MENU_TRIGGER_STYLE, label, env);
         HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
@@ -609,6 +613,15 @@ fn button_label_view(color: Option<Color>, label: AnyView) -> AnyView {
 /// The theme label color for a general (retained) button label, switching
 /// reactively between the enabled and disabled label colors so the retained
 /// sub-view recolors without being rebuilt.
+/// Marks the subtree of a list row.
+///
+/// A row's content is body text that happens to be tappable, so it keeps the
+/// ordinary foreground colour. Themes paint a container-less button in their
+/// accent colour, which is right for a text button on a screen and wrong for
+/// every row of a list.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ListRowChrome;
+
 fn disabled_aware_label_color(
     theme: &dyn waterui_backend_core::widget::WidgetTheme,
     style: ButtonStyle,
@@ -719,13 +732,27 @@ fn measure_button_label_intrinsic(
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
-    if matches!(label.display_mode_preference(), LabelDisplayMode::TitleOnly) {
+    if renders_as_plain_title(label) {
         let styled = styled_button_title(theme, style, label, env);
         HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
     } else {
         let label = styled_button_label(theme, style, label.clone());
         measure_label_intrinsic(&label, state, env)
     }
+}
+
+/// Whether a label is nothing but its own title, and can therefore take the
+/// cheap path that draws styled text instead of retaining a sub-view.
+///
+/// A label built from caller-supplied views also reports `TitleOnly` once
+/// resolved — it has no icon — so the display mode alone is not the question;
+/// answering it with the mode alone drew the spoken text in place of the
+/// content.
+fn renders_as_plain_title(label: &Label) -> bool {
+    matches!(
+        label.display_mode_preference(),
+        LabelDisplayMode::TitleOnly
+    ) && !label.has_custom_content()
 }
 
 fn styled_button_title(
@@ -764,16 +791,21 @@ fn styled_with_default_foreground(styled: StyledStr, color: Color) -> StyledStr 
     out
 }
 
-/// Applies the theme's button label font, which only a semantic label has
-/// anywhere to put: custom content is an arbitrary view and styles itself.
+/// Applies the theme's button label font to a label that owns its text. A
+/// label built from caller-supplied views carries its own typography, and
+/// `Label::font` rejects it outright.
 fn styled_button_label(
     theme: &dyn waterui_backend_core::widget::WidgetTheme,
     style: ButtonStyle,
     label: Label,
 ) -> Label {
-    match theme.button_label_font(style) {
-        Some(font) if !label.has_custom_content() => label.font(font),
-        _ => label,
+    if label.has_custom_content() {
+        return label;
+    }
+    if let Some(font) = theme.button_label_font(style) {
+        label.font(font)
+    } else {
+        label
     }
 }
 

@@ -200,10 +200,12 @@ where
 impl List<BuiltViews> {
     /// Creates a list from a static [`ListContent`] tree.
     ///
-    /// `ListContent` accepts [`ListItem`], [`Row`] (the [`row`] / [`detail_row`]
-    /// helpers produce one), [`Section<C>`], tuples, arrays, vectors, and
-    /// `Option<T>`, so heterogeneous content composes structurally just like
-    /// `SwiftUI`'s `Section { row; row }` form. For dynamic identity-keyed data,
+    /// `ListContent` accepts `|| ListItem::new(…)` row builders, [`Row`] (the
+    /// [`row`] / [`detail_row`] helpers produce one), [`Section<C>`], tuples,
+    /// arrays, vectors, and `Option<T>`, so heterogeneous content composes
+    /// structurally just like `SwiftUI`'s `Section { row; row }` form. A row is
+    /// a builder rather than a finished [`ListItem`] because the list rebuilds
+    /// it whenever the row is realized again. For dynamic identity-keyed data,
     /// use [`List::for_each`] instead; for any pre-built [`Views`]
     /// implementation, use [`List::new`].
     #[must_use]

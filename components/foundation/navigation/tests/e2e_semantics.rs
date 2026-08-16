@@ -1,12 +1,10 @@
 //! End-to-end semantic tests for navigation components.
 
-use core::convert::TryFrom;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
 use waterui::ViewExt as _;
-use waterui::id::Id;
 use waterui::layout::stack::vstack;
 use waterui::text::Text;
 use waterui::{Binding, View};
@@ -22,24 +20,22 @@ enum TestRoute {
     Second,
 }
 
-fn home_tab_id() -> Id {
-    Id::try_from(1).expect("test tab id must be non-zero")
-}
-
-fn settings_tab_id() -> Id {
-    Id::try_from(2).expect("test tab id must be non-zero")
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum TestTab {
+    Home,
+    Settings,
 }
 
 fn tabs_view() -> impl View {
-    let selection = Binding::container(home_tab_id());
+    let selection = Binding::container(TestTab::Home);
 
     Tabs::new(
-        selection,
+        &selection,
         vec![
-            Tab::new(home_tab_id(), "Home Tab", || {
+            Tab::new(TestTab::Home, "Home Tab", || {
                 NavigationView::new("Home", Text::new("home content"))
             }),
-            Tab::new(settings_tab_id(), "Settings Tab", || {
+            Tab::new(TestTab::Settings, "Settings Tab", || {
                 NavigationView::new("Settings", Text::new("settings content"))
             }),
         ],
@@ -174,6 +170,69 @@ fn split_view() -> impl View {
         |value| NavigationView::new("Detail", Text::new(format!("detail:{value}"))),
     )
     .placeholder(|| Text::new("placeholder content"))
+}
+
+/// Each tab owns a navigation stack, the composition an app uses for
+/// tab-scoped push navigation: pushing inside one tab must leave the other
+/// tab's stack where the user left it.
+fn tabs_with_stacks_view() -> impl View {
+    let selection = Binding::container(TestTab::Home);
+
+    Tabs::new(
+        &selection,
+        vec![
+            Tab::new(TestTab::Home, "Home Tab", || {
+                NavigationView::new(
+                    "Home",
+                    NavigationStack::new(NavigationView::new(
+                        "Home Root",
+                        NavigationLink::new("Open Home Detail", || {
+                            NavigationView::new("Home Detail", Text::new("home detail content"))
+                        }),
+                    )),
+                )
+                .navigation_bar_visibility(false)
+            }),
+            Tab::new(TestTab::Settings, "Settings Tab", || {
+                NavigationView::new(
+                    "Settings",
+                    NavigationStack::new(NavigationView::new(
+                        "Settings Root",
+                        Text::new("settings root content"),
+                    )),
+                )
+                .navigation_bar_visibility(false)
+            }),
+        ],
+    )
+}
+
+#[waterui::test(tabs_with_stacks_view, theme = hydrolysis_m3::install)]
+fn tab_scoped_stack_pushes_without_disturbing_other_tabs(app: &mut SemanticApp) {
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open Home Detail")
+        .tap();
+    app.query()
+        .role(Role::LABEL)
+        .label("home detail content")
+        .assert_exists();
+
+    app.query().role(Role::TAB).label("Settings Tab").tap();
+    app.query()
+        .role(Role::LABEL)
+        .label("settings root content")
+        .assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("home detail content")
+        .assert_not_exists();
+
+    app.query().role(Role::TAB).label("Home Tab").tap();
+    app.query()
+        .role(Role::LABEL)
+        .label("home detail content")
+        .assert_exists();
 }
 
 #[waterui::test(tabs_view, theme = hydrolysis_m3::install)]
