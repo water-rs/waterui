@@ -1,12 +1,23 @@
-pub const BUTTON_MIN_WIDTH: f64 = 48.0;
+/// `ButtonDefaults.MinWidth`.
+pub const BUTTON_MIN_WIDTH: f64 = 58.0;
+/// `ButtonSmallTokens.ContainerHeight`, which is also `ButtonDefaults
+/// .MinHeight` on a touch pointer. Compose drops to 36dp only when the
+/// platform reports a precision pointer; `WaterUI` has no such signal at theme
+/// level, so the touch-safe height is the default.
 pub const BUTTON_MIN_HEIGHT: f64 = 40.0;
+/// `BaselineButtonTokens.ContainerShapeRound` is `CornerFull`, which on a 40dp
+/// container resolves to half the height.
 pub const BUTTON_CONTAINER_RADIUS: f64 = 20.0;
+/// `BaselineButtonTokens.LeadingSpace` / `TrailingSpace`.
 pub const BUTTON_TEXT_HORIZONTAL_PADDING: f64 = 24.0;
-pub const BUTTON_TEXT_VERTICAL_PADDING: f64 = 10.0;
+/// `ButtonDefaults.ContentPadding` vertical.
+pub const BUTTON_TEXT_VERTICAL_PADDING: f64 = 8.0;
 pub const BUTTON_LINK_UNDERLINE_BOTTOM_INSET: f64 = 2.0;
 pub const BUTTON_LINK_UNDERLINE_THICKNESS: f64 = 1.0;
+/// `ButtonDefaults.TextButtonContentPadding` horizontal.
 pub const BUTTON_LINK_HORIZONTAL_PADDING: f64 = 12.0;
-pub const BUTTON_LINK_VERTICAL_PADDING: f64 = 10.0;
+/// `ButtonDefaults.TextButtonContentPadding` vertical.
+pub const BUTTON_LINK_VERTICAL_PADDING: f64 = 8.0;
 
 pub const TOGGLE_SWITCH_WIDTH: f64 = 52.0;
 pub const TOGGLE_SWITCH_HEIGHT: f64 = 32.0;
