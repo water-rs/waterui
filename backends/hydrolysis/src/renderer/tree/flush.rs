@@ -50,8 +50,8 @@ impl RenderNode {
                 #[cfg(feature = "accessibility")]
                 renderer.push_accessibility_owner(&container.accessibility_identity);
                 #[cfg(feature = "accessibility")]
-                let group_scope = container.accessibility_child_env.as_ref().map(|_| {
-                    renderer.begin_accessibility_group(
+                let container_scope = container.accessibility_child_env.as_ref().map(|_| {
+                    renderer.begin_accessibility_container(
                         transformed_rect(ctx.hit_transform, ctx.bounds),
                         env,
                     )
@@ -75,9 +75,9 @@ impl RenderNode {
                     child.flush(renderer, child_ctx, child_env);
                 }
                 #[cfg(feature = "accessibility")]
-                if let Some(group_scope) = group_scope {
+                if let Some(container_scope) = container_scope {
                     renderer.push_accessibility_owner(&container.accessibility_identity);
-                    renderer.end_accessibility_group(group_scope);
+                    renderer.end_accessibility_container(container_scope);
                     renderer.pop_accessibility_owner();
                 }
             }
