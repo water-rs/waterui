@@ -5,6 +5,7 @@ use crate::dimensions::{
     PROGRESS_LINEAR_LABEL_HEIGHT, PROGRESS_LINEAR_MIN_TRACK_WIDTH, PROGRESS_LINEAR_STOP_SIZE,
     PROGRESS_LINEAR_TRACK_ACTIVE_SPACE, PROGRESS_LINEAR_VALUE_LABEL_TOP_SPACING,
 };
+use crate::material_shapes::{material_shape_sequence, morph, radii_to_path};
 use crate::theme::colors::MaterialColorScheme;
 use crate::{Brush, DrawContext, ProgressIndicatorStyle, ProgressMetrics, lerp_color};
 use core::f64::consts::FRAC_PI_2;
@@ -140,6 +141,7 @@ pub const fn metrics(style: ProgressIndicatorStyle) -> ProgressMetrics {
         ProgressIndicatorStyle::Circular => {
             ProgressMetrics::circular(PROGRESS_CIRCULAR_DIAMETER, PROGRESS_CIRCULAR_STROKE_WIDTH)
         }
+        ProgressIndicatorStyle::Loading => loading_metrics(),
     }
 }
 
@@ -478,6 +480,110 @@ fn circle_arc_path(center: Point, radius: f64, start_angle: f64, sweep: f64) -> 
         ));
     }
     path
+}
+
+// ---------------------------------------------------------------------------
+// Loading indicator
+// ---------------------------------------------------------------------------
+
+/// `LoadingIndicatorTokens.ContainerWidth` / `ContainerHeight`.
+pub const LOADING_CONTAINER_SIZE: f64 = 48.0;
+/// `LoadingIndicatorTokens.ActiveSize`: the shape inside that container.
+pub const LOADING_INDICATOR_SIZE: f64 = 38.0;
+/// `MorphIntervalMillis`: how long the indicator rests on each shape.
+const LOADING_MORPH_INTERVAL_MS: u64 = 650;
+const LOADING_MORPH_INTERVAL: Duration = Duration::from_millis(LOADING_MORPH_INTERVAL_MS);
+/// `GlobalRotationDurationMillis`: one full turn, linear.
+const LOADING_GLOBAL_ROTATION_MS: u64 = 4_666;
+const LOADING_GLOBAL_ROTATION: Duration = Duration::from_millis(LOADING_GLOBAL_ROTATION_MS);
+/// `QuarterRotation`: each morph also kicks the shape a quarter turn on.
+const LOADING_QUARTER_ROTATION: f64 = core::f64::consts::FRAC_PI_2;
+
+/// Returns the metrics for a loading indicator.
+pub const fn loading_metrics() -> ProgressMetrics {
+    ProgressMetrics::loading(LOADING_CONTAINER_SIZE, LOADING_INDICATOR_SIZE)
+}
+
+/// The period over which the morph and the rotation come back into phase.
+///
+/// The shape cycle is seven morph intervals and the rotation is its own
+/// duration; neither divides the other, so a single repeating clock has to run
+/// for their least common multiple. Sampling one clock — rather than two —
+/// keeps both beats derived from the same instant, so they can never drift
+/// apart across a dropped frame.
+pub fn loading_cycle() -> Duration {
+    let shapes =
+        u64::try_from(material_shape_sequence().len()).expect("the shape sequence is seven long");
+    let morph = LOADING_MORPH_INTERVAL_MS * shapes;
+    Duration::from_millis(
+        morph / gcd(morph, LOADING_GLOBAL_ROTATION_MS) * LOADING_GLOBAL_ROTATION_MS,
+    )
+}
+
+/// Greatest common divisor, for putting the two beats on one clock.
+const fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let remainder = a % b;
+        a = b;
+        b = remainder;
+    }
+    a
+}
+
+/// The indicator's outline at `elapsed` into its cycle, in its own unit space.
+///
+/// Compose springs between consecutive shapes; the spring is critically damped
+/// enough at these intervals that the visible motion is the settle, so this
+/// eases the morph with the standard emphasized curve over the interval.
+fn loading_outline(elapsed: Duration) -> Vec<f64> {
+    let shapes = material_shape_sequence();
+    // Which shape is counted in whole milliseconds, so a long-running indicator
+    // cannot drift onto the wrong one through accumulated float error; only the
+    // fraction within an interval needs to be continuous.
+    let millis =
+        u64::try_from(elapsed.as_millis()).expect("the loading phase is bounded by its own cycle");
+    let steps = millis / LOADING_MORPH_INTERVAL_MS;
+    let index = usize::try_from(steps).unwrap_or(0) % shapes.len();
+    let next = (index + 1) % shapes.len();
+    let interval = LOADING_MORPH_INTERVAL.as_secs_f64();
+    let progress =
+        Duration::from_millis(millis % LOADING_MORPH_INTERVAL_MS).as_secs_f64() / interval;
+    morph(&shapes[index], &shapes[next], ease_in_out(progress))
+}
+
+/// A smoothstep, standing in for the settle of Compose's morph spring.
+fn ease_in_out(progress: f64) -> f64 {
+    let progress = progress.clamp(0.0, 1.0);
+    progress * progress * 3.0f64.mul_add(-2.0 * progress / 3.0, 3.0) / 3.0
+}
+
+/// How far the indicator has turned at `elapsed`: a steady rotation, plus the
+/// quarter turn each completed morph adds.
+fn loading_rotation(elapsed: Duration) -> f64 {
+    let turns = elapsed.as_secs_f64() / LOADING_GLOBAL_ROTATION.as_secs_f64();
+    let morphs = (elapsed.as_secs_f64() / LOADING_MORPH_INTERVAL.as_secs_f64()).floor();
+    core::f64::consts::TAU.mul_add(turns, LOADING_QUARTER_ROTATION * morphs)
+}
+
+pub fn draw_loading(
+    colors: &MaterialColorScheme,
+    draw: &mut dyn DrawContext,
+    bounds: Rect,
+    elapsed: Duration,
+    four_color: bool,
+) {
+    let radii = loading_outline(elapsed);
+    let centre = bounds.center();
+    // `ActiveIndicatorScale`: the shape is drawn at ActiveSize inside a
+    // ContainerSize box, so it never touches the container's edge.
+    let scale = LOADING_INDICATOR_SIZE.min(bounds.width().min(bounds.height())) / 2.0;
+    let mut path = radii_to_path(&radii, Point::ORIGIN, scale);
+    path.apply_affine(
+        vello::kurbo::Affine::translate((centre.x, centre.y))
+            * vello::kurbo::Affine::rotate(loading_rotation(elapsed)),
+    );
+    let color = progress_color(colors, elapsed, four_color, LOADING_GLOBAL_ROTATION);
+    draw.fill_path(&path, &Brush::from(color));
 }
 
 #[cfg(test)]

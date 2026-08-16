@@ -6,6 +6,7 @@ into_ffi! {ProgressStyle, non_exhaustive,
     pub enum WuiProgressStyle {
         Linear,
         Circular,
+        Loading,
     }
 }
 
