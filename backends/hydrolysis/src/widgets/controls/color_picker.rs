@@ -23,6 +23,7 @@ use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
     measure_label_intrinsic, resolved_color_to_peniko, transformed_rect,
 };
+#[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
 use crate::widgets::util::{inset_rect, widget_theme};
 
