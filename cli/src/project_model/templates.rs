@@ -357,6 +357,15 @@ impl TemplateContext {
         let android_backend_path = waterui_path
             .as_ref()
             .map(|waterui_path| waterui_path.join("backends/android"));
+        // A support app exists to host one specific WaterUI runtime, so it has
+        // to resolve dependencies exactly the way that runtime's own workspace
+        // does — `[patch]` included. Cargo only honours `[patch]` from the root
+        // of the workspace being built, and a support app scaffolded outside
+        // that tree has no such root: it silently resolves the unpatched
+        // crates.io version of every forked dependency. The app then links a
+        // different graphics stack than the module it loads, and the module
+        // fails to `dlopen` against symbols that no longer match.
+        let project_root_path = waterui_path.clone();
         Self {
             app_display_name: app_display_name.into(),
             app_name: app_name.into(),
@@ -368,7 +377,7 @@ impl TemplateContext {
             waterui_path,
             browser: BrowserTemplateContext::new(WebViewBackend::Default),
             backend_project_path: None,
-            project_root_path: None,
+            project_root_path,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
             accessory,
@@ -1508,6 +1517,12 @@ mod tests {
 
         assert!(cargo_toml.contains(&format!("path = \"{expected_ffi_path}\"")));
         assert!(cargo_toml.contains("dev = [\"waterui_test/dev\"]"));
+        // This crate roots the workspace preview modules join, so the module and the
+        // runtime it is loaded into share one Cargo resolution.
+        assert!(
+            cargo_toml.contains(&format!("\"{}/*\"", crate::templates::PREVIEW_MODULES_DIR)),
+            "generated FFI crate must root the preview module workspace"
+        );
         let manifest = cargo_toml
             .parse::<toml::Table>()
             .expect("ffi Cargo.toml should parse");
@@ -1608,6 +1623,22 @@ mod tests {
         assert_eq!(
             manifest["dependencies"]["waterui-ffi"]["default-features"].as_bool(),
             Some(false)
+        );
+        // The module is a member of the support runtime's workspace, never a
+        // workspace of its own: one Cargo resolution is what makes the module and
+        // the runtime it is loaded into agree on the `-C metadata` hash that ends
+        // up in every symbol. Profiles and `[patch]` belong to that root.
+        assert!(
+            !manifest.contains_key("workspace"),
+            "preview module must not root its own workspace"
+        );
+        assert!(
+            !manifest.contains_key("patch"),
+            "preview module must inherit `[patch]` from the workspace root"
+        );
+        assert!(
+            !manifest.contains_key("profile"),
+            "preview module must inherit profiles from the workspace root"
         );
         assert_eq!(
             manifest["dependencies"]["waterui-preview"]["optional"].as_bool(),
@@ -1899,6 +1930,16 @@ struct SupportCargoManifest {
     features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
     workspace: SupportWorkspaceSection,
+    /// `[patch]` inherited from the runtime's own workspace.
+    ///
+    /// Declaring `[workspace]` makes this crate its own workspace root, and
+    /// Cargo only honours `[patch]` from the root of the workspace being built.
+    /// A support app that skipped these resolved the unpatched crates.io
+    /// version of every forked dependency, so it linked a different runtime
+    /// than the module it loads — and the module failed to `dlopen` against
+    /// symbols whose crate hashes no longer matched.
+    #[serde(skip_serializing_if = "cargo_toml::PatchSet::is_empty")]
+    patch: cargo_toml::PatchSet,
 }
 
 #[derive(serde::Serialize)]
@@ -1988,7 +2029,15 @@ async fn write_support_cargo_toml(
     crate_name: &str,
     features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
+    runtime_root: Option<&Path>,
 ) -> io::Result<()> {
+    let patch = match runtime_root {
+        Some(root) => {
+            let root = root.to_path_buf();
+            smol::unblock(move || collect_workspace_patches(&root)).await?
+        }
+        None => cargo_toml::PatchSet::default(),
+    };
     let manifest = SupportCargoManifest {
         package: SupportPackageSection {
             name: crate_name.to_string(),
@@ -2006,6 +2055,7 @@ async fn write_support_cargo_toml(
         features,
         dependencies,
         workspace: SupportWorkspaceSection {},
+        patch,
     };
 
     let toml_string = toml::to_string_pretty(&manifest)
@@ -3015,7 +3065,19 @@ pub mod ffi {
             .dependencies
             .insert("waterui-ffi".to_string(), ffi_dependency);
 
-        manifest.workspace = Some(Workspace::default());
+        // This crate roots the workspace that also holds preview modules. A preview
+        // module is loaded into the support application and resolves its `WaterUI`
+        // symbols against the runtime that application already has open, so the two
+        // must come out of one Cargo resolution: Cargo derives `-C metadata` — which
+        // it mangles into every symbol — per workspace, and two workspaces produce
+        // runtimes whose symbols cannot resolve against each other even when their
+        // dependency graphs are byte-for-byte identical. The glob keeps the root
+        // independent of which project is being previewed, and matches nothing for
+        // an ordinary application.
+        manifest.workspace = Some(Workspace {
+            members: vec![format!("{}/*", super::PREVIEW_MODULES_DIR)],
+            ..Workspace::default()
+        });
 
         if let Some(project_root) = &ctx.project_root_path {
             super::propagate_workspace_patches(&mut manifest, project_root).await?;
@@ -3028,6 +3090,12 @@ pub mod ffi {
         Ok(())
     }
 }
+
+/// Directory, relative to the generated FFI crate, that holds preview modules.
+///
+/// The FFI crate roots the workspace these modules join; see the workspace
+/// declaration in `ffi::generate_cargo_toml` for why they must share one.
+pub const PREVIEW_MODULES_DIR: &str = "modules";
 
 /// Root-level templates (Cargo.toml, lib.rs, .gitignore).
 pub mod root {
@@ -3325,19 +3393,26 @@ pub mod preview {
                 .map(|feature| format!("waterui/{feature}"))
                 .collect(),
         )]);
-        write_support_cargo_toml(base_dir, ctx.crate_name.as_str(), features, dependencies).await
+        write_support_cargo_toml(
+            base_dir,
+            ctx.crate_name.as_str(),
+            features,
+            dependencies,
+            ctx.waterui_path.as_deref(),
+        )
+        .await
     }
 }
 
 /// Preview-only wrapper templates.
 pub mod preview_ffi {
-    use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product, Workspace};
+    use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product};
 
     use super::{
         NativeBackendDependencyPathKind, PREVIEW_VERSION, Path, TemplateContext, TemplateNamespace,
         WATERUI_FFI_VERSION, cargo_semver, cargo_version_req,
-        compute_native_backend_dependency_path, embedded, fs, generated_dev_profile, io,
-        scaffold_dir, write_file_if_changed,
+        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
+        write_file_if_changed,
     };
 
     /// Preview ABI exported to Apple support applications.
@@ -3346,6 +3421,12 @@ pub mod preview_ffi {
     pub const ANDROID_ABI_FEATURE: &str = "android-preview-abi";
 
     /// Write preview-only wrapper templates to the given directory.
+    ///
+    /// The crate is always a member of the support runtime's workspace rather
+    /// than a workspace of its own, so the module and the runtime it is loaded
+    /// into come out of a single Cargo resolution and agree on `-C metadata`.
+    /// Profiles, `[patch]` entries and the lockfile therefore belong to that
+    /// root and are deliberately absent here.
     ///
     /// # Errors
     ///
@@ -3374,7 +3455,6 @@ pub mod preview_ffi {
         let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
         package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
         manifest.package = Some(package);
-        manifest.profile = generated_dev_profile();
 
         manifest.lib = Some(Product {
             crate_type: vec!["dylib".to_string()],
@@ -3457,12 +3537,6 @@ pub mod preview_ffi {
                     "dep:waterui-preview".to_string(),
                 ],
             );
-        }
-
-        manifest.workspace = Some(Workspace::default());
-
-        if let Some(project_root) = &ctx.project_root_path {
-            super::propagate_workspace_patches(&mut manifest, project_root).await?;
         }
 
         let toml_string = toml::to_string_pretty(&manifest)
@@ -3566,7 +3640,14 @@ pub mod inspector {
             vec!["waterui/dynamic_linking".to_string()],
         )]);
 
-        write_support_cargo_toml(base_dir, ctx.crate_name.as_str(), features, dependencies).await
+        write_support_cargo_toml(
+            base_dir,
+            ctx.crate_name.as_str(),
+            features,
+            dependencies,
+            ctx.waterui_path.as_deref(),
+        )
+        .await
     }
 
     #[cfg(test)]

@@ -447,7 +447,12 @@ impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "IO error: {e}"),
-            Self::Library(e) => write!(f, "Library error: {e}"),
+            // `libloading`'s `Display` for a failed `dlopen` is the bare words
+            // "dlopen failed" — the dynamic linker's actual complaint (missing
+            // symbol, bad architecture, unsigned library) lives in `Debug`.
+            // Printing that is the difference between a diagnosable failure and
+            // a dead end.
+            Self::Library(e) => write!(f, "Library error: {e:?}"),
             Self::CodeSign(e) => write!(f, "Codesign error: {e}"),
         }
     }
