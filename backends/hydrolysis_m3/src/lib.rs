@@ -33,6 +33,7 @@ mod icons;
 mod layout;
 mod navigation;
 mod semantics;
+pub mod split_button;
 mod theme;
 
 pub(crate) use controls::{button, input, picker, progress, slider, stepper, toggle};
@@ -101,6 +102,9 @@ pub use navigation_drawer::{
 pub use segmented_button::{
     OutlinedSegmentedButton, OutlinedSegmentedButtonSet, SegmentedButtonShape,
     outlined_segmented_button, outlined_segmented_button_set,
+};
+pub use split_button::{
+    FilledSplitButton, SplitButton, SplitButtonVariantTokens, TonalSplitButton, split_button,
 };
 pub use theme::colors::{
     MaterialColorMode, MaterialColorScheme, MaterialColorSchemes, MaterialColorSource,

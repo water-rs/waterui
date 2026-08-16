@@ -101,6 +101,25 @@ pub fn delete(grid: IconGrid) -> BezPath {
     path
 }
 
+/// Material `keyboard_arrow_down` on the [`ICON_GRID`], as the corners of the
+/// filled chevron. Shared so a consumer that needs unit-square path commands
+/// rather than a `BezPath` describes the same shape.
+pub const CHEVRON_DOWN_OUTLINE: [(f64, f64); 6] = [
+    (7.41, 8.59),
+    (12.0, 13.17),
+    (16.59, 8.59),
+    (18.0, 10.0),
+    (12.0, 16.0),
+    (6.0, 10.0),
+];
+
+/// The grid every Material icon is authored on, exposed so callers can
+/// normalize [`CHEVRON_DOWN_OUTLINE`] themselves.
+#[must_use]
+pub const fn icon_grid_size() -> f64 {
+    ICON_GRID
+}
+
 #[cfg(test)]
 mod tests {
     use super::{IconGrid, delete, drag_handle};
