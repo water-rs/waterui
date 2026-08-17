@@ -24,7 +24,9 @@ use core::{
 };
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
-use waterui_controls::{IntoLabel, button};
+use waterui_controls::{ButtonStyle, IntoLabel, button};
+use waterui_icon::SystemIcon;
+use waterui_text::Text;
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, boxed_action};
 use waterui_core::{
     AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, Retain, Str, View,
@@ -704,6 +706,39 @@ pub struct NavigationToolbarItem {
     pub placement: NavigationToolbarPlacement,
     /// Item content.
     pub content: AnyView,
+    /// The item's name, when it was declared as a semantic label.
+    ///
+    /// Kept beside the content rather than only inside it, because the
+    /// platforms disagree about how much of a toolbar action to draw: a Mac
+    /// shows the icon alone and keeps the name for the overflow menu, its
+    /// tooltip and assistive technology, while a phone's navigation bar
+    /// commonly shows the text. Once the label is erased into a view, no
+    /// backend can tell the name from the icon, so both travel separately and
+    /// each platform draws what its own chrome calls for.
+    pub title: Option<Text>,
+    /// The item's icon, when it was declared as a semantic label.
+    pub icon: Option<ToolbarItemIcon>,
+}
+
+/// A toolbar item's icon, kept apart from its name.
+///
+/// The two forms are not interchangeable: a platform that recognizes the symbol
+/// draws it at whatever size and weight its chrome calls for, while a view has
+/// to be rendered into an image at a chosen size.
+pub enum ToolbarItemIcon {
+    /// A symbol the platform knows by name.
+    System(SystemIcon),
+    /// A view the backend renders itself.
+    View(AnyViewBuilder<AnyView>),
+}
+
+impl Debug for ToolbarItemIcon {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::System(icon) => formatter.debug_tuple("System").field(icon).finish(),
+            Self::View(_) => formatter.write_str("View"),
+        }
+    }
 }
 
 impl Debug for NavigationToolbarItem {
@@ -718,20 +753,41 @@ impl Debug for NavigationToolbarItem {
 
 impl NavigationToolbarItem {
     /// Creates a toolbar item with arbitrary content.
+    ///
+    /// Arbitrary content carries no name or icon of its own, so a backend can
+    /// only place the view as given. [`Self::action`] is what lets each platform
+    /// draw the item its own way.
     pub fn new(placement: NavigationToolbarPlacement, content: impl View) -> Self {
         Self {
             placement,
             content: AnyView::new(content),
+            title: None,
+            icon: None,
         }
     }
 
     /// Creates a semantic toolbar action.
+    ///
+    /// The label's name and icon are lifted out before the content is erased, so
+    /// every backend can draw the item the way its own chrome does — see
+    /// [`NavigationToolbarItem::title`].
     pub fn action<Args: 'static>(
         placement: NavigationToolbarPlacement,
         label: impl IntoLabel + 'static,
         handler: impl Handler<Args>,
     ) -> Self {
-        Self::new(placement, button(label).action(handler))
+        let label = label.into_label();
+        let title = Some(label.semantic_text().clone());
+        let icon = label.semantic_icon().map_or_else(
+            || label.icon_view().map(ToolbarItemIcon::View),
+            |icon| Some(ToolbarItemIcon::System(icon)),
+        );
+        Self {
+            placement,
+            content: AnyView::new(button(label).style(ButtonStyle::Plain).action(handler)),
+            title,
+            icon,
+        }
     }
 }
 
@@ -1204,9 +1260,18 @@ where
         );
 
         let destination = AnyViewBuilder::new(self.content);
-        button(self.label).action(move |receiver: NavigationController| {
-            receiver.push_builder(destination.clone());
-        })
+        button(self.label)
+            // A navigation link carries no chrome of its own. It is a button
+            // semantically — it is activated, and reads as one to assistive
+            // technology — but the platforms draw the destination-following
+            // affordance around the row it sits in, not as a filled capsule
+            // behind its label. The default style would give every list row a
+            // button's background, which is the grey card a Mac list does not
+            // have.
+            .style(ButtonStyle::Plain)
+            .action(move |receiver: NavigationController| {
+                receiver.push_builder(destination.clone());
+            })
     }
 }
 
@@ -1217,10 +1282,20 @@ where
 {
     fn body(self, env: &waterui_core::Environment) -> impl View {
         let value = self.value;
+        // Plain for the same reason as `NavigationLink` above: the link is a
+        // button in behaviour, not in chrome.
         if let Some(navigator) = env.get::<Navigator<T>>().cloned() {
-            AnyView::new(button(self.label).action(move || navigator.push(value.clone())))
+            AnyView::new(
+                button(self.label)
+                    .style(ButtonStyle::Plain)
+                    .action(move || navigator.push(value.clone())),
+            )
         } else if let Some(navigator) = env.get::<Navigator<ErasedNavigationRoute>>().cloned() {
-            AnyView::new(button(self.label).action(move || navigator.push(value.clone())))
+            AnyView::new(
+                button(self.label)
+                    .style(ButtonStyle::Plain)
+                    .action(move || navigator.push(value.clone())),
+            )
         } else {
             panic!("NavigationLink::value used outside of a compatible path-backed stack")
         }
@@ -1233,6 +1308,16 @@ impl NavigationView {
     pub fn resolve_native_fields(&mut self, env: &Environment) {
         if let Some(search) = &mut self.bar.search {
             search.prompt = waterui_text::Text::computed(search.prompt.resolve(env).content);
+        }
+
+        // A toolbar item's name crosses the boundary as resolved content, so it
+        // has to stop depending on the environment here — `Text::content` panics
+        // on an environment-dependent text, and the FFI layer has no environment
+        // to resolve one against.
+        for item in &mut self.bar.toolbar.items {
+            if let Some(title) = item.title.take() {
+                item.title = Some(Text::computed(title.resolve(env).content));
+            }
         }
 
         self.bar.resolved_color = self.bar.color.as_ref().map(|color| {

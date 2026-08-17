@@ -239,6 +239,22 @@ fn filter_messages(messages: &[Message], query: &str) -> Vec<Message> {
 // Root: one tab per navigation container
 // ---------------------------------------------------------------------------
 
+/// The settings pane on its own.
+///
+/// Each tab gets a preview of its own so its chrome can be looked at without
+/// driving the running application to that tab — the pane a bug is in is the
+/// pane that has to be rendered to see it.
+#[preview]
+pub fn settings_pane() -> impl View {
+    settings_stack()
+}
+
+/// The library pane on its own, for the same reason.
+#[preview]
+pub fn library_pane() -> impl View {
+    library_split()
+}
+
 #[preview]
 pub fn demo() -> impl View {
     let mail = Mail::new();
@@ -363,21 +379,30 @@ fn message_row(message: Message) -> ListItem {
         // spoken text rather than guessing it from the layout.
         Label::new(announced, move || {
             let message = message.clone();
-            vstack((
-                hstack((
-                    message.unread.then(|| Accent.size(8.0, 8.0).clip(Circle)),
-                    text(message.sender).sub_headline().foreground(Foreground),
-                    spacer(),
-                    message
-                        .flagged
-                        .then(|| mdi::flag().size(14.0, 14.0).foreground(Accent)),
+            // The unread dot hangs beside the text rather than sitting inside
+            // it, so every row's text starts at the same place whether or not
+            // it has one — a row that indents itself because it is unread is
+            // what a mail list must not do.
+            hstack((
+                hstack((message.unread.then(|| Accent.size(8.0, 8.0).clip(Circle)),))
+                    .size(8.0, 8.0),
+                vstack((
+                    hstack((
+                        text(message.sender).sub_headline().foreground(Foreground),
+                        spacer(),
+                        message
+                            .flagged
+                            .then(|| mdi::flag().size(14.0, 14.0).foreground(Accent)),
+                    ))
+                    .spacing(6.0),
+                    text(message.subject).body().foreground(Foreground),
+                    text(message.preview).caption().foreground(MutedForeground),
                 ))
-                .spacing(6.0),
-                text(message.subject).body().foreground(Foreground),
-                text(message.preview).caption().foreground(MutedForeground),
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(2.0),
             ))
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(2.0)
+            .alignment(VerticalAlignment::Top)
+            .spacing(6.0)
             .padding_with(EdgeInsets::symmetric(8.0, 0.0))
         }),
         MailRoute::Message(id),
@@ -738,10 +763,10 @@ fn settings_root(notifications: &Binding<bool>, compact: &Binding<bool>) -> Navi
 }
 
 fn settings_link(title: &'static str, route: SettingsRoute) -> ListItem {
-    ListItem::new(NavigationLink::value(
-        label(title).icon(mdi::chevron_right()).trailing(),
-        route,
-    ))
+    // No disclosure indicator here: whether a row that pushes shows one is the
+    // platform's own convention — iOS draws a chevron, a Mac does not — so the
+    // link decides, not the application.
+    ListItem::new(NavigationLink::value(title, route))
 }
 
 fn appearance_page(compact: Binding<bool>) -> NavigationView {
