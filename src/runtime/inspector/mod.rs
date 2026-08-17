@@ -211,21 +211,46 @@ where
     }
 }
 
-/// A listening inspector endpoint and the producers that feed it.
+/// An inspector endpoint and the producers that feed it.
+///
+/// The producers — the event hub and the task probe — exist from the moment the
+/// runtime does, so the recorders a backend holds are live handles either way.
+/// The socket is not: it is bound the first time somebody asks for the
+/// inspector, because an application nobody is inspecting should not be holding
+/// a port open and advertising itself for having been launched.
 pub struct InspectorRuntime {
-    endpoint: InspectorEndpointInfo,
-    #[cfg(not(target_arch = "wasm32"))]
-    advertisement: Advertisement,
     hub: Arc<EventHub>,
     task_probe: Arc<tasks::TaskProbe>,
+    #[cfg(not(target_arch = "wasm32"))]
+    listening: std::sync::OnceLock<ListeningEndpoint>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pending: std::sync::Mutex<Option<PendingEndpoint>>,
+}
+
+/// What a bound endpoint owns once it is listening.
+#[cfg(not(target_arch = "wasm32"))]
+struct ListeningEndpoint {
+    endpoint: InspectorEndpointInfo,
+    advertisement: Advertisement,
+}
+
+/// Everything needed to bind, held until somebody asks.
+#[cfg(not(target_arch = "wasm32"))]
+struct PendingEndpoint {
+    config: InspectorServerConfig,
+    backend: &'static str,
+    receiver: async_channel::Receiver<hub::Dispatch>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for InspectorRuntime {
     fn drop(&mut self) {
         // A file naming an endpoint that no longer exists sends the next reader
-        // to a closed port.
-        if let Err(error) = self.advertisement.withdraw() {
+        // to a closed port. Nothing was published if the socket was never bound.
+        let Some(listening) = self.listening.get() else {
+            return;
+        };
+        if let Err(error) = listening.advertisement.withdraw() {
             tracing::warn!(
                 target: "waterui::inspector",
                 error = %error,
@@ -239,16 +264,43 @@ impl std::fmt::Debug for InspectorRuntime {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("InspectorRuntime")
-            .field("endpoint", &self.endpoint)
+            .field("endpoint", &self.bound_endpoint())
             .finish_non_exhaustive()
     }
 }
 
 impl InspectorRuntime {
-    /// Where this endpoint is listening.
+    /// Where this endpoint is listening, if it has been asked to.
     #[must_use]
-    pub const fn endpoint(&self) -> &InspectorEndpointInfo {
-        &self.endpoint
+    pub fn bound_endpoint(&self) -> Option<&InspectorEndpointInfo> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.listening.get().map(|listening| &listening.endpoint)
+        }
+    }
+
+    /// Where this endpoint is listening, binding the socket if it is not yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the socket cannot be bound or a thread cannot
+    /// be spawned.
+    pub fn endpoint(&self) -> io::Result<&InspectorEndpointInfo> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the TCP inspector endpoint is unavailable in browsers",
+            ))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.ensure_listening().map(|listening| &listening.endpoint)
+        }
     }
 
     /// The probe that reports main-thread occupancy.
@@ -296,12 +348,27 @@ impl InspectorRuntime {
     }
 
     /// Starts an inspector pointed at this endpoint.
+    ///
+    /// This is where the socket is bound: being asked for the inspector is the
+    /// only reason to open one.
     fn launch_inspector(&self) {
+        let endpoint = match self.endpoint() {
+            Ok(endpoint) => endpoint.clone(),
+            Err(error) => {
+                tracing::warn!(
+                    target: "waterui::inspector",
+                    error = %error,
+                    "Could not open an inspector endpoint"
+                );
+                return;
+            }
+        };
+
         if cfg!(any(target_os = "android", target_os = "ios")) {
             tracing::info!(
                 target: "waterui::inspector",
-                inspector_addr = %self.endpoint.addr,
-                token = %self.endpoint.token,
+                inspector_addr = %endpoint.addr,
+                token = %endpoint.token,
                 "Inspect requested; attach from your computer with `water inspector`"
             );
             return;
@@ -313,8 +380,8 @@ impl InspectorRuntime {
         let Some(cli) = water_cli_path() else {
             tracing::warn!(
                 target: "waterui::inspector",
-                inspector_addr = %self.endpoint.addr,
-                token = %self.endpoint.token,
+                inspector_addr = %endpoint.addr,
+                token = %endpoint.token,
                 "Could not find the `water` CLI; attach with `water inspect --target <addr> --token <token>`,                  or point WATERUI_CLI at the binary"
             );
             return;
@@ -324,9 +391,9 @@ impl InspectorRuntime {
         command
             .arg("inspector")
             .arg("--target")
-            .arg(self.endpoint.addr.to_string())
+            .arg(endpoint.addr.to_string())
             .arg("--token")
-            .arg(&self.endpoint.token);
+            .arg(&endpoint.token);
 
         // The CLI builds the inspector against the project it is inspecting, and
         // reads that project from its working directory. A launched application
@@ -336,8 +403,8 @@ impl InspectorRuntime {
             command.arg("--path").arg(project);
         }
 
-        let addr = self.endpoint.addr;
-        let token = self.endpoint.token.clone();
+        let addr = endpoint.addr;
+        let token = endpoint.token.clone();
 
         // A launched application's streams do not reach whoever started it, so
         // anything the CLI says about a failure is lost unless it is captured
@@ -505,21 +572,25 @@ fn available_channels() -> ChannelSet {
     available
 }
 
-/// Starts the endpoint when the environment asks for one.
+/// Prepares inspection, listening only when the environment asks for it.
 ///
-/// Inspection is something the user asks for — through "Inspect Element", or by
-/// configuring an endpoint in the environment. A debug build no longer binds a
-/// port and advertises itself merely for having been launched: an application
-/// that nobody is inspecting should not be holding a socket open, and an
-/// unrequested endpoint is a service the developer did not ask to run.
+/// Two ways in, and they differ in *when the socket opens*:
 ///
-/// A debug build can still be *found* by `water inspector`, because the CLI
-/// launches it with the environment configuration this reads.
+/// - The environment names an endpoint — how `water inspector` launches an
+///   application it means to attach to — and it starts listening immediately,
+///   because something is already waiting to connect.
+/// - A debug build otherwise gets a runtime that is ready but silent. Nothing is
+///   bound and nothing is advertised until the user asks for the inspector, at
+///   which point [`InspectorRuntime::open`] opens the port. An application
+///   nobody is inspecting has no business holding one open, and "Inspect
+///   Element" is still offered because the runtime is there to offer it.
+///
+/// A release build inspects only when the environment says so.
 #[must_use]
 pub fn maybe_init_from_env(backend: &'static str) -> Option<InspectorRuntime> {
-    let config = match InspectorServerConfig::from_env() {
-        Ok(Some(config)) => config,
-        Ok(None) => return None,
+    let (config, listen_now) = match InspectorServerConfig::from_env() {
+        Ok(Some(config)) => (config, true),
+        Ok(None) => (InspectorServerConfig::for_debug_build()?, false),
         Err(error) => {
             tracing::warn!(
                 target: "waterui::inspector",
@@ -529,6 +600,10 @@ pub fn maybe_init_from_env(backend: &'static str) -> Option<InspectorRuntime> {
             return None;
         }
     };
+
+    if !listen_now {
+        return Some(prepare_with_config(config, backend));
+    }
 
     match init_with_config(config, backend) {
         Ok(runtime) => Some(runtime),
@@ -564,11 +639,73 @@ pub fn init_with_config(
 
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let runtime = InspectorRuntime::prepared(config, backend);
+        runtime.ensure_listening()?;
+        Ok(runtime)
+    }
+}
+
+/// Builds a runtime whose socket is not bound yet.
+///
+/// # Errors
+///
+/// Never fails: nothing is bound here.
+#[must_use]
+pub fn prepare_with_config(
+    config: InspectorServerConfig,
+    backend: &'static str,
+) -> InspectorRuntime {
+    InspectorRuntime::prepared(config, backend)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl InspectorRuntime {
+    fn prepared(config: InspectorServerConfig, backend: &'static str) -> Self {
+        let (hub, receiver) = EventHub::new();
+        let task_probe = Arc::new(tasks::TaskProbe::new(
+            Arc::clone(&hub),
+            config.task_window,
+            config.stall_ratio,
+        ));
+        Self {
+            hub,
+            task_probe,
+            listening: std::sync::OnceLock::new(),
+            pending: std::sync::Mutex::new(Some(PendingEndpoint {
+                config,
+                backend,
+                receiver,
+            })),
+        }
+    }
+
+    /// Binds the socket and starts serving, if that has not happened yet.
+    fn ensure_listening(&self) -> io::Result<&ListeningEndpoint> {
+        if let Some(listening) = self.listening.get() {
+            return Ok(listening);
+        }
+
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let Some(PendingEndpoint {
+            config,
+            backend,
+            receiver,
+        }) = pending
+        else {
+            // Another caller bound it between the check and the lock.
+            return self.listening.get().ok_or_else(|| {
+                io::Error::other("the inspector endpoint failed to bind on another thread")
+            });
+        };
+
         let listener = TcpListener::bind(SocketAddr::new(config.host, config.port))?;
         listener.set_nonblocking(false)?;
         let addr = listener.local_addr()?;
 
-        let (hub, receiver) = EventHub::new();
         let available = available_channels();
         let target = TargetInfo {
             pid: std::process::id(),
@@ -577,7 +714,7 @@ pub fn init_with_config(
         };
 
         spawn("waterui-inspector-dispatch", {
-            let hub = Arc::clone(&hub);
+            let hub = Arc::clone(&self.hub);
             move || server::dispatch_loop(&hub, &receiver, available)
         })?;
 
@@ -605,7 +742,7 @@ pub fn init_with_config(
         }
 
         spawn("waterui-inspector-accept", {
-            let hub = Arc::clone(&hub);
+            let hub = Arc::clone(&self.hub);
             let token = config.token.clone();
             move || server::accept_loop(&listener, &hub, token.as_str(), &target, available)
         })?;
@@ -616,19 +753,13 @@ pub fn init_with_config(
             "Inspector endpoint listening"
         );
 
-        Ok(InspectorRuntime {
-            advertisement,
+        Ok(self.listening.get_or_init(|| ListeningEndpoint {
             endpoint: InspectorEndpointInfo {
                 addr,
                 token: config.token,
             },
-            task_probe: Arc::new(tasks::TaskProbe::new(
-                Arc::clone(&hub),
-                config.task_window,
-                config.stall_ratio,
-            )),
-            hub,
-        })
+            advertisement,
+        }))
     }
 }
 
