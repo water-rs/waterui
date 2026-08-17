@@ -6,7 +6,7 @@
 
 use std::error::Error;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use shaderloom::WgslModuleCache;
 
@@ -50,7 +50,73 @@ pub struct SharedGpuContext {
     /// Every GPU-backed view on this runtime shares it, so two views that
     /// produce byte-identical WGSL compile it once.
     pub shader_cache: Arc<WgslModuleCache>,
+    /// The scene renderer every vector-drawing view on this device shares.
+    ///
+    /// A renderer is a device-level resource: it owns the pipelines that
+    /// rasterize a scene, and those depend on the device rather than on what is
+    /// being drawn. Building one per view made an application with a dozen
+    /// icons build a dozen renderers, compile a dozen copies of the same
+    /// pipelines, and reach a first frame a dozen separate times — which is
+    /// what icons appearing one after another looks like.
+    ///
+    /// Built on first use, so an application that draws no vector content never
+    /// builds one at all.
+    scene_renderer: Arc<SharedSceneRenderer>,
     submission_completion_driver: GpuSubmissionCompletionDriver,
+}
+
+/// One device's scene renderer, built the first time something draws a scene.
+///
+/// A renderer owns the pipelines that rasterize a scene; those depend on the
+/// device rather than on what is being drawn, so every vector-drawing view on a
+/// device shares this one. Building one per view made an application with a
+/// dozen icons compile a dozen copies of the same pipelines and reach a first
+/// frame a dozen separate times.
+#[derive(Default)]
+pub struct SharedSceneRenderer {
+    renderer: OnceLock<Mutex<vello::Renderer>>,
+}
+
+impl fmt::Debug for SharedSceneRenderer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SharedSceneRenderer")
+            .field("built", &self.renderer.get().is_some())
+            .finish()
+    }
+}
+
+impl SharedSceneRenderer {
+    /// Runs `use_renderer` against this device's renderer, building it if needed.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the renderer cannot be built, which means the device cannot
+    /// rasterize vector content at all.
+    pub fn with<R>(
+        &self,
+        device: &wgpu::Device,
+        use_renderer: impl FnOnce(&mut vello::Renderer) -> R,
+    ) -> R {
+        let renderer = self.renderer.get_or_init(|| {
+            Mutex::new(
+                vello::Renderer::new(
+                    device,
+                    vello::RendererOptions {
+                        use_cpu: false,
+                        antialiasing_support: vello::AaSupport::area_only(),
+                        num_init_threads: std::num::NonZeroUsize::new(1),
+                        pipeline_cache: None,
+                    },
+                )
+                .expect("the GPU device cannot rasterize vector scenes"),
+            )
+        });
+        let mut guard = renderer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        use_renderer(&mut guard)
+    }
 }
 
 impl fmt::Debug for SharedGpuContext {
@@ -106,8 +172,15 @@ impl SharedGpuContext {
             device,
             queue,
             shader_cache: Arc::new(WgslModuleCache::new()),
+            scene_renderer: Arc::new(SharedSceneRenderer::default()),
             submission_completion_driver,
         })
+    }
+
+    /// The scene renderer every vector-drawing view on this device shares.
+    #[must_use]
+    pub const fn scene_renderer(&self) -> &Arc<SharedSceneRenderer> {
+        &self.scene_renderer
     }
 
     /// Returns the driver that resolves exact GPU-submission completion fences.
