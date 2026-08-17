@@ -67,7 +67,7 @@ fn next_select(socket: &mut TcpStream) -> NodeId {
 #[test]
 fn an_attached_inspector_is_told_which_node_to_reveal() {
     let inspector = init_with_config(config(), "test").expect("the endpoint binds");
-    let mut socket = attach(inspector.endpoint().addr);
+    let mut socket = attach(inspector.endpoint().expect("the endpoint listens").addr);
 
     inspector.inspect_node(NodeId(42));
 
@@ -82,6 +82,6 @@ fn a_node_asked_for_before_anyone_attached_is_delivered_on_arrival() {
 
     inspector.inspect_node(NodeId(7));
 
-    let mut socket = attach(inspector.endpoint().addr);
+    let mut socket = attach(inspector.endpoint().expect("the endpoint listens").addr);
     assert_eq!(next_select(&mut socket), NodeId(7));
 }
