@@ -8,7 +8,11 @@
 extern crate alloc;
 
 mod scene_renderer;
+mod tree_renderer;
 mod vello_renderer;
+
+/// The SVG parser this crate draws from.
+pub use vello_svg::usvg;
 
 use waterui_core::{AnyView, Computed, Environment, Signal, SignalExt, View};
 use waterui_graphics::SceneView;

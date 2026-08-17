@@ -6,6 +6,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::future::Future;
@@ -106,6 +107,13 @@ pub struct GpuContext<'a> {
     /// Owned by the host alongside the device, so two surfaces producing
     /// byte-identical WGSL compile it once.
     pub shader_cache: &'a WgslModuleCache,
+    /// The scene renderer shared by every vector-drawing view on this device.
+    ///
+    /// Owned by the host alongside the device for the same reason as
+    /// `shader_cache`: a renderer's pipelines depend on the device, not on what
+    /// is drawn with them, so a dozen icons share one rather than each building
+    /// its own and reaching a first frame separately.
+    pub scene_renderer: &'a Arc<crate::gpu::shared_context::SharedSceneRenderer>,
     /// Preferred MSAA sample count for `surface_format`.
     ///
     /// Prefer [`GpuContext::new`], which derives this from the adapter's
@@ -158,6 +166,7 @@ impl<'a> GpuContext<'a> {
         queue: &'a wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         shader_cache: &'a WgslModuleCache,
+        scene_renderer: &'a Arc<crate::gpu::shared_context::SharedSceneRenderer>,
         max_samples: u32,
         redraw_handle: RedrawHandle,
     ) -> Self {
@@ -167,6 +176,7 @@ impl<'a> GpuContext<'a> {
             queue,
             surface_format,
             shader_cache,
+            scene_renderer,
             msaa_samples: supported_msaa_samples(adapter, surface_format, max_samples),
             redraw_handle,
         }
@@ -1111,6 +1121,7 @@ impl GpuSurface {
             queue,
             surface_format: config.format,
             shader_cache: shared.shader_cache.as_ref(),
+            scene_renderer: shared.scene_renderer(),
             msaa_samples,
             redraw_handle: RedrawHandle::new(),
         };
@@ -1204,6 +1215,7 @@ impl GpuSurface {
             queue,
             surface_format: config.format,
             shader_cache: shared.shader_cache.as_ref(),
+            scene_renderer: shared.scene_renderer(),
             msaa_samples,
             redraw_handle: RedrawHandle::new(),
         };

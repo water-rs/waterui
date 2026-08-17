@@ -47,7 +47,7 @@ pub use gpu_surface::{
 #[cfg(feature = "gpu")]
 pub use shader_surface::ShaderSurface;
 #[cfg(feature = "gpu")]
-pub use shared_context::{GpuRuntime, SharedContextError, SharedGpuContext};
+pub use shared_context::{GpuRuntime, SharedContextError, SharedGpuContext, SharedSceneRenderer};
 
 #[cfg(feature = "gpu")]
 pub use animated_mesh_gradient::{
