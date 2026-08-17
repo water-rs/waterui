@@ -5,14 +5,16 @@ use core::{any::Any, cell::Cell};
 use waterui_core::Signal;
 use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator};
 
-use crate::vello_renderer::SvgSceneData;
+use crate::scene_data::SvgSceneData;
 
-/// SceneView-backed SVG content.
+/// Scene content that draws one SVG document.
+#[derive(Debug)]
 pub struct SvgSceneContent {
     scene_data: SvgSceneData,
 }
 
 impl SvgSceneContent {
+    /// Parses `svg_content` into content that draws it.
     #[must_use]
     pub fn new(svg_content: &str) -> Self {
         Self {
@@ -28,7 +30,7 @@ impl SceneContent for SvgSceneContent {
     }
 }
 
-/// SceneView-backed SVG content whose tint is driven by a signal without rebuilding the view tree.
+/// Scene content whose tint is driven by a signal without rebuilding the view tree.
 pub struct ReactiveSvgSceneContent<S>
 where
     S: Signal<Output = alloc::string::String> + 'static,
@@ -42,11 +44,26 @@ where
     watcher_guard: Option<Box<dyn Any>>,
 }
 
+impl<S> core::fmt::Debug for ReactiveSvgSceneContent<S>
+where
+    S: Signal<Output = alloc::string::String> + 'static,
+    S::Guard: 'static,
+{
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ReactiveSvgSceneContent")
+            .field("current_color", &self.current_color)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<S> ReactiveSvgSceneContent<S>
 where
     S: Signal<Output = alloc::string::String> + 'static,
     S::Guard: 'static,
 {
+    /// Content drawing `svg_template`, with its colour placeholder replaced by
+    /// whatever `tint` currently reads.
     #[must_use]
     pub fn new(svg_template: alloc::string::String, tint: S) -> Self {
         Self {
@@ -70,7 +87,7 @@ where
 
         let svg_content = self
             .svg_template
-            .replace(crate::vello_renderer::SVG_COLOR_PLACEHOLDER, &next_color);
+            .replace(crate::scene_data::SVG_COLOR_PLACEHOLDER, &next_color);
         self.scene_data = Some(SvgSceneData::parse(&svg_content));
         self.current_color = Some(next_color);
     }

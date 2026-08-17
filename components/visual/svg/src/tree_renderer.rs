@@ -11,32 +11,46 @@
 //! handling of paint order, clip paths, nested documents and flattened text
 //! comes from.
 
+use alloc::vec::Vec;
+
 use kurbo::{Affine, BezPath, Rect, Shape as _, Stroke};
-use peniko::{BlendMode, Brush, Fill, Mix};
+use peniko::color::DynamicColor;
+use peniko::{BlendMode, Brush, ColorStop, Extend, Fill, Gradient, Mix};
 use waterui_graphics::Scene2D;
 
 use crate::usvg;
 
-/// Draws a whole document into `scene`, positioned by `transform`.
-pub fn render_tree(scene: &mut dyn Scene2D, tree: &usvg::Tree, transform: Affine) {
-    render_group(scene, tree.root(), transform);
+/// Draws a whole document into `scene`, positioned by `base`.
+pub fn render_tree(scene: &mut dyn Scene2D, tree: &usvg::Tree, base: Affine) {
+    render_group(scene, tree.root(), base);
 }
 
-fn render_group(scene: &mut dyn Scene2D, group: &usvg::Group, transform: Affine) {
+/// Draws a group's children.
+///
+/// `base` places the document; every node carries its own *absolute* transform,
+/// so the two combine per node and `base` is passed down unchanged. Handing
+/// children an identity base instead loses the document's placement for
+/// everything inside a group.
+fn render_group(scene: &mut dyn Scene2D, group: &usvg::Group, base: Affine) {
     for node in group.children() {
-        let transform = transform * to_affine(&node.abs_transform());
+        let transform = base * to_affine(&node.abs_transform());
         match node {
-            usvg::Node::Group(group) => render_nested_group(scene, group, transform),
+            usvg::Node::Group(group) => render_nested_group(scene, group, base, transform),
             usvg::Node::Path(path) => render_path(scene, path, transform),
             usvg::Node::Image(image) => render_image(scene, image, transform),
             // Text is drawn from its flattened outlines, so it needs no font
             // machinery of its own here.
-            usvg::Node::Text(text) => render_group(scene, text.flattened(), transform),
+            usvg::Node::Text(text) => render_group(scene, text.flattened(), base),
         }
     }
 }
 
-fn render_nested_group(scene: &mut dyn Scene2D, group: &usvg::Group, transform: Affine) {
+fn render_nested_group(
+    scene: &mut dyn Scene2D,
+    group: &usvg::Group,
+    base: Affine,
+    transform: Affine,
+) {
     let alpha = group.opacity().get();
     let blend = to_blend_mode(group.blend_mode());
 
@@ -62,9 +76,7 @@ fn render_nested_group(scene: &mut dyn Scene2D, group: &usvg::Group, transform: 
         });
 
     scene.push_layer(Fill::NonZero, blend, alpha, transform, &clip);
-    // The children carry absolute transforms of their own, so the group's is
-    // not applied twice.
-    render_group(scene, group, Affine::IDENTITY);
+    render_group(scene, group, base);
     scene.pop_layer();
 }
 
@@ -75,30 +87,28 @@ fn render_path(scene: &mut dyn Scene2D, path: &usvg::Path, transform: Affine) {
     let outline = to_bez_path(path);
 
     let fill = || {
-        let Some(fill) = path.fill() else { return None };
-        let brush = to_brush(fill.paint(), fill.opacity())?;
+        let fill = path.fill()?;
+        let (brush, brush_transform) = to_brush(fill.paint(), fill.opacity())?;
         let rule = match fill.rule() {
             usvg::FillRule::NonZero => Fill::NonZero,
             usvg::FillRule::EvenOdd => Fill::EvenOdd,
         };
-        Some((rule, brush))
+        Some((rule, brush, brush_transform))
     };
     let stroke = || {
-        let Some(stroke) = path.stroke() else {
-            return None;
-        };
-        let brush = to_brush(stroke.paint(), stroke.opacity())?;
-        Some((to_stroke(stroke), brush))
+        let stroke = path.stroke()?;
+        let (brush, brush_transform) = to_brush(stroke.paint(), stroke.opacity())?;
+        Some((to_stroke(stroke), brush, brush_transform))
     };
 
     let draw_fill = |scene: &mut dyn Scene2D| {
-        if let Some((rule, brush)) = fill() {
-            scene.fill(rule, transform, &brush, &outline);
+        if let Some((rule, brush, brush_transform)) = fill() {
+            scene.fill(rule, transform, &brush, brush_transform, &outline);
         }
     };
     let draw_stroke = |scene: &mut dyn Scene2D| {
-        if let Some((stroke, brush)) = stroke() {
-            scene.stroke(&stroke, transform, &brush, &outline);
+        if let Some((stroke, brush, brush_transform)) = stroke() {
+            scene.stroke(&stroke, transform, &brush, brush_transform, &outline);
         }
     };
 
@@ -119,7 +129,8 @@ fn render_image(scene: &mut dyn Scene2D, image: &usvg::Image, transform: Affine)
         return;
     }
     match image.kind() {
-        // A nested document is just more of the same tree.
+        // A nested document is placed by this node, and its own nodes carry
+        // absolute transforms within it, so it becomes the base in there.
         usvg::ImageKind::SVG(svg) => render_group(scene, svg.root(), transform),
         // Raster images inside an SVG are not decoded here. An icon set does not
         // use them, and pulling an image decoder into every application that
@@ -217,19 +228,80 @@ fn to_stroke(stroke: &usvg::Stroke) -> Stroke {
         )
 }
 
-/// The paint a fill or stroke uses, when it is one this draws.
+/// The paint a fill or stroke uses, with the transform that positions it.
 ///
-/// Gradients and patterns resolve to their own paint servers, which an icon set
-/// does not use; a document that does gets nothing drawn for that shape rather
-/// than a wrong colour.
-fn to_brush(paint: &usvg::Paint, opacity: usvg::Opacity) -> Option<Brush> {
+/// A pattern paints with a whole subtree rather than a brush, which no
+/// `Scene2D` command expresses; such a shape is left undrawn rather than
+/// painted a wrong colour.
+fn to_brush(paint: &usvg::Paint, opacity: usvg::Opacity) -> Option<(Brush, Option<Affine>)> {
     match paint {
-        usvg::Paint::Color(color) => Some(Brush::Solid(peniko::Color::from_rgba8(
-            color.red,
-            color.green,
-            color.blue,
-            opacity.to_u8(),
-        ))),
-        _ => None,
+        usvg::Paint::Color(color) => Some((
+            Brush::Solid(peniko::Color::from_rgba8(
+                color.red,
+                color.green,
+                color.blue,
+                opacity.to_u8(),
+            )),
+            None,
+        )),
+        usvg::Paint::LinearGradient(gradient) => {
+            let brush = Gradient::new_linear(
+                (f64::from(gradient.x1()), f64::from(gradient.y1())),
+                (f64::from(gradient.x2()), f64::from(gradient.y2())),
+            )
+            .with_extend(to_extend(gradient.spread_method()))
+            .with_stops(to_stops(gradient.stops(), opacity).as_slice());
+            Some((
+                Brush::Gradient(brush),
+                to_brush_transform(&gradient.transform()),
+            ))
+        }
+        usvg::Paint::RadialGradient(gradient) => {
+            let brush = Gradient::new_two_point_radial(
+                // The focal point has no radius of its own in this SVG model.
+                (f64::from(gradient.fx()), f64::from(gradient.fy())),
+                0.0,
+                (f64::from(gradient.cx()), f64::from(gradient.cy())),
+                gradient.r().get(),
+            )
+            .with_extend(to_extend(gradient.spread_method()))
+            .with_stops(to_stops(gradient.stops(), opacity).as_slice());
+            Some((
+                Brush::Gradient(brush),
+                to_brush_transform(&gradient.transform()),
+            ))
+        }
+        usvg::Paint::Pattern(_) => None,
     }
+}
+
+fn to_stops(stops: &[usvg::Stop], opacity: usvg::Opacity) -> Vec<ColorStop> {
+    stops
+        .iter()
+        .map(|stop| ColorStop {
+            offset: stop.offset().get(),
+            color: DynamicColor::from_alpha_color(peniko::Color::from_rgba8(
+                stop.color().red,
+                stop.color().green,
+                stop.color().blue,
+                (stop.opacity() * opacity).to_u8(),
+            )),
+        })
+        .collect()
+}
+
+const fn to_extend(spread: usvg::SpreadMethod) -> Extend {
+    match spread {
+        usvg::SpreadMethod::Pad => Extend::Pad,
+        usvg::SpreadMethod::Reflect => Extend::Reflect,
+        usvg::SpreadMethod::Repeat => Extend::Repeat,
+    }
+}
+
+/// The gradient's own transform, when it has one.
+///
+/// `None` leaves the paint on the shape's transform, which is what a gradient
+/// without a `gradientTransform` wants.
+fn to_brush_transform(transform: &usvg::Transform) -> Option<Affine> {
+    (!transform.is_identity()).then(|| to_affine(transform))
 }

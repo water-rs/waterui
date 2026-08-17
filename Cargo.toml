@@ -177,6 +177,15 @@ erased-serde = { version = "0.4.10", default-features = false, features = ["allo
 wgpu = "29.0.4"
 encase = "0.12"
 vello = "0.9"
+# The CPU/GPU split renderer: it processes paths on the CPU and rasterizes on
+# the GPU, so unlike Vello classic it needs no indirect execution — which is
+# what the iOS Simulator's Metal lacks.
+vello_hybrid = { version = "0.2", default-features = false, features = ["std", "wgpu", "text"] }
+# The glyph-run types `vello_hybrid`'s text API takes but does not re-export.
+# Taken from the same checkout as `vello_hybrid`, which vendors it: the crates.io
+# release is a different major version, and a glyph from one is not a glyph from
+# the other.
+glifo = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow", default-features = false, features = ["std"] }
 parley = { version = "0.11", default-features = false }
 vello_svg = "0.10.0"
 kurbo = "0.13"
@@ -316,6 +325,8 @@ xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e7
 # underflowed workgroup-array index; Mali page-faults on it). Fixed upstream in
 # linebender/vello#1817; drop this patch when a release containing it ships.
 vello = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow" }
+# From the same checkout, so both engines are built from one tree.
+vello_hybrid = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow" }
 
 # Arm's proprietary Vulkan driver (r54p2 on Pixel 9 Pro / Android 16)
 # rasterizes as if viewport heights were positive, ignoring the negative-height

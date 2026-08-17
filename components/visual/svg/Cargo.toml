@@ -28,6 +28,7 @@ vello.workspace = true
 [dev-dependencies]
 waterui.workspace = true
 waterui-testing.workspace = true
+pollster.workspace = true
 
 [lints]
 workspace = true

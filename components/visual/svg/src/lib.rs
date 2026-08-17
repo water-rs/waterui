@@ -7,12 +7,16 @@
 
 extern crate alloc;
 
+mod scene_data;
 mod scene_renderer;
 mod tree_renderer;
-mod vello_renderer;
 
 /// The SVG parser this crate draws from.
 pub use vello_svg::usvg;
+
+/// Scene content that draws an SVG document, for composing an SVG into a scene
+/// that is not a whole view of its own.
+pub use scene_renderer::{ReactiveSvgSceneContent, SvgSceneContent};
 
 use waterui_core::{AnyView, Computed, Environment, Signal, SignalExt, View};
 use waterui_graphics::SceneView;
@@ -162,7 +166,7 @@ impl Svg {
         S: Signal<Output = alloc::string::String> + 'static,
         S::Guard: 'static,
     {
-        let svg_template = self.build_svg_content(vello_renderer::SVG_COLOR_PLACEHOLDER);
+        let svg_template = self.build_svg_content(scene_data::SVG_COLOR_PLACEHOLDER);
         SceneView::new(scene_renderer::ReactiveSvgSceneContent::new(
             svg_template,
             color_signal,
@@ -246,5 +250,3 @@ impl View for Svg {
     }
 }
 
-// Re-export renderer for advanced usage.
-pub use vello_renderer::VelloSvgRenderer;

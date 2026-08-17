@@ -404,7 +404,7 @@ impl InspectorRuntime {
         }
 
         let addr = endpoint.addr;
-        let token = endpoint.token.clone();
+        let token = endpoint.token;
 
         // A launched application's streams do not reach whoever started it, so
         // anything the CLI says about a failure is lost unless it is captured

@@ -92,7 +92,7 @@ use kurbo::Shape as _;
 
 use crate::conversions::{point_to_kurbo, rect_to_kurbo, resolved_color_to_peniko};
 use crate::state::{DrawingState, FillStyle, StrokeStyle};
-use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::{Glyph, GlyphRun, Scene2D, SceneContent, SceneInvalidator, SceneView};
 
 /// A canvas for 2D vector graphics rendering.
 ///
@@ -503,6 +503,7 @@ impl DrawingContext<'_> {
             self.current_state.fill_rule,
             self.current_state.transform,
             &brush,
+            None,
             path.inner(),
         );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
@@ -517,7 +518,13 @@ impl DrawingContext<'_> {
         let stroke = self.current_state.build_stroke();
         let pushed_alpha = self.push_global_alpha_layer_if_needed(path.inner());
         self.scene
-            .stroke(&stroke, self.current_state.transform, &brush, path.inner());
+            .stroke(
+                &stroke,
+                self.current_state.transform,
+                &brush,
+                None,
+                path.inner(),
+            );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
@@ -539,6 +546,7 @@ impl DrawingContext<'_> {
             self.current_state.fill_rule,
             self.current_state.transform,
             &brush,
+            None,
             &shape_path,
         );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
@@ -556,7 +564,13 @@ impl DrawingContext<'_> {
         let stroke = self.current_state.build_stroke();
         let pushed_alpha = self.push_global_alpha_layer_if_needed(&shape_path);
         self.scene
-            .stroke(&stroke, self.current_state.transform, &brush, &shape_path);
+            .stroke(
+                &stroke,
+                self.current_state.transform,
+                &brush,
+                None,
+                &shape_path,
+            );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
@@ -570,6 +584,7 @@ impl DrawingContext<'_> {
             self.current_state.fill_rule,
             self.current_state.transform,
             &brush,
+            None,
             &shape_path,
         );
     }
@@ -593,6 +608,7 @@ impl DrawingContext<'_> {
             self.current_state.fill_rule,
             self.current_state.transform,
             &brush,
+            None,
             &shape_path,
         );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
@@ -611,7 +627,13 @@ impl DrawingContext<'_> {
         let shape_path = circle.to_path(0.1);
         let pushed_alpha = self.push_global_alpha_layer_if_needed(&shape_path);
         self.scene
-            .stroke(&stroke, self.current_state.transform, &brush, &shape_path);
+            .stroke(
+                &stroke,
+                self.current_state.transform,
+                &brush,
+                None,
+                &shape_path,
+            );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
@@ -628,7 +650,13 @@ impl DrawingContext<'_> {
         let shape_path = line.to_path(0.1);
         let pushed_alpha = self.push_global_alpha_layer_if_needed(&shape_path);
         self.scene
-            .stroke(&stroke, self.current_state.transform, &brush, &shape_path);
+            .stroke(
+                &stroke,
+                self.current_state.transform,
+                &brush,
+                None,
+                &shape_path,
+            );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
@@ -1111,32 +1139,37 @@ impl DrawingContext<'_> {
         let alpha = self.normalized_global_alpha();
         let transform = self.current_state.transform
             * kurbo::Affine::translate((f64::from(origin.x), f64::from(origin.y)));
-        self.scene.encode_vello(&mut |scene| {
-            for line in layout.lines() {
-                for item in line.items() {
-                    if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                        let run = glyph_run.run();
-                        let mut run_x = glyph_run.offset();
-                        let run_y = glyph_run.baseline();
-                        let glyphs = glyph_run.glyphs().map(move |glyph| {
-                            let x = run_x + glyph.x;
-                            let y = run_y - glyph.y;
-                            run_x += glyph.advance;
-                            vello::Glyph { id: glyph.id, x, y }
-                        });
+        let mut glyphs = Vec::new();
+        for line in layout.lines() {
+            for item in line.items() {
+                if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                    let run = glyph_run.run();
+                    let mut run_x = glyph_run.offset();
+                    let run_y = glyph_run.baseline();
+                    glyphs.clear();
+                    glyphs.extend(glyph_run.glyphs().map(|glyph| {
+                        let positioned = Glyph {
+                            id: glyph.id,
+                            x: run_x + glyph.x,
+                            y: run_y - glyph.y,
+                        };
+                        run_x += glyph.advance;
+                        positioned
+                    }));
 
-                        scene
-                            .draw_glyphs(run.font())
-                            .brush(brush)
-                            .brush_alpha(alpha)
-                            .transform(transform)
-                            .font_size(run.font_size())
-                            .normalized_coords(run.normalized_coords())
-                            .draw(style, glyphs);
-                    }
+                    self.scene.draw_glyph_run(&GlyphRun {
+                        font: run.font(),
+                        font_size: run.font_size(),
+                        normalized_coords: run.normalized_coords(),
+                        transform,
+                        brush,
+                        brush_alpha: alpha,
+                        style,
+                        glyphs: &glyphs,
+                    });
                 }
             }
-        });
+        }
     }
 }
 
@@ -1227,13 +1260,13 @@ mod tests {
     use super::*;
 
     struct TestScene {
-        appended_scene: bool,
+        stroked_glyph_run: bool,
     }
 
     impl TestScene {
         const fn new() -> Self {
             Self {
-                appended_scene: false,
+                stroked_glyph_run: false,
             }
         }
     }
@@ -1244,6 +1277,7 @@ mod tests {
             _fill: peniko::Fill,
             _transform: kurbo::Affine,
             _brush: &peniko::Brush,
+            _brush_transform: Option<kurbo::Affine>,
             _shape: &kurbo::BezPath,
         ) {
         }
@@ -1253,6 +1287,7 @@ mod tests {
             _stroke: &kurbo::Stroke,
             _transform: kurbo::Affine,
             _brush: &peniko::Brush,
+            _brush_transform: Option<kurbo::Affine>,
             _shape: &kurbo::BezPath,
         ) {
         }
@@ -1279,11 +1314,84 @@ mod tests {
 
         fn draw_image(&mut self, _image: &peniko::ImageBrush, _transform: kurbo::Affine) {}
 
+        fn draw_glyph_run(&mut self, run: &waterui_graphics::GlyphRun<'_>) {
+            if matches!(run.style, peniko::StyleRef::Stroke(_)) {
+                self.stroked_glyph_run = true;
+            }
+        }
+
         fn append_vello_scene(&mut self, _scene: &vello::Scene, _transform: Option<kurbo::Affine>) {
-            self.appended_scene = true;
         }
 
         fn reset(&mut self) {}
+    }
+
+    /// Draws every kind of command a scene carries: solid and gradient fills,
+    /// a stroke, a clipped layer, and a run of text.
+    fn draw_every_command(ctx: &mut DrawingContext<'_>) {
+        ctx.set_fill_style(waterui_graphics::color::Srgb::new(0.09, 0.10, 0.15));
+        ctx.fill_rect(Rect::from_size(Size::new(ctx.width, ctx.height)));
+
+        let mut gradient = ctx.create_linear_gradient(24.0, 24.0, 216.0, 120.0);
+        gradient.add_color_stop(0.0, waterui_graphics::color::Srgb::new(0.95, 0.55, 0.66));
+        gradient.add_color_stop(1.0, waterui_graphics::color::Srgb::new(0.35, 0.63, 0.94));
+        ctx.set_fill_style(gradient);
+        ctx.fill_rect(Rect::new(Point::new(24.0, 24.0), Size::new(192.0, 96.0)));
+
+        ctx.set_stroke_style(waterui_graphics::color::Srgb::new(1.0, 0.84, 0.32));
+        ctx.set_line_width(6.0);
+        ctx.stroke_circle(Point::new(300.0, 72.0), 40.0);
+
+        ctx.push_clip_rect(Rect::new(Point::new(24.0, 140.0), Size::new(150.0, 60.0)));
+        ctx.set_fill_style(waterui_graphics::color::Srgb::new(0.40, 0.85, 0.60));
+        ctx.fill_circle(Point::new(96.0, 170.0), 60.0);
+        ctx.pop_layer();
+
+        ctx.set_fill_style(waterui_graphics::color::Srgb::new(0.98, 0.98, 1.0));
+        ctx.set_font(FontSpec::new("", 28.0));
+        ctx.fill_text("Scene engines", Point::new(200.0, 170.0));
+    }
+
+    /// Renders the same drawing through both scene engines.
+    ///
+    /// This machine's GPU runs the compute pipeline, so it can run either
+    /// engine; a device without indirect execution can only run the hybrid one,
+    /// and this is how the two are compared where both are available. The PNGs
+    /// are for looking at — the engines rasterize differently, so nothing about
+    /// them is asserted pixel-wise.
+    #[test]
+    fn both_scene_engines_render_a_canvas() {
+        use waterui_graphics::shared_context::SceneEngine;
+        use waterui_graphics::{GpuRuntime, OffscreenRenderConfig, OffscreenSize};
+
+        let directory = std::path::Path::new("/tmp/waterui_scene_engines");
+        std::fs::create_dir_all(directory).expect("output directory must be creatable");
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("scene engine comparison requires a working GPU runtime");
+        let size = OffscreenSize::try_from_pixels(400, 220).expect("test size must be valid");
+
+        for (engine, name) in [
+            (SceneEngine::Classic, "classic"),
+            (SceneEngine::Hybrid, "hybrid"),
+        ] {
+            let surface = SceneView::new(CanvasContent {
+                draw_fn: Box::new(draw_every_command),
+                invalidator: None,
+                pending_redraw: Rc::new(Cell::new(false)),
+                active_guards: Vec::new(),
+                text_engine: TextEngine::default(),
+            })
+            .into_gpu_surface();
+            let config = OffscreenRenderConfig::new(size)
+                .format(wgpu::TextureFormat::Rgba8Unorm)
+                .scene_engine(engine);
+            let mut env = waterui_core::Environment::new();
+            let output = pollster::block_on(surface.render_offscreen(&runtime, config, &mut env))
+                .expect("offscreen render should succeed");
+            output
+                .save_png(directory.join(alloc::format!("{name}.png")))
+                .expect("png should be written");
+        }
     }
 
     #[test]
@@ -1338,8 +1446,8 @@ mod tests {
         }
 
         assert!(
-            scene.appended_scene,
-            "expected stroke_text to append a scene"
+            scene.stroked_glyph_run,
+            "expected stroke_text to draw a stroked glyph run"
         );
     }
 }

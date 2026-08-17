@@ -25,7 +25,7 @@ use std::time::Duration;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_core::{Environment, MainThreadBound, Native, NativeView, View};
 
-use crate::shared_context::GpuRuntime;
+use crate::shared_context::{GpuRuntime, SceneEngine, SharedSceneRenderer};
 
 type ErasedSetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 
@@ -113,7 +113,7 @@ pub struct GpuContext<'a> {
     /// `shader_cache`: a renderer's pipelines depend on the device, not on what
     /// is drawn with them, so a dozen icons share one rather than each building
     /// its own and reaching a first frame separately.
-    pub scene_renderer: &'a Arc<crate::gpu::shared_context::SharedSceneRenderer>,
+    pub scene_renderer: &'a Arc<SharedSceneRenderer>,
     /// Preferred MSAA sample count for `surface_format`.
     ///
     /// Prefer [`GpuContext::new`], which derives this from the adapter's
@@ -160,6 +160,11 @@ impl<'a> GpuContext<'a> {
     /// willing to allocate attachments for. The result is the largest
     /// supported count at or below that cap, and always at least 1.
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every one of these is an independent value a context is made of; \
+                  grouping them into a struct only moves the same list one level down"
+    )]
     pub fn new(
         adapter: &'a wgpu::Adapter,
         device: &'a wgpu::Device,
@@ -648,6 +653,13 @@ pub struct OffscreenRenderConfig {
     pub pointer: PointerState,
     /// Gesture state snapshot used for zoom/pan renderers.
     pub gesture: GestureState,
+    /// Engine to rasterize scene content with, overriding what the device
+    /// would pick for itself.
+    ///
+    /// A device that can run the compute pipeline can run both engines, so
+    /// this is how the same content is rendered through each of them and the
+    /// results compared. `None` uses the engine the device chose.
+    pub scene_engine: Option<SceneEngine>,
 }
 
 impl Default for OffscreenRenderConfig {
@@ -659,6 +671,7 @@ impl Default for OffscreenRenderConfig {
             msaa_samples: None,
             pointer: PointerState::default(),
             gesture: GestureState::new(),
+            scene_engine: None,
         }
     }
 }
@@ -698,6 +711,13 @@ impl OffscreenRenderConfig {
     #[must_use]
     pub const fn gesture(mut self, gesture: GestureState) -> Self {
         self.gesture = gesture;
+        self
+    }
+
+    /// Rasterizes scene content with `engine` rather than the device's choice.
+    #[must_use]
+    pub const fn scene_engine(mut self, engine: SceneEngine) -> Self {
+        self.scene_engine = Some(engine);
         self
     }
 }
@@ -1115,13 +1135,19 @@ impl GpuSurface {
         )?;
         let device = shared.device.as_ref();
         let queue = shared.queue.as_ref();
+        let overridden_renderer = config
+            .scene_engine
+            .map(|engine| Arc::new(SharedSceneRenderer::new(engine)));
+        let scene_renderer = overridden_renderer
+            .as_ref()
+            .unwrap_or_else(|| shared.scene_renderer());
         let context = GpuContext {
             adapter: &shared.adapter,
             device,
             queue,
             surface_format: config.format,
             shader_cache: shared.shader_cache.as_ref(),
-            scene_renderer: shared.scene_renderer(),
+            scene_renderer,
             msaa_samples,
             redraw_handle: RedrawHandle::new(),
         };
@@ -1209,13 +1235,19 @@ impl GpuSurface {
         )?;
         let device = shared.device.as_ref();
         let queue = shared.queue.as_ref();
+        let overridden_renderer = config
+            .scene_engine
+            .map(|engine| Arc::new(SharedSceneRenderer::new(engine)));
+        let scene_renderer = overridden_renderer
+            .as_ref()
+            .unwrap_or_else(|| shared.scene_renderer());
         let context = GpuContext {
             adapter: &shared.adapter,
             device,
             queue,
             surface_format: config.format,
             shader_cache: shared.shader_cache.as_ref(),
-            scene_renderer: shared.scene_renderer(),
+            scene_renderer,
             msaa_samples,
             redraw_handle: RedrawHandle::new(),
         };
