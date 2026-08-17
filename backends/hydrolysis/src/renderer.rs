@@ -232,6 +232,9 @@ pub struct HydrolysisRenderer {
     /// Module cache for shaders that embedded GPU surfaces, view effects and
     /// filters assemble at runtime. Shared so identical WGSL compiles once.
     shader_cache: Arc<WgslModuleCache>,
+    /// The scene renderer embedded GPU surfaces share, for the same reason: its
+    /// pipelines belong to the device rather than to any one scene.
+    scene_renderer: Arc<waterui_graphics::SharedSceneRenderer>,
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
     frame_instant: Instant,
@@ -345,6 +348,7 @@ impl HydrolysisRenderer {
             signals: FrameSignals::new(frame_instant),
             host_redraw_handle: None,
             shader_cache: Arc::new(WgslModuleCache::new()),
+            scene_renderer: Arc::default(),
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
             frame_instant,

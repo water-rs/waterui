@@ -98,7 +98,9 @@ struct SceneSurfaceRenderer {
     scene: vello::Scene,
     // `vello::Renderer` holds a `RefCell` (it is `!Sync`); it is created in setup and
     // only used in render (both on the main render thread), never in `measure`.
-    renderer: Option<MainThreadBound<vello::Renderer>>,
+    // Taken from the device during setup rather than built here: a renderer's
+    // pipelines depend on the device, not on this scene.
+    renderer: Option<alloc::sync::Arc<crate::gpu::shared_context::SharedSceneRenderer>>,
     intermediate_texture: Option<wgpu::Texture>,
     intermediate_view: Option<wgpu::TextureView>,
     blit_pipeline: Option<wgpu::RenderPipeline>,
@@ -133,18 +135,12 @@ impl GpuView for SceneSurfaceRenderer {
         self.content
             .set_invalidator(Some(Rc::new(move || redraw_handle.request_redraw())));
 
-        self.renderer = Some(MainThreadBound::new(
-            vello::Renderer::new(
-                ctx.device,
-                vello::RendererOptions {
-                    use_cpu: false,
-                    antialiasing_support: vello::AaSupport::area_only(),
-                    num_init_threads: std::num::NonZeroUsize::new(1),
-                    pipeline_cache: None,
-                },
-            )
-            .expect("failed to create SceneView vello renderer"),
-        ));
+        // The renderer belongs to the device, so this takes a handle to the
+        // shared one rather than building another. Building one per view made a
+        // dozen icons compile a dozen copies of the same pipelines and reach a
+        // first frame a dozen separate times, which is what icons appearing one
+        // after another looks like.
+        self.renderer = Some(alloc::sync::Arc::clone(ctx.scene_renderer));
 
         let (vertex_shader, fragment_shader) =
             crate::shaders::BLIT.create_render_stages(ctx.device, "vs_main", "fs_main");
@@ -266,20 +262,22 @@ impl GpuView for SceneSurfaceRenderer {
                 .build_scene(&mut scene2d, frame.width as f32, frame.height as f32)
         };
 
-        renderer
-            .render_to_texture(
-                frame.device,
-                frame.queue,
-                &self.scene,
-                intermediate_view,
-                &vello::RenderParams {
-                    base_color: peniko::Color::TRANSPARENT,
-                    width: frame.width,
-                    height: frame.height,
-                    antialiasing_method: vello::AaConfig::Area,
-                },
-            )
-            .expect("SceneView vello render failed");
+        renderer.with(frame.device, |renderer| {
+            renderer
+                .render_to_texture(
+                    frame.device,
+                    frame.queue,
+                    &self.scene,
+                    intermediate_view,
+                    &vello::RenderParams {
+                        base_color: peniko::Color::TRANSPARENT,
+                        width: frame.width,
+                        height: frame.height,
+                        antialiasing_method: vello::AaConfig::Area,
+                    },
+                )
+                .expect("SceneView vello render failed");
+        });
 
         let bind_group_layout = self
             .blit_bind_group_layout

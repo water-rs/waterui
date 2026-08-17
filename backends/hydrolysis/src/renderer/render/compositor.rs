@@ -179,6 +179,7 @@ struct EmbeddedGpuSurfaceSetup {
     device: wgpu::Device,
     queue: wgpu::Queue,
     shader_cache: Arc<WgslModuleCache>,
+    scene_renderer: Arc<waterui_graphics::SharedSceneRenderer>,
     host_redraw_handle: Option<RedrawHandle>,
 }
 
@@ -823,6 +824,7 @@ impl EmbeddedGpuSurfaceRuntime {
                 &resources.queue,
                 surface_format,
                 resources.shader_cache.as_ref(),
+                &resources.scene_renderer,
                 msaa_samples.get(),
                 redraw_handle,
             );
@@ -1075,6 +1077,7 @@ impl HydrolysisRenderer {
             device: device.clone(),
             queue: queue.clone(),
             shader_cache: Arc::clone(&self.shader_cache),
+            scene_renderer: Arc::clone(&self.scene_renderer),
             host_redraw_handle: self.host_redraw_handle.clone(),
         }
     }
