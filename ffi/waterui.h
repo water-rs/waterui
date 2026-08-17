@@ -5669,6 +5669,30 @@ typedef struct WuiNavigationToolbarItem {
    * The item's content view.
    */
   struct WuiAnyView *content;
+  /**
+   * The item's name, or null when it has no semantic label.
+   *
+   * The platforms disagree about how much of a toolbar action to draw: a Mac
+   * shows the icon alone and keeps the name for the overflow menu, its
+   * tooltip and assistive technology, while a phone's navigation bar
+   * commonly shows the text. The name and the icon therefore travel apart
+   * from the content view, so each backend can draw what its chrome calls
+   * for rather than placing a view it cannot interpret.
+   */
+  WuiComputed_StyledStr *title;
+  /**
+   * The item's icon as a platform symbol, or null.
+   *
+   * A backend that knows the symbol should prefer this: it renders at the
+   * size and weight the platform's own chrome calls for.
+   */
+  struct WuiSystemIcon *system_icon;
+  /**
+   * The item's icon as a view to render, or null.
+   *
+   * Set when the icon is not a platform symbol — a packaged icon set, say.
+   */
+  struct WuiAnyView *icon;
 } WuiNavigationToolbarItem;
 
 /**

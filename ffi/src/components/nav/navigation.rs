@@ -17,7 +17,8 @@ use waterui_navigation::{
     NativeNavigationTransition, NavigationController, NavigationDestinationState, NavigationSearch,
     NavigationSplitColumnVisibility, NavigationSplitLayout, NavigationStack,
     NavigationTitleDisplayMode, NavigationToolbarItem, NavigationToolbarPlacement,
-    NavigationTransaction, NavigationView, split::NavigationSplitDetailBuilder,
+    NavigationTransaction, NavigationView, ToolbarItemIcon,
+    split::NavigationSplitDetailBuilder,
 };
 use waterui_text::styled::StyledStr;
 
@@ -246,15 +247,46 @@ pub struct WuiNavigationToolbarItem {
     pub placement: WuiNavigationToolbarPlacement,
     /// The item's content view.
     pub content: *mut WuiAnyView,
+    /// The item's name, or null when it has no semantic label.
+    ///
+    /// The platforms disagree about how much of a toolbar action to draw: a Mac
+    /// shows the icon alone and keeps the name for the overflow menu, its
+    /// tooltip and assistive technology, while a phone's navigation bar
+    /// commonly shows the text. The name and the icon therefore travel apart
+    /// from the content view, so each backend can draw what its chrome calls
+    /// for rather than placing a view it cannot interpret.
+    pub title: *mut WuiComputed<StyledStr>,
+    /// The item's icon as a platform symbol, or null.
+    ///
+    /// A backend that knows the symbol should prefer this: it renders at the
+    /// size and weight the platform's own chrome calls for.
+    pub system_icon: *mut WuiSystemIcon,
+    /// The item's icon as a view to render, or null.
+    ///
+    /// Set when the icon is not a platform symbol — a packaged icon set, say.
+    pub icon: *mut WuiAnyView,
 }
 
 impl IntoFFI for NavigationToolbarItem {
     type FFI = WuiNavigationToolbarItem;
 
     fn into_ffi(self) -> Self::FFI {
+        let (system_icon, icon) = match self.icon {
+            Some(ToolbarItemIcon::System(icon)) => (
+                Box::into_raw(Box::new(icon.into_ffi())),
+                core::ptr::null_mut(),
+            ),
+            Some(ToolbarItemIcon::View(view)) => (core::ptr::null_mut(), view.build().into_ffi()),
+            None => (core::ptr::null_mut(), core::ptr::null_mut()),
+        };
         WuiNavigationToolbarItem {
             placement: self.placement.into(),
             content: self.content.into_ffi(),
+            title: self
+                .title
+                .map_or(core::ptr::null_mut(), |title| title.content().into_ffi()),
+            system_icon,
+            icon,
         }
     }
 }

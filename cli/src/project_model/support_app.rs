@@ -10,6 +10,62 @@ pub(crate) fn support_app_path(name: &str) -> Result<PathBuf> {
     Ok(crate::water_dir::water_home_dir()?.join(name))
 }
 
+/// Discards a support application generated against a different `WaterUI`.
+///
+/// A support application records absolute paths to the checkout it was built
+/// from. One directory is shared by every project, so a checkout that has since
+/// moved or been deleted leaves behind a project whose manifests point at
+/// nothing — and reading its workspace fails long before the scaffolder would
+/// have noticed the mismatch and rebuilt it. Throwing it away first is what
+/// makes the rebuild happen.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn discard_support_app_for_other_runtime(
+    path: &Path,
+    waterui_path: Option<&Path>,
+) -> Result<()> {
+    let manifest = path.join("Water.toml");
+    if !manifest.is_file() {
+        return Ok(());
+    }
+    let contents = match smol::fs::read_to_string(&manifest).await {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(eyre!(
+                "Failed to read {}: {error}",
+                manifest.display()
+            ));
+        }
+    };
+
+    let recorded = contents
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("waterui_path"))
+        .and_then(|value| value.split('"').nth(1))
+        .map(PathBuf::from);
+
+    let matches = match (&recorded, waterui_path) {
+        (Some(recorded), Some(wanted)) => {
+            let recorded = recorded.canonicalize().unwrap_or_else(|_| recorded.clone());
+            let wanted = wanted.canonicalize().unwrap_or_else(|_| wanted.to_path_buf());
+            recorded == wanted
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    if matches {
+        return Ok(());
+    }
+
+    info!(
+        path = %path.display(),
+        "Support app was generated against a different WaterUI; regenerating"
+    );
+    smol::fs::remove_dir_all(path)
+        .await
+        .map_err(|error| eyre!("Failed to remove the stale support app: {error}"))
+}
+
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) async fn ensure_support_app<F, Fut>(
     path: &Path,

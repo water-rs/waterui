@@ -132,6 +132,9 @@ impl InspectorServerConfig {
     /// Returns `None` in a release build: inspection there stays opt-in through
     /// [`Self::from_env`].
     ///
+    /// A debug build only *prepares* this; nothing is bound or advertised until
+    /// the user asks for the inspector. See [`InspectorRuntime`].
+    ///
     /// The token is generated per process, so an endpoint is never open to
     /// whoever happens to reach the port. Where the endpoint listens depends on
     /// who needs to reach it: a desktop application is inspected from the same
@@ -502,16 +505,21 @@ fn available_channels() -> ChannelSet {
     available
 }
 
-/// Starts the endpoint from the environment, or automatically in a debug build.
+/// Starts the endpoint when the environment asks for one.
 ///
-/// A debug build listens without being asked, so that any `WaterUI` application
-/// a developer runs can be inspected without deciding in advance that it should
-/// be. A release build inspects only when the environment says so.
+/// Inspection is something the user asks for — through "Inspect Element", or by
+/// configuring an endpoint in the environment. A debug build no longer binds a
+/// port and advertises itself merely for having been launched: an application
+/// that nobody is inspecting should not be holding a socket open, and an
+/// unrequested endpoint is a service the developer did not ask to run.
+///
+/// A debug build can still be *found* by `water inspector`, because the CLI
+/// launches it with the environment configuration this reads.
 #[must_use]
 pub fn maybe_init_from_env(backend: &'static str) -> Option<InspectorRuntime> {
     let config = match InspectorServerConfig::from_env() {
         Ok(Some(config)) => config,
-        Ok(None) => InspectorServerConfig::for_debug_build()?,
+        Ok(None) => return None,
         Err(error) => {
             tracing::warn!(
                 target: "waterui::inspector",
