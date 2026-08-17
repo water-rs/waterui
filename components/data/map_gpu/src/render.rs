@@ -2250,13 +2250,14 @@ impl MapPainter {
             let (x, y) = camera.tile_point(tile, extent, point.x, point.y);
             let disc = Circle::new((x, y), radius).to_path(0.1);
             if let Some(fill) = fill {
-                scene.fill(Fill::NonZero, Affine::IDENTITY, &Brush::Solid(fill), &disc);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, &Brush::Solid(fill), None, &disc);
             }
             if let Some(stroke) = stroke {
                 scene.stroke(
                     &Stroke::new(stroke_width),
                     Affine::IDENTITY,
                     &Brush::Solid(stroke),
+                    None,
                     &disc,
                 );
             }
@@ -2299,12 +2300,14 @@ impl MapPainter {
             Fill::NonZero,
             Affine::IDENTITY,
             &Brush::Solid(CHROME_SURFACE),
+            None,
             &dial,
         );
         scene.stroke(
             &Stroke::new(1.0),
             Affine::IDENTITY,
             &Brush::Solid(CHROME_BORDER),
+            None,
             &dial,
         );
 
@@ -2320,6 +2323,7 @@ impl MapPainter {
             Fill::NonZero,
             Affine::IDENTITY,
             &Brush::Solid(COMPASS_NORTH),
+            None,
             &north,
         );
         let mut south = BezPath::new();
@@ -2331,6 +2335,7 @@ impl MapPainter {
             Fill::NonZero,
             Affine::IDENTITY,
             &Brush::Solid(COMPASS_SOUTH),
+            None,
             &south,
         );
     }
@@ -2352,6 +2357,7 @@ impl MapPainter {
             &Stroke::new(2.0),
             Affine::IDENTITY,
             &Brush::Solid(CHROME_BORDER),
+            None,
             &bar,
         );
         self.draw_label(
@@ -2488,6 +2494,7 @@ impl MapPainter {
                 Fill::NonZero,
                 Affine::IDENTITY,
                 &Brush::Solid(batch.color),
+                None,
                 &batch.path,
             );
         }
@@ -2496,6 +2503,7 @@ impl MapPainter {
                 &Stroke::new(batch.width),
                 Affine::IDENTITY,
                 &Brush::Solid(batch.color),
+                None,
                 &batch.path,
             );
         }
@@ -2658,6 +2666,7 @@ impl MapPainter {
                 Fill::NonZero,
                 Affine::IDENTITY,
                 &Brush::Solid(Color::new([0.86, 0.12, 0.18, 1.0])),
+                None,
                 &marker,
             );
             self.draw_label(
@@ -2688,12 +2697,14 @@ impl MapPainter {
                 Fill::NonZero,
                 Affine::IDENTITY,
                 &Brush::Solid(Color::new([0.08, 0.45, 0.95, 0.14])),
+                None,
                 &accuracy_circle,
             );
             scene.stroke(
                 &Stroke::new(1.0),
                 Affine::IDENTITY,
                 &Brush::Solid(Color::new([0.08, 0.45, 0.95, 0.38])),
+                None,
                 &accuracy_circle,
             );
         }
@@ -2702,6 +2713,7 @@ impl MapPainter {
             Fill::NonZero,
             Affine::IDENTITY,
             &Brush::Solid(Color::new([1.0, 1.0, 1.0, 1.0])),
+            None,
             &outer,
         );
         let inner = Circle::new((x, y), 5.5).to_path(0.1);
@@ -2709,6 +2721,7 @@ impl MapPainter {
             Fill::NonZero,
             Affine::IDENTITY,
             &Brush::Solid(Color::new([0.05, 0.42, 0.95, 1.0])),
+            None,
             &inner,
         );
     }
@@ -2736,7 +2749,7 @@ fn fill_viewport(scene: &mut dyn Scene2D, viewport: Viewport, color: Color) {
         f64::from(viewport.height),
     )
     .to_path(0.1);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, &Brush::Solid(color), &path);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, &Brush::Solid(color), None, &path);
 }
 
 fn passes_filter(layer: &StyleLayer, context: &EvaluationContext) -> bool {

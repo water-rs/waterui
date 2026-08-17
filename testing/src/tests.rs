@@ -519,6 +519,7 @@ impl SceneContent for TestSceneContent {
             vello::peniko::Fill::NonZero,
             vello::kurbo::Affine::IDENTITY,
             &brush,
+            None,
             &rect,
         );
         false

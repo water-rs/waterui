@@ -65,6 +65,41 @@ pub struct SharedGpuContext {
     submission_completion_driver: GpuSubmissionCompletionDriver,
 }
 
+/// Which engine rasterizes scenes on a given device.
+///
+/// Decided from what the adapter reports, once, when the device is created —
+/// not from a failure at draw time. A device that cannot run the classic
+/// pipeline should never be asked to try it: doing so aborts the process rather
+/// than degrading, because the error surfaces inside wgpu's default handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SceneEngine {
+    /// The compute pipeline. Needs indirect execution; the faster of the two.
+    Classic,
+    /// Paths on the CPU, rasterization on the GPU. Needs no indirect execution,
+    /// which is what makes it the one that runs on the iOS Simulator.
+    Hybrid,
+}
+
+impl SceneEngine {
+    /// The engine this adapter can actually run.
+    #[must_use]
+    pub fn for_adapter(adapter: &wgpu::Adapter) -> Self {
+        if adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION)
+        {
+            Self::Classic
+        } else {
+            tracing::info!(
+                adapter = %adapter.get_info().name,
+                "adapter has no indirect execution; scenes render through the hybrid engine"
+            );
+            Self::Hybrid
+        }
+    }
+}
+
 /// One device's scene renderer, built the first time something draws a scene.
 ///
 /// A renderer owns the pipelines that rasterize a scene; those depend on the
@@ -72,33 +107,77 @@ pub struct SharedGpuContext {
 /// device shares this one. Building one per view made an application with a
 /// dozen icons compile a dozen copies of the same pipelines and reach a first
 /// frame a dozen separate times.
-#[derive(Default)]
 pub struct SharedSceneRenderer {
-    renderer: OnceLock<Mutex<vello::Renderer>>,
+    engine: SceneEngine,
+    classic: OnceLock<Mutex<vello::Renderer>>,
+    // The hybrid engine rasterizes through a render pipeline, so its pipelines
+    // are built for one target format; a device that also renders offscreen in
+    // another format needs a second one. There are never more than a couple, so
+    // they are looked up by scanning rather than hashed.
+    hybrid: Mutex<Vec<(wgpu::TextureFormat, HybridRenderer)>>,
+}
+
+/// The hybrid renderer and the resources it draws with.
+///
+/// They are created together and used together, so they are kept together.
+#[derive(Debug)]
+pub struct HybridRenderer {
+    /// The renderer itself.
+    pub renderer: vello_hybrid::Renderer,
+    /// Its atlas and buffer resources.
+    pub resources: vello_hybrid::Resources,
+}
+
+impl Default for SharedSceneRenderer {
+    fn default() -> Self {
+        Self::new(SceneEngine::Classic)
+    }
 }
 
 impl fmt::Debug for SharedSceneRenderer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SharedSceneRenderer")
-            .field("built", &self.renderer.get().is_some())
-            .finish()
+            .field("engine", &self.engine)
+            .finish_non_exhaustive()
     }
 }
 
 impl SharedSceneRenderer {
-    /// Runs `use_renderer` against this device's renderer, building it if needed.
+    /// A renderer for `engine`, built when something first draws a scene.
+    #[must_use]
+    pub const fn new(engine: SceneEngine) -> Self {
+        Self {
+            engine,
+            classic: OnceLock::new(),
+            hybrid: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Which engine this device rasterizes scenes with.
+    #[must_use]
+    pub const fn engine(&self) -> SceneEngine {
+        self.engine
+    }
+
+    /// Runs `use_renderer` against the classic renderer, building it if needed.
     ///
     /// # Panics
     ///
-    /// Panics when the renderer cannot be built, which means the device cannot
-    /// rasterize vector content at all.
-    pub fn with<R>(
+    /// Panics when the renderer cannot be built, or when this device runs the
+    /// hybrid engine — a caller that reaches here on such a device has skipped
+    /// the [`Self::engine`] check.
+    pub fn with_classic<R>(
         &self,
         device: &wgpu::Device,
         use_renderer: impl FnOnce(&mut vello::Renderer) -> R,
     ) -> R {
-        let renderer = self.renderer.get_or_init(|| {
+        assert_eq!(
+            self.engine,
+            SceneEngine::Classic,
+            "this device rasterizes scenes with the hybrid engine"
+        );
+        let renderer = self.classic.get_or_init(|| {
             Mutex::new(
                 vello::Renderer::new(
                     device,
@@ -117,6 +196,52 @@ impl SharedSceneRenderer {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         use_renderer(&mut guard)
     }
+
+    /// Runs `use_renderer` against the hybrid renderer, building it if needed.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this device runs the classic engine.
+    pub fn with_hybrid<R>(
+        &self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        use_renderer: impl FnOnce(&mut HybridRenderer) -> R,
+    ) -> R {
+        assert_eq!(
+            self.engine,
+            SceneEngine::Hybrid,
+            "this device rasterizes scenes with the classic engine"
+        );
+        let mut renderers = self
+            .hybrid
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = renderers
+            .iter()
+            .position(|(candidate, _)| *candidate == format)
+            .unwrap_or_else(|| {
+                let (renderer, resources) = vello_hybrid::Renderer::new(
+                    device,
+                    &vello_hybrid::RenderTargetConfig {
+                        format,
+                        // Sized per render; every render is handed the target's
+                        // own size, so the one given here only has to be valid.
+                        width: 1,
+                        height: 1,
+                    },
+                );
+                renderers.push((
+                    format,
+                    HybridRenderer {
+                        renderer,
+                        resources,
+                    },
+                ));
+                renderers.len() - 1
+            });
+        use_renderer(&mut renderers[index].1)
+    }
 }
 
 impl fmt::Debug for SharedGpuContext {
@@ -131,6 +256,7 @@ impl fmt::Debug for SharedGpuContext {
 impl SharedGpuContext {
     async fn new() -> Result<Self, SharedContextError> {
         let (instance, adapter) = request_instance_and_adapter().await?;
+        let scene_engine = SceneEngine::for_adapter(&adapter);
         let adapter_info = adapter.get_info();
         tracing::debug!(
             name = %adapter_info.name,
@@ -172,7 +298,7 @@ impl SharedGpuContext {
             device,
             queue,
             shader_cache: Arc::new(WgslModuleCache::new()),
-            scene_renderer: Arc::new(SharedSceneRenderer::default()),
+            scene_renderer: Arc::new(SharedSceneRenderer::new(scene_engine)),
             submission_completion_driver,
         })
     }

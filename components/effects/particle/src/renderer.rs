@@ -921,6 +921,7 @@ mod tests {
             queue: shared.queue.as_ref(),
             surface_format: wgpu::TextureFormat::Rgba8UnormSrgb,
             shader_cache: shared.shader_cache.as_ref(),
+            scene_renderer: shared.scene_renderer(),
             msaa_samples: 1,
             redraw_handle: RedrawHandle::new(),
         }
