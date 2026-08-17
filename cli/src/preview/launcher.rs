@@ -1102,11 +1102,16 @@ async fn scaffold_preview_module(project: &Project) -> Result<PathBuf> {
     // a different `WaterUI` checkout points its manifests at a path that may no
     // longer exist, and reading it fails before the scaffolder gets a chance to
     // notice and rebuild.
-    support_app::discard_support_app_for_other_runtime(
-        &support_path,
-        project.manifest().waterui_path.as_deref().map(Path::new),
-    )
-    .await?;
+    // The project's recorded runtime path is written relative to the project,
+    // so it is resolved against the project rather than against wherever the
+    // CLI happens to have been invoked from.
+    let runtime_path = project
+        .manifest()
+        .waterui_path
+        .as_deref()
+        .map(|path| project.root().join(path));
+    support_app::discard_support_app_for_other_runtime(&support_path, runtime_path.as_deref())
+        .await?;
     let workspace_root = preview_support_ffi_crate_path().await?;
     let modules_root = workspace_root.join(crate::templates::PREVIEW_MODULES_DIR);
     let crate_path = project.preview_dylib_crate_path(&workspace_root);
