@@ -422,11 +422,22 @@ impl NavigationController {
 
     /// Requests a user-initiated pop before a native transition begins.
     ///
+    /// A request, not an instruction: asking to pop more than the path holds
+    /// pops what there is. A backend's idea of the depth can lag the path's —
+    /// its back button is drawn from a stack it maintains itself — and a user
+    /// pressing back is not a reason to take the process down. The invariants
+    /// on [`NavigationPath::pop_n`] still hold for callers that mutate the path
+    /// directly, where an over-long pop really is a programming error.
+    ///
     /// # Panics
     ///
     /// Panics when `count` is zero.
     pub fn request_pop(&self, count: usize) {
         assert!(count != 0, "navigation pop count must be non-zero");
+        let count = count.min(self.state.depth().get());
+        if count == 0 {
+            return;
+        }
         if let Some(handler) = self.state.path_pop_handler().borrow().as_ref().cloned() {
             handler(count);
         } else {
