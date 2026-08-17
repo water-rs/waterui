@@ -27,7 +27,7 @@ pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer}
 #[cfg(feature = "gpu")]
 pub use image::{image_analysis, image_decode, image_generator};
 #[cfg(feature = "gpu")]
-pub use scene::{scene_view, scene2d, scene2d_vello};
+pub use scene::{scene_view, scene2d, scene2d_hybrid, scene2d_vello};
 
 /// Shared shader sources.
 #[cfg(feature = "gpu")]
@@ -47,7 +47,9 @@ pub use gpu_surface::{
 #[cfg(feature = "gpu")]
 pub use shader_surface::ShaderSurface;
 #[cfg(feature = "gpu")]
-pub use shared_context::{GpuRuntime, SharedContextError, SharedGpuContext, SharedSceneRenderer};
+pub use shared_context::{
+    GpuRuntime, SceneEngine, SharedContextError, SharedGpuContext, SharedSceneRenderer,
+};
 
 #[cfg(feature = "gpu")]
 pub use animated_mesh_gradient::{
@@ -106,8 +108,9 @@ pub use image_generator::{
 #[cfg(feature = "gpu")]
 pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent};
 #[cfg(feature = "gpu")]
-pub use scene2d::Scene2D;
+pub use scene2d::{Glyph, GlyphRun, Scene2D};
 #[cfg(feature = "gpu")]
+pub use scene2d_hybrid::HybridScene2D;
 pub use scene2d_vello::VelloScene2D;
 
 // Re-export dependencies used by macros

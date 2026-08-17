@@ -5,8 +5,10 @@ use core::fmt;
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, MainThreadBound, Native, NativeView, View};
 
+use crate::gpu::shared_context::SceneEngine;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use crate::scene2d::Scene2D;
+use crate::scene2d_hybrid::HybridScene2D;
 use crate::scene2d_vello::VelloScene2D;
 
 /// Environment marker: render `SceneView` directly in the backend scene.
@@ -90,17 +92,37 @@ impl View for SceneView {
     }
 }
 
+/// The scene this surface builds each frame, in whichever engine's form.
+///
+/// The engine is a property of the device, so which variant this is settles
+/// during setup and never changes afterwards.
+/// Both are boxed: they are large and differ in size by an order of magnitude,
+/// so every surface would otherwise carry the larger of the two whichever
+/// engine it actually uses.
+enum SceneBuffer {
+    /// A scene for the compute pipeline, rasterized into an intermediate
+    /// storage texture and blitted.
+    Classic(Box<vello::Scene>),
+    /// A scene for the CPU/GPU split pipeline, rasterized straight into the
+    /// frame.
+    Hybrid(Box<vello_hybrid::Scene>),
+}
+
 struct SceneSurfaceRenderer {
     // `SceneContent` is `!Send` (it carries an `Rc` invalidator). `measure` never
     // touches it (it returns a fixed size), so confining it keeps the renderer
     // `Send + Sync` for the `SubView` bound while setup/render stay on the main thread.
     content: MainThreadBound<Box<dyn SceneContent>>,
-    scene: vello::Scene,
-    // `vello::Renderer` holds a `RefCell` (it is `!Sync`); it is created in setup and
-    // only used in render (both on the main render thread), never in `measure`.
-    // Taken from the device during setup rather than built here: a renderer's
-    // pipelines depend on the device, not on this scene.
+    // Which engine's scene this is settles in setup, once the device says which
+    // one it rasterizes with.
+    scene: Option<SceneBuffer>,
+    // The renderer belongs to the device, not to this view: taken during setup
+    // rather than built here, because a renderer's pipelines depend on the
+    // device and not on this scene.
     renderer: Option<alloc::sync::Arc<crate::gpu::shared_context::SharedSceneRenderer>>,
+    // Classic rasterizes through a compute pass into a storage texture, which
+    // then has to be blitted; the hybrid engine draws straight into the frame
+    // and leaves all of this unused.
     intermediate_texture: Option<wgpu::Texture>,
     intermediate_view: Option<wgpu::TextureView>,
     blit_pipeline: Option<wgpu::RenderPipeline>,
@@ -113,7 +135,7 @@ impl SceneSurfaceRenderer {
     fn new(content: Box<dyn SceneContent>) -> Self {
         Self {
             content: MainThreadBound::new(content),
-            scene: vello::Scene::new(),
+            scene: None,
             renderer: None,
             intermediate_texture: None,
             intermediate_view: None,
@@ -141,6 +163,15 @@ impl GpuView for SceneSurfaceRenderer {
         // first frame a dozen separate times, which is what icons appearing one
         // after another looks like.
         self.renderer = Some(alloc::sync::Arc::clone(ctx.scene_renderer));
+
+        if ctx.scene_renderer.engine() == SceneEngine::Hybrid {
+            // The hybrid engine rasterizes through a render pass, so it draws
+            // straight into the frame: no storage texture to rasterize into and
+            // nothing to blit out of it. Sized on the first frame.
+            self.scene = Some(SceneBuffer::Hybrid(Box::new(vello_hybrid::Scene::new(1, 1))));
+            return core::future::ready(());
+        }
+        self.scene = Some(SceneBuffer::Classic(Box::new(vello::Scene::new())));
 
         let (vertex_shader, fragment_shader) =
             crate::shaders::BLIT.create_render_stages(ctx.device, "vs_main", "fs_main");
@@ -222,12 +253,38 @@ impl GpuView for SceneSurfaceRenderer {
         core::future::ready(())
     }
 
-    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
     fn render(&mut self, frame: &mut GpuFrame) {
-        let renderer = self
-            .renderer
+        let renderer = alloc::sync::Arc::clone(
+            self.renderer
+                .as_ref()
+                .expect("SceneView renderer used before setup"),
+        );
+        let needs_next_frame = match renderer.engine() {
+            SceneEngine::Classic => self.render_classic(&renderer, frame),
+            SceneEngine::Hybrid => self.render_hybrid(&renderer, frame),
+        };
+        if needs_next_frame {
+            frame.request_redraw();
+        }
+    }
+}
+
+impl SceneSurfaceRenderer {
+    /// Rasterizes through the compute pipeline into a storage texture, then
+    /// blits that into the frame.
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    fn render_classic(
+        &mut self,
+        renderer: &crate::gpu::shared_context::SharedSceneRenderer,
+        frame: &mut GpuFrame,
+    ) -> bool {
+        let SceneBuffer::Classic(scene) = self
+            .scene
             .as_mut()
-            .expect("SceneView renderer used before setup");
+            .expect("SceneView scene used before setup")
+        else {
+            panic!("SceneView built a hybrid scene for the classic engine");
+        };
 
         if self.intermediate_size != (frame.width, frame.height) {
             let texture = frame.device.create_texture(&wgpu::TextureDescriptor {
@@ -255,19 +312,19 @@ impl GpuView for SceneSurfaceRenderer {
             .as_ref()
             .expect("SceneView intermediate view missing");
 
-        self.scene.reset();
+        scene.reset();
         let needs_next_frame = {
-            let mut scene2d = VelloScene2D::new(&mut self.scene);
+            let mut scene2d = VelloScene2D::new(scene);
             self.content
                 .build_scene(&mut scene2d, frame.width as f32, frame.height as f32)
         };
 
-        renderer.with(frame.device, |renderer| {
+        renderer.with_classic(frame.device, |renderer| {
             renderer
                 .render_to_texture(
                     frame.device,
                     frame.queue,
-                    &self.scene,
+                    scene,
                     intermediate_view,
                     &vello::RenderParams {
                         base_color: peniko::Color::TRANSPARENT,
@@ -336,8 +393,89 @@ impl GpuView for SceneSurfaceRenderer {
         }
 
         frame.queue.submit([encoder.finish()]);
-        if needs_next_frame {
-            frame.request_redraw();
-        }
+        needs_next_frame
+    }
+
+    /// Processes paths on the CPU and rasterizes them through a render pass
+    /// straight into the frame — no compute, and so nothing that a device
+    /// without indirect execution cannot do.
+    #[allow(clippy::cast_precision_loss)]
+    fn render_hybrid(
+        &mut self,
+        renderer: &crate::gpu::shared_context::SharedSceneRenderer,
+        frame: &mut GpuFrame,
+    ) -> bool {
+        let SceneBuffer::Hybrid(scene) = self
+            .scene
+            .as_mut()
+            .expect("SceneView scene used before setup")
+        else {
+            panic!("SceneView built a classic scene for the hybrid engine");
+        };
+
+        let width = u16::try_from(frame.width).expect("scene surface is wider than a hybrid scene");
+        let height =
+            u16::try_from(frame.height).expect("scene surface is taller than a hybrid scene");
+        scene.reset_and_resize(width, height);
+
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("SceneView hybrid encoder"),
+            });
+
+        // The engine loads the target rather than clearing it, because it also
+        // draws into targets it shares. This surface owns its frame outright,
+        // so it starts from transparent.
+        drop(
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("SceneView hybrid clear pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            }),
+        );
+
+        // The content is built inside the renderer's lock because glyphs
+        // rasterize into an atlas the renderer owns: a run of text is recorded
+        // against those resources, not against the scene alone.
+        let content = &mut self.content;
+        let needs_next_frame = renderer.with_hybrid(frame.device, frame.format, |hybrid| {
+            let needs_next_frame = {
+                let mut scene2d = HybridScene2D::new(scene, &mut hybrid.resources);
+                content.build_scene(&mut scene2d, frame.width as f32, frame.height as f32)
+            };
+            hybrid
+                .renderer
+                .render(
+                    scene,
+                    &mut hybrid.resources,
+                    frame.device,
+                    frame.queue,
+                    &mut encoder,
+                    &vello_hybrid::RenderSize {
+                        width: frame.width,
+                        height: frame.height,
+                    },
+                    &frame.view,
+                    None,
+                    &vello_hybrid::TextureBindings::new(),
+                )
+                .expect("SceneView hybrid render failed");
+            needs_next_frame
+        });
+
+        frame.queue.submit([encoder.finish()]);
+        needs_next_frame
     }
 }

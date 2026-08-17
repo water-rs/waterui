@@ -18,6 +18,8 @@ gpu = [
     "dep:futures",
     "dep:wgpu",
     "dep:vello",
+    "dep:vello_hybrid",
+    "dep:glifo",
     "dep:kurbo",
     "dep:peniko",
     "dep:bytemuck",
@@ -40,6 +42,8 @@ futures = { workspace = true, optional = true }
 pastey.workspace = true
 wgpu = { workspace = true, optional = true }
 vello = { workspace = true, optional = true }
+vello_hybrid = { workspace = true, optional = true }
+glifo = { workspace = true, optional = true }
 kurbo = { workspace = true, optional = true }
 peniko = { workspace = true, optional = true }
 bytemuck = { version = "1.25", optional = true }

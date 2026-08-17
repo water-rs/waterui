@@ -1,7 +1,7 @@
 use kurbo::{Affine, BezPath, Stroke};
 use peniko::{BlendMode, Brush, Fill, ImageBrush};
 
-use crate::scene2d::Scene2D;
+use crate::scene2d::{GlyphRun, Scene2D};
 
 /// Vello-backed `Scene2D` implementation.
 pub struct VelloScene2D<'a> {
@@ -34,12 +34,28 @@ impl<'a> VelloScene2D<'a> {
 }
 
 impl Scene2D for VelloScene2D<'_> {
-    fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &BezPath) {
-        self.scene.fill(fill, transform, brush, None, shape);
+    fn fill(
+        &mut self,
+        fill: Fill,
+        transform: Affine,
+        brush: &Brush,
+        brush_transform: Option<Affine>,
+        shape: &BezPath,
+    ) {
+        self.scene
+            .fill(fill, transform, brush, brush_transform, shape);
     }
 
-    fn stroke(&mut self, stroke: &Stroke, transform: Affine, brush: &Brush, shape: &BezPath) {
-        self.scene.stroke(stroke, transform, brush, None, shape);
+    fn stroke(
+        &mut self,
+        stroke: &Stroke,
+        transform: Affine,
+        brush: &Brush,
+        brush_transform: Option<Affine>,
+        shape: &BezPath,
+    ) {
+        self.scene
+            .stroke(stroke, transform, brush, brush_transform, shape);
     }
 
     fn push_layer(
@@ -63,6 +79,24 @@ impl Scene2D for VelloScene2D<'_> {
 
     fn draw_image(&mut self, image: &ImageBrush, transform: Affine) {
         self.scene.draw_image(image, transform);
+    }
+
+    fn draw_glyph_run(&mut self, run: &GlyphRun<'_>) {
+        self.scene
+            .draw_glyphs(run.font)
+            .brush(run.brush)
+            .brush_alpha(run.brush_alpha)
+            .transform(run.transform)
+            .font_size(run.font_size)
+            .normalized_coords(run.normalized_coords)
+            .draw(
+                run.style,
+                run.glyphs.iter().map(|glyph| vello::Glyph {
+                    id: glyph.id,
+                    x: glyph.x,
+                    y: glyph.y,
+                }),
+            );
     }
 
     fn append_vello_scene(&mut self, scene: &vello::Scene, transform: Option<Affine>) {

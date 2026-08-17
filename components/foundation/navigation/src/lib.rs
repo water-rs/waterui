@@ -758,6 +758,8 @@ impl Debug for NavigationToolbarItem {
             .debug_struct("NavigationToolbarItem")
             .field("placement", &self.placement)
             .field("content", &self.content)
+            .field("title", &self.title)
+            .field("icon", &self.icon)
             .finish()
     }
 }
