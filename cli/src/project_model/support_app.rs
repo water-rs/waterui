@@ -18,52 +18,69 @@ pub(crate) fn support_app_path(name: &str) -> Result<PathBuf> {
 /// nothing — and reading its workspace fails long before the scaffolder would
 /// have noticed the mismatch and rebuilt it. Throwing it away first is what
 /// makes the rebuild happen.
+///
+/// A support application is two halves: the small project under the Water home,
+/// and the generated backend workspace in the build cache, which is where the
+/// manifests that pin the checkout actually live. Discarding one without the
+/// other leaves exactly the file the next build reads, so both go together —
+/// including when only the cached half is left behind.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) async fn discard_support_app_for_other_runtime(
     path: &Path,
     waterui_path: Option<&Path>,
 ) -> Result<()> {
     let manifest = path.join("Water.toml");
-    if !manifest.is_file() {
+    let contents = match smol::fs::read_to_string(&manifest).await {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(eyre!("Failed to read {}: {error}", manifest.display()));
+        }
+    };
+
+    let recorded = contents.as_ref().and_then(|contents| {
+        contents
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("waterui_path"))
+            .and_then(|value| value.split('"').nth(1))
+            .map(PathBuf::from)
+    });
+
+    let matches = contents.is_some()
+        && match (&recorded, waterui_path) {
+            (Some(recorded), Some(wanted)) => {
+                let recorded = recorded.canonicalize().unwrap_or_else(|_| recorded.clone());
+                let wanted = wanted.canonicalize().unwrap_or_else(|_| wanted.to_path_buf());
+                recorded == wanted
+            }
+            (None, None) => true,
+            _ => false,
+        };
+    if matches {
         return Ok(());
     }
-    let contents = match smol::fs::read_to_string(&manifest).await {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(eyre!(
-                "Failed to read {}: {error}",
-                manifest.display()
-            ));
-        }
-    };
 
-    let recorded = contents
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("waterui_path"))
-        .and_then(|value| value.split('"').nth(1))
-        .map(PathBuf::from);
-
-    let matches = match (&recorded, waterui_path) {
-        (Some(recorded), Some(wanted)) => {
-            let recorded = recorded.canonicalize().unwrap_or_else(|_| recorded.clone());
-            let wanted = wanted.canonicalize().unwrap_or_else(|_| wanted.to_path_buf());
-            recorded == wanted
-        }
-        (None, None) => true,
-        _ => false,
-    };
-    if matches {
+    let cache = crate::water_dir::build_cache_container_for(path).await?;
+    if !path.exists() && !cache.exists() {
         return Ok(());
     }
 
     info!(
         path = %path.display(),
+        cache = %cache.display(),
         "Support app was generated against a different WaterUI; regenerating"
     );
-    smol::fs::remove_dir_all(path)
-        .await
-        .map_err(|error| eyre!("Failed to remove the stale support app: {error}"))
+    if path.exists() {
+        smol::fs::remove_dir_all(path)
+            .await
+            .map_err(|error| eyre!("Failed to remove the stale support app: {error}"))?;
+    }
+    if cache.exists() {
+        smol::fs::remove_dir_all(&cache).await.map_err(|error| {
+            eyre!("Failed to remove the stale support app's build cache: {error}")
+        })?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::redundant_pub_crate)]

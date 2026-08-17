@@ -120,6 +120,50 @@ pub async fn project_build_cache_dir(project_root: &Path) -> eyre::Result<PathBu
     Ok(project_build_cache_dir_in(&project_root, &cache_root))
 }
 
+/// Return the whole managed cache container for a project directory, which need
+/// not exist.
+///
+/// A generated backend workspace lives in the cache rather than in the project,
+/// so a project that has been thrown away leaves its cache behind — and that
+/// cache is what the next build reads. Canonicalizing the project root is not
+/// available in that case, so the nearest existing ancestor is canonicalized
+/// and the rest of the path appended as written.
+///
+/// # Errors
+/// Returns an error if no ancestor of `project_root` can be canonicalized or the
+/// global cache root cannot be resolved.
+pub async fn build_cache_container_for(project_root: &Path) -> eyre::Result<PathBuf> {
+    let mut trailing = Vec::new();
+    let mut existing = project_root.to_path_buf();
+    let resolved = loop {
+        match existing.canonicalize() {
+            Ok(resolved) => break resolved,
+            Err(_) => {
+                let name = existing.file_name().map(std::ffi::OsString::from);
+                let parent = existing.parent().map(Path::to_path_buf);
+                match (name, parent) {
+                    (Some(name), Some(parent)) => {
+                        trailing.push(name);
+                        existing = parent;
+                    }
+                    _ => {
+                        return Err(eyre::eyre!(
+                            "Failed to resolve any existing ancestor of {}",
+                            project_root.display()
+                        ));
+                    }
+                }
+            }
+        }
+    };
+    let mut project_root = resolved;
+    for name in trailing.iter().rev() {
+        project_root.push(name);
+    }
+    let cache_root = build_cache_root().await?;
+    Ok(project_cache_container_in(&project_root, &cache_root))
+}
+
 /// Ensure the managed build-cache directory exists for a project and return it.
 ///
 /// # Errors
