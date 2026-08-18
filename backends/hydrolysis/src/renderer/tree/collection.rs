@@ -357,8 +357,10 @@ impl CollectionNode {
         #[cfg(feature = "accessibility")]
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
-            let scope = renderer
-                .begin_accessibility_container(transformed_rect(ctx.hit_transform, ctx.bounds), env);
+            let scope = renderer.begin_accessibility_container(
+                transformed_rect(ctx.hit_transform, ctx.bounds),
+                env,
+            );
             renderer.pop_accessibility_owner();
             scope
         });
@@ -709,8 +711,10 @@ impl LazyStackNode {
         #[cfg(feature = "accessibility")]
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
-            let scope = renderer
-                .begin_accessibility_container(transformed_rect(ctx.hit_transform, ctx.bounds), env);
+            let scope = renderer.begin_accessibility_container(
+                transformed_rect(ctx.hit_transform, ctx.bounds),
+                env,
+            );
             renderer.pop_accessibility_owner();
             scope
         });

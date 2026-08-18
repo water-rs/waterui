@@ -59,7 +59,10 @@ impl CdpCommand for AddScriptToEvaluateOnNewDocument<'_> {
 #[derive(Debug, Deserialize)]
 pub struct ScriptIdentifier {
     /// Chromium's handle for the script.
-    #[expect(dead_code, reason = "decoded for completeness; no caller removes a script yet")]
+    #[expect(
+        dead_code,
+        reason = "decoded for completeness; no caller removes a script yet"
+    )]
     pub identifier: String,
 }
 
@@ -109,7 +112,10 @@ pub struct ExceptionDetails {
     pub text: String,
     /// The thrown value, when there was one.
     #[serde(default)]
-    #[expect(dead_code, reason = "`text` carries the message; the value is decoded for completeness")]
+    #[expect(
+        dead_code,
+        reason = "`text` carries the message; the value is decoded for completeness"
+    )]
     pub exception: Option<RemoteObject>,
 }
 
@@ -313,8 +319,7 @@ mod tests {
     #[test]
     fn a_response_missing_its_optional_fields_still_parses() {
         // Previously each of these absent fields was an `expect` away from a panic.
-        let response: EvaluateResponse =
-            serde_json::from_str(r#"{"result":{}}"#).expect("parses");
+        let response: EvaluateResponse = serde_json::from_str(r#"{"result":{}}"#).expect("parses");
         assert!(response.result.value.is_none());
         assert!(response.exception_details.is_none());
 

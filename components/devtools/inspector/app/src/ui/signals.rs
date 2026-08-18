@@ -7,8 +7,8 @@
 
 use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
-use waterui::widget::condition::when;
 use waterui::reactive::collection::SignalCollection;
+use waterui::widget::condition::when;
 use waterui_inspector_protocol::ChannelSet;
 
 use crate::model::{Model, SignalRow};
@@ -23,12 +23,10 @@ use super::parts;
 pub fn view(model: Model) -> impl View {
     let unavailable = model
         .available
-        
         .map(|available| !available.contains(ChannelSet::SIGNALS))
         .computed();
     let unsubscribed = model
         .subscribed
-        
         .map(|subscribed| !subscribed.contains(ChannelSet::SIGNALS))
         .computed();
     let empty = model.signals.map(|rows| rows.is_empty()).computed();
@@ -52,10 +50,16 @@ pub fn view(model: Model) -> impl View {
             )
         })
         .or(
-            empty.clone().zip(&unsubscribed).map(|(empty, off)| empty && off).computed(),
+            empty
+                .clone()
+                .zip(&unsubscribed)
+                .map(|(empty, off)| empty && off)
+                .computed(),
             || parts::empty_state("Open the signals channel in Overview to start tracing."),
         )
-        .or(empty, || parts::empty_state("No reactive state observed yet."))
+        .or(empty, || {
+            parts::empty_state("No reactive state observed yet.")
+        })
         .otherwise({
             let signals = model.signals.clone();
             move || List::for_each(SignalCollection::new(signals.clone()), row_view)
@@ -104,30 +108,28 @@ fn totals(model: &Model) -> impl View {
 fn row_view(row: SignalRow) -> ListItem {
     ListItem::new(
         hstack((
-        vstack((
-            text(row.type_name).sub_headline(),
-            // The creation site is the whole point: it turns "something is
-            // firing 4000 times a second" into a file and a line.
-            text(row.origin)
-                .caption()
-                .foreground(MutedForeground),
+            vstack((
+                text(row.type_name).sub_headline(),
+                // The creation site is the whole point: it turns "something is
+                // firing 4000 times a second" into a file and a line.
+                text(row.origin).caption().foreground(MutedForeground),
+            ))
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(2.0),
+            spacer(),
+            parts::metric(
+                "watchers",
+                Computed::constant(Str::from(row.subscribers.to_string())),
+            ),
+            parts::metric(
+                "fired",
+                Computed::constant(Str::from(row.notifications.to_string())),
+            ),
         ))
-        .alignment(HorizontalAlignment::Leading)
-        .spacing(2.0),
-        spacer(),
-        parts::metric(
-            "watchers",
-            Computed::constant(Str::from(row.subscribers.to_string())),
-        ),
-        parts::metric(
-            "fired",
-            Computed::constant(Str::from(row.notifications.to_string())),
-        ),
-    ))
-    .spacing(16.0)
-    .padding_with(EdgeInsets::new(8.0, 8.0, 12.0, 12.0))
-    // A dropped node stays visible so its history can still be read, but it is
-    // clearly no longer live.
-    .opacity(if row.dropped { 0.45 } else { 1.0 }),
+        .spacing(16.0)
+        .padding_with(EdgeInsets::new(8.0, 8.0, 12.0, 12.0))
+        // A dropped node stays visible so its history can still be read, but it is
+        // clearly no longer live.
+        .opacity(if row.dropped { 0.45 } else { 1.0 }),
     )
 }

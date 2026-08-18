@@ -5,8 +5,8 @@
 
 use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
-use waterui_controls::LabelDisplayMode;
 use waterui::widget::condition::when;
+use waterui_controls::LabelDisplayMode;
 use waterui_inspector_protocol::{Channel, ChannelSet};
 
 use crate::connection::SubscriptionSender;
@@ -24,10 +24,7 @@ pub fn view(model: Model, subscriptions: SubscriptionSender) -> impl View {
 
     scroll(
         vstack((
-            parts::section_header(
-                "Target",
-                "The application this inspector is attached to.",
-            ),
+            parts::section_header("Target", "The application this inspector is attached to."),
             hstack((
                 parts::metric(
                     "Process",
@@ -53,7 +50,9 @@ pub fn view(model: Model, subscriptions: SubscriptionSender) -> impl View {
                 parts::metric(
                     "Name",
                     target
-                        .map(|info| info.map_or_else(|| Str::from("—"), |info| Str::from(info.name)))
+                        .map(|info| {
+                            info.map_or_else(|| Str::from("—"), |info| Str::from(info.name))
+                        })
                         .computed(),
                 ),
             ))
@@ -97,15 +96,10 @@ fn channel_rows(model: &Model, subscriptions: &SubscriptionSender) -> VStack<(Ve
 }
 
 /// One channel: a toggle, a description, and whether the target has it at all.
-fn channel_row(
-    channel: Channel,
-    model: &Model,
-    subscriptions: &SubscriptionSender,
-) -> impl View {
+fn channel_row(channel: Channel, model: &Model, subscriptions: &SubscriptionSender) -> impl View {
     let subscribed = model.subscribed.clone();
     let available = model.available.clone();
     let unavailable = available
-        
         .map(move |available| !available.contains(channel.as_set()))
         .computed();
 
@@ -119,7 +113,11 @@ fn channel_row(
         when(unavailable.clone(), || {
             text("unsupported").caption().foreground(Orange)
         })
-        .otherwise(move || text(channel_cost(channel)).caption().foreground(MutedForeground)),
+        .otherwise(move || {
+            text(channel_cost(channel))
+                .caption()
+                .foreground(MutedForeground)
+        }),
         spacer(),
         toggle(channel_title(channel), &enabled)
             .disabled(unavailable)

@@ -191,7 +191,6 @@ impl SubView for GtkSubView {
     fn priority(&self) -> i32 {
         self.priority
     }
-
 }
 
 /// Helper to determine the `StretchAxis` for common GTK widgets.

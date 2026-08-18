@@ -283,7 +283,8 @@ impl Model {
     /// see a node is a request for the channel that carries it — and marks the
     /// node so the pane can reveal it.
     pub fn apply_select(&self, node: u64) {
-        self.subscribed.set(self.subscribed.get() | ChannelSet::TREE);
+        self.subscribed
+            .set(self.subscribed.get() | ChannelSet::TREE);
         self.section.set(Some(Section::Tree));
         self.revealed.set(Some(node));
     }
@@ -550,7 +551,9 @@ mod tests {
 
         let rows = model.tree.get();
         assert_eq!(
-            rows.iter().map(|row| (row.id, row.depth)).collect::<Vec<_>>(),
+            rows.iter()
+                .map(|row| (row.id, row.depth))
+                .collect::<Vec<_>>(),
             vec![(1, 0), (2, 1), (4, 2), (3, 1)]
         );
     }
@@ -593,7 +596,12 @@ mod tests {
         });
 
         assert_eq!(
-            model.tree.get().iter().map(|row| row.id).collect::<Vec<_>>(),
+            model
+                .tree
+                .get()
+                .iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>(),
             vec![1, 2]
         );
     }

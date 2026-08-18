@@ -110,8 +110,7 @@ pub fn format_us(micros: u64) -> Str {
 /// from a broken one.
 pub fn empty_state(message: impl Into<Str>) -> impl View {
     let message = message.into();
-    vstack((text!("{message}").foreground(MutedForeground),))
-        .padding_with(EdgeInsets::all(32.0))
+    vstack((text!("{message}").foreground(MutedForeground),)).padding_with(EdgeInsets::all(32.0))
 }
 
 /// A section heading with an explanatory subtitle.

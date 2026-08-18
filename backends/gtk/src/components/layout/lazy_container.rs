@@ -39,9 +39,7 @@ impl GtkComponent for Native<LazyContainer> {
         // instead — a different question — is what laid every lazy `HStack` out
         // vertically once the stacks became content-sized.
         let axis = lazy_stack_axis(layout.as_ref()).unwrap_or_else(|| {
-            panic!(
-                "GTK LazyContainer supports the virtualizable stack layouts; got {layout:?}"
-            )
+            panic!("GTK LazyContainer supports the virtualizable stack layouts; got {layout:?}")
         });
         let (orientation, spacing, cross_alignment) = match &axis {
             LazyStackAxis::Vertical { spacing, alignment } => (

@@ -201,7 +201,6 @@ impl SubView for JniSubView {
     fn priority(&self) -> i32 {
         self.priority
     }
-
 }
 
 fn horizontal_alignment_to_java<'local>(
@@ -709,9 +708,8 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutSizeThatFit
         let jni_subviews = extract_subviews(env, subviews);
         let subview_refs: Vec<&dyn SubView> =
             jni_subviews.iter().map(|s| s as &dyn SubView).collect();
-        let size = with_memoized_children(&subview_refs, |refs| {
-            layout.size_that_fits(proposal, refs)
-        });
+        let size =
+            with_memoized_children(&subview_refs, |refs| layout.size_that_fits(proposal, refs));
         env.new_object(
             jni_str!("dev/waterui/android/runtime/SizeStruct"),
             jni_sig!("(FF)V"),

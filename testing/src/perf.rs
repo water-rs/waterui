@@ -362,8 +362,7 @@ impl PerfRun<'_> {
 
     /// Queues a wheel/trackpad scroll event for the next measured frame without settling the app.
     pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) {
-        self
-            .app
+        self.app
             .app
             .driver
             .scroll_at(x, y, dx, dy, is_line_delta, &self.app.app.env);
@@ -371,8 +370,7 @@ impl PerfRun<'_> {
 
     /// Requests a redraw for the next measured frame without changing semantic state.
     pub fn redraw(&mut self) {
-        self
-            .app
+        self.app
             .app
             .driver
             .request_redraw(&self.app.app.content, &self.app.app.env);

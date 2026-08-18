@@ -110,7 +110,10 @@ mod tests {
             .iter()
             .fold(ChannelSet::empty(), |set, channel| set | channel.as_set());
         assert_eq!(union, ChannelSet::all());
-        assert_eq!(Channel::ALL.len(), ChannelSet::all().bits().count_ones() as usize);
+        assert_eq!(
+            Channel::ALL.len(),
+            ChannelSet::all().bits().count_ones() as usize
+        );
     }
 
     #[test]

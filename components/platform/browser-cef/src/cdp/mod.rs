@@ -270,8 +270,8 @@ impl CefCdpSession {
         &self,
         command: &C,
     ) -> impl Future<Output = Result<C::Response, CefCdpError>> + 'static + use<C> {
-        let params = serde_json::to_value(command)
-            .expect("a CDP command's parameters must serialize");
+        let params =
+            serde_json::to_value(command).expect("a CDP command's parameters must serialize");
         let future = self.execute_raw(C::METHOD, &params);
         async move {
             let response = future.await?;

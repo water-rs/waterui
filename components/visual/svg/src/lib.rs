@@ -249,4 +249,3 @@ impl View for Svg {
         self.to_framed_scene_view("#000000")
     }
 }
-

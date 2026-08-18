@@ -5,8 +5,8 @@
 
 use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
-use waterui::widget::condition::when;
 use waterui::reactive::collection::SignalCollection;
+use waterui::widget::condition::when;
 use waterui_inspector_protocol::LogLevel;
 
 use crate::model::{LogRow, Model};
@@ -37,9 +37,10 @@ pub fn view(model: Model) -> impl View {
         .spacing(8.0)
         .padding_with(EdgeInsets::all(16.0)),
         Divider,
-        when(empty, || parts::empty_state("Nothing logged at this level yet.")).otherwise(
-            move || List::for_each(SignalCollection::new(rows.clone()), row_view),
-        ),
+        when(empty, || {
+            parts::empty_state("Nothing logged at this level yet.")
+        })
+        .otherwise(move || List::for_each(SignalCollection::new(rows.clone()), row_view)),
     ))
     .alignment(HorizontalAlignment::Leading)
 }
@@ -98,16 +99,16 @@ fn level_picker(minimum: &Binding<LogLevel>) -> impl View {
 fn row_view(row: LogRow) -> ListItem {
     ListItem::new(
         hstack((
-        text(row.level.name())
-            .caption()
-            .foreground(parts::level_color(row.level))
-            .width(52.0),
-        vstack((text(row.message), origin_view(row.target, row.origin)))
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(2.0),
-    ))
-    .spacing(10.0)
-    .padding_with(EdgeInsets::new(6.0, 6.0, 12.0, 12.0)),
+            text(row.level.name())
+                .caption()
+                .foreground(parts::level_color(row.level))
+                .width(52.0),
+            vstack((text(row.message), origin_view(row.target, row.origin)))
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(2.0),
+        ))
+        .spacing(10.0)
+        .padding_with(EdgeInsets::new(6.0, 6.0, 12.0, 12.0)),
     )
 }
 

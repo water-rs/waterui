@@ -16,8 +16,8 @@ use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
 use futures::channel::oneshot;
 use num_traits::ToPrimitive;
-pub use shaderloom::WgslModuleCache;
 use parking_lot::RwLock;
+pub use shaderloom::WgslModuleCache;
 use std::error::Error;
 use std::path::Path;
 use std::time::Duration;
@@ -1320,7 +1320,6 @@ impl GpuSurface {
     pub fn priority(&self) -> i32 {
         self.renderer.priority()
     }
-
 }
 
 fn resolve_offscreen_msaa(
@@ -1422,7 +1421,6 @@ impl SubView for GpuSurface {
     fn priority(&self) -> i32 {
         self.priority()
     }
-
 }
 
 impl NativeView for GpuSurface {

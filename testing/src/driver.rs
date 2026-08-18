@@ -205,7 +205,9 @@ impl A11yDriver for HydrolysisA11yDriver {
     }
 
     fn is_settled(&self) -> bool {
-        self.runtime.as_ref().is_none_or(HeadlessRuntime::is_settled)
+        self.runtime
+            .as_ref()
+            .is_none_or(HeadlessRuntime::is_settled)
     }
 
     fn clock(&self) -> Option<Instant> {

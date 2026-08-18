@@ -511,9 +511,9 @@ impl Url {
             ParsedComponents::Web(web) if web.path.is_present() => self.slice(web.path),
             ParsedComponents::Web(_) => "/", // No path means root
             ParsedComponents::Local(local) => self.slice(local.path),
-            ParsedComponents::Data(_)
-            | ParsedComponents::Blob(_)
-            | ParsedComponents::Opaque(_) => "",
+            ParsedComponents::Data(_) | ParsedComponents::Blob(_) | ParsedComponents::Opaque(_) => {
+                ""
+            }
         }
     }
 

@@ -7,9 +7,10 @@ use waterui_layout::{
     HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
     VerticalAlignment, ViewDimensions,
     container::{FixedContainer, LazyContainer},
-    measure_layout, with_memoized_children,
+    measure_layout,
     scroll::Axis,
     stack::LazyStackAxis,
+    with_memoized_children,
 };
 
 use crate::{IntoFFI, IntoRust, WuiAnyView, array::WuiArray};
@@ -364,7 +365,6 @@ impl SubView for WuiSubView {
     fn priority(&self) -> i32 {
         self.priority
     }
-
 }
 
 // ============================================================================
