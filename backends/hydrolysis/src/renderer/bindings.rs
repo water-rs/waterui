@@ -206,9 +206,12 @@ impl HydrolysisRenderer {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
-        self.gesture_engine.register_existing_target(
-            target.with_bounds_depth_and_group(bounds, self.render_depth, group_id),
-        );
+        self.gesture_engine
+            .register_existing_target(target.with_bounds_depth_and_group(
+                bounds,
+                self.render_depth,
+                group_id,
+            ));
     }
 
     pub(crate) fn allocate_gesture_group_id(&mut self) -> usize {

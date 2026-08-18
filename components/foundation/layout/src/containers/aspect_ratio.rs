@@ -4,7 +4,9 @@ use alloc::{vec, vec::Vec};
 use nami::{Computed, Signal, SignalExt};
 use waterui_core::{AnyView, IntoSignalF32, View, layout::LayoutInvalidationCallback};
 
-use crate::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer};
+use crate::{
+    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer,
+};
 
 /// How a view fills a ratio-constrained box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -185,8 +187,8 @@ mod tests {
     #[test]
     fn one_offered_axis_decides_the_other() {
         let child = Content(Size::new(10.0, 10.0));
-        let size = layout(ContentMode::Fit)
-            .size_that_fits(ProposalSize::new(Some(80.0), None), &[&child]);
+        let size =
+            layout(ContentMode::Fit).size_that_fits(ProposalSize::new(Some(80.0), None), &[&child]);
         assert!((size.height - 40.0).abs() < 0.01, "got {size:?}");
     }
 
@@ -201,11 +203,13 @@ mod tests {
     #[test]
     fn the_child_is_centred_in_the_bounds_it_does_not_fill() {
         let child = Content(Size::new(10.0, 10.0));
-        let rects = layout(ContentMode::Fit).place(
-            Rect::new(Point::zero(), Size::new(300.0, 100.0)),
-            &[&child],
+        let rects = layout(ContentMode::Fit)
+            .place(Rect::new(Point::zero(), Size::new(300.0, 100.0)), &[&child]);
+        assert!(
+            (rects[0].width() - 200.0).abs() < 0.01,
+            "got {:?}",
+            rects[0]
         );
-        assert!((rects[0].width() - 200.0).abs() < 0.01, "got {:?}", rects[0]);
         assert!((rects[0].x() - 50.0).abs() < 0.01, "got {:?}", rects[0]);
     }
 }

@@ -57,7 +57,10 @@ fn breakdown(last_frame: &Binding<Option<FrameSample>>) -> impl View + use<> {
 
     vstack((
         hstack((
-            parts::metric("Kind", field(&frame, |sample| Str::from(sample.kind.name()))),
+            parts::metric(
+                "Kind",
+                field(&frame, |sample| Str::from(sample.kind.name())),
+            ),
             parts::metric(
                 "Total",
                 field(&frame, |sample| {
@@ -143,10 +146,6 @@ fn field(
 ) -> Computed<Str> {
     frame
         .clone()
-        .map(move |sample| {
-            sample
-                .as_ref()
-                .map_or_else(|| Str::from("—"), &project)
-        })
+        .map(move |sample| sample.as_ref().map_or_else(|| Str::from("—"), &project))
         .computed()
 }

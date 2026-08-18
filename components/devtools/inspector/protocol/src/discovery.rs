@@ -218,7 +218,9 @@ mod tests {
         advertisement(u32::MAX)
             .publish()
             .expect("publishing writes the file");
-        advertisement(0).publish().expect("publishing writes the file");
+        advertisement(0)
+            .publish()
+            .expect("publishing writes the file");
 
         assert!(
             list().expect("the directory is readable").is_empty(),

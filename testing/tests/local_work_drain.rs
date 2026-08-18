@@ -43,8 +43,16 @@ fn draining_runs_only_what_was_already_parked() {
     .detach();
 
     let _ = waterui_testing::drain_parked_local_work();
-    assert_eq!(rounds.get(), 1, "a self-spawning task must not spin the drain");
+    assert_eq!(
+        rounds.get(),
+        1,
+        "a self-spawning task must not spin the drain"
+    );
 
     let _ = waterui_testing::drain_parked_local_work();
-    assert_eq!(rounds.get(), 2, "the next drain picks up the newly parked work");
+    assert_eq!(
+        rounds.get(),
+        2,
+        "the next drain picks up the newly parked work"
+    );
 }

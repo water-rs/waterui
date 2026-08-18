@@ -18,10 +18,9 @@ use cef::{
     ImplPreferenceManager, ImplRenderHandler, ImplRequestHandler, ImplValue, KeyEvent,
     KeyEventType, LifeSpanHandler, LoadHandler, MouseButtonType, MouseEvent, PaintElementType,
     Range, Rect, RenderHandler, Request, RequestContext, RequestContextSettings, RequestHandler,
-    ScreenInfo, TerminationStatus, WindowInfo, WrapClient, WrapDisplayHandler,
-    WrapLifeSpanHandler, WrapLoadHandler, WrapRenderHandler, WrapRequestHandler,
-    browser_host_create_browser_sync, dictionary_value_create, request_context_create_context,
-    value_create,
+    ScreenInfo, TerminationStatus, WindowInfo, WrapClient, WrapDisplayHandler, WrapLifeSpanHandler,
+    WrapLoadHandler, WrapRenderHandler, WrapRequestHandler, browser_host_create_browser_sync,
+    dictionary_value_create, request_context_create_context, value_create,
 };
 #[cfg(feature = "chromium")]
 use futures::channel::oneshot;
@@ -243,7 +242,6 @@ pub enum CefPageEvent {
 
 #[cfg(feature = "chromium")]
 type PageWatcher = Box<dyn Fn(CefPageEvent)>;
-
 
 struct PageState {
     mode: CefPageMode,

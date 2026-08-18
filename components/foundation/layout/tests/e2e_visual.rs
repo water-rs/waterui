@@ -157,7 +157,11 @@ fn layout_priority_view() -> impl View {
 
 #[waterui::test(layout_priority_view, theme = hydrolysis_m3::install, viewport = (160, 120))]
 fn layout_priority_protects_the_prioritized_child(app: &mut SemanticApp) {
-    let kept = app.query().role(Role::LABEL).label("Keep me whole").single();
+    let kept = app
+        .query()
+        .role(Role::LABEL)
+        .label("Keep me whole")
+        .single();
     let yielded = app.query().role(Role::LABEL).label("I can shrink").single();
 
     assert!(

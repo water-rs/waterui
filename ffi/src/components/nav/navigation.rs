@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use nami::SignalExt as _;
 
+use crate::WuiSystemIcon;
 use crate::action::WuiAction;
 use crate::array::WuiArray;
 use crate::closure::{ForeignCallbackContext, WuiFn};
@@ -10,15 +11,13 @@ use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_graphics::color::ResolvedColor;
-use crate::WuiSystemIcon;
 use waterui_navigation::tab::{NativeTabStyle, Tab, TabIcon, TabsLayout};
 use waterui_navigation::{
     Bar, ColumnWidth, CustomNavigationController, NativeNavigationSplitStyle,
     NativeNavigationTransition, NavigationController, NavigationDestinationState, NavigationSearch,
     NavigationSplitColumnVisibility, NavigationSplitLayout, NavigationStack,
     NavigationTitleDisplayMode, NavigationToolbarItem, NavigationToolbarPlacement,
-    NavigationTransaction, NavigationView, ToolbarItemIcon,
-    split::NavigationSplitDetailBuilder,
+    NavigationTransaction, NavigationView, ToolbarItemIcon, split::NavigationSplitDetailBuilder,
 };
 use waterui_text::styled::StyledStr;
 

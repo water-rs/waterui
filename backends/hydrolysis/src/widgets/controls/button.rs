@@ -250,9 +250,7 @@ impl MenuRenderState {
             accessibility_label,
         } = menu;
         let label = match label.downcast::<Label>() {
-            Ok(label) if renders_as_plain_title(&label) => {
-                MenuLabel::Title(*label)
-            }
+            Ok(label) if renders_as_plain_title(&label) => MenuLabel::Title(*label),
             Ok(label) => MenuLabel::View(RetainedSubview::new(AnyView::new(*label))),
             Err(view) => MenuLabel::View(RetainedSubview::new(view)),
         };
@@ -749,10 +747,8 @@ fn measure_button_label_intrinsic(
 /// answering it with the mode alone drew the spoken text in place of the
 /// content.
 fn renders_as_plain_title(label: &Label) -> bool {
-    matches!(
-        label.display_mode_preference(),
-        LabelDisplayMode::TitleOnly
-    ) && !label.has_custom_content()
+    matches!(label.display_mode_preference(), LabelDisplayMode::TitleOnly)
+        && !label.has_custom_content()
 }
 
 fn styled_button_title(

@@ -9,11 +9,11 @@
 use std::net::{IpAddr, Ipv4Addr, TcpStream};
 use std::time::Duration;
 
-use waterui::inspector::{InspectorServerConfig, init_with_config};
 use waterui::inspector::protocol::transport::{read_frame_blocking, write_frame_blocking};
 use waterui::inspector::protocol::{
     ChannelSet, InspectorClientMessage, InspectorServerMessage, NodeId, protocol_info,
 };
+use waterui::inspector::{InspectorServerConfig, init_with_config};
 
 fn config() -> InspectorServerConfig {
     InspectorServerConfig {

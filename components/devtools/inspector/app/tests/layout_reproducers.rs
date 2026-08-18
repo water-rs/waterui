@@ -16,23 +16,24 @@ use waterui_testing::{OffscreenApp, Role, ui as test_ui};
 fn a_list_under_a_header_renders_its_rows() {
     let rows = ["FramePump", "VideoTick", "LayoutPass"];
 
-    let mut app: OffscreenApp = test_ui()
-        .viewport(600, 400)
-        .theme(install)
-        .mount_offscreen(move || {
-            vstack((
-                text("Task").caption(),
-                vstack(
-                    rows.iter()
-                        .map(|row| text(*row).anyview())
-                        .collect::<Vec<_>>(),
-                )
+    let mut app: OffscreenApp =
+        test_ui()
+            .viewport(600, 400)
+            .theme(install)
+            .mount_offscreen(move || {
+                vstack((
+                    text("Task").caption(),
+                    vstack(
+                        rows.iter()
+                            .map(|row| text(*row).anyview())
+                            .collect::<Vec<_>>(),
+                    )
+                    .alignment(HorizontalAlignment::Leading)
+                    .spacing(8.0),
+                ))
                 .alignment(HorizontalAlignment::Leading)
-                .spacing(8.0),
-            ))
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(12.0)
-        });
+                .spacing(12.0)
+            });
 
     for row in ["FramePump", "VideoTick", "LayoutPass"] {
         app.query().role(Role::LABEL).label(row).assert_exists();

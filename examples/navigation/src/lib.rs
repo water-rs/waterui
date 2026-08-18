@@ -22,6 +22,7 @@
 //! makes a tab remember where you left it: push twice in Inbox, visit Settings,
 //! come back, and the two pushed pages are still there.
 
+use waterui::Identifiable;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove, Section, row};
 use waterui::id::Id;
@@ -32,7 +33,6 @@ use waterui::preview;
 use waterui::reactive::binding;
 use waterui::reactive::collection::SignalCollection;
 use waterui::shape::{Circle, RoundedRectangle};
-use waterui::Identifiable;
 use waterui_icons_material_icon as mdi;
 
 // ---------------------------------------------------------------------------
@@ -807,7 +807,3 @@ fn about_page() -> NavigationView {
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }
-
-
-
-
