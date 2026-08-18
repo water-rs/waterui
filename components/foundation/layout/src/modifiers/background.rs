@@ -134,7 +134,6 @@ where
             background,
         } = self;
 
-
         // Background is first (renders behind), content is second (renders on top)
         FixedContainer::new(BackgroundLayout, (background, content))
     }

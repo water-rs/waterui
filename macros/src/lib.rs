@@ -1330,7 +1330,9 @@ fn single_typed_parameter<'a>(
     if input_fn.sig.inputs.len() != 1 {
         return Err(syn::Error::new_spanned(
             &input_fn.sig.inputs,
-            format!("`#[waterui::test(...)]` test function must take exactly one parameter: {expected}"),
+            format!(
+                "`#[waterui::test(...)]` test function must take exactly one parameter: {expected}"
+            ),
         )
         .to_compile_error()
         .into());
@@ -1340,7 +1342,9 @@ fn single_typed_parameter<'a>(
         Some(syn::FnArg::Typed(arg)) => Ok(arg),
         _ => Err(syn::Error::new_spanned(
             &input_fn.sig.inputs,
-            format!("`#[waterui::test(...)]` test function must take one explicit parameter: {expected}"),
+            format!(
+                "`#[waterui::test(...)]` test function must take one explicit parameter: {expected}"
+            ),
         )
         .to_compile_error()
         .into()),

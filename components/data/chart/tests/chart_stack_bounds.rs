@@ -42,8 +42,18 @@ fn a_chart_does_not_flatten_the_rows_beside_it() {
             .spacing(16.0)
         });
 
-    let kind = app.query().role(Role::LABEL).label("Kind").single().bounds();
-    let layout = app.query().role(Role::LABEL).label("Layout").single().bounds();
+    let kind = app
+        .query()
+        .role(Role::LABEL)
+        .label("Kind")
+        .single()
+        .bounds();
+    let layout = app
+        .query()
+        .role(Role::LABEL)
+        .label("Layout")
+        .single()
+        .bounds();
 
     assert!(
         kind.height() > 1.0,

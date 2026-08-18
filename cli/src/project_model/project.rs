@@ -316,7 +316,8 @@ impl Project {
     /// Directory name this project's preview module occupies inside a workspace.
     #[must_use]
     pub fn preview_module_member_path(&self) -> PathBuf {
-        Path::new(crate::templates::PREVIEW_MODULES_DIR).join(self.preview_ffi_crate_name().to_string())
+        Path::new(crate::templates::PREVIEW_MODULES_DIR)
+            .join(self.preview_ffi_crate_name().to_string())
     }
 
     /// Get the full path to the managed preview-only companion crate.

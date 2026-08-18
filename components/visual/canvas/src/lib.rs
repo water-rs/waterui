@@ -517,14 +517,13 @@ impl DrawingContext<'_> {
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
         let pushed_alpha = self.push_global_alpha_layer_if_needed(path.inner());
-        self.scene
-            .stroke(
-                &stroke,
-                self.current_state.transform,
-                &brush,
-                None,
-                path.inner(),
-            );
+        self.scene.stroke(
+            &stroke,
+            self.current_state.transform,
+            &brush,
+            None,
+            path.inner(),
+        );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
@@ -563,14 +562,13 @@ impl DrawingContext<'_> {
         let brush = self.resolve_stroke_style();
         let stroke = self.current_state.build_stroke();
         let pushed_alpha = self.push_global_alpha_layer_if_needed(&shape_path);
-        self.scene
-            .stroke(
-                &stroke,
-                self.current_state.transform,
-                &brush,
-                None,
-                &shape_path,
-            );
+        self.scene.stroke(
+            &stroke,
+            self.current_state.transform,
+            &brush,
+            None,
+            &shape_path,
+        );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
@@ -626,14 +624,13 @@ impl DrawingContext<'_> {
         let circle = kurbo::Circle::new(point_to_kurbo(center), f64::from(radius));
         let shape_path = circle.to_path(0.1);
         let pushed_alpha = self.push_global_alpha_layer_if_needed(&shape_path);
-        self.scene
-            .stroke(
-                &stroke,
-                self.current_state.transform,
-                &brush,
-                None,
-                &shape_path,
-            );
+        self.scene.stroke(
+            &stroke,
+            self.current_state.transform,
+            &brush,
+            None,
+            &shape_path,
+        );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 
@@ -649,14 +646,13 @@ impl DrawingContext<'_> {
         let line = kurbo::Line::new(point_to_kurbo(start), point_to_kurbo(end));
         let shape_path = line.to_path(0.1);
         let pushed_alpha = self.push_global_alpha_layer_if_needed(&shape_path);
-        self.scene
-            .stroke(
-                &stroke,
-                self.current_state.transform,
-                &brush,
-                None,
-                &shape_path,
-            );
+        self.scene.stroke(
+            &stroke,
+            self.current_state.transform,
+            &brush,
+            None,
+            &shape_path,
+        );
         self.pop_global_alpha_layer_if_needed(pushed_alpha);
     }
 

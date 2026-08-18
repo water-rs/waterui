@@ -42,9 +42,9 @@ impl Target {
             .map_err(|_| String::from("WATERUI_INSPECTOR_TARGET_ADDR is not set"))?;
         let token = std::env::var("WATERUI_INSPECTOR_TOKEN")
             .map_err(|_| String::from("WATERUI_INSPECTOR_TOKEN is not set"))?;
-        let addr = addr
-            .parse()
-            .map_err(|error| format!("WATERUI_INSPECTOR_TARGET_ADDR `{addr}` is invalid: {error}"))?;
+        let addr = addr.parse().map_err(|error| {
+            format!("WATERUI_INSPECTOR_TARGET_ADDR `{addr}` is invalid: {error}")
+        })?;
         Ok(Self { addr, token })
     }
 }
@@ -130,10 +130,9 @@ async fn session(
         let next_event = read_frame::<_, InspectorServerMessage>(&mut reader);
         let next_request = subscriptions.recv();
 
-        match futures_lite::future::or(
-            async { Step::Event(next_event.await) },
-            async { Step::Subscribe(next_request.await.ok()) },
-        )
+        match futures_lite::future::or(async { Step::Event(next_event.await) }, async {
+            Step::Subscribe(next_request.await.ok())
+        })
         .await
         {
             Step::Event(Ok(message)) => {

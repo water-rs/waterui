@@ -977,8 +977,8 @@ fn lazy_stack_role_emits_the_container_node_over_its_rows() {
         update
             .nodes
             .iter()
-            .all(|(_, node)| node.label() != Some("Rows") || node.role()
-                == AccessibilityNodeRole::List),
+            .all(|(_, node)| node.label() != Some("Rows")
+                || node.role() == AccessibilityNodeRole::List),
         "the list's name must not be repeated on its rows"
     );
 }

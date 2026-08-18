@@ -121,7 +121,6 @@ impl Toggle {
     pub const fn checkbox(self) -> Self {
         self.style(ToggleStyle::Checkbox)
     }
-
 }
 
 impl_label_style_methods!(Toggle);

@@ -4,15 +4,15 @@ mod support;
 
 use core::num::NonZeroUsize;
 
+use nami::SignalExt as _;
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
-use nami::SignalExt as _;
 use waterui::{Binding, Str};
 use waterui_controls::{
     Menu, TextField, Toggle, button, label, slider::slider, stepper::stepper, toggle,
 };
-use waterui_testing::{Role, SemanticApp, Selector, UiBuilder};
+use waterui_testing::{Role, Selector, SemanticApp, UiBuilder};
 
 use support::control_shell;
 
@@ -300,8 +300,7 @@ fn stepper_respects_range_bounds(ui: UiBuilder) {
     let value = Binding::i32(2);
     let value_for_view = value.clone();
 
-    let mut app =
-        ui.mount(move || control_shell(stepper("Limited", &value_for_view).range(0..=2)));
+    let mut app = ui.mount(move || control_shell(stepper("Limited", &value_for_view).range(0..=2)));
 
     assert_rejected("stepper increment at max should report no change", || {
         app.query().label("Limited").value("2").increment();
@@ -322,9 +321,9 @@ fn text_field_set_text_updates_binding(ui: UiBuilder) {
     });
 
     app.query()
-            .role(Role::TEXT_INPUT)
-            .label("Name")
-            .set_text("Alice");
+        .role(Role::TEXT_INPUT)
+        .label("Name")
+        .set_text("Alice");
     assert_eq!(
         value.get(),
         Str::from("Alice"),
@@ -341,8 +340,7 @@ fn text_field_focus_updates_ui_focus(ui: UiBuilder) {
     let value = Binding::container(Str::from(""));
     let value_for_view = value;
 
-    let mut app =
-        ui.mount(move || control_shell(TextField::new(&value_for_view).label("Search")));
+    let mut app = ui.mount(move || control_shell(TextField::new(&value_for_view).label("Search")));
 
     let selector = Selector::default().role(Role::TEXT_INPUT).label("Search");
     app.query().role(Role::TEXT_INPUT).label("Search").focus();
@@ -397,7 +395,9 @@ fn accessibility_label_follows_a_signal_without_rebuilding(ui: UiBuilder) {
     // accessibility *state* already does, instead of freezing at the value it
     // had when the subtree was built.
     let unread = Binding::i32(3);
-    let label = unread.clone().map(|count| Str::from(format!("{count} unread messages")));
+    let label = unread
+        .clone()
+        .map(|count| Str::from(format!("{count} unread messages")));
 
     let mut app = ui.mount(move || control_shell(button("Inbox").a11y_label(label.clone())));
 
@@ -462,9 +462,12 @@ fn disabled_toggle_ignores_input_and_reports_disabled(ui: UiBuilder) {
         !element.node().enabled(),
         "disabled-toggle: switch should expose disabled accessibility state"
     );
-    assert_rejected("disabled-toggle: accessibility tap should be rejected", || {
-        app.query().role(Role::SWITCH).label("Wi-Fi").tap();
-    });
+    assert_rejected(
+        "disabled-toggle: accessibility tap should be rejected",
+        || {
+            app.query().role(Role::SWITCH).label("Wi-Fi").tap();
+        },
+    );
     // The pointer event dispatches into the window but must not hit the
     // disabled control: the binding stays unchanged.
     let _ = app
@@ -533,8 +536,7 @@ fn disabled_slider_ignores_value_actions(ui: UiBuilder) {
     let value = Binding::f64(0.5);
     let value_for_view = value.clone();
 
-    let mut app =
-        ui.mount(move || control_shell(slider("Volume", &value_for_view).disabled(true)));
+    let mut app = ui.mount(move || control_shell(slider("Volume", &value_for_view).disabled(true)));
 
     let element = app.query().role(Role::SLIDER).label("Volume").single();
     assert!(
@@ -575,9 +577,12 @@ fn disabled_button_ignores_action(ui: UiBuilder) {
         )
     });
 
-    assert_rejected("disabled-button: accessibility tap should be rejected", || {
-        app.query().role(Role::BUTTON).label("Submit").tap();
-    });
+    assert_rejected(
+        "disabled-button: accessibility tap should be rejected",
+        || {
+            app.query().role(Role::BUTTON).label("Submit").tap();
+        },
+    );
     // The pointer event dispatches into the window but must not hit the
     // disabled control: the action never runs.
     let _ = app

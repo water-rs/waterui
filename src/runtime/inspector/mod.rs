@@ -771,5 +771,3 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<()> {
         .map(drop)
         .map_err(|error| io::Error::other(format!("failed to spawn {name} thread: {error}")))
 }
-
-

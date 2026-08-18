@@ -683,11 +683,11 @@ pub(crate) fn render_list_parts(
     if state.borrow().resolve_sections(row_count, env) {
         // Row extents measured before the chrome was known are short by its
         // height, so drop them rather than drawing rows into a stale slot.
-        state
-            .borrow()
-            .extent_index
-            .borrow_mut()
-            .reset(row_count, list_metrics.one_line_row_height, 0.0);
+        state.borrow().extent_index.borrow_mut().reset(
+            row_count,
+            list_metrics.one_line_row_height,
+            0.0,
+        );
     }
 
     let viewport = ctx.bounds;

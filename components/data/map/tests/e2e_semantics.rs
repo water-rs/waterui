@@ -43,8 +43,7 @@ fn map_exposes_accessibility_surface_and_reactive_annotations(ui: UiBuilder) {
     let region_for_view = region.clone();
     let annotations_for_view = annotations.clone();
 
-    let mut app =
-        ui.mount(move || map_view(region_for_view.clone(), annotations_for_view.clone()));
+    let mut app = ui.mount(move || map_view(region_for_view.clone(), annotations_for_view.clone()));
 
     app.query()
         .role(Role::IMAGE)

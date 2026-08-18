@@ -50,7 +50,9 @@ pub(crate) async fn discard_support_app_for_other_runtime(
         && match (&recorded, waterui_path) {
             (Some(recorded), Some(wanted)) => {
                 let recorded = recorded.canonicalize().unwrap_or_else(|_| recorded.clone());
-                let wanted = wanted.canonicalize().unwrap_or_else(|_| wanted.to_path_buf());
+                let wanted = wanted
+                    .canonicalize()
+                    .unwrap_or_else(|_| wanted.to_path_buf());
                 recorded == wanted
             }
             (None, None) => true,

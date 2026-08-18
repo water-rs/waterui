@@ -6,7 +6,6 @@ use core::fmt::Debug;
 
 use nami::{Binding, Computed, SignalExt as _};
 use waterui_controls::IntoLabel;
-use waterui_icon::SystemIcon;
 use waterui_core::{
     AnyView, Environment, IntoSignal, Str, View,
     handler::{AnyViewBuilder, ViewBuilder},
@@ -15,6 +14,7 @@ use waterui_core::{
     layout::StretchAxis,
     raw_view,
 };
+use waterui_icon::SystemIcon;
 
 use super::NavigationView;
 

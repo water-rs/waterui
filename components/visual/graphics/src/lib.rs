@@ -65,13 +65,6 @@ pub use view_effect::{
     EffectRenderer, OutputSize, ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput,
 };
 
-/// The `Effect` family that `.filter(F)` requires, at the graphics root
-/// alongside the `ViewEffect` family it mirrors.
-#[cfg(feature = "gpu")]
-pub use filter_view::{
-    Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
-    EffectRedrawCallback, EffectRenderResult, EffectSetupResult,
-};
 #[cfg(feature = "gpu")]
 pub use filter_view::{
     AppliedFilter, Bloom, Blur, Brightness, BumpDistortion, ColorMatrix, Contrast, Crystallize,
@@ -80,6 +73,13 @@ pub use filter_view::{
     LineHalftone, MirrorTile, MotionBlur, PerspectiveCorrection, PerspectiveTransform,
     PinchDistortion, Pixellate, Saturation, Sepia, Sharpen, TemperatureTint, TwirlDistortion,
     UnsharpMask, Vibrance, Vignette, VortexDistortion, WhitePoint, ZoomBlur,
+};
+/// The `Effect` family that `.filter(F)` requires, at the graphics root
+/// alongside the `ViewEffect` family it mirrors.
+#[cfg(feature = "gpu")]
+pub use filter_view::{
+    Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
+    EffectRedrawCallback, EffectRenderResult, EffectSetupResult,
 };
 #[cfg(feature = "gpu")]
 pub use multi_input_filter::{

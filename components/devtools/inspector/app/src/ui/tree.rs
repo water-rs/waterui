@@ -7,8 +7,8 @@
 
 use waterui::prelude::theme_color::{Accent, MutedForeground};
 use waterui::prelude::*;
-use waterui::widget::condition::when;
 use waterui::reactive::collection::SignalCollection;
+use waterui::widget::condition::when;
 
 use crate::model::{Model, TreeRow};
 
@@ -45,7 +45,10 @@ pub fn view(model: Model) -> impl View {
                 let revealed = revealed.clone();
                 List::for_each(rows.clone(), move |row: TreeRow| {
                     let id = row.id;
-                    let is_revealed = revealed.clone().map(move |node| node == Some(id)).computed();
+                    let is_revealed = revealed
+                        .clone()
+                        .map(move |node| node == Some(id))
+                        .computed();
                     row_view(row, is_revealed)
                 })
             }
@@ -131,10 +134,7 @@ fn label_view(label: Option<Str>) -> AnyView {
 /// Reactive rather than baked in, so a second "inspect element" moves the mark
 /// instead of rebuilding the tree.
 fn revealed_badge(revealed: Computed<bool>) -> AnyView {
-    when(revealed, || {
-        text("inspected").caption().foreground(Accent)
-    })
-    .anyview()
+    when(revealed, || text("inspected").caption().foreground(Accent)).anyview()
 }
 
 fn hidden_badge(hidden: bool) -> AnyView {

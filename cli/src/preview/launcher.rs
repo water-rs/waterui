@@ -277,15 +277,13 @@ async fn build_preview_dylib(
             crate::apple::platform::apple_deployment_target(&support_project, target)
                 .await
                 .wrap_err("Failed to resolve the preview support deployment target")?;
-        rust_build
-            .with_env(key, value)
-            .with_features(
-                crate::apple::platform::apple_ffi_dependency_features(
-                    &support_project,
-                    browser_runtime,
-                )
-                .await?,
+        rust_build.with_env(key, value).with_features(
+            crate::apple::platform::apple_ffi_dependency_features(
+                &support_project,
+                browser_runtime,
             )
+            .await?,
+        )
     };
     let dylib_path_start = Instant::now();
     let expected_path = rust_build
@@ -1367,9 +1365,7 @@ async fn resolve_preview_metadata(
 ) -> Result<ResolvedPreviewMetadata> {
     let project = Project::open_for_preview_build(project_path).await?;
     ensure_project_dev_feature_for_preview(&project).await?;
-    let manifest_path = scaffold_preview_module(&project)
-        .await?
-        .join("Cargo.toml");
+    let manifest_path = scaffold_preview_module(&project).await?.join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
     let metadata_start = Instant::now();
@@ -1594,5 +1590,4 @@ mod tests {
             crate::templates::preview_ffi::ANDROID_ABI_FEATURE
         );
     }
-
 }

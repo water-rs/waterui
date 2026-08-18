@@ -147,7 +147,8 @@ pub(crate) fn measure_slider_node(
     let min_label_size = render_state.min_value_label.measure_built(state, env);
     let max_label_size = render_state.max_value_label.measure_built(state, env);
 
-    let control_row_height = metrics.handle_height
+    let control_row_height = metrics
+        .handle_height
         .max(f64::from(min_label_size.height))
         .max(f64::from(max_label_size.height));
     let label_height = f64::from(label_size.height);
@@ -355,7 +356,12 @@ pub(crate) fn render_slider_parts(
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
         theme.draw_slider_track(&mut draw, track_rect, fill_rect, interaction);
-        theme.draw_slider_thumb(&mut draw, thumb_center, metrics.handle_overhang(), interaction);
+        theme.draw_slider_thumb(
+            &mut draw,
+            thumb_center,
+            metrics.handle_overhang(),
+            interaction,
+        );
         theme.draw_slider_thumb_state_layer(
             &mut draw,
             thumb_center,

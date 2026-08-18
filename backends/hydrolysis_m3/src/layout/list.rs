@@ -1,15 +1,15 @@
 use crate::dimensions::{
     LIST_DELETE_CONTROL_WIDTH, LIST_DIVIDER_LEADING_INSET, LIST_DIVIDER_TRAILING_INSET,
     LIST_HORIZONTAL_INSET, LIST_MOVE_CONTROL_WIDTH, LIST_ONE_LINE_ROW_HEIGHT,
-    LIST_SECTION_FOOTER_HEIGHT, LIST_SECTION_HEADER_HEIGHT,
-    LIST_TRAILING_CONTROL_SPACING, LIST_TRAILING_CONTROL_VERTICAL_INSET, LIST_VERTICAL_INSET,
+    LIST_SECTION_FOOTER_HEIGHT, LIST_SECTION_HEADER_HEIGHT, LIST_TRAILING_CONTROL_SPACING,
+    LIST_TRAILING_CONTROL_VERTICAL_INSET, LIST_VERTICAL_INSET,
 };
 use crate::icon_paths::{self, IconGrid};
 use crate::theme::colors::MaterialColorScheme;
 use crate::theme::state_layer;
 use crate::{
-    Brush, DrawContext, ListDividerMetrics, ListMetrics, ListRowMetrics,
-    ListSectionMetrics, ListTrailingControlMetrics, WidgetInteractionState,
+    Brush, DrawContext, ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,
+    ListTrailingControlMetrics, WidgetInteractionState,
 };
 use vello::kurbo::{Point, Rect};
 

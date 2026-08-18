@@ -10,8 +10,9 @@
 
 // Tabs sit beside the split-view navigation types instead of behind
 // `navigation::tab::…`.
-use waterui::navigation::{NavigationSplitView, Tab, Tabs, navigation_transition, split_style,
-    tab_style};
+use waterui::navigation::{
+    NavigationSplitView, Tab, Tabs, navigation_transition, split_style, tab_style,
+};
 
 // The `slider` free function joins `button`/`toggle`/`stepper`/`field`/`label`
 // at the controls root.

@@ -496,7 +496,7 @@ mod tests {
     use super::demo;
     use core::time::Duration;
     use hydrolysis_m3::install;
-    
+
     /// The chart demo renders through the Hydrolysis M3 GPU pipeline without
     /// panicking (regression guard for the >64 rebuild-loop crash) and the active
     /// chart's controls are present.

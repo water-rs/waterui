@@ -2250,7 +2250,13 @@ impl MapPainter {
             let (x, y) = camera.tile_point(tile, extent, point.x, point.y);
             let disc = Circle::new((x, y), radius).to_path(0.1);
             if let Some(fill) = fill {
-                scene.fill(Fill::NonZero, Affine::IDENTITY, &Brush::Solid(fill), None, &disc);
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    &Brush::Solid(fill),
+                    None,
+                    &disc,
+                );
             }
             if let Some(stroke) = stroke {
                 scene.stroke(
@@ -2749,7 +2755,13 @@ fn fill_viewport(scene: &mut dyn Scene2D, viewport: Viewport, color: Color) {
         f64::from(viewport.height),
     )
     .to_path(0.1);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, &Brush::Solid(color), None, &path);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        &Brush::Solid(color),
+        None,
+        &path,
+    );
 }
 
 fn passes_filter(layer: &StyleLayer, context: &EvaluationContext) -> bool {

@@ -25,8 +25,6 @@ use core::{
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui_controls::{ButtonStyle, IntoLabel, button};
-use waterui_icon::SystemIcon;
-use waterui_text::Text;
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, boxed_action};
 use waterui_core::{
     AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, Retain, Str, View,
@@ -34,7 +32,9 @@ use waterui_core::{
     impl_extractor, layout::StretchAxis, raw_view,
 };
 use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_icon::SystemIcon;
 use waterui_text::IntoText;
+use waterui_text::Text;
 
 pub use path::{
     ErasedNavigationRoute, NavigationPath, NavigationPathReplacement, RestorableNavigationRoute,

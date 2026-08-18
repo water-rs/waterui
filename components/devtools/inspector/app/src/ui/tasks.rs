@@ -6,8 +6,8 @@
 
 use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
-use waterui::widget::condition::when;
 use waterui::reactive::collection::SignalCollection;
+use waterui::widget::condition::when;
 
 use crate::model::{Model, StallRow, TaskRow};
 
@@ -67,22 +67,21 @@ fn task_row(row: TaskRow) -> ListItem {
 
     ListItem::new(
         hstack((
-        text(row.id),
-        spacer(),
-        column(text(Str::from(row.polls.to_string()))),
-        column(text(parts::format_us(row.mean_us))),
-        column(text(parts::format_us(u64::from(row.max_us)))),
-        column(text(Str::from(over.to_string())).foreground(if over > 0 {
-            Color::from(Orange)
-        } else {
-            Color::from(MutedForeground)
-        })),
+            text(row.id),
+            spacer(),
+            column(text(Str::from(row.polls.to_string()))),
+            column(text(parts::format_us(row.mean_us))),
+            column(text(parts::format_us(u64::from(row.max_us)))),
+            column(text(Str::from(over.to_string())).foreground(if over > 0 {
+                Color::from(Orange)
+            } else {
+                Color::from(MutedForeground)
+            })),
         ))
         .spacing(8.0)
         .padding_with(EdgeInsets::new(6.0, 6.0, 0.0, 0.0)),
     )
 }
-
 
 /// Fixed-width numeric column, so the table reads as a table.
 fn column(content: impl View) -> impl View {

@@ -168,7 +168,9 @@ impl GpuView for SceneSurfaceRenderer {
             // The hybrid engine rasterizes through a render pass, so it draws
             // straight into the frame: no storage texture to rasterize into and
             // nothing to blit out of it. Sized on the first frame.
-            self.scene = Some(SceneBuffer::Hybrid(Box::new(vello_hybrid::Scene::new(1, 1))));
+            self.scene = Some(SceneBuffer::Hybrid(Box::new(vello_hybrid::Scene::new(
+                1, 1,
+            ))));
             return core::future::ready(());
         }
         self.scene = Some(SceneBuffer::Classic(Box::new(vello::Scene::new())));
@@ -427,24 +429,22 @@ impl SceneSurfaceRenderer {
         // The engine loads the target rather than clearing it, because it also
         // draws into targets it shares. This surface owns its frame outright,
         // so it starts from transparent.
-        drop(
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("SceneView hybrid clear pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            }),
-        );
+        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("SceneView hybrid clear pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &frame.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        }));
 
         // The content is built inside the renderer's lock because glyphs
         // rasterize into an atlas the renderer owns: a run of text is recorded

@@ -37,10 +37,7 @@ pub fn install_inspect_gesture(window: &ApplicationWindow, env: &Environment) {
     }
     // Nothing is listening in a release build, and an entry that does nothing is
     // worse than no entry.
-    if env
-        .get::<waterui::inspector::InspectorRuntime>()
-        .is_none()
-    {
+    if env.get::<waterui::inspector::InspectorRuntime>().is_none() {
         return;
     }
 

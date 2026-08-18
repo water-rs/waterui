@@ -382,13 +382,16 @@ fn ui_test_environment_builder_preserves_custom_theme() {
 
 #[test]
 fn smoke_text_color_snapshot_preserves_semantic_labels() {
-    let mut app = ui().viewport(240, 120).theme(install_m3).mount_offscreen(|| {
-        vstack((
-            text("Explicit color").body().color(Srgb::WHITE),
-            text("Explicit color").body().color(Srgb::WHITE),
-        ))
-        .background(Srgb::BLACK)
-    });
+    let mut app = ui()
+        .viewport(240, 120)
+        .theme(install_m3)
+        .mount_offscreen(|| {
+            vstack((
+                text("Explicit color").body().color(Srgb::WHITE),
+                text("Explicit color").body().color(Srgb::WHITE),
+            ))
+            .background(Srgb::BLACK)
+        });
     assert_eq!(
         app.query()
             .role(Role::LABEL)
@@ -453,25 +456,28 @@ fn tappable_composed_view_exposes_clickable_accessibility_node() {
 
 #[test]
 fn ui_test_snapshot_renders_text_after_canvas() {
-    let mut app = ui().viewport(320, 320).theme(install_m3).mount_offscreen(|| {
-        vstack((
-            Canvas::new(|ctx| {
-                ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
-            })
-            .size(240.0, 180.0)
-            .a11y_role(waterui::accessibility::AccessibilityRole::Image)
-            .a11y_label("Canvas layer"),
-            text("W")
-                .size(48.0)
-                .color(Srgb::WHITE)
-                .body()
-                .padding_with(6.0)
-                .a11y_label("Letter W"),
-        ))
-        .spacing(6.0)
-        .background(Srgb::BLACK)
-    });
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(install_m3)
+        .mount_offscreen(|| {
+            vstack((
+                Canvas::new(|ctx| {
+                    ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
+                    ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+                })
+                .size(240.0, 180.0)
+                .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+                .a11y_label("Canvas layer"),
+                text("W")
+                    .size(48.0)
+                    .color(Srgb::WHITE)
+                    .body()
+                    .padding_with(6.0)
+                    .a11y_label("Letter W"),
+            ))
+            .spacing(6.0)
+            .background(Srgb::BLACK)
+        });
     app.query()
         .role(Role::IMAGE)
         .label("Canvas layer")
@@ -1059,9 +1065,9 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     assert_eq!(app.ui_focus(), Some(username_id));
 
     app.query()
-            .role(Role::PASSWORD_INPUT)
-            .label("Password")
-            .focus();
+        .role(Role::PASSWORD_INPUT)
+        .label("Password")
+        .focus();
     let password_id = app
         .query()
         .role(Role::PASSWORD_INPUT)
@@ -1095,9 +1101,9 @@ fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
         .mount(move || TextField::new(&value_for_view).label(text("Full Name")));
 
     app.query()
-            .role(Role::TEXT_INPUT)
-            .label("Full Name")
-            .focus();
+        .role(Role::TEXT_INPUT)
+        .label("Full Name")
+        .focus();
 
     let mut expected = String::new();
     for character in "Lexo Liu".chars() {

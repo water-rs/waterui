@@ -165,7 +165,9 @@ mod tests {
         let received: InspectorClientMessage =
             transport::read_frame_blocking(&mut bytes.as_slice()).unwrap();
         match received {
-            InspectorClientMessage::Hello { token, channels, .. } => {
+            InspectorClientMessage::Hello {
+                token, channels, ..
+            } => {
                 assert_eq!(token, "token");
                 assert_eq!(channels, ChannelSet::default_subscription());
             }

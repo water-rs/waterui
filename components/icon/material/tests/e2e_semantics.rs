@@ -12,5 +12,8 @@ fn search_icon_view() -> impl waterui::View {
 
 #[waterui::test(search_icon_view)]
 fn material_icon_exposes_accessibility_image(app: &mut SemanticApp) {
-    app.query().role(Role::IMAGE).label("Search").assert_exists();
+    app.query()
+        .role(Role::IMAGE)
+        .label("Search")
+        .assert_exists();
 }
