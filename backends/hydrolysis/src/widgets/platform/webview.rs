@@ -437,6 +437,8 @@ pub(crate) fn install_controller(env: &mut Environment) {
     env.insert(WebViewController::new(controller));
 }
 
-// No `install_controller` without an engine: the caller is gated on
-// `hydrolysis_webview`, so a build with no engine never asks for a controller and
-// a `WebView` in the tree renders as its accessible, contentless placeholder.
+// No `install_controller` without an engine. The caller is gated on the two
+// engine cfgs above rather than on `hydrolysis_webview`, which is true for any
+// webview feature and so covers engine-less combinations too. A build with no
+// engine never asks for a controller, and a `WebView` in the tree renders as its
+// accessible, contentless placeholder.
