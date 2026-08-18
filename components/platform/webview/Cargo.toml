@@ -29,6 +29,11 @@ hydrolysis-m3.workspace = true
 # reaching this crate back through the facade the way an application does.
 waterui = { workspace = true, features = ["webview"] }
 waterui-testing.workspace = true
+# `waterui/webview` only enables the component; the renderer that turns a
+# `WebView` into a node lives in the backend, behind hydrolysis's own webview
+# feature. Without it the harness reaches `Native<WebView>` with nothing to
+# render and fast-fails, so these end-to-end tests must ask for it explicitly.
+hydrolysis = { path = "../../../backends/hydrolysis", features = ["webview-default"] }
 
 [lints]
 workspace = true
