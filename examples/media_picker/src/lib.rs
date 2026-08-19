@@ -215,27 +215,12 @@ fn validate_media_result(media: &Media, expected_filter: &MediaFilter) -> Result
     }
 
     // Fast-fail for mismatched filter/type contracts.
-    let matches_filter = match expected_filter {
-        MediaFilter::Image => matches!(media, Media::Image(_)),
-        MediaFilter::Video => matches!(media, Media::Video(_)),
-        MediaFilter::LivePhoto => matches!(media, Media::LivePhoto(_)),
-        MediaFilter::All(filters) | MediaFilter::Any(filters) => filters.iter().any(|f| {
-            matches!(
-                (f, media),
-                (MediaFilter::Image, Media::Image(_))
-                    | (MediaFilter::Video, Media::Video(_))
-                    | (MediaFilter::LivePhoto, Media::LivePhoto(_))
-            )
-        }),
-        MediaFilter::Not(filters) => !filters.iter().any(|f| {
-            matches!(
-                (f, media),
-                (MediaFilter::Image, Media::Image(_))
-                    | (MediaFilter::Video, Media::Video(_))
-                    | (MediaFilter::LivePhoto, Media::LivePhoto(_))
-            )
-        }),
-    };
+    let matches_filter = matches!(
+        (expected_filter, media),
+        (MediaFilter::Image, Media::Image(_))
+            | (MediaFilter::Video, Media::Video(_))
+            | (MediaFilter::LivePhoto, Media::LivePhoto(_))
+    );
 
     if matches_filter {
         Ok(())
