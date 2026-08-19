@@ -449,6 +449,30 @@ impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityLabel {
     }
 }
 
+/// NavigationLinkHintStruct(contentPtr: Long)
+///
+/// The marker carries no data of its own: it exists so a backend that draws a
+/// destination-following affordance around a link's row can recognise one.
+/// Android's lists have no such affordance, so nothing registers this type and
+/// the marker falls through to its content — but the JNI cast is generated for
+/// every ignorable metadata, so the conversion has to exist for the Android
+/// build to compile at all.
+impl ToJavaStruct for crate::components::navigation::WuiIgnorableMetadataNavigationLinkHint {
+    fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/NavigationLinkHintStruct"
+            ))
+            .expect("NavigationLinkHintStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(J)V"),
+            &[JValue::Long(self.content as jlong)],
+        )
+        .expect("Failed to create NavigationLinkHintStruct")
+    }
+}
+
 impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityValue {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
