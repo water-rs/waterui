@@ -32,7 +32,7 @@ features = ["derive"]
 
 
 [features]
-default = []
+default = ["std"]
 std = []
 nightly = []
 serde = ["dep:serde", "waterui-str/serde"]
