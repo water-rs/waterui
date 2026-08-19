@@ -768,36 +768,11 @@ impl From<&'static str> for Url {
     }
 }
 
-impl From<String> for Url {
-    fn from(value: String) -> Self {
-        // Infallible: treat parse failures as local paths
-        value
-            .as_str()
-            .parse()
-            .unwrap_or_else(|_| Self::from_file_path_str(value))
-    }
-}
-
-impl From<Str> for Url {
-    fn from(value: Str) -> Self {
-        // Infallible: treat parse failures as local paths
-        value
-            .as_str()
-            .parse()
-            .unwrap_or_else(|_| Self::from_file_path_str(value))
-    }
-}
-
-impl<'a> From<Cow<'a, str>> for Url {
-    fn from(value: Cow<'a, str>) -> Self {
-        match value {
-            Cow::Borrowed(s) => s
-                .parse()
-                .unwrap_or_else(|_| Self::from_file_path_str(s.to_string())),
-            Cow::Owned(s) => s.parse().unwrap_or_else(|_| Self::from_file_path_str(s)),
-        }
-    }
-}
+// Deliberately no `From<String>` / `From<Str>` / `From<Cow<str>>`: a URL that
+// only exists at runtime can fail to parse, and quietly treating the failure
+// as a local path is how a malformed address reaches a native web view (see
+// `IntoUrl`). Runtime strings go through `str::parse` with explicit error
+// handling, or `Url::from_file_path_str` when a path is what is meant.
 
 impl From<Url> for Str {
     fn from(url: Url) -> Self {
@@ -1534,8 +1509,10 @@ mod tests {
         let as_string = url.clone().into_string();
         assert_eq!(as_string, "https://example.com");
 
-        let from_string = Url::from("test".to_string());
-        assert_eq!(from_string.as_str(), "test");
+        assert!(
+            "".parse::<Url>().is_err(),
+            "runtime strings must surface parse failures instead of degrading"
+        );
     }
 
     #[test]

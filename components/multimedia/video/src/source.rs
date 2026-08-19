@@ -474,17 +474,10 @@ impl From<&'static str> for MediaItem {
     }
 }
 
-impl From<String> for MediaItem {
-    fn from(value: String) -> Self {
-        Self::new(value, Delivery::Progressive)
-    }
-}
-
-impl<'a> From<Cow<'a, str>> for MediaItem {
-    fn from(value: Cow<'a, str>) -> Self {
-        Self::new(value, Delivery::Progressive)
-    }
-}
+// Deliberately no `From<String>` / `From<Cow<str>>`: those routed through
+// `Url`'s deleted silent-degrade conversions. Runtime strings must parse into
+// a `Url` explicitly (or use `Url::from_file_path_str` for paths) so a
+// malformed address fails at the call site, not inside the player.
 
 #[cfg(test)]
 mod tests {

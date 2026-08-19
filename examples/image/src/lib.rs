@@ -109,9 +109,19 @@ fn custom_url_section() -> impl View {
                             status.set(String::from("Please enter a URL"));
                             return;
                         }
+                        // User input must parse explicitly: a malformed
+                        // address is reported here instead of silently
+                        // reaching the image loader as a local path.
+                        let parsed: Url = match url_str.as_str().parse() {
+                            Ok(parsed) => parsed,
+                            Err(error) => {
+                                status.set(format!("Invalid URL: {error}"));
+                                return;
+                            }
+                        };
                         status.set(String::from("Loading..."));
                         // Pass blur binding for reactive updates
-                        let photo = Photo::new(url_str)
+                        let photo = Photo::new(parsed)
                             .on_event({
                                 let status = status.clone();
                                 move |event| match event {
