@@ -4992,6 +4992,11 @@ typedef struct WuiListItem {
    */
   WuiComputed_bool *deletable;
   /**
+   * Read-only signal marking this item as the current selection; the
+   * backend draws its platform's selection chrome while it is true.
+   */
+  WuiComputed_bool *selected;
+  /**
    * Section header carried by this item, or empty when the item does not
    * start a new section.
    */

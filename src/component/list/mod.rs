@@ -16,7 +16,7 @@ use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
 use waterui_core::id::SelfId;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
-    AnyView, Environment, Native, NativeView, View,
+    AnyView, Environment, Metadata, Native, NativeView, View,
     handler::{AnyViewBuilder, Handler, shared_action},
     id::Identifiable,
     impl_extractor,
@@ -308,7 +308,8 @@ impl From<ListConfig> for List<SharedAnyViews<ListItem>> {
     }
 }
 
-fn render_list_config(config: ListConfig, env: &Environment) -> impl View {
+fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
+    config.contents = SharedAnyViews::new(config.contents.clone().map(selection_themed));
     if let Some(hook) = env.get::<Hook<ListConfig>>() {
         AnyView::new(hook.apply(env, config))
     } else {
@@ -316,6 +317,43 @@ fn render_list_config(config: ListConfig, env: &Environment) -> impl View {
             crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
         AnyView::new(Native::new(config).with_fallback(fallback))
     }
+}
+
+/// Re-themes a row's content while it is selected.
+///
+/// The platform paints a selected row with the accent color, and everything the
+/// row draws on top of it flips to the on-accent color — the way the platforms'
+/// own lists flip a selected row's labels. Anything the row resolves through
+/// the theme's foreground, muted-foreground, or accent slots follows the
+/// `selected` signal reactively; the row itself is not rebuilt.
+fn selection_themed(mut item: ListItem) -> ListItem {
+    use crate::color::ResolvedColor;
+    use crate::theme::{color, install_color_signal};
+    use nami::SignalExt;
+    use waterui_core::env::use_env;
+    use waterui_core::resolve::Resolvable;
+
+    let selected = item.selected.clone();
+    let content = core::mem::take(&mut item.content);
+    item.content = AnyView::new(use_env(move |mut env: Environment| {
+        let on_accent = color::AccentForeground.resolve(&env).computed();
+        let flip = |normal: Computed<ResolvedColor>| {
+            selected
+                .clone()
+                .zip(&normal)
+                .zip(&on_accent)
+                .map(|((selected, normal), on_accent)| if selected { on_accent } else { normal })
+                .computed()
+        };
+        let foreground = flip(color::Foreground.resolve(&env).computed());
+        let muted = flip(color::MutedForeground.resolve(&env).computed());
+        let accent = flip(color::Accent.resolve(&env).computed());
+        install_color_signal::<color::Foreground>(&mut env, foreground);
+        install_color_signal::<color::MutedForeground>(&mut env, muted);
+        install_color_signal::<color::Accent>(&mut env, accent);
+        Metadata::new(content, env)
+    }));
+    item
 }
 
 impl<V> View for List<V>
@@ -488,6 +526,14 @@ pub struct ListItem {
     /// this marker to group subsequent items into native chrome (iOS inset
     /// grouped sections, macOS group rows, Material section headers).
     pub section: Option<ListSection>,
+    /// Read-only signal marking this item as the current selection.
+    ///
+    /// The backend draws its platform's own selection chrome for the row — the
+    /// rounded sidebar highlight on macOS, the selected row background on iOS.
+    /// Selection state itself lives wherever the app owns it (for a sidebar,
+    /// typically the `NavigationSplitView` selection binding), and each row
+    /// derives its flag from that state.
+    pub selected: Computed<bool>,
 }
 
 impl NativeView for ListItem {}
@@ -509,6 +555,7 @@ impl ListItem {
             content: AnyView::new(content),
             deletable: Computed::new(true),
             section: None,
+            selected: Computed::new(false),
         }
     }
 
@@ -528,6 +575,20 @@ impl ListItem {
     #[must_use]
     pub fn section(mut self, section: ListSection) -> Self {
         self.section = Some(section);
+        self
+    }
+
+    /// Marks this item as selected through a reactive signal.
+    ///
+    /// The platform draws its own selection chrome for the row while the
+    /// signal is true. Derive the signal from the state that owns selection:
+    ///
+    /// ```ignore
+    /// ListItem::new(row).selected(selection.map(move |current| current == Some(album)))
+    /// ```
+    #[must_use]
+    pub fn selected(mut self, selected: impl IntoComputed<bool>) -> Self {
+        self.selected = selected.into_computed();
         self
     }
 }

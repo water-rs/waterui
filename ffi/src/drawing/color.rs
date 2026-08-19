@@ -168,25 +168,6 @@ pub unsafe extern "C" fn waterui_color_from_srgba(
     Color::new(LinearResolvedColor { resolved }).into_ffi()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn srgba_constructor_decodes_transfer_function() {
-        // SAFETY: the returned owning handle is consumed exactly once below.
-        let pointer = unsafe { waterui_color_from_srgba(0.5, 0.5, 0.5, 0.25) };
-        // SAFETY: `pointer` is the valid owning handle returned above.
-        let color: Color = unsafe { IntoRust::into_rust(pointer) };
-        let resolved = color.resolve(&Environment::new()).get();
-
-        assert!((resolved.red - 0.214_041_14).abs() < 1.0e-6);
-        assert!((resolved.green - 0.214_041_14).abs() < 1.0e-6);
-        assert!((resolved.blue - 0.214_041_14).abs() < 1.0e-6);
-        assert!((resolved.opacity - 0.25).abs() < f32::EPSILON);
-    }
-}
-
 /// Resolves a color in the given environment.
 ///
 /// # Safety
@@ -204,5 +185,24 @@ pub unsafe extern "C" fn waterui_resolve_color(
         let env = &*env;
         let resolved = color.resolve(env);
         resolved.into_ffi()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn srgba_constructor_decodes_transfer_function() {
+        // SAFETY: the returned owning handle is consumed exactly once below.
+        let pointer = unsafe { waterui_color_from_srgba(0.5, 0.5, 0.5, 0.25) };
+        // SAFETY: `pointer` is the valid owning handle returned above.
+        let color: Color = unsafe { IntoRust::into_rust(pointer) };
+        let resolved = color.resolve(&Environment::new()).get();
+
+        assert!((resolved.red - 0.214_041_14).abs() < 1.0e-6);
+        assert!((resolved.green - 0.214_041_14).abs() < 1.0e-6);
+        assert!((resolved.blue - 0.214_041_14).abs() < 1.0e-6);
+        assert!((resolved.opacity - 0.25).abs() < f32::EPSILON);
     }
 }
