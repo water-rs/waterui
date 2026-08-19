@@ -256,7 +256,7 @@ impl BarcodeSource {
 /// Owns the content signal, the currently encoded [`BarcodeSource`], and the
 /// pending value delivered by the watcher; consumers call
 /// [`Self::take_reencoded`] at the start of a frame to pick up new content.
-pub(crate) struct ReactiveBarcodeContent {
+pub struct ReactiveBarcodeContent {
     symbology: BarcodeSymbology,
     content: Computed<Str>,
     pending: Rc<RefCell<Option<Str>>>,
@@ -272,7 +272,7 @@ impl fmt::Debug for ReactiveBarcodeContent {
 }
 
 impl ReactiveBarcodeContent {
-    pub(crate) fn new(symbology: BarcodeSymbology, content: Computed<Str>) -> Self {
+    pub fn new(symbology: BarcodeSymbology, content: Computed<Str>) -> Self {
         Self {
             symbology,
             content,
@@ -282,13 +282,13 @@ impl ReactiveBarcodeContent {
     }
 
     /// Encodes the signal's current value, crashing on unencodable content.
-    pub(crate) fn initial_source(&self) -> BarcodeSource {
+    pub fn initial_source(&self) -> BarcodeSource {
         BarcodeSource::encode_or_panic(self.symbology, self.content.get().as_ref())
     }
 
     /// Watches the content signal for the consumer's lifetime; every change
     /// stores the new value and wakes the surface through `redraw`.
-    pub(crate) fn install(&mut self, redraw: impl Fn() + 'static) {
+    pub fn install(&mut self, redraw: impl Fn() + 'static) {
         let pending = self.pending.clone();
         self.guard = Some(self.content.watch(move |ctx| {
             *pending.borrow_mut() = Some(ctx.value().clone());
@@ -298,7 +298,7 @@ impl ReactiveBarcodeContent {
 
     /// Takes and encodes a pending content change, if any arrived since the
     /// last frame. Crashes on unencodable content.
-    pub(crate) fn take_reencoded(&mut self) -> Option<BarcodeSource> {
+    pub fn take_reencoded(&mut self) -> Option<BarcodeSource> {
         let content = self.pending.borrow_mut().take()?;
         Some(BarcodeSource::encode_or_panic(
             self.symbology,
