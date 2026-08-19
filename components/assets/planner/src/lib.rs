@@ -565,6 +565,15 @@ pub struct IncludeBundleArgs {
     pub mount: syn::Ident,
 }
 
+impl std::fmt::Debug for IncludeBundleArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IncludeBundleArgs")
+            .field("path", &self.path.value())
+            .field("mount", &self.mount.to_string())
+            .finish()
+    }
+}
+
 impl Parse for IncludeBundleArgs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let path: LitStr = input.parse()?;

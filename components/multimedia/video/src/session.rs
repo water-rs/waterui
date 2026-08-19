@@ -789,10 +789,12 @@ fn duration_from_seconds(seconds: f64) -> Option<Duration> {
 mod tests {
     use super::*;
     use crate::AudioTrackInfo;
+    use crate::url::Url;
     use nami::Signal as _;
 
     fn item(path: &str, id: u8) -> MediaItem {
-        MediaItem::from(Url::from_file_path_str(path)).id(MediaItemId::from_bytes([id; 16]))
+        MediaItem::from(Url::from_file_path_str(path.to_owned()))
+            .id(MediaItemId::from_bytes([id; 16]))
     }
 
     #[test]
