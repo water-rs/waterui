@@ -198,12 +198,6 @@ pub(crate) struct DrawingState {
     // Text styling (Phase 5)
     pub(crate) font: FontSpec,
 
-    // Shadow (Phase 7)
-    pub(crate) shadow_blur: f32,
-    pub(crate) shadow_color: ResolvedColor,
-    pub(crate) shadow_offset_x: f32,
-    pub(crate) shadow_offset_y: f32,
-
     // Fill rule (Phase 7)
     pub(crate) fill_rule: peniko::Fill,
 }
@@ -223,10 +217,6 @@ impl Default for DrawingState {
             global_alpha: 1.0,
             blend_mode: peniko::BlendMode::default(),
             font: FontSpec::default(),
-            shadow_blur: 0.0,
-            shadow_color: ResolvedColor::from_srgb(Srgb::BLACK).with_opacity(0.0),
-            shadow_offset_x: 0.0,
-            shadow_offset_y: 0.0,
             fill_rule: peniko::Fill::NonZero, // Default fill rule
         }
     }
