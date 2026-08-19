@@ -61,24 +61,6 @@ impl Parse for AssetInput {
     }
 }
 
-struct IncludeBundleInput {
-    path: LitStr,
-    mount: Ident,
-}
-
-impl Parse for IncludeBundleInput {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let path: LitStr = input.parse()?;
-        input.parse::<Token![,]>()?;
-        let as_ident: Ident = input.parse()?;
-        if as_ident != "as" {
-            return Err(syn::Error::new(as_ident.span(), "expected `as`"));
-        }
-        input.parse::<Token![=]>()?;
-        let mount: Ident = input.parse()?;
-        Ok(Self { path, mount })
-    }
-}
 
 #[derive(Default, Clone)]
 struct ModuleNode {
@@ -246,8 +228,14 @@ pub fn assets(input: TokenStream) -> TokenStream {
 
 #[proc_macro]
 /// Registers an additional bundle mount for generated asset planning.
+///
+/// The expansion is deliberately inert (`const _: () = ();`): mounts take
+/// effect through `assets!()`, whose planner scans the crate's sources for
+/// `include_bundle!` invocations. Errors about a missing bundle directory
+/// therefore surface at the `assets!()` call site, not here — this macro only
+/// validates the syntax.
 pub fn include_bundle(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as IncludeBundleInput);
+    let input = parse_macro_input!(input as waterui_assets_planner::IncludeBundleArgs);
     let _ = input.path;
     let _ = input.mount;
     quote! { const _: () = (); }.into()
@@ -306,9 +294,9 @@ pub fn asset(input: TokenStream) -> TokenStream {
         },
         AssetKind::Image => {
             if is_remote {
-                quote! { #waterui::Photo::new(#path_lit) }
+                quote! { #waterui::media::Photo::new(#path_lit) }
             } else {
-                quote! { #waterui::Photo::from_path(#path_lit) }
+                quote! { #waterui::media::Photo::from_path(#path_lit) }
             }
         }
         AssetKind::Video => {
