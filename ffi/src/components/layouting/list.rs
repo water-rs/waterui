@@ -22,6 +22,9 @@ pub struct WuiListItem {
     pub content: *mut WuiAnyView,
     /// Read-only signal indicating whether this item can be deleted.
     pub deletable: *mut WuiComputed<bool>,
+    /// Read-only signal marking this item as the current selection; the
+    /// backend draws its platform's selection chrome while it is true.
+    pub selected: *mut WuiComputed<bool>,
     /// Section header carried by this item, or empty when the item does not
     /// start a new section.
     pub section_label: WuiStr,
@@ -60,6 +63,7 @@ impl IntoFFI for ListItem {
         WuiListItem {
             content: self.content.into_ffi(),
             deletable: self.deletable.into_ffi(),
+            selected: self.selected.into_ffi(),
             section_label,
             section_footer,
         }
