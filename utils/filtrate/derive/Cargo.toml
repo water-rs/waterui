@@ -21,6 +21,7 @@ workspace = true
 syn = { version = "3", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
+proc-macro-crate = "3"
 
 [dev-dependencies]
 filtrate-core.workspace = true
