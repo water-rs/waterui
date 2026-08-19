@@ -21,6 +21,7 @@ const CEF_HELPER_VARIANTS: [(&str, &str); 5] = [
     (" (Renderer)", ".renderer"),
 ];
 
+#[cfg(target_os = "macos")]
 #[derive(Template)]
 #[template(path = "macos/Info.plist.tpl", escape = "none")]
 struct InfoPlistTemplate<'a> {
@@ -56,6 +57,7 @@ pub struct MacOsUsageDescription {
 ///
 /// # Errors
 /// Returns an error if the binary is missing, template rendering fails, or bundle files cannot be created.
+#[cfg(target_os = "macos")]
 pub async fn package_binary_as_app(
     binary_path: &Path,
     bundle_id: &str,
