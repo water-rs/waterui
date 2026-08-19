@@ -10,8 +10,10 @@ use smol::fs;
 use waterui_assets::AssetKind;
 use waterui_assets_planner::{AssetRole, BundleManifest, PlannedAsset, ThemeConfig, plan_bundle};
 
+#[cfg(target_os = "macos")]
+use super::icon::encode_macos_icns;
 use super::icon::{
-    IconSource, LINUX_HICOLOR_SIZES, WINDOW_ICON_SIZE, encode_macos_icns, encode_png, hex_color,
+    IconSource, LINUX_HICOLOR_SIZES, WINDOW_ICON_SIZE, encode_png, hex_color,
     render_android_foreground, render_apple_icon,
 };
 use crate::project::Project;
@@ -96,6 +98,7 @@ pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::
 /// # Errors
 ///
 /// Fails when the icon asset cannot be loaded or rendered.
+#[cfg(target_os = "macos")]
 pub fn macos_icns(project: &Project) -> eyre::Result<Vec<u8>> {
     let manifest = build_manifest(project)?;
     let icon = load_project_icon(&manifest)?;

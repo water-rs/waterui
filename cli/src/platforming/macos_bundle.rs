@@ -1,10 +1,15 @@
 //! Helpers for packaging native binaries into macOS `.app` bundles.
 
+#[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "macos")]
 use askama::Template;
+#[cfg(target_os = "macos")]
 use color_eyre::eyre::{self, bail};
+#[cfg(target_os = "macos")]
 use fs_extra::dir::CopyOptions;
+#[cfg(target_os = "macos")]
 use smol::fs;
 #[cfg(target_os = "macos")]
 use smol::stream::StreamExt as _;
@@ -305,6 +310,7 @@ pub async fn remove_cef_helper_apps(app_dir: &Path, executable_name: &str) -> ey
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 async fn copy_dir(from: &Path, to: &Path) -> eyre::Result<()> {
     let source = from.to_path_buf();
     let destination = to.to_path_buf();
