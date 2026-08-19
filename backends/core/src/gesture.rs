@@ -5,7 +5,8 @@
 //! `Gesture` modifier) and routes raw pointer-down/move/up/cancel input,
 //! pinch/rotation phases, and frame ticks to the recognizers hit by the
 //! pointer. Recognized gestures invoke the bound action with the event
-//! (`TapEvent`, `LongPressEvent`, `DragEvent`, `MagnificationEvent`)
+//! (`TapEvent`, `LongPressEvent`, `DragEvent`, `MagnificationEvent`,
+//! `RotationEvent`; composed gestures deliver the completing child's event)
 //! inserted into the environment, with locations localized to the target's
 //! bounds. All coordinates are logical pixels; timestamps come from
 //! [`crate::time::Instant`].
@@ -16,7 +17,8 @@ use std::rc::Rc;
 
 use num_traits::ToPrimitive;
 use waterui::gesture::{
-    DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent, MagnificationEvent, TapEvent,
+    DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent, MagnificationEvent,
+    RotationEvent, TapEvent,
 };
 use waterui_core::Environment;
 use waterui_core::handler::BoxedAction;
@@ -125,6 +127,7 @@ enum GesturePayload {
     LongPress(LongPressEvent),
     Drag(DragEvent),
     Magnification(MagnificationEvent),
+    Rotation(RotationEvent),
 }
 
 #[derive(Default)]
@@ -185,6 +188,7 @@ impl GestureBinding {
             GesturePayload::LongPress(event) => local_env.insert(event),
             GesturePayload::Drag(event) => local_env.insert(event),
             GesturePayload::Magnification(event) => local_env.insert(event),
+            GesturePayload::Rotation(event) => local_env.insert(event),
         }
         (self.action.borrow_mut())(&local_env);
         true
@@ -230,6 +234,10 @@ fn localize_gesture_payload(payload: GesturePayload, bounds: kurbo::Rect) -> Ges
         GesturePayload::Magnification(mut event) => {
             event.center = local_gesture_point(event.center, bounds);
             GesturePayload::Magnification(event)
+        }
+        GesturePayload::Rotation(mut event) => {
+            event.center = local_gesture_point(event.center, bounds);
+            GesturePayload::Rotation(event)
         }
     }
 }
@@ -997,6 +1005,7 @@ impl GestureDetector for MagnificationDetector {
 struct RotationDetector {
     active: bool,
     angle: f32,
+    last_at: Option<Instant>,
 }
 
 impl RotationDetector {
@@ -1004,6 +1013,7 @@ impl RotationDetector {
         Self {
             active: false,
             angle: 0.0,
+            last_at: None,
         }
     }
 }
@@ -1014,37 +1024,64 @@ impl GestureDetector for RotationDetector {
             center,
             delta,
             phase,
-            ..
+            at,
         } = input
         else {
             return GestureDetection::default();
         };
-        let _ = center;
+        let mapped_phase = map_touch_phase_to_gesture_phase(phase);
         match phase {
             TouchPhase::Started => {
                 self.active = true;
                 self.angle = 0.0;
+                self.last_at = Some(at);
+                GestureDetection::recognized(GesturePayload::Rotation(RotationEvent {
+                    phase: mapped_phase,
+                    center: gesture_point(center),
+                    angle: self.angle,
+                    velocity: 0.0,
+                }))
             }
             TouchPhase::Moved => {
                 if !self.active {
                     return GestureDetection::default();
                 }
+                let previous_at = self.last_at.unwrap_or(at);
+                let dt = at
+                    .duration_since(previous_at)
+                    .as_secs_f32()
+                    .max(f32::EPSILON);
+                self.last_at = Some(at);
                 self.angle += delta;
+                GestureDetection::recognized(GesturePayload::Rotation(RotationEvent {
+                    phase: mapped_phase,
+                    center: gesture_point(center),
+                    angle: self.angle,
+                    velocity: delta / dt,
+                }))
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
                 if !self.active {
                     return GestureDetection::default();
                 }
-                self.active = false;
                 self.angle += delta;
+                let detection =
+                    GestureDetection::recognized(GesturePayload::Rotation(RotationEvent {
+                        phase: mapped_phase,
+                        center: gesture_point(center),
+                        angle: self.angle,
+                        velocity: 0.0,
+                    }));
+                self.reset();
+                detection
             }
         }
-        GestureDetection::recognized(GesturePayload::None)
     }
 
     fn reset(&mut self) {
         self.active = false;
         self.angle = 0.0;
+        self.last_at = None;
     }
 }
 
@@ -1076,10 +1113,10 @@ impl GestureDetector for ThenDetector {
         }
 
         let detection = self.second.input(input);
-        if detection.recognized.is_some() {
+        if let Some(payload) = detection.recognized {
             self.awaiting_second = false;
             self.first.reset();
-            return GestureDetection::recognized(GesturePayload::None);
+            return GestureDetection::recognized(payload);
         }
         if detection.failed {
             self.awaiting_second = false;
@@ -1116,12 +1153,12 @@ impl SimultaneousDetector {
 impl GestureDetector for SimultaneousDetector {
     fn input(&mut self, input: GestureInput) -> GestureDetection {
         let first = self.first.input(input);
-        if first.recognized.is_some() {
-            return GestureDetection::recognized(GesturePayload::None);
+        if let Some(payload) = first.recognized {
+            return GestureDetection::recognized(payload);
         }
         let second = self.second.input(input);
-        if second.recognized.is_some() {
-            return GestureDetection::recognized(GesturePayload::None);
+        if let Some(payload) = second.recognized {
+            return GestureDetection::recognized(payload);
         }
         GestureDetection::default()
     }
@@ -1164,17 +1201,17 @@ impl GestureDetector for ExclusiveDetector {
         }
 
         let first = self.first.input(input);
-        if first.recognized.is_some() {
+        if let Some(payload) = first.recognized {
             self.second.reset();
             self.suppress_until = Some(now + EXCLUSIVE_RECOGNITION_WINDOW);
-            return GestureDetection::recognized(GesturePayload::None);
+            return GestureDetection::recognized(payload);
         }
 
         let second = self.second.input(input);
-        if second.recognized.is_some() {
+        if let Some(payload) = second.recognized {
             self.first.reset();
             self.suppress_until = Some(now + EXCLUSIVE_RECOGNITION_WINDOW);
-            return GestureDetection::recognized(GesturePayload::None);
+            return GestureDetection::recognized(payload);
         }
         GestureDetection::default()
     }
@@ -1396,7 +1433,12 @@ mod tests {
         let second = detector.input(GestureInput::Tick {
             at: start + Duration::from_millis(120),
         });
-        assert!(matches!(second.recognized, Some(GesturePayload::None)));
+        // The completing child's event is forwarded so `Use<LongPressEvent>`
+        // handlers on a composed gesture find their payload.
+        assert!(matches!(
+            second.recognized,
+            Some(GesturePayload::LongPress(_))
+        ));
     }
 
     #[test]
@@ -1413,7 +1455,54 @@ mod tests {
             point,
             at: start + Duration::from_millis(10),
         });
-        assert!(matches!(recognized.recognized, Some(GesturePayload::None)));
+        // The recognizing child's own event rides along with the recognition.
+        assert!(matches!(
+            recognized.recognized,
+            Some(GesturePayload::Tap(_))
+        ));
+    }
+
+    #[test]
+    fn rotation_detector_delivers_accumulated_angle_events() {
+        let mut detector = RotationDetector::new();
+        let start = Instant::now();
+        let center = kurbo::Point::new(4.0, 6.0);
+
+        let started = detector.input(GestureInput::Rotation {
+            center,
+            delta: 0.0,
+            phase: TouchPhase::Started,
+            at: start,
+        });
+        assert!(matches!(
+            started.recognized,
+            Some(GesturePayload::Rotation(event)) if event.angle == 0.0
+        ));
+
+        let moved = detector.input(GestureInput::Rotation {
+            center,
+            delta: 0.5,
+            phase: TouchPhase::Moved,
+            at: start + Duration::from_millis(16),
+        });
+        match moved.recognized {
+            Some(GesturePayload::Rotation(event)) => {
+                assert!((event.angle - 0.5).abs() < 1e-6);
+                assert!(event.velocity > 0.0);
+            }
+            other => panic!("expected a rotation payload, got {:?}", other.is_some()),
+        }
+
+        let ended = detector.input(GestureInput::Rotation {
+            center,
+            delta: 0.25,
+            phase: TouchPhase::Ended,
+            at: start + Duration::from_millis(32),
+        });
+        assert!(matches!(
+            ended.recognized,
+            Some(GesturePayload::Rotation(event)) if (event.angle - 0.75).abs() < 1e-6
+        ));
     }
 
     #[test]
