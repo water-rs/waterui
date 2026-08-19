@@ -23,6 +23,7 @@ use waterui_core::{
     layout::StretchAxis,
 };
 use waterui_layout::scroll::ScrollController;
+use waterui_text::{IntoText, Text};
 
 mod content;
 mod section;
@@ -309,7 +310,17 @@ impl From<ListConfig> for List<SharedAnyViews<ListItem>> {
 }
 
 fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
-    config.contents = SharedAnyViews::new(config.contents.clone().map(selection_themed));
+    // Section headers and footers are semantic text: they localize, and they
+    // may be driven by a signal. Resolving them here is the one place the
+    // environment is in hand — rows are materialized lazily by the renderer,
+    // long after this body has run.
+    let section_env = env.clone();
+    config.contents = SharedAnyViews::new(
+        config
+            .contents
+            .clone()
+            .map(move |item| selection_themed(resolve_item_section(item, &section_env))),
+    );
     if let Some(hook) = env.get::<Hook<ListConfig>>() {
         AnyView::new(hook.apply(env, config))
     } else {
@@ -317,6 +328,12 @@ fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
             crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
         AnyView::new(Native::new(config).with_fallback(fallback))
     }
+}
+
+/// Resolves the section marker a row carries against the list's environment.
+fn resolve_item_section(mut item: ListItem, env: &Environment) -> ListItem {
+    item.section = item.section.map(|section| section.resolved(env));
+    item
 }
 
 /// Re-themes a row's content while it is selected.
@@ -481,20 +498,26 @@ where
 /// section header (and inset-grouped chrome around the section), macOS uses
 /// `NSTableView` group rows, and Material backends translate it into
 /// Material section dividers. View code only declares the semantic intent.
+///
+/// The header and footer are [`Text`], not strings: a section title localizes
+/// and may be driven by a signal ("3 unread"), and the backend follows that
+/// signal in place rather than rebuilding the section. The chrome's
+/// typography belongs to the platform, so a header takes the list's own
+/// section style regardless of any styling applied to the text.
 #[derive(Debug, Clone, Default)]
 pub struct ListSection {
     /// Title shown above the section.
-    pub label: Option<waterui_core::Str>,
+    pub label: Option<Text>,
     /// Footer text shown below the section.
-    pub footer: Option<waterui_core::Str>,
+    pub footer: Option<Text>,
 }
 
 impl ListSection {
     /// Creates a new section descriptor with just a header label.
     #[must_use]
-    pub fn new(label: impl Into<waterui_core::Str>) -> Self {
+    pub fn new(label: impl IntoText) -> Self {
         Self {
-            label: Some(label.into()),
+            label: Some(label.into_text()),
             footer: None,
         }
     }
@@ -510,9 +533,24 @@ impl ListSection {
 
     /// Adds a footer note shown below the section.
     #[must_use]
-    pub fn footer(mut self, footer: impl Into<waterui_core::Str>) -> Self {
-        self.footer = Some(footer.into());
+    pub fn footer(mut self, footer: impl IntoText) -> Self {
+        self.footer = Some(footer.into_text());
         self
+    }
+
+    /// Resolves the semantic header and footer against `env`, turning
+    /// localized or environment-dependent text into raw reactive configs the
+    /// renderer can read without an environment.
+    ///
+    /// The resolved text stays a signal, so a section header built from a
+    /// `Computed` — or one that only changes when the locale does — keeps
+    /// updating in place instead of being frozen at construction.
+    #[must_use]
+    fn resolved(self, env: &Environment) -> Self {
+        Self {
+            label: self.label.map(|label| Text::from(label.resolve(env))),
+            footer: self.footer.map(|footer| Text::from(footer.resolve(env))),
+        }
     }
 }
 
