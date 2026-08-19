@@ -12,7 +12,8 @@ use crate::renderer::{
 use crate::scroll::ScrollHandle;
 #[cfg(feature = "accessibility")]
 use accesskit::{
-    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+    Action as AccessibilityAction, Node as AccessibilityNode, NodeId as AccessibilityNodeId,
+    Role as AccessibilityNodeRole,
 };
 use waterui::component::list::{ListConfig, Move};
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
@@ -22,6 +23,7 @@ use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::Views;
 use waterui_core::{Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
+use waterui_text::Text;
 
 use crate::renderer::lazy::VirtualExtentIndex;
 use crate::widgets::{draw_scroll_indicators, widget_theme};
@@ -193,10 +195,15 @@ struct RowGestures {
 /// before the next marker — which the draw loop cannot discover on its own
 /// while only part of the list is realized. Resolving both onto rows up front
 /// keeps every row's height a local question again.
+///
+/// The header and footer are semantic text, not strings resolved once: an app
+/// can drive a section title from a signal, and the retained chrome is only
+/// rebuilt when membership changes. Holding the signal here is what lets a
+/// title change repaint without the list being rebuilt.
 #[derive(Clone, Default)]
 struct RowSectionChrome {
-    header: Option<waterui_core::Str>,
-    footer: Option<waterui_core::Str>,
+    header: Option<Text>,
+    footer: Option<Text>,
 }
 
 impl RowSectionChrome {
@@ -326,7 +333,7 @@ impl ListRenderState {
         let mut chrome = vec![RowSectionChrome::default(); len];
         // The footer of the section a row opens closes on the row before the
         // next marker, so each marker settles the *previous* section's footer.
-        let mut open_section: Option<(usize, Option<waterui_core::Str>)> = None;
+        let mut open_section: Option<(usize, Option<Text>)> = None;
         for index in 0..len {
             let item = materialize_list_item(&self.config.contents, index, env);
             let Some(section) = item.section else {
@@ -526,6 +533,56 @@ impl HydroNativeView for Native<ListConfig> {
     }
 }
 
+/// A row contributes up to three accessibility nodes — the section header it
+/// opens, the row itself, and the section footer it closes — so each row's id
+/// owns a slot of three keys rather than one.
+#[cfg(feature = "accessibility")]
+const A11Y_KEYS_PER_ROW: i64 = 3;
+#[cfg(feature = "accessibility")]
+const A11Y_KEY_ROW: i64 = 0;
+#[cfg(feature = "accessibility")]
+const A11Y_KEY_HEADER: i64 = 1;
+#[cfg(feature = "accessibility")]
+const A11Y_KEY_FOOTER: i64 = 2;
+
+#[cfg(feature = "accessibility")]
+fn row_a11y_key_base(row_id: ListItemId) -> i64 {
+    i64::from(i32::from(*row_id)) * A11Y_KEYS_PER_ROW
+}
+
+/// Registers one section header or footer as its own accessibility node.
+///
+/// Section chrome is not part of any row: a screen reader announces "Activity"
+/// as a heading and then the rows under it, rather than folding the title into
+/// the first row's label. The label is read through the renderer so a title
+/// driven by a signal re-flushes the tree when it changes.
+#[cfg(feature = "accessibility")]
+fn register_section_chrome_node(
+    renderer: &mut HydrolysisRenderer,
+    ctx: RenderContext,
+    semantic_key: i64,
+    label: Text,
+    is_header: bool,
+    bounds: vello::kurbo::Rect,
+    env: &Environment,
+) -> Option<AccessibilityNodeId> {
+    let role = if is_header {
+        AccessibilityNodeRole::Header
+    } else {
+        AccessibilityNodeRole::Footer
+    };
+    let styled = renderer.read_resolved_text_styled(&label, env);
+    let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(env, role));
+    node.set_label(styled.to_string());
+    renderer.register_accessibility_child_node_with_key(
+        semantic_key,
+        node,
+        transformed_rect(ctx.hit_transform, bounds),
+        env,
+        None,
+    )
+}
+
 /// Emits a list's accessibility tree from its node-owned retained state.
 pub(crate) fn list_accessibility(
     renderer: &mut HydrolysisRenderer,
@@ -539,6 +596,14 @@ pub(crate) fn list_accessibility(
     let row_count = renderer.read_signal(&row_count_signal);
     let list_metrics = crate::widgets::widget_theme(env).list_metrics();
     state.prepare_rows(row_count, list_metrics.one_line_row_height);
+    // The chrome decides how tall each row's slot is, so it has to be resolved
+    // before extents are measured here — exactly as the draw pass does.
+    if state.resolve_sections(row_count, env) {
+        state
+            .extent_index
+            .borrow_mut()
+            .reset(row_count, list_metrics.one_line_row_height, 0.0);
+    }
     let viewport = ctx.bounds;
     let content_height = state
         .extent_index
@@ -571,21 +636,58 @@ pub(crate) fn list_accessibility(
         for index in window.start..window.end {
             let row_env = env.clone();
             let item = materialize_list_item(&list.contents, index, &row_env);
-            let row_height = {
+            let chrome = state.section_chrome(index);
+            let slot_height = {
                 let cached_extent = state.extent_index.borrow().measured(index);
                 if let Some(extent) = cached_extent {
                     extent
                 } else {
                     let extent =
-                        measure_list_item_row_height(&item, renderer.state_mut(), &row_env);
+                        measure_list_item_row_height(&item, renderer.state_mut(), &row_env)
+                            + chrome.total_height(&list_metrics);
                     state.extent_index.borrow_mut().set_measured(index, extent);
                     extent
                 }
             };
-            let row_rect = vello::kurbo::Rect::new(viewport.x0, y, viewport.x1, y + row_height);
-            y += row_height;
-            if row_rect.y1 <= viewport.y0 || row_rect.y0 >= viewport.y1 {
+            let slot_rect = vello::kurbo::Rect::new(viewport.x0, y, viewport.x1, y + slot_height);
+            y += slot_height;
+            if slot_rect.y1 <= viewport.y0 || slot_rect.y0 >= viewport.y1 {
                 continue;
+            }
+            let header_height = chrome.header_height(&list_metrics);
+            let footer_height = chrome.footer_height(&list_metrics);
+            // The chrome a row owns is not part of the row: a section title is
+            // its own node, and the row's bounds are the band left between the
+            // header and the footer — the same split the draw pass makes.
+            let row_rect = vello::kurbo::Rect::new(
+                slot_rect.x0,
+                slot_rect.y0 + header_height,
+                slot_rect.x1,
+                slot_rect.y1 - footer_height,
+            );
+            let row_id = list
+                .contents
+                .get_id(index)
+                .unwrap_or_else(|| panic!("hydrolysis list row {index} has no stable identity"));
+            let key_base = row_a11y_key_base(row_id);
+            if let Some(header) = chrome.header.clone() {
+                let header_rect = vello::kurbo::Rect::new(
+                    slot_rect.x0 + list_metrics.horizontal_inset,
+                    slot_rect.y0,
+                    slot_rect.x1 - list_metrics.horizontal_inset,
+                    slot_rect.y0 + header_height,
+                );
+                if let Some(node_id) = register_section_chrome_node(
+                    renderer,
+                    ctx,
+                    key_base + A11Y_KEY_HEADER,
+                    header,
+                    true,
+                    header_rect,
+                    &row_env,
+                ) {
+                    list_node.push_child(node_id);
+                }
             }
             let mut row_node = AccessibilityNode::new(
                 renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ListItem),
@@ -596,18 +698,33 @@ pub(crate) fn list_accessibility(
                 row_node.set_label(label);
             }
             row_node.add_action(AccessibilityAction::Focus);
-            let row_id = list
-                .contents
-                .get_id(index)
-                .unwrap_or_else(|| panic!("hydrolysis list row {index} has no stable identity"));
             if let Some(row_node_id) = renderer.register_accessibility_child_node_with_key(
-                i64::from(i32::from(*row_id)),
+                key_base + A11Y_KEY_ROW,
                 row_node,
                 transformed_rect(ctx.hit_transform, row_rect),
                 &row_env,
                 None,
             ) {
                 list_node.push_child(row_node_id);
+            }
+            if let Some(footer) = chrome.footer.clone() {
+                let footer_rect = vello::kurbo::Rect::new(
+                    slot_rect.x0 + list_metrics.horizontal_inset,
+                    slot_rect.y1 - footer_height,
+                    slot_rect.x1 - list_metrics.horizontal_inset,
+                    slot_rect.y1,
+                );
+                if let Some(node_id) = register_section_chrome_node(
+                    renderer,
+                    ctx,
+                    key_base + A11Y_KEY_FOOTER,
+                    footer,
+                    false,
+                    footer_rect,
+                    &row_env,
+                ) {
+                    list_node.push_child(node_id);
+                }
             }
         }
         let _ = renderer.register_accessibility_node(
@@ -1383,7 +1500,7 @@ impl RowGestures {
 /// every theme.
 fn draw_section_label(
     ctx: &mut WidgetRenderContext<'_>,
-    label: waterui_core::Str,
+    label: Text,
     bounds: vello::kurbo::Rect,
     is_header: bool,
     env: &Environment,
@@ -1391,21 +1508,31 @@ fn draw_section_label(
     if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         return;
     }
-    let text = waterui_text::Text::new(label).color(waterui_graphics::color::Color::new(
-        waterui::theme::color::MutedForeground,
-    ));
-    let text = if is_header {
-        text.font(waterui_text::font::Subheadline)
-    } else {
-        text.font(waterui_text::font::Caption)
-    };
-    let styled = ctx.renderer_mut().read_signal(&text.resolve(env).content);
+    let styled = ctx
+        .renderer_mut()
+        .read_signal(&section_chrome_text(label, is_header).resolve(env).content);
     ctx.render_styled_text(
         styled,
         waterui_layout::stack::HorizontalAlignment::Leading,
         env,
         bounds,
     );
+}
+
+/// Applies the section chrome's own typography to a header or footer.
+///
+/// Section chrome is the platform's, not the app's: the title is styled by the
+/// list, the way `UITableView` and Material section headers style theirs.
+/// Only the text content comes from the app, and it stays reactive.
+fn section_chrome_text(label: Text, is_header: bool) -> Text {
+    let text = label.color(waterui_graphics::color::Color::new(
+        waterui::theme::color::MutedForeground,
+    ));
+    if is_header {
+        text.font(waterui_text::font::Subheadline)
+    } else {
+        text.font(waterui_text::font::Caption)
+    }
 }
 
 fn list_content_rect(

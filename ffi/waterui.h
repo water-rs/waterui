@@ -4979,14 +4979,43 @@ typedef struct WuiScrollView {
 } WuiScrollView;
 
 /**
+ * FFI representation of the section break a list item may carry.
+ *
+ * A section header is semantic text, not a frozen string: it localizes, and
+ * an app can drive it from a signal (`"3 unread"`). Both slots therefore
+ * cross as reactive styled-text signals the backend watches like any other
+ * text, rather than as a snapshot taken when the list was built. Paragraph
+ * alignment is deliberately not carried — section chrome is aligned by the
+ * platform, matching [`WuiNavigationSearch::prompt`].
+ *
+ * `has_value` distinguishes "this item opens a section" from "this item
+ * continues the previous one": a section that opens with neither a header nor
+ * a footer is a pure visual divider, and both of its signals are then null.
+ * A null signal must not be read or dropped.
+ *
+ * [`WuiNavigationSearch::prompt`]: crate::components::navigation::WuiNavigationSearch::prompt
+ */
+typedef struct WuiListSection {
+  /**
+   * `true` when this item starts a new logical section.
+   */
+  bool has_value;
+  /**
+   * Reactive header text shown above the section, or null when it has none.
+   */
+  WuiComputed_StyledStr *label;
+  /**
+   * Reactive footer text shown below the section, or null when it has none.
+   */
+  WuiComputed_StyledStr *footer;
+} WuiListSection;
+
+/**
  * FFI representation of a list item.
  *
- * `section_label` and `section_footer` are owned by the consumer — when
- * they're empty the item carries no section break, otherwise the item opens
- * a new logical section visible to the renderer (`UITableView` sections,
- * `NSTableView` group rows, Material list groups, ...). Both fields are
- * passed by value so ownership of the underlying byte buffers transfers
- * cleanly to the backend; no separate drop call is required.
+ * `section` is owned by the consumer and passed by value, so ownership of the
+ * reactive text handles it carries transfers cleanly to the backend; the
+ * backend releases each non-null handle when it is done with the item.
  */
 typedef struct WuiListItem {
   /**
@@ -5003,14 +5032,9 @@ typedef struct WuiListItem {
    */
   WuiComputed_bool *selected;
   /**
-   * Section header carried by this item, or empty when the item does not
-   * start a new section.
+   * Section break carried by this item — see [`WuiListSection`].
    */
-  struct WuiStr section_label;
-  /**
-   * Section footer carried by this item, or empty when no footer is set.
-   */
-  struct WuiStr section_footer;
+  struct WuiListSection section;
 } WuiListItem;
 
 /**
