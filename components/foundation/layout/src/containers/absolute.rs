@@ -20,11 +20,15 @@
 //! ))
 //! ```
 
+use alloc::collections::BTreeSet;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use nami::{Computed, Signal, SignalExt};
-use waterui_core::{IntoSignalF32, View, view::TupleViews};
+use nami::{Computed, Signal, SignalExt, watcher::BoxWatcherGuard};
+use waterui_core::{
+    IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews,
+};
 
 use crate::{
     Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, UnitPoint,
@@ -338,6 +342,42 @@ impl Layout for PositionedLayout {
                 }
             })
             .collect()
+    }
+
+    fn watch_invalidation(
+        &self,
+        invalidate: LayoutInvalidationCallback,
+    ) -> Vec<BoxWatcherGuard> {
+        let signals: Vec<&Computed<f32>> = match &self.target {
+            PositionTarget::Absolute { x, y } => vec![x, y],
+            PositionTarget::Fractional {
+                offset_x, offset_y, ..
+            } => vec![offset_x, offset_y],
+            PositionTarget::Pinned(pinned) => [
+                pinned.leading.as_ref(),
+                pinned.trailing.as_ref(),
+                pinned.top.as_ref(),
+                pinned.bottom.as_ref(),
+                pinned.width.as_ref(),
+                pinned.height.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        };
+        let mut identities = BTreeSet::new();
+        let mut guards = Vec::new();
+        for signal in signals {
+            if signal
+                .identity()
+                .is_some_and(|identity| !identities.insert(identity))
+            {
+                continue;
+            }
+            let invalidate = invalidate.clone();
+            guards.push(signal.watch(move |_| invalidate()));
+        }
+        guards
     }
 }
 
