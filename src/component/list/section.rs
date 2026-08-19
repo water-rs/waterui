@@ -8,7 +8,7 @@
 //! `NSTableView` group rows, Material section dividers — without any extra
 //! FFI surface.
 
-use waterui_core::Str;
+use waterui_text::{IntoText, Text};
 
 use super::ListSection;
 use super::content::{ListContent, ListItemSink};
@@ -20,17 +20,22 @@ use super::content::{ListContent, ListItemSink};
 /// at the call site. Compose sections with the existing tuple impls of
 /// [`ListContent`].
 ///
+/// The header and footer are semantic text, so a string literal localizes and
+/// a signal-backed title updates in place: the backend repaints the chrome
+/// without rebuilding the section's rows.
+///
 /// # Example
 ///
 /// ```rust,ignore
 /// use waterui::component::list::{List, Section, row};
+/// use waterui::text;
 ///
 /// List::content((
 ///     Section::new("Connection").content((
 ///         row("Status", connection_label),
 ///         row("Endpoint", endpoint_text),
 ///     )),
-///     Section::new("Activity")
+///     Section::new(text!("Activity ({stalls} stalled)"))
 ///         .footer("Updated every poll")
 ///         .content((
 ///             row("Polls", polls_text),
@@ -40,8 +45,8 @@ use super::content::{ListContent, ListItemSink};
 /// ```
 #[derive(Debug, Clone)]
 pub struct Section<C> {
-    label: Option<Str>,
-    footer: Option<Str>,
+    label: Option<Text>,
+    footer: Option<Text>,
     content: C,
 }
 
@@ -50,9 +55,9 @@ impl Section<()> {
     ///
     /// Chain [`Section::content`] to attach inner [`ListContent`].
     #[must_use]
-    pub fn new(label: impl Into<Str>) -> Self {
+    pub fn new(label: impl IntoText) -> Self {
         Self {
-            label: Some(label.into()),
+            label: Some(label.into_text()),
             footer: None,
             content: (),
         }
@@ -87,8 +92,8 @@ impl<C> Section<C> {
 
     /// Attaches a footer note rendered below the section.
     #[must_use]
-    pub fn footer(mut self, footer: impl Into<Str>) -> Self {
-        self.footer = Some(footer.into());
+    pub fn footer(mut self, footer: impl IntoText) -> Self {
+        self.footer = Some(footer.into_text());
         self
     }
 }

@@ -1667,36 +1667,19 @@ impl ToJavaStruct for crate::components::list::WuiList {
 /// WuiListItem -> ListItemStruct
 impl ToJavaStruct for crate::components::list::WuiListItem {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let section_label: waterui::Str =
-            unsafe { crate::IntoRust::into_rust(core::ptr::read(&self.section_label)) };
-        let section_footer: waterui::Str =
-            unsafe { crate::IntoRust::into_rust(core::ptr::read(&self.section_footer)) };
-        let section_label = if section_label.is_empty() {
-            JObject::null()
-        } else {
-            env.new_string(section_label.as_str())
-                .expect("Failed to create list section label")
-                .into()
-        };
-        let section_footer = if section_footer.is_empty() {
-            JObject::null()
-        } else {
-            env.new_string(section_footer.as_str())
-                .expect("Failed to create list section footer")
-                .into()
-        };
         let class = env
             .find_class(jni_str!("dev/waterui/android/runtime/ListItemStruct"))
             .expect("ListItemStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJJLjava/lang/String;Ljava/lang/String;)V"),
+            jni_sig!("(JJJZJJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.deletable as jlong),
                 JValue::Long(self.selected as jlong),
-                JValue::Object(&section_label),
-                JValue::Object(&section_footer),
+                JValue::Bool(self.section.has_value.into()),
+                JValue::Long(self.section.label as jlong),
+                JValue::Long(self.section.footer as jlong),
             ],
         )
         .expect("Failed to create ListItemStruct")

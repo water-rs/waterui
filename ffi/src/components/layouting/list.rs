@@ -1,21 +1,44 @@
 use crate::action::{WuiIndexAction, WuiMoveAction};
 use crate::reactive::WuiComputed;
 use crate::views::WuiAnyViews;
-use crate::{IntoFFI, WuiAnyView, WuiStr};
+use crate::{IntoFFI, WuiAnyView};
 use core::fmt;
 use nami::SignalExt;
-use waterui::Str;
 use waterui::component::list::{ListConfig, ListItem, ListSection};
+use waterui::text::styled::StyledStr;
 use waterui::views::ViewsExt;
+
+/// FFI representation of the section break a list item may carry.
+///
+/// A section header is semantic text, not a frozen string: it localizes, and
+/// an app can drive it from a signal (`"3 unread"`). Both slots therefore
+/// cross as reactive styled-text signals the backend watches like any other
+/// text, rather than as a snapshot taken when the list was built. Paragraph
+/// alignment is deliberately not carried — section chrome is aligned by the
+/// platform, matching [`WuiNavigationSearch::prompt`].
+///
+/// `has_value` distinguishes "this item opens a section" from "this item
+/// continues the previous one": a section that opens with neither a header nor
+/// a footer is a pure visual divider, and both of its signals are then null.
+/// A null signal must not be read or dropped.
+///
+/// [`WuiNavigationSearch::prompt`]: crate::components::navigation::WuiNavigationSearch::prompt
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiListSection {
+    /// `true` when this item starts a new logical section.
+    pub has_value: bool,
+    /// Reactive header text shown above the section, or null when it has none.
+    pub label: *mut WuiComputed<StyledStr>,
+    /// Reactive footer text shown below the section, or null when it has none.
+    pub footer: *mut WuiComputed<StyledStr>,
+}
 
 /// FFI representation of a list item.
 ///
-/// `section_label` and `section_footer` are owned by the consumer — when
-/// they're empty the item carries no section break, otherwise the item opens
-/// a new logical section visible to the renderer (`UITableView` sections,
-/// `NSTableView` group rows, Material list groups, ...). Both fields are
-/// passed by value so ownership of the underlying byte buffers transfers
-/// cleanly to the backend; no separate drop call is required.
+/// `section` is owned by the consumer and passed by value, so ownership of the
+/// reactive text handles it carries transfers cleanly to the backend; the
+/// backend releases each non-null handle when it is done with the item.
 #[repr(C)]
 pub struct WuiListItem {
     /// The content view for this item.
@@ -25,11 +48,8 @@ pub struct WuiListItem {
     /// Read-only signal marking this item as the current selection; the
     /// backend draws its platform's selection chrome while it is true.
     pub selected: *mut WuiComputed<bool>,
-    /// Section header carried by this item, or empty when the item does not
-    /// start a new section.
-    pub section_label: WuiStr,
-    /// Section footer carried by this item, or empty when no footer is set.
-    pub section_footer: WuiStr,
+    /// Section break carried by this item — see [`WuiListSection`].
+    pub section: WuiListSection,
 }
 
 impl fmt::Debug for WuiListItem {
@@ -37,21 +57,29 @@ impl fmt::Debug for WuiListItem {
         f.debug_struct("WuiListItem")
             .field("content", &self.content)
             .field("deletable", &self.deletable)
+            .field("section", &self.section)
             .finish_non_exhaustive()
     }
 }
 
-fn empty_wuistr() -> WuiStr {
-    Str::default().into_ffi()
-}
+impl IntoFFI for Option<ListSection> {
+    type FFI = WuiListSection;
 
-fn section_to_ffi(section: Option<ListSection>) -> (WuiStr, WuiStr) {
-    match section {
-        None => (empty_wuistr(), empty_wuistr()),
-        Some(ListSection { label, footer }) => (
-            label.unwrap_or_default().into_ffi(),
-            footer.unwrap_or_default().into_ffi(),
-        ),
+    fn into_ffi(self) -> Self::FFI {
+        let Some(ListSection { label, footer }) = self else {
+            return WuiListSection {
+                has_value: false,
+                label: core::ptr::null_mut(),
+                footer: core::ptr::null_mut(),
+            };
+        };
+        let into_signal = |text: waterui::text::Text| text.into_config_without_env().content;
+        WuiListSection {
+            has_value: true,
+            label: label.map_or_else(core::ptr::null_mut, |label| into_signal(label).into_ffi()),
+            footer: footer
+                .map_or_else(core::ptr::null_mut, |footer| into_signal(footer).into_ffi()),
+        }
     }
 }
 
@@ -59,13 +87,11 @@ impl IntoFFI for ListItem {
     type FFI = WuiListItem;
 
     fn into_ffi(self) -> Self::FFI {
-        let (section_label, section_footer) = section_to_ffi(self.section);
         WuiListItem {
             content: self.content.into_ffi(),
             deletable: self.deletable.into_ffi(),
             selected: self.selected.into_ffi(),
-            section_label,
-            section_footer,
+            section: self.section.into_ffi(),
         }
     }
 }
