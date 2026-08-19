@@ -489,7 +489,7 @@ impl InspectorRuntime {
     /// Must be called on the thread that owns the UI: the reactive graph is
     /// thread-confined, and so is its observer.
     #[cfg(feature = "inspector-signals")]
-    #[must_use]
+    #[must_use = "observation lasts only as long as the returned scope is held; dropping it immediately stops it"]
     pub fn observe_signals(&self) -> nami::observe::ObserverScope {
         use std::rc::Rc;
         nami::observe::ObserverScope::install(Rc::new(signals::SignalBridge::new(Arc::clone(

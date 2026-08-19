@@ -351,7 +351,7 @@ mod tests {
         let clock = TestClock::new();
         let probe = TaskProbe::with_clock(
             Arc::clone(&hub),
-            Duration::from_secs(3600),
+            Duration::from_hours(1),
             0.9,
             clock.source(),
         );
@@ -387,7 +387,7 @@ mod tests {
         let clock = TestClock::new();
         let probe = TaskProbe::with_clock(
             Arc::clone(&hub),
-            Duration::from_secs(3600),
+            Duration::from_hours(1),
             0.9,
             clock.source(),
         );

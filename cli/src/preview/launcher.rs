@@ -197,6 +197,66 @@ impl PreviewSession {
     }
 }
 
+/// Configures the module build to compile exactly as the runtime it will be
+/// loaded into was compiled.
+///
+/// The preview wrapper crate lives in the managed build cache, whose generated
+/// sources are regenerated whenever the CLI's scaffold templates move, so its
+/// dependency graph must not be compiled into that regenerated tree.
+///
+/// It goes into the *support app's* shared target directory rather than the
+/// previewed project's. A preview module is loaded into the support app and
+/// resolves its framework symbols against the runtime that app already has open,
+/// so the two have to be the same build of that runtime — not merely the same
+/// source at the same version. Two target directories mean two independent
+/// compilations, each with its own `-C metadata` and therefore its own hash in
+/// every mangled symbol; the module then fails to `dlopen` against a runtime
+/// whose symbols no longer match, even though every input to both builds was
+/// identical.
+///
+/// Cargo folds both the deployment target and the unified feature set into that
+/// same `-C metadata` hash, so a module that disagrees with its host on either
+/// one links against symbols the host does not have.
+async fn configure_preview_module_build(
+    preview_crate_path: &Path,
+    platform: PreviewPlatform,
+    target: TargetPlatform,
+    link_mode: PreviewLinkMode,
+) -> Result<RustBuild> {
+    let support_target_dir = Project::open(&preview_support_path()?)
+        .await
+        .wrap_err("Failed to open preview support project for its target directory")?
+        .water_target_dir(RustLinkage::SharedRuntime)
+        .await?;
+    let rust_build = link_mode
+        .configure_build(RustBuild::new(preview_crate_path, target.triple()))
+        .with_target_dir(support_target_dir);
+
+    let support_project = Project::open(&preview_support_path()?)
+        .await
+        .wrap_err("Failed to open the preview support project")?;
+    if matches!(platform, PreviewPlatform::Android) {
+        Ok(rust_build.with_features(
+            crate::android::platform::android_ffi_dependency_features(&support_project).await?,
+        ))
+    } else {
+        let browser_runtime = support_project
+            .browser_runtime_plan(target, crate::platform::TargetBackend::Apple)
+            .await?;
+        let (key, value) =
+            crate::apple::platform::apple_deployment_target(&support_project, target)
+                .await
+                .wrap_err("Failed to resolve the preview support deployment target")?;
+        Ok(rust_build.with_env(key, value).with_features(
+            crate::apple::platform::apple_ffi_dependency_features(
+                &support_project,
+                browser_runtime,
+            )
+            .await?,
+        ))
+    }
+}
+
 async fn build_preview_dylib(
     project_path: &Path,
     platform: PreviewPlatform,
@@ -235,56 +295,8 @@ async fn build_preview_dylib(
 
     ensure_project_dev_feature_for_preview(&project).await?;
 
-    // The preview wrapper crate lives in the managed build cache, whose generated
-    // sources are regenerated whenever the CLI's scaffold templates move, so its
-    // dependency graph must not be compiled into that regenerated tree.
-    //
-    // It goes into the *support app's* shared target directory rather than this
-    // project's. A preview module is loaded into the support app and resolves
-    // its WaterUI symbols against the runtime that app already has open, so the
-    // two have to be the same build of that runtime — not merely the same
-    // source at the same version. Two target directories mean two independent
-    // compilations, each with its own `-C metadata` and therefore its own hash
-    // in every mangled symbol; the module then fails to `dlopen` against a
-    // runtime whose symbols no longer match, even though every input to both
-    // builds was identical.
-    let support_target_dir = Project::open(&preview_support_path()?)
-        .await
-        .wrap_err("Failed to open preview support project for its target directory")?
-        .water_target_dir(RustLinkage::SharedRuntime)
-        .await?;
-    let mut rust_build = link_mode
-        .configure_build(RustBuild::new(&preview_crate_path, target.triple()))
-        .with_target_dir(support_target_dir);
-
-    // Compile the module exactly as the runtime it is loaded into was compiled.
-    //
-    // Cargo folds both the deployment target and the unified feature set into the
-    // `-C metadata` hash it mangles into every symbol, so a module that disagrees
-    // with its host on either one links against symbols the host does not have.
-    let support_project = Project::open(&preview_support_path()?)
-        .await
-        .wrap_err("Failed to open the preview support project")?;
-    rust_build = if matches!(platform, PreviewPlatform::Android) {
-        rust_build.with_features(
-            crate::android::platform::android_ffi_dependency_features(&support_project).await?,
-        )
-    } else {
-        let browser_runtime = support_project
-            .browser_runtime_plan(target, crate::platform::TargetBackend::Apple)
-            .await?;
-        let (key, value) =
-            crate::apple::platform::apple_deployment_target(&support_project, target)
-                .await
-                .wrap_err("Failed to resolve the preview support deployment target")?;
-        rust_build.with_env(key, value).with_features(
-            crate::apple::platform::apple_ffi_dependency_features(
-                &support_project,
-                browser_runtime,
-            )
-            .await?,
-        )
-    };
+    let mut rust_build =
+        configure_preview_module_build(&preview_crate_path, platform, target, link_mode).await?;
     let dylib_path_start = Instant::now();
     let expected_path = rust_build
         .dylib_path(preview_crate_name.as_str(), false)
@@ -789,7 +801,7 @@ enum ConnectionWaitResult {
 /// events — so a slow but healthy launch is waited out rather than failed. An
 /// earlier 10s budget sat right on top of the ~10.2s cold start of a debug support
 /// app and lost the race by milliseconds, killing an app that was about to work.
-const STARTUP_DEADLINE: Duration = Duration::from_secs(180);
+const STARTUP_DEADLINE: Duration = Duration::from_mins(3);
 
 /// Wait for TCP connection while monitoring for app crashes.
 ///

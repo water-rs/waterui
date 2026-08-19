@@ -1127,14 +1127,8 @@ fn accessibility_state_ffi(state: &Computed<AccessibilityState>) -> WuiAccessibi
         Some(true) => 1,
     });
     WuiAccessibilityState {
-        disabled: state
-            .map(|state| state.is_disabled())
-            .computed()
-            .into_ffi(),
-        selected: state
-            .map(|state| state.is_selected())
-            .computed()
-            .into_ffi(),
+        disabled: state.map(|state| state.is_disabled()).computed().into_ffi(),
+        selected: state.map(|state| state.is_selected()).computed().into_ffi(),
         checked: checked.computed().into_ffi(),
         expanded: expanded.computed().into_ffi(),
         busy: state.map(|state| state.is_busy()).computed().into_ffi(),

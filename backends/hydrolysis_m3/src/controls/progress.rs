@@ -17,7 +17,7 @@ use waterui::animation::Animation;
 /// `LinearAnimationDuration` in Compose's `ProgressIndicator.kt`.
 const LINEAR_INDETERMINATE_CYCLE: Duration = Duration::from_millis(1_750);
 /// `CircularAnimationProgressDuration`: one full indeterminate cycle.
-const CIRCULAR_CYCLE_DURATION: Duration = Duration::from_millis(6_000);
+const CIRCULAR_CYCLE_DURATION: Duration = Duration::from_secs(6);
 /// `CircularAnimationAdditionalRotationDuration`: how long each 90-degree
 /// kick of the additional rotation takes.
 const CIRCULAR_ADDITIONAL_ROTATION_DURATION: Duration = Duration::from_millis(300);

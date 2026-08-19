@@ -197,7 +197,7 @@ fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder) {
         WaitResult::Completed,
         "holding past the activation duration must mount live photo motion"
     );
-    let _ = app.pointer_up_at(center_x, center_y);
+    app.pointer_up_at(center_x, center_y);
 
     let motion_gone =
         app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
@@ -217,7 +217,7 @@ fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder) {
         WaitResult::Completed,
         "live photo must support replay after returning to its still image"
     );
-    let _ = app.pointer_up_at(center_x, center_y);
+    app.pointer_up_at(center_x, center_y);
     let motion_gone =
         app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(

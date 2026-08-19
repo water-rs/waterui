@@ -408,7 +408,8 @@ impl AccessibilityBuilder {
     /// a padding or frame between the metadata and a lone text must not turn
     /// the override into a `Group("name")` around a `Label(content)`. The child
     /// keeps its identity and actions; it takes the scope's label, the scope's
-    /// explicit role, and the container's outer bounds. With zero or several
+    /// automation id, the scope's explicit role, and the container's outer
+    /// bounds. With zero or several
     /// children the container stands: it is then the only node that can say
     /// the parts belong together.
     fn collapse_single_child_container(&mut self, container_id: AccessibilityNodeId) {
@@ -422,6 +423,7 @@ impl AccessibilityBuilder {
             return;
         };
         let label = container.label().map(str::to_owned);
+        let author_id = container.author_id().map(str::to_owned);
         let role = container.role();
         let bounds = container.bounds();
         let child = self
@@ -431,6 +433,14 @@ impl AccessibilityBuilder {
             .expect("hydrolysis accessibility container child is not registered");
         if let Some(label) = label {
             child.set_label(label);
+        }
+        // The scope's automation id was claimed by the container, so it would
+        // vanish with it. A child that carries its own id keeps it, matching
+        // the nearest-consumer rule that let it claim one in the first place.
+        if let Some(author_id) = author_id
+            && child.author_id().is_none()
+        {
+            child.set_author_id(author_id);
         }
         if role != AccessibilityNodeRole::Group {
             child.set_role(role);
@@ -720,6 +730,24 @@ impl HydrolysisRenderer {
     #[cfg(feature = "accessibility")]
     pub(crate) fn push_accessibility_suppression(&mut self) {
         self.accessibility.push_suppression();
+    }
+
+    /// Parents the nodes registered until the matching pop to `node_id`.
+    ///
+    /// A scroll region's content are its descendants on every platform, so a
+    /// widget that already registered its own node uses this to gather what it
+    /// contains, rather than letting that content land beside it.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn push_accessibility_parent(&mut self, node_id: AccessibilityNodeId) {
+        self.accessibility.parent_stack.push(node_id);
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn pop_accessibility_parent(&mut self) {
+        self.accessibility
+            .parent_stack
+            .pop()
+            .expect("hydrolysis accessibility parent stack underflow");
     }
 
     #[cfg(feature = "accessibility")]

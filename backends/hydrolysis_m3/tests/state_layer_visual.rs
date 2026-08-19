@@ -122,7 +122,7 @@ fn hover_me_button() -> impl View {
 fn plain_button_hover_shows_state_layer(app: &mut OffscreenApp) {
     let _ = press_center(app, "Hover Me");
     save(app, "hover-before");
-    let _ = app.query().label("Hover Me").hover();
+    app.query().label("Hover Me").hover();
     app.pump_for(Duration::from_millis(120));
     save(app, "hover-120ms");
 }
@@ -130,7 +130,7 @@ fn plain_button_hover_shows_state_layer(app: &mut OffscreenApp) {
 fn structural_patch_view() -> impl View {
     let mode_for_view = binding(false);
     let mode_for_action = mode_for_view.clone();
-    let swapped = watch(mode_for_view.clone(), |mode| {
+    let swapped = watch(mode_for_view, |mode| {
         if mode {
             AnyView::new(text("Swapped content"))
         } else {

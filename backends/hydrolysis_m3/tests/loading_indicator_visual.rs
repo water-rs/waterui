@@ -25,7 +25,7 @@ fn the_loading_indicator_morphs_as_it_turns(ui: UiBuilder) {
         let _ = app.capture_snapshot(
             "material3-preview",
             "loading-indicator",
-            &format!("phase-{step}"),
+            format!("phase-{step}"),
         );
     }
 }
