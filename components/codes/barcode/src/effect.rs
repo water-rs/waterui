@@ -8,7 +8,9 @@ use waterui_core::{
 };
 use wgpu::util::DeviceExt;
 
-use crate::{BarcodeSource, shaders::QR_MASK_EFFECT};
+use crate::qr::ReactiveBarcodeContent;
+use crate::{BarcodeSource, BarcodeSymbology, shaders::QR_MASK_EFFECT};
+use waterui_core::Str;
 use waterui_graphics::{
     EffectRenderer, ViewEffectContext, ViewEffectInput, ViewEffectOutput, color::ResolvedColor,
     view_effect::ViewEffectRedrawCallback,
@@ -33,6 +35,7 @@ struct MaskUniforms {
 /// - light modules output configured light color
 pub struct BarcodeMaskEffect {
     source: BarcodeSource,
+    reactive_content: Option<ReactiveBarcodeContent>,
     pipeline: Option<wgpu::RenderPipeline>,
     bind_group_layout: Option<wgpu::BindGroupLayout>,
     uniform_buffer: Option<wgpu::Buffer>,
@@ -62,6 +65,7 @@ impl BarcodeMaskEffect {
     pub fn new(source: BarcodeSource, light_color: impl IntoComputed<ResolvedColor>) -> Self {
         Self {
             source,
+            reactive_content: None,
             pipeline: None,
             bind_group_layout: None,
             uniform_buffer: None,
@@ -73,6 +77,26 @@ impl BarcodeMaskEffect {
             light_color_guard: None,
             redraw_callback: None,
         }
+    }
+
+    /// Creates a mask effect whose barcode content follows a signal.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the signal's current or any later value cannot be encoded
+    /// for `symbology`; pre-validate runtime user input with
+    /// [`BarcodeSource::qr`] / [`BarcodeSource::code128`].
+    #[must_use]
+    pub fn reactive(
+        symbology: BarcodeSymbology,
+        content: impl IntoComputed<Str>,
+        light_color: impl IntoComputed<ResolvedColor>,
+    ) -> Self {
+        let reactive_content = ReactiveBarcodeContent::new(symbology, content.into_computed());
+        let source = reactive_content.initial_source();
+        let mut effect = Self::new(source, light_color);
+        effect.reactive_content = Some(reactive_content);
+        effect
     }
 
     fn create_pipeline(
@@ -210,7 +234,14 @@ impl EffectRenderer for BarcodeMaskEffect {
             .as_ref()
             .expect("BarcodeMaskEffect requires a redraw callback before setup")
             .clone();
-        self.light_color_guard = Some(self.light_color.watch(move |_| redraw()));
+        self.light_color_guard = Some(self.light_color.watch({
+            let redraw = redraw.clone();
+            move |_| redraw()
+        }));
+        if let Some(reactive_content) = &mut self.reactive_content {
+            let redraw = redraw.clone();
+            reactive_content.install(move || redraw());
+        }
         let (pipeline, bgl, sampler) = Self::create_pipeline(ctx.device, ctx.output_format);
         self.pipeline = Some(pipeline);
         self.bind_group_layout = Some(bgl);
@@ -222,6 +253,14 @@ impl EffectRenderer for BarcodeMaskEffect {
     }
 
     fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput) {
+        if let Some(source) = self
+            .reactive_content
+            .as_mut()
+            .and_then(ReactiveBarcodeContent::take_reencoded)
+        {
+            self.source = source;
+            self.create_matrix_buffer(output.device);
+        }
         let pipeline = self
             .pipeline
             .as_ref()

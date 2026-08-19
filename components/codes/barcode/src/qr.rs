@@ -1,11 +1,27 @@
 //! Barcode matrix generation for GPU rendering.
 
 use barcoders::sym::code128::Code128;
+use core::cell::RefCell;
 use core::fmt;
-use waterui_core::Str;
+use std::rc::Rc;
+use waterui_core::reactive::watcher::BoxWatcherGuard;
+use waterui_core::{Computed, Signal, Str};
 use waterui_graphics::{GpuRuntime, GpuSurface, OffscreenRenderConfig, OffscreenSize};
 
 use crate::BarcodeRenderer;
+
+/// An error produced when barcode content cannot be encoded.
+#[derive(Debug, thiserror::Error)]
+pub enum BarcodeError {
+    /// The payload does not fit into any QR version at the default error
+    /// correction level, or the requested version cannot hold it.
+    #[error("QR content cannot be encoded: {0:?}")]
+    Qr(fast_qr::qr::QRCodeError),
+    /// The payload contains characters Code128 cannot represent, or is too
+    /// short to encode.
+    #[error("Code128 content cannot be encoded: {0}")]
+    Code128(barcoders::error::Error),
+}
 
 /// Supported barcode symbologies.
 ///
@@ -59,29 +75,48 @@ impl fmt::Debug for BarcodeSource {
 
 impl BarcodeSource {
     /// Creates a new QR code from content.
-    #[must_use]
-    pub fn qr(content: impl Into<Str>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BarcodeError::Qr`] when the payload exceeds QR capacity.
+    pub fn qr(content: impl Into<Str>) -> Result<Self, BarcodeError> {
         let content = content.into();
         Self::new(BarcodeSymbology::Qr, content.as_ref())
     }
 
     /// Creates a new Code128 barcode from content.
-    #[must_use]
-    pub fn code128(content: impl Into<Str>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BarcodeError::Code128`] when the payload contains characters
+    /// Code128 cannot represent or is too short to encode.
+    pub fn code128(content: impl Into<Str>) -> Result<Self, BarcodeError> {
         let content = content.into();
         Self::new(BarcodeSymbology::Code128, content.as_ref())
     }
 
-    fn new(symbology: BarcodeSymbology, content: &str) -> Self {
+    fn new(symbology: BarcodeSymbology, content: &str) -> Result<Self, BarcodeError> {
         let matrix = match symbology {
-            BarcodeSymbology::Qr => Self::generate_qr_matrix(content),
-            BarcodeSymbology::Code128 => Self::generate_code128_matrix(content),
+            BarcodeSymbology::Qr => Self::generate_qr_matrix(content)?,
+            BarcodeSymbology::Code128 => Self::generate_code128_matrix(content)?,
         };
-        Self {
+        Ok(Self {
             symbology,
             matrix,
             size: 256,
-        }
+        })
+    }
+
+    /// Encodes `content` for `symbology`, crashing at the call site on
+    /// unencodable content.
+    ///
+    /// This is the fast-fail entry point for signal-driven content, where no
+    /// `Result` can flow back to the caller; pre-validate runtime user input
+    /// through [`BarcodeSource::qr`] / [`BarcodeSource::code128`] instead.
+    pub(crate) fn encode_or_panic(symbology: BarcodeSymbology, content: &str) -> Self {
+        Self::new(symbology, content).unwrap_or_else(|error| {
+            panic!("barcode content {content:?} cannot be encoded: {error}")
+        })
     }
 
     /// Sets the output size in pixels.
@@ -134,10 +169,10 @@ impl BarcodeSource {
         &self.matrix
     }
 
-    fn generate_qr_matrix(content: &str) -> BarcodeMatrix {
+    fn generate_qr_matrix(content: &str) -> Result<BarcodeMatrix, BarcodeError> {
         let qr = fast_qr::QRBuilder::new(content.as_bytes())
             .build()
-            .unwrap_or_else(|error| panic!("failed to encode QR content: {error:?}"));
+            .map_err(BarcodeError::Qr)?;
 
         let dimension = u32::try_from(qr.size)
             .expect("BarcodeSource::generate_qr_matrix: QR size must fit into u32");
@@ -148,7 +183,7 @@ impl BarcodeSource {
         for y in 0..dimension {
             for x in 0..dimension {
                 let linear_idx = (y * dimension + x) as usize;
-                if qr.data.get(linear_idx).is_some_and(|m| m.value()) {
+                if qr.data.as_slice().get(linear_idx).is_some_and(|m| m.value()) {
                     let word_idx = linear_idx / 32;
                     let bit_idx = linear_idx % 32;
                     packed_data[word_idx] |= 1u32 << bit_idx;
@@ -156,11 +191,11 @@ impl BarcodeSource {
             }
         }
 
-        BarcodeMatrix {
+        Ok(BarcodeMatrix {
             width: dimension,
             height: dimension,
             packed_data,
-        }
+        })
     }
 
     fn render_dimensions(&self) -> (u32, u32) {
@@ -180,14 +215,14 @@ impl BarcodeSource {
         }
     }
 
-    fn generate_code128_matrix(content: &str) -> BarcodeMatrix {
+    fn generate_code128_matrix(content: &str) -> Result<BarcodeMatrix, BarcodeError> {
         // Barcoders requires an explicit start charset marker; default to charset B.
         let payload = match content.chars().next() {
             Some('À' | 'Ɓ' | 'Ć') => content.to_string(),
             _ => format!("Ɓ{content}"),
         };
         let encoded = Code128::new(payload)
-            .unwrap_or_else(|error| panic!("failed to encode Code128 content: {error:?}"))
+            .map_err(BarcodeError::Code128)?
             .encode();
         assert!(!encoded.is_empty(), "Code128 encoder returned no modules");
 
@@ -203,11 +238,67 @@ impl BarcodeSource {
             }
         }
 
-        BarcodeMatrix {
+        Ok(BarcodeMatrix {
             width,
             height: 1,
             packed_data,
+        })
+    }
+}
+
+/// Signal-driven barcode content shared by the renderer and the mask effect.
+///
+/// Owns the content signal, the currently encoded [`BarcodeSource`], and the
+/// pending value delivered by the watcher; consumers call
+/// [`Self::take_reencoded`] at the start of a frame to pick up new content.
+pub(crate) struct ReactiveBarcodeContent {
+    symbology: BarcodeSymbology,
+    content: Computed<Str>,
+    pending: Rc<RefCell<Option<Str>>>,
+    guard: Option<BoxWatcherGuard>,
+}
+
+impl fmt::Debug for ReactiveBarcodeContent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReactiveBarcodeContent")
+            .field("symbology", &self.symbology)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReactiveBarcodeContent {
+    pub(crate) fn new(symbology: BarcodeSymbology, content: Computed<Str>) -> Self {
+        Self {
+            symbology,
+            content,
+            pending: Rc::new(RefCell::new(None)),
+            guard: None,
         }
+    }
+
+    /// Encodes the signal's current value, crashing on unencodable content.
+    pub(crate) fn initial_source(&self) -> BarcodeSource {
+        BarcodeSource::encode_or_panic(self.symbology, self.content.get().as_ref())
+    }
+
+    /// Watches the content signal for the consumer's lifetime; every change
+    /// stores the new value and wakes the surface through `redraw`.
+    pub(crate) fn install(&mut self, redraw: impl Fn() + 'static) {
+        let pending = self.pending.clone();
+        self.guard = Some(self.content.watch(move |ctx| {
+            *pending.borrow_mut() = Some(ctx.value().clone());
+            redraw();
+        }));
+    }
+
+    /// Takes and encodes a pending content change, if any arrived since the
+    /// last frame. Crashes on unencodable content.
+    pub(crate) fn take_reencoded(&mut self) -> Option<BarcodeSource> {
+        let content = self.pending.borrow_mut().take()?;
+        Some(BarcodeSource::encode_or_panic(
+            self.symbology,
+            content.as_ref(),
+        ))
     }
 }
 
@@ -244,7 +335,7 @@ mod tests {
 
     #[test]
     fn code128_matrix_stores_one_row_of_modules() {
-        let source = BarcodeSource::code128("HELLO-WATERUI-128");
+        let source = BarcodeSource::code128("HELLO-WATERUI-128").expect("static test payload must encode");
         let matrix = source.matrix();
 
         assert_eq!(matrix.height, 1);
@@ -253,7 +344,7 @@ mod tests {
 
     #[test]
     fn qr_matrix_remains_square() {
-        let source = BarcodeSource::qr("https://waterui.dev");
+        let source = BarcodeSource::qr("https://waterui.dev").expect("static test payload must encode");
         let matrix = source.matrix();
 
         assert_eq!(matrix.width, matrix.height);
@@ -267,7 +358,7 @@ mod tests {
     fn qr_generator_produces_expected_size_and_pixels() {
         let runtime = pollster::block_on(GpuRuntime::new())
             .expect("barcode tests require a working GPU runtime");
-        let mut source = BarcodeSource::qr("https://waterui.dev");
+        let mut source = BarcodeSource::qr("https://waterui.dev").expect("static test payload must encode");
         source.set_size(192);
 
         let image = pollster::block_on(source.generate(&runtime));
@@ -281,7 +372,7 @@ mod tests {
     fn code128_generator_produces_expected_size_and_pixels() {
         let runtime = pollster::block_on(GpuRuntime::new())
             .expect("barcode tests require a working GPU runtime");
-        let mut source = BarcodeSource::code128("HELLO-WATERUI");
+        let mut source = BarcodeSource::code128("HELLO-WATERUI").expect("static test payload must encode");
         source.set_size(256);
 
         let image = pollster::block_on(source.generate(&runtime));

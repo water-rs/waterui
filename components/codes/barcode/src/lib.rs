@@ -29,6 +29,6 @@ mod shaders;
 mod view;
 
 pub use effect::BarcodeMaskEffect;
-pub use qr::{BarcodeMatrix, BarcodeSource, BarcodeSymbology};
+pub use qr::{BarcodeError, BarcodeMatrix, BarcodeSource, BarcodeSymbology};
 pub use renderer::BarcodeRenderer;
 pub use view::{Barcode, BarcodeFill, BarcodeGpuFill, code128, qr_code};

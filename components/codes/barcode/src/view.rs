@@ -1,4 +1,4 @@
-use crate::{BarcodeMaskEffect, BarcodeRenderer, BarcodeSource, BarcodeSymbology};
+use crate::{BarcodeMaskEffect, BarcodeRenderer, BarcodeSymbology};
 use core::fmt;
 use nami::{Computed, SignalExt as _, signal::IntoComputed};
 use waterui_core::{
@@ -67,18 +67,18 @@ fn default_light_color() -> Computed<Color> {
     Computed::constant(Color::from(waterui_graphics::color::Srgb::WHITE))
 }
 
-fn barcode_label(symbology: BarcodeSymbology, content: &Str) -> AccessibilityLabel {
+fn barcode_label(symbology: BarcodeSymbology, content: &Computed<Str>) -> AccessibilityLabel {
     let kind = match symbology {
         BarcodeSymbology::Qr => "QR code",
         BarcodeSymbology::Code128 => "Code 128 barcode",
     };
-    AccessibilityLabel::new(format!("{kind}: {content}"))
+    AccessibilityLabel::new(content.map(move |content| Str::from(format!("{kind}: {content}"))))
 }
 
 fn apply_barcode_semantics(
     env: &Environment,
     symbology: BarcodeSymbology,
-    content: &Str,
+    content: &Computed<Str>,
     view: impl View,
 ) -> AnyView {
     let mut view = AnyView::new(view);
@@ -111,7 +111,7 @@ fn apply_barcode_semantics(
 #[derive(Clone, Debug)]
 pub struct Barcode {
     symbology: BarcodeSymbology,
-    content: Str,
+    content: Computed<Str>,
     fill: BarcodeFill,
     light_color: Computed<Color>,
 }
@@ -119,7 +119,7 @@ pub struct Barcode {
 /// Barcode view filled by arbitrary GPU content.
 pub struct BarcodeGpuFill<V: GpuView> {
     symbology: BarcodeSymbology,
-    content: Str,
+    content: Computed<Str>,
     fill: V,
     light_color: Computed<Color>,
 }
@@ -132,20 +132,41 @@ impl<V: GpuView> fmt::Debug for BarcodeGpuFill<V> {
 
 impl Barcode {
     /// Creates a QR code view.
-    pub fn qr(content: impl Into<Str>) -> Self {
+    ///
+    /// Content is a signal: a rotating token or live pairing URL re-encodes
+    /// the matrix in place without rebuilding the view.
+    ///
+    /// # Panics
+    ///
+    /// The view panics while rendering when a content value exceeds QR
+    /// capacity. Pre-validate runtime user input with [`BarcodeSource::qr`].
+    ///
+    /// [`BarcodeSource::qr`]: crate::BarcodeSource::qr
+    pub fn qr(content: impl IntoComputed<Str>) -> Self {
         Self {
             symbology: BarcodeSymbology::Qr,
-            content: content.into(),
+            content: content.into_computed(),
             fill: BarcodeFill::default(),
             light_color: default_light_color(),
         }
     }
 
     /// Creates a Code128 barcode view.
-    pub fn code128(content: impl Into<Str>) -> Self {
+    ///
+    /// Content is a signal: a changing order id re-encodes the matrix in
+    /// place without rebuilding the view.
+    ///
+    /// # Panics
+    ///
+    /// The view panics while rendering when a content value contains
+    /// characters Code128 cannot represent. Pre-validate runtime user input
+    /// with [`BarcodeSource::code128`].
+    ///
+    /// [`BarcodeSource::code128`]: crate::BarcodeSource::code128
+    pub fn code128(content: impl IntoComputed<Str>) -> Self {
         Self {
             symbology: BarcodeSymbology::Code128,
-            content: content.into(),
+            content: content.into_computed(),
             fill: BarcodeFill::default(),
             light_color: default_light_color(),
         }
@@ -213,11 +234,7 @@ impl View for Barcode {
             fill,
             light_color,
         } = self;
-        let source = match symbology {
-            BarcodeSymbology::Qr => BarcodeSource::qr(content.clone()),
-            BarcodeSymbology::Code128 => BarcodeSource::code128(content.clone()),
-        };
-        let renderer = BarcodeRenderer::new(source)
+        let renderer = BarcodeRenderer::reactive(symbology, content.clone())
             .with_fill(fill)
             .with_light_color(light_color);
         apply_barcode_semantics(env, symbology, &content, GpuSurface::new(renderer))
@@ -226,16 +243,12 @@ impl View for Barcode {
 
 impl<V: GpuView> View for BarcodeGpuFill<V> {
     fn body(self, env: &Environment) -> impl View {
-        let source = match self.symbology {
-            BarcodeSymbology::Qr => BarcodeSource::qr(self.content.clone()),
-            BarcodeSymbology::Code128 => BarcodeSource::code128(self.content.clone()),
-        };
         let environment = env.clone();
         let resolved_light = flatten_signal(
             self.light_color
                 .map(move |color| color.resolve(&environment)),
         );
-        let effect = BarcodeMaskEffect::new(source, resolved_light);
+        let effect = BarcodeMaskEffect::reactive(self.symbology, self.content.clone(), resolved_light);
         let fill_surface = GpuSurface::new(self.fill);
         apply_barcode_semantics(
             env,
@@ -247,13 +260,17 @@ impl<V: GpuView> View for BarcodeGpuFill<V> {
 }
 
 /// Free-function entry point for a QR code view.
+///
+/// See [`Barcode::qr`] for content semantics and panic conditions.
 #[must_use]
-pub fn qr_code(content: impl Into<Str>) -> Barcode {
+pub fn qr_code(content: impl IntoComputed<Str>) -> Barcode {
     Barcode::qr(content)
 }
 
 /// Free-function entry point for a Code128 barcode view.
+///
+/// See [`Barcode::code128`] for content semantics and panic conditions.
 #[must_use]
-pub fn code128(content: impl Into<Str>) -> Barcode {
+pub fn code128(content: impl IntoComputed<Str>) -> Barcode {
     Barcode::code128(content)
 }
