@@ -83,7 +83,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: crate-ci/typos@master
+      # Pinned: on `@master` the tool upgrades itself, and a new dictionary
+      # turns a green job red with no change to the repository.
+      - uses: crate-ci/typos@v1.49.0
 
   audit:
     name: Security Audit
