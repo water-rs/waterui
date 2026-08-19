@@ -22,6 +22,7 @@ wgpu.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 fast_qr = "0.13"
 barcoders = { version = "2.0.0", default-features = false }
+thiserror.workspace = true
 
 [build-dependencies]
 waterui-build-support.workspace = true

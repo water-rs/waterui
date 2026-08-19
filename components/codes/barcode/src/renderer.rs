@@ -6,7 +6,9 @@ use nami::signal::IntoComputed;
 use waterui_core::{Computed, Environment, layout::UnitPoint};
 use wgpu::util::DeviceExt;
 
-use crate::{BarcodeSource, shaders::QR_RENDER, view::BarcodeFill};
+use crate::qr::ReactiveBarcodeContent;
+use crate::{BarcodeSource, BarcodeSymbology, shaders::QR_RENDER, view::BarcodeFill};
+use waterui_core::Str;
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuView,
     color::{Color, ResolvedColor, Srgb},
@@ -41,9 +43,11 @@ struct QrUniforms {
 /// resolve through the setup environment and wake the surface precisely.
 pub struct BarcodeRenderer {
     source: BarcodeSource,
+    reactive_content: Option<ReactiveBarcodeContent>,
     fill: BarcodeFill,
     light_color: Computed<Color>,
     render_pipeline: Option<wgpu::RenderPipeline>,
+    bind_group_layout: Option<wgpu::BindGroupLayout>,
     uniform_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     matrix_width: u32,
@@ -167,15 +171,37 @@ impl BarcodeRenderer {
     pub fn new(source: BarcodeSource) -> Self {
         Self {
             source,
+            reactive_content: None,
             fill: BarcodeFill::default(),
             light_color: Computed::constant(Color::from(Srgb::WHITE)),
             render_pipeline: None,
+            bind_group_layout: None,
             uniform_buffer: None,
             bind_group: None,
             matrix_width: 0,
             matrix_height: 0,
             reactive_colors: None,
         }
+    }
+
+    /// Creates a renderer whose barcode content follows a signal.
+    ///
+    /// Every content change re-encodes the matrix and re-uploads it before the
+    /// next frame, without recreating the renderer.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the signal's current or any later value cannot be encoded
+    /// for `symbology` (QR capacity exceeded, Code128-unencodable characters).
+    /// Pre-validate runtime user input with [`BarcodeSource::qr`] /
+    /// [`BarcodeSource::code128`].
+    #[must_use]
+    pub fn reactive(symbology: BarcodeSymbology, content: impl IntoComputed<Str>) -> Self {
+        let reactive_content = ReactiveBarcodeContent::new(symbology, content.into_computed());
+        let source = reactive_content.initial_source();
+        let mut renderer = Self::new(source);
+        renderer.reactive_content = Some(reactive_content);
+        renderer
     }
 
     /// Sets the fill style for dark modules.
@@ -315,13 +341,31 @@ impl GpuView for BarcodeRenderer {
         let (pipeline, bgl) = Self::create_render_pipeline(ctx.device, ctx.surface_format);
         self.render_pipeline = Some(pipeline);
         self.create_buffers_and_bind_group(ctx.device, &bgl);
+        self.bind_group_layout = Some(bgl);
         let mut reactive_colors = ReactiveBarcodeColors::new(&self.fill, &self.light_color, env);
         reactive_colors.install(&ctx.redraw_handle);
         self.reactive_colors = Some(reactive_colors);
+        if let Some(reactive_content) = &mut self.reactive_content {
+            let redraw = ctx.redraw_handle.clone();
+            reactive_content.install(move || redraw.request_redraw());
+        }
         core::future::ready(())
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
+        if let Some(source) = self
+            .reactive_content
+            .as_mut()
+            .and_then(ReactiveBarcodeContent::take_reencoded)
+        {
+            self.source = source;
+            let bind_group_layout = self
+                .bind_group_layout
+                .take()
+                .expect("BarcodeRenderer render called before setup");
+            self.create_buffers_and_bind_group(frame.device, &bind_group_layout);
+            self.bind_group_layout = Some(bind_group_layout);
+        }
         let pipeline = self
             .render_pipeline
             .as_ref()
