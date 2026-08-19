@@ -34,7 +34,7 @@ impl SubView for FixedSizeView {
 /// A child that shrinks to whatever main-axis extent it is proposed, down to
 /// `floor`. This is what compressible content (text, a truncating label) does;
 /// [`FixedSizeView`] deliberately does not, so it models a rigid child instead.
-pub(crate) struct CompressibleView {
+pub struct CompressibleView {
     pub(crate) ideal: Size,
     pub(crate) floor: f32,
 }

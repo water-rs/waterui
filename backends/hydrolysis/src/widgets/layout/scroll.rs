@@ -5,7 +5,8 @@ use crate::renderer::{
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
-    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+    Action as AccessibilityAction, Node as AccessibilityNode, NodeId as AccessibilityNodeId,
+    Role as AccessibilityNodeRole,
 };
 use waterui_core::Environment;
 use waterui_core::Native;
@@ -39,7 +40,7 @@ pub(crate) fn register_scroll_accessibility_node(
     handle: &crate::scroll::ScrollHandle,
     metrics: crate::scroll::ScrollMetrics,
     axis: ScrollAxis,
-) {
+) -> Option<AccessibilityNodeId> {
     let mut node = AccessibilityNode::new(
         renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ScrollView),
     );
@@ -70,7 +71,7 @@ pub(crate) fn register_scroll_accessibility_node(
         }
         _ => panic!("scroll axis variant is not supported by hydrolysis"),
     }
-    let _ = renderer.register_accessibility_node(
+    renderer.register_accessibility_node(
         node,
         bounds,
         env,
@@ -78,7 +79,7 @@ pub(crate) fn register_scroll_accessibility_node(
             handle: handle.clone(),
             axis,
         }),
-    );
+    )
 }
 
 /// Geometry of one scroll indicator along its track: where the thumb starts,

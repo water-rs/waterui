@@ -867,7 +867,7 @@ fn collection_membership_view() -> impl View {
                 let _ = list_for_action.remove(index);
             }
         }),
-        ZStack::for_each(list.clone(), |row: Row| text(row.label)),
+        ZStack::for_each(list, |row: Row| text(row.label)),
     )))
 }
 

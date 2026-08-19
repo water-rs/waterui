@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_background_size_from_content() {
-        let layout = BackgroundLayout::default();
+        let layout = BackgroundLayout;
 
         let mut bg = MockSubView {
             size: Size::new(200.0, 200.0),
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_background_fills_bounds() {
-        let layout = BackgroundLayout::default();
+        let layout = BackgroundLayout;
 
         let mut bg = MockSubView {
             size: Size::new(50.0, 50.0),

@@ -15,10 +15,6 @@ use crate::model::{Model, TreeRow};
 use super::parts;
 
 /// The tree pane.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "view builders take owned reactive handles: the views they return capture them for 'static, so a borrow would not do"
-)]
 pub fn view(model: Model) -> impl View {
     let filter = Binding::container(Str::from(""));
     let empty = model.tree.map(|rows| rows.is_empty()).computed();
@@ -40,7 +36,7 @@ pub fn view(model: Model) -> impl View {
         })
         .otherwise({
             let rows = rows(&model, &filter);
-            let revealed = model.revealed.clone();
+            let revealed = model.revealed;
             move || {
                 let revealed = revealed.clone();
                 List::for_each(rows.clone(), move |row: TreeRow| {

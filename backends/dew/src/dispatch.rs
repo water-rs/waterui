@@ -233,7 +233,7 @@ impl DewRenderer {
         self.refresh_tree(width, height)
     }
 
-    pub(crate) fn theme(&self) -> &theme::ThemePalette {
+    pub(crate) const fn theme(&self) -> &theme::ThemePalette {
         self.theme
             .as_ref()
             .expect("Dew theme palette requires an initialized retained root")
