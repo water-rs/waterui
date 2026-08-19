@@ -1134,6 +1134,10 @@ struct DeferredClearRenderer {
 }
 
 impl GpuView for DeferredClearRenderer {
+    #[expect(
+        clippy::future_not_send,
+        reason = "GpuView::setup runs on the main thread and takes &mut Environment, which is Rc-backed and deliberately !Send"
+    )]
     async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
         YieldOnce::default().await;
         self.ready.set(true);

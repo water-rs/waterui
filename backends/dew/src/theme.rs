@@ -107,9 +107,7 @@ fn watch<T: 'static>(
 }
 
 pub(crate) fn foreground(env: &Environment) -> Color {
-    installed_color_signal::<Foreground>(env)
-        .map(|signal| color(signal.get()))
-        .unwrap_or(FOREGROUND)
+    installed_color_signal::<Foreground>(env).map_or(FOREGROUND, |signal| color(signal.get()))
 }
 
 fn resolved(color: Color) -> ResolvedColor {

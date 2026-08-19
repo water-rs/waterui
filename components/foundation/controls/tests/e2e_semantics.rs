@@ -395,9 +395,7 @@ fn accessibility_label_follows_a_signal_without_rebuilding(ui: UiBuilder) {
     // accessibility *state* already does, instead of freezing at the value it
     // had when the subtree was built.
     let unread = Binding::i32(3);
-    let label = unread
-        .clone()
-        .map(|count| Str::from(format!("{count} unread messages")));
+    let label = unread.map(|count| Str::from(format!("{count} unread messages")));
 
     let mut app = ui.mount(move || control_shell(button("Inbox").a11y_label(label.clone())));
 
@@ -470,8 +468,7 @@ fn disabled_toggle_ignores_input_and_reports_disabled(ui: UiBuilder) {
     );
     // The pointer event dispatches into the window but must not hit the
     // disabled control: the binding stays unchanged.
-    let _ = app
-        .query()
+    app.query()
         .role(Role::SWITCH)
         .label("Wi-Fi")
         .tap_at(0.5, 0.5);
@@ -548,8 +545,7 @@ fn disabled_slider_ignores_value_actions(ui: UiBuilder) {
     });
     // The pointer drag dispatches into the window but must not hit the
     // disabled control: the value stays unchanged.
-    let _ = app
-        .query()
+    app.query()
         .role(Role::SLIDER)
         .label("Volume")
         .drag_by(60.0, 0.0);
@@ -585,8 +581,7 @@ fn disabled_button_ignores_action(ui: UiBuilder) {
     );
     // The pointer event dispatches into the window but must not hit the
     // disabled control: the action never runs.
-    let _ = app
-        .query()
+    app.query()
         .role(Role::BUTTON)
         .label("Submit")
         .tap_at(0.5, 0.5);

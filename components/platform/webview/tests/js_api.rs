@@ -3,6 +3,10 @@
     clippy::future_not_send,
     reason = "a web view and the API it serves live on the UI thread"
 )]
+// `clippy::unused_async_trait_impl` is nightly-only: naming it is what silences
+// nightly, and allowing `unknown_lints` is what keeps stable — which has never
+// heard of it — from rejecting the name under `-D warnings`.
+#![allow(unknown_lints)]
 #![expect(
     clippy::unused_async,
     clippy::unused_async_trait_impl,

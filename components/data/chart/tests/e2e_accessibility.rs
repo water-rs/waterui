@@ -28,13 +28,29 @@ fn axis_tick_labels(bounds: DataBounds) -> BTreeSet<String> {
         .collect()
 }
 
+/// The hit a chart interaction is expected to report.
+struct ExpectedHit<'a, T> {
+    series: usize,
+    index: usize,
+    value: &'a T,
+}
+
+// Every field is `Copy` whatever `T` is, which `derive` cannot say: it would
+// bound the impls on `T: Copy` and leave the struct move-only for the chart
+// data types that are not.
+impl<T> Clone for ExpectedHit<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for ExpectedHit<'_, T> {}
+
 fn assert_chart_semantic_flow<T, V, F>(
     ui: UiBuilder,
     name: &'static str,
     hover_at: (f32, f32),
-    expected_series: usize,
-    expected_index: usize,
-    expected_value: &T,
+    expected: ExpectedHit<'_, T>,
     formatter: fn(&HitResult<T>) -> String,
     build_chart: F,
 ) where
@@ -72,15 +88,15 @@ fn assert_chart_semantic_flow<T, V, F>(
         .get()
         .expect("focused binding should hold a hit result after hover");
     assert_eq!(
-        focused_hit.series, expected_series,
+        focused_hit.series, expected.series,
         "{name}: focused series mismatch"
     );
     assert_eq!(
-        focused_hit.index, expected_index,
+        focused_hit.index, expected.index,
         "{name}: focused index mismatch"
     );
     assert_eq!(
-        &focused_hit.value, expected_value,
+        &focused_hit.value, expected.value,
         "{name}: focused value mismatch"
     );
     app.query()
@@ -99,15 +115,15 @@ fn assert_chart_semantic_flow<T, V, F>(
         .get()
         .expect("selected binding should hold a hit result after tap");
     assert_eq!(
-        selected_hit.series, expected_series,
+        selected_hit.series, expected.series,
         "{name}: selected series mismatch"
     );
     assert_eq!(
-        selected_hit.index, expected_index,
+        selected_hit.index, expected.index,
         "{name}: selected index mismatch"
     );
     assert_eq!(
-        &selected_hit.value, expected_value,
+        &selected_hit.value, expected.value,
         "{name}: selected value mismatch"
     );
     app.query()
@@ -129,9 +145,11 @@ fn line_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
         ui,
         "line",
         point_hit_location(&data, index),
-        0,
-        index,
-        &expected,
+        ExpectedHit {
+            series: 0,
+            index,
+            value: &expected,
+        },
         |hit: &HitResult<DataPoint>| {
             format!(
                 "series={} index={} x={:.2} y={:.2}",
@@ -225,9 +243,11 @@ fn bar_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
         ui,
         "bar",
         bar_hit_location(&data, index),
-        0,
-        index,
-        &expected,
+        ExpectedHit {
+            series: 0,
+            index,
+            value: &expected,
+        },
         |hit: &HitResult<DataPoint>| {
             format!(
                 "series={} index={} x={:.2} y={:.2}",
@@ -251,9 +271,11 @@ fn scatter_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
         ui,
         "scatter",
         point_hit_location(&data, index),
-        0,
-        index,
-        &expected,
+        ExpectedHit {
+            series: 0,
+            index,
+            value: &expected,
+        },
         |hit: &HitResult<DataPoint>| {
             format!(
                 "series={} index={} x={:.2} y={:.2}",
@@ -278,9 +300,11 @@ fn bubble_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
         ui,
         "bubble",
         bubble_hit_location(&data, index),
-        0,
-        index,
-        &expected,
+        ExpectedHit {
+            series: 0,
+            index,
+            value: &expected,
+        },
         |hit: &HitResult<BubblePoint>| {
             format!(
                 "series={} index={} x={:.2} y={:.2} size={:.2}",
@@ -306,9 +330,11 @@ fn candlestick_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
         ui,
         "candlestick",
         candlestick_hit_location(&data, index),
-        0,
-        index,
-        &expected,
+        ExpectedHit {
+            series: 0,
+            index,
+            value: &expected,
+        },
         |hit: &HitResult<Candle>| {
             format!(
                 "series={} index={} t={:.2} open={:.2} high={:.2} low={:.2} close={:.2}",
@@ -340,9 +366,11 @@ fn depth_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
         ui,
         "depth",
         depth_hit_location(&data, side, index),
-        0,
-        index,
-        &value,
+        ExpectedHit {
+            series: 0,
+            index,
+            value: &value,
+        },
         |hit: &HitResult<DepthDatum>| {
             let side = match hit.value.side {
                 DepthSide::Bid => "bid",
@@ -375,9 +403,11 @@ fn area_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
         ui,
         "area",
         area_hit_location(&data, series, index),
-        series,
-        index,
-        &value,
+        ExpectedHit {
+            series,
+            index,
+            value: &value,
+        },
         |hit: &HitResult<AreaDatum>| {
             format!(
                 "series={} index={} x={:.2} y={:.2}",
@@ -401,9 +431,11 @@ fn pie_chart_xctest_like_focus_and_selection_flow(ui: UiBuilder) {
         ui,
         "pie",
         pie_hit_location(&data, index, 0.0),
-        0,
-        index,
-        &value,
+        ExpectedHit {
+            series: 0,
+            index,
+            value: &value,
+        },
         |hit: &HitResult<SliceDatum>| {
             format!(
                 "series={} index={} value={:.2} start={:.3} end={:.3}",

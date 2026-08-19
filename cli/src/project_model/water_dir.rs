@@ -136,25 +136,19 @@ pub async fn build_cache_container_for(project_root: &Path) -> eyre::Result<Path
     let mut trailing = Vec::new();
     let mut existing = project_root.to_path_buf();
     let resolved = loop {
-        match existing.canonicalize() {
-            Ok(resolved) => break resolved,
-            Err(_) => {
-                let name = existing.file_name().map(std::ffi::OsString::from);
-                let parent = existing.parent().map(Path::to_path_buf);
-                match (name, parent) {
-                    (Some(name), Some(parent)) => {
-                        trailing.push(name);
-                        existing = parent;
-                    }
-                    _ => {
-                        return Err(eyre::eyre!(
-                            "Failed to resolve any existing ancestor of {}",
-                            project_root.display()
-                        ));
-                    }
-                }
-            }
+        if let Ok(resolved) = existing.canonicalize() {
+            break resolved;
         }
+        let name = existing.file_name().map(std::ffi::OsString::from);
+        let parent = existing.parent().map(Path::to_path_buf);
+        let (Some(name), Some(parent)) = (name, parent) else {
+            return Err(eyre::eyre!(
+                "Failed to resolve any existing ancestor of {}",
+                project_root.display()
+            ));
+        };
+        trailing.push(name);
+        existing = parent;
     };
     let mut project_root = resolved;
     for name in trailing.iter().rev() {

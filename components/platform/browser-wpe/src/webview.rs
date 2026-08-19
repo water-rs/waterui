@@ -6,9 +6,7 @@ use nami::watcher::BoxWatcherGuard;
 use serde::Deserialize;
 use waterui_core::{Computed, Signal};
 use waterui_url::Url;
-use waterui_webview::{
-    CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewHandle,
-};
+use waterui_webview::{CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewHandle};
 
 use crate::{WpePage, WpeRuntime, WpeRuntimePaths};
 

@@ -83,7 +83,7 @@ impl SignalObserver for SignalBridge {
     }
 }
 
-fn signal_id(identity: SignalIdentity) -> SignalId {
+const fn signal_id(identity: SignalIdentity) -> SignalId {
     SignalId(identity.raw() as u64)
 }
 

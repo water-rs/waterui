@@ -331,9 +331,35 @@ impl RenderNode {
                     metrics.offset_x + f64::from(node.viewport.width),
                     metrics.offset_y + f64::from(node.viewport.height),
                 );
+                // Registered before the content so the content can be parented
+                // to it: a scroll region owns what it scrolls, and a label on
+                // the scroll view must reach the node carrying the scroll
+                // actions rather than a group beside it.
+                #[cfg(feature = "accessibility")]
+                let scroll_accessibility_node = {
+                    renderer.push_accessibility_owner(&node.accessibility_identity);
+                    let scroll_accessibility_node =
+                        crate::widgets::scroll::register_scroll_accessibility_node(
+                            renderer,
+                            &node.env,
+                            transformed_rect(ctx.hit_transform, viewport_rect),
+                            &handle,
+                            metrics,
+                            node.axis,
+                        );
+                    renderer.pop_accessibility_owner();
+                    if let Some(scroll_accessibility_node) = scroll_accessibility_node {
+                        renderer.push_accessibility_parent(scroll_accessibility_node);
+                    }
+                    scroll_accessibility_node
+                };
                 renderer.push_lazy_viewport(lazy_viewport);
                 node.child.flush(renderer, content_ctx, env);
                 renderer.pop_lazy_viewport("hydrolysis render tree ScrollNode");
+                #[cfg(feature = "accessibility")]
+                if scroll_accessibility_node.is_some() {
+                    renderer.pop_accessibility_parent();
+                }
                 renderer.pop_layer();
                 let target_handle = handle.clone();
                 renderer.register_scroll_target(
@@ -343,19 +369,6 @@ impl RenderNode {
                         target_handle.apply_scroll_delta(dx, dy, is_line_delta)
                     },
                 );
-                #[cfg(feature = "accessibility")]
-                {
-                    renderer.push_accessibility_owner(&node.accessibility_identity);
-                    crate::widgets::scroll::register_scroll_accessibility_node(
-                        renderer,
-                        &node.env,
-                        transformed_rect(ctx.hit_transform, viewport_rect),
-                        &handle,
-                        metrics,
-                        node.axis,
-                    );
-                    renderer.pop_accessibility_owner();
-                }
                 let scroll_ctx =
                     RenderContext::with_transforms(viewport_rect, ctx.transform, ctx.hit_transform);
                 let mut widget_ctx = WidgetRenderContext::new(renderer, scroll_ctx);
