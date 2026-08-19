@@ -11,7 +11,7 @@ use waterui::graphics::color::Srgb;
 use waterui::{Signal, SignalExt as _, View, ViewExt as _};
 use waterui_chart::{
     AreaData, AreaDatum, AreaSeries, BubblePoint, Candle, ChartAnchor, DataBounds, DataPoint,
-    DepthData, DepthDatum, DepthLevel, DepthSide, HitResult, SliceDatum,
+    DepthData, DepthDatum, DepthLevel, DepthSide, HitResult, SliceDatum, candle_epoch,
 };
 use waterui_testing::{Role, Selector, SemanticApp};
 
@@ -64,7 +64,7 @@ pub fn candle_series() -> Vec<Candle> {
     let mut candles = Vec::with_capacity(32);
     let mut price = 120.0_f32;
     for index in 0_u16..32 {
-        let timestamp = f32::from(index) * 60.0;
+        let timestamp = f64::from(index) * 60.0;
         let drift = (f32::from(index) * 0.31).sin() * 4.5;
         let open = price;
         let close = open + drift;
@@ -349,7 +349,7 @@ pub fn candlestick_hit_location(data: &[Candle], index: usize) -> (f32, f32) {
     let candle = data[index];
     normalized_plot_point(
         bounds,
-        candle.timestamp,
+        candle.x_offset(candle_epoch(data)),
         f32::midpoint(candle.open, candle.close),
     )
 }

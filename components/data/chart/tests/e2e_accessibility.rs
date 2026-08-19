@@ -200,7 +200,7 @@ fn line_chart_axes_reactive_updates_accessibility_labels_when_bounds_change(ui: 
     let mut app = ui.mount(move || {
         semantic_chart_shell(
             "line-axes-reactive",
-            LineChart::new(chart_data_for_view.clone()).axes_reactive(bounds_for_view.clone()),
+            LineChart::new(chart_data_for_view.clone()).axes(bounds_for_view.clone()),
             (),
             (),
         )
