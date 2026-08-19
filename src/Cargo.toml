@@ -120,7 +120,9 @@ gpu = [
     "dep:waterui-svg",
     "dep:waterkit-screen",
 ]
-assets = ["dep:waterui-assets", "dep:waterui-assets-macros"]
+# `asset!` expands media-kind assets into `waterui::media::Photo` /
+# `waterui::video::video`, so the assets feature must carry the media stack.
+assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "media"]
 media = ["dep:waterui-media", "video"]
 video = ["dep:waterui-video"]
 webview = ["dep:waterui-webview"]
