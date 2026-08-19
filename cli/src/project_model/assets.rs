@@ -812,6 +812,7 @@ pub async fn stage_project_assets_for_android(
 }
 
 /// Render the project's macOS `.icns` app icon for hand-assembled bundles.
+#[cfg(target_os = "macos")]
 pub fn project_macos_icns(project: &Project) -> eyre::Result<Vec<u8>> {
     unified::macos_icns(project)
 }

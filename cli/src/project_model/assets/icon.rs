@@ -200,6 +200,7 @@ pub fn render_apple_icon(
 }
 
 /// Pixel sizes carried by a macOS `.icns` icon family.
+#[cfg(target_os = "macos")]
 const MACOS_ICNS_SIZES: &[u32] = &[16, 32, 64, 128, 256, 512, 1024];
 
 /// Encodes the macOS icon family (`.icns`) for hand-assembled app bundles,
@@ -209,6 +210,7 @@ const MACOS_ICNS_SIZES: &[u32] = &[16, 32, 64, 128, 256, 512, 1024];
 /// # Errors
 ///
 /// Fails when rendering fails or the icon family cannot be encoded.
+#[cfg(target_os = "macos")]
 pub fn encode_macos_icns(source: &IconSource) -> eyre::Result<Vec<u8>> {
     let mut family = icns::IconFamily::new();
     for &size in MACOS_ICNS_SIZES {
@@ -605,6 +607,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn macos_icns_encodes_all_family_sizes() {
         let logo = IconSource::default_logo();
         let encoded = encode_macos_icns(&logo).expect("icns must encode");
