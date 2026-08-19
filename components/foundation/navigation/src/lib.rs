@@ -27,9 +27,9 @@ use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui_controls::{ButtonStyle, IntoLabel, button};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, boxed_action};
 use waterui_core::{
-    AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, Retain, Str, View,
-    env::use_env, extract::Extractor, extract::Use, flatten_signal, handler::ViewBuilder,
-    impl_extractor, layout::StretchAxis, raw_view,
+    AnyView, Environment, Error, IgnorableMetadata, IntoSignal, Metadata, Native, NativeView,
+    Retain, Str, View, env::use_env, extract::Extractor, extract::Use, flatten_signal,
+    handler::ViewBuilder, impl_extractor, layout::StretchAxis, metadata::MetadataKey, raw_view,
 };
 use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_icon::SystemIcon;
@@ -866,6 +866,19 @@ impl Default for Bar {
     }
 }
 
+/// Marks a subtree as a navigation link: activating it follows to a
+/// destination.
+///
+/// The link itself renders and behaves as a plain button; this marker is how
+/// a platform that draws a destination-following affordance around the row a
+/// link sits in — the iOS disclosure chevron — recognizes one. It carries no
+/// behavior, and a renderer with no such affordance (a Mac list, say) ignores
+/// it, which is why it wraps as [`IgnorableMetadata`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NavigationLinkHint;
+
+impl MetadataKey for NavigationLinkHint {}
+
 /// A link that navigates to another view when activated.
 ///
 /// The `NavigationLink` combines a label view with a function that creates
@@ -1273,18 +1286,21 @@ where
         );
 
         let destination = AnyViewBuilder::new(self.content);
-        button(self.label)
-            // A navigation link carries no chrome of its own. It is a button
-            // semantically — it is activated, and reads as one to assistive
-            // technology — but the platforms draw the destination-following
-            // affordance around the row it sits in, not as a filled capsule
-            // behind its label. The default style would give every list row a
-            // button's background, which is the grey card a Mac list does not
-            // have.
-            .style(ButtonStyle::Plain)
-            .action(move |receiver: NavigationController| {
-                receiver.push_builder(destination.clone());
-            })
+        IgnorableMetadata::new(
+            button(self.label)
+                // A navigation link carries no chrome of its own. It is a button
+                // semantically — it is activated, and reads as one to assistive
+                // technology — but the platforms draw the destination-following
+                // affordance around the row it sits in, not as a filled capsule
+                // behind its label. The default style would give every list row a
+                // button's background, which is the grey card a Mac list does not
+                // have.
+                .style(ButtonStyle::Plain)
+                .action(move |receiver: NavigationController| {
+                    receiver.push_builder(destination.clone());
+                }),
+            NavigationLinkHint,
+        )
     }
 }
 
@@ -1297,7 +1313,7 @@ where
         let value = self.value;
         // Plain for the same reason as `NavigationLink` above: the link is a
         // button in behaviour, not in chrome.
-        if let Some(navigator) = env.get::<Navigator<T>>().cloned() {
+        let link = if let Some(navigator) = env.get::<Navigator<T>>().cloned() {
             AnyView::new(
                 button(self.label)
                     .style(ButtonStyle::Plain)
@@ -1311,7 +1327,8 @@ where
             )
         } else {
             panic!("NavigationLink::value used outside of a compatible path-backed stack")
-        }
+        };
+        IgnorableMetadata::new(link, NavigationLinkHint)
     }
 }
 

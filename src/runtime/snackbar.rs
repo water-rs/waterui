@@ -190,8 +190,11 @@ pub struct SnackbarTheme {
     pub exit_animation: Animation,
 }
 
-impl Default for SnackbarTheme {
-    fn default() -> Self {
+impl SnackbarTheme {
+    /// The Material 3 snackbar: a full-width bar pinned near the bottom edge,
+    /// leading-aligned text, small corner radius.
+    #[must_use]
+    pub fn material() -> Self {
         Self {
             container_color: Color::srgb(0x32, 0x2f, 0x35),
             supporting_text_color: Color::srgb(0xf5, 0xef, 0xf7),
@@ -218,6 +221,59 @@ impl Default for SnackbarTheme {
             motion_offset_y: 20.0,
             enter_animation: Animation::bezier(Duration::from_millis(250), 0.0, 0.0, 0.0, 1.0),
             exit_animation: Animation::bezier(Duration::from_millis(200), 0.3, 0.0, 1.0, 1.0),
+        }
+    }
+
+    /// The Apple confirmation banner: the compact rounded capsule Apple Music
+    /// shows for "Added to Library" — content-sized, centered, generously
+    /// rounded, floating above the bottom edge with a soft shadow.
+    #[must_use]
+    pub fn apple() -> Self {
+        Self {
+            container_color: Color::srgb(0x2c, 0x2c, 0x2e),
+            supporting_text_color: Color::srgb(0xff, 0xff, 0xff),
+            action_label_color: Color::srgb(0x0a, 0x84, 0xff),
+            supporting_text_font: Font::default(),
+            action_label_font: Font::default(),
+            content_padding: EdgeInsets::symmetric(14.0, 24.0),
+            // Floats clear of the home indicator / window edge.
+            viewport_padding: EdgeInsets::new(16.0, 48.0, 16.0, 16.0),
+            content_spacing: 10.0,
+            // Content-sized: no minimum, so the banner hugs its text.
+            min_width: 0.0,
+            max_width: 480.0,
+            action_trailing_padding: 12.0,
+            close_icon_size: 18.0,
+            close_state_layer_size: 32.0,
+            single_line_min_height: 50.0,
+            corner_radius: 15.0,
+            clip_radius: 0.3,
+            shadow_color: Color::srgb(0, 0, 0).with_opacity(0.18),
+            shadow_radius: 18.0,
+            shadow_offset_y: 6.0,
+            ambient_shadow_color: Color::srgb(0, 0, 0).with_opacity(0.06),
+            ambient_shadow_radius: 2.0,
+            ambient_shadow_offset_y: 1.0,
+            motion_offset_y: 16.0,
+            enter_animation: Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0),
+            exit_animation: Animation::bezier(Duration::from_millis(220), 0.4, 0.0, 1.0, 1.0),
+        }
+    }
+}
+
+/// The platform's own notification style: Apple platforms show the compact
+/// Apple-style confirmation banner, everything else the Material 3 bar. Both
+/// remain available by name — the default only picks which one the platform
+/// itself would draw.
+impl Default for SnackbarTheme {
+    fn default() -> Self {
+        #[cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))]
+        {
+            Self::apple()
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "macos", target_os = "tvos")))]
+        {
+            Self::material()
         }
     }
 }
@@ -597,6 +653,7 @@ impl SnackbarManager {
         let manager = self.clone();
         spawn_local(async move {
             native_executor::sleep(duration).await;
+            tracing::debug!("snackbar auto-dismiss timer fired for {id}");
             manager.dismiss_presentation(id);
         })
         .detach();
@@ -758,6 +815,7 @@ impl StackedSnackbarView {
         id: u64,
         theme: &SnackbarTheme,
     ) -> AnyView {
+        let has_trailing_controls = snackbar.action.is_some() || snackbar.closeable;
         // Message with optional icon using Label component
         let label_view = if let Some(icon) = snackbar.icon {
             label(snackbar.message)
@@ -805,8 +863,14 @@ impl StackedSnackbarView {
             })
         });
 
-        // Supporting text is leading-aligned; trailing controls (if any) follow
-        // the spacer. `Option<View>` renders nothing when absent.
+        // With trailing controls the text leads and the controls follow the
+        // spacer. Without them the row is just the text, so the banner can hug
+        // its content — the Apple confirmation banner is content-sized, and
+        // the Material bar keeps its width through `min_width` instead of a
+        // spacer. `Option<View>` renders nothing when absent.
+        if !has_trailing_controls {
+            return AnyView::new(hstack((label_view,)).spacing(theme.content_spacing));
+        }
         AnyView::new(
             hstack((label_view, spacer(), action_button, close_button))
                 .spacing(theme.content_spacing),

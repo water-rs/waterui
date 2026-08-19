@@ -4,7 +4,7 @@ use nami::SignalExt as _;
 use crate::WuiSystemIcon;
 use crate::action::WuiAction;
 use crate::array::WuiArray;
-use crate::closure::{ForeignCallbackContext, WuiFn};
+use crate::closure::ForeignCallbackContext;
 use crate::reactive::{WuiBinding, WuiComputed};
 use crate::{IntoFFI, WuiAnyView, WuiEnv};
 use waterui_core::Str;
@@ -14,10 +14,11 @@ use waterui_graphics::color::ResolvedColor;
 use waterui_navigation::tab::{NativeTabStyle, Tab, TabIcon, TabsLayout};
 use waterui_navigation::{
     Bar, ColumnWidth, CustomNavigationController, NativeNavigationSplitStyle,
-    NativeNavigationTransition, NavigationController, NavigationDestinationState, NavigationSearch,
-    NavigationSplitColumnVisibility, NavigationSplitLayout, NavigationStack,
-    NavigationTitleDisplayMode, NavigationToolbarItem, NavigationToolbarPlacement,
-    NavigationTransaction, NavigationView, ToolbarItemIcon, split::NavigationSplitDetailBuilder,
+    NativeNavigationTransition, NavigationController, NavigationDestinationState,
+    NavigationLinkHint, NavigationSearch, NavigationSplitColumnVisibility, NavigationSplitLayout,
+    NavigationStack, NavigationTitleDisplayMode, NavigationToolbarItem,
+    NavigationToolbarPlacement, NavigationTransaction, NavigationView, ToolbarItemIcon,
+    split::NavigationSplitDetailBuilder,
 };
 use waterui_text::styled::StyledStr;
 
@@ -64,15 +65,34 @@ impl IntoFFI for NavigationDestinationState {
     }
 }
 
-/// FFI representation of a `NavigationLink`: a label view paired with a
-/// lazily-built destination view.
+/// FFI-safe representation of `IgnorableMetadata<NavigationLinkHint>`.
+///
+/// A navigation link renders as a plain button; this marker is what lets a
+/// platform that draws a destination-following affordance around the row a
+/// link sits in — the iOS disclosure chevron — recognize one. Renderers with
+/// no such affordance ignore it and fall through to the content.
+#[repr(C)]
 #[derive(Debug)]
-pub struct WuiNavigationLink {
-    /// The tappable label view for the link.
-    pub label: *mut WuiAnyView,
-    /// Callback that builds the destination view when the link is activated.
-    pub destination: *mut WuiFn<*mut WuiAnyView>,
+pub struct WuiIgnorableMetadataNavigationLinkHint {
+    /// The link content wrapped by this marker.
+    pub content: *mut WuiAnyView,
 }
+
+impl IntoFFI for waterui_core::IgnorableMetadata<NavigationLinkHint> {
+    type FFI = WuiIgnorableMetadataNavigationLinkHint;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiIgnorableMetadataNavigationLinkHint {
+            content: self.content.into_ffi(),
+        }
+    }
+}
+
+ffi_ignorable_metadata!(
+    NavigationLinkHint,
+    WuiIgnorableMetadataNavigationLinkHint,
+    navigation_link_hint
+);
 
 /// FFI representation of a navigation bar's search field configuration.
 #[repr(C)]
