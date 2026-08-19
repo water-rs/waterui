@@ -80,6 +80,8 @@ fn core_path() -> syn::Result<TokenStream2> {
     ))
 }
 
+/// Derives a complete `Filter` implementation from a `#[filter(...)]`
+/// attribute; see the crate docs for the supported shapes.
 #[proc_macro_derive(Filter, attributes(filter))]
 pub fn derive_filter(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

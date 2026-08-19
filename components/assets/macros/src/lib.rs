@@ -61,7 +61,6 @@ impl Parse for AssetInput {
     }
 }
 
-
 #[derive(Default, Clone)]
 struct ModuleNode {
     mount: Option<String>,

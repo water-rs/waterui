@@ -40,7 +40,6 @@ pub use into_url::IntoUrl;
 #[cfg(feature = "std")]
 use core::error::Error;
 
-use alloc::borrow::Cow;
 use alloc::string::{String, ToString};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;

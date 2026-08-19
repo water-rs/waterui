@@ -104,7 +104,7 @@ pub use charts::radar::{RadarChart, radar_chart};
 pub use charts::scatter::{ScatterChart, scatter_chart};
 
 // Re-export axis types
-pub use axes::{ChartAxes, ChartAxesReactive, ChartExt};
+pub use axes::{ChartAxes, ChartExt};
 pub use axis::{AxisConfig, Tick, TickFormat};
 pub use composition::ChartProxy;
 
