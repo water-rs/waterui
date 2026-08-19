@@ -111,6 +111,7 @@ pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeTo
 pub use scene2d::{Glyph, GlyphRun, Scene2D};
 #[cfg(feature = "gpu")]
 pub use scene2d_hybrid::HybridScene2D;
+#[cfg(feature = "gpu")]
 pub use scene2d_vello::VelloScene2D;
 
 // Re-export dependencies used by macros

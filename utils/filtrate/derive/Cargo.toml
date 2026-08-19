@@ -23,5 +23,4 @@ quote = "1"
 proc-macro2 = "1"
 
 [dev-dependencies]
-trybuild = "1"
 filtrate-core.workspace = true
