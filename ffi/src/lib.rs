@@ -1694,10 +1694,14 @@ impl IntoFFI for PathCommand {
 }
 
 /// FFI-safe representation of a clip shape.
-/// Contains the path commands that define the clipping mask.
+/// Contains the structured kind plus the path commands defining the mask.
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiClipShape {
+    /// Shape kind for backend-side rendering. Prefer this over `commands`:
+    /// the commands are in unit space, where a corner radius stretches with
+    /// the clipped rect's aspect ratio.
+    pub kind: crate::shape::WuiShapeKind,
     /// Array of path commands defining the shape.
     pub commands: WuiArray<WuiPathCommand>,
 }
@@ -1708,6 +1712,7 @@ impl IntoFFI for ClipShape {
         let commands: alloc::vec::Vec<WuiPathCommand> =
             self.commands().iter().map(|cmd| cmd.into_ffi()).collect();
         WuiClipShape {
+            kind: self.kind().into_ffi(),
             commands: WuiArray::new(commands),
         }
     }

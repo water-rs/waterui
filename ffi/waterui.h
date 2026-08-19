@@ -2810,6 +2810,35 @@ typedef struct WuiMetadata_WuiRetain {
 typedef struct WuiMetadata_WuiRetain WuiMetadataRetain;
 
 /**
+ * C ABI mirror of [`ShapeKind`], flattened into a discriminant tag plus the
+ * per-corner radii used only by the rounded-rect variants.
+ */
+typedef struct WuiShapeKind {
+  /**
+   * Discriminant: 0 = rect, 1 = circle, 2 = ellipse, 3 = rounded rect
+   * (uniform radius), 4 = uneven rounded rect (per-corner radii),
+   * 5 = capsule, 6 = custom path.
+   */
+  int32_t tag;
+  /**
+   * Top-left corner radius, used by tags 3 and 4.
+   */
+  float top_left;
+  /**
+   * Top-right corner radius, used by tags 3 and 4.
+   */
+  float top_right;
+  /**
+   * Bottom-right corner radius, used by tags 3 and 4.
+   */
+  float bottom_right;
+  /**
+   * Bottom-left corner radius, used by tags 3 and 4.
+   */
+  float bottom_left;
+} WuiShapeKind;
+
+/**
  * FFI-safe representation of a path command.
  * All coordinates are normalized (0.0-1.0) and scale with view bounds.
  */
@@ -2980,9 +3009,15 @@ typedef struct WuiArray_WuiPathCommand {
 
 /**
  * FFI-safe representation of a clip shape.
- * Contains the path commands that define the clipping mask.
+ * Contains the structured kind plus the path commands defining the mask.
  */
 typedef struct WuiClipShape {
+  /**
+   * Shape kind for backend-side rendering. Prefer this over `commands`:
+   * the commands are in unit space, where a corner radius stretches with
+   * the clipped rect's aspect ratio.
+   */
+  struct WuiShapeKind kind;
   /**
    * Array of path commands defining the shape.
    */
@@ -3401,35 +3436,6 @@ typedef struct WuiResolvedGradient {
    */
   float end_value;
 } WuiResolvedGradient;
-
-/**
- * C ABI mirror of [`ShapeKind`], flattened into a discriminant tag plus the
- * per-corner radii used only by the rounded-rect variants.
- */
-typedef struct WuiShapeKind {
-  /**
-   * Discriminant: 0 = rect, 1 = circle, 2 = ellipse, 3 = rounded rect
-   * (uniform radius), 4 = uneven rounded rect (per-corner radii),
-   * 5 = capsule, 6 = custom path.
-   */
-  int32_t tag;
-  /**
-   * Top-left corner radius, used by tags 3 and 4.
-   */
-  float top_left;
-  /**
-   * Top-right corner radius, used by tags 3 and 4.
-   */
-  float top_right;
-  /**
-   * Bottom-right corner radius, used by tags 3 and 4.
-   */
-  float bottom_right;
-  /**
-   * Bottom-left corner radius, used by tags 3 and 4.
-   */
-  float bottom_left;
-} WuiShapeKind;
 
 /**
  * C ABI mirror of [`ResolvedShape`], the backend-native shape payload
@@ -5661,6 +5667,21 @@ typedef struct WuiVideoPlayer {
    */
   bool show_controls;
 } WuiVideoPlayer;
+
+/**
+ * FFI-safe representation of `IgnorableMetadata<NavigationLinkHint>`.
+ *
+ * A navigation link renders as a plain button; this marker is what lets a
+ * platform that draws a destination-following affordance around the row a
+ * link sits in — the iOS disclosure chevron — recognize one. Renderers with
+ * no such affordance ignore it and fall through to the content.
+ */
+typedef struct WuiIgnorableMetadataNavigationLinkHint {
+  /**
+   * The link content wrapped by this marker.
+   */
+  struct WuiAnyView *content;
+} WuiIgnorableMetadataNavigationLinkHint;
 
 /**
  * FFI representation of a single toolbar item and its placement.
@@ -9733,6 +9754,21 @@ struct WuiVideoPlayer waterui_force_as_video_player(struct WuiAnyView *view);
  * Returns the stable `TypeId` identifying this view type across the FFI.
  */
 struct WuiTypeId waterui_video_player_id(void);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
+struct WuiTypeId waterui_ignorable_metadata_navigation_link_hint_id(void);
+
+/**
+ * Force-casts an `AnyView` to this ignorable metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains an `IgnorableMetadata<$ty>`.
+ */
+struct WuiIgnorableMetadataNavigationLinkHint waterui_force_as_ignorable_metadata_navigation_link_hint(struct WuiAnyView *view);
 
 /**
  * # Safety
