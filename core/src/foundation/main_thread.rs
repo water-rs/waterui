@@ -23,15 +23,18 @@ use core::ops::Deref;
 /// # Safety model
 ///
 /// The [`Send`] and [`Sync`] impls are `unsafe`: they are sound only because every
-/// access goes through [`get`](Self::get) / [`get_mut`](Self::get_mut) /
-/// [`Deref`], each of which asserts the caller is on the owning thread and panics
-/// otherwise, so the inner `!Send` value never actually crosses a thread boundary.
-/// If the wrapper is dropped on a non-owning thread the inner value is **leaked**
-/// rather than dropped, since running a `!Send` destructor off-thread would be
-/// undefined behavior.
+/// access goes through [`Deref`] / [`DerefMut`](core::ops::DerefMut) /
+/// [`into_inner`](Self::into_inner), each of which asserts the caller is on the
+/// owning thread and panics otherwise, so the inner `!Send` value never actually
+/// crosses a thread boundary. If the wrapper is dropped on a non-owning thread the
+/// inner value is **leaked** rather than dropped, since running a `!Send`
+/// destructor off-thread would be undefined behavior.
 ///
-/// On `no_std` (single-threaded embedded) targets there is no other thread to
-/// violate the confinement, so the checks compile to no-ops.
+/// The owner-thread check requires the `std` feature, which is on by default and
+/// must stay on for any build that can spawn a second thread. Disabling default
+/// features is reserved for genuinely single-threaded `no_std` builds, where there
+/// is no other thread to violate the confinement and the checks compile to no-ops;
+/// opting out on a threaded target silently removes the soundness net.
 pub struct MainThreadBound<T> {
     #[cfg(feature = "std")]
     owner: std::thread::ThreadId,
