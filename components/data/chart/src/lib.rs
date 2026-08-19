@@ -54,6 +54,7 @@ pub use data::{
     // Candlestick/financial types
     Candle,
     CandlestickData,
+    candle_epoch,
     ChoroplethData,
     ColorScale,
     // Contour types
