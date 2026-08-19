@@ -63,7 +63,6 @@ waterui-build-support.workspace = true
 # platform/macos_display_link.rs). All of these are already in winit's own
 # dependency graph.
 [target.'cfg(target_os = "macos")'.dependencies]
-base64 = { version = "0.22", optional = true }
 block2 = { version = "0.6", optional = true }
 cookie = { version = "0.18", optional = true }
 ctrlc = { version = "3.5", features = ["termination"] }
@@ -166,7 +165,6 @@ inspector-signals = ["waterui/inspector-signals"]
 webview-default = [
     "dep:waterui-browser-wpe",
     "waterui-browser-wpe/webview",
-    "dep:base64",
     "dep:block2",
     "dep:cookie",
     "dep:futures",
@@ -174,7 +172,6 @@ webview-default = [
     "dep:serde_json",
 ]
 webview-system = [
-    "dep:base64",
     "dep:block2",
     "dep:cookie",
     "dep:futures",

@@ -9,7 +9,7 @@ use waterui::reactive::binding;
 use waterui_testing::{OffscreenApp, Role, UiBuilder};
 
 fn rail(layout: NavigationRailLayout) -> impl View {
-    // A clonable stand-in for a real icon: the item keeps its icon type.
+    // A cloneable stand-in for a real icon: the item keeps its icon type.
     let dot = || text("\u{25cf}");
     let home = binding(true);
     let search = binding(false);
