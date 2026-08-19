@@ -399,6 +399,75 @@ impl AccessibilityBuilder {
             .is_some_and(|scope| self.consumed_semantics_scopes.contains(&scope.key()))
     }
 
+    /// Collapses a synthesized naming container around exactly one semantic
+    /// node into that node.
+    ///
+    /// `.a11y_label(..)` on a view with a single accessibility element means
+    /// "this is that element's name" on every platform — SwiftUI's
+    /// `accessibilityLabel` overrides the element rather than wrapping it — so
+    /// a padding or frame between the metadata and a lone text must not turn
+    /// the override into a `Group("name")` around a `Label(content)`. The child
+    /// keeps its identity and actions; it takes the scope's label, the scope's
+    /// explicit role, and the container's outer bounds. With zero or several
+    /// children the container stands: it is then the only node that can say
+    /// the parts belong together.
+    fn collapse_single_child_container(&mut self, container_id: AccessibilityNodeId) {
+        let container_index = self
+            .nodes
+            .iter()
+            .position(|(id, _)| *id == container_id)
+            .expect("hydrolysis accessibility container to collapse is not registered");
+        let container = &self.nodes[container_index].1;
+        let [child_id] = *container.children() else {
+            return;
+        };
+        let label = container.label().map(str::to_owned);
+        let role = container.role();
+        let bounds = container.bounds();
+        let child = self
+            .nodes
+            .iter_mut()
+            .find_map(|(id, node)| (*id == child_id).then_some(node))
+            .expect("hydrolysis accessibility container child is not registered");
+        if let Some(label) = label {
+            child.set_label(label);
+        }
+        if role != AccessibilityNodeRole::Group {
+            child.set_role(role);
+        }
+        if let Some(bounds) = bounds {
+            child.set_bounds(bounds);
+        }
+        // The child takes the container's place under its parent.
+        if let Some(slot) = self
+            .root_children
+            .iter_mut()
+            .find(|slot| **slot == container_id)
+        {
+            *slot = child_id;
+        } else {
+            let slot = self
+                .nodes
+                .iter_mut()
+                .filter(|(id, _)| *id != container_id)
+                .find_map(|(_, node)| {
+                    node.children()
+                        .iter()
+                        .position(|child| *child == container_id)
+                        .map(|position| (node, position))
+                });
+            let (parent, position) =
+                slot.expect("hydrolysis accessibility container to collapse has no parent");
+            let mut children = parent.children().to_vec();
+            children[position] = child_id;
+            parent.set_children(children);
+        }
+        self.nodes.remove(container_index);
+        if self.focus == container_id {
+            self.focus = child_id;
+        }
+    }
+
     pub(crate) fn finalize_tree_update(&mut self) {
         self.node_ids
             .retain(|key, _| self.active_node_keys.contains(key));
@@ -425,6 +494,8 @@ impl AccessibilityBuilder {
 pub(crate) struct AccessibilityContainerScope {
     parent_pushed: bool,
     suppression_pushed: bool,
+    /// The node this scope synthesized for the container, when it did.
+    container_node: Option<AccessibilityNodeId>,
 }
 
 #[cfg(feature = "accessibility")]
@@ -434,6 +505,7 @@ impl AccessibilityContainerScope {
     const INERT: Self = Self {
         parent_pushed: false,
         suppression_pushed: false,
+        container_node: None,
     };
 }
 
@@ -696,6 +768,7 @@ impl HydrolysisRenderer {
             return AccessibilityContainerScope {
                 parent_pushed: false,
                 suppression_pushed: true,
+                container_node: None,
             };
         }
 
@@ -724,6 +797,7 @@ impl HydrolysisRenderer {
             return AccessibilityContainerScope {
                 parent_pushed: false,
                 suppression_pushed: true,
+                container_node: None,
             };
         }
         let Some(node_id) = self.register_accessibility_node(node, bounds, env, None) else {
@@ -744,6 +818,7 @@ impl HydrolysisRenderer {
         AccessibilityContainerScope {
             parent_pushed: true,
             suppression_pushed,
+            container_node: Some(node_id),
         }
     }
 
@@ -757,6 +832,10 @@ impl HydrolysisRenderer {
                 .parent_stack
                 .pop()
                 .expect("hydrolysis accessibility container parent stack underflow");
+        }
+        if let Some(container_id) = scope.container_node {
+            self.accessibility
+                .collapse_single_child_container(container_id);
         }
     }
 
