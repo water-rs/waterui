@@ -183,7 +183,12 @@ impl BarcodeSource {
         for y in 0..dimension {
             for x in 0..dimension {
                 let linear_idx = (y * dimension + x) as usize;
-                if qr.data.as_slice().get(linear_idx).is_some_and(|m| m.value()) {
+                if qr
+                    .data
+                    .as_slice()
+                    .get(linear_idx)
+                    .is_some_and(|m| m.value())
+                {
                     let word_idx = linear_idx / 32;
                     let bit_idx = linear_idx % 32;
                     packed_data[word_idx] |= 1u32 << bit_idx;
@@ -335,7 +340,8 @@ mod tests {
 
     #[test]
     fn code128_matrix_stores_one_row_of_modules() {
-        let source = BarcodeSource::code128("HELLO-WATERUI-128").expect("static test payload must encode");
+        let source =
+            BarcodeSource::code128("HELLO-WATERUI-128").expect("static test payload must encode");
         let matrix = source.matrix();
 
         assert_eq!(matrix.height, 1);
@@ -344,7 +350,8 @@ mod tests {
 
     #[test]
     fn qr_matrix_remains_square() {
-        let source = BarcodeSource::qr("https://waterui.dev").expect("static test payload must encode");
+        let source =
+            BarcodeSource::qr("https://waterui.dev").expect("static test payload must encode");
         let matrix = source.matrix();
 
         assert_eq!(matrix.width, matrix.height);
@@ -358,7 +365,8 @@ mod tests {
     fn qr_generator_produces_expected_size_and_pixels() {
         let runtime = pollster::block_on(GpuRuntime::new())
             .expect("barcode tests require a working GPU runtime");
-        let mut source = BarcodeSource::qr("https://waterui.dev").expect("static test payload must encode");
+        let mut source =
+            BarcodeSource::qr("https://waterui.dev").expect("static test payload must encode");
         source.set_size(192);
 
         let image = pollster::block_on(source.generate(&runtime));
@@ -372,7 +380,8 @@ mod tests {
     fn code128_generator_produces_expected_size_and_pixels() {
         let runtime = pollster::block_on(GpuRuntime::new())
             .expect("barcode tests require a working GPU runtime");
-        let mut source = BarcodeSource::code128("HELLO-WATERUI").expect("static test payload must encode");
+        let mut source =
+            BarcodeSource::code128("HELLO-WATERUI").expect("static test payload must encode");
         source.set_size(256);
 
         let image = pollster::block_on(source.generate(&runtime));

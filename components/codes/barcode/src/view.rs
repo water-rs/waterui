@@ -248,7 +248,8 @@ impl<V: GpuView> View for BarcodeGpuFill<V> {
             self.light_color
                 .map(move |color| color.resolve(&environment)),
         );
-        let effect = BarcodeMaskEffect::reactive(self.symbology, self.content.clone(), resolved_light);
+        let effect =
+            BarcodeMaskEffect::reactive(self.symbology, self.content.clone(), resolved_light);
         let fill_surface = GpuSurface::new(self.fill);
         apply_barcode_semantics(
             env,

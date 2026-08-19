@@ -1,6 +1,6 @@
 //! Shared media source model for native and self-drawn video realizations.
 
-use std::{borrow::Cow, num::NonZeroUsize, time::Duration};
+use std::{num::NonZeroUsize, time::Duration};
 
 use nami::impl_constant;
 use uuid::Uuid;

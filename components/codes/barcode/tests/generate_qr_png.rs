@@ -15,7 +15,9 @@ fn generate_qr_png_offscreen() {
     let out_path = std::env::var("WATERUI_QR_OUT")
         .map_or_else(|_| PathBuf::from("target/generated_qr.png"), PathBuf::from);
 
-    let renderer = BarcodeRenderer::new(BarcodeSource::qr(content.clone()).expect("static test payload must encode"));
+    let renderer = BarcodeRenderer::new(
+        BarcodeSource::qr(content.clone()).expect("static test payload must encode"),
+    );
     let size = OffscreenSize::try_from_pixels(768, 768).expect("valid output size");
     let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
     let runtime = pollster::block_on(GpuRuntime::new())

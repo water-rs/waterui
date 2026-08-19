@@ -16,9 +16,8 @@ use waterui_navigation::{
     Bar, ColumnWidth, CustomNavigationController, NativeNavigationSplitStyle,
     NativeNavigationTransition, NavigationController, NavigationDestinationState,
     NavigationLinkHint, NavigationSearch, NavigationSplitColumnVisibility, NavigationSplitLayout,
-    NavigationStack, NavigationTitleDisplayMode, NavigationToolbarItem,
-    NavigationToolbarPlacement, NavigationTransaction, NavigationView, ToolbarItemIcon,
-    split::NavigationSplitDetailBuilder,
+    NavigationStack, NavigationTitleDisplayMode, NavigationToolbarItem, NavigationToolbarPlacement,
+    NavigationTransaction, NavigationView, ToolbarItemIcon, split::NavigationSplitDetailBuilder,
 };
 use waterui_text::styled::StyledStr;
 

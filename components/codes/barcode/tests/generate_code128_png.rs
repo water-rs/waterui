@@ -17,7 +17,9 @@ fn generate_code128_png_offscreen() {
         PathBuf::from,
     );
 
-    let renderer = BarcodeRenderer::new(BarcodeSource::code128(content.clone()).expect("static test payload must encode"));
+    let renderer = BarcodeRenderer::new(
+        BarcodeSource::code128(content.clone()).expect("static test payload must encode"),
+    );
     let size = OffscreenSize::try_from_pixels(1024, 256).expect("valid output size");
     let config = OffscreenRenderConfig::new(size).format(wgpu::TextureFormat::Rgba8Unorm);
     let runtime = pollster::block_on(GpuRuntime::new())

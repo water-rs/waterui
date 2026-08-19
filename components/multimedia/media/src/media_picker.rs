@@ -2,8 +2,6 @@
 //!
 //! This module provides media selection functionality through `MediaPicker`.
 
-use alloc::vec::Vec;
-
 #[cfg(feature = "std")]
 use alloc::string::ToString;
 #[cfg(feature = "std")]
@@ -153,7 +151,6 @@ fn live_photo_from_paths(image: &Path, video: &Path) -> Media {
         Url::from_file_path_str(video.to_string_lossy().to_string()),
     ))
 }
-
 
 /// Represents a selected media item.
 #[derive(Debug, Clone, PartialEq, Eq)]

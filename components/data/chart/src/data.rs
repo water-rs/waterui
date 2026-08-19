@@ -59,7 +59,12 @@ impl DataPoint {
 #[repr(C)]
 pub struct Candle {
     /// Unix timestamp (seconds).
-    pub timestamp: f32,
+    ///
+    /// Stored as `f64` because an `f32` cannot separate adjacent candles at
+    /// current Unix time (its representable step there is 128 seconds).
+    /// Geometry rebases timestamps to offsets from the series' first candle
+    /// via [`Candle::x_offset`] before narrowing to `f32`.
+    pub timestamp: f64,
     /// Opening price.
     pub open: f32,
     /// Highest price.
@@ -71,14 +76,14 @@ pub struct Candle {
     /// Trading volume.
     pub volume: f32,
     /// Padding for 32-byte alignment.
-    pub pad: [f32; 2],
+    pub pad: f32,
 }
 
 impl Candle {
     /// Creates a new candle.
     #[must_use]
     pub const fn new(
-        timestamp: f32,
+        timestamp: f64,
         open: f32,
         high: f32,
         low: f32,
@@ -92,7 +97,7 @@ impl Candle {
             low,
             close,
             volume,
-            pad: [0.0; 2],
+            pad: 0.0,
         }
     }
 
@@ -101,6 +106,32 @@ impl Candle {
     pub fn is_bullish(&self) -> bool {
         self.close >= self.open
     }
+
+    /// X position of this candle in chart space: seconds since `epoch`.
+    ///
+    /// `epoch` is the series' first timestamp (see [`candle_epoch`]); rebasing
+    /// before the `f32` narrowing keeps second-resolution candles distinct,
+    /// which raw Unix seconds in `f32` cannot.
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "narrowing to f32 after rebasing is the documented contract"
+    )]
+    pub fn x_offset(&self, epoch: f64) -> f32 {
+        let offset = self.timestamp - epoch;
+        let narrowed = offset as f32;
+        debug_assert!(
+            narrowed.is_finite(),
+            "candle timestamp offset {offset} does not fit into f32"
+        );
+        narrowed
+    }
+}
+
+/// The rebasing epoch for a candle series: the first candle's timestamp.
+#[must_use]
+pub fn candle_epoch(candles: &[Candle]) -> f64 {
+    candles.first().map_or(0.0, |candle| candle.timestamp)
 }
 
 /// A single order book level for depth charts.
@@ -1213,9 +1244,11 @@ impl DataBounds {
             max_y: f32::MIN,
         };
 
+        let epoch = candle_epoch(candles);
         for c in candles {
-            bounds.min_x = bounds.min_x.min(c.timestamp);
-            bounds.max_x = bounds.max_x.max(c.timestamp);
+            let x = c.x_offset(epoch);
+            bounds.min_x = bounds.min_x.min(x);
+            bounds.max_x = bounds.max_x.max(x);
             bounds.min_y = bounds.min_y.min(c.low);
             bounds.max_y = bounds.max_y.max(c.high);
         }

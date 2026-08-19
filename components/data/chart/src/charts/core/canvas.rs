@@ -1206,12 +1206,14 @@ pub(crate) fn candlestick_geometry(
         (plot.width() / usize_to_f32(data.len()) * 0.65).max(1.0)
     };
     let mut targets = HitTargets::new(chart_viewport_from_rect(plot));
+    let epoch = crate::data::candle_epoch(data);
     for (index, candle) in data.iter().enumerate() {
-        let x = map_xy(plot, bounds, candle.timestamp, candle.close).x;
-        let high = map_xy(plot, bounds, candle.timestamp, candle.high).y;
-        let low = map_xy(plot, bounds, candle.timestamp, candle.low).y;
-        let open_y = map_xy(plot, bounds, candle.timestamp, candle.open).y;
-        let close_y = map_xy(plot, bounds, candle.timestamp, candle.close).y;
+        let time = candle.x_offset(epoch);
+        let x = map_xy(plot, bounds, time, candle.close).x;
+        let high = map_xy(plot, bounds, time, candle.high).y;
+        let low = map_xy(plot, bounds, time, candle.low).y;
+        let open_y = map_xy(plot, bounds, time, candle.open).y;
+        let close_y = map_xy(plot, bounds, time, candle.close).y;
         let top = open_y.min(close_y);
         let bottom = open_y.max(close_y);
         let rect = Rect::new(
@@ -1716,6 +1718,7 @@ pub(crate) fn draw_candlestick(
     let plot = plot_rect(ctx, PLOT_PADDING_RATIO);
     let candle_width = (plot.width() / usize_to_f32(data.len()) * 0.65).max(1.0);
 
+    let epoch = crate::data::candle_epoch(data);
     for candle in data {
         let color = if candle.close >= candle.open {
             bullish
@@ -1723,11 +1726,12 @@ pub(crate) fn draw_candlestick(
             bearish
         };
 
-        let x = map_xy(plot, bounds, candle.timestamp, candle.close).x;
-        let high = map_xy(plot, bounds, candle.timestamp, candle.high).y;
-        let low = map_xy(plot, bounds, candle.timestamp, candle.low).y;
-        let open_y = map_xy(plot, bounds, candle.timestamp, candle.open).y;
-        let close_y = map_xy(plot, bounds, candle.timestamp, candle.close).y;
+        let time = candle.x_offset(epoch);
+        let x = map_xy(plot, bounds, time, candle.close).x;
+        let high = map_xy(plot, bounds, time, candle.high).y;
+        let low = map_xy(plot, bounds, time, candle.low).y;
+        let open_y = map_xy(plot, bounds, time, candle.open).y;
+        let close_y = map_xy(plot, bounds, time, candle.close).y;
 
         ctx.set_line_width(1.0);
         ctx.set_stroke_style(color);

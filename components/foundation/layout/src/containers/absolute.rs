@@ -26,9 +26,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use nami::{Computed, Signal, SignalExt, watcher::BoxWatcherGuard};
-use waterui_core::{
-    IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews,
-};
+use waterui_core::{IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews};
 
 use crate::{
     Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, UnitPoint,
@@ -344,10 +342,7 @@ impl Layout for PositionedLayout {
             .collect()
     }
 
-    fn watch_invalidation(
-        &self,
-        invalidate: LayoutInvalidationCallback,
-    ) -> Vec<BoxWatcherGuard> {
+    fn watch_invalidation(&self, invalidate: LayoutInvalidationCallback) -> Vec<BoxWatcherGuard> {
         let signals: Vec<&Computed<f32>> = match &self.target {
             PositionTarget::Absolute { x, y } => vec![x, y],
             PositionTarget::Fractional {
