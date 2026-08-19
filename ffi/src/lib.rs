@@ -1002,7 +1002,7 @@ ffi_ignorable_metadata!(
     accessibility_label
 );
 
-fn accessibility_role_code(role: AccessibilityRole) -> i32 {
+fn accessibility_role_code(role: &AccessibilityRole) -> i32 {
     match role {
         AccessibilityRole::Button => 0,
         AccessibilityRole::Link => 1,
@@ -1053,7 +1053,7 @@ impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityRole> {
     fn into_ffi(self) -> Self::FFI {
         WuiIgnorableMetadataAccessibilityValue {
             content: self.content.into_ffi(),
-            value: accessibility_role_code(self.value),
+            value: accessibility_role_code(&self.value),
         }
     }
 }
@@ -1114,36 +1114,30 @@ pub struct WuiAccessibilityState {
     pub hidden: *mut WuiComputed<bool>,
 }
 
-fn accessibility_state_ffi(state: Computed<AccessibilityState>) -> WuiAccessibilityState {
-    let checked = state.clone().map(|state| match state.checked_state() {
+fn accessibility_state_ffi(state: &Computed<AccessibilityState>) -> WuiAccessibilityState {
+    let checked = state.map(|state| match state.checked_state() {
         None => -1,
         Some(AccessibilityChecked::False) => 0,
         Some(AccessibilityChecked::True) => 1,
         Some(AccessibilityChecked::Mixed) => 2,
     });
-    let expanded = state.clone().map(|state| match state.expanded_state() {
+    let expanded = state.map(|state| match state.expanded_state() {
         None => -1,
         Some(false) => 0,
         Some(true) => 1,
     });
     WuiAccessibilityState {
         disabled: state
-            .clone()
             .map(|state| state.is_disabled())
             .computed()
             .into_ffi(),
         selected: state
-            .clone()
             .map(|state| state.is_selected())
             .computed()
             .into_ffi(),
         checked: checked.computed().into_ffi(),
         expanded: expanded.computed().into_ffi(),
-        busy: state
-            .clone()
-            .map(|state| state.is_busy())
-            .computed()
-            .into_ffi(),
+        busy: state.map(|state| state.is_busy()).computed().into_ffi(),
         hidden: state.map(|state| state.is_hidden()).computed().into_ffi(),
     }
 }
@@ -1164,7 +1158,7 @@ impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityState> {
     fn into_ffi(self) -> Self::FFI {
         WuiIgnorableMetadataAccessibilityState {
             content: self.content.into_ffi(),
-            state: accessibility_state_ffi(Computed::constant(self.value)),
+            state: accessibility_state_ffi(&Computed::constant(self.value)),
         }
     }
 }
@@ -1175,7 +1169,7 @@ impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityStateSignal> {
     fn into_ffi(self) -> Self::FFI {
         WuiIgnorableMetadataAccessibilityState {
             content: self.content.into_ffi(),
-            state: accessibility_state_ffi(self.value.state().clone()),
+            state: accessibility_state_ffi(self.value.state()),
         }
     }
 }

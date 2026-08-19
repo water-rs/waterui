@@ -606,7 +606,7 @@ fn album_row(album: Album, selection: &Binding<Option<Album>>) -> impl Fn() -> L
     let selection = selection.clone();
 
     move || {
-        let selection = selection.clone();
+        let tap_selection = selection.clone();
         ListItem::new(
             hstack((
                 mdi::album().size(20.0, 20.0).foreground(Accent),
@@ -616,8 +616,11 @@ fn album_row(album: Album, selection: &Binding<Option<Album>>) -> impl Fn() -> L
             ))
             .spacing(10.0)
             .padding_with(EdgeInsets::symmetric(10.0, 12.0))
-            .on_tap(move || selection.set(Some(album))),
+            .on_tap(move || tap_selection.set(Some(album))),
         )
+        // The platform draws its own selection chrome; the row only derives
+        // its flag from the state that owns selection.
+        .selected(selection.clone().map(move |current| current == Some(album)))
     }
 }
 

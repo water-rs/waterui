@@ -1666,10 +1666,11 @@ impl ToJavaStruct for crate::components::list::WuiListItem {
             .expect("ListItemStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJLjava/lang/String;Ljava/lang/String;)V"),
+            jni_sig!("(JJJLjava/lang/String;Ljava/lang/String;)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.deletable as jlong),
+                JValue::Long(self.selected as jlong),
                 JValue::Object(&section_label),
                 JValue::Object(&section_footer),
             ],
