@@ -553,9 +553,16 @@ fn is_rust_keyword(ident: &str) -> bool {
     )
 }
 
-struct IncludeBundleArgs {
-    path: LitStr,
-    mount: syn::Ident,
+/// Parsed arguments of an `include_bundle!("path", as = mount)` invocation.
+///
+/// This is the single source of truth for the macro's syntax: the
+/// `include_bundle!` proc macro and this planner's source scanner both parse
+/// through it, so the two can never drift apart.
+pub struct IncludeBundleArgs {
+    /// Bundle directory path relative to the crate root.
+    pub path: LitStr,
+    /// Module name the bundle is mounted under.
+    pub mount: syn::Ident,
 }
 
 impl Parse for IncludeBundleArgs {
