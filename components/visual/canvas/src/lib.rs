@@ -714,31 +714,6 @@ impl DrawingContext<'_> {
         self.current_state.global_alpha = alpha.clamp(0.0, 1.0);
     }
 
-    /// Sets the shadow blur radius.
-    ///
-    /// A blur value of 0 means sharp shadows, higher values create softer shadows.
-    pub fn set_shadow_blur(&mut self, blur: impl IntoSignalF32) {
-        let blur = self.resolve_f32(blur);
-        self.current_state.shadow_blur = blur.max(0.0);
-    }
-
-    /// Sets the shadow color.
-    pub fn set_shadow_color(&mut self, color: impl Into<waterui_graphics::color::ResolvedColor>) {
-        self.current_state.shadow_color = color.into();
-    }
-
-    /// Sets the shadow offset in the x and y directions.
-    ///
-    /// # Arguments
-    /// * `x` - Horizontal offset (positive = right)
-    /// * `y` - Vertical offset (positive = down)
-    pub fn set_shadow_offset(&mut self, x: impl IntoSignalF32, y: impl IntoSignalF32) {
-        let x = self.resolve_f32(x);
-        let y = self.resolve_f32(y);
-        self.current_state.shadow_offset_x = x;
-        self.current_state.shadow_offset_y = y;
-    }
-
     /// Sets the fill rule for determining the interior of shapes.
     ///
     /// # Arguments
@@ -934,8 +909,11 @@ impl DrawingContext<'_> {
         let dest_offset =
             kurbo::Affine::translate((f64::from(dest.origin().x), f64::from(dest.origin().y)));
 
-        // Compose transforms: src_offset -> scale -> dest_offset
-        let image_transform = src_offset * scale * dest_offset;
+        // Compose transforms so a source point is first shifted by -src origin,
+        // then scaled, then translated to the destination. kurbo's `Affine`
+        // multiplication applies the RIGHT operand first, so the source offset
+        // must sit rightmost.
+        let image_transform = dest_offset * scale * src_offset;
 
         // Compose with current transform
         let final_transform = self.current_state.transform * image_transform;
@@ -978,8 +956,8 @@ impl DrawingContext<'_> {
 
     /// Measures the given text with the current font.
     ///
-    /// Returns approximate text metrics. For more accurate measurements,
-    /// use a dedicated text layout library.
+    /// Uses the same shaping pipeline as [`draw_text`](Self::draw_text), so the
+    /// metrics match what drawing produces exactly.
     ///
     /// # Example
     ///
@@ -988,14 +966,12 @@ impl DrawingContext<'_> {
     /// println!("Text width: {}", metrics.width);
     /// ```
     #[must_use]
-    pub fn measure_text(&self, text: &str) -> TextMetrics {
+    pub fn measure_text(&mut self, text: &str) -> TextMetrics {
         if text.is_empty() {
             return TextMetrics::new(0.0, 0.0);
         }
 
-        let mut text_engine = TextEngine::default();
-        let layout =
-            build_text_layout_with_engine(&mut text_engine, &self.current_state.font, text, None);
+        let layout = self.build_text_layout(text, None);
         TextMetrics::new(layout.full_width(), layout.height())
     }
 
@@ -1257,12 +1233,14 @@ mod tests {
 
     struct TestScene {
         stroked_glyph_run: bool,
+        image_transforms: Vec<kurbo::Affine>,
     }
 
     impl TestScene {
         const fn new() -> Self {
             Self {
                 stroked_glyph_run: false,
+                image_transforms: Vec::new(),
             }
         }
     }
@@ -1308,7 +1286,9 @@ mod tests {
 
         fn pop_layer(&mut self) {}
 
-        fn draw_image(&mut self, _image: &peniko::ImageBrush, _transform: kurbo::Affine) {}
+        fn draw_image(&mut self, _image: &peniko::ImageBrush, transform: kurbo::Affine) {
+            self.image_transforms.push(transform);
+        }
 
         fn draw_glyph_run(&mut self, run: &waterui_graphics::GlyphRun<'_>) {
             if matches!(run.style, peniko::StyleRef::Stroke(_)) {
@@ -1395,7 +1375,7 @@ mod tests {
         let mut scene = TestScene::new();
         let mut text_engine = TextEngine::default();
         let mut guards = Vec::new();
-        let ctx = DrawingContext {
+        let mut ctx = DrawingContext {
             scene: &mut scene,
             width: 640.0,
             height: 480.0,
@@ -1415,6 +1395,54 @@ mod tests {
         assert!(metrics.height > 0.0, "expected positive text height");
         assert_eq!(ctx.measure_text("").width, 0.0);
         assert_eq!(ctx.measure_text("").height, 0.0);
+    }
+
+    #[test]
+    fn draw_image_sub_maps_source_rect_onto_destination_rect() {
+        let mut scene = TestScene::new();
+        let mut text_engine = TextEngine::default();
+        let mut guards = Vec::new();
+
+        // A non-origin source rect and a non-unit scale: the sprite at
+        // (32, 16)..(64, 48) must land exactly on (100, 100)..(164, 164).
+        let src = Rect::new(Point::new(32.0, 16.0), Size::new(32.0, 32.0));
+        let dest = Rect::new(Point::new(100.0, 100.0), Size::new(64.0, 64.0));
+
+        {
+            let mut ctx = DrawingContext {
+                scene: &mut scene,
+                width: 640.0,
+                height: 480.0,
+                state_stack: Vec::new(),
+                current_state: DrawingState::new(),
+                reactive: ReactiveFrameState {
+                    pending_redraw: Rc::new(Cell::new(false)),
+                    invalidator: None,
+                    guards: &mut guards,
+                },
+                text_engine: &mut text_engine,
+                requested_next_frame: false,
+            };
+            let pixels = alloc::vec![0u8; 128 * 128 * 4];
+            let image = CanvasImage::from_rgba_pixels(128, 128, &pixels)
+                .expect("test image must be constructible");
+            ctx.draw_image_sub(&image, src, dest);
+        }
+
+        let transform = *scene
+            .image_transforms
+            .first()
+            .expect("draw_image_sub must emit exactly one image draw");
+        let src_origin = transform * kurbo::Point::new(32.0, 16.0);
+        let src_corner = transform * kurbo::Point::new(64.0, 48.0);
+        assert!(
+            (src_origin.x - 100.0).abs() < 1e-6 && (src_origin.y - 100.0).abs() < 1e-6,
+            "source origin must map to destination origin, got {src_origin:?}"
+        );
+        assert!(
+            (src_corner.x - 164.0).abs() < 1e-6 && (src_corner.y - 164.0).abs() < 1e-6,
+            "source corner must map to destination corner, got {src_corner:?}"
+        );
     }
 
     #[test]
