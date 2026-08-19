@@ -1590,7 +1590,9 @@ mod tests {
     #[test]
     fn fetch_cache_key_has_fixed_length() {
         let long_path = "a".repeat(512);
-        let url = Url::from(format!("https://example.com/{long_path}"));
+        let url = format!("https://example.com/{long_path}")
+            .parse::<Url>()
+            .expect("test URL must parse");
         let key = fetch_cache_key(url.as_str());
         assert_eq!(key.len(), 43);
     }
@@ -1684,7 +1686,9 @@ mod tests {
                 .expect("server should write response");
         });
 
-        let url = Url::from(format!("http://{address}/download"));
+        let url = format!("http://{address}/download")
+            .parse::<Url>()
+            .expect("test URL must parse");
         let fetched = futures::executor::block_on(fetch_remote_to_cache(
             url.as_str().to_owned(),
             url.extension().map(str::to_owned),
@@ -1740,7 +1744,9 @@ mod tests {
                 .expect("server should write response");
         });
 
-        let url = Url::from(format!("http://{address}/{long_path}"));
+        let url = format!("http://{address}/{long_path}")
+            .parse::<Url>()
+            .expect("test URL must parse");
         let fetched = futures::executor::block_on(fetch_remote_to_cache(
             url.as_str().to_owned(),
             url.extension().map(str::to_owned),

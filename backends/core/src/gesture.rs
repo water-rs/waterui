@@ -122,7 +122,6 @@ enum GestureInput {
 
 #[derive(Clone)]
 enum GesturePayload {
-    None,
     Tap(TapEvent),
     LongPress(LongPressEvent),
     Drag(DragEvent),
@@ -183,7 +182,6 @@ impl GestureBinding {
         let mut local_env = env.clone();
         local_env.insert(self.gesture.clone());
         match localize_gesture_payload(payload, bounds) {
-            GesturePayload::None => {}
             GesturePayload::Tap(event) => local_env.insert(event),
             GesturePayload::LongPress(event) => local_env.insert(event),
             GesturePayload::Drag(event) => local_env.insert(event),
@@ -218,7 +216,6 @@ fn gesture_point(point: kurbo::Point) -> GesturePoint {
 
 fn localize_gesture_payload(payload: GesturePayload, bounds: kurbo::Rect) -> GesturePayload {
     match payload {
-        GesturePayload::None => GesturePayload::None,
         GesturePayload::Tap(mut event) => {
             event.location = local_gesture_point(event.location, bounds);
             GesturePayload::Tap(event)

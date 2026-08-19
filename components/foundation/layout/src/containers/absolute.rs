@@ -57,9 +57,6 @@ impl Layout for AbsoluteLayout {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
-    #[allow(clippy::too_many_lines)]
-    #[allow(clippy::too_many_lines)]
     fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
         // Give every child the full bounds - they position themselves
         children.iter().map(|_| bounds).collect()
