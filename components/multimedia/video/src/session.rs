@@ -792,7 +792,7 @@ mod tests {
     use nami::Signal as _;
 
     fn item(path: &str, id: u8) -> MediaItem {
-        MediaItem::from(path.to_owned()).id(MediaItemId::from_bytes([id; 16]))
+        MediaItem::from(Url::from_file_path_str(path)).id(MediaItemId::from_bytes([id; 16]))
     }
 
     #[test]
