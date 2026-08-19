@@ -57,6 +57,29 @@ use syn::{
 
 /// Generate a `filtrate_core::Filter` implementation for the annotated
 /// struct. See module-level docs for accepted attribute shapes.
+/// Resolves the path of the crate providing the `Filter` machinery.
+///
+/// The derive is re-exported by `filtrate`, so a consumer may depend on
+/// `filtrate-core` directly or only on `filtrate` (whose root re-exports every
+/// name the generated code references). Emitting a hard-coded
+/// `::filtrate_core` would break the latter, standard, arrangement.
+fn core_path() -> syn::Result<TokenStream2> {
+    for candidate in ["filtrate-core", "filtrate"] {
+        match proc_macro_crate::crate_name(candidate) {
+            Ok(proc_macro_crate::FoundCrate::Itself) => return Ok(quote! { crate }),
+            Ok(proc_macro_crate::FoundCrate::Name(name)) => {
+                let ident = Ident::new(&name, proc_macro2::Span::call_site());
+                return Ok(quote! { ::#ident });
+            }
+            Err(_) => {}
+        }
+    }
+    Err(syn::Error::new(
+        proc_macro2::Span::call_site(),
+        "#[derive(Filter)] requires a dependency on `filtrate` or `filtrate-core`",
+    ))
+}
+
 #[proc_macro_derive(Filter, attributes(filter))]
 pub fn derive_filter(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -100,6 +123,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         })
         .collect();
 
+    let core = core_path()?;
     let layout = analyze_fields(&fields, &generic_type_params)?;
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
@@ -107,7 +131,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let extra_where: Vec<TokenStream2> = layout
         .bound_idents
         .iter()
-        .map(|ident| quote! { #ident: ::filtrate_core::FilterParam })
+        .map(|ident| quote! { #ident: #core::FilterParam })
         .collect();
     let where_clause = if extra_where.is_empty() {
         where_clause.cloned()
@@ -121,7 +145,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     let total_params = layout.total_params;
-    let params_array = layout.build_params_array_tokens();
+    let params_array = layout.build_params_array_tokens(&core);
     let visit_calls = layout.build_visit_signals_tokens();
 
     let shader_path = attrs.shader_path;
@@ -141,7 +165,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     Ok(quote! {
-        impl #impl_generics ::filtrate_core::Filter for #ident #ty_generics #where_clause {
+        impl #impl_generics #core::Filter for #ident #ty_generics #where_clause {
             const COLOR_ONLY: bool = #color_only;
             type Params = [f32; #total_params];
 
@@ -150,11 +174,11 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 #params_array
             }
 
-            fn collect_stages<__C: ::filtrate_core::StageCollector>(&self, collector: &mut __C) {
+            fn collect_stages<__C: #core::StageCollector>(&self, collector: &mut __C) {
                 #stage_call
             }
 
-            fn visit_signals<__V: ::filtrate_core::SignalVisitor>(&self, visitor: &mut __V) {
+            fn visit_signals<__V: #core::SignalVisitor>(&self, visitor: &mut __V) {
                 #visit_calls
             }
         }
@@ -327,15 +351,15 @@ fn analyze_fields(
 }
 
 impl FieldLayout {
-    fn build_params_array_tokens(&self) -> TokenStream2 {
+    fn build_params_array_tokens(&self, core: &TokenStream2) -> TokenStream2 {
         let snapshots = self.fields.iter().flat_map(|entry| match entry {
             FieldEntry::Scalar { member } => {
-                vec![quote! { ::filtrate_core::FilterParam::snapshot(&self.#member) }]
+                vec![quote! { #core::FilterParam::snapshot(&self.#member) }]
             }
             FieldEntry::Array { member, len } => (0..*len)
                 .map(|i| {
                     let element = syn::Index::from(i);
-                    quote! { ::filtrate_core::FilterParam::snapshot(&self.#member[#element]) }
+                    quote! { #core::FilterParam::snapshot(&self.#member[#element]) }
                 })
                 .collect(),
         });
