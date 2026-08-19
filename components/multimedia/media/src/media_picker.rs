@@ -87,7 +87,7 @@ where
                 {
                     let requested_filter = filter.get();
                     let picker = KitPhotoPicker::new()
-                        .with_media_type(media_type_from_filter(&requested_filter));
+                        .with_media_type(media_type_from_filter(requested_filter));
                     let handle = match picker.pick().await {
                         Ok(handle) => handle,
                         Err(error) => {
@@ -122,27 +122,11 @@ where
 }
 
 #[cfg(feature = "std")]
-fn media_type_from_filter(filter: &MediaFilter) -> MediaType {
+const fn media_type_from_filter(filter: MediaFilter) -> MediaType {
     match filter {
         MediaFilter::Image => MediaType::Image,
         MediaFilter::Video => MediaType::Video,
         MediaFilter::LivePhoto => MediaType::LivePhoto,
-        MediaFilter::All(filters) | MediaFilter::Any(filters) => {
-            if filters.iter().any(requests_live_photo) {
-                MediaType::LivePhoto
-            } else if filters.iter().all(|f| matches!(f, MediaFilter::Video)) {
-                MediaType::Video
-            } else {
-                MediaType::Image
-            }
-        }
-        MediaFilter::Not(filters) => {
-            if filters.iter().any(|f| matches!(f, MediaFilter::Image)) {
-                MediaType::Video
-            } else {
-                MediaType::Image
-            }
-        }
     }
 }
 
@@ -170,16 +154,6 @@ fn live_photo_from_paths(image: &Path, video: &Path) -> Media {
     ))
 }
 
-#[cfg(feature = "std")]
-fn requests_live_photo(filter: &MediaFilter) -> bool {
-    match filter {
-        MediaFilter::LivePhoto => true,
-        MediaFilter::All(filters) | MediaFilter::Any(filters) => {
-            filters.iter().any(requests_live_photo)
-        }
-        MediaFilter::Not(_) | MediaFilter::Image | MediaFilter::Video => false,
-    }
-}
 
 /// Represents a selected media item.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,8 +175,12 @@ impl Selected {
     }
 }
 
-/// Represents filters that can be applied to media selection.
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+/// The kind of media a [`MediaPicker`] offers for selection.
+///
+/// Platform pickers accept exactly one media kind per presentation, so the
+/// filter is deliberately a plain choice rather than a boolean algebra: every
+/// value here is honored exactly by the native picker, never approximated.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MediaFilter {
     /// Filter for live photos.
     LivePhoto,
@@ -210,12 +188,6 @@ pub enum MediaFilter {
     Video,
     /// Filter for images.
     Image,
-    /// Filter for all of the specified filters.
-    All(Vec<Self>),
-    /// Filter for none of the specified filters.
-    Not(Vec<Self>),
-    /// Filter for any of the specified filters.
-    Any(Vec<Self>),
 }
 
 impl_constant!(MediaFilter);
@@ -244,24 +216,12 @@ mod tests {
     }
 
     #[test]
-    fn live_photo_filters_request_paired_media() {
+    fn every_filter_maps_to_its_exact_platform_media_type() {
         assert_eq!(
-            media_type_from_filter(&MediaFilter::LivePhoto),
+            media_type_from_filter(MediaFilter::LivePhoto),
             MediaType::LivePhoto
         );
-        assert_eq!(
-            media_type_from_filter(&MediaFilter::Any(vec![
-                MediaFilter::Image,
-                MediaFilter::LivePhoto,
-            ])),
-            MediaType::LivePhoto
-        );
-        assert_eq!(
-            media_type_from_filter(&MediaFilter::All(vec![
-                MediaFilter::Video,
-                MediaFilter::LivePhoto,
-            ])),
-            MediaType::LivePhoto
-        );
+        assert_eq!(media_type_from_filter(MediaFilter::Image), MediaType::Image);
+        assert_eq!(media_type_from_filter(MediaFilter::Video), MediaType::Video);
     }
 }
