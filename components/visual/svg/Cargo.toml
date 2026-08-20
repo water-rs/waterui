@@ -22,9 +22,6 @@ vello_svg.workspace = true
 kurbo.workspace = true
 peniko.workspace = true
 
-# GPU backend (Vello)
-vello.workspace = true
-
 [dev-dependencies]
 waterui.workspace = true
 waterui-testing.workspace = true
@@ -33,4 +30,4 @@ pollster.workspace = true
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
-ignored = ["tracing", "waterui-macros"]
+ignored = ["waterui-macros"]
