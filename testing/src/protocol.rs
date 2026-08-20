@@ -1,16 +1,17 @@
-//! Conversion of perf measurements into the shared preview protocol types.
+//! Conversion of perf measurements into the shared bench wire types.
 //!
-//! The generated Hydrolysis preview binary serializes the converted report as
-//! one JSON line on stdout; the `water` CLI deserializes the same types, so
-//! field renames break the build instead of silently desynchronizing.
+//! `#[waterui::bench]` full runs serialize the converted report as JSON into
+//! the bench report directory; the `water bench` command deserializes the same
+//! types, so field renames break the build instead of silently
+//! desynchronizing.
 
 use std::time::Duration;
 
-use waterui_preview_protocol::hydrolysis::{PerfFrame, PerfMeasurement, PerfPhases};
+use waterui_preview_protocol::bench::{PerfFrame, PerfMeasurement, PerfPhases};
 
 use crate::perf::PerfReport;
 
-/// Converts a perf report into the shared preview-protocol measurements.
+/// Converts a perf report into the shared bench wire measurements.
 #[must_use]
 pub fn perf_report_to_protocol(report: &PerfReport) -> Vec<PerfMeasurement> {
     report

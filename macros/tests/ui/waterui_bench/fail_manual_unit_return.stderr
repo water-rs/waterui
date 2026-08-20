@@ -1,0 +1,7 @@
+error: the manual form of `#[waterui::bench(...)]` must return the recorded `PerfReport`
+ --> tests/ui/waterui_bench/fail_manual_unit_return.rs:1:1
+  |
+1 | #[waterui::bench]
+  | ^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `waterui::bench` (in Nightly builds, run with -Z macro-backtrace for more info)

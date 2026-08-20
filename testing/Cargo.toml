@@ -24,6 +24,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 executor-core.workspace = true
 sysinfo.workspace = true
 waterui-preview-protocol.workspace = true
+serde_json = "1.0"
 
 [dev-dependencies]
 bitflags.workspace = true

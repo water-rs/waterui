@@ -165,7 +165,7 @@ impl UiBuilder {
     pub fn perf<V, F>(self, view_fn: F) -> PerfReport
     where
         V: View + 'static,
-        F: Fn() -> V + Clone + 'static,
+        F: Fn() -> V + 'static,
     {
         self.perf_with(view_fn, |perf| {
             perf.measure("steady-redraw", |run| {
@@ -178,8 +178,8 @@ impl UiBuilder {
     pub fn perf_with<V, F, A>(self, view_fn: F, automation: A) -> PerfReport
     where
         V: View + 'static,
-        F: Fn() -> V + Clone + 'static,
-        A: FnOnce(&mut PerfApp<F, V>),
+        F: Fn() -> V + 'static,
+        A: FnOnce(&mut PerfApp),
     {
         let config = self.perf_config;
         let mut app = PerfApp::new(self, view_fn, config);

@@ -1,0 +1,5 @@
+error: `#[waterui::bench(...)]` does not support async functions; drive frames through `PerfRun` instead
+ --> tests/ui/waterui_bench/fail_async.rs:6:1
+  |
+6 | async fn async_bench(perf: &mut waterui_testing::PerfApp) {
+  | ^^^^^

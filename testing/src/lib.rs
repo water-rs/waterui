@@ -84,6 +84,7 @@
 
 mod app;
 mod artifacts;
+pub mod bench;
 pub(crate) mod driver;
 mod executor;
 mod perf;
