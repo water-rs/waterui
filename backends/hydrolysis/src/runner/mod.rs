@@ -168,7 +168,7 @@ pub fn run(app: App) {
     // Keep a handle on the executor: the render loop below has to drive it, or
     // any async work a view starts (a `GpuView`'s `setup`, above all) never
     // completes and the frame is rendered against uninitialized state.
-    let local_executor = headless::HeadlessMainThreadExecutor::default();
+    let local_executor = headless::HeadlessMainThreadExecutor::thread_shared();
     let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
         local_executor.clone(),
         inspector_probe,
