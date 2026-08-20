@@ -10,35 +10,95 @@ use waterui_webview::{CustomWebViewController, ScriptInjectionTime, WatcherGuard
 
 use crate::{WpePage, WpeRuntime, WpeRuntimePaths};
 
+/// Where a controller's runtime comes from.
+///
+/// A backend installs its controller into the environment while building the
+/// application, long before it knows whether the tree contains a `WebView` at
+/// all. Initializing the staged runtime there would make every application on
+/// the platform — and every test binary whose features happen to enable this
+/// engine — require a `water`-staged WPE install just to start. So the packaged
+/// runtime is named now and loaded on first use.
+#[derive(Debug)]
+enum RuntimeSource {
+    /// A runtime the caller already initialized.
+    Ready(WpeRuntime),
+    /// The runtime staged next to the executable, loaded when first needed.
+    Packaged {
+        paths: WpeRuntimePaths,
+        runtime: RefCell<Option<WpeRuntime>>,
+    },
+}
+
 /// Environment controller for standard `WebViews` backed by bundled WPE `WebKit`.
 #[derive(Debug, Clone)]
 pub struct WpeController {
-    runtime: WpeRuntime,
+    // Shared so every clone of the controller resolves the same runtime once.
+    source: Rc<RuntimeSource>,
 }
 
 impl WpeController {
     /// Creates a controller from an initialized runtime.
     #[must_use]
-    pub const fn new(runtime: WpeRuntime) -> Self {
-        Self { runtime }
+    pub fn new(runtime: WpeRuntime) -> Self {
+        Self {
+            source: Rc::new(RuntimeSource::Ready(runtime)),
+        }
     }
 
-    /// Loads the runtime staged by `water run` or `water package`.
+    /// Names the runtime staged by `water run` or `water package`.
+    ///
+    /// The staged install is not touched until the first web view is opened;
+    /// see [`Self::runtime`] for what happens when it is missing.
     #[must_use]
     pub fn packaged() -> Self {
-        let paths = WpeRuntimePaths::packaged();
-        Self::new(WpeRuntime::initialize(&paths))
+        Self {
+            source: Rc::new(RuntimeSource::Packaged {
+                paths: WpeRuntimePaths::packaged(),
+                runtime: RefCell::new(None),
+            }),
+        }
+    }
+
+    /// The initialized runtime, loading the staged one on first call.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the staged runtime is missing, invalid, or ABI-incompatible.
+    /// That fast-fail is unchanged and just as loud as before — it now fires
+    /// when an application actually opens a web view rather than when the
+    /// backend installs the controller, so the requirement lands on the code
+    /// that needs it instead of on every application built with this engine.
+    fn runtime(&self) -> WpeRuntime {
+        match self.source.as_ref() {
+            RuntimeSource::Ready(runtime) => runtime.clone(),
+            RuntimeSource::Packaged { paths, runtime } => runtime
+                .borrow_mut()
+                .get_or_insert_with(|| WpeRuntime::initialize(paths))
+                .clone(),
+        }
     }
 
     /// Dispatches all currently-ready WPE tasks.
+    ///
+    /// A controller whose runtime has not been loaded has no pages and so no
+    /// work pending; pumping does not force the staged install to load.
     pub fn pump(&self) {
-        while self.runtime.iteration() {}
+        let runtime = match self.source.as_ref() {
+            RuntimeSource::Ready(runtime) => runtime.clone(),
+            RuntimeSource::Packaged { runtime, .. } => {
+                let Some(runtime) = runtime.borrow().clone() else {
+                    return;
+                };
+                runtime
+            }
+        };
+        while runtime.iteration() {}
     }
 }
 
 impl CustomWebViewController for WpeController {
     fn open(&self) -> impl WebViewHandle {
-        WpeWebViewHandle::new(WpePage::new(self.runtime.clone()))
+        WpeWebViewHandle::new(WpePage::new(self.runtime()))
     }
 }
 

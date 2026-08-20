@@ -14,7 +14,7 @@ mod linux {
     use waterui_core::Environment;
     use waterui_graphics::gpu_surface::{GpuSurface, OffscreenRenderConfig, OffscreenSize};
     use waterui_graphics::shared_context::GpuRuntime;
-    use waterui_webview::WebViewEvent;
+    use waterui_webview::{BackendEvent, WebViewEvent};
 
     const WIDTH: u32 = 640;
     const HEIGHT: u32 = 360;
@@ -61,12 +61,15 @@ mod linux {
         let page = WpePage::new(runtime);
         let loaded = Rc::new(Cell::new(false));
         let load_error = Rc::new(RefCell::new(None::<String>));
-        page.watch({
+        // The guard has to outlive the pump loop below: dropping it
+        // unsubscribes, and the smoke run would then wait for a `Loaded` it can
+        // no longer observe until it times out.
+        let _load_watcher = page.watch({
             let loaded = Rc::clone(&loaded);
             let load_error = Rc::clone(&load_error);
             move |event| match event {
-                WebViewEvent::Loaded => loaded.set(true),
-                WebViewEvent::Error(error) => {
+                BackendEvent::Event(WebViewEvent::Loaded) => loaded.set(true),
+                BackendEvent::Event(WebViewEvent::Error(error)) => {
                     load_error.replace(Some(format!("{error:?}")));
                 }
                 _ => {}
