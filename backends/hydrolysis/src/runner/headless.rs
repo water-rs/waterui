@@ -115,8 +115,22 @@ pub(crate) struct HeadlessMainThreadExecutor {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl Default for HeadlessMainThreadExecutor {
-    fn default() -> Self {
+thread_local! {
+    /// One executor per thread, shared by every headless runtime on it.
+    ///
+    /// `try_init_local_executor` installs a single executor per thread and the
+    /// first install wins, so per-runtime executors would strand every task a
+    /// second runtime spawns on the same thread (perf repetitions,
+    /// multi-measure benches, any test mounting twice) in the first runtime's
+    /// queue — never drained, and dropped only during thread-local teardown,
+    /// where dropping a future whose destructor touches other thread-locals
+    /// aborts the process.
+    static THREAD_EXECUTOR: HeadlessMainThreadExecutor = HeadlessMainThreadExecutor::new();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl HeadlessMainThreadExecutor {
+    fn new() -> Self {
         let (runnable_tx, runnable_rx) = mpsc::channel();
         Self {
             runnable_tx,
@@ -124,10 +138,12 @@ impl Default for HeadlessMainThreadExecutor {
             pending: Arc::new(AtomicUsize::new(0)),
         }
     }
-}
 
-#[cfg(not(target_arch = "wasm32"))]
-impl HeadlessMainThreadExecutor {
+    /// The executor shared by every headless runtime on this thread.
+    pub(crate) fn thread_shared() -> Self {
+        THREAD_EXECUTOR.with(Clone::clone)
+    }
+
     /// Runs every runnable currently queued, returning whether any ran.
     ///
     /// The offscreen runner must call this while rendering: a `GpuView`'s
@@ -200,6 +216,21 @@ pub struct HeadlessRuntime {
     popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow>>,
     create_platform: fn(u32, u32, wgpu::TextureFormat) -> HeadlessPlatformWindow,
     local_executor: HeadlessMainThreadExecutor,
+    /// Declared last so it drops after the runtime state above: consumes any
+    /// still-queued spawned work while this thread's locals are intact, so no
+    /// runnable is ever dropped during thread-local teardown.
+    _executor_teardown: DrainExecutorOnDrop,
+}
+
+/// Drains the thread-shared executor when the owning runtime drops.
+#[cfg(not(target_arch = "wasm32"))]
+struct DrainExecutorOnDrop(HeadlessMainThreadExecutor);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for DrainExecutorOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.drain();
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -274,7 +305,7 @@ impl HeadlessRuntime {
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .with_writer(std::io::stderr)
             .try_init();
-        let local_executor = HeadlessMainThreadExecutor::default();
+        let local_executor = HeadlessMainThreadExecutor::thread_shared();
         let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
             local_executor.clone(),
             inspector_probe,
@@ -318,6 +349,7 @@ impl HeadlessRuntime {
             pending_window_queue,
             popup_windows: Vec::new(),
             create_platform,
+            _executor_teardown: DrainExecutorOnDrop(local_executor.clone()),
             local_executor,
         }
     }
