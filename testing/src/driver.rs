@@ -42,6 +42,13 @@ pub trait A11yDriver {
     /// Whether the mounted runtime is quiescent: no queued input, no spawned
     /// work awaiting a drain, and no renderer-scheduled semantic work.
     fn is_settled(&self) -> bool;
+    /// Whether a state change has been requested but not yet flushed, so the
+    /// tree the last pump produced no longer reflects the app's state.
+    ///
+    /// Narrower than [`Self::is_settled`]: work that continues over future
+    /// frames of its own accord (animations, gliding scrolls) does not count,
+    /// so waiting on this terminates even in an app that never comes to rest.
+    fn has_pending_semantic_update(&self) -> bool;
     /// The current virtual frame instant, if any pump has run yet. Perf runs
     /// seed their own frame clock from this so interleaved clocks stay
     /// monotone.
@@ -208,6 +215,12 @@ impl A11yDriver for HydrolysisA11yDriver {
         self.runtime
             .as_ref()
             .is_none_or(HeadlessRuntime::is_settled)
+    }
+
+    fn has_pending_semantic_update(&self) -> bool {
+        self.runtime
+            .as_ref()
+            .is_some_and(HeadlessRuntime::has_pending_semantic_update)
     }
 
     fn clock(&self) -> Option<Instant> {

@@ -16,6 +16,7 @@ use waterui::component::{text, vstack};
 use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::color::Srgb;
 use waterui::graphics::{Scene2D, SceneContent, SceneView};
+use waterui::text::Text;
 use waterui::theme;
 use waterui_canvas::Canvas;
 use waterui_core::handler::AnyViewBuilder;
@@ -58,6 +59,10 @@ impl A11yDriver for NoopDriver {
 
     fn is_settled(&self) -> bool {
         true
+    }
+
+    fn has_pending_semantic_update(&self) -> bool {
+        false
     }
 
     fn perform_action(&mut self, _request: AccessibilityActionRequest, _env: &Environment) -> bool {
@@ -1246,5 +1251,78 @@ fn headless_capture_waits_for_async_gpu_setup() {
         &snapshot.rgba8[center..center + 3],
         &[255, 0, 0],
         "the GpuSurface content must be present in the captured frame"
+    );
+}
+
+/// A query answers about the app's state now, not as of the last interaction.
+///
+/// Every input path settles after dispatching, so a tap's consequences are in
+/// the tree by the time the call returns. State a test changes directly — a
+/// `Binding` it owns, set the way app code would — goes through no such path.
+/// Without the sync on read, the next query answered from the tree as it stood
+/// before the change: it reported the old label, and an assertion that should
+/// have failed passed.
+#[test]
+fn a_query_sees_state_changed_since_the_last_pump() {
+    let label = waterui::reactive::binding(waterui::Str::from("before"));
+    let probe = label.clone();
+    let mut app = crate::ui().mount(move || vstack((Text::computed(label.clone()),)));
+
+    app.query()
+        .role(crate::Role::LABEL)
+        .label("before")
+        .assert_exists();
+
+    probe.set(waterui::Str::from("after"));
+
+    app.query()
+        .role(crate::Role::LABEL)
+        .label("after")
+        .assert_exists();
+    app.query()
+        .role(crate::Role::LABEL)
+        .label("before")
+        .assert_not_exists();
+}
+
+/// An app that never comes to rest still answers queries promptly.
+///
+/// An indeterminate indicator keeps the runtime unsettled forever, so a read
+/// that waited for quiescence would spend its whole pump budget on every
+/// query and still find the app busy. Reading waits on *unapplied* work
+/// instead, which is a state the app does reach between changes.
+#[test]
+fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
+    let label = waterui::reactive::binding(waterui::Str::from("before"));
+    let probe = label.clone();
+    let mut app = crate::ui().theme(install_m3).mount(move || {
+        vstack((
+            waterui::component::progress::loading().label("Loading"),
+            Text::computed(label.clone()),
+        ))
+    });
+
+    assert!(
+        !app.driver.is_settled(),
+        "an indeterminate indicator keeps the runtime busy for as long as it is on screen"
+    );
+    assert!(
+        !app.driver.has_pending_semantic_update(),
+        "busy is not the same as stale: with nothing unapplied the tree is current"
+    );
+
+    probe.set(waterui::Str::from("after"));
+    assert!(
+        app.driver.has_pending_semantic_update(),
+        "a signal change leaves an update the last flush did not apply"
+    );
+
+    app.query()
+        .role(crate::Role::LABEL)
+        .label("after")
+        .assert_exists();
+    assert!(
+        !app.driver.has_pending_semantic_update(),
+        "reading the tree must have applied the update, not merely waited for it"
     );
 }
