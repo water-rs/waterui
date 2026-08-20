@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787256173350,
+  "lastUpdate": 1787256175453,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -133,6 +133,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 12572,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "committer": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "distinct": true,
+          "id": "fee088a9397dd9d2dbe05abd680f6ddfd10e0c0f",
+          "message": "ci: record benchmark history for the platforms that produced results\n\nA bench leg that fails uploads no JSON, so the history job errored on the\nmissing file and discarded the runs that had succeeded. Windows is\ndeliberately non-gating until #152 is resolved, so that is the expected\nsteady state, not an exception.\n\nEach platform's history step now runs only when its result file exists.\nmacOS and Linux history is recorded either way; a broken platform costs\nits own series and nobody else's.",
+          "timestamp": "2026-08-20T15:22:00-04:00",
+          "tree_id": "0c4d547b95cc4712e8aaf2cef8ca3c3ad9347790",
+          "url": "https://github.com/water-rs/waterui/commit/fee088a9397dd9d2dbe05abd680f6ddfd10e0c0f"
+        },
+        "date": 1787256174897,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 766946,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 523362,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 22823,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 15876,
             "unit": "us"
           }
         ]
