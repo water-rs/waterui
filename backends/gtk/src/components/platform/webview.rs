@@ -1,3 +1,5 @@
+//! Renders `WebView` through whichever browser engine this build selected.
+
 use gtk4::Widget;
 #[cfg(feature = "webview-system")]
 use gtk4::prelude::*;

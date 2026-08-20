@@ -2,6 +2,7 @@
 
 use gtk4::{Application, ApplicationWindow};
 use nami::Signal;
+use num_traits::ToPrimitive as _;
 use waterui::window::WindowBackground;
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
@@ -50,20 +51,34 @@ pub fn install_inspect_gesture(window: &ApplicationWindow, env: &Environment) {
         let window = window.clone();
         let env = env.clone();
         move |_, _, x, y| {
-            let Some(inspector) = env.get::<waterui::inspector::InspectorRuntime>() else {
+            if env.get::<waterui::inspector::InspectorRuntime>().is_none() {
                 return;
-            };
+            }
             let popover = gtk4::Popover::new();
             popover.set_has_arrow(true);
             popover.set_parent(&window);
-            popover.set_pointing_to(Some(&gdk4::Rectangle::new(x as i32, y as i32, 1, 1)));
+            popover.set_pointing_to(Some(&gdk4::Rectangle::new(
+                pointer_coordinate(x),
+                pointer_coordinate(y),
+                1,
+                1,
+            )));
 
             let item = gtk4::Button::with_label("Inspect element");
             item.set_has_frame(false);
             item.connect_clicked({
                 let popover = popover.clone();
+                // `Environment::get` hands back a reference borrowed from the
+                // environment, which cannot escape into this `'static` handler.
+                // The environment itself is cheap to clone, so the handler
+                // carries one and resolves the runtime when the item is
+                // actually clicked.
+                let env = env.clone();
                 move |_| {
                     popover.popdown();
+                    let Some(inspector) = env.get::<waterui::inspector::InspectorRuntime>() else {
+                        return;
+                    };
                     inspector.open();
                 }
             });
@@ -72,6 +87,19 @@ pub fn install_inspect_gesture(window: &ApplicationWindow, env: &Environment) {
         }
     });
     window.add_controller(click);
+}
+
+/// Rounds a GTK gesture coordinate to the integer pixel `GdkRectangle` takes.
+///
+/// GTK reports gesture positions as finite widget-local logical pixels, so the
+/// rounded value is always well inside `i32`; anything else means GTK handed us
+/// a coordinate for a window that cannot exist, which is worth crashing on
+/// rather than silently pointing the popover somewhere else.
+fn pointer_coordinate(value: f64) -> i32 {
+    value
+        .round()
+        .to_i32()
+        .unwrap_or_else(|| panic!("GTK pointer coordinate {value} does not fit i32"))
 }
 
 /// Applies `WaterUI` window background styling to a GTK window.

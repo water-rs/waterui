@@ -6,7 +6,6 @@ apple/build
 *.xcworkspace/xcuserdata
 web/pkg
 .build
-Cargo.lock
 *.log
 /.cargo/*
 !/.cargo/config.toml

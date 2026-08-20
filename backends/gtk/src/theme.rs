@@ -1,4 +1,4 @@
-//! GTK system palette projection into WaterUI theme slots.
+//! GTK system palette projection into `WaterUI` theme slots.
 
 use std::rc::Rc;
 
@@ -31,7 +31,7 @@ struct Palette {
 }
 
 /// Installs GTK's named system colors and keeps them synchronized with theme changes.
-pub(crate) fn install(env: &mut Environment, widget: &Widget) {
+pub fn install(env: &mut Environment, widget: &Widget) {
     let settings = Settings::default().expect("GTK theme installation requires default settings");
     let palette = Rc::new(Palette::read(widget));
     install_missing::<Background>(env, &palette.background);
@@ -60,7 +60,7 @@ pub(crate) fn install(env: &mut Environment, widget: &Widget) {
     let palette_for_appearance = Rc::clone(&palette);
     let widget_for_appearance = widget.clone();
     settings.connect_notify_local(Some("gtk-application-prefer-dark-theme"), move |_, _| {
-        palette_for_appearance.update(&widget_for_appearance)
+        palette_for_appearance.update(&widget_for_appearance);
     });
     let widget = widget.clone();
     settings.connect_notify_local(Some("gtk-theme-name"), move |_, _| palette.update(&widget));
@@ -109,6 +109,21 @@ impl Palette {
     }
 }
 
+/// Reads one of the GTK theme's named colors.
+///
+/// GTK 4.10 deprecated `GtkStyleContext` as a whole without providing any
+/// replacement for looking a *named* theme color up: `gtk_widget_get_color`
+/// exposes only the widget's current foreground, which cannot answer
+/// `theme_bg_color`, `theme_base_color`, `borders`, or
+/// `theme_selected_fg_color`. Framework principle 6 requires the backend to
+/// resolve `WaterUI`'s theme tokens from the platform theme rather than
+/// hard-coding colors, so this stays until GTK ships a successor API; the
+/// expectation is scoped to this one function so nothing else silently keeps
+/// using the deprecated style context.
+#[expect(
+    deprecated,
+    reason = "GTK 4.10 deprecated GtkStyleContext with no replacement for named-color lookup"
+)]
 fn lookup(widget: &Widget, name: &str) -> ResolvedColor {
     let rgba = widget
         .style_context()
