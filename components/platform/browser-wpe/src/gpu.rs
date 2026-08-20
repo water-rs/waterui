@@ -116,6 +116,15 @@ impl DmaBufFrameCopier {
             }
             GpuBackend::Gles(gles) => {
                 gles.copy_dma_buf(&frame, &destination);
+                // SAFETY: every glow entry point is unsafe because it requires
+                // the GL context its function pointers were loaded from to be
+                // current on this thread. `GlesInterop` is neither `Send` nor
+                // `Sync` (it holds the `libloading` handles and raw EGL
+                // pointers) and is reached here only through `&self` on the UI
+                // thread, which is where wgpu's GLES device keeps its context
+                // current. `glFinish` takes no arguments, so currency is the
+                // only precondition; it is what makes the copy above complete
+                // before `presented()` lets the browser reuse the buffer.
                 unsafe {
                     gles.gl.finish();
                 }
@@ -642,39 +651,83 @@ struct GlesInterop {
 
 impl GlesInterop {
     fn new() -> Self {
+        // SAFETY: `Library::new` is unsafe because `dlopen` runs the library's
+        // initializers, which can execute arbitrary code. These are the two
+        // system EGL/GLES runtime libraries named by their versioned SONAMEs,
+        // not a caller-supplied path, and the process is already running on
+        // them: wgpu's GLES backend opened the same libraries to create the
+        // device this interop serves, so `dlopen` returns the existing handle
+        // and no new initializer runs. Both handles are stored in `Self`, so
+        // every symbol resolved below stays valid for as long as it is callable.
         let egl_library = unsafe { libloading::Library::new("libEGL.so.1") }
             .unwrap_or_else(|error| panic!("failed to load libEGL.so.1 for WPE: {error}"));
+        // SAFETY: as above, for the GLES runtime.
         let gles_library = unsafe { libloading::Library::new("libGLESv2.so.2") }
             .unwrap_or_else(|error| panic!("failed to load libGLESv2.so.2 for WPE: {error}"));
-        let get_proc = load_library_symbol::<EglGetProcAddress>(
-            &[&egl_library],
-            b"eglGetProcAddress\0",
-            "eglGetProcAddress",
-        );
-        let egl_get_current_display = load_egl_symbol::<EglGetCurrentDisplay>(
-            &egl_library,
-            &gles_library,
-            get_proc,
-            "eglGetCurrentDisplay",
-        );
-        let egl_create_image = load_egl_symbol::<EglCreateImage>(
-            &egl_library,
-            &gles_library,
-            get_proc,
-            "eglCreateImageKHR",
-        );
-        let egl_destroy_image = load_egl_symbol::<EglDestroyImage>(
-            &egl_library,
-            &gles_library,
-            get_proc,
-            "eglDestroyImageKHR",
-        );
-        let image_target_texture = load_egl_symbol::<GlEglImageTargetTexture2d>(
-            &egl_library,
-            &gles_library,
-            get_proc,
-            "glEGLImageTargetTexture2DOES",
-        );
+        // SAFETY: `EglGetProcAddress` is the signature of `eglGetProcAddress`,
+        // which is the name being resolved, satisfying `load_library_symbol`'s
+        // contract. A platform that does not export it panics inside the loader
+        // rather than returning a null pointer to call through.
+        let get_proc = unsafe {
+            load_library_symbol::<EglGetProcAddress>(
+                &[&egl_library],
+                b"eglGetProcAddress\0",
+                "eglGetProcAddress",
+            )
+        };
+        // SAFETY: `EglGetCurrentDisplay` is the signature of
+        // `eglGetCurrentDisplay`, the name resolved here, which is what
+        // `load_egl_symbol` requires; an absent name panics in the loader.
+        let egl_get_current_display = unsafe {
+            load_egl_symbol::<EglGetCurrentDisplay>(
+                &egl_library,
+                &gles_library,
+                get_proc,
+                "eglGetCurrentDisplay",
+            )
+        };
+        // SAFETY: `EglCreateImage` is the signature of `eglCreateImageKHR`, the
+        // name resolved here; an absent name panics in the loader.
+        let egl_create_image = unsafe {
+            load_egl_symbol::<EglCreateImage>(
+                &egl_library,
+                &gles_library,
+                get_proc,
+                "eglCreateImageKHR",
+            )
+        };
+        // SAFETY: `EglDestroyImage` is the signature of `eglDestroyImageKHR`,
+        // the name resolved here; an absent name panics in the loader.
+        let egl_destroy_image = unsafe {
+            load_egl_symbol::<EglDestroyImage>(
+                &egl_library,
+                &gles_library,
+                get_proc,
+                "eglDestroyImageKHR",
+            )
+        };
+        // SAFETY: `GlEglImageTargetTexture2d` is the signature of
+        // `glEGLImageTargetTexture2DOES`, the name resolved here. This one is an
+        // extension entry point, so it usually arrives through
+        // `eglGetProcAddress` rather than `dlsym`; either way the loader panics
+        // if the driver lacks it.
+        let image_target_texture = unsafe {
+            load_egl_symbol::<GlEglImageTargetTexture2d>(
+                &egl_library,
+                &gles_library,
+                get_proc,
+                "glEGLImageTargetTexture2DOES",
+            )
+        };
+        // SAFETY: `from_loader_function` requires the loader to return either a
+        // null pointer or a pointer to a function with the signature glow
+        // expects for that name. `load_egl_address` resolves names only through
+        // `dlsym` on the two GL libraries above and `eglGetProcAddress`, so any
+        // non-null result is the platform's own implementation of exactly that
+        // GL entry point; unknown names come back null, which glow records as
+        // unavailable rather than calling. glow copies the pointers out during
+        // this call, and the libraries backing them are kept alive by the
+        // handles moved into `Self` below.
         let gl = unsafe {
             glow::Context::from_loader_function(|name| {
                 load_egl_address(&egl_library, &gles_library, get_proc, name)
@@ -692,12 +745,29 @@ impl GlesInterop {
     }
 
     fn copy_dma_buf(&self, frame: &DmaBufFrame, destination: &wgpu::Texture) {
+        // SAFETY: `egl_get_current_display` holds the address `dlsym`/
+        // `eglGetProcAddress` returned for `eglGetCurrentDisplay`, whose EGL
+        // signature is exactly the `EglGetCurrentDisplay` alias. It takes no
+        // arguments and only reads the calling thread's EGL binding, so the
+        // sole precondition is being on the thread wgpu made current — the UI
+        // thread, which `&self` on this non-`Send` type guarantees. A thread
+        // with no current context yields `EGL_NO_DISPLAY`, caught just below.
         let display = unsafe { (self.egl_get_current_display)() };
         assert!(
             !display.is_null(),
             "WPE EGL import requires a current EGL display"
         );
         let attributes = dma_buf_egl_attributes(frame);
+        // SAFETY: `egl_create_image` is the resolved `eglCreateImageKHR`, whose
+        // signature matches `EglCreateImage`. `display` was just asserted
+        // non-null and comes from this thread's current binding; the context
+        // and buffer arguments are `EGL_NO_CONTEXT`/`NULL`, which is what the
+        // `EGL_LINUX_DMA_BUF_EXT` target requires. `attributes` is built by
+        // `dma_buf_egl_attributes`, which terminates the list with `EGL_NONE`
+        // and passes the plane's file descriptor while `frame` still owns it,
+        // so the descriptor is open for the whole call. EGL does not take
+        // ownership of that descriptor, so `frame` may still close it later.
+        // `attributes` outlives the call, as EGL only reads it here.
         let image = unsafe {
             (self.egl_create_image)(
                 display,
@@ -709,16 +779,30 @@ impl GlesInterop {
         };
         assert!(!image.is_null(), "failed to import WPE DMA-BUF as EGLImage");
         self.blit_egl_image(frame, destination, image);
-        assert_eq!(
-            unsafe { (self.egl_destroy_image)(display, image) },
-            1,
-            "failed to destroy imported WPE EGLImage"
-        );
+        // SAFETY: the resolved `eglDestroyImageKHR`, matching `EglDestroyImage`.
+        // `image` was created non-null from `display` just above and has not
+        // been destroyed since; `blit_egl_image` only binds it to a texture and
+        // does not consume it. Destroying it here is the single matching
+        // release for that single creation, and the GL work referencing it has
+        // already been recorded against the texture.
+        let destroyed = unsafe { (self.egl_destroy_image)(display, image) };
+        assert_eq!(destroyed, 1, "failed to destroy imported WPE EGLImage");
     }
 
     fn blit_egl_image(&self, frame: &DmaBufFrame, destination: &wgpu::Texture, image: EglImage) {
         let width = i32::try_from(frame.width).expect("WPE frame width exceeds EGLint");
         let height = i32::try_from(frame.height).expect("WPE frame height exceeds EGLint");
+        // SAFETY: `Texture::as_hal` is unsafe because it exposes the backend
+        // object behind wgpu's tracking, so the caller must both name the
+        // backend the texture really belongs to and not invalidate wgpu's view
+        // of it. The backend is checked: this method is only reached from
+        // `copy_dma_buf`, which `create_gpu_backend` selects solely for
+        // `wgpu::Backend::Gl`, and a mismatch surfaces as `None` and panics
+        // here rather than being transmuted. The guard's only use is to read
+        // `inner` for the raw texture name; the texture is not destroyed,
+        // reallocated, or relabelled, and the blit below writes through the
+        // ordinary GL pipeline, which is a state wgpu re-establishes for its
+        // own next command.
         let destination = unsafe {
             destination
                 .as_hal::<wgpu::hal::api::Gles>()
@@ -737,6 +821,21 @@ impl GlesInterop {
             "WPE destination must be a two-dimensional GLES texture"
         );
 
+        // SAFETY: every call in this block is a glow GL entry point, unsafe for
+        // the one shared reason that GL requires its context to be current on
+        // the calling thread; `&self` on this non-`Send` type reaches here only
+        // on the UI thread, where wgpu keeps the GLES context current. Beyond
+        // currency the arguments are checked rather than assumed:
+        // `source_texture`, `read` and `draw` are names GL just handed back,
+        // each used only between its creation and its deletion at the end of
+        // the block; `destination_texture`/`destination_target` come from the
+        // live hal guard above and `destination_target` was asserted to be
+        // `TEXTURE_2D`; `image` is the non-null `EGLImage` its caller keeps
+        // alive across this call; and both framebuffers are asserted complete
+        // before `blit_framebuffer` reads or writes through them, with `width`
+        // and `height` converted from the frame's own dimensions. The block
+        // unbinds both framebuffers and the texture before deleting them, so it
+        // leaves no name bound for wgpu's next command to trip over.
         unsafe {
             let source_texture = self
                 .gl
@@ -854,8 +953,28 @@ fn dma_buf_egl_attributes(frame: &DmaBufFrame) -> Vec<c_int> {
     attributes
 }
 
-fn load_library_symbol<T: Copy>(libraries: &[&libloading::Library], name: &[u8], label: &str) -> T {
+/// Resolves `name` from the first library that exports it.
+///
+/// # Safety
+///
+/// `T` must be the type of the symbol named by `name` in whichever of
+/// `libraries` exports it. Callers in this module pass the `unsafe extern "C"`
+/// aliases declared above, each matching the EGL/GL signature for the name it
+/// is paired with.
+unsafe fn load_library_symbol<T: Copy>(
+    libraries: &[&libloading::Library],
+    name: &[u8],
+    label: &str,
+) -> T {
     for library in libraries {
+        // SAFETY: `Library::get` is unsafe because it reinterprets the address
+        // `dlsym` returns as `T` without being able to check it. The caller
+        // guarantees, per this function's own contract, that `T` is the type of
+        // `name` in these libraries. `name` is a NUL-terminated byte string, as
+        // `dlsym` requires. The returned `Symbol` borrows the library, and the
+        // `*symbol` copy is a bare function pointer whose validity is tied to
+        // the library staying loaded — which `GlesInterop` ensures by owning
+        // both handles for as long as it can call them.
         if let Ok(symbol) = unsafe { library.get::<T>(name) } {
             return *symbol;
         }
@@ -863,7 +982,15 @@ fn load_library_symbol<T: Copy>(libraries: &[&libloading::Library], name: &[u8],
     panic!("required WPE GPU symbol `{label}` is unavailable")
 }
 
-fn load_egl_symbol<T: Copy>(
+/// Resolves an EGL/GL entry point, falling back to `eglGetProcAddress` for the
+/// extension entry points the libraries do not export directly.
+///
+/// # Safety
+///
+/// `T` must be the type of the symbol named `name`. Every caller in this module
+/// pairs one of the `unsafe extern "C"` aliases declared above with the EGL name
+/// it was written for.
+unsafe fn load_egl_symbol<T: Copy>(
     egl: &libloading::Library,
     gles: &libloading::Library,
     get_proc: EglGetProcAddress,
@@ -872,10 +999,18 @@ fn load_egl_symbol<T: Copy>(
     let name_with_nul =
         CString::new(name).unwrap_or_else(|_| panic!("EGL symbol contains a NUL byte"));
     for library in [egl, gles] {
+        // SAFETY: `T` is the symbol's type by this function's contract, and
+        // `as_bytes_with_nul` supplies the NUL-terminated name `dlsym` wants.
+        // The copied-out function pointer stays valid because `GlesInterop`
+        // keeps both libraries loaded for as long as it holds the pointer.
         if let Ok(symbol) = unsafe { library.get::<T>(name_with_nul.as_bytes_with_nul()) } {
             return *symbol;
         }
     }
+    // SAFETY: `get_proc` is the address resolved for `eglGetProcAddress`, whose
+    // signature is `EglGetProcAddress`. It takes a NUL-terminated name, which
+    // `as_ptr` provides from a `CString` that outlives the call, and returns
+    // either null or the entry point for that name.
     let address = unsafe { get_proc(name_with_nul.as_ptr()) };
     assert!(
         !address.is_null(),
@@ -886,9 +1021,20 @@ fn load_egl_symbol<T: Copy>(
         size_of::<*const c_void>(),
         "WPE GPU symbol pointer has an unexpected size"
     );
+    // SAFETY: `transmute_copy` reinterprets the resolved address as `T`. The
+    // sizes are asserted equal immediately above, so no memory outside
+    // `address` is read; `T` is one of the `unsafe extern "C" fn` aliases, whose
+    // validity invariant is being a non-null pointer to a function of that
+    // signature — non-null is asserted, and the signature holds by this
+    // function's contract. The address belongs to a library `GlesInterop` keeps
+    // loaded, so the resulting pointer stays callable.
     unsafe { std::mem::transmute_copy(&address) }
 }
 
+/// Resolves the address of GL entry point `name`, or null when it is absent.
+///
+/// This is glow's loader, so it deliberately returns a bare address rather than
+/// a typed pointer: glow is what knows the signature for each name.
 fn load_egl_address(
     egl: &libloading::Library,
     gles: &libloading::Library,
@@ -897,6 +1043,11 @@ fn load_egl_address(
 ) -> *const c_void {
     let name_with_nul = CString::new(name).expect("GL symbol contains a NUL byte");
     for library in [egl, gles] {
+        // SAFETY: `Library::get` needs the requested type to describe the
+        // symbol. The type asked for here is `*const c_void`, the address
+        // itself, which is what `dlsym` returns for any symbol whatsoever, so
+        // no signature is being claimed and no call is made through it. The
+        // name is NUL-terminated as `dlsym` requires.
         let Ok(symbol) =
             (unsafe { library.get::<*const c_void>(name_with_nul.as_bytes_with_nul()) })
         else {
@@ -906,6 +1057,12 @@ fn load_egl_address(
             return *symbol;
         }
     }
+    // SAFETY: `get_proc` is the resolved `eglGetProcAddress`, matching
+    // `EglGetProcAddress`. Its one argument must be a NUL-terminated name,
+    // which `as_ptr` gives from a `CString` alive for the whole call; it
+    // returns null for names the driver does not implement. Extension entry
+    // points such as `glEGLImageTargetTexture2DOES` are reachable only this
+    // way, which is why the `dlsym` attempts above are allowed to miss.
     unsafe { get_proc(name_with_nul.as_ptr()) }
 }
 
@@ -916,6 +1073,18 @@ struct ImportedVulkanImage {
     queue_family_index: u32,
 }
 
+// SAFETY: `ash::Device` is not `Send` only because it wraps the dispatchable
+// `VkDevice` handle as a raw pointer; the image and memory fields are
+// non-dispatchable `u64` handles. Vulkan permits a `VkDevice` to be used from
+// any thread, and the two calls this type makes off-thread —
+// `vkDestroyImage` and `vkFreeMemory` in `Drop` — require external
+// synchronization only on the objects they destroy. This type owns its image
+// and memory outright: they are created in `import_vulkan_dma_buf`, never
+// handed out or cloned, and destroyed exactly once here, so no other thread can
+// name them. `Send` is what lets `render_browser_frame` move the import into
+// wgpu's `on_submitted_work_done` callback, which is where it must be dropped:
+// that is the point at which the GPU has finished the copy that reads the
+// image.
 unsafe impl Send for ImportedVulkanImage {}
 
 impl ImportedVulkanImage {
@@ -926,12 +1095,37 @@ impl ImportedVulkanImage {
         width: u32,
         height: u32,
     ) {
+        // SAFETY: `Texture::as_hal` requires naming the backend the texture
+        // actually has and leaving wgpu's own view of it intact. The backend is
+        // checked rather than assumed — `create_gpu_backend` selects
+        // `GpuBackend::Vulkan` only for `wgpu::Backend::Vulkan`, and a mismatch
+        // yields `None` and panics here. The guard is used only to read the
+        // handle, and it is still alive at that point because it is bound to a
+        // local.
         let destination = unsafe {
             destination
                 .as_hal::<wgpu::hal::api::Vulkan>()
                 .expect("WPE destination texture is not Vulkan")
         };
+        // SAFETY: `raw_handle` exposes the underlying `VkImage`, valid for as
+        // long as the wgpu texture it came from lives. The caller holds that
+        // texture by reference across this whole function, and the handle is
+        // only recorded into a command buffer that is submitted before the
+        // borrow ends.
         let destination = unsafe { destination.raw_handle() };
+        // SAFETY: recording raw Vulkan into a wgpu encoder. `as_hal_mut` needs
+        // the right backend, which is checked as above and panics on `None`,
+        // and requires that the commands recorded leave the encoder in a state
+        // wgpu can keep using. This block records only pipeline barriers and one
+        // `vkCmdCopyImage`; it starts and ends no render pass and allocates no
+        // resources, so the encoder is exactly where wgpu left it afterwards.
+        // The two barriers form a matched pair that acquires `self.image` from
+        // `QUEUE_FAMILY_EXTERNAL` into this device's queue family and releases
+        // it back, which is what the DMA-BUF's external ownership requires; the
+        // layouts they name match the ones `vkCmdCopyImage` is given. The
+        // destination is transitioned by wgpu itself, which knows it as a
+        // `COPY_DST` texture. Extents come from the frame the image was imported
+        // at, so the copy stays inside both images.
         unsafe {
             encoder.as_hal_mut::<wgpu::hal::api::Vulkan, _, _>(|encoder| {
                 let encoder = encoder.expect("WPE command encoder is not Vulkan");
@@ -1012,6 +1206,15 @@ impl ImportedVulkanImage {
 
 impl Drop for ImportedVulkanImage {
     fn drop(&mut self) {
+        // SAFETY: both handles were created in `import_vulkan_dma_buf`, are
+        // owned solely by this value, and are destroyed exactly once here. The
+        // image is destroyed before the memory it is bound to, as Vulkan
+        // requires. Neither may still be in use by the GPU: both paths that
+        // create an `ImportedVulkanImage` guarantee this before dropping it —
+        // `DmaBufFrameCopier::copy` waits on the submission with
+        // `PollType::Wait`, and `render_browser_frame` defers the drop into
+        // `on_submitted_work_done`. Freeing the memory also closes the DMA-BUF
+        // descriptor Vulkan took ownership of at import.
         unsafe {
             self.device.destroy_image(self.image, None);
             self.device.free_memory(self.memory, None);
@@ -1020,6 +1223,13 @@ impl Drop for ImportedVulkanImage {
 }
 
 fn import_vulkan_dma_buf(device: &wgpu::Device, frame: &mut DmaBufFrame) -> ImportedVulkanImage {
+    // SAFETY: `Device::as_hal` requires the named backend to be the device's
+    // real one and that the exposed device is not used to invalidate wgpu's
+    // state. The backend is checked: this function is reached only through
+    // `GpuBackend::Vulkan`, which `create_gpu_backend` selects for
+    // `wgpu::Backend::Vulkan` alone, and a mismatch panics here instead of being
+    // reinterpreted. The raw device is used only to create a new image and
+    // memory of this function's own, never to touch anything wgpu owns.
     let hal_device = unsafe {
         device
             .as_hal::<wgpu::hal::api::Vulkan>()
@@ -1034,7 +1244,20 @@ fn import_vulkan_dma_buf(device: &wgpu::Device, frame: &mut DmaBufFrame) -> Impo
         .expect("WPE packed DMA-BUF frame must contain one plane");
     let image = create_vulkan_import_image(raw, frame, &plane);
     let memory = import_vulkan_image_memory(&hal_device, image, plane);
+    // SAFETY: `image` and `memory` were both just created on `raw`, so they
+    // belong to this device and neither has been bound before — this is the one
+    // and only bind for each. `validate_vulkan_import` established that the
+    // device enables the external-memory and DRM-modifier extensions the pair
+    // was created with. The memory was allocated from a type in
+    // `vkGetImageMemoryRequirements(image).memoryTypeBits` (intersected with
+    // what the descriptor supports) and sized to that requirement's `size`,
+    // with a `VkMemoryDedicatedAllocateInfo` naming this exact image, so
+    // offset 0 satisfies the alignment requirement by construction.
     if let Err(error) = unsafe { raw.bind_image_memory(image, memory, 0) } {
+        // SAFETY: binding failed, so nothing owns these yet and neither is in
+        // use by the GPU. Both are still live handles from `raw`, destroyed
+        // exactly once here, memory after the image bound to it. Freeing the
+        // memory closes the imported DMA-BUF descriptor Vulkan took over.
         unsafe {
             raw.free_memory(memory, None);
             raw.destroy_image(image, None);
@@ -1111,6 +1334,16 @@ fn create_vulkan_import_image(
         .usage(vk::ImageUsageFlags::TRANSFER_SRC)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
+    // SAFETY: `create_info` is fully initialized above and its two `push_next`
+    // extension structs — `VkExternalMemoryImageCreateInfo` and
+    // `VkImageDrmFormatModifierExplicitCreateInfoEXT` — are local `mut`
+    // bindings that outlive this call, as the borrow checker enforces through
+    // `ImageCreateInfo`'s lifetime parameter. `plane_layout` likewise outlives
+    // the borrow `plane_layouts` takes of it. The extensions those structs
+    // require were asserted enabled by `validate_vulkan_import`, which also
+    // rejected `DRM_FORMAT_MOD_INVALID`, so `DRM_FORMAT_MODIFIER_EXT` tiling
+    // has the explicit modifier it demands and the single plane layout matches
+    // the single-plane packed format asserted at the EGL/DMA-BUF boundary.
     unsafe { raw.create_image(&create_info, None) }
         .unwrap_or_else(|error| panic!("failed to create Vulkan DMA-BUF import image: {error}"))
 }
@@ -1122,10 +1355,20 @@ fn import_vulkan_image_memory(
 ) -> vk::DeviceMemory {
     let raw = hal_device.raw_device();
     let handle_type = vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT;
+    // SAFETY: `image` was created on `raw` by the caller and has not been
+    // destroyed, which is all `vkGetImageMemoryRequirements` requires; it only
+    // reads the image and writes the returned struct.
     let requirements = unsafe { raw.get_image_memory_requirements(image) };
     let loader =
         ash::khr::external_memory_fd::Device::new(hal_device.shared_instance().raw_instance(), raw);
     let mut fd_properties = vk::MemoryFdPropertiesKHR::default();
+    // SAFETY: `VK_KHR_external_memory_fd` was asserted enabled by
+    // `validate_vulkan_import`, so the loader's entry point exists. The
+    // descriptor is borrowed from `plane`, which still owns it here, so it is
+    // open for the call; the query does not consume it. `fd_properties` is an
+    // initialized local the call writes through. On failure the image created
+    // by the caller is destroyed before panicking — it is not yet bound to any
+    // memory and nothing else refers to it.
     unsafe {
         loader
             .get_memory_fd_properties(handle_type, plane.fd.as_raw_fd(), &mut fd_properties)
@@ -1139,6 +1382,9 @@ fn import_vulkan_image_memory(
         type_bits != 0,
         "WPE DMA-BUF is incompatible with every Vulkan memory type"
     );
+    // SAFETY: the instance and physical device both come from the live hal
+    // device guard the caller holds, so they are valid and belong together.
+    // The query only reads them and returns a value.
     let memory_properties = unsafe {
         hal_device
             .shared_instance()
@@ -1156,9 +1402,24 @@ fn import_vulkan_image_memory(
         .push_next(&mut dedicated)
         .allocation_size(requirements.size)
         .memory_type_index(memory_type_index);
+    // SAFETY: `allocation` is fully initialized and its two `push_next` structs
+    // are local `mut` bindings outliving the call. `VK_KHR_external_memory_fd`
+    // and `VK_EXT_external_memory_dma_buf` were asserted enabled by
+    // `validate_vulkan_import`, so `DMA_BUF_EXT` is an accepted handle type.
+    // `memory_type_index` was chosen from `type_bits`, the intersection of the
+    // image's requirements with the types the descriptor supports, which was
+    // asserted non-empty. `imported_fd` is open and, per the Vulkan spec, is
+    // transferred to the implementation on success — which is why nothing
+    // closes it afterwards and why `plane.fd` was consumed with `into_raw_fd`
+    // rather than borrowed.
     match unsafe { raw.allocate_memory(&allocation, None) } {
         Ok(memory) => memory,
         Err(error) => {
+            // SAFETY: on failure the implementation did *not* take the
+            // descriptor, so this side still owns it and must close it exactly
+            // once; `imported_fd` has not been closed and no `OwnedFd` holds it
+            // any more, `into_raw_fd` having released it. The image is a live
+            // handle from `raw`, unbound and unused by the GPU, destroyed once.
             unsafe {
                 libc::close(imported_fd);
                 raw.destroy_image(image, None);
