@@ -40,15 +40,4 @@ pub(crate) fn run_semantic_automation(app: &mut waterui_testing::SemanticApp) {
 
     {{ semantic_automation_body }}
 }
-
-pub(crate) fn run_perf_automation<F, V>(perf: &mut waterui_testing::PerfApp<F, V>)
-where
-    F: Fn() -> V + Clone + 'static,
-    V: waterui::View + 'static,
-{
-    use waterui::prelude::*;
-    use waterui_testing::*;
-
-    {{ perf_automation_body }}
-}
 {% endif %}

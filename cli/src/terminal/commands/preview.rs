@@ -1,6 +1,6 @@
 //! `water preview` command implementation.
 //!
-//! Renders, tests, or profiles a `WaterUI` preview.
+//! Renders or semantically tests a `WaterUI` preview.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -15,18 +15,12 @@ use syn::{Attribute, Item};
 use crate::shell::Shell;
 use crate::toolchain_checks;
 use crate::{error, header, note, success};
-use waterui_cli::preview::perf_report::{
-    PreviewPerfBudget, PreviewPerfReport, bytes_label, enforce_perf_budget, micros_label,
-    parse_preview_perf_output, resource_summary, write_preview_perf_html, write_preview_perf_json,
-    write_preview_perf_output_json, write_preview_perf_stdout_json, write_preview_perf_trace,
-};
 use waterui_cli::preview::protocol::{AppError, DylibId, function_path_to_symbol};
 use waterui_cli::preview::{
-    HydrolysisPreviewEventKind, HydrolysisPreviewPerfRun, HydrolysisPreviewPointerButton,
-    HydrolysisPreviewRequest, HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent,
-    HydrolysisPreviewSource, HydrolysisPreviewTestMode, HydrolysisPreviewTheme, PreviewPlatform,
-    PreviewSession, launch_preview_session, render_preview_with_hydrolysis,
-    test_preview_with_hydrolysis,
+    HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewRequest,
+    HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource,
+    HydrolysisPreviewTheme, PreviewPlatform, PreviewSession, launch_preview_session,
+    render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
 
 /// Target platform for preview.
@@ -85,7 +79,6 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
                 height,
                 sccache_path: sccache_path.clone(),
             },
-            HydrolysisPreviewTestMode::Semantic,
             &automation_body,
         )
         .await?;
@@ -98,151 +91,6 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
             "Preview semantic test passed: {}",
             target.display_name()
         );
-    }
-
-    Ok(())
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "keeps one ordered perf run lifecycle from artifact planning through report emission"
-)]
-async fn run_preview_perf(shell: &Shell, args: PreviewPerfArgs) -> Result<()> {
-    let platform = resolve_preview_platform(args.platform)?;
-    ensure_hydrolysis_preview_platform(platform)?;
-    let (width, height) = parse_frame(&args.frame)?;
-    let project_path = crate::project_path::canonicalize(&args.path)?;
-    let crate_name = read_project_crate_name(&project_path).await?;
-    let targets = resolve_test_targets(
-        &project_path,
-        &crate_name,
-        args.target.as_deref(),
-        args.expr,
-        args.all,
-    )
-    .await?;
-    if args.samples == 0 {
-        bail!("`water preview perf --samples` must be greater than zero.");
-    }
-    if args.flamegraph_frequency <= 0 {
-        bail!("`water preview perf --flamegraph-frequency` must be greater than zero.");
-    }
-    let automation_body = load_automation_body(
-        args.code.as_deref(),
-        args.code_file.as_deref(),
-        "",
-        "`water preview perf`",
-    )
-    .await?;
-    let sccache_path = super::detect_sccache_path(shell).await;
-    let format_output = args.output.clone();
-    let flamegraph_path =
-        resolve_preview_perf_flamegraph_path(args.all, format_output.as_deref(), args.flamegraph);
-    let flamegraphs = resolve_flamegraphs(Some(flamegraph_path.as_path()), args.all, &targets)?;
-    let json_reports =
-        resolve_perf_artifacts(args.report_json.as_deref(), args.all, &targets, "json")?;
-    let traces = resolve_perf_artifacts(args.trace.as_deref(), args.all, &targets, "json")?;
-    let html_reports =
-        resolve_perf_mode_artifacts(args.format, format_output.as_deref(), args.all, &targets)?;
-    let mut reports = Vec::new();
-
-    for ((((target, flamegraph), json_report), trace), html_report) in targets
-        .into_iter()
-        .zip(flamegraphs)
-        .zip(json_reports)
-        .zip(traces)
-        .zip(html_reports)
-    {
-        if args.format != PreviewPerfOutputFormat::Json {
-            header!(shell, "Preview perf: {}", target.display_name());
-        }
-        let spinner = (args.format != PreviewPerfOutputFormat::Json)
-            .then(|| shell.spinner("Building and profiling with hydrolysis..."))
-            .flatten();
-        let output = test_preview_with_hydrolysis(
-            HydrolysisPreviewRequest {
-                project_path: &project_path,
-                source: target.hydrolysis_source(),
-                theme: args.theme.into(),
-                width,
-                height,
-                sccache_path: sccache_path.clone(),
-            },
-            HydrolysisPreviewTestMode::Perf(HydrolysisPreviewPerfRun {
-                warmups: args.warmups,
-                samples: args.samples,
-                repetitions: args.repetitions,
-                flamegraph: flamegraph.clone(),
-                flamegraph_frequency: args.flamegraph_frequency,
-            }),
-            &automation_body,
-        )
-        .await?;
-        if let Some(s) = spinner {
-            s.finish_and_clear();
-        }
-        let mut perf_report =
-            parse_preview_perf_output(target.display_name().to_string(), &output)?;
-        if let Some(flamegraph) = flamegraph.as_ref() {
-            perf_report.flamegraph = Some(flamegraph.clone());
-        }
-        enforce_perf_budget(
-            &perf_report,
-            PreviewPerfBudget {
-                p95_us: args.max_p95_us,
-                rebuild_ratio: args.max_rebuild_ratio,
-                scene_layers: args.max_scene_layers,
-                gpu_surface_layers: args.max_gpu_surface_layers,
-                clip_layers: args.max_clip_layers,
-            },
-        )?;
-        if args.format == PreviewPerfOutputFormat::Human {
-            emit_preview_perf_human(shell, &perf_report);
-        }
-        if let Some(path) = json_report {
-            write_preview_perf_json(&path, &perf_report).await?;
-        }
-        if let Some(path) = trace {
-            write_preview_perf_trace(&path, &perf_report).await?;
-        }
-        if let Some(path) = html_report {
-            write_preview_perf_html(&path, std::slice::from_ref(&perf_report)).await?;
-            open_preview_perf_html(&path).await?;
-            success!(shell, "Preview perf report opened: {}", path.display());
-        }
-        if args.format != PreviewPerfOutputFormat::Json {
-            if let Some(flamegraph) = flamegraph {
-                success!(
-                    shell,
-                    "Preview perf passed: {} (flamegraph: {})",
-                    target.display_name(),
-                    flamegraph.display()
-                );
-            } else {
-                success!(shell, "Preview perf passed: {}", target.display_name());
-            }
-        }
-        reports.push(perf_report);
-    }
-
-    match args.format {
-        PreviewPerfOutputFormat::Human => {}
-        PreviewPerfOutputFormat::Json => {
-            if let Some(path) = format_output.as_deref() {
-                write_preview_perf_output_json(path, &reports).await?;
-            } else {
-                write_preview_perf_stdout_json(&reports)?;
-            }
-        }
-        PreviewPerfOutputFormat::Html => {
-            if args.all {
-                let path =
-                    format_output.unwrap_or_else(|| PathBuf::from("preview-perf-report.html"));
-                write_preview_perf_html(&path, &reports).await?;
-                open_preview_perf_html(&path).await?;
-                success!(shell, "Preview perf report opened: {}", path.display());
-            }
-        }
     }
 
     Ok(())
@@ -326,8 +174,6 @@ pub struct Args {
 enum PreviewCommand {
     /// Run semantic assertions against a preview.
     Test(PreviewTestArgs),
-    /// Profile a preview through the full Hydrolysis offscreen GPU pipeline.
-    Perf(PreviewPerfArgs),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -368,120 +214,6 @@ struct PreviewTestArgs {
     path: PathBuf,
 }
 
-#[derive(ClapArgs, Debug)]
-struct PreviewPerfArgs {
-    /// Preview target: a `#[preview]` function path or a `WaterUI` expression.
-    target: Option<String>,
-
-    /// Discover and profile every `#[preview]` function in the crate.
-    #[arg(long)]
-    all: bool,
-
-    /// Treat the target as a `WaterUI` expression returning `impl View`.
-    #[arg(long)]
-    expr: bool,
-
-    /// Target platform (defaults to the native preview platform).
-    #[arg(short, long, value_enum)]
-    platform: Option<CliPreviewPlatform>,
-
-    /// Theme package for Hydrolysis preview perf.
-    #[arg(long, value_enum)]
-    theme: CliHydrolysisPreviewTheme,
-
-    /// Frame size `WIDTHxHEIGHT` (default: `375x667`).
-    #[arg(short, long, default_value = "375x667")]
-    frame: String,
-
-    /// Warmup frame count before sampling.
-    #[arg(long, default_value_t = 10)]
-    warmups: u32,
-
-    /// Recorded frame count per measurement.
-    #[arg(long, default_value_t = 120)]
-    samples: u32,
-
-    /// Independent measurement repetitions.
-    #[arg(long, default_value_t = 7)]
-    repetitions: u32,
-
-    /// Rust automation body. Receives `perf: &mut waterui_testing::PerfApp<_, _, _>`.
-    #[arg(long)]
-    code: Option<String>,
-
-    /// File containing a Rust automation body.
-    #[arg(long)]
-    code_file: Option<PathBuf>,
-
-    /// Write a CPU call-stack flamegraph SVG. With `--all`, PATH is a directory.
-    #[arg(long, num_args = 0..=1, default_missing_value = "__waterui_default_flamegraph__")]
-    flamegraph: Option<PathBuf>,
-
-    /// Flamegraph sampling frequency in Hertz.
-    #[arg(long, default_value_t = 100)]
-    flamegraph_frequency: i32,
-
-    /// Write a machine-readable perf report JSON. With `--all`, PATH is a directory.
-    #[arg(long)]
-    report_json: Option<PathBuf>,
-
-    /// Write a Chrome/Perfetto-compatible aggregate trace JSON. With `--all`, PATH is a directory.
-    #[arg(long)]
-    trace: Option<PathBuf>,
-
-    /// Fail when any measurement p95 exceeds this duration in microseconds.
-    #[arg(long)]
-    max_p95_us: Option<u64>,
-
-    /// Fail when any measurement rebuild ratio exceeds this value.
-    #[arg(long)]
-    max_rebuild_ratio: Option<f64>,
-
-    /// Fail when any measurement submits more compositor scene layers than this value.
-    #[arg(long)]
-    max_scene_layers: Option<u64>,
-
-    /// Fail when any measurement submits more embedded GPU surface layers than this value.
-    #[arg(long)]
-    max_gpu_surface_layers: Option<u64>,
-
-    /// Fail when any measurement pushes more Vello clip layers than this value.
-    #[arg(long)]
-    max_clip_layers: Option<u64>,
-
-    /// Presentation mode for perf results.
-    #[arg(long, value_enum, default_value_t = PreviewPerfOutputFormat::Human)]
-    format: PreviewPerfOutputFormat,
-
-    /// Output path for `--format json` or `--format html`. HTML opens automatically.
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// Project directory path (defaults to current directory).
-    #[arg(long, default_value = ".")]
-    path: PathBuf,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum PreviewPerfOutputFormat {
-    /// Human-friendly terminal summary.
-    Human,
-    /// Structured JSON written to stdout or `--output`.
-    Json,
-    /// Minimal visual HTML report written to `--output` and opened in the browser.
-    Html,
-}
-
-impl core::fmt::Display for PreviewPerfOutputFormat {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Human => f.write_str("human"),
-            Self::Json => f.write_str("json"),
-            Self::Html => f.write_str("html"),
-        }
-    }
-}
-
 /// Run the preview command.
 ///
 /// # Errors
@@ -493,13 +225,12 @@ impl core::fmt::Display for PreviewPerfOutputFormat {
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     match args.command {
         Some(PreviewCommand::Test(args)) => return run_preview_test(shell, args).await,
-        Some(PreviewCommand::Perf(args)) => return run_preview_perf(shell, args).await,
         None => {}
     }
 
     let Some(target) = args.target.as_deref() else {
         bail!(
-            "`water preview` requires a target. Use `water preview <target>`, `water preview test`, or `water preview perf`."
+            "`water preview` requires a target. Use `water preview <target>` or `water preview test`."
         );
     };
 
@@ -779,7 +510,7 @@ async fn resolve_test_targets(
             }
         }
         (false, None) => {
-            bail!("preview test/perf requires a target or `--all`.");
+            bail!("preview test requires a target or `--all`.");
         }
     }
 }
@@ -893,253 +624,6 @@ async fn load_automation_body(
     }
 }
 
-fn emit_preview_perf_human(shell: &Shell, report: &PreviewPerfReport) {
-    // This deliberately stays compact and regular: the default terminal format is optimized for
-    // humans and LLM agents to scan, while stable machine consumption belongs to JSON mode.
-    note!(shell, "Perf report: {}", report.target);
-    for measurement in &report.measurements {
-        note!(
-            shell,
-            "  {}: samples={} rendered={} idle={} mean={} median={} p95={} min={} max={} rendered-mean={} rendered-p95={} rendered-max={} rebuilt={}/{} missed120={}/{} missed60={}/{}",
-            measurement.name,
-            measurement.samples,
-            measurement.rendered_frames,
-            measurement.idle_frames,
-            micros_label(measurement.mean_us),
-            micros_label(measurement.median_us),
-            micros_label(measurement.p95_us),
-            micros_label(measurement.min_us),
-            micros_label(measurement.max_us),
-            micros_label(measurement.rendered_mean_us),
-            micros_label(measurement.rendered_p95_us),
-            micros_label(measurement.rendered_max_us),
-            measurement.rebuilt_frames,
-            measurement.samples,
-            measurement.missed_120fps_frames,
-            measurement.samples,
-            measurement.missed_60fps_frames,
-            measurement.samples
-        );
-        note!(
-            shell,
-            "    phases: rebuild mean={} p95={} | build={} p95={} | dispatch={} p95={} | finish={} p95={} | render mean={} p95={} | animation mean={} | input mean={}",
-            micros_label(measurement.phases.rebuild_mean_us),
-            micros_label(measurement.phases.rebuild_p95_us),
-            micros_label(measurement.phases.build_content_mean_us),
-            micros_label(measurement.phases.build_content_p95_us),
-            micros_label(measurement.phases.scene_dispatch_mean_us),
-            micros_label(measurement.phases.scene_dispatch_p95_us),
-            micros_label(measurement.phases.scene_finish_mean_us),
-            micros_label(measurement.phases.scene_finish_p95_us),
-            micros_label(measurement.phases.render_mean_us),
-            micros_label(measurement.phases.render_p95_us),
-            micros_label(measurement.phases.animation_mean_us),
-            micros_label(measurement.phases.input_mean_us)
-        );
-        note!(
-            shell,
-            "    caches: measurement hits={} misses={}",
-            measurement.measurement_cache_hits,
-            measurement.measurement_cache_misses
-        );
-        note!(
-            shell,
-            "    layers: compositor={} vello={} gpu-surface={} clip-pushes={} max-clip-depth={}",
-            measurement.scene_layers,
-            measurement.vello_scene_layers,
-            measurement.gpu_surface_layers,
-            measurement.clip_layers,
-            measurement.max_clip_depth
-        );
-        note!(
-            shell,
-            "    filters: applied={} capture={} effect={}",
-            measurement.applied_filter_count,
-            micros_label(measurement.applied_filter_capture_us),
-            micros_label(measurement.applied_filter_effect_us)
-        );
-        if let Some(resources) = resource_summary(measurement) {
-            note!(
-                shell,
-                "    resources: cpu avg={:.1}% max={:.1}% | memory max={} | gpu-frame avg={} max={} | layers avg={:.1} max={} | clip avg={:.1} max-depth={} | raw_samples={}",
-                resources.avg_cpu_percent,
-                resources.max_cpu_percent,
-                bytes_label(resources.max_memory_bytes),
-                micros_label(resources.avg_gpu_frame_us),
-                micros_label(resources.max_gpu_frame_us),
-                resources.avg_scene_layers,
-                resources.max_scene_layers,
-                resources.avg_clip_layers,
-                resources.max_clip_depth,
-                measurement.frames.len()
-            );
-        }
-    }
-    if let Some(flamegraph) = &report.flamegraph {
-        note!(shell, "  flamegraph: {}", flamegraph.display());
-    }
-}
-
-fn resolve_flamegraphs(
-    flamegraph: Option<&Path>,
-    all: bool,
-    targets: &[PreviewTarget],
-) -> Result<Vec<Option<PathBuf>>> {
-    let Some(path) = flamegraph else {
-        return Ok(std::iter::repeat_with(|| None)
-            .take(targets.len())
-            .collect());
-    };
-    let default_marker = Path::new("__waterui_default_flamegraph__");
-    if all {
-        let dir = if path == default_marker {
-            std::env::temp_dir().join("waterui-preview-flamegraphs")
-        } else {
-            path.to_path_buf()
-        };
-        if dir.exists() && !dir.is_dir() {
-            bail!(
-                "`water preview perf --all --flamegraph` expects a directory, got {}",
-                dir.display()
-            );
-        }
-        std::fs::create_dir_all(&dir)?;
-        return Ok(targets
-            .iter()
-            .map(|target| Some(dir.join(format!("{}.svg", target.file_stem()))))
-            .collect());
-    }
-    if targets.len() != 1 {
-        bail!("internal error: single flamegraph path received for multiple preview targets");
-    }
-    let output_path = if path == default_marker {
-        std::env::temp_dir().join("waterui-preview-flamegraph.svg")
-    } else {
-        path.to_path_buf()
-    };
-    if let Some(parent) = output_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    Ok(vec![Some(output_path)])
-}
-
-fn resolve_preview_perf_flamegraph_path(
-    all: bool,
-    output: Option<&Path>,
-    flamegraph: Option<PathBuf>,
-) -> PathBuf {
-    flamegraph.unwrap_or_else(|| {
-        if all {
-            PathBuf::from("__waterui_default_flamegraph__")
-        } else {
-            output.map_or_else(
-                || PathBuf::from("__waterui_default_flamegraph__"),
-                |path| path.with_extension("flamegraph.svg"),
-            )
-        }
-    })
-}
-
-fn resolve_perf_artifacts(
-    path: Option<&Path>,
-    all: bool,
-    targets: &[PreviewTarget],
-    extension: &str,
-) -> Result<Vec<Option<PathBuf>>> {
-    let Some(path) = path else {
-        return Ok(std::iter::repeat_with(|| None)
-            .take(targets.len())
-            .collect());
-    };
-    if all {
-        if path.exists() && !path.is_dir() {
-            bail!(
-                "`water preview perf --all` expects artifact paths to be directories, got {}",
-                path.display()
-            );
-        }
-        std::fs::create_dir_all(path)?;
-        return Ok(targets
-            .iter()
-            .map(|target| Some(path.join(format!("{}.{}", target.file_stem(), extension))))
-            .collect());
-    }
-    if targets.len() != 1 {
-        bail!("internal error: single perf artifact path received for multiple preview targets");
-    }
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    Ok(vec![Some(path.to_path_buf())])
-}
-
-fn resolve_perf_mode_artifacts(
-    format: PreviewPerfOutputFormat,
-    output: Option<&Path>,
-    all: bool,
-    targets: &[PreviewTarget],
-) -> Result<Vec<Option<PathBuf>>> {
-    match format {
-        PreviewPerfOutputFormat::Human | PreviewPerfOutputFormat::Json => {
-            Ok(std::iter::repeat_with(|| None)
-                .take(targets.len())
-                .collect())
-        }
-        PreviewPerfOutputFormat::Html if all => Ok(std::iter::repeat_with(|| None)
-            .take(targets.len())
-            .collect()),
-        PreviewPerfOutputFormat::Html => {
-            if targets.len() != 1 {
-                bail!(
-                    "internal error: single HTML report path received for multiple preview targets"
-                );
-            }
-            let path = output.map_or_else(
-                || std::env::temp_dir().join("waterui-preview-perf.html"),
-                Path::to_path_buf,
-            );
-            if let Some(parent) = path
-                .parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-            {
-                std::fs::create_dir_all(parent)?;
-            }
-            Ok(vec![Some(path)])
-        }
-    }
-}
-
-async fn open_preview_perf_html(path: &Path) -> Result<()> {
-    let path = crate::project_path::canonicalize(path)?;
-    let mut command = if cfg!(target_os = "macos") {
-        let mut command = smol::process::Command::new("open");
-        command.arg(&path);
-        command
-    } else if cfg!(target_os = "windows") {
-        let mut command = smol::process::Command::new("cmd");
-        command.arg("/C").arg("start").arg("").arg(&path);
-        command
-    } else {
-        let mut command = smol::process::Command::new("xdg-open");
-        command.arg(&path);
-        command
-    };
-    let status = command
-        .status()
-        .await
-        .map_err(|error| color_eyre::eyre::eyre!("failed to open HTML report: {error}"))?;
-    if !status.success() {
-        bail!("failed to open HTML report {}: {status}", path.display());
-    }
-    Ok(())
-}
-
 fn emit_child_output(shell: &Shell, output: &str) {
     for line in output.lines().filter(|line| !line.trim().is_empty()) {
         note!(shell, "{line}");
@@ -1169,13 +653,6 @@ impl PreviewTarget {
         match self {
             Self::Function { symbol, .. } => HydrolysisPreviewSource::Symbol(symbol),
             Self::Expression { expression } => HydrolysisPreviewSource::Expression(expression),
-        }
-    }
-
-    fn file_stem(&self) -> String {
-        match self {
-            Self::Function { function_path, .. } => function_path.replace("::", "_"),
-            Self::Expression { .. } => "expression".to_string(),
         }
     }
 }
@@ -1277,7 +754,7 @@ fn native_preview_platform() -> Result<CliPreviewPlatform> {
 
 fn ensure_hydrolysis_preview_platform(platform: CliPreviewPlatform) -> Result<()> {
     if platform != CliPreviewPlatform::Macos {
-        bail!("`water preview test` and `water preview perf` support Hydrolysis on macos only.");
+        bail!("`water preview test` supports Hydrolysis on macos only.");
     }
     Ok(())
 }

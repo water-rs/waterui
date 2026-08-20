@@ -22,7 +22,7 @@ use waterui_preview_protocol::hydrolysis::{
     PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
 };
 pub use waterui_preview_protocol::hydrolysis::{
-    PerfRunConfig as HydrolysisPreviewPerfRun, ScenarioEvent as HydrolysisPreviewScenarioEvent,
+    ScenarioEvent as HydrolysisPreviewScenarioEvent,
     ScenarioEventKind as HydrolysisPreviewEventKind,
     ScenarioPointerButton as HydrolysisPreviewPointerButton,
 };
@@ -61,15 +61,6 @@ pub enum HydrolysisPreviewSource<'a> {
     Expression(&'a str),
 }
 
-/// Hydrolysis preview test mode.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HydrolysisPreviewTestMode {
-    /// Semantic accessibility-tree test without a render target.
-    Semantic,
-    /// Full offscreen GPU performance test.
-    Perf(HydrolysisPreviewPerfRun),
-}
-
 /// Interactive capture scenario for Hydrolysis preview.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HydrolysisPreviewScenario {
@@ -94,7 +85,6 @@ struct HydrolysisPreviewBindingsTemplate<'a> {
     preview_theme_installer: &'a str,
     include_automation: bool,
     semantic_automation_body: &'a str,
-    perf_automation_body: &'a str,
 }
 
 /// Common inputs for driving the managed Hydrolysis preview backend.
@@ -159,13 +149,12 @@ pub async fn render_preview_with_hydrolysis(
     run_preview_binary(&project, &binary_path, width, height, output_path, scenario).await
 }
 
-/// Run a preview test or perf session via the managed Hydrolysis backend binary.
+/// Run a semantic preview test session via the managed Hydrolysis backend binary.
 ///
 /// # Errors
 /// Returns an error if the managed backend cannot be prepared, built, or executed.
 pub async fn test_preview_with_hydrolysis(
     request: HydrolysisPreviewRequest<'_>,
-    mode: HydrolysisPreviewTestMode,
     automation_body: &str,
 ) -> Result<String> {
     let HydrolysisPreviewRequest {
@@ -177,16 +166,7 @@ pub async fn test_preview_with_hydrolysis(
         sccache_path,
     } = request;
     let project = ensure_hydrolysis_backend_ready(project_path).await?;
-    write_preview_bindings(
-        &project,
-        source,
-        theme,
-        Some(PreviewAutomation {
-            mode: &mode,
-            body: automation_body,
-        }),
-    )
-    .await?;
+    write_preview_bindings(&project, source, theme, Some(automation_body)).await?;
     stage_preview_resources(&project, theme).await?;
 
     let mut build_options = BuildOptions::development(false);
@@ -210,7 +190,7 @@ pub async fn test_preview_with_hydrolysis(
     )
     .await?;
     stage_hydrolysis_shared_runtime(&binary_path, TargetPlatform::MacOS).await?;
-    run_preview_test_binary(&project, &binary_path, width, height, &mode).await
+    run_preview_test_binary(&project, &binary_path, width, height).await
 }
 
 async fn stage_preview_resources(project: &Project, theme: HydrolysisPreviewTheme) -> Result<()> {
@@ -246,19 +226,13 @@ async fn ensure_hydrolysis_backend_ready(project_path: &Path) -> Result<Project>
     Ok(project)
 }
 
-/// Automation bound into the preview test binding.
-struct PreviewAutomation<'a> {
-    mode: &'a HydrolysisPreviewTestMode,
-    body: &'a str,
-}
-
 async fn write_preview_bindings(
     project: &Project,
     source: HydrolysisPreviewSource<'_>,
     theme: HydrolysisPreviewTheme,
-    automation: Option<PreviewAutomation<'_>>,
+    automation_body: Option<&str>,
 ) -> Result<()> {
-    let file_name = if automation.is_some() {
+    let file_name = if automation_body.is_some() {
         "preview_test.rs"
     } else {
         "preview_symbol.rs"
@@ -272,22 +246,14 @@ async fn write_preview_bindings(
         HydrolysisPreviewSource::Symbol(symbol) => (false, symbol, ""),
         HydrolysisPreviewSource::Expression(expression) => (true, "", expression),
     };
-    let (semantic_automation_body, perf_automation_body) =
-        automation
-            .as_ref()
-            .map_or(("", ""), |automation| match automation.mode {
-                HydrolysisPreviewTestMode::Semantic => (automation.body, ""),
-                HydrolysisPreviewTestMode::Perf(_) => ("", automation.body),
-            });
     let rendered = HydrolysisPreviewBindingsTemplate {
         expression_mode,
         preview_symbol,
         preview_expression,
         crate_name_ident: crate_name_ident.as_str(),
         preview_theme_installer: theme.installer(),
-        include_automation: automation.is_some(),
-        semantic_automation_body,
-        perf_automation_body,
+        include_automation: automation_body.is_some(),
+        semantic_automation_body: automation_body.unwrap_or(""),
     }
     .render()
     .wrap_err("Failed to render hydrolysis preview bindings template")?;
@@ -376,7 +342,7 @@ async fn run_preview_binary(
         PreviewRunMode::Image { ref output } => {
             expect_nonempty_output(output, "output").await?;
         }
-        PreviewRunMode::Semantic | PreviewRunMode::Perf(_) => {
+        PreviewRunMode::Semantic => {
             unreachable!("render runs only produce images or scenarios")
         }
     }
@@ -389,24 +355,11 @@ async fn run_preview_test_binary(
     binary_path: &Path,
     width: f32,
     height: f32,
-    mode: &HydrolysisPreviewTestMode,
 ) -> Result<String> {
-    let run_mode = match mode {
-        HydrolysisPreviewTestMode::Semantic => PreviewRunMode::Semantic,
-        HydrolysisPreviewTestMode::Perf(perf) => {
-            let mut perf = perf.clone();
-            perf.flamegraph = perf
-                .flamegraph
-                .as_deref()
-                .map(absolute_output_path)
-                .transpose()?;
-            PreviewRunMode::Perf(perf)
-        }
-    };
     let config = PreviewRunConfig {
         width,
         height,
-        mode: run_mode,
+        mode: PreviewRunMode::Semantic,
     };
     let config_path = write_run_config(project, &config).await?;
     let backend_path = project.backend_path::<HydrolysisBackend>();
@@ -434,12 +387,6 @@ async fn run_preview_test_binary(
             format!("exit status {}", output.status)
         };
         bail!("Hydrolysis preview test binary failed: {details}");
-    }
-
-    if let PreviewRunMode::Perf(perf) = &config.mode
-        && let Some(flamegraph) = &perf.flamegraph
-    {
-        expect_nonempty_output(flamegraph, "flamegraph").await?;
     }
 
     Ok(stdout)

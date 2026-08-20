@@ -451,6 +451,59 @@ fn stepper_updates(ui: UiBuilder) {
 - Keyboard with modifiers: `app.press_named_key_with("Tab", modifiers)`.
   Gesture pacing: `query.drag_by_with(dx, dy, DragOptions { steps: 12, frame_per_step: true })`.
 
+## Benchmarks (`#[waterui::bench]` + `water bench`)
+
+GPU frame benchmarks live next to your tests and use the same dev-dependencies
+(`waterui-testing`, `hydrolysis-m3`). Each bench mounts the view in the
+offscreen GPU runtime and records whole-frame timings plus renderer counters.
+
+```rust
+use waterui_testing::PerfApp;
+
+// Mounting form: the macro mounts a no-arg view function offscreen.
+#[waterui::bench(dashboard, theme = hydrolysis_m3::install, viewport = (390, 844), max_p95_us = 8_000)]
+fn dashboard_redraw(perf: &mut PerfApp) {
+    perf.measure("steady-redraw", |run| run.redraw());
+    perf.measure("wheel-scroll", |run| {
+        run.scroll_at(195.0, 600.0, 0.0, -24.0, false);
+    });
+}
+
+// Manual form: the bench owns Bindings the view closes over and returns the report.
+#[waterui::bench(theme = hydrolysis_m3::install, max_rebuild_ratio = 0.1)]
+fn counter_updates(ui: waterui_testing::UiBuilder) -> waterui_testing::PerfReport {
+    let value = Binding::i32(0);
+    let value_for_view = value.clone();
+    ui.perf_with(move || counter(&value_for_view), |perf| {
+        perf.measure("steady-redraw", |run| run.redraw());
+    })
+}
+```
+
+- The closure passed to `measure` runs before **every** frame: queue input
+  (`run.pointer_move/down/up`, `run.scroll_at`) or `run.redraw()`, and the
+  frame that follows is what gets timed. `run.app()` exposes the full semantic
+  query/interaction API mid-run.
+- Budgets are optional attribute arguments applying to every measurement:
+  `max_p95_us`, `max_mean_us` (µs), `max_rebuild_ratio` (0.0–1.0),
+  `max_scene_layers`, `max_gpu_surface_layers`, `max_clip_layers`.
+- Smoke vs full: under plain `cargo nextest run` a bench runs in smoke mode
+  (2 frames, no budgets) purely as a correctness test. `water bench` runs the
+  full measurement (defaults: 10 warmups, 120 samples, 7 repetitions) and
+  enforces budgets — a blown budget is a failed test.
+
+```bash
+water bench                             # all benches in the current crate
+water bench scroll                      # only benches whose name contains "scroll"
+water bench --path examples/stress      # another crate
+water bench --samples 240 --warmups 20  # custom run shape
+water bench --format html -o report.html
+water bench --format json               # machine-readable, stdout or -o PATH
+water bench --gha bench.json            # github-action-benchmark JSON
+water bench --report-dir target/benches # keep per-bench report JSONs
+water bench --max-p95-us 8000           # tighten budgets from the CLI (tighter wins)
+```
+
 ## CLI Commands
 
 ```bash
