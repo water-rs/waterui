@@ -417,6 +417,188 @@ workspace_contains_source_layout() {
   done < <(submodule_records "$SOURCE_REPO")
 }
 
+# --- Slot model ---------------------------------------------------------
+#
+# Workspaces used to live at a fresh timestamped path every time, which meant
+# every `create_workspace.sh` handed Cargo a directory it had never seen
+# before. Cargo folds the package path into `-C metadata` for every
+# workspace-member crate (it has to: two crates with the same name at
+# different paths must not collide in the build graph), so a new path means a
+# new metadata hash for every WaterUI crate, which means every workspace
+# crate looks unbuilt and recompiles from scratch — incremental caches from
+# the last task are unreachable, and even sccache cannot help, because its
+# cache key includes that same metadata. Only registry dependencies, whose
+# path is the same everywhere, ever hit warm cache.
+#
+# The fix is to stop generating fresh paths. A slot is a workspace at a fixed
+# path — `$WORKSPACE_ROOT/slot-1`, `slot-2`, ... — that persists across tasks
+# instead of being deleted when one finishes. Reusing a slot means the path,
+# and therefore `-C metadata`, and therefore every crate's build cache key,
+# is identical to the last time that slot was used: Cargo's own incremental
+# cache (never discarded now — `copy_target_cow` still skips `incremental/`,
+# but only when *seeding* a brand new slot) and sccache both come back warm.
+#
+# A slot's state is entirely self-describing, the same philosophy
+# `ensure_workspace_context` already uses to tell a workspace from the
+# canonical checkout: nothing external tracks which slots are in use.
+#   - FREE: the superproject is checked out on the canonical integration
+#     branch (never an `agent/` branch) and the whole tree, submodules
+#     included, has no local changes. `slot_is_free` below is the read-only
+#     check for this and never fetches or mutates anything.
+#   - BUSY: some agent workspace flow switched it to `agent/<slug>/<ts>` and
+#     may have uncommitted work in progress. The same branch-prefix evidence
+#     `ensure_workspace_context` reads is what makes a slot BUSY — claiming a
+#     slot and claiming "this checkout is an agent workspace" are the same
+#     act.
+#   - CORRUPT: looks like a FREE candidate (right branch, clean) but its
+#     history diverged from canonical instead of being a pure ancestor of it,
+#     so it cannot be fast-forwarded. This should not happen from ordinary
+#     use of these scripts — a FREE slot is untouched by anything else — so
+#     it is treated as an anomaly: warn, skip it, try the next slot. Recovery
+#     is manual: delete the slot directory. The next `create_workspace.sh`
+#     either reuses that now-missing number for a fresh clone or leaves it
+#     alone and uses a different slot; either way nothing needs to track the
+#     gap.
+
+# A slot directory basename, as opposed to a legacy timestamped workspace
+# path (`<timestamp>-<slug>`) from before this model existed. `finish_workspace.sh`
+# keys its post-merge behaviour off this: a slot is returned to FREE, a
+# legacy workspace is still deleted.
+is_slot_workspace() {
+  local workspace_root="$1"
+  [[ "${workspace_root:t}" == slot-<1-> ]]
+}
+
+# Every slot directory under `workspace_root`, sorted by slot number. A slot
+# recovered from CORRUPT state is removed by deleting its directory (see
+# SKILL.md), which leaves a gap in the numbering rather than a contiguous
+# run — so slots are found by listing what is actually on disk, never by
+# counting upward until the first miss.
+existing_slot_paths() {
+  local workspace_root="$1"
+  local path
+
+  setopt local_options numericglobsort
+  for path in "${workspace_root}"/slot-<1->(N/); do
+    print -- "$path"
+  done
+}
+
+# The lowest unused slot number under `workspace_root`, so a deleted
+# (recovered) slot's number is reused before the pool grows.
+new_slot_path() {
+  local workspace_root="$1"
+  local n=1
+
+  while [[ -e "${workspace_root}/slot-${n}" ]]; do
+    n=$((n + 1))
+  done
+  print -- "${workspace_root}/slot-${n}"
+}
+
+# Read-only FREE check — see the slot model comment above. Never fetches or
+# mutates, so it is cheap to run over every slot on every
+# `create_workspace.sh` call.
+slot_is_free() {
+  local slot="$1"
+  local integration_branch="$2"
+  local branch
+
+  (workspace_contains_source_layout "$slot") >/dev/null 2>&1 || return 1
+  branch="$(git -C "$slot" rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 1
+  [[ "$branch" == "$integration_branch" ]] || return 1
+  repo_and_submodules_are_clean "$slot"
+}
+
+# Brings a FREE slot up to date with canonical and claims it for `branch_name`:
+# fast-forwards the superproject's integration branch, then for each
+# submodule fast-forwards its own configured integration branch and hard-
+# aligns the checkout to the exact commit the superproject's tree now records
+# for it (in steady state this is the same commit the branch fast-forward
+# already landed on — every canonical commit that advances a submodule
+# pointer is paired with the submodule's own advance — so the checkout is a
+# consistency check as much as an alignment), and finally branches the
+# superproject and every submodule to `branch_name`.
+#
+# Runs entirely inside a captured subshell: any step's failure (typically a
+# fast-forward refused because the slot diverged from canonical) reaches the
+# caller as a plain exit status rather than tearing down the whole script, so
+# a CORRUPT slot can be skipped in favour of the next one instead of killing
+# `create_workspace.sh` outright.
+_claim_free_slot_impl() {
+  local slot="$1"
+  local source_root="$2"
+  local integration_branch="$3"
+  local branch_name="$4"
+  local name
+  local submodule_relpath
+  local submodule_path
+  local canonical_submodule
+  local target_branch
+  local actual_branch
+  local desired_commit
+
+  merge_branch_ff_only "$slot" "$source_root" "$integration_branch" "superproject"
+
+  while IFS=$'\t' read -r name submodule_relpath; do
+    [[ -n "${name:-}" ]] || continue
+    submodule_path="${slot}/${submodule_relpath}"
+    canonical_submodule="${source_root}/${submodule_relpath}"
+    target_branch="$(configured_submodule_branch "$source_root" "$name")"
+    [[ -n "$target_branch" ]] || die "submodule ${submodule_relpath} has no configured integration branch in .gitmodules"
+
+    actual_branch="$(current_branch "$submodule_path")"
+    [[ "$actual_branch" == "$target_branch" ]] || die "slot submodule ${submodule_relpath} is on ${actual_branch}, expected ${target_branch}"
+
+    merge_branch_ff_only "$submodule_path" "$canonical_submodule" "$target_branch" "submodule ${submodule_relpath}"
+
+    desired_commit="$(submodule_gitlink_commit "$slot" "$submodule_relpath")"
+    run_quietly git -C "$submodule_path" checkout "$desired_commit" || die "failed to align submodule ${submodule_relpath} to ${desired_commit}"
+  done < <(submodule_records "$source_root")
+
+  ensure_branch "$slot" "$branch_name"
+  branch_submodules "$slot" "$branch_name"
+}
+
+claim_free_slot() {
+  local slot="$1"
+  local source_root="$2"
+  local integration_branch="$3"
+  local branch_name="$4"
+  local output
+
+  if output="$(_claim_free_slot_impl "$slot" "$source_root" "$integration_branch" "$branch_name" 2>&1)"; then
+    [[ -z "$output" ]] || print -u2 -- "$output"
+    return 0
+  fi
+
+  warn "slot ${slot:t} looked FREE but would not fast-forward cleanly onto canonical (diverged garbage?); skipping it"
+  [[ -z "$output" ]] || print -u2 -- "$output"
+  return 1
+}
+
+# Scans every existing slot for one this task can use, claiming the first
+# FREE one that fast-forwards cleanly. Prints the claimed slot path and
+# returns 0, or prints nothing and returns 1 if every slot is BUSY or
+# CORRUPT.
+find_and_claim_free_slot() {
+  local workspace_root="$1"
+  local source_root="$2"
+  local integration_branch="$3"
+  local branch_name="$4"
+  local slot
+
+  for slot in $(existing_slot_paths "$workspace_root"); do
+    slot_is_free "$slot" "$integration_branch" || continue
+    if claim_free_slot "$slot" "$source_root" "$integration_branch" "$branch_name"; then
+      print -- "$slot"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 ensure_workspace_context() {
   local current_root
   local expected_source
@@ -458,6 +640,56 @@ ensure_workspace_branch_consistency() {
   done < <(submodule_records "$SOURCE_REPO")
 }
 
+# Whether a lock directory has an owner that is still doing the work the lock
+# is for.
+#
+# The recorded pid existing is not enough. A run killed with `kill -9`, or lost
+# to a power cut, never reaches its trap, and by the time anyone looks the kernel
+# may have handed that pid number to something unrelated — so the command has to
+# match too. Anything else is a lock nobody can end, which is a worse failure
+# than the one the lock exists to prevent.
+lock_has_live_owner() {
+  local lock_dir="$1"
+  local owner_pattern="$2"
+  local pid
+
+  pid="$(cat "${lock_dir}/pid" 2>/dev/null)" || return 1
+  [[ -n "$pid" ]] || return 1
+  ps -p "$pid" -o command= 2>/dev/null | rg -q "$owner_pattern"
+}
+
+# Claims `lock_dir` with a `mkdir`-based lock: refuses if a live process
+# matching `owner_pattern` already holds it, reclaims it (with a warning) if
+# the recorded holder is gone. Shared by the integration lock
+# (finish_workspace.sh, one merge into canonical at a time) and the slot claim
+# lock (create_workspace.sh, one slot selection at a time) — same stale-pid
+# problem, same fix, two different holders to look for.
+acquire_lock() {
+  local lock_dir="$1"
+  local owner_pattern="$2"
+  local busy_message="$3"
+
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    if lock_has_live_owner "$lock_dir" "$owner_pattern"; then
+      die "${busy_message} (holder pid $(cat "${lock_dir}/pid" 2>/dev/null))"
+    fi
+    # Nobody is behind it. Clear it and race for it again: whoever loses the
+    # second `mkdir` has a live winner and is refused, so reclaiming cannot hand
+    # the lock to two runs at once.
+    warn "clearing a lock whose holder is gone (pid $(cat "${lock_dir}/pid" 2>/dev/null))"
+    rm -rf "$lock_dir"
+    mkdir "$lock_dir" 2>/dev/null || die "$busy_message"
+  fi
+  print -- "$$" >"${lock_dir}/pid"
+  print -- "$lock_dir"
+}
+
+release_lock() {
+  local lock_dir="${1:-}"
+  [[ -n "$lock_dir" && -d "$lock_dir" ]] || return 0
+  rm -rf "$lock_dir"
+}
+
 integration_lock_dir_for_source() {
   local source_root="$1"
   local lock_root
@@ -477,48 +709,47 @@ ensure_no_integration_lock() {
   [[ ! -d "$lock_dir" ]] || die "another agent is already integrating into $source_root"
 }
 
-# Whether a lock directory has an owner that is still integrating.
-#
-# The recorded pid existing is not enough. A run killed with `kill -9`, or lost
-# to a power cut, never reaches its trap, and by the time anyone looks the kernel
-# may have handed that pid number to something unrelated — so the command has to
-# match too. Anything else is a lock nobody can end, which is a worse failure
-# than the one the lock exists to prevent.
-integration_lock_has_owner() {
-  local lock_dir="$1"
-  local pid
-
-  pid="$(cat "${lock_dir}/pid" 2>/dev/null)" || return 1
-  [[ -n "$pid" ]] || return 1
-  ps -p "$pid" -o command= 2>/dev/null | rg -q "finish_workspace\.sh"
-}
-
 acquire_integration_lock() {
   local source_root="$1"
   local lock_dir
 
   lock_dir="$(integration_lock_dir_for_source "$source_root")"
-  if ! mkdir "$lock_dir" 2>/dev/null; then
-    if integration_lock_has_owner "$lock_dir"; then
-      die "another agent is already integrating into $source_root (holder pid $(cat "${lock_dir}/pid" 2>/dev/null))"
-    fi
-    # Nobody is behind it. Clear it and race for it again: whoever loses the
-    # second `mkdir` has a live winner and is refused, so reclaiming cannot hand
-    # the lock to two runs at once.
-    warn "clearing an integration lock whose holder is gone (pid $(cat "${lock_dir}/pid" 2>/dev/null))"
-    rm -rf "$lock_dir"
-    mkdir "$lock_dir" 2>/dev/null || die "another agent is already integrating into $source_root"
-  fi
-  print -- "$$" > "${lock_dir}/pid"
-  print -- "$WORKSPACE_ROOT" > "${lock_dir}/workspace-root"
-  print -- "$source_root" > "${lock_dir}/source-repo"
+  lock_dir="$(acquire_lock "$lock_dir" 'finish_workspace\.sh' "another agent is already integrating into $source_root")"
+  print -- "$WORKSPACE_ROOT" >"${lock_dir}/workspace-root"
+  print -- "$source_root" >"${lock_dir}/source-repo"
   print -- "$lock_dir"
 }
 
 release_integration_lock() {
-  local lock_dir="${1:-}"
-  [[ -n "$lock_dir" && -d "$lock_dir" ]] || return 0
-  rm -rf "$lock_dir"
+  release_lock "$1"
+}
+
+slot_claim_lock_dir_for_workspace_root() {
+  local workspace_root="$1"
+  local lock_root
+  local lock_key
+
+  mkdir -p "$LOCK_ROOT" || die "failed to create lock root: $LOCK_ROOT"
+  lock_root="$(canonical_dir "$LOCK_ROOT")"
+  lock_key="$(print -n -- "${workspace_root}:slot-claim" | shasum -a 256 | awk '{ print $1 }')"
+  print -- "${lock_root}/${lock_key}.lock"
+}
+
+# Held only across slot *selection* — scanning existing slots for a FREE one
+# and claiming it, or branching a brand new one — never across the slow
+# `target/` seed copy a new slot still needs. Two `create_workspace.sh` runs
+# racing on the same machine would otherwise both see the same FREE slot and
+# both try to switch it onto their own agent branch.
+acquire_slot_claim_lock() {
+  local workspace_root="$1"
+  local lock_dir
+
+  lock_dir="$(slot_claim_lock_dir_for_workspace_root "$workspace_root")"
+  acquire_lock "$lock_dir" 'create_workspace\.sh' "another agent is already claiming a workspace slot under $workspace_root"
+}
+
+release_slot_claim_lock() {
+  release_lock "$1"
 }
 
 rebase_current_branch_onto_source_branch() {
