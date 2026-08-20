@@ -433,6 +433,13 @@ pub(crate) fn install_controller(env: &mut Environment) {
 pub(crate) fn install_controller(env: &mut Environment) {
     use waterui_webview::WebViewController;
 
+    // The backend supplies the *default* controller. An application or test
+    // that already installed one of its own keeps it: overwriting here made the
+    // engine this build happens to select silently outrank an explicit choice,
+    // which is how test doubles ended up shadowed by the packaged WPE runtime.
+    if env.get::<WebViewController>().is_some() {
+        return;
+    }
     let controller = waterui_browser_wpe::WpeController::packaged();
     env.insert(WebViewController::new(controller));
 }
