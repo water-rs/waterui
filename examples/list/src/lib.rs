@@ -140,3 +140,27 @@ pub fn app(env: Environment) -> App {
     let state = DemoState::new();
     App::new(move || content(state.clone()), env)
 }
+
+#[cfg(test)]
+mod bench {
+    use waterui_testing::PerfApp;
+
+    use super::demo;
+
+    // Scrolling a lazy list realizes and recycles rows without structural
+    // frame rebuilds (observed 0/840 rebuilt frames in a full local run); the
+    // rebuild-ratio budget guards that invariant.
+    #[waterui::bench(
+        demo,
+        theme = hydrolysis_m3::install,
+        viewport = (390, 844),
+        max_rebuild_ratio = 0.1,
+    )]
+    fn list_wheel_scroll(perf: &mut PerfApp) {
+        perf.measure("wheel-scroll", |run| {
+            // A continuous wheel scroll over the lazy list: every frame
+            // advances the viewport, realizing and recycling rows.
+            run.scroll_at(195.0, 600.0, 0.0, -24.0, false);
+        });
+    }
+}

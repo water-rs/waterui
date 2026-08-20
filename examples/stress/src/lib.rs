@@ -292,3 +292,48 @@ pub fn demo() -> impl View {
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }
+
+#[cfg(test)]
+mod bench {
+    use waterui::prelude::*;
+    use waterui_testing::PerfApp;
+
+    use super::{custom_section, filter_section, system_section};
+
+    /// The three stress pressure paths at their default preview scale, without
+    /// the app's background toggle tasks: the bench drives frames itself.
+    fn stress_scene() -> impl View {
+        let system_toggle = Binding::bool(true);
+        let blur_target = Binding::f64(1.0);
+        let saturation_target = Binding::f64(1.0);
+        let hue_target = Binding::f64(0.0);
+        scroll(
+            vstack((
+                system_section(120, &system_toggle),
+                custom_section(96),
+                filter_section(144, &blur_target, &saturation_target, &hue_target),
+            ))
+            .padding(),
+        )
+    }
+
+    // Counter budgets derived from a full local run (observed: rebuilt 0/840,
+    // compositor layers 1, gpu-surface layers 0, clip pushes 1) with generous
+    // headroom; they guard structural regressions, which are hardware
+    // independent. Frame-time ceilings are left to CI via `water bench
+    // --max-p95-us`, which knows its own hardware.
+    #[waterui::bench(
+        stress_scene,
+        theme = hydrolysis_m3::install,
+        viewport = (390, 844),
+        max_rebuild_ratio = 0.05,
+        max_scene_layers = 4,
+        max_gpu_surface_layers = 2,
+        max_clip_layers = 8,
+    )]
+    fn stress_steady_redraw(perf: &mut PerfApp) {
+        perf.measure("steady-redraw", |run| {
+            run.redraw();
+        });
+    }
+}
