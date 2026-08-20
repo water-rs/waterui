@@ -24,4 +24,3 @@ proc-macro2 = "1"
 proc-macro-crate = "3"
 
 [dev-dependencies]
-filtrate-core.workspace = true

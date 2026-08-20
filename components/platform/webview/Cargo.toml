@@ -38,6 +38,11 @@ hydrolysis = { path = "../../../backends/hydrolysis", features = ["webview-defau
 [lints]
 workspace = true
 
+# `hydrolysis` above is a feature-activation dev-dependency (see its comment):
+# it is never named in code, so cargo-machete cannot see why it exists.
+[package.metadata.cargo-machete]
+ignored = ["hydrolysis"]
+
 [[bench]]
 name = "bridge"
 harness = false
