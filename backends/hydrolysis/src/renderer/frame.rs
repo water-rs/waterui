@@ -425,6 +425,24 @@ impl HydrolysisRenderer {
         self.signals.take_next_frame_rebuild_request()
     }
 
+    /// Whether a state change has already been requested but not yet applied,
+    /// so the semantics the last flush produced are stale.
+    ///
+    /// This is the *unapplied* half of [`Self::has_scheduled_semantic_work`]:
+    /// a signal fired and asked for a patch or a rebuild, and the next flush
+    /// will show a different tree. It deliberately excludes work that merely
+    /// continues over future frames — animations, gesture deadlines, gliding
+    /// scrolls — because those never stop asking, so a caller that waits on
+    /// them waits forever. An observer that needs to see the current state
+    /// waits on this; one that needs the app to come fully to rest waits on
+    /// `has_scheduled_semantic_work`.
+    #[must_use]
+    pub fn has_pending_semantic_update(&self) -> bool {
+        self.signals.has_patch_request()
+            || self.signals.has_rebuild_request()
+            || self.signals.has_next_frame_rebuild_request()
+    }
+
     /// Whether the renderer has scheduled work that will still change layout,
     /// semantics, or reactive state on a future frame: pending patches or
     /// rebuilds, active animations, armed gesture deadlines, or gliding smooth
@@ -436,9 +454,7 @@ impl HydrolysisRenderer {
     /// would make an app with a focused field never count as settled.
     #[must_use]
     pub fn has_scheduled_semantic_work(&self) -> bool {
-        self.signals.has_patch_request()
-            || self.signals.has_rebuild_request()
-            || self.signals.has_next_frame_rebuild_request()
+        self.has_pending_semantic_update()
             || self.animations_active()
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()

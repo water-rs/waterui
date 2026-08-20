@@ -694,7 +694,7 @@ impl SemanticApp {
         }
     }
 
-    fn evaluate_expectation(&self, expectation: &Expectation) -> bool {
+    fn evaluate_expectation(&mut self, expectation: &Expectation) -> bool {
         match &expectation.kind {
             ExpectationKind::Exists(selector) => !self.matching_ids(selector).is_empty(),
             ExpectationKind::NotExists(selector) => self.matching_ids(selector).is_empty(),
@@ -708,12 +708,41 @@ impl SemanticApp {
         }
     }
 
-    fn matching_ids(&self, selector: &Selector) -> Vec<NodeId> {
+    /// Brings the held tree up to date with any state change that has already
+    /// been requested but not yet flushed.
+    ///
+    /// Every *input* path settles after dispatching, so a tap's consequences
+    /// are in the tree by the time the call returns. A test that changes state
+    /// directly — setting a `Binding` it owns — goes through no such path, and
+    /// without this the next query would answer from the tree as it was before
+    /// the change, reporting the old label and passing assertions that should
+    /// fail. Reading the tree is therefore what pulls the update through.
+    ///
+    /// This waits on unapplied work only, never on work that continues by
+    /// itself: an app with a running animation is never settled, so settling
+    /// here would spend the full pump budget on every query.
+    fn sync_tree(&mut self) {
+        /// Enough pumps for a change to cascade (a patch that schedules the
+        /// next), far below anything a real update needs. Exceeding it means
+        /// the app re-dirties itself every frame, which the settle path — with
+        /// its own budget — is the right tool for.
+        const MAX_SYNC_PUMPS: usize = 8;
+
+        for _ in 0..MAX_SYNC_PUMPS {
+            if !self.driver.has_pending_semantic_update() {
+                return;
+            }
+            self.pump_once();
+        }
+    }
+
+    fn matching_ids(&mut self, selector: &Selector) -> Vec<NodeId> {
+        self.sync_tree();
         self.validate_selector_scope(selector);
         self.tree.matching(selector)
     }
 
-    pub(crate) fn resolve_elements(&self, selector: &Selector) -> ElementSet {
+    pub(crate) fn resolve_elements(&mut self, selector: &Selector) -> ElementSet {
         let ids = self.matching_ids(selector);
         let elements = ids
             .into_iter()
@@ -726,7 +755,7 @@ impl SemanticApp {
         ElementSet::new(elements, self.tree.revision())
     }
 
-    pub(crate) fn resolve_single(&self, selector: &Selector) -> ElementRef {
+    pub(crate) fn resolve_single(&mut self, selector: &Selector) -> ElementRef {
         let results = self.resolve_elements(selector);
         match results.len() {
             1 => results[0].clone(),
@@ -941,7 +970,7 @@ impl SemanticApp {
         rebuilt
     }
 
-    fn matches_ui_focus(&self, selector: &Selector) -> bool {
+    fn matches_ui_focus(&mut self, selector: &Selector) -> bool {
         let ids = self.matching_ids(selector);
         ids.len() == 1 && self.ui_focus == Some(ids[0])
     }
