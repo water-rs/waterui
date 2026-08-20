@@ -83,7 +83,13 @@ jobs:
         run: |
           mkdir -p target/llvm-cov-target
           printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > target/llvm-cov-target/CACHEDIR.TAG
+      # NEXTEST_PROFILE rather than --profile: cargo-llvm-cov reads that flag as
+      # cargo's build profile. The ci profile matters here because it disables
+      # fail-fast — without it a single failing test ends the run and hides the
+      # state of every test after it (see #153, where one failure masked 632).
       - run: cargo llvm-cov nextest --workspace --features waterui/all --lcov --output-path lcov.info
+        env:
+          NEXTEST_PROFILE: ci
       - uses: codecov/codecov-action@v4
         with:
           use_oidc: true
