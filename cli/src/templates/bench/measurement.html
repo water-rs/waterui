@@ -4,10 +4,8 @@
 <button class="active" type="button" role="tab" aria-selected="true" data-tab-target="overview">Overview</button>
 <button type="button" role="tab" aria-selected="false" data-tab-target="frames">Frames</button>
 <button type="button" role="tab" aria-selected="false" data-tab-target="resources">Resources</button>
-<button type="button" role="tab" aria-selected="false" data-tab-target="flamegraph">Flamegraph</button>
 </nav>
 <section class="tab-panel active" data-tab-panel="overview">{{ diagnosis|safe }}{{ phase_stack|safe }}</section>
 <section class="tab-panel" data-tab-panel="frames">{{ frame_timeline|safe }}</section>
 <section class="tab-panel" data-tab-panel="resources">{{ resources|safe }}</section>
-<section class="tab-panel" data-tab-panel="flamegraph">{{ flamegraph|safe }}</section>
 </article>

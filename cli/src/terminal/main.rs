@@ -16,7 +16,8 @@ use futures::future::{self, Either};
 use tracing_subscriber::EnvFilter;
 
 use commands::{
-    backend, build, clean, create, device, devices, doctor, gc, inspector, package, preview, run,
+    backend, bench, build, clean, create, device, devices, doctor, gc, inspector, package, preview,
+    run,
 };
 
 /// `WaterUI` command line interface.
@@ -45,6 +46,9 @@ enum Commands {
 
     /// Build and run on device/simulator.
     Run(run::Args),
+
+    /// Run `#[waterui::bench]` GPU frame benchmarks and collect reports.
+    Bench(bench::Args),
 
     /// Build the project for a platform.
     Build(build::Args),
@@ -116,6 +120,7 @@ fn main() -> Result<()> {
                     Commands::Create(args) => create::run(&shell, args).await,
                     Commands::Backend(args) => backend::run(&shell, args).await,
                     Commands::Run(args) => run::run(&shell, args).await,
+                    Commands::Bench(args) => bench::run(&shell, args).await,
                     Commands::Build(args) => build::run(&shell, args).await,
 
                     Commands::Package(args) => package::run(&shell, args).await,
