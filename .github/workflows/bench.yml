@@ -163,6 +163,11 @@ jobs:
           pattern: bench-gha-*
           path: bench-gha
       - name: Track benchmark history (ubuntu)
+        # A leg that failed uploads no JSON, and a non-gating leg is expected
+        # to fail (see #152 for Windows). Recording the platforms that did
+        # produce results is the point; erroring on the ones that did not
+        # would let one platform's breakage discard everyone else's history.
+        if: hashFiles('bench-gha/bench-gha-ubuntu-latest/bench-gha.json') != ''
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: WaterUI Bench (ubuntu-latest)
@@ -179,6 +184,11 @@ jobs:
           # on violation. This is a trend alert, not a merge gate.
           fail-on-alert: false
       - name: Track benchmark history (macos)
+        # A leg that failed uploads no JSON, and a non-gating leg is expected
+        # to fail (see #152 for Windows). Recording the platforms that did
+        # produce results is the point; erroring on the ones that did not
+        # would let one platform's breakage discard everyone else's history.
+        if: hashFiles('bench-gha/bench-gha-macos-latest/bench-gha.json') != ''
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: WaterUI Bench (macos-latest)
@@ -191,6 +201,11 @@ jobs:
           alert-threshold: "150%"
           fail-on-alert: false
       - name: Track benchmark history (windows)
+        # A leg that failed uploads no JSON, and a non-gating leg is expected
+        # to fail (see #152 for Windows). Recording the platforms that did
+        # produce results is the point; erroring on the ones that did not
+        # would let one platform's breakage discard everyone else's history.
+        if: hashFiles('bench-gha/bench-gha-windows-latest/bench-gha.json') != ''
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: WaterUI Bench (windows-latest)
