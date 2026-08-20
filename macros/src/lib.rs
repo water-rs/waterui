@@ -1222,7 +1222,7 @@ fn testing_crate_path() -> syn::Result<proc_macro2::TokenStream> {
         }
         Err(_) => Err(syn::Error::new(
             Span::call_site(),
-            "`#[waterui::test(...)]` requires the `waterui-testing` crate as a dependency (it may be renamed in Cargo.toml).",
+            "`#[waterui::test(...)]` and `#[waterui::bench(...)]` require the `waterui-testing` crate as a dependency (it may be renamed in Cargo.toml).",
         )),
     }
 }
@@ -1325,14 +1325,13 @@ fn parse_test_view_arg(args: TokenStream) -> Result<WateruiTestArgs, TokenStream
 
 fn single_typed_parameter<'a>(
     input_fn: &'a ItemFn,
+    macro_label: &str,
     expected: &str,
 ) -> Result<&'a syn::PatType, TokenStream> {
     if input_fn.sig.inputs.len() != 1 {
         return Err(syn::Error::new_spanned(
             &input_fn.sig.inputs,
-            format!(
-                "`#[waterui::test(...)]` test function must take exactly one parameter: {expected}"
-            ),
+            format!("`{macro_label}` test function must take exactly one parameter: {expected}"),
         )
         .to_compile_error()
         .into());
@@ -1342,23 +1341,25 @@ fn single_typed_parameter<'a>(
         Some(syn::FnArg::Typed(arg)) => Ok(arg),
         _ => Err(syn::Error::new_spanned(
             &input_fn.sig.inputs,
-            format!(
-                "`#[waterui::test(...)]` test function must take one explicit parameter: {expected}"
-            ),
+            format!("`{macro_label}` test function must take one explicit parameter: {expected}"),
         )
         .to_compile_error()
         .into()),
     }
 }
 
-/// The mounting form takes the app session by `&mut`.
-fn validate_mounted_parameter(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
-    let typed_arg = single_typed_parameter(input_fn, "a `&mut` app session")?;
+/// The mounting form takes its session parameter by `&mut`.
+fn validate_mounted_parameter<'a>(
+    input_fn: &'a ItemFn,
+    macro_label: &str,
+    expected: &str,
+) -> Result<&'a syn::PatType, TokenStream> {
+    let typed_arg = single_typed_parameter(input_fn, macro_label, expected)?;
 
     let syn::Type::Reference(reference) = typed_arg.ty.as_ref() else {
         return Err(syn::Error::new_spanned(
             &typed_arg.ty,
-            "`#[waterui::test(...)]` parameter must be a mutable reference to the app session",
+            format!("`{macro_label}` parameter must be a mutable reference: {expected}"),
         )
         .to_compile_error()
         .into());
@@ -1366,7 +1367,7 @@ fn validate_mounted_parameter(input_fn: &ItemFn) -> Result<&syn::PatType, TokenS
     if reference.mutability.is_none() {
         return Err(syn::Error::new_spanned(
             &typed_arg.ty,
-            "`#[waterui::test(...)]` parameter must be `&mut ...`",
+            format!("`{macro_label}` parameter must be `&mut ...`"),
         )
         .to_compile_error()
         .into());
@@ -1376,13 +1377,18 @@ fn validate_mounted_parameter(input_fn: &ItemFn) -> Result<&syn::PatType, TokenS
 }
 
 /// The manual-mount form takes the configured `UiBuilder` by value.
-fn validate_builder_parameter(input_fn: &ItemFn) -> Result<&syn::PatType, TokenStream> {
-    let typed_arg = single_typed_parameter(input_fn, "the `UiBuilder` by value")?;
+fn validate_builder_parameter<'a>(
+    input_fn: &'a ItemFn,
+    macro_label: &str,
+) -> Result<&'a syn::PatType, TokenStream> {
+    let typed_arg = single_typed_parameter(input_fn, macro_label, "the `UiBuilder` by value")?;
 
     if matches!(typed_arg.ty.as_ref(), syn::Type::Reference(_)) {
         return Err(syn::Error::new_spanned(
             &typed_arg.ty,
-            "the manual-mount form of `#[waterui::test(...)]` takes the `UiBuilder` by value; mount it in the test body",
+            format!(
+                "the manual-mount form of `{macro_label}` takes the `UiBuilder` by value; mount it in the test body"
+            ),
         )
         .to_compile_error()
         .into());
@@ -1391,11 +1397,12 @@ fn validate_builder_parameter(input_fn: &ItemFn) -> Result<&syn::PatType, TokenS
     Ok(typed_arg)
 }
 
-fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatType, TokenStream> {
+/// Signature checks shared by `#[waterui::test]` and `#[waterui::bench]`.
+fn validate_harness_fn_shape(input_fn: &ItemFn, macro_label: &str) -> Result<(), TokenStream> {
     if input_fn.sig.constness.is_some() {
         return Err(syn::Error::new_spanned(
             input_fn.sig.constness,
-            "`#[waterui::test(...)]` does not support const functions",
+            format!("`{macro_label}` does not support const functions"),
         )
         .to_compile_error()
         .into());
@@ -1403,7 +1410,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
     if let syn::Safety::Unsafe(unsafe_token) = &input_fn.sig.safety {
         return Err(syn::Error::new_spanned(
             unsafe_token,
-            "`#[waterui::test(...)]` does not support unsafe functions",
+            format!("`{macro_label}` does not support unsafe functions"),
         )
         .to_compile_error()
         .into());
@@ -1411,7 +1418,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
     if input_fn.sig.abi.is_some() {
         return Err(syn::Error::new_spanned(
             &input_fn.sig.abi,
-            "`#[waterui::test(...)]` does not support extern ABI",
+            format!("`{macro_label}` does not support extern ABI"),
         )
         .to_compile_error()
         .into());
@@ -1419,7 +1426,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
     if input_fn.sig.variadic.is_some() {
         return Err(syn::Error::new_spanned(
             &input_fn.sig.variadic,
-            "`#[waterui::test(...)]` does not support variadic arguments",
+            format!("`{macro_label}` does not support variadic arguments"),
         )
         .to_compile_error()
         .into());
@@ -1427,15 +1434,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
     if !input_fn.sig.generics.params.is_empty() || input_fn.sig.generics.where_clause.is_some() {
         return Err(syn::Error::new_spanned(
             &input_fn.sig.generics,
-            "`#[waterui::test(...)]` does not support generic test functions",
-        )
-        .to_compile_error()
-        .into());
-    }
-    if !is_unit_output(&input_fn.sig.output) {
-        return Err(syn::Error::new_spanned(
-            &input_fn.sig.output,
-            "`#[waterui::test(...)]` test functions must not return a value",
+            format!("`{macro_label}` does not support generic test functions"),
         )
         .to_compile_error()
         .into());
@@ -1444,17 +1443,31 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
         if attr.path().is_ident("test") {
             return Err(syn::Error::new_spanned(
                 attr,
-                "Do not combine `#[test]` with `#[waterui::test(...)]`",
+                format!("Do not combine `#[test]` with `{macro_label}`"),
             )
             .to_compile_error()
             .into());
         }
     }
+    Ok(())
+}
+
+fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatType, TokenStream> {
+    const LABEL: &str = "#[waterui::test(...)]";
+    validate_harness_fn_shape(input_fn, LABEL)?;
+    if !is_unit_output(&input_fn.sig.output) {
+        return Err(syn::Error::new_spanned(
+            &input_fn.sig.output,
+            "`#[waterui::test(...)]` test functions must not return a value",
+        )
+        .to_compile_error()
+        .into());
+    }
 
     if mounts_view {
-        validate_mounted_parameter(input_fn)
+        validate_mounted_parameter(input_fn, LABEL, "a `&mut` app session")
     } else {
-        validate_builder_parameter(input_fn)
+        validate_builder_parameter(input_fn, LABEL)
     }
 }
 
@@ -1565,6 +1578,277 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
         #[test]
         #visibility fn #fn_name() {
             #run_body
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+struct WateruiBenchArgs {
+    /// `Some` mounts this no-arg view function; `None` is the manual-mount
+    /// form whose bench function receives the configured `UiBuilder` by value
+    /// and returns the recorded `PerfReport`.
+    view: Option<syn::Path>,
+    theme: Option<Expr>,
+    viewport: Option<(Expr, Expr)>,
+    budgets: [(&'static str, Option<Expr>); 6],
+}
+
+const BENCH_BUDGET_ARGS: [&str; 6] = [
+    "max_p95_us",
+    "max_mean_us",
+    "max_rebuild_ratio",
+    "max_scene_layers",
+    "max_gpu_surface_layers",
+    "max_clip_layers",
+];
+
+impl WateruiBenchArgs {
+    fn parse_named(&mut self, input: syn::parse::ParseStream) -> syn::Result<()> {
+        let name: syn::Ident = input.parse()?;
+        input.parse::<Token![=]>()?;
+        if name == "theme" {
+            self.theme = Some(input.parse()?);
+            return Ok(());
+        }
+        if name == "viewport" {
+            let content;
+            syn::parenthesized!(content in input);
+            let width: Expr = content.parse()?;
+            content.parse::<Token![,]>()?;
+            let height: Expr = content.parse()?;
+            self.viewport = Some((width, height));
+            return Ok(());
+        }
+        if let Some((slot_name, slot)) = self
+            .budgets
+            .iter_mut()
+            .find(|(slot_name, _)| name == slot_name)
+        {
+            if slot.is_some() {
+                return Err(syn::Error::new_spanned(
+                    name,
+                    format!("duplicate `#[waterui::bench(...)]` budget `{slot_name}`"),
+                ));
+            }
+            *slot = Some(input.parse()?);
+            return Ok(());
+        }
+        Err(syn::Error::new_spanned(
+            name,
+            "`#[waterui::bench(...)]` accepts an optional view function path followed by `theme = <installer>`, `viewport = (width, height)`, and the budgets `max_p95_us`, `max_mean_us`, `max_rebuild_ratio`, `max_scene_layers`, `max_gpu_surface_layers`, `max_clip_layers`",
+        ))
+    }
+
+    /// Whether the next tokens are a named `ident = ...` argument rather than
+    /// the leading view function path.
+    fn peeks_named(input: syn::parse::ParseStream) -> bool {
+        let fork = input.fork();
+        if fork.parse::<syn::Ident>().is_err() {
+            return false;
+        }
+        fork.peek(Token![=])
+    }
+}
+
+impl Parse for WateruiBenchArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut args = Self {
+            view: None,
+            theme: None,
+            viewport: None,
+            budgets: BENCH_BUDGET_ARGS.map(|name| (name, None)),
+        };
+        let mut first = true;
+        while !input.is_empty() {
+            if !first {
+                input.parse::<Token![,]>()?;
+                if input.is_empty() {
+                    break;
+                }
+            }
+            if first && !Self::peeks_named(input) {
+                args.view = Some(input.parse()?);
+            } else {
+                args.parse_named(input)?;
+            }
+            first = false;
+        }
+        Ok(args)
+    }
+}
+
+fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatType, TokenStream> {
+    const LABEL: &str = "#[waterui::bench(...)]";
+    validate_harness_fn_shape(input_fn, LABEL)?;
+    if input_fn.sig.asyncness.is_some() {
+        return Err(syn::Error::new_spanned(
+            input_fn.sig.asyncness,
+            "`#[waterui::bench(...)]` does not support async functions; drive frames through `PerfRun` instead",
+        )
+        .to_compile_error()
+        .into());
+    }
+
+    if mounts_view {
+        if !is_unit_output(&input_fn.sig.output) {
+            return Err(syn::Error::new_spanned(
+                &input_fn.sig.output,
+                "the mounting form of `#[waterui::bench(...)]` must not return a value; record scenarios through `&mut PerfApp`",
+            )
+            .to_compile_error()
+            .into());
+        }
+        validate_mounted_parameter(input_fn, LABEL, "`&mut PerfApp`")
+    } else {
+        if is_unit_output(&input_fn.sig.output) {
+            return Err(syn::Error::new_spanned(
+                &input_fn.sig.output,
+                "the manual form of `#[waterui::bench(...)]` must return the recorded `PerfReport`",
+            )
+            .to_compile_error()
+            .into());
+        }
+        validate_builder_parameter(input_fn, LABEL)
+    }
+}
+
+/// Attribute macro for `WaterUI` GPU frame benchmarks.
+///
+/// Expands into a plain `#[test]` named `waterui_bench_<name>` (that prefix is
+/// how `water bench` discovers benches through `cargo nextest`). Without the
+/// `WATERUI_BENCH_*` environment variables the bench runs in smoke mode
+/// (0 warmups, 2 samples, 1 repetition, no budget enforcement), so a plain
+/// `cargo nextest run` keeps every bench compiling and executing as a cheap
+/// correctness test. `water bench` sets the environment for full measurement
+/// runs, where the budget arguments are enforced in-process — a blown budget
+/// is a failed test.
+///
+/// # Mounting form
+///
+/// A no-arg view function path mounts offscreen before the bench body runs;
+/// the bench function receives `&mut PerfApp` and records scenarios with
+/// `measure`. `theme = <installer>` swaps the theme package and
+/// `viewport = (width, height)` sizes the window.
+///
+/// ```ignore
+/// fn dashboard() -> impl View {
+///     // ...
+/// }
+///
+/// #[waterui::bench(dashboard, theme = hydrolysis_m3::install, viewport = (390, 844), max_p95_us = 8_000)]
+/// fn dashboard_redraw(perf: &mut waterui_testing::PerfApp) {
+///     perf.measure("steady-redraw", |run| run.redraw());
+/// }
+/// ```
+///
+/// # Manual form
+///
+/// Without a view path the bench function receives the configured
+/// `UiBuilder` by value, drives `perf_with` itself, and returns the
+/// `PerfReport` — the form for benches that own `Binding`s the view closes
+/// over.
+///
+/// ```ignore
+/// #[waterui::bench(theme = hydrolysis_m3::install, max_rebuild_ratio = 0.2)]
+/// fn counter_updates(ui: waterui_testing::UiBuilder) -> waterui_testing::PerfReport {
+///     let value = Binding::i32(0);
+///     let value_for_view = value.clone();
+///     ui.perf_with(move || counter(&value_for_view), |perf| {
+///         perf.measure("increment", |run| {
+///             run.app().query().label("Increment").tap();
+///             let _ = run;
+///         });
+///     })
+/// }
+/// ```
+///
+/// # Budgets
+///
+/// `max_p95_us`, `max_mean_us`, `max_rebuild_ratio`, `max_scene_layers`,
+/// `max_gpu_surface_layers`, and `max_clip_layers` are all optional and apply
+/// to every measurement the bench records. `water bench` can only tighten
+/// them further via its `--max-*` flags.
+#[proc_macro_attribute]
+pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
+    let bench_args = match syn::parse::<WateruiBenchArgs>(args) {
+        Ok(bench_args) => bench_args,
+        Err(err) => return err.to_compile_error().into(),
+    };
+    let input_fn = parse_macro_input!(input as ItemFn);
+    let typed_arg = match validate_bench_fn(&input_fn, bench_args.view.is_some()) {
+        Ok(typed_arg) => typed_arg,
+        Err(err) => return err,
+    };
+
+    let testing_path = match testing_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
+    let attrs = &input_fn.attrs;
+    let visibility = &input_fn.vis;
+    let bench_name = input_fn.sig.ident.to_string();
+    let test_fn_name = syn::Ident::new(
+        &format!("waterui_bench_{bench_name}"),
+        input_fn.sig.ident.span(),
+    );
+    let fn_body = &input_fn.block;
+    let arg_pattern = &typed_arg.pat;
+    let arg_type = &typed_arg.ty;
+
+    let mut builder = quote! { #testing_path::ui() };
+    if let Some((width, height)) = &bench_args.viewport {
+        builder = quote! { #builder.viewport(#width, #height) };
+    }
+    if let Some(theme) = &bench_args.theme {
+        builder = quote! { #builder.theme(#theme) };
+    }
+    builder = quote! { #builder.perf_config(__waterui_bench_config) };
+
+    let budget_fields = bench_args.budgets.iter().map(|(name, value)| {
+        let field = syn::Ident::new(name, Span::call_site());
+        value.as_ref().map_or_else(
+            || quote! { #field: ::core::option::Option::None },
+            |expr| quote! { #field: ::core::option::Option::Some(#expr) },
+        )
+    });
+    let budgets = quote! {
+        #testing_path::bench::BenchBudgets { #(#budget_fields),* }
+    };
+
+    let run_closure = bench_args.view.as_ref().map_or_else(
+        || {
+            quote! {
+                |__waterui_bench_config| {
+                    let #arg_pattern: #arg_type = #builder;
+                    let __waterui_bench_report: #testing_path::PerfReport = #fn_body;
+                    __waterui_bench_report
+                }
+            }
+        },
+        |view_fn| {
+            quote! {
+                |__waterui_bench_config| {
+                    #builder.perf_with(#view_fn, |__waterui_bench_perf| {
+                        let #arg_pattern: #arg_type = __waterui_bench_perf;
+                        #fn_body
+                    })
+                }
+            }
+        },
+    );
+
+    let expanded = quote! {
+        #(#attrs)*
+        #[test]
+        #visibility fn #test_fn_name() {
+            #testing_path::bench::run_bench(
+                env!("CARGO_PKG_NAME"),
+                #bench_name,
+                #budgets,
+                #run_closure,
+            );
         }
     };
 
