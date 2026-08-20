@@ -12,7 +12,7 @@ use waterui_browser_cef::{
 use waterui_core::Environment;
 use waterui_graphics::gpu_surface::GpuSurface;
 
-use crate::browser_input::{GtkBrowserInput, install};
+use crate::browser_input::{GtkBrowserInput, PointerSample, install};
 
 const CEF_WHEEL_DELTA: f64 = 120.0;
 
@@ -115,16 +115,9 @@ impl CefGtkInput {
 }
 
 impl GtkBrowserInput for CefGtkInput {
-    fn pointer_move(
-        &self,
-        x: f64,
-        y: f64,
-        _delta_x: f64,
-        _delta_y: f64,
-        modifiers: ModifierType,
-        _time_ms: u32,
-    ) {
-        self.page.pointer_move(x, y, self.modifiers(modifiers));
+    fn pointer_move(&self, sample: PointerSample) {
+        self.page
+            .pointer_move(sample.x, sample.y, self.modifiers(sample.modifiers));
     }
 
     fn pointer_button(
@@ -151,28 +144,24 @@ impl GtkBrowserInput for CefGtkInput {
             .pointer_button(pressed, button, x, y, self.modifiers(modifiers));
     }
 
-    fn scroll(
-        &self,
-        x: f64,
-        y: f64,
-        delta_x: f64,
-        delta_y: f64,
-        finished: bool,
-        modifiers: ModifierType,
-        _time_ms: u32,
-    ) {
+    fn scroll(&self, sample: PointerSample, finished: bool) {
         if finished {
             return;
         }
         let remainder = self.wheel_remainder.get();
-        let delta_x = delta_x.mul_add(CEF_WHEEL_DELTA, remainder.0);
-        let delta_y = delta_y.mul_add(CEF_WHEEL_DELTA, remainder.1);
+        let delta_x = sample.delta_x.mul_add(CEF_WHEEL_DELTA, remainder.0);
+        let delta_y = sample.delta_y.mul_add(CEF_WHEEL_DELTA, remainder.1);
         let integral_x = delta_x.round();
         let integral_y = delta_y.round();
         self.wheel_remainder
             .set((delta_x - integral_x, delta_y - integral_y));
-        self.page
-            .scroll(x, y, integral_x, integral_y, self.modifiers(modifiers));
+        self.page.scroll(
+            sample.x,
+            sample.y,
+            integral_x,
+            integral_y,
+            self.modifiers(sample.modifiers),
+        );
     }
 
     fn focus(&self, focused: bool) {

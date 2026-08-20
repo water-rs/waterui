@@ -8,7 +8,7 @@
     allow(dead_code, unused_imports)
 )]
 
-//! System WebKitGTK implementation selected by `webview-system`.
+//! System `WebKitGTK` implementation selected by `webview-system`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -26,7 +26,7 @@ type JsHandler = Rc<waterui_webview::ScriptMessageHandler>;
 
 const WEBKIT_FEATURE_MSG: &str = "WebView requires waterui-gtk feature `webkitgtk` and linkable WebKitGTK 6 libraries on Linux (fast-fail: no placeholder backend)";
 
-/// Adapts the shared bridge's one-function transport onto WebKitGTK's message handler.
+/// Adapts the shared bridge's one-function transport onto `WebKitGTK`'s message handler.
 const TRANSPORT_SCRIPT: &str = concat!(
     "globalThis.__wateruiSend = function (envelope) {",
     "window.webkit.messageHandlers.__wateruiSend.postMessage(envelope);",
@@ -692,6 +692,7 @@ mod webkitgtk {
     }
 }
 
+/// Installs the system `WebKitGTK` controller unless one is already present.
 pub fn ensure_webview_controller(env: &mut Environment) {
     if env.get::<WebViewController>().is_some() {
         return;
@@ -800,8 +801,17 @@ impl GtkWebViewHandle {
         self.widget.clone()
     }
 
+    /// Converts a URI `WebKitGTK` reported into the event payload type.
+    ///
+    /// Parsed through `FromStr` rather than [`Url::parse`], which keeps only
+    /// web URLs: an engine legitimately navigates to `about:blank`, and that is
+    /// not an error. A URI the engine emits that does not parse at all is a
+    /// contract break worth crashing on, matching the WPE bridge's
+    /// `parse_url`; the removed `Url::from(String)` fallback used to
+    /// manufacture a bogus `Url` and hand it to the application instead.
     fn parse_url(raw: &str) -> Url {
-        Url::parse(raw).unwrap_or_else(|| Url::from(raw.to_owned()))
+        raw.parse()
+            .unwrap_or_else(|error| panic!("WebKitGTK emitted an invalid URL {raw:?}: {error}"))
     }
 
     #[cfg(all(
@@ -1403,6 +1413,11 @@ impl WebViewHandle for GtkWebViewHandle {
         }
     }
 
+    #[expect(
+        clippy::future_not_send,
+        reason = "a GTK web view is main-thread-only: its shared state is an `Rc` and it holds \
+                  raw WebKitGTK pointers, so this future is awaited on the GTK main context"
+    )]
     async fn get_cookies(&self) -> Vec<Cookie<'static>> {
         self.shared
             .cookie_cache
@@ -1434,7 +1449,7 @@ impl WebViewHandle for GtkWebViewHandle {
         )))]
         {
             let _ = script;
-            return Box::pin(async { Err(Str::from(WEBKIT_FEATURE_MSG)) });
+            Box::pin(async { Err(Str::from(WEBKIT_FEATURE_MSG)) })
         }
     }
 }
