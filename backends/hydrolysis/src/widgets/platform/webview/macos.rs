@@ -777,9 +777,12 @@ impl CustomWebViewController for MacSystemWebViewController {
 }
 
 pub(crate) fn install(env: &mut Environment) {
-    assert!(
-        env.get::<WebViewController>().is_none(),
-        "Hydrolysis macOS system WebView controller was installed twice"
-    );
+    // The backend supplies the *default* controller, so an application or test
+    // that installed its own keeps it. This used to assert instead, which turned
+    // a deliberate `WebViewController` in the environment into a crash; the WPE
+    // path had the mirror-image bug and silently overwrote one.
+    if env.get::<WebViewController>().is_some() {
+        return;
+    }
     env.insert(WebViewController::new(MacSystemWebViewController));
 }
