@@ -1,5 +1,6 @@
 //! Shared TCP protocol between `water` CLI and the preview support app.
 
+pub mod bench;
 pub mod hydrolysis;
 
 use serde::de::{Error as DeError, Visitor as DeVisitor};

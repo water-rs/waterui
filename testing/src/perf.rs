@@ -1,6 +1,7 @@
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use waterui_core::View;
+use waterui_core::{AnyView, View};
 
 use crate::app::{OffscreenApp, UiBuilder};
 use crate::driver::FrameTiming;
@@ -384,15 +385,17 @@ impl PerfRun<'_> {
 }
 
 /// Records performance scenarios for one view.
-pub struct PerfApp<F, V> {
+///
+/// The view factory is erased internally, so user-facing signatures (bench
+/// bodies, automation closures) stay a plain `&mut PerfApp`.
+pub struct PerfApp {
     builder: UiBuilder,
-    view_fn: F,
+    view_fn: Rc<dyn Fn() -> AnyView>,
     config: PerfConfig,
     report: PerfReport,
-    _view: core::marker::PhantomData<fn() -> V>,
 }
 
-impl<F, V> core::fmt::Debug for PerfApp<F, V> {
+impl core::fmt::Debug for PerfApp {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PerfApp")
             .field("builder", &self.builder)
@@ -402,20 +405,19 @@ impl<F, V> core::fmt::Debug for PerfApp<F, V> {
     }
 }
 
-impl<F, V> PerfApp<F, V>
-where
-    F: Fn() -> V + Clone + 'static,
-    V: View + 'static,
-{
-    pub(crate) const fn new(builder: UiBuilder, view_fn: F, config: PerfConfig) -> Self {
+impl PerfApp {
+    pub(crate) fn new<F, V>(builder: UiBuilder, view_fn: F, config: PerfConfig) -> Self
+    where
+        F: Fn() -> V + 'static,
+        V: View + 'static,
+    {
         Self {
             builder,
-            view_fn,
+            view_fn: Rc::new(move || AnyView::new(view_fn())),
             config,
             report: PerfReport {
                 measurements: Vec::new(),
             },
-            _view: core::marker::PhantomData,
         }
     }
 
@@ -440,7 +442,8 @@ where
                 .expect("perf sample count should fit usize"),
         );
         for _ in 0..self.config.repetitions {
-            let mut app = self.builder.clone().mount_offscreen(self.view_fn.clone());
+            let view_fn = Rc::clone(&self.view_fn);
+            let mut app = self.builder.clone().mount_offscreen(move || view_fn());
             // Seed from the driver's virtual clock (the mount already pumped)
             // so perf frames and interleaved semantic pumps stay monotone.
             let mut frame_at = app.app.driver.clock().unwrap_or_else(Instant::now);

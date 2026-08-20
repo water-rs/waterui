@@ -1,0 +1,7 @@
+error: `#[waterui::bench(...)]` test function must take exactly one parameter: `&mut PerfApp`
+ --> tests/ui/waterui_bench/fail_param_count.rs:5:1
+  |
+5 | #[waterui::bench(sample_view)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `waterui::bench` (in Nightly builds, run with -Z macro-backtrace for more info)

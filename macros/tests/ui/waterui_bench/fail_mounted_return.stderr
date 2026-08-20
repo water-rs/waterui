@@ -1,0 +1,5 @@
+error: the mounting form of `#[waterui::bench(...)]` must not return a value; record scenarios through `&mut PerfApp`
+ --> tests/ui/waterui_bench/fail_mounted_return.rs:6:56
+  |
+6 | fn returns_report(perf: &mut waterui_testing::PerfApp) -> u32 {
+  |                                                        ^^^^^^
