@@ -9,8 +9,11 @@ use smol::fs;
 #[cfg(target_os = "macos")]
 use smol::stream::StreamExt as _;
 
+// `copy_file` is used by `package_binary_as_app`, which compiles on every
+// host; only the codesign helpers below are macOS-gated.
+use crate::utils::copy_file;
 #[cfg(target_os = "macos")]
-use crate::utils::{copy_file, run_command_os};
+use crate::utils::run_command_os;
 
 #[cfg(target_os = "macos")]
 const CEF_HELPER_VARIANTS: [(&str, &str); 5] = [
