@@ -1,0 +1,184 @@
+name: Bench
+
+# Two-tier regression philosophy:
+#
+# `water bench` enforces deterministic counter budgets in-process (rebuild
+# ratio, scene/clip/gpu-surface layer counts, cache misses, and similar
+# environment-independent numbers). A budget violation is a hard failure —
+# `water bench` exits nonzero and this job fails — because those counters
+# don't depend on runner hardware or how busy the machine happens to be.
+#
+# Wall-clock timings are the opposite: on a shared GitHub-hosted runner
+# they're noisy from one run to the next, so a hard pass/fail gate on wall
+# time would be flaky by construction. Wall-clock trends are instead tracked
+# over time on the `gh-pages` branch (via benchmark-action/github-action-
+# benchmark below) and surfaced as alert comments on a push to `dev`/`main`
+# when a trend crosses a threshold — informational, not a merge blocker.
+on:
+  pull_request:
+    branches: ["**"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  push:
+    branches: [dev, main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only by default; only the push-triggered `bench-history` job elevates
+# to `contents: write`, which it needs to commit benchmark history to
+# `gh-pages`.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  bench:
+    name: Bench (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      # GPU offscreen benches run here, same as test.yml's GPU snapshot tests,
+      # so the Linux leg needs the Vulkan ICD loader for llvmpipe/lavapipe.
+      - name: Install native dependencies
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+      - name: Install DirectX Shader Compiler
+        if: runner.os == 'Windows'
+        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+      - name: Verify DirectX Shader Compiler
+        if: runner.os == 'Windows'
+        run: dxc --version
+      - uses: mozilla/sccache-action@v0.0.11
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-${{ matrix.os }}
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      - name: Build water CLI
+        run: cargo build -p waterui-cli
+      - name: Resolve water binary path
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "WATER_BIN=target/debug/water.exe" >> "$GITHUB_ENV"
+          else
+            echo "WATER_BIN=target/debug/water" >> "$GITHUB_ENV"
+          fi
+      - name: Bench examples/stress
+        shell: bash
+        run: |
+          "$WATER_BIN" bench --path examples/stress \
+            --report-dir bench-reports/stress \
+            --gha bench-gha-stress.json
+      - name: Bench examples/list
+        shell: bash
+        run: |
+          "$WATER_BIN" bench --path examples/list \
+            --report-dir bench-reports/list \
+            --gha bench-gha-list.json
+      # `water bench --gha` writes one customSmallerIsBetter JSON array per
+      # suite; github-action-benchmark below wants a single array, so flatten
+      # the two suite files into one before handing it off.
+      - name: Merge per-suite benchmark JSON
+        shell: bash
+        run: jq -s 'add' bench-gha-stress.json bench-gha-list.json > bench-gha.json
+      - name: Upload bench reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-reports-${{ matrix.os }}
+          path: bench-reports/**
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload benchmark JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-gha-${{ matrix.os }}
+          path: bench-gha.json
+          retention-days: 14
+
+  # Store and compare wall-clock history only on push: a pull_request from a
+  # fork has no write access to push `gh-pages`, and the hard gate for pull
+  # requests is already the deterministic budgets `water bench` itself
+  # enforced in the matrix above (a violation already failed that job).
+  #
+  # This runs as a single job AFTER the matrix — not as a per-leg step —
+  # because github-action-benchmark commits to `gh-pages` and three matrix
+  # legs pushing concurrently race each other (non-fast-forward push
+  # failures). One job storing the three per-OS series sequentially cannot
+  # race, and keeps the expensive bench legs fully parallel.
+  bench-history:
+    name: Bench history
+    needs: bench
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bench-gha-*
+          path: bench-gha
+      - name: Track benchmark history (ubuntu)
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: WaterUI Bench (ubuntu-latest)
+          tool: customSmallerIsBetter
+          output-file-path: bench-gha/bench-gha-ubuntu-latest/bench-gha.json
+          benchmark-data-dir-path: dev/bench
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          comment-on-alert: true
+          alert-threshold: "150%"
+          # Wall-clock on a shared runner is noisy; the hard gate is the
+          # deterministic counter budgets water bench enforces in-process
+          # (see the file header comment), which already failed the bench job
+          # on violation. This is a trend alert, not a merge gate.
+          fail-on-alert: false
+      - name: Track benchmark history (macos)
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: WaterUI Bench (macos-latest)
+          tool: customSmallerIsBetter
+          output-file-path: bench-gha/bench-gha-macos-latest/bench-gha.json
+          benchmark-data-dir-path: dev/bench
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          comment-on-alert: true
+          alert-threshold: "150%"
+          fail-on-alert: false
+      - name: Track benchmark history (windows)
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: WaterUI Bench (windows-latest)
+          tool: customSmallerIsBetter
+          output-file-path: bench-gha/bench-gha-windows-latest/bench-gha.json
+          benchmark-data-dir-path: dev/bench
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          comment-on-alert: true
+          alert-threshold: "150%"
+          fail-on-alert: false
