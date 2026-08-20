@@ -3,6 +3,16 @@
 # Surface anything pathologically slow rather than letting CI hang on it.
 slow-timeout = { period = "60s", terminate-after = 10 }
 
+# `#[waterui::bench]` tests are long by design in full-measurement mode:
+# `water bench` drives hundreds of frames per repetition, and on a software
+# rasterizer (llvmpipe on CI's Linux runners) a heavy scene runs at seconds
+# per frame — the stress bench hit the default 600s terminate ceiling there.
+# Mark them slow later and give them a far higher terminate ceiling instead
+# of letting the general-test watchdog kill a legitimate measurement run.
+[[profile.default.overrides]]
+filter = "test(waterui_bench_)"
+slow-timeout = { period = "300s", terminate-after = 8 }
+
 [profile.ci]
 # Report every failure in one run: stopping at the first turns a multi-failure
 # break into one CI round trip per failure.
@@ -13,3 +23,10 @@ status-level = "retry"
 # retry keeps that from failing the branch, and the retry is reported.
 retries = { backoff = "fixed", count = 2, delay = "1s" }
 slow-timeout = { period = "120s", terminate-after = 5 }
+
+# Same bench exemption as the default profile: smoke-mode benches are cheap,
+# but a heavy scene's first GPU mount on a software rasterizer can still be
+# slow, and a measurement run must never be killed by the general watchdog.
+[[profile.ci.overrides]]
+filter = "test(waterui_bench_)"
+slow-timeout = { period = "300s", terminate-after = 8 }

@@ -121,19 +121,25 @@ jobs:
         with:
           shared-key: ci-ubuntu
           cache-on-failure: true
-      - name: Generate Cargo.lock
-        run: cargo generate-lockfile
+      # The audit and deny checks run against the COMMITTED Cargo.lock — the
+      # dependency set the workspace actually builds. A `cargo generate-lockfile`
+      # step used to precede them; it silently re-resolved everything to the
+      # newest compatible versions first, so the checks audited a hypothetical
+      # future resolution instead of the real one. That is exactly backwards
+      # for supply-chain checks: the August 2026 `arrayref 0.3.10` compromise
+      # (see the [bans] section in deny.toml) would have been *pulled in* by
+      # that step while the committed lock stayed clean.
       - name: Security audit
         uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
       - uses: taiki-e/install-action@cargo-deny
-      - name: License check
-        run: cargo deny check licenses
-      - name: License check (kit)
+      - name: License and ban check
+        run: cargo deny check licenses bans
+      - name: License and ban check (kit)
         if: ${{ hashFiles('kit/Cargo.toml') != '' }}
         working-directory: kit
-        run: cargo deny --config ../deny.toml check licenses
+        run: cargo deny check --config ../deny.toml licenses bans
       - uses: taiki-e/install-action@cargo-machete
       - name: Unused dependencies
         run: |
