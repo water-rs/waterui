@@ -1,6 +1,6 @@
 ---
 name: waterui-agent-workspace
-description: Manage isolated development workspaces for substantial code changes in the WaterUI repository. Use whenever an agent is asked to implement a feature, build a new capability, perform a large bug fix, refactor multiple files, modify backends or submodules, run a parallel agent task, or do any non-trivial WaterUI development that will involve writing code, running repeated builds or tests, rebasing, resolving conflicts, or merging back. For these tasks, do not edit the canonical repository directly. This skill creates a local git-cloned workspace with a COW-copied Cargo target, clones WaterUI submodules safely, explains how to resolve conflicts inside the workspace, and finishes by taking the global integration lock, fast-forwarding changes back, and deleting the workspace.
+description: Manage isolated development workspaces for substantial code changes in the WaterUI repository. Use whenever an agent is asked to implement a feature, build a new capability, perform a large bug fix, refactor multiple files, modify backends or submodules, run a parallel agent task, or do any non-trivial WaterUI development that will involve writing code, running repeated builds or tests, rebasing, resolving conflicts, or merging back. For these tasks, do not edit the canonical repository directly. This skill hands out a reusable workspace slot at a fixed path with a warm Cargo target, clones WaterUI submodules safely, explains how to resolve conflicts inside the workspace, and finishes by taking the global integration lock, fast-forwarding changes back, and returning the slot to the pool for the next task.
 ---
 
 # WaterUI Agent Workspace
@@ -23,6 +23,16 @@ This workflow now uses `git clone`, so uncommitted tracked changes in the canoni
 ```
 
 Use a short lowercase hyphenated slug such as `layout-cache-fix`.
+
+This hands you a **slot** — a workspace at a fixed, reused path
+(`$WATERUI_AGENT_WORKSPACE_ROOT/slot-1`, `slot-2`, ...) rather than a fresh
+timestamped clone. If a FREE slot exists (nothing has it checked out on an
+`agent/` branch), the script fast-forwards it onto canonical and hands it to
+you already warm — no clone, no `target/` copy. Only when every slot is
+taken does it clone a brand new one. This is a performance fix, not a
+behavior change: everything below about branches, submodules, and merging
+back works identically whichever way the slot was obtained. See "The Slot
+Model" below for why this matters and what makes a slot reusable.
 
 4. Change into the printed workspace path and do all subsequent edits, builds, and tests there.
 
@@ -67,11 +77,69 @@ Run it from anywhere inside the agent workspace, not from the canonical reposito
 
 Override the default source or workspace paths only through `WATERUI_AGENT_SOURCE_REPO` or `WATERUI_AGENT_WORKSPACE_ROOT` when the machine layout changes.
 
-The created workspace is not only branched at the superproject level. The script clones each configured submodule from the local canonical checkout, activates it in the new workspace, and creates the same `agent/<slug>/<timestamp>` branch inside each initialized submodule so backend work does not happen on detached HEADs.
+Whether reused or freshly cloned, a workspace is not only branched at the
+superproject level. The script activates each configured submodule and
+creates the same `agent/<slug>/<timestamp>` branch inside each initialized
+submodule so backend work does not happen on detached HEADs.
 
-The workspace is created with `git clone`, so Git naturally skips ignored and untracked build debris such as `.worktrees` and `.water`. After cloning, the script uses APFS COW copy for the repository `target/` directory so Rust builds stay warm without sharing Cargo locks.
+A brand new slot is created with `git clone`, so Git naturally skips ignored
+and untracked build debris such as `.worktrees` and `.water`. After cloning,
+the script uses APFS COW copy for the repository `target/` directory so Rust
+builds stay warm without sharing Cargo locks. A reused slot skips both steps
+entirely — it already has a clone and an already-warm `target/`.
 
 The finish step is serialized across all agent workspaces with a lock on the canonical repository. Only one agent may merge back at a time.
+
+## The Slot Model
+
+A workspace lives at a fixed, reused path — a **slot** — instead of a fresh
+timestamped clone every time. This exists to fix a real cost: Cargo folds a
+crate's filesystem path into `-C metadata` for every workspace-member crate
+(it has to, so two same-named crates at different paths never collide in the
+build graph). A brand new path therefore means a brand new metadata hash for
+every WaterUI crate on every task — every workspace crate looks unbuilt and
+recompiles from scratch, incremental caches from the previous task are
+unreachable, and sccache cannot help either, because its cache key includes
+that same metadata. Only registry dependencies, whose path is identical
+everywhere, ever hit warm cache. Reusing the same path keeps `-C metadata`
+identical across tasks, so both Cargo's own incremental cache and sccache
+come back warm — this is the entire reason `create_workspace.sh` now hands
+out slots instead of cloning fresh every time.
+
+A slot's state is entirely self-describing — the same principle
+`ensure_workspace_context` already uses to tell a workspace from the
+canonical checkout — so nothing external tracks which slots are in use:
+
+- **FREE**: the superproject is checked out on the canonical integration
+  branch (never an `agent/` branch) and the whole tree, submodules included,
+  has no local changes. `create_workspace.sh` scans existing slots for the
+  first FREE one, fast-forwards it onto canonical (superproject, then each
+  submodule's own configured integration branch, then hard-aligns each
+  submodule checkout to the exact commit canonical's tree now records for
+  it), and switches it to the new `agent/<slug>/<timestamp>` branch — no
+  clone, no `target/` copy.
+- **BUSY**: some workspace has it checked out on an `agent/` branch, possibly
+  with uncommitted work. This is the routine state for a slot mid-task;
+  `create_workspace.sh` skips it silently and looks at the next one.
+- **CORRUPT**: looks FREE (right branch, clean) but its history has diverged
+  from canonical instead of being a pure ancestor of it, so it cannot be
+  fast-forwarded. This should not happen from ordinary use of these scripts —
+  a FREE slot is untouched by anything else — so it is treated as an anomaly:
+  `create_workspace.sh` warns, names the slot, and tries the next one rather
+  than failing the whole run. **Recovery is manual**: delete the corrupt
+  slot's directory (`rm -rf $WATERUI_AGENT_WORKSPACE_ROOT/slot-N`). The next
+  `create_workspace.sh` either reclaims that now-missing slot number for a
+  fresh clone or uses a different slot — nothing needs to track the gap.
+
+`finish_workspace.sh` is what makes a slot FREE again: after the merge lands
+on canonical, it switches the slot's superproject and every submodule back
+onto their configured integration branches, fast-forwards each from
+canonical, and deletes the spent `agent/` branch — leaving the slot clean,
+on the integration branch, and still warm. This replaces the old behaviour
+of deleting the workspace outright; deletion only still happens for a
+**legacy timestamped workspace** (a `<timestamp>-<slug>` path from before the
+slot model), recognised by its basename not matching `slot-<N>`. Both kinds
+of workspace can exist side by side under the same `$WATERUI_AGENT_WORKSPACE_ROOT` — `finish_workspace.sh` picks the right ending for whichever one it is handed.
 
 ## What The Script Enforces
 
@@ -79,13 +147,18 @@ The create script fails immediately if any of the following are true:
 
 - It is not run from the canonical source repository.
 - Cargo resolves any `build.target-dir`.
-- The source or workspace filesystem is not APFS.
+- A brand new slot is needed and the source or workspace filesystem is not APFS.
 
 Uncommitted changes in the canonical checkout do not stop it, and are reported
 rather than obeyed: a workspace is built from committed state, so whatever is
 in someone's working tree has no bearing on what lands in it. Requiring a clean
 tree here protected nothing while letting one agent's half-finished edit stop
 every other agent from starting.
+
+The APFS requirement, and the volume check below, apply only when a brand new
+slot actually needs to be cloned and its `target/` copied — a reused slot
+copies nothing, so it never pays either check, even on a workspace root that
+would otherwise fail them.
 
 A workspace root on a different volume than the source repository is allowed
 (the usual answer when the boot disk is out of space) but only warns: APFS
@@ -94,9 +167,10 @@ copy-on-write to a full byte copy — creation is slower and the copy occupies
 real disk space instead of sharing blocks. The difference is large enough to
 change behaviour: seconds against tens of minutes. A root on a removable volume
 costs more than time, because a workspace is unusable while that volume is
-detached and `finish_workspace.sh` can wedge on it — see below.
+detached and `finish_workspace.sh` can wedge on it — see below. This cost is
+paid once per slot; every later reuse of that same slot pays nothing.
 - Any configured submodule is missing, is not a Git worktree, or does not keep its gitdir under the source repository metadata.
-- The destination path already exists.
+- A brand new slot's destination path already exists (should not happen — slot numbers are only ever handed out once).
 - The task slug is not lowercase hyphenated text.
 
 The finish script fails immediately if any of the following are true:
@@ -161,12 +235,16 @@ rather than deciding for them.
 `~/.waterui-agent/locks/` from before the merge until it exits, so while it runs
 no other agent can merge. It releases the lock from an `EXIT INT TERM` trap.
 
-Never conclude it succeeded because its effects appeared. `delete_workspace` is
-the last thing it does, so the commits land on canonical well before the script
-is done. One run whose workspace sat on a USB volume that dropped off the bus
-left its `rm -rf` in uninterruptible disk wait for eighty minutes; the merge had
+Never conclude it succeeded because its effects appeared. Returning the slot
+to FREE (or, for a legacy workspace, `delete_workspace`) is the last thing it
+does, so the commits land on canonical well before the script is done. One run
+whose legacy workspace sat on a USB volume that dropped off the bus left its
+`rm -rf` in uninterruptible disk wait for eighty minutes; the merge had
 landed, canonical was clean, and every other agent's finish failed with "another
-agent is already integrating" the whole time.
+agent is already integrating" the whole time. A slot's tail step is ordinary
+git plumbing rather than a directory-tree delete, so it is far less likely to
+wedge the same way — but the lock is still the only thing that answers "is it
+really done," not whether the merge's effects are already visible on canonical.
 
 The lock records its holder, so this is a question you can answer rather than
 infer — from either side. The lock directory contains `pid`, `source-repo` and
@@ -198,10 +276,16 @@ lock directory must then be removed by hand.
 `WATERUI_AGENT_WORKSPACE_ROOT` may change between sessions — typically to an
 external volume when the boot disk fills up. What to know when it does:
 
-- Existing workspaces stay where they were created and remain fully usable:
-  sync and finish recognise a workspace by its own evidence (local-path
-  `origin`, `agent/` branch), not by its location, so no environment override
-  is needed for them.
+- Existing workspaces — slots and legacy alike — stay where they were created
+  and remain fully usable: sync and finish recognise a workspace by its own
+  evidence (local-path `origin`, `agent/` branch), not by its location, so no
+  environment override is needed for them.
+- `create_workspace.sh` only scans for FREE slots under the *current*
+  `$WATERUI_AGENT_WORKSPACE_ROOT`. Slots left behind under an old root are not
+  found or reused after the root moves — they just sit there, warm and idle.
+  They are still perfectly usable directly (`cd` in and run the canonical
+  checkout's scripts by absolute path, as below) or can be deleted to reclaim
+  the disk space.
 - Exception: a workspace **cloned before that recognition rule landed**
   carries a pre-fix script copy that still path-matches against the current
   root, and running its own `sync_workspace.sh`/`finish_workspace.sh` dies
@@ -211,9 +295,10 @@ external volume when the boot disk fills up. What to know when it does:
   absolute path while `cd`'d inside the workspace, and it works without any
   override. (Prefixing `WATERUI_AGENT_WORKSPACE_ROOT=<old root>` onto the
   stale copy also works, but fixes nothing going forward.)
-- A root on another volume must still be APFS, and every `create` there pays
-  a full `target/` copy instead of a COW clone (see above). If the boot disk
-  has room again, prefer a root on the source repository's own volume.
+- A root on another volume must still be APFS, and every brand new slot
+  cloned there pays a full `target/` copy instead of a COW clone (see above)
+  — a one-time cost per slot, not per task. If the boot disk has room again,
+  prefer a root on the source repository's own volume.
 
 ## After Creation
 
@@ -222,12 +307,12 @@ external volume when the boot disk fills up. What to know when it does:
 - Rebase and resolve conflicts only inside the workspace.
 - When the canonical repository advances, run `sync_workspace.sh` from the workspace before trying to finish.
 - Do not merge back until the workspace and every changed submodule are fully committed and clean.
-- Run `finish_workspace.sh` to fast-forward submodules first, then fast-forward the superproject, then delete the workspace directory.
+- Run `finish_workspace.sh` to fast-forward submodules first, then fast-forward the superproject, then release the slot back to the pool (or delete the workspace directory, for a legacy non-slot workspace).
 - If finish fails because the canonical repository moved ahead, stop and rebase or respawn the workspace. Do not force a merge inside the canonical repository.
 
 ## Resource
 
-- `scripts/create_workspace.sh`: Create the isolated workspace with local `git clone`, clone each submodule from the canonical checkout, copy `target/` with APFS COW, and switch the superproject plus each initialized submodule onto matching `agent/<slug>/<timestamp>` branches.
+- `scripts/create_workspace.sh`: Scan existing slots for a FREE one and, if found, fast-forward and reuse it; otherwise clone a brand new slot with local `git clone`, clone each submodule from the canonical checkout, and copy `target/` with APFS COW. Either way, switch the superproject plus each initialized submodule onto matching `agent/<slug>/<timestamp>` branches.
 - `scripts/sync_workspace.sh`: Rebase workspace submodules onto their configured integration branches, commit any rebased submodule pointer updates inside the workspace, then rebase the workspace superproject onto the canonical branch.
-- `scripts/finish_workspace.sh`: Acquire the canonical integration lock, fast-forward each configured submodule, fast-forward the superproject, and delete the workspace on success.
+- `scripts/finish_workspace.sh`: Acquire the canonical integration lock, fast-forward each configured submodule, fast-forward the superproject, then return the slot to FREE (switch superproject and submodules back to their integration branches, fast-forward them, delete the spent agent branches) — or delete the workspace outright for a legacy non-slot workspace.
 - `references/waterui-runtime-semantics.md`: WaterUI-specific guidance for fine-grained rebuild semantics, `GpuSurface` renderer ownership, and the rule that visual tests require direct image reading rather than heuristics.
