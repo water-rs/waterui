@@ -473,6 +473,24 @@ impl HeadlessRuntime {
             })
     }
 
+    /// Whether a state change has been requested but not yet flushed, so the
+    /// semantics this runtime last produced are stale.
+    ///
+    /// Unlike [`Self::is_settled`] this says nothing about work that keeps
+    /// going of its own accord — an animation, a gliding scroll, an armed
+    /// gesture deadline. It answers only "is what I last observed still
+    /// current?", which is what an observer needs before reading the tree: an
+    /// app with a perpetual animation is never settled, but it is very often
+    /// up to date.
+    #[must_use]
+    pub fn has_pending_semantic_update(&self) -> bool {
+        self.runtime.renderer.has_pending_semantic_update()
+            || self
+                .popup_windows
+                .iter()
+                .any(|popup| popup.renderer.has_pending_semantic_update())
+    }
+
     pub fn pump(&mut self, capture_snapshot: bool) -> HeadlessPumpResult {
         self.pump_at(capture_snapshot, Instant::now())
     }
