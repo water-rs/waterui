@@ -47,10 +47,30 @@ jobs:
     name: Bench (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
+    # Windows GPU tests currently die in wgpu-on-WARP submission timeouts —
+    # https://github.com/water-rs/waterui/issues/152 — so its bench leg
+    # reports but does not gate until that issue is closed.
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
+      # macOS runners have a real (paravirtualized Metal) GPU and run the full
+      # default measurement shape. The Linux and Windows runners rasterize in
+      # software (llvmpipe / WARP), where a heavy scene runs at seconds per
+      # frame — the full shape blew straight through nextest's terminate
+      # ceiling there. A reduced shape keeps those legs meaningful (the
+      # counter budgets are shape-independent, and the wall-clock series stays
+      # self-consistent per OS over time) while fitting the job budget.
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            bench-shape: --warmups 2 --samples 24 --repetitions 3
+            experimental: false
+          - os: macos-latest
+            bench-shape: ""
+            experimental: false
+          - os: windows-latest
+            bench-shape: --warmups 2 --samples 24 --repetitions 3
+            experimental: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,13 +108,13 @@ jobs:
       - name: Bench examples/stress
         shell: bash
         run: |
-          "$WATER_BIN" bench --path examples/stress \
+          "$WATER_BIN" bench --path examples/stress ${{ matrix.bench-shape }} \
             --report-dir bench-reports/stress \
             --gha bench-gha-stress.json
       - name: Bench examples/list
         shell: bash
         run: |
-          "$WATER_BIN" bench --path examples/list \
+          "$WATER_BIN" bench --path examples/list ${{ matrix.bench-shape }} \
             --report-dir bench-reports/list \
             --gha bench-gha-list.json
       # `water bench --gha` writes one customSmallerIsBetter JSON array per

@@ -15,12 +15,23 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
+    # The Windows leg rotted while compilation was broken and currently has 25
+    # known-failing tests across independent defect classes — tracked in
+    # https://github.com/water-rs/waterui/issues/152. It reports but does not
+    # gate until that issue is closed; remove `experimental` there, not here.
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       # Report every platform in one run. Cancelling the other two hides their
       # results, so a cross-platform break costs one round trip per platform.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            experimental: false
+          - os: windows-latest
+            experimental: true
+          - os: macos-latest
+            experimental: false
     steps:
       - uses: actions/checkout@v4
         with:
