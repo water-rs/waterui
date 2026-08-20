@@ -1,4 +1,4 @@
-//! Bundled WPE WebKit implementation for the GTK backend.
+//! Bundled WPE `WebKit` implementation for the GTK backend.
 
 use std::rc::Rc;
 
@@ -10,16 +10,23 @@ use waterui_core::Environment;
 use waterui_graphics::gpu_surface::GpuSurface;
 use waterui_webview::WebViewController;
 
-use crate::browser_input::{GtkBrowserInput, install};
+use crate::browser_input::{GtkBrowserInput, PointerSample, install};
 
 pub use waterui_browser_wpe::WpeWebViewHandle as GtkWebViewHandle;
 
-/// Installs the bundled WPE controller before the application view is built.
+/// Installs the bundled WPE controller before the application view is built,
+/// unless the application already provided one.
+///
+/// The backend's controller is a default, not an override — the name said
+/// "ensure" while the body overwrote whatever was already there.
 pub fn ensure_webview_controller(env: &mut Environment) {
+    if env.get::<WebViewController>().is_some() {
+        return;
+    }
     env.insert(WebViewController::new(WpeController::packaged()));
 }
 
-/// Creates a GPU-only WPE widget and forwards GTK input into WPEPlatform.
+/// Creates a GPU-only WPE widget and forwards GTK input into `WPEPlatform`.
 pub(crate) fn render_webview(handle: &GtkWebViewHandle, env: &Environment) -> gtk4::Widget {
     let page = handle.page().clone();
     let viewport = WpeViewport::new();
@@ -45,17 +52,15 @@ pub(crate) fn render_webview(handle: &GtkWebViewHandle, env: &Environment) -> gt
 struct WpeGtkInput(WpePage);
 
 impl GtkBrowserInput for WpeGtkInput {
-    fn pointer_move(
-        &self,
-        x: f64,
-        y: f64,
-        delta_x: f64,
-        delta_y: f64,
-        modifiers: ModifierType,
-        time_ms: u32,
-    ) {
-        self.0
-            .pointer_move(x, y, delta_x, delta_y, wpe_modifiers(modifiers), time_ms);
+    fn pointer_move(&self, sample: PointerSample) {
+        self.0.pointer_move(
+            sample.x,
+            sample.y,
+            sample.delta_x,
+            sample.delta_y,
+            wpe_modifiers(sample.modifiers),
+            sample.time_ms,
+        );
     }
 
     fn pointer_button(
@@ -77,25 +82,16 @@ impl GtkBrowserInput for WpeGtkInput {
         );
     }
 
-    fn scroll(
-        &self,
-        x: f64,
-        y: f64,
-        delta_x: f64,
-        delta_y: f64,
-        finished: bool,
-        modifiers: ModifierType,
-        time_ms: u32,
-    ) {
+    fn scroll(&self, sample: PointerSample, finished: bool) {
         self.0.scroll(
-            x,
-            y,
-            delta_x,
-            delta_y,
+            sample.x,
+            sample.y,
+            sample.delta_x,
+            sample.delta_y,
             true,
             finished,
-            wpe_modifiers(modifiers),
-            time_ms,
+            wpe_modifiers(sample.modifiers),
+            sample.time_ms,
         );
     }
 

@@ -37,6 +37,7 @@ use waterui_graphics::gpu_surface::{
     GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle,
     preferred_msaa_samples,
 };
+use waterui_graphics::{SceneEngine, SharedSceneRenderer};
 
 use crate::component::GtkComponent;
 use crate::renderer::{CSS_CLASS_DYNAMIC_RANGE_HDR, CSS_CLASS_DYNAMIC_RANGE_SDR, GtkRenderer};
@@ -81,6 +82,14 @@ struct GpuState {
     wgpu_device: Option<wgpu::Device>,
     wgpu_queue: Option<wgpu::Queue>,
     device_init_in_progress: bool,
+    /// Module cache and scene renderer for the device above.
+    ///
+    /// Both hold objects compiled against that device — `wgpu::ShaderModule`s
+    /// and vello pipelines — so they are created with it and dropped with it on
+    /// unrealize. Keeping them here rather than inside the setup task is what
+    /// makes them shared at all: a cache created per setup call is thrown away
+    /// the moment setup returns and caches nothing.
+    device_shared: Option<DeviceSharedResources>,
 
     surface_format: Option<wgpu::TextureFormat>,
     msaa_samples: u32,
@@ -111,6 +120,32 @@ struct GpuState {
     glow: Option<Rc<glow::Context>>,
 }
 
+/// The resources every renderer on one GL-adopted device shares.
+///
+/// The GTK backend gives each `GLArea` its own external-GL device (see the
+/// module header), so "per device" is "per widget" here — but a single surface
+/// still assembles the same WGSL and draws vector scenes across many setups and
+/// frames, and both of these exist so that work happens once per device instead
+/// of once per use.
+#[derive(Debug)]
+struct DeviceSharedResources {
+    shader_cache: Arc<WgslModuleCache>,
+    scene_renderer: Arc<SharedSceneRenderer>,
+}
+
+impl DeviceSharedResources {
+    /// Builds the pair for `adapter`, choosing the scene engine from what the
+    /// adapter reports. External-GL adapters frequently lack indirect
+    /// execution, so this is not a formality: asking such a device to run the
+    /// classic pipeline aborts inside wgpu rather than degrading.
+    fn new(adapter: &wgpu::Adapter) -> Self {
+        Self {
+            shader_cache: Arc::new(WgslModuleCache::new()),
+            scene_renderer: Arc::new(SharedSceneRenderer::new(SceneEngine::for_adapter(adapter))),
+        }
+    }
+}
+
 impl GpuState {
     fn new(gpu_surface: GpuSurface, env: Environment) -> Self {
         let msaa_max_samples = gpu_surface.msaa_sample_limit();
@@ -126,6 +161,7 @@ impl GpuState {
             wgpu_device: None,
             wgpu_queue: None,
             device_init_in_progress: false,
+            device_shared: None,
             surface_format: None,
             msaa_samples: 1,
             last_size: None,
@@ -592,6 +628,7 @@ fn init_wgpu_if_needed(
     {
         let mut st = state.borrow_mut();
         st.wgpu_instance = Some(instance);
+        st.device_shared = Some(DeviceSharedResources::new(&adapter));
         st.wgpu_adapter = Some(adapter.clone());
         st.surface_format = Some(format);
         st.msaa_samples = msaa_samples;
@@ -654,83 +691,121 @@ fn inherited_hdr_preference(area: &gtk4::GLArea) -> Option<bool> {
     None
 }
 
-fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
-    {
-        let st = state.borrow();
-        if st.setup_done {
-            return true;
-        }
-        if st.setup_in_progress {
-            return false;
-        }
-    }
+/// Everything one renderer setup pass needs, taken out of the state together so
+/// the async task owns a consistent snapshot of a single GL context generation.
+struct SetupInputs {
+    gpu_surface: GpuSurface,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    adapter: wgpu::Adapter,
+    format: wgpu::TextureFormat,
+    msaa_samples: u32,
+    redraw_handle: RedrawHandle,
+    env: Environment,
+    shader_cache: Arc<WgslModuleCache>,
+    scene_renderer: Arc<SharedSceneRenderer>,
+}
 
-    let (gpu_surface, device, queue, adapter, format, msaa_samples, redraw_handle, env) = {
-        let mut st = state.borrow_mut();
-        if st.setup_done {
-            return true;
+impl GpuState {
+    /// Claims the surface for a setup pass, or reports why one cannot start.
+    ///
+    /// Returns `None` while the device is still being requested, while another
+    /// pass is running, or while a pass from a torn-down context still owns the
+    /// surface. On `Some` the surface has been taken out of the state and
+    /// `setup_in_progress` is set, so the caller must run the pass.
+    fn begin_setup(&mut self) -> Option<SetupInputs> {
+        if self.setup_in_progress {
+            return None;
         }
-        if st.setup_in_progress {
-            return false;
-        }
-        let Some(device) = st.wgpu_device.clone() else {
+        let Some(device) = self.wgpu_device.clone() else {
             tracing::debug!("[gtk-gpu] setup_if_needed: missing device");
-            return false;
+            return None;
         };
-        let Some(queue) = st.wgpu_queue.clone() else {
+        let Some(queue) = self.wgpu_queue.clone() else {
             tracing::debug!("[gtk-gpu] setup_if_needed: missing queue");
-            return false;
+            return None;
         };
-        let Some(adapter) = st.wgpu_adapter.clone() else {
+        let Some(adapter) = self.wgpu_adapter.clone() else {
             tracing::debug!("[gtk-gpu] setup_if_needed: missing adapter");
-            return false;
+            return None;
         };
-        let Some(format) = st.surface_format else {
+        let Some(format) = self.surface_format else {
             tracing::debug!("[gtk-gpu] setup_if_needed: missing surface format");
-            return false;
+            return None;
         };
-        let Some(gpu_surface) = st.gpu_surface.take() else {
+        let Some(shared) = self.device_shared.as_ref() else {
+            tracing::debug!("[gtk-gpu] setup_if_needed: missing device-shared resources");
+            return None;
+        };
+        let shader_cache = Arc::clone(&shared.shader_cache);
+        let scene_renderer = Arc::clone(&shared.scene_renderer);
+        let Some(gpu_surface) = self.gpu_surface.take() else {
             // A setup task from a torn-down context still owns the surface; it
             // hands it back (with setup_done unset) when it finishes, and the
             // next frame restarts setup on this context.
             tracing::debug!("[gtk-gpu] setup_if_needed: surface still owned by in-flight setup");
-            return false;
+            return None;
         };
-        st.setup_in_progress = true;
-        (
+        self.setup_in_progress = true;
+        Some(SetupInputs {
             gpu_surface,
             device,
             queue,
             adapter,
             format,
-            st.msaa_samples,
-            st.redraw_handle.clone(),
-            st.env.clone(),
-        )
+            msaa_samples: self.msaa_samples,
+            redraw_handle: self.redraw_handle.clone(),
+            env: self.env.clone(),
+            shader_cache,
+            scene_renderer,
+        })
+    }
+}
+
+fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
+    if state.borrow().setup_done {
+        return true;
+    }
+    // Nothing can run between this borrow and the next on the GTK main loop, so
+    // the state cannot change underneath the two checks.
+    let Some(inputs) = state.borrow_mut().begin_setup() else {
+        return false;
     };
 
     tracing::debug!("[gtk-gpu] setup_if_needed: begin setup");
+    spawn_renderer_setup(area, state, inputs);
+    false
+}
 
+/// Runs `GpuSurface::setup` on the main context and hands the surface back.
+fn spawn_renderer_setup(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>, inputs: SetupInputs) {
+    let SetupInputs {
+        mut gpu_surface,
+        device,
+        queue,
+        adapter,
+        format,
+        msaa_samples,
+        redraw_handle,
+        mut env,
+        shader_cache,
+        scene_renderer,
+    } = inputs;
     let state_clone = Rc::clone(state);
     let area_clone = area.clone();
-    let device = device;
-    let queue = queue;
-    let adapter = adapter;
     let generation = state.borrow().context_generation;
     gtk4::glib::MainContext::default().spawn_local(WithAreaContextCurrent {
         area: area.clone(),
         future: async move {
-            let mut gpu_surface = gpu_surface;
-            let mut env = env;
-            let shader_cache = WgslModuleCache::new();
             let ctx = GpuContext {
                 adapter: &adapter,
                 device: &device,
                 queue: &queue,
                 surface_format: format,
                 shader_cache: &shader_cache,
+                scene_renderer: &scene_renderer,
                 msaa_samples,
-                redraw_handle: redraw_handle.clone(),
+                redraw_handle,
             };
             gpu_surface.setup(&ctx, &mut env).await;
             {
@@ -757,7 +832,6 @@ fn setup_if_needed(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
             area_clone.queue_render();
         },
     });
-    false
 }
 
 #[allow(
@@ -1165,6 +1239,9 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
             st.wgpu_queue = None;
             st.wgpu_device = None;
             st.device_init_in_progress = false;
+            // Compiled shader modules and vello pipelines belong to the device
+            // that just died; the next realized context builds its own.
+            st.device_shared = None;
             st.wgpu_adapter = None;
             st.wgpu_instance = None;
             st.glow = None;

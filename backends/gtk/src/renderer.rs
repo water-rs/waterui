@@ -82,19 +82,20 @@ const FOCUS_REQUEST_PENDING_DATA_KEY: &str = "waterui_focus_request_pending";
 const FOCUS_MAP_HANDLER_INSTALLED_DATA_KEY: &str = "waterui_focus_map_handler_installed";
 const RETAIN_DATA_KEY: &str = "waterui-retain-metadata";
 
-fn gtk_accessibility_role(role: AccessibilityRole) -> gtk4::AccessibleRole {
+fn gtk_accessibility_role(role: &AccessibilityRole) -> gtk4::AccessibleRole {
     match role {
         AccessibilityRole::Button => gtk4::AccessibleRole::Button,
         AccessibilityRole::Link => gtk4::AccessibleRole::Link,
         AccessibilityRole::Image => gtk4::AccessibleRole::Img,
         AccessibilityRole::Text => gtk4::AccessibleRole::Label,
         AccessibilityRole::Header => gtk4::AccessibleRole::Heading,
-        AccessibilityRole::Footer => gtk4::AccessibleRole::Section,
+        // GTK has no landmark role for a footer; `Section` is the closest
+        // container role, which is also what a plain section maps to.
+        AccessibilityRole::Footer | AccessibilityRole::Section => gtk4::AccessibleRole::Section,
         AccessibilityRole::Navigation => gtk4::AccessibleRole::Navigation,
         AccessibilityRole::Main => gtk4::AccessibleRole::Main,
         AccessibilityRole::Search => gtk4::AccessibleRole::Search,
         AccessibilityRole::Article => gtk4::AccessibleRole::Document,
-        AccessibilityRole::Section => gtk4::AccessibleRole::Section,
         AccessibilityRole::List => gtk4::AccessibleRole::List,
         AccessibilityRole::ListItem => gtk4::AccessibleRole::ListItem,
         AccessibilityRole::Checkbox => gtk4::AccessibleRole::Checkbox,
@@ -118,20 +119,30 @@ fn gtk_accessibility_role(role: AccessibilityRole) -> gtk4::AccessibleRole {
 }
 
 fn apply_gtk_accessibility_state(widget: &Widget, state: &AccessibilityState) {
-    let checked = match state.checked_state() {
-        None => gtk4::AccessibleTristate::Undefined,
-        Some(AccessibilityChecked::False) => gtk4::AccessibleTristate::False,
-        Some(AccessibilityChecked::True) => gtk4::AccessibleTristate::True,
-        Some(AccessibilityChecked::Mixed) => gtk4::AccessibleTristate::Mixed,
-    };
     widget.update_state(&[
         gtk4::accessible::State::Disabled(state.is_disabled()),
         gtk4::accessible::State::Selected(Some(state.is_selected())),
-        gtk4::accessible::State::Checked(checked),
         gtk4::accessible::State::Expanded(state.expanded_state()),
         gtk4::accessible::State::Busy(state.is_busy()),
         gtk4::accessible::State::Hidden(state.is_hidden()),
     ]);
+    // `GtkAccessibleTristate` has no "unset" member: false/true/mixed are the
+    // only values the state can hold. A view that is not checkable expresses
+    // that by the state being absent, which is `gtk_accessible_reset_state`.
+    // Resetting rather than skipping matters because widgets are reused: a row
+    // that was checked and is now plain must lose the attribute, not keep a
+    // stale one.
+    match state.checked_state() {
+        None => widget.reset_state(gtk4::AccessibleState::Checked),
+        Some(checked) => {
+            let tristate = match checked {
+                AccessibilityChecked::False => gtk4::AccessibleTristate::False,
+                AccessibilityChecked::True => gtk4::AccessibleTristate::True,
+                AccessibilityChecked::Mixed => gtk4::AccessibleTristate::Mixed,
+            };
+            widget.update_state(&[gtk4::accessible::State::Checked(tristate)]);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1560,7 +1571,7 @@ impl GtkRenderer {
             dispatcher,
             |renderer, metadata, env| {
                 let widget = renderer.render_any(metadata.content, env);
-                widget.set_accessible_role(gtk_accessibility_role(metadata.value));
+                widget.set_accessible_role(gtk_accessibility_role(&metadata.value));
                 widget
             },
         );
