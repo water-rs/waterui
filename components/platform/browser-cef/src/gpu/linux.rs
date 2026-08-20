@@ -31,6 +31,13 @@ impl AcceleratedFrameSink for LinuxFrameSink {
         let height = u32::try_from(size.height).expect("CEF DMA-BUF height must be positive");
         let plane = &frame.planes[0];
         assert!(plane.fd >= 0, "CEF DMA-BUF file descriptor is invalid");
+        // SAFETY: `borrow_raw` requires the descriptor to be open and to stay
+        // open for the borrow's lifetime. CEF owns this descriptor and keeps it
+        // valid for the duration of the `on_accelerated_paint` callback this
+        // runs inside, which is exactly the scope of `borrowed`; it is asserted
+        // non-negative just above. The borrow is only used to duplicate the
+        // descriptor into an `OwnedFd`, so nothing outlives the callback and
+        // CEF's own close is unaffected.
         let borrowed = unsafe { BorrowedFd::borrow_raw(plane.fd) };
         let fd: OwnedFd = borrowed
             .try_clone_to_owned()
