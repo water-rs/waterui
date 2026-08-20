@@ -25,6 +25,17 @@ use waterui_preview_protocol::bench::{
 /// between the macro and this runner.
 const BENCH_TEST_PREFIX: &str = "waterui_bench_";
 
+/// Resolves a path against the current directory without requiring it to exist.
+///
+/// `canonicalize` is unusable here: the directory is created after this point.
+fn absolute_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let cwd = std::env::current_dir().wrap_err("failed to resolve the current directory")?;
+    Ok(cwd.join(path))
+}
+
 /// One `water bench` invocation.
 #[derive(Debug, Clone)]
 pub struct BenchRunOptions {
@@ -66,11 +77,18 @@ pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> 
     // Held so a temporary report directory outlives collection.
     let _temp_dir;
     let report_dir = if let Some(dir) = &options.report_dir {
-        smol::fs::create_dir_all(dir)
+        // Absolute, and deliberately so: this path is both created and read
+        // here, in the CLI's working directory, but it is handed to a nextest
+        // process whose working directory is the bench crate. A relative path
+        // therefore names two different directories on the two sides — the
+        // benches write their reports under the crate, and collection then
+        // finds nothing and reports the crate as having no benches at all.
+        let dir = absolute_path(dir)?;
+        smol::fs::create_dir_all(&dir)
             .await
             .wrap_err_with(|| format!("failed to create report directory {}", dir.display()))?;
-        clear_stale_reports(dir).await?;
-        dir.clone()
+        clear_stale_reports(&dir).await?;
+        dir
     } else {
         let temp_dir = tempfile::Builder::new()
             .prefix("waterui-bench-")
