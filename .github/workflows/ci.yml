@@ -31,6 +31,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,19 +39,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev
+      - uses: ./.github/actions/setup-linux-deps
       - uses: mozilla/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
           cache-on-failure: true
       - run: cargo fmt --all -- --check
+      # The workspace pass runs under default features: a workspace-wide
+      # `--all-features` pass can never build, because hydrolysis enforces
+      # "exactly one WebView engine" with a `compile_error!`
+      # (backends/hydrolysis/src/lib.rs). The second pass lints the root
+      # crate's all-features surface — root-crate-only scope is what cargo's
+      # default package selection does without `--workspace`, and here that
+      # narrowing is exactly right, not an accident: the root `waterui` crate
+      # is the one crate whose features are all mutually compatible.
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     # A full instrumented rebuild shares nothing with the ordinary builds, so it
     # runs on the integration branches rather than on every pull request.
     if: github.event_name == 'push'
@@ -61,7 +71,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
-      - run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev
+      - uses: ./.github/actions/setup-linux-deps
       - uses: mozilla/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
@@ -81,66 +91,51 @@ jobs:
   typos:
     name: Typos
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       # Pinned: on `@master` the tool upgrades itself, and a new dictionary
       # turns a green job red with no change to the repository.
       - uses: crate-ci/typos@v1.49.0
 
-  audit:
-    name: Security Audit
+  # Security audit, license check and unused-dependency check are each a cheap
+  # metadata pass over the dependency graph, but were previously three separate
+  # jobs that each paid full runner startup, checkout and cache-restore cost.
+  # They share nothing that isolates them from each other, so one job running
+  # them sequentially pays that fixed cost once instead of three times.
+  hygiene:
+    name: Hygiene
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Generate Cargo.lock
-        run: cargo generate-lockfile
-      - uses: mozilla/sccache-action@v0.0.11
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-ubuntu
-          cache-on-failure: true
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-  license-check:
-    name: License Check
-    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+      # Only the license check below needs a native dependency (nasm, for a
+      # build script) and it never runs a GUI/audio/video stack, so this job
+      # does not need the full setup-linux-deps package list.
       - run: sudo apt-get update && sudo apt-get install -y nasm
       - uses: mozilla/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
           cache-on-failure: true
+      - name: Generate Cargo.lock
+        run: cargo generate-lockfile
+      - name: Security audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - uses: taiki-e/install-action@cargo-deny
-      - run: cargo deny check licenses
-      - name: Check kit licenses
+      - name: License check
+        run: cargo deny check licenses
+      - name: License check (kit)
         if: ${{ hashFiles('kit/Cargo.toml') != '' }}
         working-directory: kit
         run: cargo deny --config ../deny.toml check licenses
-
-  unused-deps:
-    name: Unused Dependencies
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla/sccache-action@v0.0.11
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-ubuntu
-          cache-on-failure: true
       - uses: taiki-e/install-action@cargo-machete
-      - name: Run cargo machete on the root workspace
+      - name: Unused dependencies
         run: |
           printf 'kit\nutils/nami\n' > .ignore
           cargo machete --with-metadata
@@ -148,12 +143,13 @@ jobs:
   feature-checks:
     name: Features
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev
+      - uses: ./.github/actions/setup-linux-deps
       - uses: mozilla/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
@@ -175,6 +171,7 @@ jobs:
     # contains them. Regenerating anywhere else would delete them and break the
     # Apple backend, so macOS is the canonical generation host.
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -214,6 +211,7 @@ jobs:
     needs: test
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p artifacts
