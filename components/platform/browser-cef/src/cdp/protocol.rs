@@ -210,6 +210,10 @@ pub struct Cookie {
 }
 
 /// Captures the page as an image.
+///
+/// Screenshots are a `chromium` capability: the only caller,
+/// `page::screenshot_command`, is gated the same way.
+#[cfg(feature = "chromium")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureScreenshot {
@@ -224,12 +228,14 @@ pub struct CaptureScreenshot {
     pub capture_beyond_viewport: bool,
 }
 
+#[cfg(feature = "chromium")]
 impl CdpCommand for CaptureScreenshot {
     const METHOD: &'static str = "Page.captureScreenshot";
     type Response = CaptureScreenshotResponse;
 }
 
 /// The captured image.
+#[cfg(feature = "chromium")]
 #[derive(Debug, Deserialize)]
 pub struct CaptureScreenshotResponse {
     /// Base64-encoded image bytes.
@@ -237,6 +243,10 @@ pub struct CaptureScreenshotResponse {
 }
 
 /// Chooses where downloads are written.
+///
+/// Redirecting downloads is a `chromium` capability: the only caller,
+/// `page::set_download_directory`, is gated the same way.
+#[cfg(feature = "chromium")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetDownloadBehavior<'a> {
@@ -246,6 +256,7 @@ pub struct SetDownloadBehavior<'a> {
     pub download_path: &'a str,
 }
 
+#[cfg(feature = "chromium")]
 impl CdpCommand for SetDownloadBehavior<'_> {
     const METHOD: &'static str = "Browser.setDownloadBehavior";
     type Response = Empty;
@@ -266,7 +277,9 @@ pub struct Empty {}
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureScreenshot, CdpCommand, Cookie, Evaluate, EvaluateResponse, SetCookie};
+    #[cfg(feature = "chromium")]
+    use super::CaptureScreenshot;
+    use super::{CdpCommand, Cookie, Evaluate, EvaluateResponse, SetCookie};
 
     #[test]
     fn parameters_serialize_under_the_names_chromium_expects() {
@@ -305,6 +318,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "chromium")]
     fn png_omits_the_quality_parameter_that_only_lossy_formats_take() {
         let png = CaptureScreenshot {
             format: "png",
