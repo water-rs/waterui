@@ -136,10 +136,13 @@ jobs:
       - uses: taiki-e/install-action@cargo-deny
       - name: License and ban check
         run: cargo deny check licenses bans
+      # `--config` goes before the subcommand: the cargo-deny that
+      # install-action provides takes it as a global option, and rejects the
+      # `check --config` spelling that newer builds accept.
       - name: License and ban check (kit)
         if: ${{ hashFiles('kit/Cargo.toml') != '' }}
         working-directory: kit
-        run: cargo deny check --config ../deny.toml licenses bans
+        run: cargo deny --config ../deny.toml check licenses bans
       - uses: taiki-e/install-action@cargo-machete
       - name: Unused dependencies
         run: |
