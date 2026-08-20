@@ -612,6 +612,19 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
             .or_else(|| self.compute_relative_backend_path("android"))
     }
 
+    /// Absolute path of the `WaterUI` workspace root when building against a
+    /// local checkout, resolved against the project root for relative
+    /// `waterui_path` values. `None` in remote-backend mode.
+    fn waterui_workspace_root(&self) -> Option<PathBuf> {
+        let waterui_path = self.waterui_path.as_ref()?;
+        if waterui_path.is_absolute() {
+            return Some(waterui_path.clone());
+        }
+        self.project_root_path
+            .as_ref()
+            .map(|project_root| project_root.join(waterui_path))
+    }
+
     /// Compute the relative path from the backend project directory to the project root.
     ///
     /// For a backend at `apple/`, returns `..` (go up 1 level).
@@ -2242,6 +2255,16 @@ struct GeneratedCargoManifest<T> {
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
     target: std::collections::BTreeMap<String, GeneratedTargetSection<T>>,
     workspace: GeneratedWorkspaceSection,
+    /// `[patch]` inherited from the runtime's own workspace.
+    ///
+    /// Declaring `[workspace]` makes a generated backend crate its own
+    /// workspace root, and Cargo only honours `[patch]` from the root of the
+    /// workspace being built. A backend crate that skips these silently
+    /// resolves the unpatched crates.io version of every forked dependency
+    /// (`vello_hybrid` above all) and fails to unify types with the
+    /// workspace-built crates it links.
+    #[serde(skip_serializing_if = "cargo_toml::PatchSet::is_empty", default)]
+    patch: cargo_toml::PatchSet,
 }
 
 #[derive(serde::Serialize)]
@@ -2593,17 +2616,29 @@ pub mod hydrolysis {
     ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
         let mut outputs =
             super::render_dir_outputs(TemplateNamespace::Hydrolysis, &embedded::HYDROLYSIS, ctx)?;
+        let patch = collect_runtime_patches(ctx)?;
         outputs.push((
             std::path::PathBuf::from("Cargo.toml"),
-            super::render_generated_cargo_toml(&generated_manifest(ctx, package_name))?
+            super::render_generated_cargo_toml(&generated_manifest(ctx, package_name, patch))?
                 .into_bytes(),
         ));
         Ok(outputs)
     }
 
+    /// `[patch]` tables of the workspace the backend builds against, so the
+    /// generated crate resolves forked dependencies exactly like the
+    /// runtime's own workspace does.
+    fn collect_runtime_patches(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
+        ctx.waterui_workspace_root().map_or_else(
+            || Ok(cargo_toml::PatchSet::default()),
+            |root| super::collect_workspace_patches(&root),
+        )
+    }
+
     fn generated_manifest(
         ctx: &TemplateContext,
         package_name: &str,
+        patch: cargo_toml::PatchSet,
     ) -> GeneratedCargoManifest<GeneratedDependencyValue> {
         let mut package = super::generated_package(package_name, Vec::new());
         package.autobins = Some(false);
@@ -2635,6 +2670,7 @@ pub mod hydrolysis {
             )]),
             target: cargo_target_dependencies(ctx),
             workspace: GeneratedWorkspaceSection {},
+            patch,
         }
     }
 
@@ -2647,7 +2683,11 @@ pub mod hydrolysis {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        let manifest = generated_manifest(ctx, package_name);
+        let patch = match ctx.waterui_workspace_root() {
+            Some(root) => smol::unblock(move || super::collect_workspace_patches(&root)).await?,
+            None => cargo_toml::PatchSet::default(),
+        };
+        let manifest = generated_manifest(ctx, package_name, patch);
         write_generated_cargo_toml(base_dir, super::render_generated_cargo_toml(&manifest)?).await
     }
 
@@ -2732,15 +2772,6 @@ pub mod hydrolysis {
             (
                 "pollster".to_string(),
                 GeneratedDependencyValue::simple("0.4"),
-            ),
-            (
-                "pprof".to_string(),
-                GeneratedDependencyValue::detailed(GeneratedDependencyDetail {
-                    version: Some("0.15".to_string()),
-                    path: None,
-                    default_features: None,
-                    features: vec!["flamegraph".to_string()],
-                }),
             ),
             (
                 "waterui-core".to_string(),
@@ -3221,6 +3252,7 @@ pub mod root {
             build_dependencies: BTreeMap::new(),
             target: native_target_section(waterui_dependency),
             workspace: GeneratedWorkspaceSection {},
+            patch: cargo_toml::PatchSet::default(),
         };
 
         write_generated_cargo_toml(base_dir, super::render_generated_cargo_toml(&manifest)?).await
