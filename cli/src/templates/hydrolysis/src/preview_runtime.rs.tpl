@@ -27,8 +27,8 @@ pub(crate) fn run() {
             ref captures_ms,
             ref events,
         } => run_scenario(output_dir, captures_ms, events, config.width, config.height),
-        PreviewRunMode::Semantic | PreviewRunMode::Perf(_) => panic!(
-            "hydrolysis preview: semantic/perf runs require the preview test binary (waterui-preview-test-mode)"
+        PreviewRunMode::Semantic => panic!(
+            "hydrolysis preview: semantic runs require the preview test binary (waterui-preview-test-mode)"
         ),
     }
 }

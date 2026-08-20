@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WaterUI Preview Perf</title>
+  <title>WaterUI Bench Report</title>
   <style>
     :root {
       color-scheme: light;
@@ -82,8 +82,7 @@
       font-size: 12px;
     }
 
-    .measurement,
-    .flamegraph {
+    .measurement {
       background: var(--surface);
       border: 1px solid var(--line);
       border-radius: 6px;
@@ -123,41 +122,6 @@
     .measurements {
       display: grid;
       gap: 16px;
-    }
-
-    .flamegraph {
-      padding: 8px;
-    }
-
-    .flamegraph div {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 6px;
-    }
-
-    .flamegraph a {
-      color: var(--accent);
-      font-size: 13px;
-      font-weight: 650;
-      text-decoration: none;
-    }
-
-    .flamegraph object {
-      display: block;
-      width: max(1600px, 100%);
-      height: 680px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #ffffff;
-    }
-
-    .flamegraph-viewport {
-      overflow: auto;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #ffffff;
     }
 
     .measurement {
@@ -538,7 +502,7 @@
   <main>
     <header>
       <div>
-        <h1>WaterUI Preview Perf</h1>
+        <h1>WaterUI Bench Report</h1>
         <p>Hydrolysis offscreen GPU pipeline</p>
       </div>
       <section class="summary" aria-label="Summary">

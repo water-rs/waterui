@@ -47,6 +47,7 @@ async fn detect_sccache_path(shell: &Shell) -> Option<PathBuf> {
 }
 
 pub mod backend;
+pub mod bench;
 pub mod build;
 pub mod clean;
 pub mod create;
