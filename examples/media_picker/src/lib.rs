@@ -85,15 +85,14 @@ fn picker_button(
 ) -> impl View {
     let state = display_state.clone();
     let sel = selection.clone();
-    let expected_filter = filter.clone();
+    let expected_filter = filter;
 
     // Create media picker and watch for selection changes
     MediaPicker::new(&sel)
-        .filter(filter.clone())
+        .filter(filter)
         .label(text(label))
         .on_change(&sel, {
             let state = state.clone();
-            let expected_filter = expected_filter.clone();
             move |new_selection| {
                 let Some(selected) = new_selection else {
                     state.set(DisplayState::Empty);

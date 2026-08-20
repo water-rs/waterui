@@ -54,7 +54,6 @@ pub use data::{
     // Candlestick/financial types
     Candle,
     CandlestickData,
-    candle_epoch,
     ChoroplethData,
     ColorScale,
     // Contour types
@@ -80,6 +79,7 @@ pub use data::{
     RadarSeries,
     ScatterData,
     SeriesStyle,
+    candle_epoch,
 };
 pub use interaction::{
     AreaDatum, ChartAnchor, ChartScrollableAxes, ChartViewport, DepthDatum, DepthSide, GridDatum,
