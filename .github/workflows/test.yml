@@ -14,6 +14,7 @@ jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     strategy:
       # Report every platform in one run. Cancelling the other two hides their
       # results, so a cross-platform break costs one round trip per platform.
@@ -25,9 +26,15 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install nasm
+      # GPU snapshot tests run in this job, so this leg needs the Vulkan ICD
+      # loader (mesa-vulkan-drivers/libvulkan1) on top of the base package
+      # list — that's what lets llvmpipe/lavapipe stand in for a real GPU on
+      # a headless Linux runner.
+      - name: Install native dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev
+        uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
       - name: Install DirectX Shader Compiler
         if: runner.os == 'Windows'
         uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
@@ -62,8 +69,20 @@ jobs:
           else
             echo "WORKSPACE_EXCLUDES=" >> "$GITHUB_ENV"
           fi
+      # One full-workspace pass under default features. A workspace-wide
+      # `--all-features` pass is structurally impossible here — hydrolysis
+      # enforces "exactly one WebView engine" with a `compile_error!`
+      # (backends/hydrolysis/src/lib.rs), so enabling `webview-system` and
+      # `webview-cef` together can never build. The old second pass that
+      # *looked* workspace-wide (`cargo nextest run --all-features`) never was:
+      # the root manifest has both `[workspace]` and `[package]`, so without
+      # `--workspace` cargo narrowed it to the root `waterui` crate — the only
+      # crate whose features are all mutually compatible.
       - shell: bash
         run: cargo nextest run --workspace $WORKSPACE_EXCLUDES --profile ci
+      # The root crate's feature-gated re-export surface, with every feature
+      # on. Root-crate-only scope is intentional (see above); most of the
+      # build is shared with the workspace pass, so this increment is cheap.
       - shell: bash
         run: cargo nextest run --all-features --profile ci
       # Compile the CEF backend on Windows without its binary distribution.
