@@ -1,6 +1,13 @@
 version = "2.52.5"
 source_url = "https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz"
 source_sha256 = "bcfc6c91db7659dcf24f6ff79ad27ac1eae1bc61dca0dbfee154706926740b3b"
+# The release tarball ships `Tools/wpe/dependencies/apt`, which begins by
+# sourcing `Tools/glib/dependencies/apt` — a file the tarball leaves out, so
+# `Tools/wpe/install-dependencies` exits before it installs anything. The list
+# is not ours to invent, so the same file is taken from the tag the tarball was
+# cut from, pinned by digest like the tarball itself.
+glib_dependencies_url = "https://raw.githubusercontent.com/WebKit/WebKit/wpewebkit-2.52.5/Tools/glib/dependencies/apt"
+glib_dependencies_sha256 = "2b0b863757efe70a5e4d0050e85172cc63befb1c4e35d5d5099ab6181e7b4ac0"
 released = "2026-07-13T00:00:00Z"
 maximum_glibc = "2.35"
 smoke_timeout_seconds = "60"

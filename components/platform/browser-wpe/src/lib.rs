@@ -7,6 +7,14 @@
 //! WPE is a Linux engine — the runtime polls dma-buf fences through `poll(2)`
 //! and passes dma-buf file descriptors — so this crate is empty elsewhere,
 //! the same way `waterui-gtk` is.
+//!
+//! # Testing against the real engine
+//!
+//! `tests/real_engine.rs` drives an actual WPE `WebKit` runtime — navigation,
+//! history, and the `waterui` bridge in both directions. Running it needs a
+//! staged runtime, so it sits behind the `real-engine` feature and its module
+//! documentation carries the commands. `.github/workflows/browser-wpe.yml` runs
+//! it on the paths it guards; nothing else in CI does.
 
 #[cfg(all(feature = "webview", target_os = "linux"))]
 mod abi;

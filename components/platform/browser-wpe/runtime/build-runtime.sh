@@ -20,6 +20,8 @@ configuration_value() {
 version="$(configuration_value version)"
 source_url="$(configuration_value source_url)"
 source_sha256="$(configuration_value source_sha256)"
+glib_dependencies_url="$(configuration_value glib_dependencies_url)"
+glib_dependencies_sha256="$(configuration_value glib_dependencies_sha256)"
 released="$(configuration_value released)"
 maximum_glibc="$(configuration_value maximum_glibc)"
 smoke_timeout_seconds="$(configuration_value smoke_timeout_seconds)"
@@ -27,7 +29,7 @@ cli_wpe_version="$(
     sed -n 's/^wpe_version = "\([^"]*\)"$/\1/p' "$repo_root/cli/src/browser_runtime.toml"
 )"
 
-if [[ -z "$version" || -z "$source_url" || -z "$source_sha256" || -z "$released" || -z "$maximum_glibc" || -z "$smoke_timeout_seconds" ]]; then
+if [[ -z "$version" || -z "$source_url" || -z "$source_sha256" || -z "$glib_dependencies_url" || -z "$glib_dependencies_sha256" || -z "$released" || -z "$maximum_glibc" || -z "$smoke_timeout_seconds" ]]; then
     echo "invalid WPE runtime source configuration" >&2
     exit 1
 fi
@@ -66,6 +68,18 @@ source_directory="$work_directory/wpewebkit-$version"
 build_directory="$work_directory/build"
 prefix="$work_directory/runtime"
 
+# `Tools/wpe/dependencies/apt` sources this file and the release tarball does
+# not ship it, so upstream's own installer exits before installing anything.
+# Restore it from the tag the tarball was cut from rather than keeping a second,
+# hand-copied dependency list in this repository.
+glib_dependencies="$source_directory/Tools/glib/dependencies/apt"
+if [[ ! -f "$glib_dependencies" ]]; then
+    mkdir -p "$(dirname "$glib_dependencies")"
+    curl --fail --location --retry 3 --output "$glib_dependencies" "$glib_dependencies_url"
+    printf '%s  %s\n' "$glib_dependencies_sha256" "$glib_dependencies" | sha256sum --check
+    chmod +x "$glib_dependencies"
+fi
+
 sudo "$source_directory/Tools/wpe/install-dependencies"
 sudo apt-get install -y --no-install-recommends \
     bubblewrap \
@@ -77,6 +91,10 @@ sudo apt-get install -y --no-install-recommends \
     pax-utils \
     xdg-dbus-proxy
 
+# `USE_LIBBACKTRACE` defaults on and is a hard requirement when it is, but no
+# Debian or Ubuntu release packages libbacktrace, so configuring fails on every
+# apt-based host. It only symbolizes WebKit's own crash logs, which a shipped
+# runtime does not print.
 cmake \
     -S "$source_directory" \
     -B "$build_directory" \
@@ -96,7 +114,8 @@ cmake \
     -DENABLE_LAYOUT_TESTS=OFF \
     -DENABLE_MINIBROWSER=OFF \
     -DENABLE_WPE_LEGACY_API=OFF \
-    -DENABLE_WPE_PLATFORM=ON
+    -DENABLE_WPE_PLATFORM=ON \
+    -DUSE_LIBBACKTRACE=OFF
 cmake --build "$build_directory" --parallel "${WATERUI_WPE_BUILD_JOBS:-$(nproc)}"
 cmake --install "$build_directory"
 

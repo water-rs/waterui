@@ -34,14 +34,21 @@ wgpu.workspace = true
 
 [dev-dependencies]
 base64 = "0.22"
+executor-core = { workspace = true, features = ["async-executor"] }
 pollster.workspace = true
+tiny_http = "0.12"
 
 [[example]]
 name = "runtime_smoke"
 required-features = ["runtime-smoke"]
 
+[[test]]
+name = "real_engine"
+required-features = ["real-engine"]
+
 [features]
 default = ["webview"]
+real-engine = ["webview"]
 runtime-smoke = ["webview"]
 webview = [
     "dep:cookie",

@@ -56,6 +56,12 @@ jobs:
       # is the one crate whose features are all mutually compatible.
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      # The WPE real-engine tests sit behind a feature, because running them
+      # needs a staged WPE WebKit runtime that only `browser-wpe.yml` provisions
+      # — and that workflow only fires on the paths those tests cover. Neither
+      # pass above compiles them, so lint them here: compiling them costs
+      # nothing extra and keeps them from rotting between real-engine runs.
+      - run: cargo clippy -p waterui-browser-wpe --features real-engine --all-targets -- -D warnings
 
   coverage:
     name: Coverage
