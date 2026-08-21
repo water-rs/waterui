@@ -103,6 +103,19 @@ impl Display for Str {
     }
 }
 
+/// Prints the string, the way every other string type does.
+///
+/// The derived implementation exposed the tagged representation instead — a
+/// raw pointer and a length that is negative whenever the string is owned — so
+/// `{:?}` on a `Str` produced `Str { ptr: .., len: -9 }`. That is unreadable
+/// where `Debug` matters most: assertion failures, tracing fields, and the
+/// `{:?}` of any type holding one.
+impl fmt::Debug for Str {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
 impl<'a> Extend<&'a str> for Str {
     fn extend<T: IntoIterator<Item = &'a str>>(&mut self, iter: T) {
         self.handle(move |string| {
