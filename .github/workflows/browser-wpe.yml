@@ -17,21 +17,19 @@ name: WPE Real Engine
 permissions:
   contents: read
 
+# CURRENT STATE: the engine build does not work, so this workflow cannot pass.
+# `ubuntu-22.04` ships GCC 11.4 and WebKit 2.52.5 requires 12.2, while
+# `source.toml`'s `maximum_glibc = 2.35` is exactly 22.04's glibc, so the build
+# cannot simply move to a newer image without giving up a portable artifact.
+# See #155 for that and the three blockers already fixed.
+#
+# Until the build is proven, dispatch is the only trigger. The `push` and
+# `pull_request` filters would paint a red X on every change to the webview
+# paths — guaranteed, explained elsewhere, and quickly learned-to-ignore — and
+# the weekly schedule existed to keep the runtime cache from being evicted,
+# which is pointless while no build ever populates it. Restore both in the same
+# change that makes the build succeed.
 on:
-  push:
-    branches: [main, dev]
-    paths:
-      - components/platform/browser-wpe/**
-      - components/platform/webview/**
-      - .github/workflows/browser-wpe.yml
-  pull_request:
-    branches: ["**"]
-    paths:
-      - components/platform/browser-wpe/**
-      - components/platform/webview/**
-      - .github/workflows/browser-wpe.yml
-  schedule:
-    - cron: "0 5 * * 1,4"
   workflow_dispatch:
 
 concurrency:
