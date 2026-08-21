@@ -113,8 +113,17 @@ impl SharedState {
         }
     }
 
+    /// Converts a URL `WebKit` reported into the event payload type.
+    ///
+    /// Parsed through `FromStr` rather than [`Url::parse`], which keeps only web
+    /// URLs: a web view legitimately navigates to `about:blank`, and that is not
+    /// an error. An absolute string `WKWebView` emits that does not parse at all
+    /// is a contract break worth crashing on, matching the `WebKitGTK` and WPE
+    /// bridges; the `Url::from(String)` fallback this replaces used to
+    /// manufacture a bogus `Url` and hand it to the application instead.
     fn parse_url(raw: String) -> Url {
-        Url::parse(&raw).unwrap_or_else(|| Url::from(raw))
+        raw.parse()
+            .unwrap_or_else(|error| panic!("WebKit emitted an invalid URL {raw:?}: {error}"))
     }
 }
 
@@ -287,13 +296,7 @@ define_class!(
                 let frame = unsafe { message.frameInfo() };
                 let is_main_frame = unsafe { frame.isMainFrame() };
                 let origin = unsafe { frame.securityOrigin() };
-                let origin = unsafe {
-                    format!(
-                        "{}://{}",
-                        origin.protocol().to_string(),
-                        origin.host().to_string()
-                    )
-                };
+                let origin = unsafe { format!("{}://{}", origin.protocol(), origin.host()) };
                 is_main_frame
                     && policy.is_some_and(|policy| {
                         origin.parse().is_ok_and(|origin| policy.allows(&origin))

@@ -413,15 +413,15 @@ pub(crate) fn render_webview_node(
             .cef
             .render(ctx.renderer_mut(), bounds, transform, hit_transform);
     }
+    // No engine: the semantic node registered above is the whole rendering, and
+    // it has already happened. Registering it a second time here published two
+    // nodes for one web view, which a screen reader reads as two.
     #[cfg(not(any(
         hydrolysis_macos_system_webview,
         hydrolysis_linux_wpe_webview,
         hydrolysis_cef_webview
     )))]
-    {
-        let _ = state;
-        register_webview_accessibility(ctx, env);
-    }
+    let _ = state;
 }
 
 #[cfg(hydrolysis_macos_system_webview)]
@@ -446,6 +446,11 @@ pub(crate) fn install_controller(env: &mut Environment) {
 
 // No `install_controller` without an engine. The caller is gated on the two
 // engine cfgs above rather than on `hydrolysis_webview`, which is true for any
-// webview feature and so covers engine-less combinations too. A build with no
-// engine never asks for a controller, and a `WebView` in the tree renders as its
-// accessible, contentless placeholder.
+// webview feature and so covers engine-less combinations too.
+//
+// A build with no engine therefore installs no controller, and a `WebView`
+// created in it fails where it is created — this backend has no page to show and
+// says so, rather than quietly rendering an empty rectangle. An application that
+// wants the contentless web view on purpose asks for it by name, with
+// `WebViewController::without_engine()`; the rendering path above then publishes
+// its accessibility node and nothing else.
