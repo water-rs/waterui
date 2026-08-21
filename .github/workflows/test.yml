@@ -36,7 +36,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      # clippy is here for the macOS-only CEF real-engine target at the end of
+      # this job: it cannot be linted by ci.yml's Linux lint job the way its WPE
+      # sibling is, because CEF requires a macOS application bundle and the
+      # target refuses to compile anywhere else.
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       # GPU snapshot tests run in this job, so this leg needs the Vulkan ICD
       # loader (mesa-vulkan-drivers/libvulkan1) on top of the base package
       # list — that's what lets llvmpipe/lavapipe stand in for a real GPU on
@@ -103,6 +109,27 @@ jobs:
       # nextest cannot run doctests, and this workspace has plenty of them.
       - shell: bash
         run: cargo test --doc --workspace $WORKSPACE_EXCLUDES
+      # The web view bridge has broken three times in ways no Rust-side test
+      # could see, so these drive a real Chromium. Unlike the WPE sibling in
+      # `browser-wpe.yml`, which compiles an engine from source for hours, CEF
+      # is a prebuilt distribution `cef-dll-sys` downloads while building the
+      # crate: the whole leg is a couple of minutes on top of a workspace this
+      # job has already compiled, which is why it lives here instead of in a
+      # workflow of its own that would pay for a second macOS runner and a
+      # second build of the same graph.
+      #
+      # macOS only, because CEF requires its browser process to live in an
+      # application bundle; the test stages one and the target does not compile
+      # on the other platforms.
+      - name: Lint the CEF real-engine tests
+        if: runner.os == 'macOS'
+        run: cargo clippy -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
+      # `cargo test` rather than nextest: CEF's browser process has to own the
+      # main thread, libtest runs test bodies on spawned ones, so the target is
+      # `harness = false` and nextest cannot enumerate it.
+      - name: Run the CEF real-engine tests
+        if: runner.os == 'macOS'
+        run: cargo test -p waterui-browser-cef --features real-engine --test real_engine
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
