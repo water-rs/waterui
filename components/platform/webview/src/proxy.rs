@@ -119,8 +119,10 @@ impl WebViewProxy {
     }
 
     /// Injects a script that will run on every page load.
-    pub fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
-        self.handle.inject_script(script, time);
+    ///
+    /// `key` names the script; injecting again under the same key replaces it.
+    pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
+        self.handle.inject_script(key, script, time);
     }
 
     /// Enables or disables redirect following.

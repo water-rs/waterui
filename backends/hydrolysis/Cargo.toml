@@ -83,10 +83,12 @@ objc2-foundation = { version = "0.3", optional = true, features = [
     "NSError",
     "NSGeometry",
     "NSHTTPCookie",
+    "NSJSONSerialization",
     "NSObject",
     "NSRunLoop",
     "NSString",
     "NSURL",
+    "NSURLError",
     "NSURLRequest",
     "NSURLResponse",
 ] }
@@ -104,6 +106,7 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
     "objc2-app-kit",
     "objc2-core-foundation",
     "WKBackForwardList",
+    "WKContentWorld",
     "WKFrameInfo",
     "WKSecurityOrigin",
     "WKHTTPCookieStore",
@@ -156,6 +159,16 @@ waterui-navigation.workspace = true
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 waterui = { path = "../..", default-features = false, features = ["flow-markdown", "gpu"] }
+base64 = "0.22"
+executor-core = { workspace = true, features = ["async-executor"] }
+tiny_http = "0.12"
+
+# `WKWebView` is `MainThreadOnly` and libtest runs tests on worker threads, so
+# the macOS real-engine suite owns its `main` and pumps the main run loop.
+[[test]]
+name = "real_engine_macos"
+harness = false
+required-features = ["webview-system", "winit"]
 
 [features]
 default = []

@@ -15,7 +15,9 @@ categories = ["gui", "web-programming"]
 default = ["cef-runtime"]
 cef-runtime = ["cef/sandbox", "cef-dll-sys/sandbox"]
 compile-only = ["cef/dox", "cef-dll-sys/dox"]
-chromium = ["dep:async-channel", "dep:base64", "dep:waterui-chromium"]
+# `waterui-webview` supplies the removable watcher registry the shared CDP
+# session uses; both browser-facing features need it.
+chromium = ["dep:async-channel", "dep:base64", "dep:waterui-chromium", "dep:waterui-webview"]
 real-engine = ["cef-runtime", "webview"]
 webview = ["dep:cookie", "dep:waterui-str", "dep:waterui-webview"]
 

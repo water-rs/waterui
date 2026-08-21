@@ -110,7 +110,7 @@ pub fn eval(input: TokenStream) -> TokenStream {
 /// A JavaScript program read from a file at compile time.
 ///
 /// ```ignore
-/// webview.inject(js_file!("scripts/setup.js"), ScriptInjectionTime::DocumentStart);
+/// webview.inject("setup", js_file!("scripts/setup.js"), ScriptInjectionTime::DocumentStart);
 /// exec_file!(webview, "scripts/setup.js").await?;
 /// ```
 ///

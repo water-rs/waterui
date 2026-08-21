@@ -929,7 +929,11 @@ mod winit_impl {
 
     use nami::Signal;
     #[cfg(hydrolysis_macos_system_webview)]
-    use objc2::{MainThreadMarker, rc::Retained};
+    use objc2::runtime::NSObjectProtocol;
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2::{
+        DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained,
+    };
     #[cfg(hydrolysis_macos_system_webview)]
     use objc2_app_kit::NSView;
     #[cfg(hydrolysis_macos_system_webview)]
@@ -1164,10 +1168,85 @@ mod winit_impl {
         surface: WinitSurface,
     }
 
+    /// Whether an AppKit rect contains a point, in the same coordinate space.
+    #[cfg(hydrolysis_macos_system_webview)]
+    fn ns_rect_contains(rect: NSRect, point: NSPoint) -> bool {
+        point.x >= rect.origin.x
+            && point.y >= rect.origin.y
+            && point.x < rect.origin.x + rect.size.width
+            && point.y < rect.origin.y + rect.size.height
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    struct NativeViewContainerIvars {
+        /// Where `WaterUI` draws interactive content over the hosted native
+        /// view, in this container's *superview* coordinate space — the space
+        /// `hitTest:` is given its point in.
+        occluded: core::cell::RefCell<Vec<NSRect>>,
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    define_class!(
+        #[unsafe(super(NSView))]
+        #[name = "WuiHydrolysisNativeViewContainer"]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = NativeViewContainerIvars]
+        struct NativeViewContainer;
+
+        unsafe impl NSObjectProtocol for NativeViewContainer {}
+
+        impl NativeViewContainer {
+            /// Refuses hits where `WaterUI` painted interactive content on top.
+            ///
+            /// Raising the overlay's `zPosition` fixed only what the user sees:
+            /// a `CALayer` is not in AppKit's hit-test chain, so a snackbar,
+            /// dialog or menu drawn over a `WKWebView` rendered above it and
+            /// still handed every click to the page underneath. Returning `nil`
+            /// lets the event fall through to the winit content view, where
+            /// Hydrolysis's own hit test finds the target that is visibly on
+            /// top.
+            ///
+            /// The view is returned unowned, as `hitTest:` is defined to: the
+            /// pointer travels straight through from the superclass, so it is a
+            /// raw pointer rather than a `Retained` here.
+            #[unsafe(method(hitTest:))]
+            fn hit_test(&self, point: NSPoint) -> *mut NSView {
+                if self
+                    .ivars()
+                    .occluded
+                    .borrow()
+                    .iter()
+                    .any(|rect| ns_rect_contains(*rect, point))
+                {
+                    return core::ptr::null_mut();
+                }
+                // SAFETY: main-thread call to `NSView`'s own implementation,
+                // which is what this override defers to for every other point.
+                unsafe { msg_send![super(self), hitTest: point] }
+            }
+        }
+    );
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    impl NativeViewContainer {
+        fn new(mtm: MainThreadMarker) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(NativeViewContainerIvars {
+                occluded: core::cell::RefCell::new(Vec::new()),
+            });
+            // SAFETY: `initWithFrame:` is `NSView`'s designated initializer, and
+            // `-> Retained<Self>` is the signature objc2 expects here.
+            unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+        }
+
+        fn set_occluded(&self, rects: Vec<NSRect>) {
+            self.ivars().occluded.replace(rects);
+        }
+    }
+
     #[cfg(hydrolysis_macos_system_webview)]
     struct MacNativeViewHost {
         web_view: Retained<WKWebView>,
-        container: Retained<NSView>,
+        container: Retained<NativeViewContainer>,
         rounded_clip_views: Vec<Retained<NSView>>,
     }
 
@@ -1176,7 +1255,7 @@ mod winit_impl {
         fn new(web_view: Retained<WKWebView>, root_view: &NSView) -> Self {
             let mtm = MainThreadMarker::new()
                 .expect("Hydrolysis hybrid composition must run on the AppKit main thread");
-            let container = NSView::new(mtm);
+            let container = NativeViewContainer::new(mtm);
             container.setWantsLayer(true);
             container
                 .layer()
@@ -1403,6 +1482,20 @@ mod winit_impl {
                 host.container.setFrame(container_frame);
                 host.container
                     .setHidden(visible.is_zero_area() || opacity == 0.0);
+                // The renderer republishes these every frame in window hit-test
+                // space, which is logical points measured from the top-left, so
+                // they convert with a scale factor of 1. `hitTest:` is given its
+                // point in the root view's space, which is what this produces.
+                host.container.set_occluded(
+                    placement
+                        .occlusion
+                        .borrow()
+                        .iter()
+                        .map(|rect| {
+                            appkit_root_rect(*rect, logical_height, 1.0, root_view.isFlipped())
+                        })
+                        .collect(),
+                );
                 let local_bounds = NSRect::new(
                     NSPoint::ZERO,
                     NSSize::new(container_frame.size.width, container_frame.size.height),

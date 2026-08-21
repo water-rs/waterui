@@ -53,12 +53,19 @@ fn main() {
                 feature = "webview-cef"
             )
         },
+        // "A web engine resolved", not "a webview feature was asked for": the
+        // features name bridges that only exist on some targets, so
+        // `webview-system` off macOS or `webview-default` on Windows selects
+        // nothing at all. Conflating the two gated the controller call on a
+        // condition broader than the controller's own definition, and
+        // `--features webview-system` failed to build with a missing
+        // `install_controller`. `widgets/platform/webview.rs` turns each
+        // unsatisfiable request into a `compile_error!` that says what to enable.
         hydrolysis_webview: {
             any(
-                feature = "webview-default",
-                feature = "webview-system",
-                feature = "webview-wpe",
-                feature = "webview-cef"
+                hydrolysis_macos_system_webview,
+                hydrolysis_linux_wpe_webview,
+                hydrolysis_cef_webview
             )
         },
     }

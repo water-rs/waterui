@@ -251,6 +251,12 @@ pub(crate) struct NativeViewLayer {
     pub(crate) transform: vello::kurbo::Affine,
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) active_layers: Vec<ActiveSceneLayer>,
+    /// Where `WaterUI`-drawn interactive content covers this view, in window
+    /// hit-test space, refreshed every frame by
+    /// [`NativeViewOcclusion`](crate::renderer::NativeViewOcclusion). The view
+    /// host refuses AppKit hits inside these rects so the content on top gets
+    /// the click it visibly deserves.
+    pub(crate) occlusion: Rc<RefCell<Vec<vello::kurbo::Rect>>>,
 }
 
 pub(crate) enum RenderLayer {

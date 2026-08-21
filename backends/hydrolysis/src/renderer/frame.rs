@@ -201,7 +201,8 @@ impl HydrolysisRenderer {
 
         self.animation_controller
             .finish_rebuild_frame_with_inactive_slot_retention(false);
-        self.hit_test.finish_rebuild_frame();
+        self.hit_test
+            .finish_rebuild_frame(&self.text_editing.text_input_targets);
         self.navigation.finish_rebuild_frame();
         self.signals.finish_rebuild();
         #[cfg(feature = "accessibility")]
@@ -357,6 +358,7 @@ impl HydrolysisRenderer {
         view: objc2::rc::Retained<objc2_web_kit::WKWebView>,
         transform: vello::kurbo::Affine,
         bounds: vello::kurbo::Rect,
+        occlusion: Rc<RefCell<Vec<vello::kurbo::Rect>>>,
     ) {
         self.flush_vello_scene_layer();
         self.compositor
@@ -366,6 +368,7 @@ impl HydrolysisRenderer {
                 transform,
                 bounds,
                 active_layers: self.compositor.active_scene_layers.clone(),
+                occlusion,
             }));
     }
 

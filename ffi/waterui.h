@@ -6401,8 +6401,13 @@ typedef struct WuiWebViewHandle {
   void (*set_redirects_enabled)(void*, WuiComputed_bool*);
   /**
    * Inject a script that runs on every page load.
+   *
+   * The first string is a key naming the script: injecting again under a key
+   * already in use replaces that script rather than adding a second copy.
+   * The mirrored-state seed relies on it, being re-rendered and replaced
+   * before every navigation.
    */
-  void (*inject_script)(void*, struct WuiStr, enum WuiScriptInjectionTime);
+  void (*inject_script)(void*, struct WuiStr, struct WuiStr, enum WuiScriptInjectionTime);
   /**
    * Set event callback. Native calls this when events occur.
    */
@@ -6421,7 +6426,12 @@ typedef struct WuiWebViewHandle {
   /**
    * Restricts which documents may reach the bridge.
    *
-   * Receives newline-separated URI patterns, or `*` for every origin.
+   * Receives newline-separated rule tokens: `*` for every origin, `file:` for
+   * any local file, and otherwise an exact `scheme://host[:port]` to compare
+   * the calling frame's origin against. **The empty string denies every
+   * document** — that is what the default policy resolves to when the view is
+   * opened at a URL with no origin — and a backend that treats it as `*`
+   * hands every registered handler to whatever the view navigates to.
    */
   void (*set_bridge_origins)(void*, struct WuiStr);
   /**
@@ -6434,8 +6444,25 @@ typedef struct WuiWebViewHandle {
   void (*get_cookies)(const void*, struct WuiStringCallback);
   /**
    * Execute JavaScript on the currently loaded page and call callback with result.
+   *
+   * The raw path: the value comes back however the engine marshals it.
    */
   void (*run_javascript)(void*, struct WuiStr, struct WuiJsCallback);
+  /**
+   * Run the string as the body of an `async` function and **await** the
+   * promise it returns, then call the callback with the resolved value.
+   *
+   * Every typed evaluation goes through here, because the shared wrapper in
+   * `js/eval.js` is `async`: an engine API that does not await — WebKit's
+   * `evaluateJavaScript`, `webkit_web_view_evaluate_javascript`,
+   * `WebView.evaluateJavascript` — hands back the promise object instead of
+   * the JSON envelope, and every `eval!`/`exec!` fails while mirrored state
+   * silently stops reaching the page. Use `callAsyncJavaScript`,
+   * `webkit_web_view_call_async_javascript_function`, `Runtime.evaluate`
+   * with `awaitPromise`, or resolve the promise in JavaScript and report the
+   * result through the backend's own bridge.
+   */
+  void (*call_async_javascript)(void*, struct WuiStr, struct WuiJsCallback);
   /**
    * Release the native handle.
    */

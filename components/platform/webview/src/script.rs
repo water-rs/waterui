@@ -96,10 +96,11 @@ script_body!(JsExpr, "expression");
 script_body!(JsProgram, "program");
 
 impl JsExpr {
-    /// Renders the call a backend evaluates to run this expression.
+    /// Renders the async function body a backend runs to evaluate this
+    /// expression.
     ///
-    /// The result is always the JSON envelope [`JsOutcome`] parses, whatever the
-    /// engine underneath.
+    /// The value it resolves with is always the JSON envelope [`JsOutcome`]
+    /// parses, whatever the engine underneath.
     #[must_use]
     pub fn wrapped_call(&self) -> String {
         wrap(&format!("return ({});", self.source.as_str()), self.args())
@@ -107,17 +108,23 @@ impl JsExpr {
 }
 
 impl JsProgram {
-    /// Renders the call a backend evaluates to run this program.
+    /// Renders the async function body a backend runs to execute this program.
     #[must_use]
     pub fn wrapped_call(&self) -> String {
         wrap(self.source.as_str(), self.args())
     }
 }
 
-/// Builds `__wateruiEval(async (__wa0, …) => { … }, [args])`.
+/// Builds `return __wateruiEval(async (__wa0, …) => { … }, [args]);`.
 ///
 /// The arguments are serialized into the call rather than concatenated into the
 /// body, so an interpolated value cannot be read as source.
+///
+/// The result is a **function body**, not a bare expression, because
+/// [`call_async_javascript`](crate::WebViewHandle::call_async_javascript) is
+/// what runs it: `__wateruiEval` is `async`, so the value here is a promise that
+/// the backend has to await. Returning it from an async function body is the
+/// shape every engine's awaiting API takes.
 fn wrap(body: &str, args: &[serde_json::Value]) -> String {
     let parameters = (0..args.len())
         .map(|index| format!("__wa{index}"))
@@ -125,7 +132,7 @@ fn wrap(body: &str, args: &[serde_json::Value]) -> String {
         .join(",");
     let args =
         serde_json::to_string(args).expect("interpolated JavaScript arguments must serialize");
-    format!("globalThis.__wateruiEval(async ({parameters}) => {{ {body} }}, {args})")
+    format!("return globalThis.__wateruiEval(async ({parameters}) => {{ {body} }}, {args});")
 }
 
 /// Why evaluating JavaScript failed.
@@ -276,5 +283,17 @@ mod tests {
         let expr = JsExpr::raw("document.title");
         assert_eq!(expr.source(), "document.title");
         assert!(expr.args().is_empty());
+    }
+
+    /// The wrapped form is a function *body* that returns the wrapper's promise,
+    /// so the backend's awaiting API resolves it. Emitting a bare expression is
+    /// what left every backend holding an unawaited `Promise` instead of the
+    /// envelope, and made `eval`/`exec` fail on every engine that does not await
+    /// on its own.
+    #[test]
+    fn the_wrapped_form_returns_the_promise_for_the_backend_to_await() {
+        let call = JsExpr::raw("document.title").wrapped_call();
+        assert!(call.starts_with("return globalThis.__wateruiEval("), "{call}");
+        assert!(call.trim_end().ends_with(");"), "{call}");
     }
 }

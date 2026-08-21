@@ -13,6 +13,7 @@ use waterui_webview::{
     Cookie, CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewHandle, bridge,
 };
 
+
 use crate::cdp::{CefCdpSession, protocol};
 use crate::page::{CefController, CefPageConfiguration, CefPageHandle, CefPageMode};
 
@@ -24,8 +25,38 @@ pub struct CefWebViewHandle {
     page: CefPageHandle,
     handlers: Rc<RefCell<HashMap<String, Rc<MessageHandler>>>>,
     /// Which documents may reach the bridge. Checked on every call, because the
-    /// CDP binding is installed process-wide and any page can reach it.
+    /// CDP binding is installed for every execution context and any frame in
+    /// the page can reach it.
     origins: Rc<RefCell<Option<waterui_webview::OriginPolicy>>>,
+    /// Document-start scripts by key, so injecting again under a key replaces
+    /// the script rather than stacking another copy in front of it.
+    scripts: Rc<RefCell<HashMap<String, String>>>,
+    /// Unregisters the CDP event watcher when the last clone goes away.
+    ///
+    /// Without it the watcher — which captures the page — stayed in the
+    /// session's list forever, and page and watcher held each other up.
+    _events: Rc<WatcherGuard>,
+    /// Closes the browser when the last clone of this handle goes away.
+    _close: Rc<CloseBrowserOnDrop>,
+}
+
+/// Closes the CEF browser when the web view that owned it is gone.
+///
+/// Nothing on the web view path used to close a browser at all: dropping the
+/// handle released the Rust side and left the renderer process, its frame
+/// production and its accelerated-paint sink running for the life of the
+/// application — and `CefShutdown` then ran with live browsers, which CEF
+/// documents as undefined behaviour.
+struct CloseBrowserOnDrop {
+    page: CefPageHandle,
+}
+
+impl Drop for CloseBrowserOnDrop {
+    fn drop(&mut self) {
+        // The close handshake completes on the CEF message loop; nothing here
+        // waits for it, but the request itself must go out.
+        self.page.request_close();
+    }
 }
 
 impl core::fmt::Debug for CefWebViewHandle {
@@ -41,28 +72,43 @@ impl CefWebViewHandle {
         let handlers = Rc::new(RefCell::new(HashMap::<String, Rc<MessageHandler>>::new()));
         let origins: Rc<RefCell<Option<waterui_webview::OriginPolicy>>> =
             Rc::new(RefCell::new(None));
+        let contexts = Rc::new(RefCell::new(HashMap::<i64, String>::new()));
+        let scripts = Rc::new(RefCell::new(HashMap::<String, String>::new()));
         let session = page.cdp();
         install_bridge(&session);
-        session.watch_events({
+        let events = session.watch_events({
             let handlers = Rc::clone(&handlers);
             let origins = Rc::clone(&origins);
+            let contexts = Rc::clone(&contexts);
             let session = session.clone();
-            let page = page.clone();
-            move |event| {
-                if event.method != "Runtime.bindingCalled" {
-                    return;
+            move |event| match event.method.as_str() {
+                "Runtime.executionContextCreated" => track_context(&contexts, &event.params),
+                "Runtime.executionContextDestroyed" => {
+                    if let Some(id) = context_id(&event.params, "executionContextId") {
+                        contexts.borrow_mut().remove(&id);
+                    }
                 }
-                if !document_may_use_bridge(&page, &origins) {
-                    tracing::warn!("a document outside the bridge origin policy tried to call a WaterUI handler");
-                    return;
+                "Runtime.executionContextsCleared" => contexts.borrow_mut().clear(),
+                "Runtime.bindingCalled" => {
+                    let context = context_id(&event.params, "executionContextId");
+                    if !frame_may_use_bridge(&contexts, &origins, context) {
+                        tracing::warn!(
+                            "a frame outside the bridge origin policy tried to call a WaterUI handler"
+                        );
+                        return;
+                    }
+                    dispatch_bridge_call(&session, &handlers, &event.params, context);
                 }
-                dispatch_bridge_call(&session, &handlers, &event.params);
+                _ => {}
             }
         });
         Self {
+            _close: Rc::new(CloseBrowserOnDrop { page: page.clone() }),
             page,
             handlers,
             origins,
+            scripts,
+            _events: Rc::new(events),
         }
     }
 
@@ -98,7 +144,7 @@ impl WebViewHandle for CefWebViewHandle {
         self.page.navigate(url);
     }
 
-    fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
+    fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
         let source = match time {
             ScriptInjectionTime::DocumentStart => script.to_string(),
             ScriptInjectionTime::DocumentEnd => format!(
@@ -106,10 +152,32 @@ impl WebViewHandle for CefWebViewHandle {
                 serde_json::to_string(script).expect("WebView script must serialize")
             ),
         };
-        execute_without_result(
-            &self.session(),
-            &protocol::AddScriptToEvaluateOnNewDocument { source: &source },
-        );
+        let session = self.session();
+        // Add before removing, so a document that commits between the two runs
+        // one of the versions rather than none.
+        let added = session.execute(&protocol::AddScriptToEvaluateOnNewDocument { source: &source });
+        let previous = self.scripts.borrow().get(key).cloned();
+        if let Some(identifier) = previous {
+            execute_without_result(
+                &session,
+                &protocol::RemoveScriptToEvaluateOnNewDocument {
+                    identifier: &identifier,
+                },
+            );
+        }
+        let scripts = Rc::clone(&self.scripts);
+        let key = key.to_string();
+        executor_core::spawn_local(async move {
+            match added.await {
+                Ok(script) => {
+                    scripts.borrow_mut().insert(key, script.identifier);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "CEF refused a WaterUI document-start script");
+                }
+            }
+        })
+        .detach();
     }
 
     fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
@@ -236,12 +304,36 @@ impl WebViewHandle for CefWebViewHandle {
         reason = "CEF pages and DevTools sessions are confined to the UI thread"
     )]
     async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
+        self.evaluate(script).await
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "CEF pages and DevTools sessions are confined to the UI thread"
+    )]
+    async fn call_async_javascript(&self, body: &str) -> Result<Str, Str> {
+        // `body` is a function body, so it cannot be evaluated as an
+        // expression; wrapping it in an async IIFE gives CDP the promise it
+        // awaits.
+        let expression = format!("(async () => {{ {body} }})()");
+        self.evaluate(&expression).await
+    }
+}
+
+impl CefWebViewHandle {
+    /// Evaluates `expression` in the main frame, awaiting a promise result.
+    #[expect(
+        clippy::future_not_send,
+        reason = "CEF pages and DevTools sessions are confined to the UI thread"
+    )]
+    async fn evaluate(&self, expression: &str) -> Result<Str, Str> {
         let response = self
             .session()
             .execute(&protocol::Evaluate {
-                expression: script,
+                expression,
                 await_promise: true,
                 return_by_value: true,
+                context_id: None,
             })
             .await
             .map_err(|error| Str::from(error.to_string()))?;
@@ -264,33 +356,56 @@ impl CustomWebViewController for CefController {
     }
 }
 
-/// Whether the document currently loaded may use the bridge.
+/// Records the origin of a newly created execution context.
+fn track_context(contexts: &RefCell<HashMap<i64, String>>, params: &Value) {
+    let Some(context) = params.get("context") else {
+        return;
+    };
+    let Some(id) = context.get("id").and_then(Value::as_i64) else {
+        return;
+    };
+    let origin = context
+        .get("origin")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    contexts.borrow_mut().insert(id, origin);
+}
+
+/// Reads an execution-context id out of an event's parameters.
+fn context_id(params: &Value, key: &str) -> Option<i64> {
+    params.get(key).and_then(Value::as_i64)
+}
+
+/// Whether the frame a bridge call came from may use the bridge.
 ///
-/// CEF installs the binding for the whole browser, so this is the gate: a page
-/// the view navigated to is not automatically entitled to the handlers the
-/// application registered.
-fn document_may_use_bridge(
-    page: &CefPageHandle,
+/// CEF installs the binding in every execution context, so this is the gate,
+/// and it has to be answered about the *calling* frame. Reading the top
+/// document's URL instead — which is what this used to do — meant a
+/// cross-origin iframe inside an allowed page passed the check and could call
+/// every registered handler.
+fn frame_may_use_bridge(
+    contexts: &RefCell<HashMap<i64, String>>,
     origins: &RefCell<Option<waterui_webview::OriginPolicy>>,
+    context: Option<i64>,
 ) -> bool {
     let Some(policy) = origins.borrow().clone() else {
         // No policy installed yet means no handler has been registered either.
         return false;
     };
-    let Some(browser) = page.host().browser() else {
+    // A call from a context we never saw created cannot be authenticated.
+    let Some(context) = context else {
         return false;
     };
-    let Some(frame) = browser.main_frame() else {
-        return false;
-    };
-    let url = cef::CefString::from(&frame.url()).to_string();
-    url.parse().is_ok_and(|url| policy.allows(&url))
+    let origin = contexts.borrow().get(&context).cloned();
+    origin.is_some_and(|origin| policy.allows_origin(&origin))
 }
 
 fn dispatch_bridge_call(
     session: &CefCdpSession,
     handlers: &RefCell<HashMap<String, Rc<MessageHandler>>>,
     params: &Value,
+    context: Option<i64>,
 ) {
     let Some(envelope) = params.get("payload").and_then(Value::as_str) else {
         tracing::warn!("CEF bridge binding fired without a string payload; ignoring");
@@ -318,6 +433,7 @@ fn dispatch_bridge_call(
                 expression: &reply.resolve_script(request.id),
                 await_promise: false,
                 return_by_value: false,
+                context_id: context,
             },
         );
         return;
@@ -332,12 +448,16 @@ fn dispatch_bridge_call(
             Ok(reply) => bridge::Reply::from(reply),
             Err(message) => bridge::Reply::Failure(message),
         };
+        // Back into the context that called, not the default one: the pending
+        // promise lives in the caller's frame, so a reply sent anywhere else
+        // leaves it pending forever.
         execute_without_result(
             &session,
             &protocol::Evaluate {
                 expression: &reply.resolve_script(request.id),
                 await_promise: false,
                 return_by_value: false,
+                context_id: context,
             },
         );
     })

@@ -17,7 +17,7 @@
 //! asserted by hand, or a nullable pointer WebKit hands back — is spelled out at
 //! the site.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -30,17 +30,26 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{
-    NSArray, NSDictionary, NSError, NSHTTPCookie, NSObject, NSRect, NSString, NSURL, NSURLRequest,
+    NSArray, NSDictionary, NSError, NSHTTPCookie, NSInteger, NSJSONSerialization,
+    NSJSONWritingOptions, NSObject, NSRect, NSString, NSURL,
+    NSURLErrorAppTransportSecurityRequiresSecureConnection, NSURLErrorCancelled,
+    NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost, NSURLErrorClientCertificateRejected,
+    NSURLErrorClientCertificateRequired, NSURLErrorDNSLookupFailed, NSURLErrorDomain,
+    NSURLErrorNetworkConnectionLost, NSURLErrorNotConnectedToInternet,
+    NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateHasBadDate,
+    NSURLErrorServerCertificateHasUnknownRoot, NSURLErrorServerCertificateNotYetValid,
+    NSURLErrorServerCertificateUntrusted, NSURLErrorTimedOut, NSURLRequest,
 };
 use objc2_web_kit::{
-    WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
-    WKScriptMessage, WKScriptMessageHandler, WKUserContentController, WKUserScript,
-    WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration,
+    WKContentWorld, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
+    WKNavigationDelegate, WKScriptMessage, WKScriptMessageHandler, WKSecurityOrigin,
+    WKUserContentController, WKUserScript, WKUserScriptInjectionTime, WKWebView,
+    WKWebViewConfiguration,
 };
 use waterui_core::{Computed, Environment, Str};
 use waterui_webview::{
-    BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, Url, WatcherGuard,
-    WatcherSet, WebViewController, WebViewError, WebViewEvent, WebViewHandle, bridge,
+    BackendEvent, Cookie, CustomWebViewController, OriginPolicy, ScriptInjectionTime, Url,
+    WatcherGuard, WatcherSet, WebViewController, WebViewError, WebViewEvent, WebViewHandle, bridge,
 };
 
 /// Bridges `waterui.invoke` to WebKit's message-handler transport.
@@ -55,8 +64,37 @@ const TRANSPORT_SCRIPT: &str = concat!(
 
 type JavaScriptHandler = Rc<waterui_webview::ScriptMessageHandler>;
 
+/// `NSURLErrorDomain` codes that mean the TLS handshake or a certificate was
+/// the problem, so the failure is reported as [`WebViewError::Ssl`] rather than
+/// being flattened into a generic load failure.
+const TLS_ERROR_CODES: [NSInteger; 8] = [
+    NSURLErrorSecureConnectionFailed,
+    NSURLErrorServerCertificateHasBadDate,
+    NSURLErrorServerCertificateUntrusted,
+    NSURLErrorServerCertificateHasUnknownRoot,
+    NSURLErrorServerCertificateNotYetValid,
+    NSURLErrorClientCertificateRejected,
+    NSURLErrorClientCertificateRequired,
+    NSURLErrorAppTransportSecurityRequiresSecureConnection,
+];
+
+/// `NSURLErrorDomain` codes that mean the request never reached the server, so
+/// the failure is reported as [`WebViewError::Network`].
+const TRANSPORT_ERROR_CODES: [NSInteger; 6] = [
+    NSURLErrorTimedOut,
+    NSURLErrorCannotFindHost,
+    NSURLErrorCannotConnectToHost,
+    NSURLErrorNetworkConnectionLost,
+    NSURLErrorDNSLookupFailed,
+    NSURLErrorNotConnectedToInternet,
+];
+
 #[derive(Clone)]
 struct InjectedScript {
+    /// The key the script was injected under. Re-injecting under a key already
+    /// in use replaces that script instead of stacking another copy in front of
+    /// it, which is what the mirrored-state seed relies on.
+    key: String,
     source: String,
     time: ScriptInjectionTime,
 }
@@ -65,11 +103,19 @@ struct SharedState {
     watchers: WatcherSet<BackendEvent>,
     redirects_enabled: RefCell<Computed<bool>>,
     handlers: RefCell<HashMap<String, JavaScriptHandler>>,
+    /// Keyed, in injection order. A `Vec` rather than a map because the order
+    /// scripts run in is part of what was asked for.
     scripts: RefCell<Vec<InjectedScript>>,
     last_navigation_url: RefCell<Option<String>>,
     /// Which documents may reach the bridge; checked on every message.
-    bridge_origins: RefCell<Option<waterui_webview::OriginPolicy>>,
-    transport_registered: std::cell::Cell<bool>,
+    bridge_origins: RefCell<Option<OriginPolicy>>,
+    /// Whether the document being loaded is one the policy admits.
+    ///
+    /// `WKUserContentController` has no per-origin injection filter, so the
+    /// filter is the injection itself: the scripts are rebuilt for every main
+    /// frame navigation and installed only when its destination is admitted.
+    bridge_admitted: Cell<bool>,
+    transport_registered: Cell<bool>,
 }
 
 impl Default for SharedState {
@@ -81,7 +127,8 @@ impl Default for SharedState {
             scripts: RefCell::new(Vec::new()),
             last_navigation_url: RefCell::new(None),
             bridge_origins: RefCell::new(None),
-            transport_registered: std::cell::Cell::new(false),
+            bridge_admitted: Cell::new(false),
+            transport_registered: Cell::new(false),
         }
     }
 }
@@ -89,6 +136,65 @@ impl Default for SharedState {
 impl SharedState {
     fn emit(&self, event: impl Into<BackendEvent>) {
         self.watchers.emit(&event.into());
+    }
+
+    /// Whether a document at `url` may be given the bridge.
+    ///
+    /// No policy means no bridge: a handle whose origins were never chosen has
+    /// nothing to authenticate a page against, and the seed script carries the
+    /// live value of every exposed binding.
+    fn admits(&self, url: Option<&str>) -> bool {
+        let policy = self.bridge_origins.borrow();
+        let (Some(policy), Some(url)) = (policy.as_ref(), url) else {
+            return false;
+        };
+        Url::parse(url).is_some_and(|url| policy.allows(&url))
+    }
+
+    /// Re-decides whether the document at `url` gets the bridge, and rebuilds
+    /// the injected scripts to match.
+    fn admit_document(&self, url: Option<&str>, controller: &WKUserContentController) {
+        self.bridge_admitted.set(self.admits(url));
+        install_user_scripts(controller, self);
+    }
+
+    /// Emits the failure of a navigation, or nothing when it was cancelled.
+    ///
+    /// A cancellation is not a failure: `stop()` and starting a second
+    /// navigation while the first is in flight both report `NSURLErrorCancelled`
+    /// here, and reporting those as load errors made every replaced navigation
+    /// look broken.
+    fn emit_navigation_error(&self, error: &NSError) {
+        let is_url_error = {
+            // SAFETY: reading an Objective-C string constant the framework owns.
+            let domain = unsafe { NSURLErrorDomain };
+            *error.domain() == *domain
+        };
+        let code = error.code();
+        if is_url_error && code == NSURLErrorCancelled {
+            return;
+        }
+        let message = Str::from(error.localizedDescription().to_string());
+        let error = if !is_url_error {
+            WebViewError::LoadFailed(message)
+        } else if TLS_ERROR_CODES.contains(&code) {
+            WebViewError::Ssl {
+                // The URL that failed is the one the navigation started at;
+                // `WKWebView::URL` still points at the document being replaced.
+                url: Self::parse_url(
+                    self.last_navigation_url
+                        .borrow()
+                        .clone()
+                        .unwrap_or_default(),
+                ),
+                message,
+            }
+        } else if TRANSPORT_ERROR_CODES.contains(&code) {
+            WebViewError::Network(message)
+        } else {
+            WebViewError::LoadFailed(message)
+        };
+        self.emit(WebViewEvent::Error(error));
     }
 
     fn emit_navigation_state(&self, web_view: &WKWebView) {
@@ -145,10 +251,44 @@ define_class!(
         #[allow(non_snake_case)]
         unsafe fn webView_decidePolicyForNavigationAction_decisionHandler(
             &self,
-            _web_view: &WKWebView,
-            _navigation_action: &WKNavigationAction,
+            web_view: &WKWebView,
+            navigation_action: &WKNavigationAction,
             decision_handler: &block2::DynBlock<dyn Fn(WKNavigationActionPolicy)>,
         ) {
+            // Document-start scripts have to be chosen before the load begins,
+            // and this is the last callback that runs first. The bridge, its
+            // evaluation wrapper and the mirrored-state seed are all injected
+            // here or not at all: the seed contains the current value of every
+            // exposed `Binding`, so handing it to a page the policy does not
+            // admit would publish that state to it.
+            //
+            // Sub-frame navigations are ignored: the scripts are main-frame
+            // only, and letting an iframe decide would let it revoke the
+            // main frame's bridge.
+            // SAFETY: main-thread message sends to objects WebKit retains for
+            // this call; see the module safety note.
+            let targets_main_frame = unsafe {
+                navigation_action
+                    .targetFrame()
+                    .is_some_and(|frame| frame.isMainFrame())
+            };
+            if targets_main_frame {
+                // SAFETY: main-thread message sends to objects WebKit retains
+                // for this call; see the module safety note.
+                let url = unsafe {
+                    navigation_action
+                        .request()
+                        .URL()
+                        .and_then(|url| url.absoluteString())
+                }
+                .map(|url| url.to_string());
+                // SAFETY: main-thread message send to the web view WebKit hands
+                // this callback; see the module safety note.
+                let controller = unsafe { web_view.configuration().userContentController() };
+                self.ivars()
+                    .shared
+                    .admit_document(url.as_deref(), &controller);
+            }
             decision_handler.call((WKNavigationActionPolicy::Allow,));
         }
 
@@ -248,11 +388,7 @@ define_class!(
             _navigation: Option<&WKNavigation>,
             error: &NSError,
         ) {
-            self.ivars()
-                .shared
-                .emit(WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
-                    error.localizedDescription().to_string(),
-                ))));
+            self.ivars().shared.emit_navigation_error(error);
         }
 
         #[unsafe(method(webView:didFailNavigation:withError:))]
@@ -263,11 +399,7 @@ define_class!(
             _navigation: Option<&WKNavigation>,
             error: &NSError,
         ) {
-            self.ivars()
-                .shared
-                .emit(WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
-                    error.localizedDescription().to_string(),
-                ))));
+            self.ivars().shared.emit_navigation_error(error);
         }
     }
 
@@ -294,13 +426,16 @@ define_class!(
                 // SAFETY: main-thread message send to an object WebKit retains for
                 // this call; see the module safety note.
                 let frame = unsafe { message.frameInfo() };
+                // SAFETY: main-thread message sends to objects WebKit retains for
+                // this call; see the module safety note.
                 let is_main_frame = unsafe { frame.isMainFrame() };
+                // SAFETY: main-thread message send to an object WebKit retains for
+                // this call; see the module safety note.
                 let origin = unsafe { frame.securityOrigin() };
-                let origin = unsafe { format!("{}://{}", origin.protocol(), origin.host()) };
-                is_main_frame
-                    && policy.is_some_and(|policy| {
-                        origin.parse().is_ok_and(|origin| policy.allows(&origin))
-                    })
+                // SAFETY: main-thread message sends to an object WebKit retains
+                // for this call; see the module safety note.
+                let origin = unsafe { security_origin_string(&origin) };
+                is_main_frame && policy.is_some_and(|policy| policy.allows_origin(&origin))
             };
             if !allowed {
                 tracing::warn!(
@@ -368,6 +503,127 @@ define_class!(
         }
     }
 );
+
+/// The `scheme://host[:port]` string [`OriginPolicy::allows_origin`] matches.
+///
+/// `WKSecurityOrigin` reports a scheme's default port as `0`; every other port
+/// belongs to the origin. Dropping it refused every call from a development
+/// server on `http://localhost:3000`, and admitted `https://app.example:8443`
+/// for a policy that named only `https://app.example`.
+///
+/// # Safety
+///
+/// `origin` must be a live `WKSecurityOrigin` messaged on the main thread.
+unsafe fn security_origin_string(origin: &WKSecurityOrigin) -> String {
+    // SAFETY: the caller guarantees a live receiver on the main thread.
+    let (protocol, host, port) = unsafe {
+        (
+            origin.protocol().to_string(),
+            origin.host().to_string(),
+            origin.port(),
+        )
+    };
+    if port == 0 {
+        format!("{protocol}://{host}")
+    } else {
+        format!("{protocol}://{host}:{port}")
+    }
+}
+
+fn add_user_script(controller: &WKUserContentController, source: &str, time: ScriptInjectionTime) {
+    let source = NSString::from_str(source);
+    let injection_time = match time {
+        ScriptInjectionTime::DocumentStart => WKUserScriptInjectionTime::AtDocumentStart,
+        ScriptInjectionTime::DocumentEnd => WKUserScriptInjectionTime::AtDocumentEnd,
+    };
+    let mtm = MainThreadMarker::new()
+        .expect("Hydrolysis WKWebView scripts must be installed on the macOS main thread");
+    // SAFETY: main-thread message send to an object this wrapper retains; see
+    // the module safety note. The `forMainFrameOnly` argument is `true`: the
+    // bridge is documented as reaching the main frame only, and the message
+    // handler refuses sub-frame calls, so injecting into sub-frames would only
+    // publish the mirrored state to documents that cannot use it.
+    let script = unsafe {
+        WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
+            WKUserScript::alloc(mtm),
+            &source,
+            injection_time,
+            true,
+        )
+    };
+    // SAFETY: main-thread message send to an object this wrapper retains; see
+    // the module safety note.
+    unsafe {
+        controller.addUserScript(&script);
+    }
+}
+
+/// Installs the document-start scripts for the document currently being loaded.
+///
+/// Everything is rebuilt from scratch, because `WKUserContentController` can
+/// only remove all of its user scripts at once — which is also what makes
+/// replacing a keyed script work.
+fn install_user_scripts(controller: &WKUserContentController, shared: &SharedState) {
+    // SAFETY: main-thread message send to an object this wrapper retains; see
+    // the module safety note.
+    unsafe {
+        controller.removeAllUserScripts();
+    }
+    if !shared.bridge_admitted.get() {
+        // A document outside the policy gets no bridge, no evaluation wrapper
+        // and no mirrored-state seed. The seed is the reason this is not merely
+        // tidy: it declares the current value of every exposed `Binding`, so
+        // injecting it into whatever the view navigated to would hand that page
+        // the app's state.
+        return;
+    }
+    // Transport first: the shared script calls `__wateruiSend`, so the adapter
+    // has to be defined before it. Handlers no longer need a script each --
+    // the page reaches all of them through `waterui.invoke`.
+    add_user_script(
+        controller,
+        TRANSPORT_SCRIPT,
+        ScriptInjectionTime::DocumentStart,
+    );
+    add_user_script(
+        controller,
+        waterui_webview::DOCUMENT_START_SCRIPT,
+        ScriptInjectionTime::DocumentStart,
+    );
+    for script in shared.scripts.borrow().iter() {
+        add_user_script(controller, &script.source, script.time);
+    }
+}
+
+/// Turns the value WebKit hands a completion block into the text every backend
+/// returns for it: a string as itself, anything else as JSON.
+///
+/// `-description` used to stand in for this, so an object came back in
+/// Objective-C property-list syntax (`{a = 1;}`) where every other backend
+/// returns JSON (`{"a":1}`).
+fn marshal_javascript_result(value: *mut AnyObject) -> Result<Str, Str> {
+    // SAFETY: WebKit passes a nullable result to the completion block; `as_ref`
+    // is the null check.
+    let Some(value) = (unsafe { value.as_ref() }) else {
+        // `undefined`: no value at all, which is not the JSON `null`.
+        return Ok(Str::from_static(""));
+    };
+    if let Some(string) = value.downcast_ref::<NSString>() {
+        return Ok(Str::from(string.to_string()));
+    }
+    // SAFETY: `value` is the live result object WebKit handed the completion
+    // block, and the serializer only reads it.
+    let data = unsafe {
+        NSJSONSerialization::dataWithJSONObject_options_error(
+            value,
+            NSJSONWritingOptions::FragmentsAllowed,
+        )
+    }
+    .map_err(|error| Str::from(error.localizedDescription().to_string()))?;
+    String::from_utf8(data.to_vec())
+        .map(Str::from)
+        .map_err(|error| Str::from(error.to_string()))
+}
 
 impl WebViewDelegate {
     fn new(mtm: MainThreadMarker, shared: Rc<SharedState>) -> Retained<Self> {
@@ -443,35 +699,6 @@ impl MacSystemWebViewHandle {
         unsafe { self.inner.web_view.configuration().userContentController() }
     }
 
-    fn add_user_script(
-        controller: &WKUserContentController,
-        source: &str,
-        time: ScriptInjectionTime,
-    ) {
-        let source = NSString::from_str(source);
-        let injection_time = match time {
-            ScriptInjectionTime::DocumentStart => WKUserScriptInjectionTime::AtDocumentStart,
-            ScriptInjectionTime::DocumentEnd => WKUserScriptInjectionTime::AtDocumentEnd,
-        };
-        let mtm = MainThreadMarker::new()
-            .expect("Hydrolysis WKWebView scripts must be installed on the macOS main thread");
-        // SAFETY: main-thread message send to an object this wrapper retains; see
-        // the module safety note.
-        let script = unsafe {
-            WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
-                WKUserScript::alloc(mtm),
-                &source,
-                injection_time,
-                false,
-            )
-        };
-        // SAFETY: main-thread message send to an object this wrapper retains; see
-        // the module safety note.
-        unsafe {
-            controller.addUserScript(&script);
-        }
-    }
-
     /// Registers the single WebKit message handler the bridge transports over.
     ///
     /// One handler serves every WaterUI handler name, so this runs once rather
@@ -494,28 +721,7 @@ impl MacSystemWebViewHandle {
     }
 
     fn rebuild_user_scripts(&self) {
-        let controller = self.user_content_controller();
-        // SAFETY: main-thread message send to an object this wrapper retains; see
-        // the module safety note.
-        unsafe {
-            controller.removeAllUserScripts();
-        }
-        // Transport first: the shared script calls `__wateruiSend`, so the adapter
-        // has to be defined before it. Handlers no longer need a script each --
-        // the page reaches all of them through `waterui.invoke`.
-        Self::add_user_script(
-            &controller,
-            TRANSPORT_SCRIPT,
-            ScriptInjectionTime::DocumentStart,
-        );
-        Self::add_user_script(
-            &controller,
-            waterui_webview::DOCUMENT_START_SCRIPT,
-            ScriptInjectionTime::DocumentStart,
-        );
-        for script in self.inner.shared.scripts.borrow().iter() {
-            Self::add_user_script(&controller, &script.source, script.time);
-        }
+        install_user_scripts(&self.user_content_controller(), &self.inner.shared);
     }
 
     fn native_cookie(cookie: &Cookie<'static>, web_view: &WKWebView) -> Retained<NSHTTPCookie> {
@@ -592,11 +798,21 @@ impl WebViewHandle for MacSystemWebViewHandle {
         }
     }
 
-    fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
-        self.inner.shared.scripts.borrow_mut().push(InjectedScript {
-            source: script.to_owned(),
-            time,
-        });
+    fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
+        {
+            let mut scripts = self.inner.shared.scripts.borrow_mut();
+            let entry = InjectedScript {
+                key: key.to_owned(),
+                source: script.to_owned(),
+                time,
+            };
+            // Replacing in place keeps the script's position, so the order the
+            // page runs them in does not change when one is re-rendered.
+            match scripts.iter_mut().find(|script| script.key == key) {
+                Some(existing) => *existing = entry,
+                None => scripts.push(entry),
+            }
+        }
         self.rebuild_user_scripts();
     }
 
@@ -615,8 +831,14 @@ impl WebViewHandle for MacSystemWebViewHandle {
         self.ensure_transport_registered();
     }
 
-    fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
+    fn set_bridge_origins(&self, policy: OriginPolicy) {
         self.inner.shared.bridge_origins.replace(Some(policy));
+        // The policy decides what is injected as well as what is answered, so
+        // the document already loaded is re-judged against the new one.
+        let url = SharedState::current_url(&self.inner.web_view);
+        self.inner
+            .shared
+            .admit_document(url.as_deref(), &self.user_content_controller());
     }
 
     fn remove_handler(&self, name: &str) {
@@ -733,29 +955,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
 
     async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
         let (sender, receiver) = oneshot::channel();
-        let sender = RefCell::new(Some(sender));
-        let completion = RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
-            // SAFETY: WebKit passes a nullable `NSError` to the completion block;
-            // `as_ref` is the null check.
-            let result = if let Some(error) = unsafe { error.as_ref() } {
-                Err(Str::from(error.localizedDescription().to_string()))
-            // SAFETY: WebKit passes a nullable result to the completion block;
-            // `as_ref` is the null check.
-            } else if let Some(value) = unsafe { value.as_ref() } {
-                // SAFETY: `value` is the non-null result WebKit handed the
-                // completion block, and `-description` is defined on every
-                // `NSObject`, returning a retained string.
-                let description: Retained<NSString> = unsafe { msg_send![value, description] };
-                Ok(Str::from(description.to_string()))
-            } else {
-                Ok(Str::from(""))
-            };
-            let sender = sender
-                .borrow_mut()
-                .take()
-                .expect("Hydrolysis WKWebView JavaScript callback invoked twice");
-            let _ = sender.send(result);
-        });
+        let completion = Self::javascript_completion(sender);
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
         unsafe {
@@ -768,10 +968,71 @@ impl WebViewHandle for MacSystemWebViewHandle {
             .await
             .expect("Hydrolysis WKWebView JavaScript evaluation was cancelled")
     }
+
+    async fn call_async_javascript(&self, body: &str) -> Result<Str, Str> {
+        let mtm = MainThreadMarker::new()
+            .expect("Hydrolysis WKWebView JavaScript must be evaluated on the macOS main thread");
+        let (sender, receiver) = oneshot::channel();
+        let completion = Self::javascript_completion(sender);
+        // `callAsyncJavaScript` runs the body as an async function and settles
+        // once the promise it returns resolves. `evaluateJavaScript` does not
+        // await, so it answered the shared wrapper's promise object with
+        // `WKErrorJavaScriptResultTypeUnsupported`, which is what made every
+        // `eval`/`exec` and every mirrored-state push fail on this backend.
+        //
+        // The page world is where the injected scripts live, so it is where
+        // `__wateruiEval` is defined.
+        // SAFETY: main-thread message send to an object this wrapper retains; see
+        // the module safety note. `arguments` is nil because the wrapper carries
+        // its own, and a nil frame means the main frame.
+        unsafe {
+            self.inner
+                .web_view
+                .callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+                    &NSString::from_str(body),
+                    None,
+                    None,
+                    &WKContentWorld::pageWorld(mtm),
+                    Some(&completion),
+                );
+        }
+        receiver
+            .await
+            .expect("Hydrolysis WKWebView JavaScript evaluation was cancelled")
+    }
 }
 
+impl MacSystemWebViewHandle {
+    /// The completion block both evaluation paths hand WebKit.
+    fn javascript_completion(
+        sender: oneshot::Sender<Result<Str, Str>>,
+    ) -> RcBlock<dyn Fn(*mut AnyObject, *mut NSError)> {
+        let sender = RefCell::new(Some(sender));
+        RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
+            // SAFETY: WebKit passes a nullable `NSError` to the completion block;
+            // `as_ref` is the null check.
+            let result = if let Some(error) = unsafe { error.as_ref() } {
+                Err(Str::from(error.localizedDescription().to_string()))
+            } else {
+                marshal_javascript_result(value)
+            };
+            let sender = sender
+                .borrow_mut()
+                .take()
+                .expect("Hydrolysis WKWebView JavaScript callback invoked twice");
+            let _ = sender.send(result);
+        })
+    }
+}
+
+/// The controller behind this backend's system web views.
+///
+/// Public so the real-engine test suite can drive the exact handle
+/// [`Self::open`] hands the renderer — a genuine `WKWebView`, not a double —
+/// through the shared `WebViewHandle` contract. Applications never need it:
+/// the backend installs it as the default controller on macOS.
 #[derive(Debug, Clone, Copy)]
-struct MacSystemWebViewController;
+pub struct MacSystemWebViewController;
 
 impl CustomWebViewController for MacSystemWebViewController {
     fn open(&self) -> impl WebViewHandle {

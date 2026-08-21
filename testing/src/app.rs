@@ -929,7 +929,12 @@ impl SemanticApp {
     /// progress spinner keeps the animation controller active forever); every
     /// finite transition ends well before it. Each pump advances the virtual
     /// clock one frame, so the cap costs pump work, never wall-clock sleeps.
-    fn settle(&mut self) {
+    ///
+    /// Public because a test that drives non-visual work — a handler that spawns
+    /// onto the local executor, a coalesced push that lands on the next tick —
+    /// has to be able to say "let queued work finish" without inventing an
+    /// accessibility node to wait on.
+    pub fn settle(&mut self) {
         /// Virtual time budget for perpetual animations; ~62 pumps at 16ms.
         const SETTLE_CAP: Duration = Duration::from_secs(1);
 

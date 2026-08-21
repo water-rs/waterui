@@ -67,17 +67,28 @@ impl CdpCommand for AddScriptToEvaluateOnNewDocument<'_> {
 }
 
 /// Identifies a registered document-start script.
-///
-/// Kept so the response is decoded rather than ignored; removing a script is not
-/// something `WaterUI` does yet.
 #[derive(Debug, Deserialize)]
 pub struct ScriptIdentifier {
-    /// Chromium's handle for the script.
-    #[expect(
-        dead_code,
-        reason = "decoded for completeness; no caller removes a script yet"
-    )]
+    /// Chromium's handle for the script, used to replace or remove it.
     pub identifier: String,
+}
+
+/// Removes a script previously registered by
+/// [`AddScriptToEvaluateOnNewDocument`].
+///
+/// Replacement is add-then-remove: a keyed injection has to drop the script it
+/// supersedes, or a view that re-seeds its mirrored state on every navigation
+/// accumulates one stale seed per navigation and the oldest still runs first.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveScriptToEvaluateOnNewDocument<'a> {
+    /// The handle [`AddScriptToEvaluateOnNewDocument`] returned.
+    pub identifier: &'a str,
+}
+
+impl CdpCommand for RemoveScriptToEvaluateOnNewDocument<'_> {
+    const METHOD: &'static str = "Page.removeScriptToEvaluateOnNewDocument";
+    type Response = Empty;
 }
 
 /// Evaluates an expression in the page.
@@ -90,6 +101,14 @@ pub struct Evaluate<'a> {
     pub await_promise: bool,
     /// Return the value itself rather than a remote handle.
     pub return_by_value: bool,
+    /// Which execution context to evaluate in; the default context when absent.
+    ///
+    /// A bridge reply has to go back to the context that made the call. Sending
+    /// every reply to the default context left a sub-frame's
+    /// `waterui.invoke(...)` promise pending forever, because the resolver it
+    /// was waiting on lives in the frame's own context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<i64>,
 }
 
 impl CdpCommand for Evaluate<'_> {

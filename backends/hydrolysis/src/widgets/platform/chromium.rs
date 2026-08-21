@@ -77,7 +77,10 @@ pub(crate) fn render_chromium_node(
     state: &Rc<RefCell<ChromiumRenderState>>,
     env: &Environment,
 ) {
-    let _ = env;
+    // CEF rasterizes the page into a texture the host tree cannot see into, so
+    // without this node the whole region is missing from the accessibility tree
+    // -- the same reason `WebView` publishes one, and the same node.
+    super::register_web_surface_accessibility(ctx, env);
     let bounds = ctx.bounds;
     let transform = ctx.render_context().transform;
     let hit_transform = ctx.hit_transform;

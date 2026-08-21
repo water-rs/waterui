@@ -23,7 +23,19 @@
   }
 
   var pending = new Map();
-  var nextId = 0;
+
+  // Ids are unique to this document, not just within it.
+  //
+  // A handler may still be awaiting I/O when the page navigates. The reply is
+  // then evaluated in the *new* document, whose own `pending` map started over
+  // from the same low numbers — so a stale reply could settle an unrelated call
+  // with another call's value. Starting each document at a random point makes
+  // an id from a previous document essentially certain not to be pending here,
+  // and `__wateruiResolve` already ignores ids it does not know.
+  //
+  // 26 bits of document entropy and 26 bits of counter stay well inside the
+  // range a double holds exactly, so the id crosses as an ordinary number.
+  var nextId = Math.floor(Math.random() * 0x4000000) * 0x4000000;
 
   // Integers Rust can hold and a JS number cannot. JSON has no spelling for
   // them, so they cross as {"__wateruiBigInt": "123..."} and become BigInt

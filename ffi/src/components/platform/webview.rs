@@ -288,7 +288,12 @@ pub struct WuiWebViewHandle {
 
     // Script injection
     /// Inject a script that runs on every page load.
-    pub inject_script: unsafe extern "C" fn(*mut (), WuiStr, WuiScriptInjectionTime),
+    ///
+    /// The first string is a key naming the script: injecting again under a key
+    /// already in use replaces that script rather than adding a second copy.
+    /// The mirrored-state seed relies on it, being re-rendered and replaced
+    /// before every navigation.
+    pub inject_script: unsafe extern "C" fn(*mut (), WuiStr, WuiStr, WuiScriptInjectionTime),
 
     // Event watching
     /// Set event callback. Native calls this when events occur.
@@ -304,7 +309,12 @@ pub struct WuiWebViewHandle {
     pub remove_handler: Option<unsafe extern "C" fn(*mut (), WuiStr)>,
     /// Restricts which documents may reach the bridge.
     ///
-    /// Receives newline-separated URI patterns, or `*` for every origin.
+    /// Receives newline-separated rule tokens: `*` for every origin, `file:` for
+    /// any local file, and otherwise an exact `scheme://host[:port]` to compare
+    /// the calling frame's origin against. **The empty string denies every
+    /// document** — that is what the default policy resolves to when the view is
+    /// opened at a URL with no origin — and a backend that treats it as `*`
+    /// hands every registered handler to whatever the view navigates to.
     pub set_bridge_origins: Option<unsafe extern "C" fn(*mut (), WuiStr)>,
 
     // Cookies
@@ -315,7 +325,23 @@ pub struct WuiWebViewHandle {
 
     // JavaScript
     /// Execute JavaScript on the currently loaded page and call callback with result.
+    ///
+    /// The raw path: the value comes back however the engine marshals it.
     pub run_javascript: unsafe extern "C" fn(*mut (), WuiStr, WuiJsCallback),
+
+    /// Run the string as the body of an `async` function and **await** the
+    /// promise it returns, then call the callback with the resolved value.
+    ///
+    /// Every typed evaluation goes through here, because the shared wrapper in
+    /// `js/eval.js` is `async`: an engine API that does not await — WebKit's
+    /// `evaluateJavaScript`, `webkit_web_view_evaluate_javascript`,
+    /// `WebView.evaluateJavascript` — hands back the promise object instead of
+    /// the JSON envelope, and every `eval!`/`exec!` fails while mirrored state
+    /// silently stops reaching the page. Use `callAsyncJavaScript`,
+    /// `webkit_web_view_call_async_javascript_function`, `Runtime.evaluate`
+    /// with `awaitPromise`, or resolve the promise in JavaScript and report the
+    /// result through the backend's own bridge.
+    pub call_async_javascript: unsafe extern "C" fn(*mut (), WuiStr, WuiJsCallback),
 
     // Cleanup
     /// Release the native handle.
@@ -440,12 +466,20 @@ impl WebViewHandle for FfiWebViewHandle {
         }
     }
 
-    fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
+    fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
+        let owned_key = Str::from(key.to_string());
         let owned_script = Str::from(script.to_string());
         // SAFETY: `ffi.data` and this function pointer were registered together by
         // the backend for this controller, which is alive for as long as
         // `self` is.
-        unsafe { (self.ffi.inject_script)(self.ffi.data, owned_script.into_ffi(), time.into_ffi()) }
+        unsafe {
+            (self.ffi.inject_script)(
+                self.ffi.data,
+                owned_key.into_ffi(),
+                owned_script.into_ffi(),
+                time.into_ffi(),
+            );
+        }
     }
 
     fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
@@ -539,18 +573,11 @@ impl WebViewHandle for FfiWebViewHandle {
         let Some(set) = self.ffi.set_bridge_origins else {
             return;
         };
-        let patterns = policy.uri_patterns().map_or_else(
-            || Str::from_static("*"),
-            |patterns| {
-                Str::from(
-                    patterns
-                        .iter()
-                        .map(waterui_str::Str::as_str)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                )
-            },
-        );
+        // The wire form keeps deny-all (`""`) distinct from allow-all (`"*"`).
+        // Collapsing the two is what made a view opened at a `file:` URL — whose
+        // default policy admits nothing, because a local document has no origin
+        // to compare — hand every handler to whatever it navigated to next.
+        let patterns = policy.wire();
         // SAFETY: `set` and `ffi.data` come from the same registration.
         // SAFETY: as for `add_handler` — same controller, same registration.
         unsafe { set(self.ffi.data, patterns.into_ffi()) }
@@ -614,16 +641,23 @@ impl WebViewHandle for FfiWebViewHandle {
         }
 
         async move {
-            let text = receiver
-                .recv()
-                .await
-                .expect("WebView backend dropped its cookie completion callback");
+            // A web view torn down while the query was in flight drops the
+            // callback without invoking it; that is a teardown race, not a
+            // reason to suspend the caller's task forever.
+            let Ok(text) = receiver.recv().await else {
+                return Vec::new();
+            };
             text.as_str()
                 .lines()
-                .map(|line| {
-                    Cookie::parse(line.to_string())
-                        .expect("WebView backend returned an invalid cookie")
-                        .into_owned()
+                .filter_map(|line| match Cookie::parse(line.to_string()) {
+                    Ok(cookie) => Some(cookie.into_owned()),
+                    Err(error) => {
+                        // The store holds whatever the pages put there, so one
+                        // unparseable entry must not take down the app inside a
+                        // getter.
+                        tracing::warn!(%error, "skipping a cookie the web view could not parse");
+                        None
+                    }
                 })
                 .collect()
         }
@@ -634,6 +668,41 @@ impl WebViewHandle for FfiWebViewHandle {
         reason = "WaterUI webview bridge futures resolve on the main-thread local executor and carry non-`Send` `Str` payloads by design"
     )]
     fn run_javascript(&self, script: &str) -> impl core::future::Future<Output = Result<Str, Str>> {
+        // SAFETY: the two come from the same registration; `evaluate_through`
+        // documents what it needs of them.
+        unsafe { self.evaluate_through(self.ffi.run_javascript, script) }
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "WaterUI webview bridge futures resolve on the main-thread local executor and carry non-`Send` `Str` payloads by design"
+    )]
+    fn call_async_javascript(
+        &self,
+        body: &str,
+    ) -> impl core::future::Future<Output = Result<Str, Str>> {
+        // SAFETY: as above.
+        unsafe { self.evaluate_through(self.ffi.call_async_javascript, body) }
+    }
+}
+
+impl FfiWebViewHandle {
+    /// Drives one of the two evaluation entry points, which differ only in
+    /// whether the backend awaits the promise the source produces.
+    ///
+    /// # Safety
+    ///
+    /// `evaluate` must be a function pointer from the same registration as
+    /// `self.ffi.data`.
+    #[expect(
+        clippy::future_not_send,
+        reason = "WaterUI webview bridge futures resolve on the main-thread local executor and carry non-`Send` `Str` payloads by design"
+    )]
+    unsafe fn evaluate_through(
+        &self,
+        evaluate: unsafe extern "C" fn(*mut (), WuiStr, WuiJsCallback),
+        source: &str,
+    ) -> impl core::future::Future<Output = Result<Str, Str>> {
         unsafe extern "C" fn js_callback_trampoline(data: *mut (), success: bool, result: WuiStr) {
             let sender =
                 // SAFETY: as for the cookie callback — `data` is the boxed sender
@@ -654,19 +723,24 @@ impl WebViewHandle for FfiWebViewHandle {
             call: js_callback_trampoline,
         };
 
-        let owned_script = Str::from(script.to_string());
+        let owned_source = Str::from(source.to_string());
         unsafe {
-            // SAFETY: `ffi.data` and this function pointer were registered together
-            // by the backend for this controller, which is alive for as long
-            // as `self` is.
-            (self.ffi.run_javascript)(self.ffi.data, owned_script.into_ffi(), ffi_callback);
+            // SAFETY: the caller guarantees `evaluate` and `ffi.data` come from
+            // the same registration, and that controller is alive for as long as
+            // `self` is.
+            evaluate(self.ffi.data, owned_source.into_ffi(), ffi_callback);
         }
 
         async move {
-            receiver
-                .recv()
-                .await
-                .expect("WebView backend dropped its JavaScript completion callback")
+            // A backend that is torn down mid-evaluation drops the callback
+            // without invoking it. Reporting that as an error keeps the caller's
+            // future resolving: awaiting a channel that will never receive left
+            // the task suspended forever, holding everything it had captured.
+            receiver.recv().await.unwrap_or_else(|_| {
+                Err(Str::from_static(
+                    "the web view was torn down before the script completed",
+                ))
+            })
         }
     }
 }

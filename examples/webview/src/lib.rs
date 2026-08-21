@@ -206,6 +206,7 @@ impl View for WebViewDemo {
             // Runs on every page load; the page can call back with
             // `waterui.invoke("logTitle", document.title)`.
             .inject(
+                "ready-marker",
                 "document.documentElement.dataset.waterui = 'ready';",
                 ScriptInjectionTime::DocumentEnd,
             )

@@ -37,6 +37,8 @@ pub use runner::{
     FrameCounters, FramePhases, FrameProfile, HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot,
 };
 pub use view_renderer::HydrolysisViewRenderer;
+#[cfg(hydrolysis_macos_system_webview)]
+pub use widgets::platform::webview::MacSystemWebViewController;
 
 // Cargo features are additive, so two crates in one build can each select a different
 // WebView engine and silently produce a configuration that defines the engine-specific

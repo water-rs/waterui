@@ -110,10 +110,14 @@ struct Field {
 }
 
 /// What a push sends for one key.
+///
+/// Carries writability as well as the value, so a patch can define a key the
+/// receiving document never saw seeded rather than only updating one it did.
 #[derive(Serialize)]
 struct FieldUpdate {
     v: serde_json::Value,
     e: u64,
+    w: bool,
 }
 
 /// The state a web view mirrors into its page.
@@ -235,6 +239,7 @@ impl StateRegistry {
                     FieldUpdate {
                         v: (field.read)(),
                         e: field.epoch.get(),
+                        w: field.write.is_some(),
                     },
                 ))
             })
@@ -309,24 +314,41 @@ pub fn install(webview: &crate::WebView, fields: Vec<PendingField>) {
 
     let flush = {
         let registry = Rc::clone(&registry);
-        let webview = webview.clone();
+        // Weak: this closure ends up inside the `__wateruiSetState` handler, which
+        // the backend owns for the life of the native web view. Holding the handle
+        // strongly from there closes a cycle — handle → handler → flush → handle —
+        // so the handle is never dropped, the backend never tears the web view
+        // down, and its timers, media and network activity outlive the view that
+        // showed it.
+        let handle = webview.handle().downgrade();
         let scheduled = Rc::clone(&scheduled);
         Rc::new(move || {
             if scheduled.replace(true) {
                 return;
             }
             let registry = Rc::clone(&registry);
-            let webview = webview.clone();
+            let handle = handle.clone();
             let scheduled = Rc::clone(&scheduled);
             executor_core::spawn_local(async move {
                 scheduled.set(false);
+                let Some(handle) = handle.upgrade() else {
+                    return;
+                };
                 let Some(patch) = registry.take_patch() else {
                     return;
                 };
-                let script =
-                    crate::JsProgram::raw(format!("globalThis.__wateruiState.apply({patch});"));
-                if let Err(error) = webview.exec(&script).await {
-                    tracing::warn!(%error, "failed to push WaterUI state into the page");
+                let call =
+                    crate::JsProgram::raw(format!("globalThis.__wateruiState.apply({patch});"))
+                        .wrapped_call();
+                match crate::run_wrapped_on(&handle, &call).await {
+                    Ok(outcome) => {
+                        if let Err(error) = outcome.decode::<()>() {
+                            tracing::warn!(%error, "failed to push WaterUI state into the page");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to push WaterUI state into the page");
+                    }
                 }
             })
             .detach();
@@ -339,10 +361,31 @@ pub fn install(webview: &crate::WebView, fields: Vec<PendingField>) {
 
     // The page must see correct values on its first line, so the declarations go
     // in as a document-start script rather than being pushed after load.
-    webview.inject_script(
-        &registry.seed_script(),
-        crate::ScriptInjectionTime::DocumentStart,
-    );
+    //
+    // The seed is a snapshot, so it is only correct for the document it was
+    // rendered for. It is therefore re-rendered and replaced under the same key
+    // before every navigation: without that, a reload re-seeded the new document
+    // with the values the view was created with, and nothing ever corrected them
+    // because a patch only reports the keys that changed.
+    inject_seed(webview.handle(), &registry);
+    webview
+        .handle()
+        .watch({
+            let registry = Rc::clone(&registry);
+            let handle = webview.handle().downgrade();
+            move |event| {
+                if !matches!(
+                    event,
+                    crate::BackendEvent::Event(crate::WebViewEvent::WillNavigate { .. })
+                ) {
+                    return;
+                }
+                if let Some(handle) = handle.upgrade() {
+                    inject_seed(&handle, &registry);
+                }
+            }
+        })
+        .forget();
 
     webview.handle().add_handler(
         SET_STATE_HANDLER,
@@ -371,6 +414,22 @@ pub fn install(webview: &crate::WebView, fields: Vec<PendingField>) {
 
     // Seed the initial values.
     flush();
+}
+
+/// The key the mirrored-state seed is injected under.
+///
+/// Fixed so that re-injecting replaces the previous seed instead of stacking
+/// another, staler copy in front of it.
+const SEED_SCRIPT_KEY: &str = "waterui:state-seed";
+
+/// Renders the current values and installs them as the document-start seed,
+/// replacing whatever seed was there before.
+fn inject_seed(handle: &crate::AnyWebViewHandle, registry: &Rc<StateRegistry>) {
+    handle.inject_script(
+        SEED_SCRIPT_KEY,
+        &registry.seed_script(),
+        crate::ScriptInjectionTime::DocumentStart,
+    );
 }
 
 /// Why a write from the page could not be applied.

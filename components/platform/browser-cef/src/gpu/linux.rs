@@ -61,6 +61,18 @@ impl AcceleratedFrameSink for LinuxFrameSink {
             }],
             None,
         );
+        // Only the region that holds the page: Chromium may allocate the shared
+        // image at a coded size with alignment padding, and presenting that edge
+        // to edge stretches the page and draws the gutter.
+        let visible = &frame.extra.visible_rect;
+        let borrowed_frame = match (u32::try_from(visible.width), u32::try_from(visible.height)) {
+            (Ok(visible_width), Ok(visible_height))
+                if visible_width <= width && visible_height <= height =>
+            {
+                borrowed_frame.with_visible_size(visible_width, visible_height)
+            }
+            _ => borrowed_frame,
+        };
         self.mailbox
             .publish(element, self.copier.copy(borrowed_frame));
     }

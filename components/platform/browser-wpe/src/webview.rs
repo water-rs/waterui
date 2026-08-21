@@ -109,6 +109,12 @@ const TRANSPORT_SCRIPT: &str = concat!(
     "};"
 );
 
+/// The key the transport adapter is injected under.
+const TRANSPORT_SCRIPT_KEY: &str = "waterui:wpe-transport";
+
+/// The key the shared bridge and evaluation wrapper are injected under.
+const BRIDGE_SCRIPT_KEY: &str = "waterui:bridge";
+
 type RedirectSubscription = Option<(Computed<bool>, BoxWatcherGuard)>;
 
 /// Standard `WaterUI` `WebView` handle backed by one WPE page.
@@ -132,8 +138,12 @@ impl WpeWebViewHandle {
     pub fn new(page: WpePage) -> Self {
         // Transport first: the shared script calls `__wateruiSend`, so the adapter
         // onto WPE's single WebKit message handler has to exist before it runs.
-        page.add_script(TRANSPORT_SCRIPT, false);
-        page.add_script(waterui_webview::DOCUMENT_START_SCRIPT, false);
+        page.add_script(TRANSPORT_SCRIPT_KEY, TRANSPORT_SCRIPT, false);
+        page.add_script(
+            BRIDGE_SCRIPT_KEY,
+            waterui_webview::DOCUMENT_START_SCRIPT,
+            false,
+        );
         Self {
             page,
             redirects: Rc::new(RefCell::new(None)),
@@ -160,9 +170,9 @@ impl WebViewHandle for WpeWebViewHandle {
         self.page.load_uri(url.as_str());
     }
 
-    fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
+    fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
         self.page
-            .add_script(script, time == ScriptInjectionTime::DocumentEnd);
+            .add_script(key, script, time == ScriptInjectionTime::DocumentEnd);
     }
 
     fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
@@ -220,8 +230,17 @@ impl WebViewHandle for WpeWebViewHandle {
         reason = "WPE WebKit and WaterUI view state are confined to the UI thread"
     )]
     async fn get_cookies(&self) -> Vec<Cookie<'static>> {
-        let records: Vec<CookieRecord> = serde_json::from_str(&self.page.cookies_json().await)
-            .unwrap_or_else(|error| panic!("WPE returned invalid cookie JSON: {error}"));
+        let json = self.page.cookies_json().await;
+        // The store holds whatever the pages this view visited put there, so a
+        // record this crate cannot read is the web's business, not a reason to
+        // abort the application.
+        let records: Vec<CookieRecord> = match serde_json::from_str(&json) {
+            Ok(records) => records,
+            Err(error) => {
+                tracing::warn!(%error, "WPE returned cookies this backend cannot read");
+                return Vec::new();
+            }
+        };
         records.into_iter().map(CookieRecord::into_cookie).collect()
     }
 
@@ -231,6 +250,17 @@ impl WebViewHandle for WpeWebViewHandle {
     )]
     async fn run_javascript(&self, script: &str) -> Result<waterui_str::Str, waterui_str::Str> {
         self.page.run_javascript(script).await
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "WPE WebKit and WaterUI view state are confined to the UI thread"
+    )]
+    async fn call_async_javascript(
+        &self,
+        body: &str,
+    ) -> Result<waterui_str::Str, waterui_str::Str> {
+        self.page.call_async_javascript(body).await
     }
 }
 
@@ -254,18 +284,27 @@ impl CookieRecord {
             .secure(self.secure)
             .http_only(self.http_only);
         if let Some(same_site) = self.same_site {
-            builder = builder.same_site(match same_site.as_str() {
-                "Strict" => SameSite::Strict,
-                "Lax" => SameSite::Lax,
-                "None" => SameSite::None,
-                other => panic!("WPE returned unsupported cookie SameSite value `{other}`"),
-            });
+            // An unrecognised policy is the engine's business, not a reason to
+            // abort: the cookie is still usable without it.
+            match same_site.as_str() {
+                "Strict" => builder = builder.same_site(SameSite::Strict),
+                "Lax" => builder = builder.same_site(SameSite::Lax),
+                "None" => builder = builder.same_site(SameSite::None),
+                other => tracing::warn!(
+                    same_site = other,
+                    "ignoring an unknown cookie SameSite value"
+                ),
+            }
         }
         if let Some(expires) = self.expires {
-            builder = builder.expires(
-                OffsetDateTime::from_unix_timestamp(expires)
-                    .expect("WPE cookie expiration exceeds OffsetDateTime"),
-            );
+            match OffsetDateTime::from_unix_timestamp(expires) {
+                Ok(expires) => builder = builder.expires(expires),
+                Err(error) => tracing::warn!(
+                    %error,
+                    expires,
+                    "ignoring a cookie expiry that is outside the representable range"
+                ),
+            }
         }
         builder.build()
     }

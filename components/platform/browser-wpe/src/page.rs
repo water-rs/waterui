@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr::NonNull;
 use std::rc::{Rc, Weak};
-use std::sync::Arc;
 
 use futures::channel::oneshot;
 use num_traits::ToPrimitive as _;
@@ -58,7 +57,13 @@ struct ClientContext {
     state: Weak<PageState>,
     /// The page this context belongs to, so an asynchronous handler can settle
     /// the page's promise after the transport has already returned.
-    page: Cell<Option<NonNull<WaterWpePage>>>,
+    ///
+    /// Weak, and upgraded rather than dereferenced: a handler may await for as
+    /// long as it likes, and the page can be dropped — and its native page freed
+    /// — while it does. Holding the raw pointer across the await called into
+    /// freed memory; holding the strong reference the upgrade produces keeps the
+    /// page alive for exactly the length of the reply.
+    page: RefCell<Weak<PageInner>>,
 }
 
 struct PageInner {
@@ -119,10 +124,10 @@ impl WpePage {
             size: Cell::new((1, 1, 1.0)),
             bridge_origins: RefCell::new(None),
         });
-        // The page pointer is filled in below, once `page_new` has returned it.
+        // The page is filled in below, once it exists.
         let context = Box::new(ClientContext {
             state: Rc::downgrade(&state),
-            page: Cell::new(None),
+            page: RefCell::new(Weak::new()),
         });
         let context_ptr = Box::into_raw(context);
         let mut error = std::ptr::null_mut::<c_char>();
@@ -147,20 +152,22 @@ impl WpePage {
             error.is_null(),
             "WPE page creation succeeded while also returning an error"
         );
-        // The client context now knows its page, so an asynchronous handler can
-        // settle the page's promise after the transport has returned.
-        // SAFETY: `page_new` kept the context pointer and has not freed it; this
-        // is the only write, before any callback can run.
-        unsafe {
-            (*context_ptr).page.set(Some(raw));
-        }
-        Self {
+        let page = Self {
             inner: Rc::new(PageInner {
                 runtime,
                 raw,
                 state,
             }),
+        };
+        // The client context now knows its page, so an asynchronous handler can
+        // settle the page's promise after the transport has returned — and can
+        // tell whether the page is still there when it does.
+        // SAFETY: `page_new` kept the context pointer and has not freed it; this
+        // is the only write, before any callback can run.
+        unsafe {
+            *(*context_ptr).page.borrow_mut() = Rc::downgrade(&page.inner);
         }
+        page
     }
 
     fn string(value: &str, context: &str) -> CString {
@@ -397,14 +404,21 @@ impl WpePage {
         self.inner.state.frame.borrow_mut().take()
     }
 
-    /// Adds a document script.
-    pub fn add_script(&self, script: &str, at_document_end: bool) {
+    /// Installs a document script under `key`, replacing whatever script that
+    /// key already names.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `key` or `script` contains an interior NUL byte.
+    pub fn add_script(&self, key: &str, script: &str, at_document_end: bool) {
+        let key = Self::string(key, "WPE script key");
         let script = Self::string(script, "WPE script");
         // SAFETY: bridge ABI call on the page this type owns; see the module safety
         // note.
         unsafe {
             (self.inner.state.api.api.page_add_script)(
                 self.inner.raw.as_ptr(),
+                key.as_ptr(),
                 script.as_ptr(),
                 u32::from(at_document_end),
             );
@@ -490,6 +504,34 @@ impl WpePage {
             (self.inner.state.api.api.page_run_javascript)(
                 self.inner.raw.as_ptr(),
                 script.as_ptr(),
+                callback,
+                context,
+            );
+        })
+        .await
+        .map(Str::from)
+        .map_err(Str::from)
+    }
+
+    /// Runs `body` as the body of an async function and resolves with the value
+    /// its promise settles on.
+    ///
+    /// # Errors
+    ///
+    /// Returns the serialized JavaScript exception when the promise rejects or
+    /// the body throws.
+    #[expect(
+        clippy::future_not_send,
+        reason = "WPE WebKit pages are confined to the UI thread"
+    )]
+    pub async fn call_async_javascript(&self, body: &str) -> Result<Str, Str> {
+        let body = Self::string(body, "WPE async JavaScript body");
+        // SAFETY: bridge ABI call on the page this type owns; see the module safety
+        // note.
+        self.string_result(|callback, context| unsafe {
+            (self.inner.state.api.api.page_call_async_javascript)(
+                self.inner.raw.as_ptr(),
+                body.as_ptr(),
                 callback,
                 context,
             );
@@ -610,6 +652,7 @@ unsafe extern "C" fn destroy_response(context: *mut c_void) {
 
 unsafe extern "C" fn message_callback(
     context: *mut c_void,
+    origin: *const c_char,
     envelope: *const c_char,
 ) -> WaterWpeBytes {
     // SAFETY: bridge ABI call on the page this type owns; see the module safety
@@ -622,6 +665,9 @@ unsafe extern "C" fn message_callback(
     // SAFETY: bridge ABI call on the page this type owns; see the module safety
     // note.
     let envelope = unsafe { CStr::from_ptr(envelope) };
+    // SAFETY: bridge ABI call on the page this type owns; see the module safety
+    // note.
+    let origin = unsafe { CStr::from_ptr(origin) };
 
     // Page script reaches this transport directly, so a malformed envelope or an
     // unknown handler name is rejected back to JavaScript rather than being fatal.
@@ -631,6 +677,35 @@ unsafe extern "C" fn message_callback(
         .and_then(|envelope| bridge::Request::parse(envelope).map_err(|error| error.to_string()))
     {
         Ok(request) => {
+            // Every registered handler is a capability, and `webkit.messageHandlers`
+            // is reachable from any frame of the page, so the document that sent
+            // this has to be authenticated before anything is dispatched. No policy
+            // means no handler has been registered either, and denying is what the
+            // other backends do.
+            let allowed = origin.to_str().is_ok_and(|origin| {
+                state
+                    .bridge_origins
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|policy| policy.allows_origin(origin))
+            });
+            if !allowed {
+                tracing::warn!(
+                    origin = %origin.to_string_lossy(),
+                    handler = %request.name,
+                    "a document outside the bridge origin policy tried to call a WaterUI handler"
+                );
+                // Reject rather than drop: the page is awaiting a promise, and one
+                // that never settles is indistinguishable from a handler that
+                // hangs. Like every reply, it is evaluated in the top frame, which
+                // is where the bridge is injected and therefore where the pending
+                // promise lives.
+                let reply = bridge::Reply::failure(
+                    "this document is not allowed to use the WaterUI bridge",
+                );
+                return respond(reply.resolve_script(request.id));
+            }
+
             // Release the borrow before invoking: a handler may register or remove
             // handlers on the same page.
             let handler = state.handlers.borrow().get(&request.name).map(Rc::clone);
@@ -647,22 +722,24 @@ unsafe extern "C" fn message_callback(
             // Handlers are asynchronous, so nothing is returned now; the promise
             // settles when the future completes.
             let future = handler(&request.payload);
-            let api = Arc::clone(&state.api);
-            let page = context.page.get();
+            let page = context.page.borrow().clone();
             executor_core::spawn_local(async move {
                 let reply = match future.await {
                     Ok(reply) => bridge::Reply::from(reply),
                     Err(message) => bridge::Reply::Failure(message),
                 };
-                let Some(page) = page else {
+                // The await may have outlived the web view. Upgrading answers
+                // that, and the strong reference it yields keeps the native page
+                // alive for the call: nothing can free it while this holds one.
+                let Some(page) = page.upgrade() else {
                     return;
                 };
                 let script = CString::new(reply.resolve_script(request.id))
                     .expect("a reply script never contains NUL");
-                // SAFETY: the page outlives its client context, which owns this
-                // pointer; see the module safety note.
+                // SAFETY: `page` is a live `PageInner`, which owns this pointer and
+                // frees it only in its own `Drop`; see the module safety note.
                 unsafe {
-                    (api.api.page_evaluate)(page.as_ptr(), script.as_ptr());
+                    (page.state.api.api.page_evaluate)(page.raw.as_ptr(), script.as_ptr());
                 }
             })
             .detach();
