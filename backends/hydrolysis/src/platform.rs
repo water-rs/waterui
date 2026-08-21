@@ -2098,9 +2098,12 @@ mod winit_impl {
 
     #[cfg(target_os = "linux")]
     fn native_key_event(event: &KeyEvent) -> Option<NativeKey> {
+        // winit reports the evdev scancode, and XKB numbers the same key eight
+        // higher. A key winit cannot name a scancode for has no XKB keycode
+        // either, so there is nothing to report — same as the macOS arm below.
         let keycode = event
             .physical_key
-            .to_scancode()
+            .to_scancode()?
             .checked_add(8)
             .expect("Linux XKB keycode overflow");
         Some(NativeKey {
