@@ -106,6 +106,14 @@ jobs:
       - if: runner.os == 'Windows'
         shell: bash
         run: cargo check -p waterui-browser-cef --features compile-only
+      # The macOS real-engine suite drives a genuine WKWebView through the
+      # shared bridge contract — the macOS sibling of the WPE real-engine
+      # workflow. It is `harness = false` (WKWebView is MainThreadOnly, and
+      # libtest runs tests on worker threads), so nextest cannot list it;
+      # `cargo test` runs the binary on the real process main thread.
+      - if: runner.os == 'macOS'
+        shell: bash
+        run: cargo test -p hydrolysis --features webview-system,winit --test real_engine_macos
       # nextest cannot run doctests, and this workspace has plenty of them.
       - shell: bash
         run: cargo test --doc --workspace $WORKSPACE_EXCLUDES
