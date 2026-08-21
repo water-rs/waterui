@@ -225,7 +225,8 @@ impl HydrolysisRenderer {
         // for a single frame.
         self.render_active_text_context_menu_overlay(env, transform);
         self.flush_vello_scene_layer();
-        self.hit_test.finish_rebuild_frame();
+        self.hit_test
+            .finish_rebuild_frame(&self.text_editing.text_input_targets);
         self.navigation.finish_rebuild_frame();
         if structural_change {
             // The flush re-bound every live animation. Drop slots and cached

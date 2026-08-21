@@ -85,7 +85,15 @@ webview_handle! {
         ///
         /// The script is re-injected on every navigation, so a page the view
         /// moves to gets it too.
-        fn inject_script(&self, script: &str, time: ScriptInjectionTime);
+        ///
+        /// `key` identifies the script: injecting again under a key already in
+        /// use **replaces** that script rather than adding a second copy. The
+        /// mirrored-state seed depends on that — its values are only correct for
+        /// the document it was rendered for, so it is re-rendered and replaced
+        /// before every navigation, and without replacement a view that
+        /// navigated ten times would run ten seed scripts, each staler than the
+        /// last.
+        fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime);
 
         /// Adds a handler that can be called from JavaScript.
         ///
@@ -157,7 +165,35 @@ webview_handle! {
         /// [`ScriptInjectionTime::DocumentStart`].
         ///
         /// Returns the result of the script execution, or an error message.
+        ///
+        /// This is the raw path: the value comes back however the engine
+        /// marshals it. Everything typed — [`WebView::eval`](crate::WebView::eval),
+        /// [`WebView::exec`](crate::WebView::exec) and the mirrored-state
+        /// push — goes through [`call_async_javascript`](Self::call_async_javascript)
+        /// instead, because it needs the promise awaited.
         fn run_javascript(&self, script: &str) -> impl Future<Output = Result<Str, Str>>;
+
+        /// Runs `body` as the body of an `async` function and **awaits** the
+        /// promise it returns.
+        ///
+        /// This is the entry point every typed evaluation uses, and the
+        /// distinction from [`run_javascript`](Self::run_javascript) is not
+        /// cosmetic: the shared wrapper in `js/eval.js` is `async`, so the value
+        /// of the expression a backend evaluates is always a `Promise`. An
+        /// engine API that does not await one — `evaluateJavaScript`,
+        /// `webkit_web_view_evaluate_javascript`, `WebView.evaluateJavascript` —
+        /// hands back the promise object rather than the JSON envelope, and
+        /// every `eval!` / `exec!` fails with a decode error while mirrored
+        /// state silently stops reaching the page.
+        ///
+        /// Engines spell the awaiting form differently — `WebKit`'s
+        /// `callAsyncJavaScript`, `WebKitGTK`'s
+        /// `webkit_web_view_call_async_javascript_function`, CDP's
+        /// `Runtime.evaluate` with `awaitPromise` — which is exactly why it is a
+        /// method rather than something the caller assembles. A backend whose
+        /// engine has no awaiting API resolves the promise in JavaScript and
+        /// reports the result through its own bridge.
+        fn call_async_javascript(&self, body: &str) -> impl Future<Output = Result<Str, Str>>;
     }
 
     shim extra {
@@ -167,6 +203,10 @@ webview_handle! {
         fn run_javascript<'a>(
             &'a self,
             script: &'a str,
+        ) -> Pin<Box<dyn 'a + Future<Output = Result<Str, Str>>>>;
+        fn call_async_javascript<'a>(
+            &'a self,
+            body: &'a str,
         ) -> Pin<Box<dyn 'a + Future<Output = Result<Str, Str>>>>;
     }
 
@@ -190,6 +230,13 @@ webview_handle! {
             script: &'a str,
         ) -> Pin<Box<dyn 'a + Future<Output = Result<Str, Str>>>> {
             Box::pin(WebViewHandle::run_javascript(self, script))
+        }
+
+        fn call_async_javascript<'a>(
+            &'a self,
+            body: &'a str,
+        ) -> Pin<Box<dyn 'a + Future<Output = Result<Str, Str>>>> {
+            Box::pin(WebViewHandle::call_async_javascript(self, body))
         }
     }
 
@@ -235,6 +282,33 @@ webview_handle! {
             self.inner.run_javascript(script)
         }
 
+        /// Runs `body` as an `async` function body and awaits its promise.
+        ///
+        /// See [`WebViewHandle::call_async_javascript`] for why this is separate
+        /// from [`run_javascript`](Self::run_javascript).
+        #[expect(
+            clippy::future_not_send,
+            reason = "native web views and their handles are main-thread-affine"
+        )]
+        pub fn call_async_javascript<'a>(
+            &'a self,
+            body: &'a str,
+        ) -> impl Future<Output = Result<Str, Str>> + 'a {
+            self.inner.call_async_javascript(body)
+        }
+
+        /// A weak reference to this handle.
+        ///
+        /// The mirrored-state bridge needs one: its flush closure is stored in a
+        /// handler the backend owns, so capturing the handle strongly closes a
+        /// cycle through the backend and the native web view is never destroyed.
+        #[must_use]
+        pub fn downgrade(&self) -> WeakWebViewHandle {
+            WeakWebViewHandle {
+                inner: Rc::downgrade(&self.inner),
+            }
+        }
+
         /// Creates a new `AnyWebViewHandle` from a type implementing
         /// `WebViewHandle`.
         #[must_use]
@@ -243,6 +317,28 @@ webview_handle! {
                 inner: Rc::new(handle),
             }
         }
+    }
+}
+
+/// A weak [`AnyWebViewHandle`], held by anything the backend itself owns.
+///
+/// A handler lives in the backend's own table, so a closure inside one that
+/// captures the handle strongly keeps the handle — and the native web view —
+/// alive for as long as the backend holds the handler, which is forever.
+#[derive(Clone)]
+pub struct WeakWebViewHandle {
+    inner: std::rc::Weak<dyn WebViewHandleImpl>,
+}
+
+impl_debug!(WeakWebViewHandle);
+
+impl WeakWebViewHandle {
+    /// Returns the handle, or `None` once the web view has been dropped.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<AnyWebViewHandle> {
+        self.inner
+            .upgrade()
+            .map(|inner| AnyWebViewHandle { inner })
     }
 }
 

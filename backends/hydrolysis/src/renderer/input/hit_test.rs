@@ -119,6 +119,31 @@ pub(crate) struct TrackpadPanTarget {
     pub(crate) action: TrackpadPanAction,
 }
 
+/// A native subview the host platform hit-tests for itself, together with the
+/// `WaterUI`-drawn content that has to take clicks away from it.
+///
+/// A `WKWebView` is an AppKit view, so it answers a click before anything
+/// Hydrolysis painted over it hears about one: a snackbar, dialog or menu drawn
+/// above a web view rendered correctly and was completely inert. Only the
+/// renderer knows what it drew on top, so every frame it intersects the
+/// interactive targets registered *after* the subview with the subview's own
+/// rect and publishes the result through [`Self::sink`]; the platform's view
+/// host reads that and refuses those hits.
+///
+/// Only targets carrying a hit-test order take part — pointer targets, text
+/// inputs and other embedded browsers. Scroll and trackpad-pan targets are
+/// registered without one, so their position relative to the subview cannot be
+/// decided here.
+pub(crate) struct NativeViewOcclusion {
+    /// The subview's rect in window hit-test space.
+    pub(crate) bounds: vello::kurbo::Rect,
+    /// The hit-test order the subview was flushed at. Anything registered later
+    /// paints above it.
+    pub(crate) order: usize,
+    /// Shared with the platform's view host. Rects are in window hit-test space.
+    pub(crate) sink: Rc<RefCell<Vec<vello::kurbo::Rect>>>,
+}
+
 /// Outcome of synchronizing hover targets against a pointer position.
 ///
 /// `visual_changed` means a replayable state layer's target changed (a redraw
@@ -143,6 +168,7 @@ pub(crate) struct HitTestState {
     pub(crate) browser_targets: Vec<BrowserInputTarget>,
     pub(crate) active_browser_target: Option<BrowserInputTarget>,
     pub(crate) focused_browser: Option<Rc<dyn BrowserInputHandler>>,
+    pub(crate) native_view_occlusions: Vec<NativeViewOcclusion>,
     pub(crate) pointer_targets: Vec<PointerTarget>,
     pub(crate) active_pointer_target: Option<PointerTarget>,
     pub(crate) active_pointer: Option<(u64, PointerKind)>,
@@ -181,6 +207,7 @@ pub(crate) struct HitTestState {
 impl HitTestState {
     pub(crate) fn reset_scene(&mut self) {
         self.browser_targets.clear();
+        self.native_view_occlusions.clear();
         self.pointer_targets.clear();
         self.cursor_targets.clear();
         self.hover_targets.clear();
@@ -197,8 +224,73 @@ impl HitTestState {
         self.interaction.begin_rebuild_frame();
     }
 
-    pub(crate) fn finish_rebuild_frame(&mut self) {
+    pub(crate) fn finish_rebuild_frame(&mut self, text_inputs: &[TextInputTarget]) {
         self.interaction.finish_rebuild_frame();
+        self.retire_absent_browser_focus();
+        self.publish_native_view_occlusion(text_inputs);
+    }
+
+    /// Drops keyboard focus and pointer capture held by a browser that is no
+    /// longer in the scene.
+    ///
+    /// `browser_targets` is emitted afresh every frame, so a focused handler
+    /// missing from it has left the tree. Nothing else clears it: focus was only
+    /// released by a pointer-down that missed every browser, and the handler
+    /// `Rc` kept the pruned page alive, so after navigating away from a web view
+    /// every keystroke went to an invisible document for the rest of the session
+    /// and no shortcut, text field or Escape received anything again.
+    fn retire_absent_browser_focus(&mut self) {
+        let present = |handler: &Rc<dyn BrowserInputHandler>| {
+            self.browser_targets
+                .iter()
+                .any(|target| Rc::ptr_eq(&target.handler, handler))
+        };
+        let focus_left = self
+            .focused_browser
+            .as_ref()
+            .is_some_and(|handler| !present(handler));
+        let capture_left = self
+            .active_browser_target
+            .as_ref()
+            .is_some_and(|target| !present(&target.handler));
+        if focus_left && let Some(handler) = self.focused_browser.take() {
+            handler.set_focus(false);
+        }
+        if capture_left {
+            self.active_browser_target = None;
+        }
+    }
+
+    /// Publishes, for each registered native subview, the rects where
+    /// `WaterUI`-drawn interactive content sits above it.
+    fn publish_native_view_occlusion(&self, text_inputs: &[TextInputTarget]) {
+        for occlusion in &self.native_view_occlusions {
+            let above = |order: usize, bounds: vello::kurbo::Rect| {
+                (order > occlusion.order)
+                    .then(|| bounds.intersect(occlusion.bounds))
+                    .filter(|overlap| !overlap.is_zero_area())
+            };
+            let rects: Vec<vello::kurbo::Rect> = self
+                .pointer_targets
+                .iter()
+                .filter_map(|target| above(target.order, target.bounds))
+                .chain(
+                    text_inputs
+                        .iter()
+                        .filter_map(|target| above(target.order, target.bounds)),
+                )
+                .chain(self.browser_targets.iter().filter_map(|target| {
+                    above(
+                        target.order,
+                        target
+                            .inverse_transform
+                            .inverse()
+                            .transform_rect_bbox(target.local_bounds),
+                    )
+                }))
+                .collect();
+            occlusion.sink.replace(rects);
+        }
     }
 
     pub(crate) fn next_hit_test_order(&mut self) -> usize {
@@ -1327,6 +1419,30 @@ impl HydrolysisRenderer {
             Rc::new(RefCell::new(action)),
             self.render_depth,
         );
+    }
+
+    /// Records a native subview that the host platform hit-tests for itself, so
+    /// the content drawn above it can take its own clicks back.
+    ///
+    /// `bounds` is the subview's rect in window hit-test space; `sink` is the
+    /// channel the platform's view host reads the occluding rects from. See
+    /// [`NativeViewOcclusion`].
+    #[cfg(hydrolysis_macos_system_webview)]
+    pub(crate) fn register_native_view_occlusion(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        sink: Rc<RefCell<Vec<vello::kurbo::Rect>>>,
+    ) {
+        // The subview claims a slot in the same order every hit-test target
+        // uses, which is what makes "registered later" mean "painted above".
+        let order = self.hit_test.next_hit_test_order();
+        self.hit_test
+            .native_view_occlusions
+            .push(NativeViewOcclusion {
+                bounds,
+                order,
+                sink,
+            });
     }
 
     pub(crate) fn register_pointer_target_action(

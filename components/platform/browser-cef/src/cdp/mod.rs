@@ -12,6 +12,7 @@ use cef::{
 };
 use futures::channel::oneshot;
 use serde_json::{Value, json};
+use waterui_webview::{WatcherGuard, WatcherSet};
 
 struct PendingCommand {
     method: String,
@@ -38,7 +39,6 @@ pub struct CefCdpEvent {
     pub params: Value,
 }
 
-type EventWatcher = Rc<dyn Fn(&CefCdpEvent)>;
 #[cfg(feature = "chromium")]
 type AttachmentWatcher = Box<dyn Fn()>;
 
@@ -46,7 +46,10 @@ type AttachmentWatcher = Box<dyn Fn()>;
 struct CdpState {
     next_message_id: Cell<i32>,
     pending: RefCell<HashMap<i32, PendingCommand>>,
-    event_watchers: RefCell<Vec<EventWatcher>>,
+    /// Removable, because a watcher that cannot be unregistered keeps whatever
+    /// it captured alive for the life of the page — and the web view's watcher
+    /// captures the page, so the two held each other up forever.
+    event_watchers: WatcherSet<CefCdpEvent>,
     attachment_waiters: RefCell<Vec<oneshot::Sender<Result<(), CefCdpError>>>>,
     #[cfg(feature = "chromium")]
     attachment_watchers: RefCell<Vec<AttachmentWatcher>>,
@@ -119,9 +122,7 @@ impl CdpState {
             method: method.to_string(),
             params: message.get("params").cloned().unwrap_or(Value::Null),
         };
-        for watcher in self.event_watchers.borrow().iter() {
-            watcher(&event);
-        }
+        self.event_watchers.emit(&event);
     }
 
     fn attached(&self) {
@@ -241,11 +242,14 @@ impl CefCdpSession {
         receiver.await.unwrap_or(Err(CefCdpError::Detached))
     }
 
-    pub(crate) fn watch_events(&self, watcher: impl Fn(&CefCdpEvent) + 'static) {
+    /// Registers `watcher`; dropping the returned guard unregisters it.
+    pub(crate) fn watch_events(
+        &self,
+        watcher: impl Fn(&CefCdpEvent) + 'static,
+    ) -> WatcherGuard {
         self.state
             .event_watchers
-            .borrow_mut()
-            .push(Rc::new(watcher));
+            .insert(move |event: CefCdpEvent| watcher(&event))
     }
 
     #[cfg(feature = "chromium")]
@@ -372,6 +376,8 @@ impl waterui_chromium::CustomCdpSession for CefCdpSession {
         );
         let method = method.to_string();
         let (sender, receiver) = async_channel::unbounded();
+        // The subscription lasts as long as the session: this is the public
+        // `waterui_chromium` surface, which hands back only the receiver.
         self.watch_events(move |event| {
             if event.method == method {
                 let _ = sender.try_send(waterui_chromium::CdpEvent {
@@ -379,7 +385,8 @@ impl waterui_chromium::CustomCdpSession for CefCdpSession {
                     params: event.params.clone(),
                 });
             }
-        });
+        })
+        .forget();
         receiver
     }
 

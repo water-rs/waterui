@@ -71,25 +71,136 @@ impl OriginPolicy {
         }
     }
 
-    /// The origins as URI patterns, for backends that filter injection natively.
+    /// The rules a backend matches the calling frame's origin against.
     ///
-    /// `None` means "every origin", which is how `WebKit` spells an unrestricted
-    /// allow list.
+    /// An empty list denies every document. That case is reachable — the default
+    /// [`BridgeOrigins::Initial`] resolves to it whenever the view is opened at a
+    /// URL with no origin to compare, such as a `file:` or `data:` document — and
+    /// it must stay distinguishable from [`OriginRule::Any`]. Collapsing the two
+    /// is what let a `file://` view hand every registered handler to whatever it
+    /// navigated to next.
     #[must_use]
-    pub fn uri_patterns(&self) -> Option<Vec<Str>> {
+    pub fn rules(&self) -> Vec<OriginRule> {
         match &self.origins {
-            BridgeOrigins::Any => None,
-            BridgeOrigins::LocalFiles => Some(vec![Str::from_static("file://*")]),
+            BridgeOrigins::Any => vec![OriginRule::Any],
+            BridgeOrigins::LocalFiles => vec![OriginRule::LocalFiles],
             BridgeOrigins::Initial => self
                 .initial
                 .clone()
-                .map(|origin| vec![Str::from(format!("{origin}/*"))]),
-            BridgeOrigins::Allowed(allowed) => Some(
-                allowed
-                    .iter()
-                    .map(|origin| Str::from(format!("{origin}/*")))
-                    .collect(),
-            ),
+                .map(OriginRule::Exact)
+                .into_iter()
+                .collect(),
+            BridgeOrigins::Allowed(allowed) => {
+                allowed.iter().cloned().map(OriginRule::Exact).collect()
+            }
+        }
+    }
+
+    /// Whether a frame reporting `origin` may use the bridge.
+    ///
+    /// `origin` is the `scheme://host[:port]` form every engine reports for a
+    /// frame — `WKSecurityOrigin`, a CDP execution context, `WebKitFrame`. The
+    /// comparison lives here rather than in each backend because every backend
+    /// that wrote its own got it wrong in a different way: one dropped the port
+    /// so `http://localhost:3000` was refused and `https://app.example:8443`
+    /// admitted, another compared against a `file://*` glob that a local
+    /// document's `file://` origin never matches.
+    ///
+    /// An empty or opaque origin matches nothing except [`BridgeOrigins::Any`],
+    /// which is the point: it cannot be authenticated.
+    #[must_use]
+    pub fn allows_origin(&self, origin: &str) -> bool {
+        self.rules().iter().any(|rule| match rule {
+            OriginRule::Any => true,
+            OriginRule::LocalFiles => origin.starts_with("file://"),
+            OriginRule::Exact(allowed) => allowed == origin,
+        })
+    }
+
+    /// The rules in the newline-separated form the FFI carries.
+    ///
+    /// The empty string is deny-all, so a backend can tell it apart from the
+    /// single-rule `*` that means allow-all. [`OriginRule::parse_wire`] reads it
+    /// back; every backend matches with the same two tokens rather than
+    /// inventing its own glob dialect.
+    #[must_use]
+    pub fn wire(&self) -> Str {
+        Str::from(
+            self.rules()
+                .iter()
+                .map(OriginRule::as_token)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+}
+
+/// One rule a backend matches a calling frame's origin against.
+///
+/// Backends receive these as tokens rather than URI globs because the two
+/// questions differ: a native injection filter wants a URI pattern, while
+/// authenticating a message needs an exact origin comparison. Mixing them is
+/// what made `file://*` — a valid `WebKit` injection rule — unmatchable against
+/// the `file://` origin every engine reports for a local document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OriginRule {
+    /// Every origin, including whatever the page navigates to next.
+    Any,
+    /// Any document loaded from the local filesystem.
+    LocalFiles,
+    /// Exactly this `scheme://host[:port]`.
+    Exact(Str),
+}
+
+impl OriginRule {
+    /// The token this rule crosses the FFI as.
+    #[must_use]
+    pub const fn as_token(&self) -> &str {
+        match self {
+            Self::Any => "*",
+            Self::LocalFiles => "file:",
+            Self::Exact(origin) => origin.as_str(),
+        }
+    }
+
+    /// Reads the rules back from the wire form produced by
+    /// [`OriginPolicy::wire`].
+    ///
+    /// An empty string is deny-all and yields no rules.
+    #[must_use]
+    pub fn parse_wire(wire: &str) -> Vec<Self> {
+        wire.split('\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| match line {
+                "*" => Self::Any,
+                "file:" => Self::LocalFiles,
+                origin => Self::Exact(Str::from(origin.to_owned())),
+            })
+            .collect()
+    }
+
+    /// The URI pattern a native injection filter takes for this rule.
+    ///
+    /// # This is a coarse pre-filter, never the authentication
+    ///
+    /// A backend must still decide every individual bridge message with
+    /// [`OriginPolicy::allows_origin`]. Engines disagree about what a pattern
+    /// may even say, and one of those disagreements fails silently: `WebKit`'s
+    /// `UserContentURLPattern` **rejects a host containing a colon**, so the
+    /// ported form this returns for `http://localhost:3000` parses as invalid,
+    /// an invalid pattern matches nothing, and the bridge is injected *nowhere*
+    /// — the whole feature dead on any dev server, with no error anywhere.
+    ///
+    /// A backend whose engine cannot express a port therefore widens the
+    /// pattern to what it can (`scheme://host/*`) and relies on
+    /// `allows_origin` for the exact decision. Widening the *filter* is safe
+    /// precisely because it is not the check; widening the check is not.
+    #[must_use]
+    pub fn injection_pattern(&self) -> Str {
+        match self {
+            Self::Any => Str::from_static("*"),
+            Self::LocalFiles => Str::from_static("file://*"),
+            Self::Exact(origin) => Str::from(format!("{origin}/*")),
         }
     }
 }
@@ -135,7 +246,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{BridgeOrigins, OriginPolicy};
+    use super::{BridgeOrigins, OriginPolicy, OriginRule};
     use waterui_url::Url;
 
     fn policy(origins: BridgeOrigins, initial: &str) -> OriginPolicy {
@@ -231,12 +342,90 @@ mod tests {
     #[test]
     fn patterns_describe_the_same_policy_for_native_filters() {
         assert_eq!(
-            policy(BridgeOrigins::Initial, "https://app.waterui.dev").uri_patterns(),
-            Some(vec!["https://app.waterui.dev/*".into()])
+            policy(BridgeOrigins::Initial, "https://app.waterui.dev")
+                .rules()
+                .iter()
+                .map(OriginRule::injection_pattern)
+                .collect::<Vec<_>>(),
+            vec!["https://app.waterui.dev/*"]
         );
         assert_eq!(
-            policy(BridgeOrigins::Any, "https://a.dev").uri_patterns(),
-            None
+            policy(BridgeOrigins::Any, "https://a.dev")
+                .rules()
+                .iter()
+                .map(OriginRule::injection_pattern)
+                .collect::<Vec<_>>(),
+            vec!["*"]
         );
+    }
+
+    /// The case that made the default policy fail open: a view opened at a URL
+    /// with no origin resolves to deny-all, and deny-all must not look like
+    /// allow-all on the wire.
+    #[test]
+    fn a_policy_with_nothing_to_match_denies_rather_than_admits() {
+        let policy = policy(BridgeOrigins::Initial, "file:///tmp/app.html");
+
+        assert!(policy.rules().is_empty());
+        assert_eq!(policy.wire().as_str(), "");
+        assert!(OriginRule::parse_wire(policy.wire().as_str()).is_empty());
+        assert_ne!(policy.wire(), policy_any().wire());
+    }
+
+    fn policy_any() -> OriginPolicy {
+        policy(BridgeOrigins::Any, "https://app.waterui.dev")
+    }
+
+    /// The comparison backends actually perform, against the origin string an
+    /// engine reports rather than against a URL.
+    #[test]
+    fn an_origin_string_is_matched_with_its_port() {
+        let dev_server = policy(BridgeOrigins::Initial, "http://localhost:3000/app");
+        assert!(dev_server.allows_origin("http://localhost:3000"));
+        // Dropping the port is what refused every call from a dev server.
+        assert!(!dev_server.allows_origin("http://localhost"));
+        // ...and what admitted a different origin that merely shares a host.
+        let production = policy(BridgeOrigins::Initial, "https://app.example/");
+        assert!(!production.allows_origin("https://app.example:8443"));
+        assert!(production.allows_origin("https://app.example"));
+    }
+
+    /// `file://` is how engines report a local document, and it has to match the
+    /// opt-in that exists for exactly that case.
+    #[test]
+    fn local_file_origins_match_the_local_files_opt_in() {
+        let policy = policy(BridgeOrigins::LocalFiles, "file:///tmp/app.html");
+        assert!(policy.allows_origin("file://"));
+        assert!(policy.allows_origin("file:///tmp/app.html"));
+        assert!(!policy.allows_origin("https://app.waterui.dev"));
+    }
+
+    /// Deny-all must deny, including the empty origin an opaque document
+    /// reports.
+    #[test]
+    fn a_policy_with_no_rules_admits_no_origin() {
+        let policy = policy(BridgeOrigins::Initial, "file:///tmp/app.html");
+        for origin in ["", "https://evil.example", "file://", "null"] {
+            assert!(!policy.allows_origin(origin), "{origin} must be refused");
+        }
+    }
+
+    #[test]
+    fn the_wire_form_round_trips_every_rule() {
+        for origins in [
+            BridgeOrigins::Any,
+            BridgeOrigins::LocalFiles,
+            BridgeOrigins::Initial,
+            BridgeOrigins::Allowed(vec![
+                "https://app.waterui.dev".into(),
+                "https://docs.waterui.dev".into(),
+            ]),
+        ] {
+            let policy = policy(origins, "https://app.waterui.dev");
+            assert_eq!(
+                OriginRule::parse_wire(policy.wire().as_str()),
+                policy.rules()
+            );
+        }
     }
 }

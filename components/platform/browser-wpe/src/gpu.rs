@@ -79,9 +79,15 @@ impl DmaBufFrameCopier {
             frame.is_render_ready(),
             "browser DMA-BUF must be ready before a synchronous GPU copy"
         );
+        // The destination is the *visible* extent: a browser's shared image may
+        // be allocated with alignment padding beyond it, and copying the padded
+        // buffer then presenting it edge to edge stretched the picture and drew
+        // the gutter. The source import still uses the buffer's own dimensions
+        // and stride, so this only narrows what is taken from it.
+        let (visible_width, visible_height) = frame.visible_size();
         let size = wgpu::Extent3d {
-            width: frame.width,
-            height: frame.height,
+            width: visible_width,
+            height: visible_height,
             depth_or_array_layers: 1,
         };
         let destination = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -103,7 +109,7 @@ impl DmaBufFrameCopier {
                         });
                 encoder.clear_texture(&destination, &wgpu::ImageSubresourceRange::default());
                 let imported = import_vulkan_dma_buf(&self.device, &mut frame);
-                imported.record_copy(&mut encoder, &destination, frame.width, frame.height);
+                imported.record_copy(&mut encoder, &destination, visible_width, visible_height);
                 frame.lease.presented();
                 let submission = self.queue.submit([encoder.finish()]);
                 self.device
@@ -790,8 +796,11 @@ impl GlesInterop {
     }
 
     fn blit_egl_image(&self, frame: &DmaBufFrame, destination: &wgpu::Texture, image: EglImage) {
-        let width = i32::try_from(frame.width).expect("WPE frame width exceeds EGLint");
-        let height = i32::try_from(frame.height).expect("WPE frame height exceeds EGLint");
+        // The visible extent, which is the buffer's own size unless a browser
+        // padded its shared image; the destination texture was sized to match.
+        let (visible_width, visible_height) = frame.visible_size();
+        let width = i32::try_from(visible_width).expect("WPE frame width exceeds EGLint");
+        let height = i32::try_from(visible_height).expect("WPE frame height exceeds EGLint");
         // SAFETY: `Texture::as_hal` is unsafe because it exposes the backend
         // object behind wgpu's tracking, so the caller must both name the
         // backend the texture really belongs to and not invalidate wgpu's view

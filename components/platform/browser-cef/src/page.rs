@@ -1138,6 +1138,17 @@ impl CefPageHandle {
         self.state.watch(watcher);
     }
 
+    /// Asks CEF to close this browser.
+    ///
+    /// The web view path needs the request without the completion handshake:
+    /// nothing there waits, but the browser must actually be told to go away,
+    /// or its renderer process outlives the view and `CefShutdown` later runs
+    /// with it still alive.
+    #[cfg(any(feature = "chromium", feature = "webview"))]
+    pub(crate) fn request_close(&self) {
+        self.host.close_browser(1);
+    }
+
     #[cfg(feature = "chromium")]
     pub(crate) fn close_page(&self) -> impl Future<Output = Result<(), CefCdpError>> + 'static {
         let (sender, receiver) = oneshot::channel();

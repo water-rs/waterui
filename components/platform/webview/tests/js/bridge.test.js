@@ -166,6 +166,76 @@ describe("mirrored state", () => {
     page.__wateruiState.apply({ theme: { v: "ignored", e: 2 } });
     expect(seen).toEqual(["dark", "sepia"]);
   });
+
+  // A patch used to hand watchers the raw wire value while the mirror held the
+  // revived one, so `waterui.state.id` was a BigInt and the watcher argument
+  // was `{__wateruiBigInt: "…"}` — arithmetic in a watcher silently operated on
+  // an object.
+  test("a watcher receives the same revived value the mirror holds", () => {
+    const BIG = "9007199254740993";
+    page.__wateruiState.define("id", 1, 0, true);
+    let observed;
+    waterui.watch("id", (value) => {
+      observed = value;
+    });
+    page.__wateruiState.apply({ id: { v: { __wateruiBigInt: BIG }, e: 1, w: true } });
+    expect(observed).toBe(BigInt(BIG));
+    expect(observed).toBe(waterui.state.id);
+  });
+
+  // A document that loaded while a navigation was already in flight can miss
+  // the seed entirely. A patch has to be able to define the key, or every read
+  // of that key throws for the life of the page.
+  test("a patch defines a key the document never saw seeded", () => {
+    expect(() => waterui.state.locale).toThrow(ReferenceError);
+    page.__wateruiState.apply({ locale: { v: "en", e: 3, w: true } });
+    expect(waterui.state.locale).toBe("en");
+
+    // And the writability the patch carried is honoured.
+    waterui.state.locale = "fr";
+    expect(waterui.state.locale).toBe("fr");
+  });
+
+  test("a patch that defines a read-only key refuses assignment", () => {
+    page.__wateruiState.apply({ derived: { v: 4, e: 1, w: false } });
+    expect(waterui.state.derived).toBe(4);
+    expect(() => {
+      waterui.state.derived = 9;
+    }).toThrow(TypeError);
+  });
+});
+
+// A handler can still be awaiting when the page navigates, and its reply is
+// then evaluated in the next document. Ids restarted from the same low numbers
+// in every document, so such a reply could settle an unrelated call with
+// another call's value.
+describe("replies that arrive after a navigation", () => {
+  test("a stale reply does not settle a call in the next document", async () => {
+    const first = loadPage();
+    const firstCall = first.waterui.invoke("slow", {});
+    const staleId = first.sent[0].id;
+
+    // The page navigates: a fresh document, a fresh bridge.
+    const second = loadPage();
+    let settled = false;
+    const secondCall = second.waterui.invoke("other", {});
+    secondCall.then(() => {
+      settled = true;
+    });
+
+    // The handler from the first document finally answers.
+    second.page.__wateruiResolve(staleId, true, { json: "from the old document" });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    // The call this document actually made still settles normally.
+    second.page.__wateruiResolve(second.sent[0].id, true, { json: "mine" });
+    expect(await secondCall).toBe("mine");
+
+    // Sanity: the ids really are drawn from different ranges.
+    expect(second.sent[0].id).not.toBe(staleId);
+    void firstCall;
+  });
 });
 
 describe("integers a JavaScript number cannot hold", () => {

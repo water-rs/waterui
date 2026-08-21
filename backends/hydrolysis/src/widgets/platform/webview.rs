@@ -1,3 +1,53 @@
+//! The `WebView` leaf and the engine that backs it.
+//!
+//! # Which engine a build gets
+//!
+//! Selecting a `webview-*` feature does not by itself produce an engine: each
+//! one names a bridge that exists on some targets only, and a feature that
+//! resolves to nothing used to leave `WebView` silently contentless — or, when
+//! `webview-system` was enabled without `winit`, fail to build with a missing
+//! `install_controller`. Every declared combination now either resolves to an
+//! engine or says here what to enable.
+
+#[cfg(all(feature = "webview-system", not(hydrolysis_macos_system_webview)))]
+compile_error!(
+    "the `webview-system` feature selects the macOS WKWebView bridge, which needs \
+     `target_os = \"macos\"` and the `winit` feature (WKWebView is composed into the \
+     winit window's AppKit view). Enable `winit`, build for macOS, or select \
+     `webview-cef`/`webview-wpe` instead."
+);
+
+#[cfg(all(feature = "webview-wpe", not(hydrolysis_linux_wpe_webview)))]
+compile_error!(
+    "the `webview-wpe` feature selects the WPE WebKit engine, which exists on Linux \
+     only. Build for Linux, or select `webview-cef` (macOS/Linux/Windows) or \
+     `webview-system` (macOS)."
+);
+
+#[cfg(all(feature = "webview-cef", not(hydrolysis_cef_webview)))]
+compile_error!(
+    "the `webview-cef` feature selects the CEF runtime, which is supported on macOS, \
+     Linux and Windows only."
+);
+
+#[cfg(all(
+    feature = "webview-default",
+    not(any(
+        hydrolysis_macos_system_webview,
+        hydrolysis_linux_wpe_webview,
+        hydrolysis_cef_webview
+    ))
+))]
+compile_error!(
+    "the `webview-default` feature resolves to WKWebView on macOS (which also needs \
+     the `winit` feature) and to WPE WebKit on Linux; this target has neither. Enable \
+     `winit` if you are on macOS, or select `webview-cef`."
+);
+
+// Two engines at once is the other way a feature combination goes wrong, and
+// `lib.rs` already refuses it; the checks above are only about a request that
+// resolves to no engine at all.
+
 #[cfg(hydrolysis_linux_wpe_webview)]
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -13,6 +63,9 @@ use waterui_webview::WebView;
 
 #[cfg(hydrolysis_macos_system_webview)]
 mod macos;
+
+#[cfg(hydrolysis_macos_system_webview)]
+pub use macos::MacSystemWebViewController;
 
 #[cfg(hydrolysis_linux_wpe_webview)]
 use crate::platform::{KeyCode, Modifiers, NativeKey, PointerButton};
@@ -202,6 +255,11 @@ pub(crate) struct WebViewRenderState {
     _source: WebView,
     #[cfg(hydrolysis_macos_system_webview)]
     native: macos::MacSystemWebViewHandle,
+    /// Where `WaterUI` content covers the native view, republished every frame
+    /// and read by the AppKit view host when it hit-tests. Owned here so it
+    /// lives exactly as long as the node the native view belongs to.
+    #[cfg(hydrolysis_macos_system_webview)]
+    occlusion: Rc<RefCell<Vec<vello::kurbo::Rect>>>,
     #[cfg(hydrolysis_linux_wpe_webview)]
     gpu: Rc<RefCell<EmbeddedGpuSurfaceRuntime>>,
     #[cfg(hydrolysis_linux_wpe_webview)]
@@ -226,6 +284,7 @@ impl WebViewRenderState {
         Self {
             _source: view,
             native,
+            occlusion: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -327,35 +386,6 @@ pub(crate) fn measure_webview_node(
     ))
 }
 
-/// Publishes the web view's own accessibility node.
-///
-/// The engine renders page content into a texture or a native subview, neither of
-/// which the host tree can see into, so the component itself must appear. The role
-/// defaults to a group and is overridden by `a11y_role`; the label comes from
-/// `a11y_label`.
-fn register_webview_accessibility(ctx: &mut WidgetRenderContext<'_>, env: &Environment) {
-    #[cfg(feature = "accessibility")]
-    {
-        use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
-
-        use crate::renderer::transformed_rect;
-
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-        let renderer = ctx.renderer_mut();
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
-        );
-        if let Some(label) = renderer.resolve_accessibility_label(env, None) {
-            node.set_label(label);
-        }
-        let _ = renderer.register_accessibility_node(node, bounds, env, None);
-    }
-    #[cfg(not(feature = "accessibility"))]
-    {
-        let _ = (ctx, env);
-    }
-}
-
 /// Renders a retained webview leaf every flush: flushes the composed content
 /// sub-view at the node's bounds. The content's own dispatch drives accessibility
 /// (webview a11y is render-driven) and its inner reactive `Text` nodes stay live.
@@ -364,19 +394,32 @@ pub(crate) fn render_webview_node(
     state: &Rc<RefCell<WebViewRenderState>>,
     env: &Environment,
 ) {
-    // Every engine path publishes the same semantic node. Page content is opaque to
-    // the host accessibility tree, so this is what a screen reader has to work
-    // with: the web view's own role, label and bounds.
-    register_webview_accessibility(ctx, env);
+    // Every engine path publishes the same semantic node, exactly once. Page
+    // content is opaque to the host accessibility tree, so this is what a screen
+    // reader has to work with: the web view's own role, label and bounds.
+    super::register_web_surface_accessibility(ctx, env);
 
     #[cfg(hydrolysis_macos_system_webview)]
     {
+        use crate::renderer::transformed_rect;
+
         let _ = env;
         let bounds = ctx.bounds;
         let transform = ctx.render_context().transform;
-        let native = state.borrow().native.native_view();
-        ctx.renderer_mut()
-            .record_native_view_layer(native, transform, bounds);
+        let hit_transform = ctx.hit_transform;
+        let (native, occlusion) = {
+            let state = state.borrow();
+            (state.native.native_view(), Rc::clone(&state.occlusion))
+        };
+        let renderer = ctx.renderer_mut();
+        // WebKit hit-tests the `WKWebView` itself, so Hydrolysis has to tell the
+        // view host where its own content sits on top; without this a snackbar
+        // or dialog over the page was visible and inert.
+        renderer.register_native_view_occlusion(
+            transformed_rect(hit_transform, bounds),
+            Rc::clone(&occlusion),
+        );
+        renderer.record_native_view_layer(native, transform, bounds, occlusion);
     }
     #[cfg(hydrolysis_linux_wpe_webview)]
     {

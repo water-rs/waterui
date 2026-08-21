@@ -67,9 +67,21 @@
           continue;
         }
         var entry = patch[key];
-        mirror[key] = globalThis.__wateruiBigInts.revive(entry.v);
+        // A patch is self-sufficient: a document that never ran the seed — one
+        // that loaded while a navigation was already in flight — still gets its
+        // properties defined here, rather than being left with a mirror whose
+        // keys throw on every read.
+        if (!(key in target)) {
+          globalThis.__wateruiState.define(key, entry.v, entry.e, entry.w);
+          continue;
+        }
+        var value = globalThis.__wateruiBigInts.revive(entry.v);
+        mirror[key] = value;
         epochs[key] = entry.e;
-        notify(key, entry.v);
+        // The revived value, not the wire form. A watcher used to be handed
+        // `{__wateruiBigInt: "…"}` while `waterui.state.x` held the BigInt, so
+        // arithmetic inside a watcher silently operated on an object.
+        notify(key, value);
       }
     },
   };

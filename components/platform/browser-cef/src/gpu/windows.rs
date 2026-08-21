@@ -70,11 +70,23 @@ impl AcceleratedFrameSink for WindowsFrameSink {
             shared.height,
             shared.format,
         );
+        // Only the visible region: `coded_size` may carry alignment padding, and
+        // presenting the padded texture edge to edge stretches the page and
+        // draws the gutter.
+        let visible = &frame.extra.visible_rect;
         let owned = copy_source_texture(
             &self.device,
             &self.queue,
             &source,
-            source.size(),
+            wgpu::Extent3d {
+                width: u32::try_from(visible.width)
+                    .unwrap_or(shared.width)
+                    .min(shared.width),
+                height: u32::try_from(visible.height)
+                    .unwrap_or(shared.height)
+                    .min(shared.height),
+                depth_or_array_layers: 1,
+            },
             shared.format,
         );
         self.mailbox.publish(element, owned);
