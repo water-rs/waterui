@@ -11,6 +11,15 @@ fn main() {
         return;
     }
 
+    // The real-engine tests drive the very distribution `cef-dll-sys` downloaded
+    // and this crate linked against, so its path is compiled in rather than
+    // configured by hand: a runtime that does not match what was linked is not a
+    // thing a test should be able to be pointed at.
+    println!(
+        "cargo::rustc-env=WATERUI_CEF_DISTRIBUTION={}",
+        cef_directory().display()
+    );
+
     match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("macos") => build_macos_application(),
         Ok("windows") => build_windows_sandbox(),

@@ -40,6 +40,20 @@ impl CdpCommand for AddBinding {
     type Response = Empty;
 }
 
+/// Enables the page domain, which [`AddScriptToEvaluateOnNewDocument`] needs.
+///
+/// Chromium accepts a document-start script whether or not the domain is
+/// enabled, and only *runs* the registered scripts while it is, so leaving this
+/// out installed the bridge into no document at all and reported success doing
+/// it.
+#[derive(Debug, Serialize)]
+pub struct PageEnable {}
+
+impl CdpCommand for PageEnable {
+    const METHOD: &'static str = "Page.enable";
+    type Response = Empty;
+}
+
 /// Registers a script that runs before anything else in each new document.
 #[derive(Debug, Serialize)]
 pub struct AddScriptToEvaluateOnNewDocument<'a> {

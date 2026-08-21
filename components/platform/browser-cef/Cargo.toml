@@ -16,6 +16,7 @@ default = ["cef-runtime"]
 cef-runtime = ["cef/sandbox", "cef-dll-sys/sandbox"]
 compile-only = ["cef/dox", "cef-dll-sys/dox"]
 chromium = ["dep:async-channel", "dep:base64", "dep:waterui-chromium"]
+real-engine = ["cef-runtime", "webview"]
 webview = ["dep:cookie", "dep:waterui-str", "dep:waterui-webview"]
 
 [dependencies]
@@ -67,6 +68,18 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Direct3D12",
     "Win32_System_Threading",
 ] }
+
+[dev-dependencies]
+askama = "0.16"
+base64 = "0.22"
+executor-core = { workspace = true, features = ["async-executor"] }
+tiny_http = "0.12"
+tracing-subscriber.workspace = true
+
+[[test]]
+name = "real_engine"
+harness = false
+required-features = ["real-engine"]
 
 [build-dependencies]
 cc = "1.2"
