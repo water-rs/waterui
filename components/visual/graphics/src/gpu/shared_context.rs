@@ -364,6 +364,20 @@ fn required_device_limits(adapter_limits: &wgpu::Limits) -> wgpu::Limits {
 /// Every device hosting a GPU surface requests these features so decoded HDR
 /// planes retain their native precision.
 ///
+/// `TEXTURE_FORMAT_16BIT_NORM` is requested on **every** adapter that offers
+/// it, not just Apple's. `P010` — the 10-bit layout every HDR video decodes
+/// into — allocates its planes as `R16Unorm`/`Rg16Unorm`
+/// (`runtime_player::create_visual_yuv_textures`), and wgpu rejects those
+/// formats unless the feature was enabled when the device was created. Asking
+/// for it only under `cfg!(target_vendor = "apple")` therefore paired a
+/// platform-conditional request with a platform-unconditional use: on Linux
+/// and Windows the first 10-bit frame died in `Device::create_texture` with
+/// "Texture format `R16Unorm` can't be used due to missing features".
+///
+/// Adapters that genuinely lack the feature — llvmpipe/lavapipe on headless CI,
+/// for instance — still cannot present 10-bit planes, and that remains a
+/// hard error at the point of use rather than a silent drop to 8-bit.
+///
 /// # Panics
 ///
 /// Panics on Apple when the adapter cannot provide normalized 16-bit textures.
@@ -380,6 +394,9 @@ pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Featur
             adapter_features.contains(wgpu::Features::PASSTHROUGH_SHADERS),
             "WaterUI's Apple GPU backend requires native shader passthrough for embedded MetalLib artifacts"
         );
+    }
+
+    if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
         required |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
     }
 
@@ -422,7 +439,35 @@ impl GpuRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::required_device_limits;
+    use super::{required_device_limits, required_media_features};
+
+    fn adapter_features_with_16bit_norm() -> wgpu::Features {
+        let mut features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+        if cfg!(target_vendor = "apple") {
+            features |= wgpu::Features::PASSTHROUGH_SHADERS;
+        }
+        features
+    }
+
+    #[test]
+    fn media_features_enable_16bit_norm_on_every_offering_adapter() {
+        let required = required_media_features(adapter_features_with_16bit_norm());
+        assert!(required.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM));
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    #[test]
+    fn media_features_omit_16bit_norm_when_adapter_lacks_it() {
+        let required = required_media_features(wgpu::Features::empty());
+        assert!(!required.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM));
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    #[should_panic(expected = "normalized 16-bit textures")]
+    fn media_features_panic_on_apple_without_16bit_norm() {
+        let _ = required_media_features(wgpu::Features::PASSTHROUGH_SHADERS);
+    }
 
     #[test]
     fn device_limits_clamp_compute_capabilities_to_adapter() {
