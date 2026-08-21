@@ -346,6 +346,9 @@ fn dispatch_bridge_call(
 
 fn install_bridge(session: &CefCdpSession) {
     execute_without_result(session, &protocol::RuntimeEnable {});
+    // Both enables come before the things that need them: Chromium only runs
+    // document-start scripts while the page domain is enabled.
+    execute_without_result(session, &protocol::PageEnable {});
     execute_without_result(
         session,
         &protocol::AddBinding {

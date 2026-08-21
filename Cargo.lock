@@ -12398,6 +12398,7 @@ dependencies = [
 name = "waterui-browser-cef"
 version = "0.1.0"
 dependencies = [
+ "askama",
  "async-channel",
  "base64 0.22.1",
  "block2 0.6.2",
@@ -12417,7 +12418,9 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tiny_http",
  "tracing",
+ "tracing-subscriber",
  "waterui-browser-wpe",
  "waterui-chromium",
  "waterui-core",
