@@ -900,12 +900,27 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
 
 /// Swift compilation conditions matching the optional FFI features this app
 /// enabled, so the backend compiles exactly the components whose symbols exist.
+///
+/// The two lists mirror the feature's default polarity, so a bare `swift build`
+/// of the backend package — no conditions at all — still compiles what a
+/// default-featured app links. A default-off feature gets a positive condition
+/// when enabled; a default-on feature gets a negative condition when disabled.
 async fn apple_swift_conditions(project: &Project) -> eyre::Result<Vec<String>> {
+    /// Default-off features, named when the app turns them on.
     const OPTIONAL_COMPONENTS: &[(&str, &str)] = &[("map", "WATERUI_MAP")];
+    /// Default-on features, named when the app turns them off.
+    const DEFAULT_COMPONENTS: &[(&str, &str)] = &[("gpu", "WATERUI_NO_GPU")];
 
     let mut conditions = Vec::new();
     for (feature, condition) in OPTIONAL_COMPONENTS {
         if crate::project_model::assets::package_feature_enabled(project, "waterui-ffi", feature)
+            .await?
+        {
+            conditions.push(format!("-D{condition}"));
+        }
+    }
+    for (feature, condition) in DEFAULT_COMPONENTS {
+        if !crate::project_model::assets::package_feature_enabled(project, "waterui-ffi", feature)
             .await?
         {
             conditions.push(format!("-D{condition}"));
