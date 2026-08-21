@@ -31,6 +31,7 @@ use std::{cell::Cell, fmt, rc::Rc};
 mod handle_layers;
 mod handler;
 pub use handler::*;
+mod no_engine;
 mod proxy;
 pub use proxy::WebViewProxy;
 
@@ -891,9 +892,26 @@ impl View for WebView {
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use super::subscribe_navigation;
+    use super::{WebView, subscribe_navigation};
     use waterui_core::{Binding, Signal, reactive::watcher::Context};
     use waterui_url::Url;
+
+    /// The redirect policy is a signal the web view keeps reading, not a `bool`
+    /// sampled once while the view was being described. Writing to the binding
+    /// after the fact has to reach the web view, so what the builder stores must
+    /// still be attached to the source.
+    #[test]
+    fn redirect_policy_retains_the_reactive_signal() {
+        let redirects = Binding::container(false);
+        let open = WebView::open("https://waterui.dev").redirects_enabled(redirects.clone());
+        let configured = open
+            .redirects_enabled
+            .expect("the redirect policy was configured");
+
+        assert!(!configured.get());
+        redirects.set(true);
+        assert!(configured.get());
+    }
 
     #[derive(Clone)]
     struct EmitsDuringSubscription {

@@ -28,8 +28,6 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
-#[cfg(any(hydrolysis_wayland_platform, docsrs))]
-use winit::platform::wayland::EventLoopExtWayland;
 use winit::window::{Window as NativeWindow, WindowId};
 
 use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
@@ -45,6 +43,14 @@ enum RunnerEvent {
     PollLocalTasks,
     MountPendingWindows,
     AccessKit(AccessKitEvent),
+    /// Sent by the macOS termination handler installed below.
+    ///
+    /// macOS only, because that handler is: winit does not deliver a
+    /// termination event there, so hydrolysis installs its own. On Linux
+    /// nothing produces this today — see the tracking issue for Ctrl-C
+    /// handling — so compiling it there would be dead code claiming a
+    /// capability the platform does not have.
+    #[cfg(target_os = "macos")]
     Terminate,
 }
 
@@ -620,6 +626,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                     AccessKitWindowEvent::AccessibilityDeactivated => {}
                 }
             }
+            #[cfg(target_os = "macos")]
             RunnerEvent::Terminate => {
                 self.exit_after_runtime_cleanup(_event_loop);
             }
@@ -639,6 +646,6 @@ mod tests {
         let env = Environment::new();
 
         assert!(native_window_attributes(&window, &env, true, None).active);
-        assert!(!native_window_attributes(&window, &env, false).active);
+        assert!(!native_window_attributes(&window, &env, false, None).active);
     }
 }
