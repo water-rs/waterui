@@ -24,6 +24,12 @@ use waterui_webview::{
 
 type JsHandler = Rc<waterui_webview::ScriptMessageHandler>;
 
+/// What the handle's `impl Future` methods return.
+///
+/// Boxed because the configuration with no linkable WebKitGTK produces no future
+/// at all — it fast-fails — and the two arms still have to name one type.
+type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
+
 const WEBKIT_FEATURE_MSG: &str = "WebView requires waterui-gtk feature `webkitgtk` and linkable WebKitGTK 6 libraries on Linux (fast-fail: no placeholder backend)";
 
 /// Adapts the shared bridge's one-function transport onto `WebKitGTK`'s message handler.
@@ -37,8 +43,6 @@ struct SharedState {
     watchers: WatcherSet<BackendEvent>,
     redirects_enabled: RefCell<Computed<bool>>,
     handler_callbacks: RefCell<HashMap<String, JsHandler>>,
-    cookie_cache: RefCell<String>,
-    last_uri: RefCell<Option<String>>,
     /// Which documents may reach the bridge; checked on every message.
     bridge_origins: RefCell<Option<waterui_webview::OriginPolicy>>,
 }
@@ -55,15 +59,17 @@ impl Default for SharedState {
             watchers: WatcherSet::new(),
             redirects_enabled: RefCell::new(Computed::new(true)),
             handler_callbacks: RefCell::new(HashMap::new()),
-            cookie_cache: RefCell::new(String::new()),
-            last_uri: RefCell::new(None),
             bridge_origins: RefCell::new(None),
         }
     }
 }
 
+/// One script injected through [`WebViewHandle::inject_script`], kept with the
+/// key it was injected under so re-injecting replaces it in place instead of
+/// stacking another, staler copy behind it.
 #[derive(Debug, Clone)]
 struct InjectedScript {
+    key: String,
     source: String,
     time: ScriptInjectionTime,
 }
@@ -83,7 +89,7 @@ mod webkitgtk {
     use gtk4::ffi::GtkWidget;
     use gtk4::gio;
     use gtk4::glib;
-    use gtk4::glib::translate::from_glib_full;
+    use gtk4::glib::translate::{ToGlibPtr, from_glib_none};
     use waterui_core::Str;
 
     use super::ScriptInjectionTime;
@@ -143,6 +149,11 @@ mod webkitgtk {
         _private: [u8; 0],
     }
 
+    #[repr(C)]
+    pub struct WebKitSecurityOrigin {
+        _private: [u8; 0],
+    }
+
     pub type WebKitPolicyDecisionType = c_int;
     pub const WEBKIT_POLICY_DECISION_TYPE_RESPONSE: WebKitPolicyDecisionType = 2;
 
@@ -189,6 +200,25 @@ mod webkitgtk {
             result: *mut gio::ffi::GAsyncResult,
             error: *mut *mut glib::ffi::GError,
         ) -> *mut JSCValue;
+        fn webkit_web_view_call_async_javascript_function(
+            web_view: *mut WebKitWebView,
+            body: *const c_char,
+            length: isize,
+            arguments: *mut glib::ffi::GVariant,
+            world_name: *const c_char,
+            source_uri: *const c_char,
+            cancellable: *mut gio::ffi::GCancellable,
+            callback: gio::ffi::GAsyncReadyCallback,
+            user_data: *mut c_void,
+        );
+        fn webkit_web_view_call_async_javascript_function_finish(
+            web_view: *mut WebKitWebView,
+            result: *mut gio::ffi::GAsyncResult,
+            error: *mut *mut glib::ffi::GError,
+        ) -> *mut JSCValue;
+        fn webkit_security_origin_new_for_uri(uri: *const c_char) -> *mut WebKitSecurityOrigin;
+        fn webkit_security_origin_to_string(origin: *mut WebKitSecurityOrigin) -> *mut c_char;
+        fn webkit_security_origin_unref(origin: *mut WebKitSecurityOrigin);
         fn webkit_response_policy_decision_get_response(
             decision: *mut WebKitResponsePolicyDecision,
         ) -> *mut WebKitURIResponse;
@@ -304,7 +334,16 @@ mod webkitgtk {
         })
         .expect("webkit_website_data_manager_get_cookie_manager returned null (fast-fail)");
 
-        let widget = unsafe { from_glib_full(ptr.as_ptr() as *mut GtkWidget) };
+        // `webkit_web_view_new` returns a *floating* `GInitiallyUnowned`
+        // reference. `from_glib_none` is the constructor that sinks it — as every
+        // gtk-rs widget constructor does — so the wrapper owns a real reference.
+        // `from_glib_full` does not sink, so the first `gtk_widget_set_parent`
+        // consumed the wrapper's only reference and the final unparent freed the
+        // object while `NativeState` still pointed at it.
+        //
+        // SAFETY: `ptr` is a live `WebKitWebView`, which is a `GtkWidget`, and the
+        // floating reference is handed over to the wrapper here.
+        let widget: Widget = unsafe { from_glib_none(ptr.as_ptr().cast::<GtkWidget>()) };
         WebViewParts {
             widget,
             ptr,
@@ -368,10 +407,16 @@ mod webkitgtk {
         cstr_to_string(raw)
     }
 
+    /// Injects `source`, restricted to the documents `allow_list` describes.
+    ///
+    /// `None` is `WebKit`'s "every document"; a list restricts injection to the
+    /// URI patterns in it. An *empty* list is never passed: `WebKit` reads it as
+    /// no restriction, so the caller must not inject at all in that case.
     pub(super) fn add_user_script(
         manager: NonNull<WebKitUserContentManager>,
         source: &str,
         time: ScriptInjectionTime,
+        allow_list: Option<&[Str]>,
     ) {
         let Some(source) = cstring(source) else {
             return;
@@ -380,12 +425,35 @@ mod webkitgtk {
             ScriptInjectionTime::DocumentStart => WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
             ScriptInjectionTime::DocumentEnd => WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END,
         };
+        let patterns: Option<Vec<CString>> = allow_list.map(|patterns| {
+            assert!(
+                !patterns.is_empty(),
+                "an empty WebKit allow list injects everywhere; do not inject instead (fast-fail)"
+            );
+            patterns
+                .iter()
+                .map(|pattern| {
+                    cstring(pattern.as_str()).expect("an origin pattern must not contain NUL")
+                })
+                .collect()
+        });
+        // Kept alive for the whole call: WebKit copies the strings out of it.
+        let allow_pointers: Option<Vec<*const c_char>> = patterns.as_ref().map(|patterns| {
+            patterns
+                .iter()
+                .map(|pattern| pattern.as_ptr())
+                .chain(std::iter::once(std::ptr::null()))
+                .collect()
+        });
+        let allow_list = allow_pointers
+            .as_ref()
+            .map_or(std::ptr::null(), |pointers| pointers.as_ptr());
         let script = unsafe {
             webkit_user_script_new(
                 source.as_ptr(),
                 WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
                 injection_time,
-                std::ptr::null(),
+                allow_list,
                 std::ptr::null(),
             )
         };
@@ -465,16 +533,115 @@ mod webkitgtk {
         let mut error: *mut glib::ffi::GError = std::ptr::null_mut();
         let value =
             unsafe { webkit_web_view_evaluate_javascript_finish(ptr.as_ptr(), result, &mut error) };
+        finished(value, error, "JavaScript evaluation failed")
+    }
+
+    /// Runs `body` as the body of an `async` function and awaits the promise it
+    /// returns.
+    ///
+    /// The shared evaluation wrapper is `async`, so
+    /// `webkit_web_view_evaluate_javascript` hands back the unresolved `Promise`
+    /// rather than the JSON envelope. This is the entry point that awaits it.
+    pub(super) fn call_async_javascript_function(
+        ptr: NonNull<WebKitWebView>,
+        body: &str,
+        callback: gio::ffi::GAsyncReadyCallback,
+        user_data: *mut c_void,
+    ) -> Result<(), String> {
+        let Some(body) = cstring(body) else {
+            return Err(String::from("JavaScript contains interior NUL byte"));
+        };
+        unsafe {
+            webkit_web_view_call_async_javascript_function(
+                ptr.as_ptr(),
+                body.as_ptr(),
+                -1,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                callback,
+                user_data,
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn call_async_javascript_function_finish(
+        ptr: NonNull<WebKitWebView>,
+        result: *mut gio::ffi::GAsyncResult,
+    ) -> Result<*mut JSCValue, String> {
+        let mut error: *mut glib::ffi::GError = std::ptr::null_mut();
+        let value = unsafe {
+            webkit_web_view_call_async_javascript_function_finish(ptr.as_ptr(), result, &mut error)
+        };
+        finished(value, error, "JavaScript function call failed")
+    }
+
+    /// Turns one `GError`-or-value pair from a `_finish` call into a `Result`.
+    fn finished(
+        value: *mut JSCValue,
+        error: *mut glib::ffi::GError,
+        failure: &str,
+    ) -> Result<*mut JSCValue, String> {
         if !error.is_null() {
             let message = cstr_to_string(unsafe { (*error).message });
             unsafe { glib::ffi::g_error_free(error) };
             return Err(if message.is_empty() {
-                String::from("JavaScript evaluation failed")
+                failure.to_owned()
             } else {
                 message
             });
         }
         Ok(value)
+    }
+
+    /// The strictest injection pattern `WebKit` can express for `rule`.
+    ///
+    /// [`OriginRule::injection_pattern`] renders the rule exactly, port and all,
+    /// but `WebKit`'s `UserContentURLPattern` rejects a pattern whose host
+    /// contains `:` and an invalid pattern matches nothing — so passing
+    /// `http://localhost:3000/*` through would inject nowhere and leave a dev
+    /// server with no bridge at all. `WebKit`'s filter is host-granular, so a
+    /// ported origin becomes the pattern for its host, and the port is enforced
+    /// exactly where it can be: the origin check on every bridge message.
+    ///
+    /// The URI is taken apart by GLib rather than by string surgery here.
+    pub(super) fn injection_pattern(rule: &waterui_webview::OriginRule) -> Str {
+        let waterui_webview::OriginRule::Exact(origin) = rule else {
+            return rule.injection_pattern();
+        };
+        let parsed = glib::Uri::parse(origin, glib::UriFlags::NONE)
+            .unwrap_or_else(|error| panic!("`{origin}` is not a usable origin: {error}"));
+        if parsed.port() < 0 {
+            return rule.injection_pattern();
+        }
+        let scheme = parsed.scheme();
+        let host = parsed
+            .host()
+            .unwrap_or_else(|| panic!("`{origin}` names a port but no host"));
+        Str::from(format!("{scheme}://{host}/*"))
+    }
+
+    /// The origin `WebKit` itself reports for a document at `uri`, in the
+    /// `scheme://host[:port]` form the shared origin policy matches against.
+    ///
+    /// `None` for an opaque origin — `about:blank`, `data:`, a sandboxed
+    /// document — which is exactly the case that cannot be authenticated.
+    pub(super) fn security_origin(uri: &str) -> Option<Str> {
+        let uri = cstring(uri)?;
+        let origin = unsafe { webkit_security_origin_new_for_uri(uri.as_ptr()) };
+        if origin.is_null() {
+            return None;
+        }
+        let raw = unsafe { webkit_security_origin_to_string(origin) };
+        unsafe { webkit_security_origin_unref(origin) };
+        if raw.is_null() {
+            return None;
+        }
+        let text = cstr_to_string(raw);
+        unsafe { glib::ffi::g_free(raw.cast()) };
+        Some(Str::from(text))
     }
 
     pub(super) fn jsc_value_to_rust(value: *mut JSCValue) -> Str {
@@ -545,11 +712,18 @@ mod webkitgtk {
         }
     }
 
-    pub(super) fn parse_cookie(header: &str) -> *mut SoupCookie {
+    /// Parses a `Set-Cookie` header as if it had arrived from `origin`.
+    ///
+    /// The origin is what gives a cookie without an explicit `Domain` its
+    /// domain. Parsing against `NULL` left that domain unset, and
+    /// `webkit_cookie_manager_add_cookie` then refused the cookie.
+    pub(super) fn parse_cookie(header: &str, origin: &str) -> *mut SoupCookie {
         let Some(header) = cstring(header) else {
             return std::ptr::null_mut();
         };
-        unsafe { soup_cookie_parse(header.as_ptr(), std::ptr::null_mut()) }
+        let origin = glib::Uri::parse(origin, glib::UriFlags::NONE)
+            .unwrap_or_else(|error| panic!("WebKit reported an unparseable document URI: {error}"));
+        unsafe { soup_cookie_parse(header.as_ptr(), origin.to_glib_none().0) }
     }
 
     pub(super) fn add_cookie(
@@ -792,7 +966,6 @@ impl GtkWebViewHandle {
             };
             this.install_observers();
             this.rebuild_user_scripts();
-            this.refresh_cookie_cache();
             this
         }
     }
@@ -855,6 +1028,11 @@ impl GtkWebViewHandle {
             "GTK WebView missing `can-go-forward` property"
         );
 
+        // Every closure below captures `shared` alone. Capturing the handle — which
+        // owns `widget` — closed a cycle through the widget the closure is attached
+        // to, so `NativeState::drop` never ran: the script message handler stayed
+        // registered and the web view, its web process and every registered handler
+        // outlived the view that showed them.
         let shared = self.shared.clone();
         self.widget
             .connect_notify_local(Some("uri"), move |obj, _| {
@@ -862,21 +1040,18 @@ impl GtkWebViewHandle {
                 if uri.is_empty() {
                     return;
                 }
-                shared.last_uri.replace(Some(uri.clone()));
                 shared.emit(WebViewEvent::WillNavigate {
                     url: Self::parse_url(&uri),
                 });
             });
 
         let shared = self.shared.clone();
-        let this = self.clone();
         self.widget
             .connect_notify_local(Some("estimated-load-progress"), move |obj, _| {
                 let progress = obj.property::<f64>("estimated-load-progress") as f32;
                 shared.emit(WebViewEvent::Loading { progress });
                 if progress >= 1.0 {
                     shared.emit(WebViewEvent::Loaded);
-                    this.refresh_cookie_cache();
                 }
             });
 
@@ -980,6 +1155,17 @@ impl GtkWebViewHandle {
         }
     }
 
+    /// Reinstalls every user script, restricted to the documents the bridge
+    /// origin policy admits.
+    ///
+    /// `WebKit` has no "replace this script" call, so the whole set is rebuilt;
+    /// that is also what makes an [`inject_script`](WebViewHandle::inject_script)
+    /// under an existing key replace rather than stack.
+    ///
+    /// Nothing is injected while no policy admits anything. The scripts carry the
+    /// bridge and the mirrored-state seed — the seed being the current *values*
+    /// of the exposed state — so injecting them into a document that may not use
+    /// the bridge hands that document state it is not allowed to read.
     #[cfg(all(
         feature = "webkitgtk",
         gtk_webkitgtk_link_available,
@@ -988,68 +1174,131 @@ impl GtkWebViewHandle {
     ))]
     fn rebuild_user_scripts(&self) {
         webkitgtk::remove_all_scripts(self.native.manager);
+        let policy = self.shared.bridge_origins.borrow().clone();
+        let Some(rules) = policy.as_ref().map(waterui_webview::OriginPolicy::rules) else {
+            // No policy installed yet; one always arrives before the first
+            // handler is registered.
+            return;
+        };
+        let allow_list: Option<Vec<Str>> = match rules.as_slice() {
+            // Deny-all: no document may reach the bridge, so nothing is injected.
+            // WebKit reads an *empty* allow list as "no restriction", which is why
+            // this case cannot be expressed as one.
+            [] => return,
+            // WebKit's own spelling of "every document" is a null allow list.
+            [waterui_webview::OriginRule::Any] => None,
+            rules => Some(rules.iter().map(webkitgtk::injection_pattern).collect()),
+        };
+        let allow_list = allow_list.as_deref();
+
         // Transport first: the shared script calls `__wateruiSend`, so the adapter
         // onto WebKitGTK's message handler has to exist before it runs.
         webkitgtk::add_user_script(
             self.native.manager,
             TRANSPORT_SCRIPT,
             ScriptInjectionTime::DocumentStart,
+            allow_list,
         );
         webkitgtk::add_user_script(
             self.native.manager,
             waterui_webview::DOCUMENT_START_SCRIPT,
             ScriptInjectionTime::DocumentStart,
+            allow_list,
         );
         let custom = self.native.custom_scripts.borrow().clone();
         for script in custom {
-            webkitgtk::add_user_script(self.native.manager, &script.source, script.time);
+            webkitgtk::add_user_script(
+                self.native.manager,
+                &script.source,
+                script.time,
+                allow_list,
+            );
         }
     }
 
+    /// Starts one evaluation and returns the future that settles with its result.
+    ///
+    /// `start` chooses which of `WebKit`'s two evaluation entry points runs it:
+    /// the raw one, or the one that awaits the promise the script returns.
     #[cfg(all(
         feature = "webkitgtk",
         gtk_webkitgtk_link_available,
         unix,
         not(target_os = "macos")
     ))]
-    fn refresh_cookie_cache(&self) {
-        let uri = self.current_uri_or_default();
-        let data = CookieRefreshData {
-            shared: self.shared.clone(),
-            cookie_manager: self.native.cookie_manager,
-        };
-        webkitgtk::get_cookies(
-            self.native.cookie_manager,
-            &uri,
-            Some(on_cookie_refresh_finished),
-            Box::into_raw(Box::new(data)).cast(),
-        );
+    fn evaluate(&self, script: &str, start: JsStart, finish: JsFinish) -> JsFuture {
+        start_javascript(&self.widget, script, start, finish)
     }
+}
 
-    #[cfg(all(
-        feature = "webkitgtk",
-        gtk_webkitgtk_link_available,
-        unix,
-        not(target_os = "macos")
-    ))]
-    fn run_javascript_impl(&self, script: &str) -> JsFuture {
-        let state = Rc::new(RefCell::new(JsFutureState::default()));
-        let data = JsEvalData {
-            state: state.clone(),
-            webview: self.native.ptr,
-        };
-        let data_ptr = Box::into_raw(Box::new(data));
-        if let Err(err) = webkitgtk::evaluate_javascript(
-            self.native.ptr,
-            script,
-            Some(on_javascript_evaluated),
-            data_ptr.cast(),
-        ) {
-            unsafe { drop(Box::from_raw(data_ptr)) };
-            wake_js_state(&state, Err(Str::from(err)));
-        }
-        JsFuture { state }
+/// Starts one evaluation on `view`, keeping the view alive until it completes.
+///
+/// The strong `Widget` reference in the callback's data is the liveness
+/// guarantee: `_finish` dereferences the web view, so a pending evaluation must
+/// not be able to outlive it.
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+fn start_javascript(view: &Widget, script: &str, start: JsStart, finish: JsFinish) -> JsFuture {
+    let state = Rc::new(RefCell::new(PendingState::new()));
+    let data = Box::into_raw(Box::new(JsEvalData {
+        state: Rc::clone(&state),
+        view: view.clone(),
+        finish,
+    }));
+    if let Err(error) = start(
+        webview_ptr(view),
+        script,
+        Some(on_javascript_evaluated),
+        data.cast(),
+    ) {
+        // SAFETY: WebKit refused the call before taking the callback data, so this
+        // box is still ours and nothing else will ever see it.
+        unsafe { drop(Box::from_raw(data)) };
+        settle(&state, Err(Str::from(error)));
     }
+    JsFuture { state }
+}
+
+/// The `WebKitWebView` behind a widget this backend created.
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+fn webview_ptr(view: &Widget) -> std::ptr::NonNull<webkitgtk::WebKitWebView> {
+    std::ptr::NonNull::new(view.as_ptr().cast::<webkitgtk::WebKitWebView>())
+        .expect("a live GTK widget never has a null instance pointer")
+}
+
+/// Evaluates one bridge reply in the page and reports a delivery failure.
+///
+/// A reply that never arrives leaves the page's promise pending forever, so the
+/// failure is logged rather than dropped.
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+fn deliver_reply(view: &Widget, reply: &bridge::Reply, id: u64) {
+    let script = reply.resolve_script(id);
+    let pending = start_javascript(
+        view,
+        &script,
+        webkitgtk::evaluate_javascript,
+        webkitgtk::evaluate_javascript_finish,
+    );
+    executor_core::spawn_local(async move {
+        if let Err(error) = pending.await {
+            tracing::warn!(%error, "failed to deliver a WaterUI bridge reply to the page");
+        }
+    })
+    .detach();
 }
 
 impl WebViewHandle for GtkWebViewHandle {
@@ -1116,7 +1365,7 @@ impl WebViewHandle for GtkWebViewHandle {
         }
     }
 
-    fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
+    fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
         #[cfg(all(
             feature = "webkitgtk",
             gtk_webkitgtk_link_available,
@@ -1124,13 +1373,22 @@ impl WebViewHandle for GtkWebViewHandle {
             not(target_os = "macos")
         ))]
         {
-            self.native
-                .custom_scripts
-                .borrow_mut()
-                .push(InjectedScript {
-                    source: script.to_owned(),
-                    time,
-                });
+            let injected = InjectedScript {
+                key: key.to_owned(),
+                source: script.to_owned(),
+                time,
+            };
+            {
+                let mut scripts = self.native.custom_scripts.borrow_mut();
+                // Replacing in place keeps the injection order stable, which the
+                // mirrored-state seed depends on: it is re-rendered and replaced
+                // before every navigation, and a seed that moved behind a later
+                // script would define stale values over fresh ones.
+                match scripts.iter_mut().find(|existing| existing.key == key) {
+                    Some(existing) => *existing = injected,
+                    None => scripts.push(injected),
+                }
+            }
             self.rebuild_user_scripts();
             return;
         }
@@ -1141,7 +1399,7 @@ impl WebViewHandle for GtkWebViewHandle {
             not(target_os = "macos")
         )))]
         {
-            let _ = (script, time);
+            let _ = (key, script, time);
             panic!("{WEBKIT_FEATURE_MSG}");
         }
     }
@@ -1200,7 +1458,7 @@ impl WebViewHandle for GtkWebViewHandle {
 
             let data = ScriptMessageData {
                 shared: self.shared.clone(),
-                webview: self.native.ptr,
+                view: self.widget.downgrade(),
             };
 
             let signal_id = unsafe {
@@ -1232,6 +1490,15 @@ impl WebViewHandle for GtkWebViewHandle {
 
     fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
         self.shared.bridge_origins.replace(Some(policy));
+        // The policy decides where the bridge and the mirrored-state seed are
+        // injected, so the installed scripts are reinstalled under the new one.
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
+        self.rebuild_user_scripts();
     }
 
     fn remove_handler(&self, name: &str) {
@@ -1379,7 +1646,12 @@ impl WebViewHandle for GtkWebViewHandle {
         ))]
         {
             let cookie_value = cookie.to_string();
-            let raw_cookie = webkitgtk::parse_cookie(&cookie_value);
+            let uri = self.current_uri_or_default();
+            // Parsed against the document's own URI: a cookie with no explicit
+            // `Domain` takes its domain from the origin it arrived at, and one
+            // parsed against no origin has none at all, which is what made
+            // `webkit_cookie_manager_add_cookie` refuse it.
+            let raw_cookie = webkitgtk::parse_cookie(&cookie_value, &uri);
             if raw_cookie.is_null() {
                 self.shared
                     .emit(WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
@@ -1390,7 +1662,6 @@ impl WebViewHandle for GtkWebViewHandle {
             let data = CookieAddData {
                 shared: self.shared.clone(),
                 cookie_manager: self.native.cookie_manager,
-                uri: self.current_uri_or_default(),
                 cookie: raw_cookie,
             };
             webkitgtk::add_cookie(
@@ -1413,22 +1684,42 @@ impl WebViewHandle for GtkWebViewHandle {
         }
     }
 
-    #[expect(
-        clippy::future_not_send,
-        reason = "a GTK web view is main-thread-only: its shared state is an `Rc` and it holds \
-                  raw WebKitGTK pointers, so this future is awaited on the GTK main context"
-    )]
-    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
-        self.shared
-            .cookie_cache
-            .borrow()
-            .lines()
-            .map(|line| {
-                Cookie::parse(line.to_owned())
-                    .expect("WebKit returned an invalid cookie")
-                    .into_owned()
-            })
-            .collect()
+    /// Asks the cookie manager for the current document's cookies.
+    ///
+    /// Queried live rather than read from a cache refreshed at load: a cookie the
+    /// page sets afterwards — an XHR that logs in — was invisible until the next
+    /// navigation, while every other backend answered from the live store.
+    fn get_cookies(&self) -> impl std::future::Future<Output = Vec<Cookie<'static>>> {
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
+        let cookies: BoxFuture<Vec<Cookie<'static>>> = {
+            let state = Rc::new(RefCell::new(PendingState::new()));
+            let data = CookieQueryData {
+                state: Rc::clone(&state),
+                shared: self.shared.clone(),
+                _view: self.widget.clone(),
+                cookie_manager: self.native.cookie_manager,
+            };
+            webkitgtk::get_cookies(
+                self.native.cookie_manager,
+                &self.current_uri_or_default(),
+                Some(on_cookies_queried),
+                Box::into_raw(Box::new(data)).cast(),
+            );
+            Box::pin(CookieFuture { state })
+        };
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
+        let cookies: BoxFuture<Vec<Cookie<'static>>> = panic!("{WEBKIT_FEATURE_MSG}");
+        cookies
     }
 
     fn run_javascript(&self, script: &str) -> impl std::future::Future<Output = Result<Str, Str>> {
@@ -1438,19 +1729,52 @@ impl WebViewHandle for GtkWebViewHandle {
             unix,
             not(target_os = "macos")
         ))]
-        {
-            return Box::pin(self.run_javascript_impl(script));
-        }
+        let result: BoxFuture<Result<Str, Str>> = Box::pin(self.evaluate(
+            script,
+            webkitgtk::evaluate_javascript,
+            webkitgtk::evaluate_javascript_finish,
+        ));
+        // Every other method fast-fails without a linkable WebKitGTK; this one used
+        // to answer with an `Err` instead, which reads as "the script failed".
         #[cfg(not(all(
             feature = "webkitgtk",
             gtk_webkitgtk_link_available,
             unix,
             not(target_os = "macos")
         )))]
-        {
+        let result: BoxFuture<Result<Str, Str>> = {
             let _ = script;
-            Box::pin(async { Err(Str::from(WEBKIT_FEATURE_MSG)) })
-        }
+            panic!("{WEBKIT_FEATURE_MSG}")
+        };
+        result
+    }
+
+    fn call_async_javascript(
+        &self,
+        body: &str,
+    ) -> impl std::future::Future<Output = Result<Str, Str>> {
+        #[cfg(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        ))]
+        let result: BoxFuture<Result<Str, Str>> = Box::pin(self.evaluate(
+            body,
+            webkitgtk::call_async_javascript_function,
+            webkitgtk::call_async_javascript_function_finish,
+        ));
+        #[cfg(not(all(
+            feature = "webkitgtk",
+            gtk_webkitgtk_link_available,
+            unix,
+            not(target_os = "macos")
+        )))]
+        let result: BoxFuture<Result<Str, Str>> = {
+            let _ = body;
+            panic!("{WEBKIT_FEATURE_MSG}")
+        };
+        result
     }
 }
 
@@ -1493,21 +1817,13 @@ struct TlsFailedData {
     unix,
     not(target_os = "macos")
 ))]
-#[derive(Clone)]
 struct ScriptMessageData {
     shared: Rc<SharedState>,
-    webview: std::ptr::NonNull<webkitgtk::WebKitWebView>,
-}
-
-#[cfg(all(
-    feature = "webkitgtk",
-    gtk_webkitgtk_link_available,
-    unix,
-    not(target_os = "macos")
-))]
-struct CookieRefreshData {
-    shared: Rc<SharedState>,
-    cookie_manager: std::ptr::NonNull<webkitgtk::WebKitCookieManager>,
+    /// Weak, because this data lives in a closure the web view's own user content
+    /// manager owns: a strong reference here would keep the view alive forever.
+    /// Upgrading before each use is also the liveness check the reply path needs,
+    /// since a handler may await while the view is torn down.
+    view: gtk4::glib::WeakRef<Widget>,
 }
 
 #[cfg(all(
@@ -1519,7 +1835,6 @@ struct CookieRefreshData {
 struct CookieAddData {
     shared: Rc<SharedState>,
     cookie_manager: std::ptr::NonNull<webkitgtk::WebKitCookieManager>,
-    uri: String,
     cookie: *mut webkitgtk::SoupCookie,
 }
 
@@ -1529,8 +1844,25 @@ struct CookieAddData {
     unix,
     not(target_os = "macos")
 ))]
-struct JsFutureState {
-    result: Option<Result<Str, Str>>,
+struct CookieQueryData {
+    state: Rc<RefCell<PendingState<Vec<Cookie<'static>>>>>,
+    shared: Rc<SharedState>,
+    /// Strong, and held for its reference alone: the cookie manager belongs to
+    /// the web view, and this query dereferences it in a callback that runs after
+    /// the view could otherwise have been dropped.
+    _view: Widget,
+    cookie_manager: std::ptr::NonNull<webkitgtk::WebKitCookieManager>,
+}
+
+/// One value a GLib async callback will produce, and the waker waiting for it.
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+struct PendingState<T> {
+    result: Option<T>,
     waker: Option<std::task::Waker>,
 }
 
@@ -1540,8 +1872,8 @@ struct JsFutureState {
     unix,
     not(target_os = "macos")
 ))]
-impl Default for JsFutureState {
-    fn default() -> Self {
+impl<T> PendingState<T> {
+    const fn new() -> Self {
         Self {
             result: None,
             waker: None,
@@ -1549,14 +1881,15 @@ impl Default for JsFutureState {
     }
 }
 
+/// The future half of a [`PendingState`].
 #[cfg(all(
     feature = "webkitgtk",
     gtk_webkitgtk_link_available,
     unix,
     not(target_os = "macos")
 ))]
-struct JsFuture {
-    state: Rc<RefCell<JsFutureState>>,
+struct Pending<T> {
+    state: Rc<RefCell<PendingState<T>>>,
 }
 
 #[cfg(all(
@@ -1565,8 +1898,8 @@ struct JsFuture {
     unix,
     not(target_os = "macos")
 ))]
-impl std::future::Future for JsFuture {
-    type Output = Result<Str, Str>;
+impl<T> std::future::Future for Pending<T> {
+    type Output = T;
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
@@ -1588,9 +1921,56 @@ impl std::future::Future for JsFuture {
     unix,
     not(target_os = "macos")
 ))]
+type JsFuture = Pending<Result<Str, Str>>;
+
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+type CookieFuture = Pending<Vec<Cookie<'static>>>;
+
+/// Starts one evaluation. `webkit_web_view_evaluate_javascript` runs the script
+/// as written; `webkit_web_view_call_async_javascript_function` awaits the
+/// promise it returns.
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+type JsStart = fn(
+    std::ptr::NonNull<webkitgtk::WebKitWebView>,
+    &str,
+    gtk4::gio::ffi::GAsyncReadyCallback,
+    *mut std::ffi::c_void,
+) -> Result<(), String>;
+
+/// Collects the result of whichever [`JsStart`] began the evaluation.
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+type JsFinish = fn(
+    std::ptr::NonNull<webkitgtk::WebKitWebView>,
+    *mut gtk4::gio::ffi::GAsyncResult,
+) -> Result<*mut webkitgtk::JSCValue, String>;
+
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
 struct JsEvalData {
-    state: Rc<RefCell<JsFutureState>>,
-    webview: std::ptr::NonNull<webkitgtk::WebKitWebView>,
+    state: Rc<RefCell<PendingState<Result<Str, Str>>>>,
+    /// Strong: `finish` dereferences the web view, so the view has to outlive the
+    /// evaluation it was asked for.
+    view: Widget,
+    finish: JsFinish,
 }
 
 #[cfg(all(
@@ -1599,7 +1979,7 @@ struct JsEvalData {
     unix,
     not(target_os = "macos")
 ))]
-fn wake_js_state(state: &Rc<RefCell<JsFutureState>>, result: Result<Str, Str>) {
+fn settle<T>(state: &Rc<RefCell<PendingState<T>>>, result: T) {
     let mut state = state.borrow_mut();
     state.result = Some(result);
     if let Some(waker) = state.waker.take() {
@@ -1619,7 +1999,7 @@ unsafe extern "C" fn on_javascript_evaluated(
     user_data: *mut std::ffi::c_void,
 ) {
     let data = unsafe { Box::from_raw(user_data.cast::<JsEvalData>()) };
-    let outcome = match webkitgtk::evaluate_javascript_finish(data.webview, result) {
+    let outcome = match (data.finish)(webview_ptr(&data.view), result) {
         Ok(value) => {
             let output = webkitgtk::jsc_value_to_rust(value);
             webkitgtk::unref_jsc_value(value);
@@ -1627,7 +2007,65 @@ unsafe extern "C" fn on_javascript_evaluated(
         }
         Err(err) => Err(Str::from(err)),
     };
-    wake_js_state(&data.state, outcome);
+    settle(&data.state, outcome);
+}
+
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+unsafe extern "C" fn on_cookies_queried(
+    _source_object: *mut gtk4::glib::gobject_ffi::GObject,
+    result: *mut gtk4::gio::ffi::GAsyncResult,
+    user_data: *mut std::ffi::c_void,
+) {
+    let data = unsafe { Box::from_raw(user_data.cast::<CookieQueryData>()) };
+    let cookies = match webkitgtk::get_cookies_finish(data.cookie_manager, result) {
+        Ok(list) => {
+            let cookies = collect_cookies(list);
+            webkitgtk::free_cookie_list(list);
+            cookies
+        }
+        Err(err) => {
+            data.shared
+                .emit(WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
+                    err,
+                ))));
+            Vec::new()
+        }
+    };
+    settle(&data.state, cookies);
+}
+
+/// Reads a `GList` of `SoupCookie` into the shared cookie type.
+///
+/// A cookie WebKit hands back that this parser rejects is reported and skipped:
+/// one malformed cookie in the store used to abort the application from inside a
+/// getter.
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+fn collect_cookies(list: *mut gtk4::glib::ffi::GList) -> Vec<Cookie<'static>> {
+    let mut cookies = Vec::new();
+    let mut node = list;
+    while !node.is_null() {
+        let cookie = unsafe { (*node).data.cast::<webkitgtk::SoupCookie>() };
+        if let Some(header) = webkitgtk::cookie_to_set_cookie_header(cookie) {
+            match Cookie::parse(header) {
+                Ok(cookie) => cookies.push(cookie.into_owned()),
+                Err(error) => {
+                    tracing::warn!(%error, "skipping a cookie WebKitGTK returned that is not parseable");
+                }
+            }
+        }
+        node = unsafe { (*node).next };
+    }
+    cookies
 }
 
 #[cfg(all(
@@ -1649,51 +2087,6 @@ unsafe extern "C" fn on_cookie_added(
             ))));
     }
     webkitgtk::free_cookie(data.cookie);
-    let refresh = CookieRefreshData {
-        shared: data.shared.clone(),
-        cookie_manager: data.cookie_manager,
-    };
-    webkitgtk::get_cookies(
-        data.cookie_manager,
-        &data.uri,
-        Some(on_cookie_refresh_finished),
-        Box::into_raw(Box::new(refresh)).cast(),
-    );
-}
-
-#[cfg(all(
-    feature = "webkitgtk",
-    gtk_webkitgtk_link_available,
-    unix,
-    not(target_os = "macos")
-))]
-unsafe extern "C" fn on_cookie_refresh_finished(
-    _source_object: *mut gtk4::glib::gobject_ffi::GObject,
-    result: *mut gtk4::gio::ffi::GAsyncResult,
-    user_data: *mut std::ffi::c_void,
-) {
-    let data = unsafe { Box::from_raw(user_data.cast::<CookieRefreshData>()) };
-    match webkitgtk::get_cookies_finish(data.cookie_manager, result) {
-        Ok(list) => {
-            let mut lines = Vec::new();
-            let mut node = list;
-            while !node.is_null() {
-                let cookie = unsafe { (*node).data.cast::<webkitgtk::SoupCookie>() };
-                if let Some(line) = webkitgtk::cookie_to_set_cookie_header(cookie) {
-                    lines.push(line);
-                }
-                node = unsafe { (*node).next };
-            }
-            webkitgtk::free_cookie_list(list);
-            data.shared.cookie_cache.replace(lines.join("\n"));
-        }
-        Err(err) => {
-            data.shared
-                .emit(WebViewEvent::Error(WebViewError::LoadFailed(Str::from(
-                    err,
-                ))));
-        }
-    }
 }
 
 #[cfg(all(
@@ -1704,14 +2097,19 @@ unsafe extern "C" fn on_cookie_refresh_finished(
 ))]
 /// Receives one `waterui.invoke(...)` envelope from page script.
 ///
-/// Page script reaches this transport directly, so a malformed envelope or an
-/// unknown handler name is rejected back to JavaScript rather than being fatal.
+/// Page script reaches this transport directly, so a malformed envelope, an
+/// origin outside the policy or an unknown handler name is rejected back to
+/// JavaScript rather than being fatal.
 unsafe extern "C" fn on_script_message_received(
     _manager: *mut webkitgtk::WebKitUserContentManager,
     value: *mut webkitgtk::JSCValue,
     user_data: *mut std::ffi::c_void,
 ) {
     let data = unsafe { &*(user_data.cast::<ScriptMessageData>()) };
+    let Some(view) = data.view.upgrade() else {
+        tracing::warn!("a WaterUI bridge call arrived after its web view was destroyed");
+        return;
+    };
     let envelope = webkitgtk::jsc_value_to_rust(value);
     let request = match bridge::Request::parse(envelope.as_str()) {
         Ok(request) => request,
@@ -1720,6 +2118,19 @@ unsafe extern "C" fn on_script_message_received(
             return;
         }
     };
+
+    if !document_may_use_bridge(&data.shared, &view) {
+        tracing::warn!(
+            handler = %request.name,
+            "a document outside the bridge origin policy tried to call a WaterUI handler"
+        );
+        deliver_reply(
+            &view,
+            &bridge::Reply::failure("this document may not use the WaterUI bridge"),
+            request.id,
+        );
+        return;
+    }
 
     // Release the borrow before invoking: a handler may register or remove
     // handlers on the same web view.
@@ -1734,25 +2145,67 @@ unsafe extern "C" fn on_script_message_received(
             handler = %request.name,
             "page script called a WaterUI handler that is not registered"
         );
-        let reply = bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name));
-        let script = reply.resolve_script(request.id);
-        let _ = webkitgtk::evaluate_javascript(data.webview, &script, None, std::ptr::null_mut());
+        deliver_reply(
+            &view,
+            &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name)),
+            request.id,
+        );
         return;
     };
 
     // Handlers are asynchronous, so the promise settles when the future
     // completes rather than when this callback returns.
     let future = handler(&request.payload);
-    let webview = data.webview;
+    // Weak across the await: a handler is free to await while the view it was
+    // called from is torn down, and the reply then has nowhere to go. Carrying a
+    // raw `WebKitWebView` pointer through the await evaluated JavaScript in freed
+    // memory instead.
+    let view = data.view.clone();
     executor_core::spawn_local(async move {
         let reply = match future.await {
             Ok(reply) => bridge::Reply::from(reply),
             Err(message) => bridge::Reply::Failure(message),
         };
-        let script = reply.resolve_script(request.id);
-        let _ = webkitgtk::evaluate_javascript(webview, &script, None, std::ptr::null_mut());
+        let Some(view) = view.upgrade() else {
+            tracing::warn!(
+                "a WaterUI handler answered after its web view was destroyed; dropping the reply"
+            );
+            return;
+        };
+        deliver_reply(&view, &reply, request.id);
     })
     .detach();
+}
+
+/// Whether the document now loaded in `view` may reach the bridge.
+///
+/// The origin comes from `WebKit`'s own `WebKitSecurityOrigin`, and the decision
+/// from the shared [`OriginPolicy`](waterui_webview::OriginPolicy), so this
+/// backend does not get to invent its own idea of what two origins being equal
+/// means. No policy installed denies: the policy is installed before the first
+/// handler exists, so a call arriving without one cannot be authenticated.
+///
+/// WebKitGTK reports script messages without the frame that sent them, so this
+/// authenticates the document the view is showing. Subframe content is kept away
+/// from the bridge by injecting the transport into the top frame only, and only
+/// into documents the policy's URI patterns admit.
+#[cfg(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+))]
+fn document_may_use_bridge(shared: &SharedState, view: &Widget) -> bool {
+    let Some(policy) = shared.bridge_origins.borrow().clone() else {
+        return false;
+    };
+    let uri = webkitgtk::current_uri(webview_ptr(view));
+    let Some(origin) = webkitgtk::security_origin(&uri) else {
+        // An opaque origin — `about:blank`, `data:`, a sandboxed document — cannot
+        // be authenticated, so it reaches nothing.
+        return false;
+    };
+    policy.allows_origin(&origin)
 }
 
 #[cfg(all(

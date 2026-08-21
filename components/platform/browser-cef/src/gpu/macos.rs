@@ -28,8 +28,17 @@ use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
 
 struct RetainedIoSurface {
     surface: CFRetained<IOSurfaceRef>,
+    /// The allocated extent of the shared image, which is what the `IOSurface`
+    /// must be imported as.
     width: u32,
     height: u32,
+    /// The part of it that actually holds the page.
+    ///
+    /// Chromium may allocate the shared image with alignment padding, so this
+    /// is not always the coded size. Presenting the coded texture edge to edge
+    /// stretched the page and sampled the padding gutter.
+    visible_width: u32,
+    visible_height: u32,
     format: wgpu::TextureFormat,
 }
 
@@ -43,6 +52,12 @@ impl RetainedIoSurface {
         let size = &frame.extra.coded_size;
         let width = u32::try_from(size.width).expect("CEF IOSurface width must be positive");
         let height = u32::try_from(size.height).expect("CEF IOSurface height must be positive");
+        let visible = &frame.extra.visible_rect;
+        // Clamped to the allocation: a visible rect larger than the coded size
+        // would be a CEF bug, and copying past the end of the surface is not the
+        // way to find out.
+        let visible_width = u32::try_from(visible.width).unwrap_or(width).min(width);
+        let visible_height = u32::try_from(visible.height).unwrap_or(height).min(height);
         let pointer = NonNull::new(frame.shared_texture_io_surface.cast::<IOSurfaceRef>())
             .expect("CEF accelerated paint returned a null IOSurface");
         // SAFETY: the caller contract makes `pointer` a live `IOSurface`; retaining
@@ -59,6 +74,8 @@ impl RetainedIoSurface {
             surface,
             width,
             height,
+            visible_width,
+            visible_height,
             format,
         }
     }
@@ -106,7 +123,11 @@ impl AcceleratedFrameSink for MacFrameSink {
             &self.device,
             &self.queue,
             &source,
-            source.size(),
+            wgpu::Extent3d {
+                width: surface.visible_width,
+                height: surface.visible_height,
+                depth_or_array_layers: 1,
+            },
             surface.format,
         );
         self.mailbox.publish(element, owned);

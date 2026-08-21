@@ -92,6 +92,14 @@ pub struct DmaBufFrame {
     pub planes: Vec<DmaBufPlane>,
     /// Rendering completion fence supplied by WPE.
     pub rendering_fence: Option<OwnedFd>,
+    /// The part of the buffer that actually holds the image, when it is smaller
+    /// than the allocation.
+    ///
+    /// Chromium may allocate a shared image at a coded size carrying alignment
+    /// padding, so `width`/`height` describe the buffer while this describes the
+    /// picture. `None` means the whole buffer is the picture, which is the WPE
+    /// case.
+    pub(crate) visible: Option<(u32, u32)>,
     #[cfg_attr(
         not(target_os = "linux"),
         expect(
@@ -131,8 +139,31 @@ impl DmaBufFrame {
             modifier,
             planes,
             rendering_fence,
+            visible: None,
             lease: DmaBufFrameLease::Owned,
         }
+    }
+
+    /// Narrows the frame to the region that actually holds the image.
+    ///
+    /// Presenting a padded buffer edge to edge stretches the picture and draws
+    /// the padding gutter, which is what happens whenever a browser's coded size
+    /// exceeds its visible rect.
+    #[must_use]
+    pub fn with_visible_size(mut self, width: u32, height: u32) -> Self {
+        assert!(
+            width > 0 && height > 0 && width <= self.width && height <= self.height,
+            "a DMA-BUF frame's visible size must be non-zero and within the buffer"
+        );
+        self.visible = Some((width, height));
+        self
+    }
+
+    /// The extent that should be presented: the visible region when the buffer
+    /// is padded, the whole buffer otherwise.
+    #[must_use]
+    pub fn visible_size(&self) -> (u32, u32) {
+        self.visible.unwrap_or((self.width, self.height))
     }
 
     #[cfg(feature = "webview")]
@@ -177,6 +208,9 @@ impl DmaBufFrame {
             modifier: frame.modifier,
             planes,
             rendering_fence,
+            // WPE hands over exactly the picture; only a browser's padded shared
+            // image needs narrowing.
+            visible: None,
             lease: DmaBufFrameLease::Wpe(WpeFrameLease {
                 api,
                 token: frame.token,

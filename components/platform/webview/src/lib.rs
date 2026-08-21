@@ -45,7 +45,7 @@ pub mod bridge;
 mod script;
 pub use script::{DOCUMENT_START_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram};
 mod origins;
-pub use origins::{BridgeOrigins, IntoBridgeOrigins, OriginPolicy};
+pub use origins::{BridgeOrigins, IntoBridgeOrigins, OriginPolicy, OriginRule};
 
 /// An object whose methods and state are exposed to the page.
 ///
@@ -554,18 +554,7 @@ impl WebView {
         reason = "native web views and JavaScript execution are main-thread-affine"
     )]
     async fn run_wrapped(&self, call: &str) -> Result<JsOutcome, JsError> {
-        let raw = self
-            .handle
-            .run_javascript(call)
-            .await
-            .map_err(|message| JsError::Exception {
-                message,
-                stack: None,
-            })?;
-        serde_json::from_str(raw.as_str()).map_err(|source| JsError::Decode {
-            expected: "JsOutcome",
-            source,
-        })
+        run_wrapped_on(&self.handle, call).await
     }
 
     /// Sets a cookie in this web view's native cookie store.
@@ -588,8 +577,12 @@ impl WebView {
     }
 
     /// Injects a script that will run on every page load.
-    pub fn inject_script(&self, script: &str, time: ScriptInjectionTime) {
-        self.handle.inject_script(script, time);
+    ///
+    /// `key` names the script. Injecting again under the same key replaces it,
+    /// so a script whose content depends on current state can be kept current
+    /// without stacking a new copy on every update.
+    pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
+        self.handle.inject_script(key, script, time);
     }
 
     /// Enables or disables following redirects.
@@ -605,6 +598,33 @@ impl WebView {
     pub const fn handle(&self) -> &AnyWebViewHandle {
         &self.handle
     }
+}
+
+/// Runs a wrapped call on `handle` and parses the envelope it resolves with.
+///
+/// Free rather than a method because the mirrored-state bridge holds only a
+/// [`WeakWebViewHandle`] — it lives inside a handler the backend owns, so
+/// keeping a whole [`WebView`] there is what stopped the native web view from
+/// ever being destroyed.
+#[expect(
+    clippy::future_not_send,
+    reason = "native web views and JavaScript execution are main-thread-affine"
+)]
+pub(crate) async fn run_wrapped_on(
+    handle: &AnyWebViewHandle,
+    call: &str,
+) -> Result<JsOutcome, JsError> {
+    let raw = handle
+        .call_async_javascript(call)
+        .await
+        .map_err(|message| JsError::Exception {
+            message,
+            stack: None,
+        })?;
+    serde_json::from_str(raw.as_str()).map_err(|source| JsError::Decode {
+        expected: "JsOutcome",
+        source,
+    })
 }
 
 fn subscribe_navigation<S, F>(url: &S, navigate: F) -> S::Guard
@@ -643,7 +663,7 @@ pub struct WebViewOpen {
     url: Computed<Url>,
     redirects_enabled: Option<Computed<bool>>,
     user_agent: Option<Computed<Str>>,
-    scripts: Vec<(Str, ScriptInjectionTime)>,
+    scripts: Vec<(Str, Str, ScriptInjectionTime)>,
     handlers: Vec<(Str, BoxedMessageHandler)>,
     event_watchers: Vec<Box<dyn Fn(WebViewEvent)>>,
     state: Vec<state::PendingField>,
@@ -679,8 +699,15 @@ impl WebViewOpen {
     }
 
     /// Injects a script that runs on every page load.
-    pub fn inject(mut self, script: impl Into<Str>, time: ScriptInjectionTime) -> Self {
-        self.scripts.push((script.into(), time));
+    ///
+    /// `key` names the script; injecting again under the same key replaces it.
+    pub fn inject(
+        mut self,
+        key: impl Into<Str>,
+        script: impl Into<Str>,
+        time: ScriptInjectionTime,
+    ) -> Self {
+        self.scripts.push((key.into(), script.into(), time));
         self
     }
 
@@ -807,11 +834,19 @@ impl WebViewOpen {
             bridge_origins,
         } = self;
         let webview = controller.open();
+        // The policy is resolved against the URL the view opens at, and it goes
+        // in before the first handler exists, so no handler is ever reachable
+        // unguarded. It used to be installed last, after every handler was
+        // already registered; nothing had navigated yet, so it was only ever
+        // safe by accident.
+        webview
+            .handle()
+            .set_bridge_origins(OriginPolicy::new(bridge_origins, &url.get()));
         if let Some(enabled) = redirects_enabled {
             webview.set_redirects_enabled(enabled);
         }
-        for (script, time) in scripts {
-            webview.inject_script(script.as_str(), time);
+        for (key, script, time) in scripts {
+            webview.inject_script(key.as_str(), script.as_str(), time);
         }
         for (name, build) in handlers {
             webview
@@ -832,11 +867,6 @@ impl WebViewOpen {
                 })
                 .forget();
         }
-        // The policy is resolved against the URL the view opens at, and installed
-        // before any handler, so no handler is ever reachable unguarded.
-        webview
-            .handle()
-            .set_bridge_origins(OriginPolicy::new(bridge_origins, &url.get()));
         if !state.is_empty() {
             state::install(&webview, state);
         }

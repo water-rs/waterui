@@ -97,6 +97,7 @@ impl AndroidWebViewFactory {
                 set_cookie: Some(webview_set_cookie),
                 get_cookies: Some(webview_get_cookies),
                 run_javascript: webview_run_javascript,
+                call_async_javascript: webview_call_async_javascript,
                 drop: webview_drop,
             }
         })
@@ -226,20 +227,29 @@ unsafe extern "C" fn webview_set_redirects_enabled(data: *mut (), enabled: *mut 
 
 unsafe extern "C" fn webview_inject_script(
     data: *mut (),
+    key: WuiStr,
     script: WuiStr,
     time: WuiScriptInjectionTime,
 ) {
     let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    let key = wui_str_to_string(key);
     let script = wui_str_to_string(script);
     handle.with_env(|env| {
+        let jkey = java_string(env, &key);
         let jscript = java_string(env, &script);
         env.call_method(
             &handle.wrapper,
             jni_str!("injectScript"),
-            jni_sig!("(Ljava/lang/String;I)V"),
-            &[JValue::Object(&jscript), JValue::Int(time as jint)],
+            jni_sig!("(Ljava/lang/String;Ljava/lang/String;I)V"),
+            &[
+                JValue::Object(&jkey),
+                JValue::Object(&jscript),
+                JValue::Int(time as jint),
+            ],
         )
-        .expect("webview_inject_script: failed to call WebViewWrapper.injectScript(String, int)");
+        .expect(
+            "webview_inject_script: failed to call WebViewWrapper.injectScript(String, String, int)",
+        );
     });
 }
 
@@ -373,6 +383,37 @@ unsafe extern "C" fn webview_run_javascript(
             ],
         )
         .expect("webview_run_javascript: failed to call WebViewWrapper.runJavaScript");
+    });
+}
+
+/// Runs an async function body and awaits the promise it returns.
+///
+/// Android's `WebView.evaluateJavascript` has no awaiting form, so the Kotlin
+/// side resolves the promise in JavaScript and reports the settled value back
+/// through this same callback. Without it the shared wrapper's promise crossed
+/// unresolved and every typed evaluation — including every mirrored-state push
+/// — failed to decode.
+unsafe extern "C" fn webview_call_async_javascript(
+    data: *mut (),
+    body: WuiStr,
+    callback: WuiJsCallback,
+) {
+    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    let body = wui_str_to_string(body);
+    let call_ptr = callback.call as usize as jlong;
+    handle.with_env(|env| {
+        let jbody = java_string(env, &body);
+        env.call_method(
+            &handle.wrapper,
+            jni_str!("callAsyncJavaScript"),
+            jni_sig!("(Ljava/lang/String;JJ)V"),
+            &[
+                JValue::Object(&jbody),
+                JValue::Long(callback.data as jlong),
+                JValue::Long(call_ptr),
+            ],
+        )
+        .expect("webview_call_async_javascript: failed to call WebViewWrapper.callAsyncJavaScript");
     });
 }
 

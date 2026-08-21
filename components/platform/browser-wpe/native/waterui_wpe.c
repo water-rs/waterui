@@ -44,6 +44,10 @@ struct WaterWpePage {
     WaterWpeDestroyNotify destroy_user_data;
     gboolean redirects_enabled;
     char *last_uri;
+    /* Document scripts by key, so injecting again under a key replaces the
+     * script instead of stacking another copy in front of it. Owns one
+     * reference to each script it names. */
+    GHashTable *scripts;
 };
 
 typedef struct {
@@ -612,6 +616,39 @@ static void water_wpe_evaluate_without_result(
         NULL);
 }
 
+/* Drops the reference a page's script table holds. A wrapper rather than a cast
+ * of `webkit_user_script_unref` to `GDestroyNotify`, which is a function-pointer
+ * cast the build refuses. */
+static void water_wpe_user_script_free(gpointer script)
+{
+    webkit_user_script_unref(script);
+}
+
+/* The origin of the document currently loaded in `page`, as
+ * `scheme://host[:port]`.
+ *
+ * The engine computes it, so it cannot be spoofed by page script. An opaque
+ * origin — a `data:` document, a sandboxed frame — has no string form and comes
+ * back empty, which the policy refuses.
+ *
+ * WPE reports script messages without the frame that sent them: the frame object
+ * exists only in the web process extension API, and the UI-process
+ * `script-message-received` signal carries the value alone. This is therefore the
+ * top document's origin, and it is why `water_wpe_page_add_script` injects into
+ * the top frame only. */
+static char *water_wpe_page_origin(WaterWpePage *page)
+{
+    const char *uri = webkit_web_view_get_uri(page->web_view);
+    if (!uri)
+        return g_strdup("");
+    WebKitSecurityOrigin *origin = webkit_security_origin_new_for_uri(uri);
+    if (!origin)
+        return g_strdup("");
+    char *text = webkit_security_origin_to_string(origin);
+    webkit_security_origin_unref(origin);
+    return text ? text : g_strdup("");
+}
+
 static void water_wpe_script_message(
     WebKitUserContentManager *manager,
     JSCValue *value,
@@ -621,7 +658,9 @@ static void water_wpe_script_message(
     /* The envelope is forwarded verbatim: it is parsed once, in Rust, so its
      * format is defined in exactly one place. */
     char *envelope = jsc_value_to_string(value);
-    WaterWpeBytes reply = page->message_callback(page->user_data, envelope);
+    char *origin = water_wpe_page_origin(page);
+    WaterWpeBytes reply = page->message_callback(page->user_data, origin, envelope);
+    g_free(origin);
     if (reply.data != NULL && reply.len > 0) {
         char *script = g_strndup((const char *)reply.data, reply.len);
         water_wpe_evaluate_without_result(page, script);
@@ -657,6 +696,11 @@ WaterWpePage *water_wpe_page_new(
     page->user_data = user_data;
     page->destroy_user_data = destroy_user_data;
     page->redirects_enabled = TRUE;
+    page->scripts = g_hash_table_new_full(
+        g_str_hash,
+        g_str_equal,
+        g_free,
+        water_wpe_user_script_free);
     page->content_manager = webkit_user_content_manager_new();
     gboolean registered = webkit_user_content_manager_register_script_message_handler(
         page->content_manager,
@@ -735,6 +779,7 @@ void water_wpe_page_free(WaterWpePage *page)
     g_object_unref(page->toplevel);
     g_object_unref(page->web_view);
     g_object_unref(page->content_manager);
+    g_hash_table_unref(page->scripts);
     page->destroy_user_data(page->user_data);
     g_free(page->last_uri);
     g_free(page);
@@ -921,20 +966,34 @@ void water_wpe_page_evaluate(WaterWpePage *page, const char *script)
 
 void water_wpe_page_add_script(
     WaterWpePage *page,
+    const char *key,
     const char *script,
     uint32_t injection_time)
 {
+    g_assert(page != NULL);
+    g_assert(key != NULL);
+    g_assert(script != NULL);
     g_assert_cmpuint(injection_time, <=, 1);
+    /* Top frame only. The documented default is that the bridge belongs to the
+     * document the view was opened at; a page that embeds a cross-origin iframe
+     * does not thereby hand it every registered handler. */
     WebKitUserScript *user_script = webkit_user_script_new(
         script,
-        WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+        WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
         injection_time == 0
             ? WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START
             : WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END,
         NULL,
         NULL);
+    /* Add before removing, so a document that commits between the two runs one
+     * of the two versions rather than neither. */
     webkit_user_content_manager_add_script(page->content_manager, user_script);
-    webkit_user_script_unref(user_script);
+    WebKitUserScript *previous = g_hash_table_lookup(page->scripts, key);
+    if (previous)
+        webkit_user_content_manager_remove_script(page->content_manager, previous);
+    /* Takes the reference `webkit_user_script_new` returned; replacing the entry
+     * drops the reference the previous script held. */
+    g_hash_table_insert(page->scripts, g_strdup(key), user_script);
 }
 
 typedef struct {
@@ -1075,18 +1134,30 @@ void water_wpe_page_get_cookies(
         async);
 }
 
-static void water_wpe_javascript_ready(
-    GObject *object,
-    GAsyncResult *result,
-    gpointer user_data)
+/* One text form for every JavaScript result, matching the GTK and CEF backends:
+ * a string comes back bare, anything else as JSON. `jsc_value_to_json` quotes a
+ * string, which is why WPE alone used to report `"WaterUI"` where the others
+ * reported `WaterUI`. */
+static char *water_wpe_value_to_text(JSCValue *value)
 {
-    WaterWpeAsyncResult *async = user_data;
-    GError *error = NULL;
-    JSCValue *value = webkit_web_view_evaluate_javascript_finish(
-        WEBKIT_WEB_VIEW(object),
-        result,
-        &error);
+    if (jsc_value_is_string(value))
+        return jsc_value_to_string(value);
+    if (jsc_value_is_null(value) || jsc_value_is_undefined(value))
+        return g_strdup("null");
+    char *json = jsc_value_to_json(value, 0);
+    return json ? json : jsc_value_to_string(value);
+}
+
+/* Reports one finished evaluation and consumes `async`, `value` and `error`.
+ * Exactly one of `value` and `error` is set, as GLib's async convention
+ * requires. */
+static void water_wpe_javascript_complete(
+    WaterWpeAsyncResult *async,
+    JSCValue *value,
+    GError *error)
+{
     if (!value) {
+        g_assert(error != NULL);
         async->callback(
             async->user_data,
             false,
@@ -1096,13 +1167,37 @@ static void water_wpe_javascript_ready(
         g_free(async);
         return;
     }
-    char *json = jsc_value_to_json(value, 0);
-    if (!json)
-        json = jsc_value_to_string(value);
-    async->callback(async->user_data, true, json, strlen(json));
-    g_free(json);
+    char *text = water_wpe_value_to_text(value);
+    async->callback(async->user_data, true, text, strlen(text));
+    g_free(text);
     g_object_unref(value);
     g_free(async);
+}
+
+static void water_wpe_javascript_ready(
+    GObject *object,
+    GAsyncResult *result,
+    gpointer user_data)
+{
+    GError *error = NULL;
+    JSCValue *value = webkit_web_view_evaluate_javascript_finish(
+        WEBKIT_WEB_VIEW(object),
+        result,
+        &error);
+    water_wpe_javascript_complete(user_data, value, error);
+}
+
+static void water_wpe_async_javascript_ready(
+    GObject *object,
+    GAsyncResult *result,
+    gpointer user_data)
+{
+    GError *error = NULL;
+    JSCValue *value = webkit_web_view_call_async_javascript_function_finish(
+        WEBKIT_WEB_VIEW(object),
+        result,
+        &error);
+    water_wpe_javascript_complete(user_data, value, error);
 }
 
 void water_wpe_page_run_javascript(
@@ -1111,6 +1206,8 @@ void water_wpe_page_run_javascript(
     WaterWpeResultCallback callback,
     void *user_data)
 {
+    g_assert(page != NULL);
+    g_assert(script != NULL);
     WaterWpeAsyncResult *async = g_new0(WaterWpeAsyncResult, 1);
     async->callback = callback;
     async->user_data = user_data;
@@ -1122,6 +1219,32 @@ void water_wpe_page_run_javascript(
         NULL,
         NULL,
         water_wpe_javascript_ready,
+        async);
+}
+
+void water_wpe_page_call_async_javascript(
+    WaterWpePage *page,
+    const char *body,
+    WaterWpeResultCallback callback,
+    void *user_data)
+{
+    g_assert(page != NULL);
+    g_assert(body != NULL);
+    WaterWpeAsyncResult *async = g_new0(WaterWpeAsyncResult, 1);
+    async->callback = callback;
+    async->user_data = user_data;
+    /* This is the only entry point that resolves the promise the body returns.
+     * The arguments are NULL because the shared wrapper carries its own values
+     * inside the body it was rendered with. */
+    webkit_web_view_call_async_javascript_function(
+        page->web_view,
+        body,
+        -1,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        water_wpe_async_javascript_ready,
         async);
 }
 

@@ -68,10 +68,12 @@ const UNREPRESENTABLE: u64 = 9_007_199_254_740_993;
 /// number rather than being tagged along with the one above.
 const REPRESENTABLE: u64 = 42;
 
-const FIRST_HTML: &str = include_str!("pages/first.html");
-const SECOND_HTML: &str = include_str!("pages/second.html");
-const CHECKS_JS: &str = include_str!("pages/checks.js");
-const STATE_SEED_JS: &str = include_str!("pages/state_seed.js");
+// The pages live with the shared webview crate because they exercise the shared
+// bridge contract; every real-engine suite loads the same ones.
+const FIRST_HTML: &str = include_str!("../../webview/tests/pages/first.html");
+const SECOND_HTML: &str = include_str!("../../webview/tests/pages/second.html");
+const CHECKS_JS: &str = include_str!("../../webview/tests/pages/checks.js");
+const STATE_SEED_JS: &str = include_str!("../../webview/tests/pages/state_seed.js");
 
 /// The local executor the page's handler replies are spawned onto.
 ///
@@ -207,7 +209,11 @@ impl RealEngine {
             })
         });
 
-        handle.inject_script(STATE_SEED_JS, ScriptInjectionTime::DocumentStart);
+        handle.inject_script(
+            "waterui:test-state-seed",
+            STATE_SEED_JS,
+            ScriptInjectionTime::DocumentStart,
+        );
 
         Self {
             server,

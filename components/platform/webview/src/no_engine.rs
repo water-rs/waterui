@@ -81,7 +81,7 @@ impl WebViewHandle for NoEngineHandle {
         false
     }
 
-    fn inject_script(&self, _script: &str, _time: ScriptInjectionTime) {}
+    fn inject_script(&self, _key: &str, _script: &str, _time: ScriptInjectionTime) {}
 
     fn add_handler(&self, _name: &str, _handler: Box<ScriptMessageHandler>) {}
 
@@ -114,6 +114,18 @@ impl WebViewHandle for NoEngineHandle {
     fn run_javascript(&self, _script: &str) -> impl Future<Output = Result<Str, Str>> {
         ready(Err(Str::from_static(
             "this build has no web engine, so there is no page to run JavaScript in",
+        )))
+    }
+
+    /// Fails for the same reason as [`Self::run_javascript`]: an async call's
+    /// result has no truthful empty value either.
+    #[expect(
+        clippy::future_not_send,
+        reason = "a web view and its handle are main-thread-affine"
+    )]
+    fn call_async_javascript(&self, _body: &str) -> impl Future<Output = Result<Str, Str>> {
+        ready(Err(Str::from_static(
+            "this build has no web engine, so there is no page to call JavaScript in",
         )))
     }
 }

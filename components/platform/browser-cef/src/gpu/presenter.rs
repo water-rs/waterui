@@ -69,6 +69,15 @@ impl OwnedFrameMailbox {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+/// Copies the visible part of an imported browser frame into a texture
+/// `WaterUI` owns.
+///
+/// `size` is the *visible* extent, which is not always the extent of the shared
+/// texture: Chromium allocates the shared image at a `coded_size` that may carry
+/// alignment padding beyond `visible_rect`. Copying the whole coded texture and
+/// then sampling it edge to edge stretched the page and drew the padding gutter
+/// at every window size where the rounding applied, so only the visible region
+/// is taken here and the destination is exactly that size.
 pub(super) fn copy_source_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -90,13 +99,16 @@ pub(super) fn copy_source_texture(
         label: Some("waterui_cef_frame_copy"),
     });
     encoder.copy_texture_to_texture(source.as_image_copy(), destination.as_image_copy(), size);
-    let submission = queue.submit([encoder.finish()]);
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
-            timeout: None,
-        })
-        .expect("CEF accelerated frame GPU copy failed");
+    queue.submit([encoder.finish()]);
+    // Deliberately no `device.poll(Wait)`. This runs inside CEF's
+    // `OnAcceleratedPaint`, which is dispatched from `do_message_loop_work()` on
+    // the WaterUI main thread, so blocking on a GPU fence here stalled the whole
+    // UI loop once per browser frame — sixty times a second for an animating
+    // page, which is exactly what the frame budget cannot afford. The wait buys
+    // nothing: submissions on one queue complete in order, so the later pass
+    // that samples `destination` is already ordered after this copy, and wgpu
+    // keeps `source` alive until the submission it is referenced by has
+    // finished.
     destination
 }
 

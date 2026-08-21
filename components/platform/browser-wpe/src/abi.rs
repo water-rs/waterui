@@ -6,7 +6,7 @@
 
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
 
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 pub const MAX_PLANES: usize = 4;
 
 #[repr(C)]
@@ -47,8 +47,10 @@ pub type DestroyNotify = unsafe extern "C" fn(*mut c_void);
 pub type EventCallback =
     unsafe extern "C" fn(*mut c_void, c_uint, *const c_char, *const c_char, c_double);
 pub type FrameCallback = unsafe extern "C" fn(*mut c_void, *const WaterWpeFrame);
-/// Receives one bridge envelope verbatim and returns the reply script.
-pub type MessageCallback = unsafe extern "C" fn(*mut c_void, *const c_char) -> WaterWpeBytes;
+/// Receives the calling document's origin and one bridge envelope verbatim, and
+/// returns the reply script.
+pub type MessageCallback =
+    unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> WaterWpeBytes;
 pub type ResultCallback = unsafe extern "C" fn(*mut c_void, bool, *const c_char, usize);
 
 pub struct WpeApi {
@@ -102,10 +104,13 @@ pub struct WpeApi {
     ),
     pub page_key: unsafe extern "C" fn(*mut WaterWpePage, bool, c_uint, c_uint, c_uint, c_uint),
     pub page_evaluate: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
-    pub page_add_script: unsafe extern "C" fn(*mut WaterWpePage, *const c_char, c_uint),
+    pub page_add_script:
+        unsafe extern "C" fn(*mut WaterWpePage, *const c_char, *const c_char, c_uint),
     pub page_set_cookie: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
     pub page_get_cookies: unsafe extern "C" fn(*mut WaterWpePage, ResultCallback, *mut c_void),
     pub page_run_javascript:
+        unsafe extern "C" fn(*mut WaterWpePage, *const c_char, ResultCallback, *mut c_void),
+    pub page_call_async_javascript:
         unsafe extern "C" fn(*mut WaterWpePage, *const c_char, ResultCallback, *mut c_void),
     pub frame_presented: unsafe extern "C" fn(*mut c_void),
     pub frame_release: unsafe extern "C" fn(*mut c_void, c_int),
@@ -157,6 +162,10 @@ impl WpeApi {
                 page_set_cookie: symbol(library, b"water_wpe_page_set_cookie\0"),
                 page_get_cookies: symbol(library, b"water_wpe_page_get_cookies\0"),
                 page_run_javascript: symbol(library, b"water_wpe_page_run_javascript\0"),
+                page_call_async_javascript: symbol(
+                    library,
+                    b"water_wpe_page_call_async_javascript\0",
+                ),
                 frame_presented: symbol(library, b"water_wpe_frame_presented\0"),
                 frame_release: symbol(library, b"water_wpe_frame_release\0"),
             }
