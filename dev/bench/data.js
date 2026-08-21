@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787256175453,
+  "lastUpdate": 1787304055571,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -87,6 +87,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 26265,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "committer": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "distinct": true,
+          "id": "f14490d9eb1ef1b62f480d93886e00aa70a7e588",
+          "message": "fix(browser-wpe): drop the dependency entries a CI image cannot satisfy\n\nThe first real run of the engine build got as far as installing WPE's\ndependencies and died there with exit 100, on ubuntu-22.04:\n\n    git-svn : Depends: git (< 1:2.34.1-.) but 1:2.55.0-0ppa1~ubuntu22.04.2\n    libgstreamer1.0-dev : Depends: libunwind-dev\n    E: Unable to correct problems, you have held broken packages\n\nGitHub's runner images install git from a PPA, so 22.04's git-svn can\nnever be satisfied there — and git-svn is tooling for the SVN workflow\nWebKit has retired, which nothing in this build reads. One unusable\nconvenience package was aborting the entire install.\n\nThis is the third blocker in the same script, after the missing sourced\nfile and the libbacktrace requirement, and it applies equally to the\nexisting browser-runtime-wpe job, which runs the same script on the same\nrunner. That job has never produced an artifact.",
+          "timestamp": "2026-08-21T04:48:37-04:00",
+          "tree_id": "12afe093f09feb6c19f47706e883cbd78c58509e",
+          "url": "https://github.com/water-rs/waterui/commit/f14490d9eb1ef1b62f480d93886e00aa70a7e588"
+        },
+        "date": 1787304054725,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 451301,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 441538,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 35387,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 32577,
             "unit": "us"
           }
         ]
