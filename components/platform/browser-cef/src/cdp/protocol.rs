@@ -320,6 +320,7 @@ mod tests {
             expression: "1 + 1",
             await_promise: true,
             return_by_value: true,
+            context_id: None,
         };
         let json = serde_json::to_value(&evaluate).expect("serializes");
 
@@ -328,6 +329,8 @@ mod tests {
         // camelCase, because that is what the protocol uses.
         assert_eq!(json["awaitPromise"], true);
         assert_eq!(json["returnByValue"], true);
+        // The default context is expressed by omission, not by null.
+        assert!(json.get("contextId").is_none());
     }
 
     #[test]
