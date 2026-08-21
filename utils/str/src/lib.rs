@@ -26,7 +26,6 @@ nami_core::impl_constant!(Str);
 /// `Str` combines the benefits of both `&'static str` and `String` with efficient
 /// cloning and passing, automatically using the most appropriate representation
 /// based on the source.
-#[derive(Debug)]
 pub struct Str {
     /// Pointer to the string data.
     ptr: NonNull<()>,
