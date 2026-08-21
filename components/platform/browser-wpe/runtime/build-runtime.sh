@@ -80,10 +80,27 @@ if [[ ! -f "$glib_dependencies" ]]; then
     chmod +x "$glib_dependencies"
 fi
 
+# Upstream's list mixes developer tooling in with the build dependencies, and
+# two entries make the whole apt transaction unsatisfiable on a current CI
+# image:
+#   * `git-svn` pins `git (< 1:2.34.1-.)`, while GitHub's runner images install
+#     git from a PPA — 2.55 against 22.04's 2.34. It is tooling for the SVN
+#     workflow WebKit has long since left behind; nothing in this build reads
+#     it. apt cannot install it, and one unusable package aborts everything
+#     else with it.
+#   * `libgstreamer1.0-dev` needs `libunwind-dev`, which apt does not pull in
+#     on its own here.
+# Drop the first from the list and install the second alongside our own
+# additions, so the installer fails only for reasons that actually matter.
+sed -i '/git-svn/d' \
+    "$glib_dependencies" \
+    "$source_directory/Tools/wpe/dependencies/apt"
+
 sudo "$source_directory/Tools/wpe/install-dependencies"
 sudo apt-get install -y --no-install-recommends \
     bubblewrap \
     cmake \
+    libunwind-dev \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
     ninja-build \
