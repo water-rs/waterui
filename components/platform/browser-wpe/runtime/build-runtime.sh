@@ -96,11 +96,15 @@ sed -i '/git-svn/d' \
     "$glib_dependencies" \
     "$source_directory/Tools/wpe/dependencies/apt"
 
+# Before upstream's installer, not after: it is `libgstreamer1.0-dev` inside
+# that installer's own list that needs this, so satisfying it afterwards is too
+# late — the installer has already aborted the transaction.
+sudo apt-get install -y --no-install-recommends libunwind-dev
+
 sudo "$source_directory/Tools/wpe/install-dependencies"
 sudo apt-get install -y --no-install-recommends \
     bubblewrap \
     cmake \
-    libunwind-dev \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
     ninja-build \
