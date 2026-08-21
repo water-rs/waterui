@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787304057724,
+  "lastUpdate": 1787307649353,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -131,6 +131,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 32577,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "committer": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "distinct": true,
+          "id": "37947d28099f2d9fce17fb08574ac66822bbb2d6",
+          "message": "ci: stop the WPE workflow from failing on every webview change\n\nThe engine build cannot succeed today: ubuntu-22.04 ships GCC 11.4 and\nWebKit 2.52.5 requires 12.2, while source.toml's maximum_glibc of 2.35\nis exactly that image's glibc, so the build cannot move to a newer runner\nwithout giving up a portable artifact. Issue #155 records that and the\nthree blockers already fixed.\n\nA guaranteed red X on every webview change is worse than no signal — it\nis a signal everyone learns to ignore. Dispatch remains so the path stays\nexercisable; the weekly schedule goes with the path triggers, since it\nexisted to keep a runtime cache warm that no successful build has ever\npopulated. Both come back in the change that makes the build work.",
+          "timestamp": "2026-08-21T05:49:33-04:00",
+          "tree_id": "5839b2857c6d92d57f3875b0347f6d2d83431da5",
+          "url": "https://github.com/water-rs/waterui/commit/37947d28099f2d9fce17fb08574ac66822bbb2d6"
+        },
+        "date": 1787307648769,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 470740,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 439792,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 37883,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 32727,
             "unit": "us"
           }
         ]
