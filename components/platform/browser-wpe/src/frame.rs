@@ -149,6 +149,11 @@ impl DmaBufFrame {
     /// Presenting a padded buffer edge to edge stretches the picture and draws
     /// the padding gutter, which is what happens whenever a browser's coded size
     /// exceeds its visible rect.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the visible size is zero or exceeds the buffer, since such
+    /// a region cannot describe any part of the image this frame holds.
     #[must_use]
     pub fn with_visible_size(mut self, width: u32, height: u32) -> Self {
         assert!(
