@@ -57,9 +57,10 @@ pub mod prelude {
     pub use super::webview;
     pub use super::{
         AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, View,
-        ViewExt, accessibility, animation, app, color, component, cursor, drag_drop, entry, env,
-        error, filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata,
-        navigation, reactive, regional, shape, signal, style, task, text, widget, window,
+        ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop,
+        entry, env, error, filter, form, fullscreen, gesture, gradient, id, layout, locale,
+        metadata, navigation, reactive, regional, shape, signal, style, task, text, widget,
+        window,
     };
 
     pub use crate::include_markdown;
@@ -213,7 +214,7 @@ pub(crate) mod view_ext;
 pub use nami as reactive;
 pub use nami::SignalExt;
 #[doc(inline)]
-pub use reactive::{Binding, Computed, Signal, signal};
+pub use reactive::{Binding, Computed, Signal, binding, signal};
 pub use runtime::reactive_ext::AnimationExt;
 
 pub use waterui_core::plugin::Plugin;
