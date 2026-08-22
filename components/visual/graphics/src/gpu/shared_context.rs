@@ -73,27 +73,37 @@ pub struct SharedGpuContext {
 /// than degrading, because the error surfaces inside wgpu's default handler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SceneEngine {
-    /// The compute pipeline. Needs indirect execution; the faster of the two.
+    /// The compute pipeline. Needs indirect execution and f16 unpacking in
+    /// f32 shaders; the faster of the two.
     Classic,
-    /// Paths on the CPU, rasterization on the GPU. Needs no indirect execution,
-    /// which is what makes it the one that runs on the iOS Simulator.
+    /// Paths on the CPU, rasterization on the GPU. Needs neither of the
+    /// classic pipeline's capabilities, which is what makes it the one that
+    /// runs on the iOS Simulator and the Android emulator.
     Hybrid,
 }
 
 impl SceneEngine {
+    /// Everything the classic compute pipeline's shaders demand of a device.
+    ///
+    /// `SHADER_F16_IN_F32` is here because `vello.flatten` calls
+    /// `unpack2x16float`, which naga validates against that capability at
+    /// `create_shader_module` — an adapter that omits it (the Android
+    /// emulator's SwiftShader-backed Vulkan, for one) aborts there, long
+    /// after this choice was made.
+    const CLASSIC_REQUIREMENTS: wgpu::DownlevelFlags = wgpu::DownlevelFlags::INDIRECT_EXECUTION
+        .union(wgpu::DownlevelFlags::SHADER_F16_IN_F32);
+
     /// The engine this adapter can actually run.
     #[must_use]
     pub fn for_adapter(adapter: &wgpu::Adapter) -> Self {
-        if adapter
-            .get_downlevel_capabilities()
-            .flags
-            .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION)
-        {
+        let flags = adapter.get_downlevel_capabilities().flags;
+        if flags.contains(Self::CLASSIC_REQUIREMENTS) {
             Self::Classic
         } else {
             tracing::info!(
                 adapter = %adapter.get_info().name,
-                "adapter has no indirect execution; scenes render through the hybrid engine"
+                missing = ?Self::CLASSIC_REQUIREMENTS.difference(flags),
+                "adapter cannot run the classic pipeline; scenes render through the hybrid engine"
             );
             Self::Hybrid
         }
