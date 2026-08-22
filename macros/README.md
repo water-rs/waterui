@@ -1,6 +1,6 @@
 # waterui-macros
 
-Procedural macros for the WaterUI framework, providing automatic derive implementations and code generation for forms, reactive projections, string formatting, and preview functionality.
+Procedural macros for the WaterUI framework, providing automatic derive implementations and code generation for forms, reactive projections, and preview functionality.
 
 ## Overview
 
@@ -8,9 +8,8 @@ This crate is the macro engine behind WaterUI's ergonomic APIs. It provides four
 
 1. **Form Generation** - Automatically generate UI forms from Rust structs with `#[derive(FormBuilder)]` and `#[form]`
 2. **Reactive Projections** - Decompose struct bindings into per-field bindings with `#[derive(Project)]`
-3. **Formatted Strings** - Create reactive formatted strings with the `s!` macro
-4. **Preview** - Enable instant view previews with `#[preview]`
-5. **UI Testing** - Build accessibility-first unit tests with `#[waterui::test(view_fn)]`
+3. **Preview** - Enable instant view previews with `#[preview]`
+4. **UI Testing** - Build accessibility-first unit tests with `#[waterui::test(view_fn)]`
 
 This crate is typically accessed through the main `waterui` crate via `use waterui::prelude::*;` rather than being used directly.
 
@@ -162,45 +161,6 @@ For a struct `MyForm`, the macro generates:
 2. A `Project` implementation that creates mapped bindings for each field
 3. Proper lifetime bounds (`'static`) on generic parameters
 
-### String Formatting
-
-#### `s!` - Reactive String Formatting
-
-Function-like procedural macro for creating formatted string signals with automatic variable capture. Powers the `text!` macro in WaterUI.
-
-**Features:**
-
-- Automatic variable capture from format string placeholders
-- Positional and named argument support
-- Reactive updates when dependencies change
-- Supports up to 4 variables/arguments
-
-**Usage patterns:**
-
-```rust
-use waterui::reactive::{binding, constant};
-use waterui::s;
-
-let name = binding("Alice");
-let age = binding(25);
-
-// Named variable capture (automatic)
-let msg = s!("Hello {name}, you are {age} years old");
-
-// Positional arguments
-let msg2 = s!("Hello {}, you are {}", name, age);
-
-// Static strings (returns constant signal)
-let static_msg = s!("No variables here");
-```
-
-**Implementation details:**
-
-- Uses `zip` combinator to merge multiple reactive signals
-- Delegates to `__format!` macro for actual formatting
-- Returns `Computed<Str>` for reactive values, `Constant<Str>` for static strings
-- Validates format string at compile time (detects mismatched argument counts)
-
 ### Preview
 
 #### `#[preview]`
@@ -300,7 +260,10 @@ Requirements:
 
 ### Function-like Macros
 
-- **`s!(...)`** - Create reactive formatted strings with automatic variable capture
+- **`text!(...)`** - Build a localized, reactive `Text` view from a format string
+- **`catalog!()`** - Load the crate's `i18n/` folder into a compile-time catalog
+- **`view!(...)`** - Unify the view types of `if`/`match` branches in a block
+- **`exec!` / `eval!` / `js_file!` / `exec_file!`** - Typed JavaScript for a web view
 
 ## Features
 
@@ -317,7 +280,6 @@ This is a proc-macro crate with no optional features. All macros are always avai
 The macros perform extensive compile-time validation:
 
 - `FormBuilder`: Requires named struct fields
-- `s!`: Detects mismatched placeholder/argument counts, mixed positional/named usage
 - `Project`: Rejects enums and unions (only works with structs)
 - `form`: Requires structs with named fields
 
