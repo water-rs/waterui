@@ -281,8 +281,20 @@ async fn build_preview_dylib(
         elapsed_ms = project_open_start.elapsed().as_millis(),
         "Preview opened project"
     );
-    let workspace_root = preview_support_ffi_crate_path().await?;
-    let preview_crate_path = project.preview_dylib_crate_path(&workspace_root);
+    // Scaffold rather than assume: this build used to derive the module's path
+    // and trust that some earlier flow had written it, which held only while a
+    // previous preview's module survived in the build cache. The support-app
+    // discard that runs when the runtime checkout changes deletes that cache,
+    // and the next dylib build then spawned cargo in a directory that did not
+    // exist — the "Failed to execute cargo build: No such file or directory"
+    // that hit every first preview after switching workspaces.
+    let scaffold_start = Instant::now();
+    let preview_crate_path = scaffold_preview_module(&project).await?;
+    info!(
+        path = %preview_crate_path.display(),
+        elapsed_ms = scaffold_start.elapsed().as_millis(),
+        "Preview module scaffold is up to date"
+    );
     let preview_crate_name = project.preview_dylib_crate_name();
     let target = match platform {
         PreviewPlatform::Macos => TargetPlatform::MacOS,
