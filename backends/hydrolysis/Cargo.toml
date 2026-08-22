@@ -58,6 +58,12 @@ accesskit_winit = { version = "0.33.2", optional = true }
 cfg_aliases = "0.2.2"
 waterui-build-support.workspace = true
 
+# Termination signals for the windowed desktop runner. No windowing system
+# delivers SIGINT/SIGTERM/SIGHUP (or the Windows console close events) to winit,
+# so the runner installs its own handler on every desktop target it builds for.
+[target.'cfg(any(unix, windows))'.dependencies]
+ctrlc = { version = "3.5", features = ["termination"], optional = true }
+
 # Explicit ProMotion opt-in on macOS: a CADisplayLink created from the winit
 # window's NSView declares the 120Hz frame-rate demand (see
 # platform/macos_display_link.rs). All of these are already in winit's own
@@ -65,7 +71,6 @@ waterui-build-support.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = { version = "0.6", optional = true }
 cookie = { version = "0.18", optional = true }
-ctrlc = { version = "3.5", features = ["termination"] }
 futures = { workspace = true, optional = true }
 objc2 = { version = "0.6", optional = true }
 objc2-app-kit = { version = "0.3", optional = true, features = [
@@ -210,6 +215,7 @@ winit = [
     "accessibility",
     "dep:winit",
     "dep:accesskit_winit",
+    "dep:ctrlc",
     "dep:objc2",
     "dep:objc2-app-kit",
     "dep:objc2-core-graphics",
