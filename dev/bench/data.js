@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787368816592,
+  "lastUpdate": 1787368818976,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -485,6 +485,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 15876,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "committer": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "distinct": true,
+          "id": "1bd764b37f114b80c6dcb0a33b157a10664b308a",
+          "message": "fix(cli): repin the apple backend to the current submodule\n\nThe GPU feature-pruning commit advanced the Apple submodule; the scaffold\npin follows, as the build_info guard test demands.",
+          "timestamp": "2026-08-21T21:34:04-04:00",
+          "tree_id": "1305fdf34ffa968815dbed30b9dc3d77ab1fe28d",
+          "url": "https://github.com/water-rs/waterui/commit/1bd764b37f114b80c6dcb0a33b157a10664b308a"
+        },
+        "date": 1787368818468,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 704136,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 572847,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 19556,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 16020,
             "unit": "us"
           }
         ]
