@@ -751,8 +751,8 @@ fn settings_root(notifications: &Binding<bool>, compact: &Binding<bool>) -> Navi
 
     List::content((
         Section::new("General").content((
-            move || ListItem::new(Toggle::new(&notifications).label("Notifications")),
-            move || ListItem::new(Toggle::new(&compact).label("Compact rows")),
+            move || ListItem::new(Toggle::new("Notifications", &notifications)),
+            move || ListItem::new(Toggle::new("Compact rows", &compact)),
         )),
         Section::new("More")
             .footer("Sub-pages push onto this tab's own stack.")
@@ -780,7 +780,7 @@ fn appearance_page(compact: Binding<bool>) -> NavigationView {
     List::content((Section::new("Density")
         .footer("The row height the message list uses.")
         .content((
-            move || ListItem::new(Toggle::new(&compact).label("Compact rows")),
+            move || ListItem::new(Toggle::new("Compact rows", &compact)),
             row("Current", text!("{density}")),
         )),))
     .title("Appearance")

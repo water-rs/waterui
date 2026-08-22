@@ -363,7 +363,9 @@ fn text_field_value_display_stays_live() {
     let value = binding(Str::from("AAA"));
     let builder = {
         let value = value.clone();
-        AnyViewBuilder::<AnyView>::new(move || AnyView::new(TextField::new(&value)))
+        AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(TextField::new("Value", &value).hide_label())
+        })
     };
     let env = test_environment();
     let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 240, 120);

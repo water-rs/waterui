@@ -216,7 +216,7 @@ they are the load-bearing primitive that `impl_constant!` builds on.
 Builder methods come in three flavors; use the one whose semantics fit:
 
 - **No-arg flag toggles** for boolean opt-ins:
-  `ColorPicker::new(&c).with_alpha().with_hdr()` — never
+  `ColorPicker::new("Accent", &c).with_alpha().with_hdr()` — never
   `.support_alpha(true).support_hdr(true)`. The `bool` parameter is
   meaningless ceremony.
 
@@ -226,13 +226,13 @@ Builder methods come in three flavors; use the one whose semantics fit:
   the intermediate object is independently useful.
 
 - **Builder-method range/configuration** for optional knobs that have a
-  reasonable default: `Slider::new(&value).range(0.0..=10.0)` and
-  `Stepper::new(&value).range(0..=100).step(5)`. The binding is the
-  primary argument; the configuration follows. Slider's default range is
-  `0.0..=1.0`.
+  reasonable default: `Slider::new("Volume", &value).range(0.0..=10.0)` and
+  `Stepper::new("Count", &value).range(0..=100).step(5)`. The label and
+  binding are the primary arguments; the configuration follows. Slider's
+  default range is `0.0..=1.0`.
 
 - **Trait-based dispatch** when the same conceptual constructor handles
-  several value types: `DatePicker::new(&binding)` dispatches via
+  several value types: `DatePicker::new("Due", &binding)` dispatches via
   `DatePickable` to `Date`/`Time`/`DateTime`. Don't expose
   `Type::date / Type::time / Type::datetime` as separate constructor
   names.

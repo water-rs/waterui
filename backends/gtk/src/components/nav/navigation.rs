@@ -38,7 +38,11 @@ fn render_search_widget(
 ) -> gtk4::Widget {
     renderer
         .render(
-            TextField::new(&search.text).prompt(search.prompt.clone()),
+            // A search field shows only its placeholder, so the prompt doubles
+            // as the accessible name and the visible label is suppressed.
+            TextField::new(search.prompt.clone(), &search.text)
+                .hide_label()
+                .prompt(search.prompt.clone()),
             env,
         )
         .upcast()

@@ -49,7 +49,7 @@
 //!
 //! // Use focused states with UI elements
 //! let view = vstack((
-//!     TextField::new(&binding("")).focused(&focus_binding, Field::Username),
+//!     TextField::new("Username", &binding("")).focused(&focus_binding, Field::Username),
 //!     SecureField::new("Password", &binding(Secure::default()))
 //!         .focused(&focus_binding, Field::Password),
 //! ));

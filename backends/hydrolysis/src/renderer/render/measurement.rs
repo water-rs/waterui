@@ -573,7 +573,10 @@ pub(crate) fn measure_navigation_view_intrinsic(
     let trailing_size = LayoutSize::new(trailing_width as f32, trailing_height as f32);
     let search_size = if let Some(search) = navigation.bar.search.as_ref() {
         let body_env = env.clone();
-        let search_field = TextField::new(&search.text).prompt(search.prompt.clone());
+        // Mirrors the search field built in `widgets::nav::navigation`.
+        let search_field = TextField::new(search.prompt.clone(), &search.text)
+            .hide_label()
+            .prompt(search.prompt.clone());
         let search_body =
             normalize_layout_view(AnyView::new(search_field.body(&body_env)), &body_env);
         measure_view_intrinsic(&search_body, state, &body_env)

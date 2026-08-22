@@ -10,6 +10,8 @@ use alloc::vec::Vec;
 use nami::SignalExt;
 use nami::signal::IntoComputed;
 use nami::{Binding, Computed};
+use waterui_controls::label::Label;
+use waterui_controls::{IntoLabel, impl_label_style_methods};
 use waterui_core::{Environment, configurable};
 
 use waterui_core::id::{Id, Mapping, TaggedView};
@@ -43,6 +45,13 @@ pub enum PickerStyle {
 #[derive(Debug)]
 /// Configuration for the `Picker` component.
 pub struct PickerConfig {
+    /// The label displayed for the picker.
+    ///
+    /// Always present: it is required at construction so assistive technology
+    /// has a name to announce, even when
+    /// [`LabelDisplayMode::Hidden`](waterui_controls::label::LabelDisplayMode::Hidden)
+    /// removes the visible chrome.
+    pub label: Label,
     /// The items to display in the picker.
     pub items: Computed<Vec<PickerItem<Id>>>,
     /// The binding to the currently selected item.
@@ -55,6 +64,10 @@ configurable!(
     /// A control for selecting from a list of options.
     ///
     /// Picker displays a selection UI (menu, wheel, or segmented style depending on context).
+    ///
+    /// The label is required at construction; hide it visually with
+    /// [`Picker::hide_label`] when the surrounding chrome already names the
+    /// control.
     ///
     /// # Layout Behavior
     ///
@@ -83,6 +96,7 @@ pub type PickerItem<T> = TaggedView<T, Text>;
 impl PickerConfig {
     #[must_use]
     fn resolve(mut self, env: &Environment) -> Self {
+        self.label = self.label.resolve(env);
         let env = env.clone();
         let locale = locale_binding(&env);
         self.items = self
@@ -100,8 +114,15 @@ impl PickerConfig {
 }
 
 impl Picker {
-    /// Creates a new `Picker` with the given items and selection binding.
+    /// Creates a new `Picker` with the given label, items, and selection
+    /// binding.
+    ///
+    /// The label is mandatory — see
+    /// [the label module](waterui_controls::label). Chain [`Self::hide_label`]
+    /// when the surrounding chrome already names the picker; the label stays in
+    /// the accessibility tree.
     pub fn new<T: Ord + Clone + 'static>(
+        label: impl IntoLabel,
         items: impl IntoComputed<Vec<PickerItem<T>>>,
         selection: &Binding<T>,
     ) -> Self {
@@ -120,6 +141,7 @@ impl Picker {
         };
 
         Self(PickerConfig {
+            label: label.into_label(),
             items,
             selection: mapping.binding(selection),
             style: PickerStyle::default(),
@@ -148,11 +170,14 @@ impl Picker {
     }
 }
 
-/// Creates a new `Picker` with the given items and selection binding.
+impl_label_style_methods!(Picker);
+
+/// Creates a new `Picker` with the given label, items, and selection binding.
 /// See [`Picker`] for more details.
 pub fn picker<T: Ord + Clone + 'static>(
+    label: impl IntoLabel,
     items: impl IntoComputed<Vec<PickerItem<T>>>,
     selection: &Binding<T>,
 ) -> Picker {
-    Picker::new(items, selection)
+    Picker::new(label, items, selection)
 }

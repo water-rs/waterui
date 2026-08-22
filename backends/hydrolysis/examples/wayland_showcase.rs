@@ -57,16 +57,14 @@ fn main_view() -> impl View {
         vstack((
             text("Hydrolysis Wayland Showcase").size(34.0),
             text("Control matrix on pure-Rust backend").size(16.0),
-            TextField::new(&username)
-                .label("Username")
-                .prompt("Type your name"),
+            TextField::new("Username", &username).prompt("Type your name"),
             SecureField::new("Password", &password),
-            Toggle::new(&toggle_value).label("Realtime rebuild"),
+            Toggle::new("Realtime rebuild", &toggle_value),
             slider("Animation blend", &slider_value),
             stepper("Detail level", &stepper_value).range(1..=12),
             hstack((loading(), text("Background task running").size(14.0))).spacing(12.0),
-            Picker::new(picker_items, &render_mode).style(PickerStyle::Menu),
-            Toggle::new(&list_editing).label("List editing"),
+            Picker::new("Render mode", picker_items, &render_mode).style(PickerStyle::Menu),
+            Toggle::new("List editing", &list_editing),
             List::for_each(diagnostics_rows, |row| {
                 let (name, value, color) = row.into_inner();
                 ListItem::new(hstack((

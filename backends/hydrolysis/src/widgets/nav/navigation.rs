@@ -109,8 +109,12 @@ impl NavigationViewRenderState {
             }
         }
         let search_field = search.as_ref().map(|search| {
+            // A search field shows only its placeholder, so the prompt doubles
+            // as the accessible name and the visible label is suppressed.
             RetainedSubview::new(AnyView::new(
-                TextField::new(&search.text).prompt(search.prompt.clone()),
+                TextField::new(search.prompt.clone(), &search.text)
+                    .hide_label()
+                    .prompt(search.prompt.clone()),
             ))
         });
         Self {

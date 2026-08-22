@@ -25,7 +25,9 @@ pub fn view(model: Model) -> impl View {
                 "View tree",
                 "The accessibility tree, as assistive technology sees it.",
             ),
-            TextField::new(&filter).prompt("Filter by label or role"),
+            TextField::new("Filter by label or role", &filter)
+                .hide_label()
+                .prompt("Filter by label or role"),
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(8.0)

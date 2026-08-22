@@ -1041,9 +1041,7 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     let focus_for_view = focus.clone();
     let mut app = ui().theme(hydrolysis_m3::install).mount(move || {
         vstack((
-            TextField::new(&username)
-                .label(text("Username"))
-                .focused(&focus_for_view, Field::Username),
+            TextField::new(text("Username"), &username).focused(&focus_for_view, Field::Username),
             SecureField::new(text("Password"), &password).focused(&focus_for_view, Field::Password),
             button("Submit"),
         ))
@@ -1103,7 +1101,7 @@ fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
     let value_for_view = value.clone();
     let mut app = ui()
         .theme(hydrolysis_m3::install)
-        .mount(move || TextField::new(&value_for_view).label(text("Full Name")));
+        .mount(move || TextField::new(text("Full Name"), &value_for_view));
 
     app.query()
         .role(Role::TEXT_INPUT)

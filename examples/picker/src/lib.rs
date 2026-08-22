@@ -116,15 +116,21 @@ pub fn demo() -> impl View {
                 text("Choose from different picker presentation styles").body(),
                 spacer(),
                 text("Automatic (default)").bold(),
-                Picker::new(picker_items.clone(), &automatic_selection),
+                Picker::new(
+                    "Automatic (default)",
+                    picker_items.clone(),
+                    &automatic_selection,
+                ),
                 picker_selection_text(&automatic_selection),
                 spacer(),
                 text("Menu Style").bold(),
-                Picker::new(picker_items.clone(), &menu_selection).style(PickerStyle::Menu),
+                Picker::new("Menu Style", picker_items.clone(), &menu_selection)
+                    .style(PickerStyle::Menu),
                 picker_selection_text(&menu_selection),
                 spacer(),
                 text("Radio Style").bold(),
-                Picker::new(picker_items.clone(), &radio_selection).style(PickerStyle::Radio),
+                Picker::new("Radio Style", picker_items.clone(), &radio_selection)
+                    .style(PickerStyle::Radio),
                 picker_selection_text(&radio_selection),
             ))
             .padding_with(EdgeInsets::all(12.0)),

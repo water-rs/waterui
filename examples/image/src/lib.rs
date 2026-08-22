@@ -96,7 +96,9 @@ fn custom_url_section() -> impl View {
         text("Custom URL Loader").headline(),
         "Load any image from the web (blur updates in real-time)",
         hstack((
-            TextField::new(&url_input).prompt("Enter image URL"),
+            TextField::new("Image URL", &url_input)
+                .hide_label()
+                .prompt("Enter image URL"),
             button("Load")
                 .bordered_prominent()
                 .action(

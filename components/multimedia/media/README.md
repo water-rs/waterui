@@ -109,10 +109,7 @@ fn volume_demo() -> impl View {
         ))
             .muted(&muted),
 
-        HStack::new((
-            Text::new("Mute"),
-            Toggle::new(&muted),
-        )),
+        Toggle::new("Mute", &muted),
     ))
 }
 ```

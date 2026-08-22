@@ -263,7 +263,11 @@ mod tests {
     /// the right edge, white thumb at the on end, thumb outline.
     #[test]
     fn toggle_emits_track_thumb_and_outline() {
-        let commands = render_commands(Toggle::new(&binding(true)), 200.0, 40.0);
+        let commands = render_commands(
+            Toggle::new("Ready", &binding(true)).hide_label(),
+            200.0,
+            40.0,
+        );
         assert_eq!(commands.len(), 3, "track fill, thumb fill, thumb stroke");
 
         assert_color_near(solid_brush(&commands[0]), theme::ACCENT);
@@ -279,7 +283,11 @@ mod tests {
     /// the thumb to the leading end.
     #[test]
     fn toggle_off_uses_muted_track_with_leading_thumb() {
-        let commands = render_commands(Toggle::new(&binding(false)), 200.0, 40.0);
+        let commands = render_commands(
+            Toggle::new("Ready", &binding(false)).hide_label(),
+            200.0,
+            40.0,
+        );
         assert_color_near(solid_brush(&commands[0]), theme::TRACK);
         assert_point_near(commands[1].bounds().center(), Point::new(164.5, 20.0));
     }
@@ -313,8 +321,12 @@ mod tests {
             .install(&mut env);
 
         let mut renderer = DewRenderer::default();
-        let commands =
-            renderer.render_tree(AnyView::new(Toggle::new(&binding(true))), &env, 200.0, 40.0);
+        let commands = renderer.render_tree(
+            AnyView::new(Toggle::new("Ready", &binding(true)).hide_label()),
+            &env,
+            200.0,
+            40.0,
+        );
         assert_color_near(
             solid_brush(&commands.commands()[0]),
             peniko::Color::from_rgb8(255, 0, 0),

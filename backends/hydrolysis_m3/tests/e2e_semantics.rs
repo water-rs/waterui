@@ -48,7 +48,7 @@ fn material_controls_view() -> impl View {
             toggle("Wi-Fi", &enabled),
             slider("Volume", &value),
             stepper("Quantity", &count),
-            TextField::new(&name).label("Project"),
+            TextField::new("Project", &name),
         ))
         .spacing(12.0),
     )
@@ -76,7 +76,7 @@ fn material_controls_expose_accessibility_semantics(app: &mut SemanticApp) {
 
 fn material_search_field_view() -> impl View {
     let name = Binding::container(Str::from(""));
-    material_shell(TextField::new(&name).label("Search"))
+    material_shell(TextField::new("Search", &name))
 }
 
 #[waterui::test(material_search_field_view, theme = install, viewport = (360, 320))]
@@ -809,7 +809,7 @@ fn material_navigation_view_preserves_title_and_content_semantics(app: &mut Sema
 
 fn material_focused_text_field_view() -> impl View {
     let name = Binding::container(Str::from("Hydrolysis"));
-    material_shell(TextField::new(&name).label("Project"))
+    material_shell(TextField::new("Project", &name))
 }
 
 #[ignore = "captures a real Hydrolysis focused text field PNG for direct visual review"]

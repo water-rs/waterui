@@ -22,7 +22,7 @@ fn main_view() -> impl View {
                 .fill(Color::srgb_hex("#2563EB"))
                 .size(560.0, 180.0),
             hstack((
-                Toggle::new(&toggle_value).label("Toggle"),
+                Toggle::new("Toggle", &toggle_value),
                 slider("Slider", &slider_value),
                 stepper("Stepper", &stepper_value).range(0..=10),
             ))

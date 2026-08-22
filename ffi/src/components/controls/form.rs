@@ -160,6 +160,8 @@ into_ffi! {PickerStyle, non_exhaustive, pub enum WuiPickerStyle {
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiPicker {
+    /// Semantic label slot for the picker — see [`WuiLabel`].
+    pub label: WuiLabel,
     /// The picker's items, rendered as an identity-tracked view collection.
     pub items: *mut crate::views::WuiAnyViews,
     /// Reactive binding to the tag of the currently selected item.
@@ -173,6 +175,7 @@ impl IntoFFI for PickerConfig {
 
     fn into_ffi(self) -> Self::FFI {
         WuiPicker {
+            label: self.label.into_ffi(),
             items: crate::views::signal_vec_views(
                 self.items,
                 |items, index| items[index].tag,
