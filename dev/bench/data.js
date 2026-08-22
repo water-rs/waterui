@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787397724120,
+  "lastUpdate": 1787397726065,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -661,6 +661,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 11871,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "committer": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "distinct": true,
+          "id": "e436ee0db0e42bba0e43754fc1dc26540e80ac5f",
+          "message": "style(graphics): wrap the scene-engine capability doc to rustfmt's liking",
+          "timestamp": "2026-08-22T06:18:15-04:00",
+          "tree_id": "a85823a55c4147291e38578e55c020a7b97c8cf2",
+          "url": "https://github.com/water-rs/waterui/commit/e436ee0db0e42bba0e43754fc1dc26540e80ac5f"
+        },
+        "date": 1787397725598,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 541779,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 453571,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 15700,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 14078,
             "unit": "us"
           }
         ]
