@@ -985,6 +985,14 @@ async fn prepare_macos_bundle_launch(
     })
 }
 
+/// A backstop against a wedged `LaunchServices` only, never a judgement about
+/// how fast a launch "should" be: readiness is the app's process appearing,
+/// failure is `open` exiting, and this bound is sized so it can never lose a
+/// race against a slow-but-healthy launch (Gatekeeper's first-run scan of a
+/// freshly built binary alone can take well past five seconds).
+#[cfg(target_os = "macos")]
+const MACOS_LAUNCH_BACKSTOP: Duration = Duration::from_secs(120);
+
 #[cfg(target_os = "macos")]
 async fn launch_macos_bundle_process(
     launch: &MacosBundleLaunchContext,
@@ -1019,7 +1027,12 @@ async fn launch_macos_bundle_process(
         ))
     })?;
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Readiness is decided by real signals, not a stopwatch: the app's process
+    // appearing means the launch succeeded, and `open` exiting before that
+    // means it failed — its status and stderr say why. A fixed five-second
+    // deadline used to stand in for both, and it killed launches that were
+    // about to work; see [`MACOS_LAUNCH_BACKSTOP`].
+    let deadline = Instant::now() + MACOS_LAUNCH_BACKSTOP;
     while Instant::now() < deadline {
         let new_pid = list_conflicting_macos_app_pids(launch)
             .await?
@@ -1028,13 +1041,42 @@ async fn launch_macos_bundle_process(
         if let Some(app_pid) = new_pid {
             return Ok((child, app_pid));
         }
+
+        // `open -W` outlives the app, so any exit before the process appeared
+        // is a launch that did not happen — report LaunchServices' own words
+        // instead of a timeout.
+        match child.try_status() {
+            Ok(Some(status)) => {
+                let mut stderr_text = String::new();
+                if let Some(stderr) = child.stderr.as_mut() {
+                    use smol::io::AsyncReadExt as _;
+                    let _ = stderr.read_to_string(&mut stderr_text).await;
+                }
+                let stderr_text = stderr_text.trim();
+                return Err(FailToRun::Launch(eyre::eyre!(
+                    "LaunchServices failed to start '{}': `open` exited with {status}{}{}",
+                    launch.artifact_path.display(),
+                    if stderr_text.is_empty() { "" } else { ": " },
+                    stderr_text,
+                )));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(FailToRun::Launch(eyre::eyre!(
+                    "Failed to supervise the `open` process for '{}': {error}",
+                    launch.artifact_path.display()
+                )));
+            }
+        }
+
         Timer::after(Duration::from_millis(80)).await;
     }
 
     let _ = child.kill();
     let _ = child.status().await;
     Err(FailToRun::Launch(eyre::eyre!(
-        "LaunchServices did not start '{}' within 5 seconds",
+        "LaunchServices neither started '{}' nor failed within {MACOS_LAUNCH_BACKSTOP:?}; \
+         `open` is still running with no matching app process",
         launch.artifact_path.display()
     )))
 }
