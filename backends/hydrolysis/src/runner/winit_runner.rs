@@ -43,15 +43,83 @@ enum RunnerEvent {
     PollLocalTasks,
     MountPendingWindows,
     AccessKit(AccessKitEvent),
-    /// Sent by the macOS termination handler installed below.
+    /// Sent by the termination handler installed in [`run`].
     ///
-    /// macOS only, because that handler is: winit does not deliver a
-    /// termination event there, so hydrolysis installs its own. On Linux
-    /// nothing produces this today — see the tracking issue for Ctrl-C
-    /// handling — so compiling it there would be dead code claiming a
-    /// capability the platform does not have.
-    #[cfg(target_os = "macos")]
+    /// No windowing system turns a termination signal into a winit event, on
+    /// any desktop platform, so the runner listens for the signals itself. The
+    /// variant exists wherever that handler does — every target with signals or
+    /// Windows console control events.
+    #[cfg(any(unix, windows))]
     Terminate,
+}
+
+/// What a termination signal does, given how many arrived before it.
+#[cfg(any(unix, windows))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminationAction {
+    /// Ask the event loop to tear the runtime down, the way the last window
+    /// closing does.
+    RequestExit,
+    /// Stop asking. The loop had its chance and did not take it.
+    ForceExit,
+}
+
+/// Collapses repeated termination signals into "ask once, then stop asking".
+///
+/// Installing a handler replaces the default disposition of SIGINT, so without
+/// this a wedged process becomes unkillable from the terminal that started it:
+/// the graceful request is only reachable through the very event loop the hang
+/// lives in.
+#[cfg(any(unix, windows))]
+#[derive(Debug, Default)]
+struct TerminationRequests {
+    requested: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(any(unix, windows))]
+impl TerminationRequests {
+    fn record(&self) -> TerminationAction {
+        if self
+            .requested
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            TerminationAction::ForceExit
+        } else {
+            TerminationAction::RequestExit
+        }
+    }
+}
+
+/// Shell convention for a process killed by SIGINT (128 + 2). `ctrlc` does not
+/// report which signal arrived, and Ctrl-C is what a user is pressing when the
+/// forced path is reached.
+#[cfg(any(unix, windows))]
+const FORCED_TERMINATION_EXIT_CODE: i32 = 130;
+
+/// Turns termination signals into [`RunnerEvent::Terminate`].
+///
+/// The `termination` feature of `ctrlc` covers SIGINT, SIGTERM and SIGHUP on
+/// Unix and the console close/logoff/shutdown events on Windows, so every way a
+/// desktop shell or session manager asks a windowed app to stop reaches the
+/// same teardown the last window closing does.
+#[cfg(any(unix, windows))]
+fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
+    let event_proxy = event_proxy.clone();
+    let requests = TerminationRequests::default();
+    ctrlc::set_handler(move || match requests.record() {
+        TerminationAction::RequestExit => {
+            // `ctrlc` runs this on a thread of its own rather than inside a
+            // signal handler, so waking the loop from here is an ordinary send.
+            let _ = event_proxy.send_event(RunnerEvent::Terminate);
+        }
+        TerminationAction::ForceExit => {
+            tracing::warn!(
+                "hydrolysis runner: termination signal repeated, exiting without runtime teardown"
+            );
+            std::process::exit(FORCED_TERMINATION_EXIT_CODE);
+        }
+    })
+    .expect("hydrolysis runner: failed to install the termination handler");
 }
 
 struct PendingWindow {
@@ -162,14 +230,8 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     super::install_native_component_hooks(&mut env);
-    #[cfg(target_os = "macos")]
-    ctrlc::set_handler({
-        let event_proxy = event_proxy.clone();
-        move || {
-            let _ = event_proxy.send_event(RunnerEvent::Terminate);
-        }
-    })
-    .expect("hydrolysis runner: failed to install the macOS termination handler");
+    #[cfg(any(unix, windows))]
+    install_termination_handler(&event_proxy);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui::window::WindowManager::new({
         let pending_window_queue = Rc::clone(&pending_window_queue);
@@ -626,7 +688,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                     AccessKitWindowEvent::AccessibilityDeactivated => {}
                 }
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(unix, windows))]
             RunnerEvent::Terminate => {
                 self.exit_after_runtime_cleanup(_event_loop);
             }
@@ -637,8 +699,20 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
 #[cfg(test)]
 mod tests {
     use super::native_window_attributes;
+    #[cfg(any(unix, windows))]
+    use super::{TerminationAction, TerminationRequests};
     use waterui::window::{Window, WindowState};
     use waterui_core::{Environment, binding};
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn first_termination_signal_asks_the_loop_and_later_ones_do_not() {
+        let requests = TerminationRequests::default();
+
+        assert_eq!(requests.record(), TerminationAction::RequestExit);
+        assert_eq!(requests.record(), TerminationAction::ForceExit);
+        assert_eq!(requests.record(), TerminationAction::ForceExit);
+    }
 
     #[test]
     fn popup_window_attributes_do_not_activate() {
