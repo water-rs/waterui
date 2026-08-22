@@ -5,14 +5,16 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust
 //! use waterui::prelude::*;
 //!
+//! let gradient_view = hstack((Color::blue(), Color::teal()));
+//!
 //! // Gradient behind text
-//! text!("Hello").background(gradient_view)
+//! text!("Hello").background(gradient_view);
 //!
 //! // Using the layout directly
-//! background(content, background_view)
+//! background(text!("Hello"), Color::blue());
 //! ```
 
 use core::fmt;

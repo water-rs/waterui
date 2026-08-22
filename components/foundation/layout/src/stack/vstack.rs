@@ -384,30 +384,39 @@ impl Layout for VStackLayout {
 /// Use a `VStack` to arrange views top-to-bottom. The stack sizes itself to fit
 /// its contents, distributing available space among its children.
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn heading() -> impl View {
 /// vstack((
 ///     text("Title"),
 ///     text("Subtitle"),
 /// ))
+/// # }
 /// ```
 ///
 /// You can customize the spacing between children and their horizontal alignment:
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn spaced() -> impl View {
 /// VStack::new(HorizontalAlignment::Leading, 8.0, (
 ///     text("First"),
 ///     text("Second"),
 /// ))
+/// # }
 /// ```
 ///
 /// Use [`spacer()`](crate::spacer()) to push content to the top and bottom:
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn page() -> impl View {
 /// vstack((
 ///     text("Header"),
 ///     spacer(),
 ///     text("Footer"),
 /// ))
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct VStack<C> {
