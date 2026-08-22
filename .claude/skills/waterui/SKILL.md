@@ -539,7 +539,7 @@ Run previews with `water preview my_card --platform macos`.
 let blur = Binding::f64(0.0);
 vstack((
     Photo::new(url).blur(blur.clone()),  // blur reacts to slider
-    Slider::new(0.0..=10.0, &blur),
+    slider("Blur radius", &blur).range(0.0..=10.0),
     text!("Blur: {blur:.1}"),
 ))
 
@@ -620,7 +620,7 @@ button("Load")
 vstack((
     text!("{status}"),
     photo_view,
-    Slider::new(0.0..=10.0, &blur),  // Slider controls blur in real-time
+    slider("Blur radius", &blur).range(0.0..=10.0),  // controls blur in real-time
 ))
 ```
 
