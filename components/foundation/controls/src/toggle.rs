@@ -47,18 +47,26 @@ configurable!(
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_controls::{Toggle, toggle};
+    /// # fn labelled(is_enabled: Binding<bool>) -> impl View {
     /// // Simple toggle with label
     /// toggle("Wi-Fi", &is_enabled)
+    /// # }
     ///
+    /// # fn bare(dark_mode: Binding<bool>) -> impl View {
     /// // Toggle without label
     /// Toggle::new(&dark_mode)
+    /// # }
     ///
+    /// # fn settings(notifications: Binding<bool>, sound: Binding<bool>) -> impl View {
     /// // In a settings list
     /// vstack((
     ///     toggle("Notifications", &notifications),
     ///     toggle("Sound", &sound),
     /// ))
+    /// # }
     /// ```
     //
     // ═══════════════════════════════════════════════════════════════════════════

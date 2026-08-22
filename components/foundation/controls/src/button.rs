@@ -18,10 +18,12 @@
 //!
 //! The simplest form takes a closure with no parameters:
 //!
-//! ```rust,ignore
+//! ```rust
 //! use waterui::prelude::*;
 //!
+//! # fn simple() {
 //! button("Click me").action(|| {});
+//! # }
 //! ```
 //!
 //! ## State Injection
@@ -29,9 +31,11 @@
 //! Use `.state()` on the resulting view to inject cloneable state into the
 //! environment, then extract it inside `action(...)` with `State<T>`:
 //!
-//! ```rust,ignore
+//! ```rust
 //! use waterui::prelude::*;
+//! use waterui::reactive::binding;
 //!
+//! # fn injected() {
 //! let counter: Binding<i32> = binding(0);
 //!
 //! button("Increment")
@@ -40,70 +44,108 @@
 //!     })
 //!     .state(&counter);
 //!
-//! button("Go")
+//! let query: Binding<Str> = binding("");
+//! let history: Binding<Vec<Str>> = binding(Vec::new());
+//!
+//! button("Search")
 //!     .action(
-//!         |State(wv): State<WebView>, State(addr): State<Binding<Url>>| {
-//!         wv.go_to(addr.get().as_str());
+//!         |State(query): State<Binding<Str>>, State(history): State<Binding<Vec<Str>>>| {
+//!             history.get_mut().push(query.get());
 //!         },
 //!     )
-//!     .state(&webview)
-//!     .state(&address);
+//!     .state(&query)
+//!     .state(&history);
+//! # }
 //! ```
 //!
 //! ## Environment Extraction
 //!
-//! Any extractor type can be used directly as an `action(...)` parameter:
+//! Any extractor type can be used directly as an `action(...)` parameter. Any
+//! `Clone` type becomes one with [`impl_extractor!`](waterui_core::impl_extractor):
 //!
-//! ```rust,ignore
+//! ```rust
+//! use waterui::impl_extractor;
 //! use waterui::prelude::*;
 //!
-//! button("Apply Theme")
-//!     .action(|theme: Theme| {
-//!         apply_theme(theme);
-//!     });
+//! #[derive(Clone)]
+//! struct CurrentUser(Str);
+//! impl_extractor!(CurrentUser);
 //!
+//! #[derive(Clone)]
+//! struct DatabaseConnection;
+//! impl_extractor!(DatabaseConnection);
+//! # impl DatabaseConnection {
+//! #     fn save_user_preferences(&self, _user: CurrentUser) {}
+//! # }
+//!
+//! # fn extracted() {
 //! button("Save")
 //!     .action(|db: DatabaseConnection, user: CurrentUser| {
 //!         db.save_user_preferences(user);
 //!     });
+//! # }
 //! ```
 //!
 //! ## Combined State and Extraction
 //!
 //! State and custom extractors compose in a single handler:
 //!
-//! ```rust,ignore
+//! ```rust
+//! use waterui::impl_extractor;
 //! use waterui::prelude::*;
 //!
+//! # use waterui::reactive::binding;
+//! # #[derive(Clone, Default)]
+//! # struct FormData {
+//! #     email: Str,
+//! # }
+//! # #[derive(Clone)]
+//! # struct ApiClient;
+//! # impl_extractor!(ApiClient);
+//! # impl ApiClient {
+//! #     fn submit(&self, _form: FormData) {}
+//! # }
+//! # fn combined() {
+//! # let form_data: Binding<FormData> = binding(FormData::default());
 //! button("Submit")
-//!     .action(|State(data): State<FormData>, client: ApiClient| {
+//!     .action(|State(data): State<Binding<FormData>>, client: ApiClient| {
 //!         client.submit(data.get());
 //!     })
 //!     .state(&form_data);
+//! # }
 //! ```
 //!
 //! ## Async Actions
 //!
 //! All patterns support async variants with `action_async`:
 //!
-//! ```rust,ignore
+//! ```rust
 //! use waterui::prelude::*;
 //!
+//! # use waterui::reactive::binding;
+//! # async fn fetch_from_server() -> Str {
+//! #     Str::from("payload")
+//! # }
+//! # fn asynchronous() {
+//! # let result_binding: Binding<Str> = binding("");
 //! button("Fetch Data")
-//!     .action_async(|State(result): State<ResultBinding>| async move {
+//!     .action_async(|State(result): State<Binding<Str>>| async move {
 //!         let data = fetch_from_server().await;
 //!         result.set(data);
 //!     })
 //!     .state(&result_binding);
+//! # }
 //! ```
 //!
 //! ## Button Styles
 //!
 //! Use `.style()` or convenience methods to change the button's visual appearance:
 //!
-//! ```rust,ignore
+//! ```rust
 //! use waterui::prelude::*;
+//! use waterui_controls::ButtonStyle;
 //!
+//! # fn styled() {
 //! // Using style method
 //! button("Primary Action")
 //!     .style(ButtonStyle::BorderedProminent)
@@ -121,6 +163,7 @@
 //! button("Subtle")
 //!     .plain()
 //!     .action(|| { /* ... */ });
+//! # }
 //! ```
 
 use core::fmt;
@@ -191,9 +234,11 @@ macro_rules! impl_style_methods {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::prelude::*;
+/// use waterui_controls::ButtonStyle;
 ///
+/// # fn styles() {
 /// // Primary action with prominent styling
 /// button("Submit").style(ButtonStyle::BorderedProminent);
 ///
@@ -202,6 +247,7 @@ macro_rules! impl_style_methods {
 ///
 /// // Navigation link
 /// button("Learn More").style(ButtonStyle::Link);
+/// # }
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -452,8 +498,12 @@ impl Button<fn(&Environment)> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_controls::{Button, label::label};
+    /// # fn demo() {
     /// let btn = Button::new(label("Click me")).action(|| {});
+    /// # }
     /// ```
     #[must_use]
     pub fn new(label: Label) -> Self {
@@ -475,10 +525,15 @@ impl<Action> Button<Action> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_controls::ButtonStyle;
+    /// # fn submit_form() {}
+    /// # fn demo() {
     /// button("Submit")
     ///     .style(ButtonStyle::BorderedProminent)
     ///     .action(|| submit_form());
+    /// # }
     /// ```
     #[must_use]
     pub const fn style(mut self, style: ButtonStyle) -> Self {
@@ -530,8 +585,11 @@ impl<Action> Button<Action> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # fn demo() {
     /// button("Click me").action(|| {});
+    /// # }
     /// ```
     #[must_use]
     pub fn action<F, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
@@ -557,11 +615,21 @@ impl<Action> Button<Action> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # mod api {
+    /// #     use waterui::Str;
+    /// #     pub async fn fetch_data() -> Str {
+    /// #         Str::from("payload")
+    /// #     }
+    /// # }
+    /// # fn process(_data: Str) {}
+    /// # fn demo() {
     /// button("Fetch").action_async(|| async {
     ///     let data = api::fetch_data().await;
     ///     process(data);
     /// });
+    /// # }
     /// ```
     pub fn action_async<F, Fut, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
     where
@@ -616,10 +684,12 @@ where
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::prelude::*;
 ///
+/// # fn demo() {
 /// button("Click me").action(|| {});
+/// # }
 /// ```
 pub fn button(label: impl IntoLabel) -> Button<fn(&Environment)> {
     Button::new(label.into_label())

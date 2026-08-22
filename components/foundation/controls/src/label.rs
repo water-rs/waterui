@@ -70,12 +70,17 @@ nami::impl_constant!(IconPosition);
 /// Install this as a plugin on a subtree to adapt labels for chrome such as
 /// toolbars or compact layouts:
 ///
-/// ```rust,ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # use waterui_controls::{LabelDisplayMode, button, label};
+/// # use waterui_icon::system_icon;
+/// # fn toolbar() -> impl View {
 /// hstack((
 ///     button(label("Search").system_icon(system_icon::search())).action(|| {}),
 ///     button(label("Settings").system_icon(system_icon::settings())).action(|| {}),
 /// ))
 /// .install(LabelDisplayMode::IconOnly)
+/// # }
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LabelDisplayMode {
@@ -292,11 +297,19 @@ impl Label {
     /// is also what lets modifier chains (`.padding()`, `.clip(…)`, …) be used
     /// here at all: those wrappers are not `Clone`.
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_controls::Label;
+    /// # fn verification_badge() -> impl View {
+    /// #     text("✓")
+    /// # }
+    /// # fn build() -> Label {
     /// let verified = Label::new(
     ///     "Verified account",
     ///     || hstack((text("Account"), verification_badge())),
     /// );
+    /// # verified
+    /// # }
     /// ```
     #[must_use]
     pub fn new(semantic_text: impl IntoText, content: impl ViewBuilder) -> Self {

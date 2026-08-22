@@ -39,17 +39,25 @@ configurable!(
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_controls::slider;
+    /// # fn basic(volume: Binding<f64>) -> impl View {
     /// // Basic slider (label required for accessibility)
     /// slider("Volume", &volume).range(0.0..=100.0)
+    /// # }
     ///
+    /// # fn labelled_track(brightness: Binding<f64>) -> impl View {
     /// // With end-of-track value labels
     /// slider("Brightness", &brightness)
     ///     .min_value_label("Dark")
     ///     .max_value_label("Bright")
+    /// # }
     ///
+    /// # fn hidden(volume: Binding<f64>) -> impl View {
     /// // Visually hidden label, still announced by VoiceOver / TalkBack
     /// slider("Volume", &volume).hide_label()
+    /// # }
     /// ```
     //
     // ═══════════════════════════════════════════════════════════════════════════
