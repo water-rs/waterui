@@ -29,6 +29,8 @@ pub(crate) struct HydroSubview<'a> {
 struct ResolvedTextMeasure {
     input: ResolvedTextLayoutInput,
     service: Arc<TextMeasureService>,
+    /// Maximum laid-out lines, from the leaf's `TextConfig::line_limit`.
+    max_lines: Option<usize>,
 }
 
 impl<'a> HydroSubview<'a> {
@@ -37,10 +39,12 @@ impl<'a> HydroSubview<'a> {
         state: &'a RefCell<&'a mut HydroState>,
         env: &'a Environment,
     ) -> Self {
-        let resolved_text = try_resolve_text_leaf(view, env).map(|input| ResolvedTextMeasure {
-            input,
-            service: Arc::clone(&state.borrow().text),
-        });
+        let resolved_text =
+            try_resolve_text_leaf(view, env).map(|(input, max_lines)| ResolvedTextMeasure {
+                input,
+                service: Arc::clone(&state.borrow().text),
+                max_lines,
+            });
         Self {
             view: MainThreadBound::new(view),
             state: MainThreadBound::new(state),
@@ -85,7 +89,7 @@ impl SubView for HydroSubview<'_> {
         // `MainThreadBound` state, so it may run on any thread.
         if let Some(resolved) = &self.resolved_text {
             let layout = resolved.service.shape(&resolved.input, proposal.width);
-            let dimensions = text_dimensions_from_layout(&layout, None);
+            let dimensions = text_dimensions_from_layout(&layout, resolved.max_lines);
             return self.apply_stretch(dimensions, proposal);
         }
 
@@ -129,7 +133,10 @@ impl SubView for HydroSubview<'_> {
 /// text handling in
 /// [`measure_view_dimensions_with_proposal`](super::measure_view_dimensions_with_proposal)
 /// so the worker-thread fast path and the main-thread recursion agree.
-fn try_resolve_text_leaf(view: &AnyView, env: &Environment) -> Option<ResolvedTextLayoutInput> {
+fn try_resolve_text_leaf(
+    view: &AnyView,
+    env: &Environment,
+) -> Option<(ResolvedTextLayoutInput, Option<usize>)> {
     let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
 
     if let Some(content) = passthrough_content(view) {
@@ -137,28 +144,37 @@ fn try_resolve_text_leaf(view: &AnyView, env: &Environment) -> Option<ResolvedTe
     }
 
     if let Some(text) = view.downcast_ref::<Str>() {
-        return Some(resolve_text_layout_input(
-            &StyledStr::plain(text.clone()),
-            HorizontalAlignment::Leading,
-            &scoped_env,
+        return Some((
+            resolve_text_layout_input(
+                &StyledStr::plain(text.clone()),
+                HorizontalAlignment::Leading,
+                &scoped_env,
+            ),
+            None,
         ));
     }
 
     if let Some(text) = view.downcast_ref::<Text>() {
         let resolved = text.resolve(&scoped_env);
-        return Some(resolve_text_layout_input(
-            &resolved.content.get(),
-            resolved.paragraph_alignment.get(),
-            &scoped_env,
+        return Some((
+            resolve_text_layout_input(
+                &resolved.content.get(),
+                resolved.paragraph_alignment.get(),
+                &scoped_env,
+            ),
+            resolved.line_limit.map(core::num::NonZeroUsize::get),
         ));
     }
 
     if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
         let config = text.as_inner();
-        return Some(resolve_text_layout_input(
-            &config.content.get(),
-            config.paragraph_alignment.get(),
-            &scoped_env,
+        return Some((
+            resolve_text_layout_input(
+                &config.content.get(),
+                config.paragraph_alignment.get(),
+                &scoped_env,
+            ),
+            config.line_limit.map(core::num::NonZeroUsize::get),
         ));
     }
 

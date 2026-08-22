@@ -713,6 +713,18 @@ impl IntoFFI for &'static str {
     }
 }
 
+/// An optional count crosses as itself, with `0` meaning "none".
+///
+/// This is the convention `WuiTextField::line_limit` established: the zero a
+/// `NonZeroUsize` cannot hold is exactly the wire value left over to mean
+/// "no limit".
+impl IntoFFI for Option<core::num::NonZeroUsize> {
+    type FFI = usize;
+    fn into_ffi(self) -> Self::FFI {
+        self.map_or(0, core::num::NonZeroUsize::get)
+    }
+}
+
 impl WuiStr {
     /// Returns the string as a `&str` without consuming the `WuiStr`.
     ///

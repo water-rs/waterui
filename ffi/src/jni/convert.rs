@@ -1072,7 +1072,7 @@ impl ToJavaStruct for crate::shape::WuiResolvedShape {
     }
 }
 
-/// WuiText -> TextStruct(contentPtr: Long, paragraphAlignmentPtr: Long)
+/// WuiText -> TextStruct(contentPtr: Long, paragraphAlignmentPtr: Long, lineLimit: Int)
 impl ToJavaStruct for crate::components::text::WuiText {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1080,10 +1080,11 @@ impl ToJavaStruct for crate::components::text::WuiText {
             .expect("TextStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJ)V"),
+            jni_sig!("(JJI)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.paragraph_alignment as jlong),
+                JValue::Int(i32::try_from(self.line_limit).unwrap_or(i32::MAX)),
             ],
         )
         .expect("Failed to create TextStruct")

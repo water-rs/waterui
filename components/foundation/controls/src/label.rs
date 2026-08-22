@@ -623,6 +623,22 @@ impl Label {
         }
     }
 
+    /// Caps the visible semantic text at `limit` lines unless the author
+    /// already set an explicit limit.
+    ///
+    /// Controls whose platform baseline keeps labels on one line — a `SwiftUI`
+    /// or Material button truncates rather than folding its label into a
+    /// paragraph — apply their default through this, while an explicit
+    /// [`Text::line_limit`] from the author stays authoritative. Custom-view
+    /// labels are untouched: an arbitrary composition owns its own wrapping.
+    #[must_use]
+    pub fn default_text_line_limit(mut self, limit: core::num::NonZeroUsize) -> Self {
+        if let LabelContent::Semantic { text, .. } = &mut self.content {
+            *text = text.clone().default_line_limit(limit);
+        }
+        self
+    }
+
     /// Resolves environment-dependent label presentation before crossing into
     /// a native backend payload.
     #[must_use]

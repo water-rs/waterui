@@ -486,6 +486,8 @@ pub(crate) struct TextNode {
     pub(crate) accessibility_identity: Rc<()>,
     pub(crate) content: Computed<StyledStr>,
     pub(crate) alignment: Computed<HorizontalAlignment>,
+    /// Maximum laid-out lines, from `TextConfig::line_limit`.
+    pub(crate) line_limit: Option<usize>,
 }
 
 pub(crate) struct ContainerNode {

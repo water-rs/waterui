@@ -35,6 +35,8 @@ pub(super) struct NodeSubView<'a> {
 struct ResolvedNodeTextMeasure {
     input: ResolvedTextLayoutInput,
     service: std::sync::Arc<TextMeasureService>,
+    /// Maximum laid-out lines, from the leaf's `TextConfig::line_limit`.
+    max_lines: Option<usize>,
 }
 
 /// Resolve a node that measures as a pure text leaf into a `Send` shaping input,
@@ -45,12 +47,11 @@ struct ResolvedNodeTextMeasure {
 fn try_resolve_node_text_leaf(
     node: &RenderNode,
     env: &Environment,
-) -> Option<ResolvedTextLayoutInput> {
+) -> Option<(ResolvedTextLayoutInput, Option<usize>)> {
     match node {
-        RenderNode::Text(text) => Some(resolve_text_layout_input(
-            &text.content.get(),
-            text.alignment.get(),
-            env,
+        RenderNode::Text(text) => Some((
+            resolve_text_layout_input(&text.content.get(), text.alignment.get(), env),
+            text.line_limit,
         )),
         RenderNode::Opacity(node) => try_resolve_node_text_leaf(&node.child, env),
         RenderNode::Scale(node) => try_resolve_node_text_leaf(&node.child, env),
@@ -70,11 +71,13 @@ impl<'a> NodeSubView<'a> {
         state: &'a RefCell<&'a mut HydroState>,
         env: &'a Environment,
     ) -> Self {
-        let resolved_text =
-            try_resolve_node_text_leaf(node, env).map(|input| ResolvedNodeTextMeasure {
+        let resolved_text = try_resolve_node_text_leaf(node, env).map(|(input, max_lines)| {
+            ResolvedNodeTextMeasure {
                 input,
                 service: std::sync::Arc::clone(&state.borrow().text),
-            });
+                max_lines,
+            }
+        });
         Self {
             stretch: node.stretch(),
             priority: node.priority(),
@@ -113,7 +116,7 @@ impl SubView for NodeSubView<'_> {
         // `MainThreadBound` state, so it may run on any thread.
         if let Some(resolved) = &self.resolved_text {
             let layout = resolved.service.shape(&resolved.input, proposal.width);
-            let dimensions = text_dimensions_from_layout(&layout, None);
+            let dimensions = text_dimensions_from_layout(&layout, resolved.max_lines);
             return self.apply_stretch(dimensions, proposal);
         }
         if let Some((_, dimensions)) = self

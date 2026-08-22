@@ -32,6 +32,12 @@ impl GtkComponent for Native<TextConfig> {
         // TextConfig is used for content text which may need wrapping
         label.set_wrap(true);
         label.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+        if let Some(limit) = config.line_limit {
+            // TextConfig::line_limit: cap the laid-out lines and truncate the
+            // last visible one with an ellipsis, the platform label baseline.
+            label.set_lines(i32::try_from(limit.get()).unwrap_or(i32::MAX));
+            label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        }
 
         // Set up reactive updates
         let guard = config.content.watch({

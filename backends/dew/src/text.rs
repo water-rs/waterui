@@ -146,6 +146,7 @@ impl TextLayoutCache {
         &mut self,
         revision: u64,
         key: TextLayoutKey,
+        max_lines: Option<usize>,
         build: impl FnOnce() -> parley::Layout<[u8; 4]>,
     ) -> ((f32, f32), CacheOutcome) {
         self.sync_revision(revision);
@@ -153,7 +154,7 @@ impl TextLayoutCache {
             return (*size, CacheOutcome::Reused);
         }
         let layout = build();
-        let size = (layout.width(), layout.height());
+        let size = capped_layout_size(&layout, max_lines);
         self.sizes.push((key, size));
         let displayed_elsewhere = self
             .retained
@@ -178,6 +179,7 @@ impl TextLayoutCache {
         &mut self,
         revision: u64,
         key: TextLayoutKey,
+        max_lines: Option<usize>,
         transform: Affine,
         list: &mut DisplayList,
         build: impl FnOnce() -> parley::Layout<[u8; 4]>,
@@ -192,7 +194,8 @@ impl TextLayoutCache {
             outcome = CacheOutcome::Built;
             let layout = build();
             if !self.sizes.iter().any(|(cached, _)| *cached == key) {
-                self.sizes.push((key, (layout.width(), layout.height())));
+                self.sizes
+                    .push((key, capped_layout_size(&layout, max_lines)));
             }
             self.retained = Some(RetainedText {
                 key,
@@ -217,7 +220,9 @@ impl TextLayoutCache {
                 .expect("the parley layout is present until runs are derived");
             // The layout's job ends here: runs replay from now on, and the
             // heavyweight parley structures go back to the heap.
-            retained.runs.insert(retain_glyph_runs(&layout, list))
+            retained
+                .runs
+                .insert(retain_glyph_runs(&layout, list, max_lines))
         };
         for run in runs {
             let mut command = run.command.clone();
@@ -534,7 +539,7 @@ pub(crate) fn emit_text_commands(
     layout: &parley::Layout<[u8; 4]>,
     transform: Affine,
 ) {
-    for run in retain_glyph_runs(layout, list) {
+    for run in retain_glyph_runs(layout, list, None) {
         let mut command = run.command;
         command.set_transform(transform);
         list.push_placed(command, transform.transform_rect_bbox(run.local_bounds));
@@ -547,9 +552,29 @@ pub(crate) fn emit_text_commands(
 /// This is where the per-glyph `skrifa` outline-bounds lookups happen, so it
 /// runs once per (text, width) rather than once per frame; `list` receives the
 /// work accounting.
+/// The laid-out size, counting at most `max_lines` lines.
+///
+/// Mirrors the hydrolysis renderer's capped measurement: a limited text
+/// reserves height for its visible lines only, and Dew clips the remainder at
+/// the line boundary — the frugal renderer draws no ellipsis.
+fn capped_layout_size(layout: &parley::Layout<[u8; 4]>, max_lines: Option<usize>) -> (f32, f32) {
+    let Some(limit) = max_lines else {
+        return (layout.width(), layout.height());
+    };
+    let mut width = 0.0_f32;
+    let mut height = 0.0_f32;
+    for line in layout.lines().take(limit) {
+        let metrics = line.metrics();
+        width = width.max(metrics.advance);
+        height += metrics.line_height;
+    }
+    (width, height)
+}
+
 fn retain_glyph_runs(
     layout: &parley::Layout<[u8; 4]>,
     list: &mut DisplayList,
+    max_lines: Option<usize>,
 ) -> Vec<RetainedGlyphRun> {
     let mut retained = Vec::new();
     let transform = Affine::IDENTITY;
@@ -559,7 +584,7 @@ fn retain_glyph_runs(
         f64::from(layout.width()),
         f64::from(layout.height()),
     );
-    for line in layout.lines() {
+    for line in layout.lines().take(max_lines.unwrap_or(usize::MAX)) {
         for item in line.items() {
             let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
@@ -754,10 +779,30 @@ mod tests {
             parley::Layout::new()
         };
 
-        cache.measure(0, TextLayoutKey::new(Some(120.0), theme::FOREGROUND), build);
-        cache.measure(0, TextLayoutKey::new(Some(120.0), theme::FOREGROUND), build);
-        cache.measure(0, TextLayoutKey::new(Some(80.0), theme::FOREGROUND), build);
-        cache.measure(1, TextLayoutKey::new(Some(120.0), theme::FOREGROUND), build);
+        cache.measure(
+            0,
+            TextLayoutKey::new(Some(120.0), theme::FOREGROUND),
+            None,
+            build,
+        );
+        cache.measure(
+            0,
+            TextLayoutKey::new(Some(120.0), theme::FOREGROUND),
+            None,
+            build,
+        );
+        cache.measure(
+            0,
+            TextLayoutKey::new(Some(80.0), theme::FOREGROUND),
+            None,
+            build,
+        );
+        cache.measure(
+            1,
+            TextLayoutKey::new(Some(120.0), theme::FOREGROUND),
+            None,
+            build,
+        );
 
         assert_eq!(builds.get(), 3);
     }

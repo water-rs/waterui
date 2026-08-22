@@ -136,7 +136,7 @@ impl RenderNode {
                 text.alignment.get(),
                 env,
                 proposal.width,
-                None,
+                text.line_limit,
             ),
             RenderNode::Container(container) => {
                 let cell = RefCell::new(state);

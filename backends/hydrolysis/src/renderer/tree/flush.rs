@@ -44,7 +44,15 @@ impl RenderNode {
                 #[cfg(feature = "accessibility")]
                 renderer.pop_accessibility_owner();
                 let (state, scene) = renderer.state_and_scene_mut();
-                HydrolysisRenderer::render_styled_text(state, scene, ctx, styled, alignment, env);
+                HydrolysisRenderer::render_styled_text_limited(
+                    state,
+                    scene,
+                    ctx,
+                    styled,
+                    alignment,
+                    env,
+                    text.line_limit,
+                );
             }
             RenderNode::Container(container) => {
                 #[cfg(feature = "accessibility")]

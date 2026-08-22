@@ -37,6 +37,7 @@ impl RenderNode {
                     accessibility_identity: Rc::new(()),
                     content: config.content,
                     alignment: config.paragraph_alignment,
+                    line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
                 }));
             }
             Err(view) => view,
