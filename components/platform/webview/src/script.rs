@@ -293,7 +293,10 @@ mod tests {
     #[test]
     fn the_wrapped_form_returns_the_promise_for_the_backend_to_await() {
         let call = JsExpr::raw("document.title").wrapped_call();
-        assert!(call.starts_with("return globalThis.__wateruiEval("), "{call}");
+        assert!(
+            call.starts_with("return globalThis.__wateruiEval("),
+            "{call}"
+        );
         assert!(call.trim_end().ends_with(");"), "{call}");
     }
 }

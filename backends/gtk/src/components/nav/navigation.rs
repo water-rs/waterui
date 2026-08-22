@@ -221,7 +221,12 @@ impl GtkComponent for NavigationStack<(), ()> {
         bar_container.append(&header_bar);
 
         let back_button = gtk4::Button::with_label(
-            navigation_back_label().resolve(env).accessibility_label().get().to_plain().as_str(),
+            navigation_back_label()
+                .resolve(env)
+                .accessibility_label()
+                .get()
+                .to_plain()
+                .as_str(),
         );
         back_button.set_visible(false);
         let leading_slot = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);

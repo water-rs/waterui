@@ -1328,9 +1328,7 @@ impl NavigationView {
         if let Some(BarColor::Unresolved(color)) = &self.bar.color {
             let resolved_env = env.clone();
             self.bar.color = Some(BarColor::Resolved(flatten_signal(
-                color
-                    .clone()
-                    .map(move |color| color.resolve(&resolved_env)),
+                color.clone().map(move |color| color.resolve(&resolved_env)),
             )));
         }
     }

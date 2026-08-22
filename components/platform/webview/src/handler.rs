@@ -336,9 +336,7 @@ impl WeakWebViewHandle {
     /// Returns the handle, or `None` once the web view has been dropped.
     #[must_use]
     pub fn upgrade(&self) -> Option<AnyWebViewHandle> {
-        self.inner
-            .upgrade()
-            .map(|inner| AnyWebViewHandle { inner })
+        self.inner.upgrade().map(|inner| AnyWebViewHandle { inner })
     }
 }
 

@@ -39,8 +39,7 @@ pub(crate) fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
             frame.motion.fade_through_threshold,
         ),
         RetainedNavigationTransition::None => ResolvedNavigationTransitionFrame::IDENTITY,
-        RetainedNavigationTransition::Frames
-        | RetainedNavigationTransition::MatchedGeometry(_) => {
+        RetainedNavigationTransition::Frames | RetainedNavigationTransition::MatchedGeometry(_) => {
             frame.style.frame(progress, frame.direction)
         }
     };

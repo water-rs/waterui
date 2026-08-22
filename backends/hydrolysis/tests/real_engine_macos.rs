@@ -60,10 +60,12 @@ mod real {
 
     // The pages live with the shared webview crate because they exercise the
     // shared bridge contract; every real-engine suite loads the same ones.
-    const FIRST_HTML: &str = include_str!("../../../components/platform/webview/tests/pages/first.html");
+    const FIRST_HTML: &str =
+        include_str!("../../../components/platform/webview/tests/pages/first.html");
     const SECOND_HTML: &str =
         include_str!("../../../components/platform/webview/tests/pages/second.html");
-    const CHECKS_JS: &str = include_str!("../../../components/platform/webview/tests/pages/checks.js");
+    const CHECKS_JS: &str =
+        include_str!("../../../components/platform/webview/tests/pages/checks.js");
     const STATE_SEED_JS: &str =
         include_str!("../../../components/platform/webview/tests/pages/state_seed.js");
 
@@ -179,7 +181,9 @@ mod real {
         // The default policy an opened view resolves to: the origin it was
         // opened at, which is the local server. This is the policy under which
         // the bridge admits the pages below and refuses everything else.
-        let initial: Url = base.parse().expect("the local page server address is a URL");
+        let initial: Url = base
+            .parse()
+            .expect("the local page server address is a URL");
         handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Initial, &initial));
 
         RealEngine {
@@ -439,13 +443,12 @@ mod real {
         let engine = start(executor);
         engine.open("/first");
 
-        let answer = engine
-            .block_on(
-                engine
-                    .handle
-                    .call_async_javascript("return globalThis.__wateruiEval(async () => 6 * 7, []);"),
-            )
-            .expect("the awaiting evaluation path answers");
+        let answer =
+            engine
+                .block_on(engine.handle.call_async_javascript(
+                    "return globalThis.__wateruiEval(async () => 6 * 7, []);",
+                ))
+                .expect("the awaiting evaluation path answers");
         let envelope: Value = serde_json::from_str(&answer).unwrap_or_else(|error| {
             panic!("the wrapper's promise resolved to `{answer}`, not its JSON envelope: {error}")
         });
@@ -468,21 +471,27 @@ mod real {
         let engine = start(executor);
 
         let probe = |tag: &str| {
-            format!(
-                "(globalThis.__wateruiProbe = globalThis.__wateruiProbe || []).push({tag:?});"
-            )
+            format!("(globalThis.__wateruiProbe = globalThis.__wateruiProbe || []).push({tag:?});")
         };
-        engine
-            .handle
-            .inject_script("waterui:test-probe", &probe("stale"), ScriptInjectionTime::DocumentStart);
+        engine.handle.inject_script(
+            "waterui:test-probe",
+            &probe("stale"),
+            ScriptInjectionTime::DocumentStart,
+        );
         engine.open("/first");
-        engine
-            .handle
-            .inject_script("waterui:test-probe", &probe("current"), ScriptInjectionTime::DocumentStart);
+        engine.handle.inject_script(
+            "waterui:test-probe",
+            &probe("current"),
+            ScriptInjectionTime::DocumentStart,
+        );
         engine.open("/second");
 
         let recorded = engine
-            .block_on(engine.handle.run_javascript("JSON.stringify(globalThis.__wateruiProbe)"))
+            .block_on(
+                engine
+                    .handle
+                    .run_javascript("JSON.stringify(globalThis.__wateruiProbe)"),
+            )
             .expect("the probe array evaluates");
         let entries: Vec<String> = serde_json::from_str(&recorded)
             .unwrap_or_else(|error| panic!("the probe recorded `{recorded}`: {error}"));

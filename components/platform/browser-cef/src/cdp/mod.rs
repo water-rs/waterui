@@ -243,10 +243,7 @@ impl CefCdpSession {
     }
 
     /// Registers `watcher`; dropping the returned guard unregisters it.
-    pub(crate) fn watch_events(
-        &self,
-        watcher: impl Fn(&CefCdpEvent) + 'static,
-    ) -> WatcherGuard {
+    pub(crate) fn watch_events(&self, watcher: impl Fn(&CefCdpEvent) + 'static) -> WatcherGuard {
         self.state
             .event_watchers
             .insert(move |event: CefCdpEvent| watcher(&event))
