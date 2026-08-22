@@ -40,11 +40,15 @@ impl ColorStop {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let gradient = ctx.create_linear_gradient(0.0, 0.0, 100.0, 100.0);
+/// ```rust
+/// # use waterui_canvas::DrawingContext;
+/// # use waterui_graphics::color::Srgb;
+/// # fn draw(ctx: &mut DrawingContext<'_>) {
+/// let mut gradient = ctx.create_linear_gradient(0.0, 0.0, 100.0, 100.0);
 /// gradient.add_color_stop(0.0, Srgb::new(1.0, 0.0, 0.0));
 /// gradient.add_color_stop(1.0, Srgb::new(0.0, 0.0, 1.0));
 /// ctx.set_fill_style(gradient);
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct LinearGradient {
@@ -104,11 +108,15 @@ impl LinearGradient {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let gradient = ctx.create_radial_gradient(50.0, 50.0, 10.0, 50.0, 50.0, 50.0);
+/// ```rust
+/// # use waterui_canvas::DrawingContext;
+/// # use waterui_graphics::color::Srgb;
+/// # fn draw(ctx: &mut DrawingContext<'_>) {
+/// let mut gradient = ctx.create_radial_gradient(50.0, 50.0, 10.0, 50.0, 50.0, 50.0);
 /// gradient.add_color_stop(0.0, Srgb::new(1.0, 1.0, 1.0));
 /// gradient.add_color_stop(1.0, Srgb::new(0.0, 0.0, 0.0));
 /// ctx.set_fill_style(gradient);
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct RadialGradient {
@@ -178,12 +186,16 @@ impl RadialGradient {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let gradient = ctx.create_conic_gradient(0.0, 50.0, 50.0);
+/// ```rust
+/// # use waterui_canvas::DrawingContext;
+/// # use waterui_graphics::color::Srgb;
+/// # fn draw(ctx: &mut DrawingContext<'_>) {
+/// let mut gradient = ctx.create_conic_gradient(0.0, 50.0, 50.0);
 /// gradient.add_color_stop(0.0, Srgb::new(1.0, 0.0, 0.0));
 /// gradient.add_color_stop(0.5, Srgb::new(0.0, 1.0, 0.0));
 /// gradient.add_color_stop(1.0, Srgb::new(0.0, 0.0, 1.0));
 /// ctx.set_fill_style(gradient);
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct ConicGradient {

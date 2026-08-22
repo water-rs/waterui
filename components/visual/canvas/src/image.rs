@@ -17,7 +17,10 @@ use peniko;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # use waterui_canvas::{CanvasImage, DrawingContext, ImageError};
+/// # fn draw(ctx: &mut DrawingContext<'_>, png_data: &[u8]) -> Result<(), ImageError> {
 /// // Load from PNG bytes
 /// let image = CanvasImage::from_bytes(png_data)?;
 ///
@@ -25,7 +28,9 @@ use peniko;
 /// ctx.draw_image(&image, Point::new(10.0, 10.0));
 ///
 /// // Draw scaled
-/// ctx.draw_image_scaled(&image, Rect::new(Point::ZERO, Size::new(200.0, 150.0)));
+/// ctx.draw_image_scaled(&image, Rect::new(Point::zero(), Size::new(200.0, 150.0)));
+/// # Ok(())
+/// # }
 /// ```
 pub struct CanvasImage {
     /// Internal peniko image (not exposed to users)
