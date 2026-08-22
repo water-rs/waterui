@@ -5,8 +5,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
+  # rust-cache is the only cache layer (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
 
@@ -15,34 +14,27 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
-    # The Windows leg rotted while compilation was broken and currently has 25
-    # known-failing tests across independent defect classes — tracked in
-    # https://github.com/water-rs/waterui/issues/152. It reports but does not
-    # gate until that issue is closed; remove `experimental` there, not here.
-    continue-on-error: ${{ matrix.experimental }}
     strategy:
-      # Report every platform in one run. Cancelling the other two hides their
+      # Report every platform in one run. Cancelling the other hides its
       # results, so a cross-platform break costs one round trip per platform.
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            experimental: false
-          - os: windows-latest
-            experimental: true
-          - os: macos-latest
-            experimental: false
+        # Windows is not here: it does not gate (25 known failures, #152) yet
+        # was the longest leg, so it defined the critical path of a run that
+        # could not act on its result. It runs on a schedule in `windows.yml`.
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      # clippy is here for the macOS-only CEF real-engine target at the end of
-      # this job: it cannot be linted by ci.yml's Linux lint job the way its WPE
-      # sibling is, because CEF requires a macOS application bundle and the
-      # target refuses to compile anywhere else.
+      # rustfmt and clippy run in the Linux leg below; clippy is additionally
+      # needed by the macOS-only CEF real-engine target at the end of this job,
+      # which cannot be linted on Linux the way its WPE sibling is, because CEF
+      # requires a macOS application bundle and the target refuses to compile
+      # anywhere else.
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       # GPU snapshot tests run in this job, so this leg needs the Vulkan ICD
       # loader (mesa-vulkan-drivers/libvulkan1) on top of the base package
       # list — that's what lets llvmpipe/lavapipe stand in for a real GPU on
@@ -52,40 +44,34 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-      - name: Install DirectX Shader Compiler
-        if: runner.os == 'Windows'
-        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
-      - name: Verify DirectX Shader Compiler
-        if: runner.os == 'Windows'
-        run: dxc --version
-      - uses: mozilla/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
           cache-on-failure: true
+      # Lint before testing: it is the cheapest failure to produce, and the one
+      # a contributor is most likely to hit, so it should not wait behind the
+      # whole test run. Linux only — the macOS leg has its own CEF lint below.
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+      # Two passes, split for the same structural reason as the two test
+      # passes below: workspace-wide under default features, then the root
+      # crate alone with every feature on.
+      - name: Clippy (workspace)
+        if: runner.os == 'Linux'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (all features)
+        if: runner.os == 'Linux'
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      # The WPE real-engine tests sit behind a feature, because running them
+      # needs a staged WPE WebKit runtime that only `browser-wpe.yml` provisions
+      # — and that workflow only fires on the paths those tests cover. Neither
+      # pass above compiles them, so lint them here: compiling them costs
+      # nothing extra and keeps them from rotting between real-engine runs.
+      - name: Clippy (WPE real engine)
+        if: runner.os == 'Linux'
+        run: cargo clippy -p waterui-browser-wpe --features real-engine --all-targets -- -D warnings
       - uses: taiki-e/install-action@nextest
-      # Two crates cannot build in the Windows job, for reasons that are not
-      # bugs:
-      #
-      # waterui-dylib is the dynamic-link anchor — a Rust `dylib` on purpose, so
-      # the preview system can share one copy of the framework across
-      # dynamically loaded preview libraries. That exports every Rust symbol,
-      # 290k of them, and a PE export table stops at 65535. The preview system
-      # targets macOS, the iOS Simulator and Android, not Windows.
-      #
-      # waterui-browser-cef links cef_sandbox from a CEF binary distribution the
-      # runner does not stage. It is still compiled below, through the crate's
-      # own `compile-only` feature, which its build script honours ahead of
-      # `cef-runtime` for exactly this case — so Windows keeps compile coverage
-      # of the backend without provisioning the SDK.
-      - name: Select workspace members
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            echo "WORKSPACE_EXCLUDES=--exclude waterui-dylib --exclude waterui-browser-cef" >> "$GITHUB_ENV"
-          else
-            echo "WORKSPACE_EXCLUDES=" >> "$GITHUB_ENV"
-          fi
       # One full-workspace pass under default features. A workspace-wide
       # `--all-features` pass is structurally impossible here — hydrolysis
       # enforces "exactly one WebView engine" with a `compile_error!`
@@ -95,28 +81,20 @@ jobs:
       # the root manifest has both `[workspace]` and `[package]`, so without
       # `--workspace` cargo narrowed it to the root `waterui` crate — the only
       # crate whose features are all mutually compatible.
-      - shell: bash
-        run: cargo nextest run --workspace $WORKSPACE_EXCLUDES --profile ci
+      - run: cargo nextest run --workspace --profile ci
       # The root crate's feature-gated re-export surface, with every feature
       # on. Root-crate-only scope is intentional (see above); most of the
       # build is shared with the workspace pass, so this increment is cheap.
-      - shell: bash
-        run: cargo nextest run --all-features --profile ci
-      # Compile the CEF backend on Windows without its binary distribution.
-      - if: runner.os == 'Windows'
-        shell: bash
-        run: cargo check -p waterui-browser-cef --features compile-only
+      - run: cargo nextest run --all-features --profile ci
       # The macOS real-engine suite drives a genuine WKWebView through the
       # shared bridge contract — the macOS sibling of the WPE real-engine
       # workflow. It is `harness = false` (WKWebView is MainThreadOnly, and
       # libtest runs tests on worker threads), so nextest cannot list it;
       # `cargo test` runs the binary on the real process main thread.
       - if: runner.os == 'macOS'
-        shell: bash
         run: cargo test -p hydrolysis --features webview-system,winit --test real_engine_macos
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - shell: bash
-        run: cargo test --doc --workspace $WORKSPACE_EXCLUDES
+      - run: cargo test --doc --workspace
       # The web view bridge has broken three times in ways no Rust-side test
       # could see, so these drive a real Chromium. Unlike the WPE sibling in
       # `browser-wpe.yml`, which compiles an engine from source for hours, CEF

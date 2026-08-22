@@ -38,8 +38,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
+  # rust-cache is the only cache layer (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
 
 jobs:
@@ -60,7 +59,6 @@ jobs:
       - uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-      - uses: mozilla/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: browser-wpe
