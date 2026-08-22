@@ -9,7 +9,8 @@ use waterui::theme::{
     ColorScheme,
     color::{
         Accent, AccentContainer, AccentForeground, Background, Border, Foreground, MutedForeground,
-        Surface, SurfaceVariant, Tertiary, TertiaryContainer,
+        SelectionContainer, SelectionForeground, Surface, SurfaceVariant, Tertiary,
+        TertiaryContainer,
     },
     install_color_scheme, install_color_signal, installed_color_scheme, installed_color_signal,
 };
@@ -28,6 +29,8 @@ struct Palette {
     accent_foreground: Binding<ResolvedColor>,
     tertiary: Binding<ResolvedColor>,
     tertiary_container: Binding<ResolvedColor>,
+    selection_container: Binding<ResolvedColor>,
+    selection_foreground: Binding<ResolvedColor>,
 }
 
 /// Installs GTK's named system colors and keeps them synchronized with theme changes.
@@ -45,6 +48,8 @@ pub fn install(env: &mut Environment, widget: &Widget) {
     install_missing::<AccentForeground>(env, &palette.accent_foreground);
     install_missing::<Tertiary>(env, &palette.tertiary);
     install_missing::<TertiaryContainer>(env, &palette.tertiary_container);
+    install_missing::<SelectionContainer>(env, &palette.selection_container);
+    install_missing::<SelectionForeground>(env, &palette.selection_foreground);
 
     if installed_color_scheme(env).is_none() {
         let scheme = binding(system_scheme(&settings));
@@ -87,6 +92,8 @@ impl Palette {
             accent_foreground: binding(lookup(widget, "theme_selected_fg_color")),
             tertiary: binding(accent),
             tertiary_container: binding(with_opacity(accent, 0.2)),
+            selection_container: binding(accent),
+            selection_foreground: binding(lookup(widget, "theme_selected_fg_color")),
         }
     }
 
@@ -106,6 +113,9 @@ impl Palette {
             .set(lookup(widget, "theme_selected_fg_color"));
         self.tertiary.set(accent);
         self.tertiary_container.set(with_opacity(accent, 0.2));
+        self.selection_container.set(accent);
+        self.selection_foreground
+            .set(lookup(widget, "theme_selected_fg_color"));
     }
 }
 

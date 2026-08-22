@@ -316,6 +316,14 @@ typedef enum WuiColorSlot {
    * Container color associated with the tertiary accent.
    */
   WuiColorSlot_TertiaryContainer = 10,
+  /**
+   * The fill a platform paints behind a selected item.
+   */
+  WuiColorSlot_SelectionContainer = 11,
+  /**
+   * Foreground drawn on the selection container.
+   */
+  WuiColorSlot_SelectionForeground = 12,
 } WuiColorSlot;
 
 /**

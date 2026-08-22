@@ -834,6 +834,8 @@ fn color_slot(slot: jint) -> crate::theme::WuiColorSlot {
         8 => crate::theme::WuiColorSlot::AccentContainer,
         9 => crate::theme::WuiColorSlot::Tertiary,
         10 => crate::theme::WuiColorSlot::TertiaryContainer,
+        11 => crate::theme::WuiColorSlot::SelectionContainer,
+        12 => crate::theme::WuiColorSlot::SelectionForeground,
         value => panic!("unknown color slot ordinal: {value}"),
     }
 }
