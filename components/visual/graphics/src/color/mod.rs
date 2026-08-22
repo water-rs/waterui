@@ -715,6 +715,14 @@ environment_color!(
     TertiaryContainerColor,
     "Tertiary-container color key for environment queries."
 );
+environment_color!(
+    SelectionContainerColor,
+    "Selection-container color key for environment queries."
+);
+environment_color!(
+    SelectionForegroundColor,
+    "Selection-foreground color key for environment queries."
+);
 
 /// Implements `View` for a color type, allowing it to be used directly as a background.
 macro_rules! impl_color_view {
