@@ -975,29 +975,66 @@ pub async fn package_feature_enabled(
     Ok(enabled)
 }
 
-/// Optional `WaterUI` capabilities that are cargo features on both the facade and
-/// the FFI crate, paired so a build can forward the app's choice to the FFI
-/// crate that actually exports the C surface.
+/// Optional `WaterUI` capabilities: each is a cargo feature on the crate that
+/// actually provides the capability, paired with the same-named feature on the
+/// FFI crate so a build can forward the graph's reality to the C surface.
+///
+/// The source of truth is the *providing* crate, not the facade toggle. An app
+/// that sets `waterui = { default-features = false }` can still pull the GPU
+/// stack in through a side door — every SVG icon pack renders through
+/// `waterui-svg`, which enables `waterui-graphics/gpu` on its own — and such an
+/// app emits `GpuSurface` views at runtime. Keying on the facade's `gpu` there
+/// pruned the FFI exports and the native backend while the authoring layer kept
+/// producing GPU views, which is a guaranteed panic on first render. Reading
+/// the resolved graph's `waterui-graphics/gpu` instead makes the exported
+/// surface follow what the app can actually express.
+///
 /// `gpu` is default-on for the facade, but the generated FFI crate must set
 /// `default-features = false` (the `c-api` and `android-jni` ABIs are mutually
 /// exclusive), which drops it. Forwarding it here is what keeps the GPU C
-/// surface present for apps that did not opt out.
-const OPTIONAL_CAPABILITIES: &[&str] = &["gpu", "map"];
+/// surface present for apps whose graphs carry the GPU stack.
+const OPTIONAL_CAPABILITIES: &[(&str, &str, &str)] = &[
+    ("gpu", "waterui-graphics", "gpu"),
+    ("map", "waterui", "map"),
+];
+
+/// Returns whether this app's resolved graph carries the named capability.
+///
+/// This is the one predicate every consumer of a capability must share: the
+/// FFI build forwards the capability's feature, and the native backend build
+/// compiles the matching components, from this same answer. The FFI features
+/// are passed on the build command line rather than written into the
+/// generated manifest, so re-resolving `waterui-ffi`'s own features from the
+/// manifest graph would always read them as off — the backend then prunes
+/// components whose symbols the dylib does export.
+///
+/// # Errors
+///
+/// Returns an error when `cargo metadata` cannot be read.
+pub async fn capability_enabled(project: &Project, capability: &str) -> eyre::Result<bool> {
+    let (_, source_package, source_feature) = OPTIONAL_CAPABILITIES
+        .iter()
+        .find(|(name, _, _)| *name == capability)
+        .unwrap_or_else(|| panic!("unknown WaterUI capability: {capability}"));
+    package_feature_enabled(project, source_package, source_feature).await
+}
 
 /// Returns the `waterui-ffi` features to enable for this app's capabilities.
 ///
-/// An app opts into a capability on the facade (`waterui = { features =
-/// ["map"] }`). The generated FFI crate is what exports that capability's C
-/// surface, so the same choice has to reach its build; reading it back out of
-/// the resolved graph keeps one declaration in the app's manifest.
+/// An app opts into a capability through its dependency graph — a facade
+/// feature (`waterui = { features = ["map"] }`) or a crate that carries the
+/// capability with it (an SVG icon pack carries `waterui-graphics/gpu`). The
+/// generated FFI crate is what exports that capability's C surface, so the
+/// resolved graph's choice has to reach its build; reading it back out keeps
+/// one declaration in the app's manifest.
 ///
 /// # Errors
 ///
 /// Returns an error when `cargo metadata` cannot be read.
 pub async fn capability_ffi_features(project: &Project) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
-    for capability in OPTIONAL_CAPABILITIES {
-        if package_feature_enabled(project, "waterui", capability).await? {
+    for (capability, _, _) in OPTIONAL_CAPABILITIES {
+        if capability_enabled(project, capability).await? {
             features.push(format!("waterui-ffi/{capability}"));
         }
     }
