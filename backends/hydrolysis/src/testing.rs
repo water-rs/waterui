@@ -31,7 +31,9 @@ pub fn install_theme(env: &mut Environment) {
                 .accent_container(color(0xDB_EA_FE))
                 .accent_foreground(color(0xFF_FF_FF))
                 .tertiary(color(0x7C_3A_ED))
-                .tertiary_container(color(0xED_E9_FE)),
+                .tertiary_container(color(0xED_E9_FE))
+                .selection_container(color(0x25_63_EB))
+                .selection_foreground(color(0xFF_FF_FF)),
         )
         .fonts(
             FontSettings::new()

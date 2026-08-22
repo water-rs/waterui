@@ -73,6 +73,8 @@
 //! - `AccentForeground` - Text on accent backgrounds
 //! - `Tertiary` - Contrasting accent for complementary emphasis
 //! - `TertiaryContainer` - Container backgrounds associated with the tertiary color
+//! - `SelectionContainer` - Fill painted behind a selected item
+//! - `SelectionForeground` - Content drawn on the selection container
 //!
 //! **Fonts**: Use standard font tokens from `waterui::text::font`:
 //! - `Body`, `Title`, `Headline`, `Subheadline`, `Caption`, `Footnote`
@@ -170,6 +172,8 @@ pub struct ColorSettings {
     accent_foreground: Option<Computed<ResolvedColor>>,
     tertiary: Option<Computed<ResolvedColor>>,
     tertiary_container: Option<Computed<ResolvedColor>>,
+    selection_container: Option<Computed<ResolvedColor>>,
+    selection_foreground: Option<Computed<ResolvedColor>>,
 }
 
 impl ColorSettings {
@@ -256,6 +260,20 @@ impl ColorSettings {
         self
     }
 
+    /// Sets the fill painted behind a selected item.
+    #[must_use]
+    pub fn selection_container(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+        self.selection_container = Some(color.into_signal().computed());
+        self
+    }
+
+    /// Sets the foreground drawn on the selection container.
+    #[must_use]
+    pub fn selection_foreground(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+        self.selection_foreground = Some(color.into_signal().computed());
+        self
+    }
+
     /// Installs the color settings into the environment.
     /// Only non-None fields are installed.
     fn install(self, env: &mut Environment) {
@@ -291,6 +309,12 @@ impl ColorSettings {
         }
         if let Some(signal) = self.tertiary_container {
             install_color_signal::<color::TertiaryContainer>(env, signal);
+        }
+        if let Some(signal) = self.selection_container {
+            install_color_signal::<color::SelectionContainer>(env, signal);
+        }
+        if let Some(signal) = self.selection_foreground {
+            install_color_signal::<color::SelectionForeground>(env, signal);
         }
     }
 }
@@ -540,6 +564,14 @@ pub mod color {
         TertiaryContainer,
         "Container color associated with the tertiary accent."
     );
+    define_color_token!(
+        SelectionContainer,
+        "The fill a platform paints behind a selected item."
+    );
+    define_color_token!(
+        SelectionForeground,
+        "Foreground drawn on the selection container."
+    );
 }
 
 // ============================================================================
@@ -653,6 +685,14 @@ pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<
     mirror_graphics_color!(
         color::TertiaryContainer,
         waterui_graphics::color::TertiaryContainerColor
+    );
+    mirror_graphics_color!(
+        color::SelectionContainer,
+        waterui_graphics::color::SelectionContainerColor
+    );
+    mirror_graphics_color!(
+        color::SelectionForeground,
+        waterui_graphics::color::SelectionForegroundColor
     );
 }
 

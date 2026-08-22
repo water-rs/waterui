@@ -321,6 +321,18 @@ mod tests {
             scheme.tertiary_container.resolved(),
         );
         assert_resolved_color_eq(
+            installed_color_signal::<theme_color::SelectionContainer>(&env)
+                .expect("selection-container token should be installed")
+                .get(),
+            scheme.secondary_container.resolved(),
+        );
+        assert_resolved_color_eq(
+            installed_color_signal::<theme_color::SelectionForeground>(&env)
+                .expect("selection-foreground token should be installed")
+                .get(),
+            scheme.on_secondary_container.resolved(),
+        );
+        assert_resolved_color_eq(
             installed_color_signal::<theme_color::Surface>(&env)
                 .expect("surface token should be installed")
                 .get(),

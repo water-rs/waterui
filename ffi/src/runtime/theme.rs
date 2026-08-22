@@ -178,6 +178,10 @@ pub enum WuiColorSlot {
     Tertiary = 9,
     /// Container color associated with the tertiary accent.
     TertiaryContainer = 10,
+    /// The fill a platform paints behind a selected item.
+    SelectionContainer = 11,
+    /// Foreground drawn on the selection container.
+    SelectionForeground = 12,
 }
 
 /// Installs a color signal for a specific slot.
@@ -221,6 +225,12 @@ pub unsafe extern "C" fn waterui_theme_install_color(
         WuiColorSlot::TertiaryContainer => {
             install_color_signal::<color::TertiaryContainer>(env, computed);
         }
+        WuiColorSlot::SelectionContainer => {
+            install_color_signal::<color::SelectionContainer>(env, computed);
+        }
+        WuiColorSlot::SelectionForeground => {
+            install_color_signal::<color::SelectionForeground>(env, computed);
+        }
     }
 }
 
@@ -251,6 +261,8 @@ pub unsafe extern "C" fn waterui_theme_color(
         WuiColorSlot::AccentContainer => color::AccentContainer.resolve(env).computed(),
         WuiColorSlot::Tertiary => color::Tertiary.resolve(env).computed(),
         WuiColorSlot::TertiaryContainer => color::TertiaryContainer.resolve(env).computed(),
+        WuiColorSlot::SelectionContainer => color::SelectionContainer.resolve(env).computed(),
+        WuiColorSlot::SelectionForeground => color::SelectionForeground.resolve(env).computed(),
     };
 
     computed.into_ffi()

@@ -338,11 +338,14 @@ fn resolve_item_section(mut item: ListItem, env: &Environment) -> ListItem {
 
 /// Re-themes a row's content while it is selected.
 ///
-/// The platform paints a selected row with the accent color, and everything the
-/// row draws on top of it flips to the on-accent color — the way the platforms'
-/// own lists flip a selected row's labels. Anything the row resolves through
-/// the theme's foreground, muted-foreground, or accent slots follows the
-/// `selected` signal reactively; the row itself is not rebuilt.
+/// A selected row is filled with the theme's `SelectionContainer`, so everything
+/// the row draws on top of it flips to `SelectionForeground` — the way the
+/// platforms' own lists flip a selected row's labels. The pair is a slot each
+/// backend owns, because the selection fill is not the accent color everywhere:
+/// Material tints the row with a tonal container and writes its own on-container
+/// color over it. Anything the row resolves through the theme's foreground,
+/// muted-foreground, or accent slots follows the `selected` signal reactively;
+/// the row itself is not rebuilt.
 fn selection_themed(mut item: ListItem) -> ListItem {
     use crate::color::ResolvedColor;
     use crate::theme::{color, install_color_signal};
@@ -353,13 +356,13 @@ fn selection_themed(mut item: ListItem) -> ListItem {
     let selected = item.selected.clone();
     let content = core::mem::take(&mut item.content);
     item.content = AnyView::new(use_env(move |mut env: Environment| {
-        let on_accent = color::AccentForeground.resolve(&env).computed();
+        let on_selection = color::SelectionForeground.resolve(&env).computed();
         let flip = |normal: Computed<ResolvedColor>| {
             selected
                 .clone()
                 .zip(&normal)
-                .zip(&on_accent)
-                .map(|((selected, normal), on_accent)| if selected { on_accent } else { normal })
+                .zip(&on_selection)
+                .map(|((selected, normal), selection)| if selected { selection } else { normal })
                 .computed()
         };
         let foreground = flip(color::Foreground.resolve(&env).computed());

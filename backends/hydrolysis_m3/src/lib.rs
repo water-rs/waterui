@@ -279,7 +279,9 @@ pub fn install_with_colors(env: &mut Environment, colors: MaterialColorScheme) {
                 .accent_foreground(colors.on_primary.resolved())
                 .accent_container(colors.primary_container.resolved())
                 .tertiary(colors.tertiary.resolved())
-                .tertiary_container(colors.tertiary_container.resolved()),
+                .tertiary_container(colors.tertiary_container.resolved())
+                .selection_container(colors.secondary_container.resolved())
+                .selection_foreground(colors.on_secondary_container.resolved()),
         )
         .install(env);
     theme::typography::install_defaults(env);
@@ -300,83 +302,7 @@ fn install_dynamic_defaults(
         Theme::new().color_scheme(scheme.clone()).install(env);
         scheme
     });
-    install_dynamic_color_signal::<waterui_theme::color::Background>(
-        env,
-        &scheme,
-        light,
-        dark,
-        |colors| colors.background,
-    );
-    install_dynamic_color_signal::<waterui_theme::color::Surface>(
-        env,
-        &scheme,
-        light,
-        dark,
-        |colors| colors.surface,
-    );
-    install_dynamic_color_signal::<waterui_theme::color::SurfaceVariant>(
-        env,
-        &scheme,
-        light,
-        dark,
-        |colors| colors.surface_variant,
-    );
-    install_dynamic_color_signal::<waterui_theme::color::Border>(
-        env,
-        &scheme,
-        light,
-        dark,
-        |colors| colors.outline,
-    );
-    install_dynamic_color_signal::<waterui_theme::color::Foreground>(
-        env,
-        &scheme,
-        light,
-        dark,
-        |colors| colors.on_surface,
-    );
-    install_dynamic_color_signal::<waterui_theme::color::MutedForeground>(
-        env,
-        &scheme,
-        light,
-        dark,
-        |colors| colors.on_surface_variant,
-    );
-    install_dynamic_color_signal::<waterui_theme::color::Accent>(
-        env,
-        &scheme,
-        light,
-        dark,
-        |colors| colors.primary,
-    );
-    install_dynamic_color_signal::<waterui_theme::color::AccentForeground>(
-        env,
-        &scheme,
-        light,
-        dark,
-        |colors| colors.on_primary,
-    );
-    install_dynamic_color_signal::<waterui_theme::color::AccentContainer>(
-        env,
-        &scheme,
-        light,
-        dark,
-        |colors| colors.primary_container,
-    );
-    install_dynamic_color_signal::<waterui_theme::color::Tertiary>(
-        env,
-        &scheme,
-        light,
-        dark,
-        |colors| colors.tertiary,
-    );
-    install_dynamic_color_signal::<waterui_theme::color::TertiaryContainer>(
-        env,
-        &scheme,
-        light,
-        dark,
-        |colors| colors.tertiary_container,
-    );
+    install_dynamic_color_tokens(env, &scheme, light, dark);
     theme::typography::install_defaults(env);
     let initial = material_scheme_for_color_scheme(light, dark, scheme.get());
     env.insert(initial);
@@ -391,6 +317,45 @@ fn install_dynamic_defaults(
     env.insert(
         Box::new(MaterialTheme::with_color_schemes(light, dark, scheme)) as Box<dyn WidgetTheme>,
     );
+}
+
+/// Projects each `WaterUI` color token onto the Material role that carries it,
+/// as a signal that re-resolves when the color scheme flips.
+fn install_dynamic_color_tokens(
+    env: &mut Environment,
+    scheme: &Computed<ColorScheme>,
+    light: MaterialColorScheme,
+    dark: MaterialColorScheme,
+) {
+    macro_rules! install {
+        ($($token:ident => $role:ident),* $(,)?) => {
+            $(
+                install_dynamic_color_signal::<waterui_theme::color::$token>(
+                    env,
+                    scheme,
+                    light,
+                    dark,
+                    |colors| colors.$role,
+                );
+            )*
+        };
+    }
+
+    install! {
+        Background => background,
+        Surface => surface,
+        SurfaceVariant => surface_variant,
+        Border => outline,
+        Foreground => on_surface,
+        MutedForeground => on_surface_variant,
+        Accent => primary,
+        AccentForeground => on_primary,
+        AccentContainer => primary_container,
+        Tertiary => tertiary,
+        TertiaryContainer => tertiary_container,
+        SelectionContainer => secondary_container,
+        SelectionForeground => on_secondary_container,
+    }
 }
 
 fn install_dynamic_color_signal<T: 'static>(

@@ -248,8 +248,8 @@ BRAND.with_opacity(0.5)
 ```
 
 Theme colors: `Foreground`, `MutedForeground`, `Accent`, `AccentContainer`,
-`AccentForeground`, `Tertiary`, `TertiaryContainer`, `Background`, `Surface`,
-`SurfaceVariant`, `Border`
+`AccentForeground`, `Tertiary`, `TertiaryContainer`, `SelectionContainer`,
+`SelectionForeground`, `Background`, `Surface`, `SurfaceVariant`, `Border`
 
 ## Icons
 
