@@ -83,6 +83,55 @@ impl ResourceFontFamilies {
     }
 }
 
+/// Replaces the renderer's font collection with the bundled deterministic set.
+///
+/// Test text used to shape against whatever the host OS discovered, so a
+/// layout assertion tuned on one platform's metrics failed on another's fonts
+/// and every snapshot golden was platform-specific. The test hosts shape with
+/// exactly the Roboto files under `testing/fonts` instead — system discovery
+/// off, identical metrics on every runner. Characters outside Roboto's
+/// coverage shape as missing glyphs on purpose: a test that needs another
+/// script should say so loudly rather than silently depending on the host's
+/// fallback set.
+#[cfg(any(test, feature = "testing"))]
+pub(crate) fn install_deterministic_test_fonts(renderer: &mut crate::renderer::HydrolysisRenderer) {
+    use parley::fontique::{Blob, CollectionOptions};
+    use std::sync::Arc;
+
+    const FONTS: &[(&str, &[u8])] = &[
+        (
+            "Roboto-Regular.ttf",
+            include_bytes!("../../../../testing/fonts/Roboto-Regular.ttf"),
+        ),
+        (
+            "Roboto-Medium.ttf",
+            include_bytes!("../../../../testing/fonts/Roboto-Medium.ttf"),
+        ),
+        (
+            "Roboto-Bold.ttf",
+            include_bytes!("../../../../testing/fonts/Roboto-Bold.ttf"),
+        ),
+        (
+            "Roboto-Italic.ttf",
+            include_bytes!("../../../../testing/fonts/Roboto-Italic.ttf"),
+        ),
+    ];
+
+    let font_cx = renderer.state_mut().text_fonts_mut();
+    font_cx.collection = Collection::new(CollectionOptions {
+        system_fonts: false,
+        ..CollectionOptions::default()
+    });
+    let mut resource_fonts = ResourceFontFamilies::default();
+    for (name, bytes) in FONTS {
+        let families = font_cx
+            .collection
+            .register_fonts(Blob::new(Arc::new(*bytes)), None);
+        resource_fonts.classify(name, &families);
+    }
+    resource_fonts.install(&mut font_cx.collection);
+}
+
 /// Register every `.ttf`/`.otf` under the app's `resources/fonts` directories
 /// and install the recognized script fallbacks.
 #[cfg(not(target_arch = "wasm32"))]

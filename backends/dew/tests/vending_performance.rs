@@ -50,36 +50,16 @@ const WARMUP_FRAMES: usize = 120;
 const DEFAULT_SAMPLE_FRAMES: usize = 3_600;
 const INTERACTION_PERIOD: usize = 120;
 
-/// Host font files standing in for the flash-bundled face, first hit wins.
+/// The flash-bundled face the simulated board ships, bundled for real.
 ///
-/// The simulated board bundles one real font exactly like firmware does —
-/// system enumeration stays off, so font matching, generic-family routing,
-/// and the heap profile follow the target's font path instead of the host's.
-/// Override with `DEW_PERF_FONT=/path/to/font.ttf` when none of these exist.
-const HOST_FONT_CANDIDATES: &[&str] = &[
-    // macOS.
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-    // Debian/Ubuntu CI images.
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    // Fedora.
-    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-];
-
-/// Loads the stand-in bundled font, failing fast with instructions.
+/// This used to probe the host for Arial or `DejaVu`, so the shaping work — and
+/// therefore the work budgets below — depended on which OS ran the test:
+/// numbers calibrated against one host's font tripped the gate on another's
+/// (issue #153). The repository's deterministic test font is compiled in
+/// instead, exactly the way firmware bundles its face: system enumeration
+/// stays off, and every platform shapes the same glyphs from the same tables.
 fn load_simulation_font() -> Vec<u8> {
-    if let Ok(path) = std::env::var("DEW_PERF_FONT") {
-        return std::fs::read(&path)
-            .unwrap_or_else(|error| panic!("DEW_PERF_FONT {path} is unreadable: {error}"));
-    }
-    HOST_FONT_CANDIDATES
-        .iter()
-        .find_map(|path| std::fs::read(path).ok())
-        .unwrap_or_else(|| {
-            panic!(
-                "no host font found at any of {HOST_FONT_CANDIDATES:?}; set \
-                 DEW_PERF_FONT=/path/to/font.ttf"
-            )
-        })
+    include_bytes!("../../../testing/fonts/Roboto-Regular.ttf").to_vec()
 }
 
 /// Steady-state heap retention tolerated, in bytes per sampled frame.

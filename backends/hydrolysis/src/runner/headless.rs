@@ -215,6 +215,10 @@ pub struct HeadlessRuntime {
     pending_window_queue: Rc<RefCell<Vec<Window>>>,
     popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow>>,
     create_platform: fn(u32, u32, wgpu::TextureFormat) -> HeadlessPlatformWindow,
+    /// Popup windows get their own renderer, which must shape with the same
+    /// fonts as the main one — deterministic bundled fonts under a test host,
+    /// the app's resource fonts everywhere else.
+    install_fonts: fn(&mut HydrolysisRenderer),
     local_executor: HeadlessMainThreadExecutor,
     /// Declared last so it drops after the runtime state above: consumes any
     /// still-queued spawned work while this thread's locals are intact, so no
@@ -242,7 +246,14 @@ impl HeadlessRuntime {
         width: u32,
         height: u32,
     ) -> Self {
-        Self::new_with_platform_window(env, content, width, height, HeadlessPlatformWindow::new)
+        Self::new_with_platform_window(
+            env,
+            content,
+            width,
+            height,
+            HeadlessPlatformWindow::new,
+            load_native_resource_fonts,
+        )
     }
 
     /// Renders at `scale_factor` physical pixels per logical pixel.
@@ -260,7 +271,8 @@ impl HeadlessRuntime {
     ///
     /// This constructor allows compute-capable software adapters for CI-only
     /// semantic testing while keeping [`Self::new`] on production adapter
-    /// selection.
+    /// selection, and shapes text with the bundled deterministic fonts so
+    /// layout assertions and snapshot goldens hold on every platform's runner.
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub fn new_for_tests(
@@ -275,6 +287,7 @@ impl HeadlessRuntime {
             width,
             height,
             HeadlessPlatformWindow::new_for_tests,
+            super::fonts::install_deterministic_test_fonts,
         )
     }
 
@@ -284,6 +297,7 @@ impl HeadlessRuntime {
         width: u32,
         height: u32,
         create_platform: fn(u32, u32, wgpu::TextureFormat) -> HeadlessPlatformWindow,
+        install_fonts: fn(&mut HydrolysisRenderer),
     ) -> Self {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
@@ -332,7 +346,7 @@ impl HeadlessRuntime {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.device())
         };
-        load_native_resource_fonts(&mut renderer);
+        install_fonts(&mut renderer);
 
         Self {
             env,
@@ -349,6 +363,7 @@ impl HeadlessRuntime {
             pending_window_queue,
             popup_windows: Vec::new(),
             create_platform,
+            install_fonts,
             _executor_teardown: DrainExecutorOnDrop(local_executor.clone()),
             local_executor,
         }
@@ -364,7 +379,7 @@ impl HeadlessRuntime {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.device())
         };
-        load_native_resource_fonts(&mut renderer);
+        (self.install_fonts)(&mut renderer);
         RuntimeWindow::new(
             window,
             platform,

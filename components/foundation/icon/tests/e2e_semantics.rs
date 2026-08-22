@@ -6,7 +6,9 @@ use waterui_icon::IconGlyph;
 use waterui_testing::{Role, SemanticApp};
 
 fn icon_glyph_view() -> impl waterui::View {
-    IconGlyph::new('\u{2605}', "Helvetica")
+    // Roboto is the deterministic family every test host bundles; a system
+    // family here would resolve on one OS and not the next.
+    IconGlyph::new('\u{2605}', "Roboto")
         .with_size(24.0)
         .a11y_role(AccessibilityRole::Image)
         .a11y_label("Glyph icon")
