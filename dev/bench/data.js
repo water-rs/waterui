@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787358486605,
+  "lastUpdate": 1787358488684,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -397,6 +397,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 13310,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "committer": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "distinct": true,
+          "id": "2434e0ea9d7faa2c0bfae0f074b8669a16e800da",
+          "message": "fix(str): make Debug print the string instead of the tagged representation\n\nStr derived Debug on a struct whose fields are a raw pointer and a length\nthat is negative whenever the string is owned, so {:?} produced\nStr { ptr: .., len: -9 }. Every other string type prints its contents,\nand this is unreadable exactly where Debug earns its keep: assertion\nfailures, tracing fields, and the {:?} of any type that holds one. It\ncost a diagnostic round trip while writing the CEF real-engine tests.\n\nNow delegates to str, with a test pinning both representations so the\nderive cannot come back.",
+          "timestamp": "2026-08-21T19:31:40-04:00",
+          "tree_id": "b46cea4c6bed30d3c878119495f79e96309b458f",
+          "url": "https://github.com/water-rs/waterui/commit/2434e0ea9d7faa2c0bfae0f074b8669a16e800da"
+        },
+        "date": 1787358488133,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 713145,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 551368,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 22427,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 15876,
             "unit": "us"
           }
         ]
