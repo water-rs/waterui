@@ -22,7 +22,7 @@ use waterui::navigation::{
     AnyNavigationTransition, Bar, NavigationDestinationState,
     NavigationSearch, NavigationSplitLayout, NavigationStack, NavigationTitleDisplayMode,
     NavigationToolbarPlacement, NavigationTransitionDirection, NavigationView,
-    RetainedNavigationTransition, navigation_back_label, resolve_navigation_root,
+    RetainedNavigationTransition, resolve_navigation_root,
 };
 use waterui::theme::color::{Background, Surface};
 use waterui_controls::text_field::TextField;
