@@ -45,12 +45,12 @@ use waterui_core::id::Identifiable;
 use waterui_core::plugin::Plugin;
 use waterui_core::views::ForEach;
 use waterui_core::{AnimationExt, View};
-use waterui_layout::AbsoluteLayout;
-use waterui_layout::container::LazyContainer;
+use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{Alignment, hstack};
+use waterui_layout::{AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
 use waterui_str::Str;
 use waterui_text::{font::Font, text::text};
 
@@ -878,6 +878,51 @@ impl StackedSnackbarView {
     }
 }
 
+/// Sizes the bar to its content, floored and capped by the theme's width bounds.
+///
+/// A `Frame` with a `max_width` answers a concrete proposal with the proposal
+/// itself clamped — `SwiftUI`'s expansion semantics — so a bar composed that
+/// way always stretched to its cap, and a closeable snackbar spanned the whole
+/// cap no matter how short its message was. The Material and Apple banners
+/// hug instead: the child row is measured under a proposal capped at `max`, so
+/// text still wraps there, and the bar's own width is the measured content
+/// clamped into `[min, max]`. During placement the row is laid out at the
+/// bar's full width, so the spacer between the message and its trailing
+/// controls still pins those controls to the trailing edge whenever the `min`
+/// floor leaves slack.
+#[derive(Debug, Clone, Copy)]
+struct HugWidth {
+    min: f32,
+    max: f32,
+}
+
+impl Layout for HugWidth {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
+        // The row is measured *unconstrained* on purpose: it contains a spacer,
+        // and a stack with a spacer answers any concrete width proposal with
+        // that proposal — which is exactly the expansion this layout exists to
+        // stop. The unconstrained answer is the content's own size; the bar is
+        // a fixed-height single line, so nothing needs the cap to wrap at.
+        let child = children.first().map_or_else(Size::zero, |child| {
+            child.measure(ProposalSize::new(None, proposal.height)).size
+        });
+        Size::new(child.width.clamp(self.min, self.max), child.height)
+    }
+
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+        children.iter().map(|_| bounds).collect()
+    }
+
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        // Never horizontally greedy — hugging is the point. Vertical follows
+        // the content, which here is a fixed-height row.
+        match children.first() {
+            Some(StretchAxis::Vertical | StretchAxis::Both) => StretchAxis::Vertical,
+            _ => StretchAxis::None,
+        }
+    }
+}
+
 impl View for StackedSnackbarView {
     fn body(self, env: &waterui_core::Environment) -> impl View {
         let theme = env.get::<SnackbarTheme>().cloned().unwrap_or_default();
@@ -920,28 +965,32 @@ impl View for StackedSnackbarView {
         let entrance_offset = item.entrance_offset.clone();
 
         Frame::new(
-            content
-                .on_appear(move || {
-                    entrance_opacity.set(1.0);
-                    entrance_offset.set(0.0);
-                })
-                .padding_with(content_padding)
-                .height(theme.single_line_min_height)
-                .min_width(theme.min_width)
-                .max_width(theme.max_width)
-                .background(
-                    RoundedRectangle::new(theme.clip_radius).fill(theme.container_color.clone()),
-                )
-                .shadow(ambient_shadow)
-                .shadow(shadow)
-                .opacity(item.opacity.with_animation(enter_animation.clone()))
-                // Entrance slide and reflow shift are independent animated
-                // bindings (each has a stable identity, so each animates).
-                .offset(
-                    0.0,
-                    item.entrance_offset.with_animation(enter_animation.clone()),
-                )
-                .offset(0.0, item.stack_offset.with_animation(enter_animation)),
+            FixedContainer::new(
+                HugWidth {
+                    min: theme.min_width,
+                    max: theme.max_width,
+                },
+                (content
+                    .on_appear(move || {
+                        entrance_opacity.set(1.0);
+                        entrance_offset.set(0.0);
+                    })
+                    .padding_with(content_padding)
+                    .height(theme.single_line_min_height),),
+            )
+            .background(
+                RoundedRectangle::new(theme.clip_radius).fill(theme.container_color.clone()),
+            )
+            .shadow(ambient_shadow)
+            .shadow(shadow)
+            .opacity(item.opacity.with_animation(enter_animation.clone()))
+            // Entrance slide and reflow shift are independent animated
+            // bindings (each has a stable identity, so each animates).
+            .offset(
+                0.0,
+                item.entrance_offset.with_animation(enter_animation.clone()),
+            )
+            .offset(0.0, item.stack_offset.with_animation(enter_animation)),
         )
         .alignment(position.to_alignment())
         .padding_with(theme.viewport_padding) // Safe area inset
