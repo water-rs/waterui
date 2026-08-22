@@ -6407,20 +6407,37 @@ mod tests {
             DecodedPixelLayout::Nv12,
             VideoColorInfo::default(),
         );
-        export_video_color_visual(
-            &runtime,
-            output_dir,
-            "p010_bt2020_pq_hdr10_to_sdr.png",
-            DecodedPixelLayout::P010,
-            VideoColorInfo {
-                matrix: MatrixCoefficients::Bt2020NonConstantLuminance,
-                primaries: ColorPrimaries::Bt2020,
-                transfer: TransferFunction::Pq,
-                range: ColorRange::Limited,
-                content_light_level: Some(ContentLightLevel::new(1_000, 400)),
-                dolby_vision: false,
-            },
-        );
+        // P010 planes allocate as R16Unorm/Rg16Unorm, which the device only
+        // carries when its adapter offers TEXTURE_FORMAT_16BIT_NORM — headless
+        // CI adapters may not. That asymmetry is the documented contract of
+        // `required_media_features`: such an adapter cannot present 10-bit
+        // planes at all, so the 10-bit visual is unrenderable there rather
+        // than approximated.
+        if runtime
+            .context()
+            .device
+            .features()
+            .contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+        {
+            export_video_color_visual(
+                &runtime,
+                output_dir,
+                "p010_bt2020_pq_hdr10_to_sdr.png",
+                DecodedPixelLayout::P010,
+                VideoColorInfo {
+                    matrix: MatrixCoefficients::Bt2020NonConstantLuminance,
+                    primaries: ColorPrimaries::Bt2020,
+                    transfer: TransferFunction::Pq,
+                    range: ColorRange::Limited,
+                    content_light_level: Some(ContentLightLevel::new(1_000, 400)),
+                    dolby_vision: false,
+                },
+            );
+        } else {
+            tracing::warn!(
+                "skipping the P010 color visual: this adapter cannot represent 10-bit planes"
+            );
+        }
         export_spherical_video_visual(&runtime, output_dir);
     }
 
