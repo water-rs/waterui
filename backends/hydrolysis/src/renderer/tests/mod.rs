@@ -1211,6 +1211,7 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
     );
     let view = vstack((
         Picker::new(
+            "Letter",
             vec![text("Alpha").tag("Alpha"), text("Beta").tag("Beta")],
             &picker_selection,
         )

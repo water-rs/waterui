@@ -52,9 +52,7 @@ fn reading_order_panel(title: &'static str, body: &'static str, arrow: &'static 
             text(arrow).headline(),
         ))
         .spacing(12.0),
-        TextField::new(&input)
-            .label("Name / الاسم / שם")
-            .prompt("Type here / اكتب هنا / הקלידו כאן"),
+        TextField::new("Name / الاسم / שם", &input).prompt("Type here / اكتب هنا / הקלידו כאן"),
     ))
     .alignment(HorizontalAlignment::Leading)
     .spacing(12.0)

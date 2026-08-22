@@ -303,7 +303,7 @@ fn toggle_animation_section(toggle_state: &Binding<bool>) -> impl View {
         text("Toggle Animation").headline(),
         text("Watch the indicator scale and rotate with toggle").body(),
         hstack((
-            Toggle::new(toggle_state).label("Power"),
+            Toggle::new("Power", toggle_state),
             spacer(),
             // Visual indicator that animates
             Green

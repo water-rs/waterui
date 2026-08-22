@@ -232,7 +232,7 @@ mod tests {
     impl View for CountingToggle {
         fn body(self, _env: &Environment) -> impl View {
             self.body_calls.set(self.body_calls.get() + 1);
-            Toggle::new(&self.value)
+            Toggle::new("Counting", &self.value).hide_label()
         }
     }
 
@@ -280,7 +280,7 @@ mod tests {
             phase: TouchPhase::Ended,
         });
         let mut runtime = DewRuntime::new(board, Environment::new(), 16, move || {
-            AnyView::new(Toggle::new(&root_value))
+            AnyView::new(Toggle::new("Queued input", &root_value).hide_label())
         });
 
         runtime.pump().expect("initial frame must render");

@@ -233,7 +233,7 @@ fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
     vstack((
         text("HDR Shapes").size(18.0),
         "Extended range colors via headroom",
-        Toggle::new(&show_hdr).label("Show HDR"),
+        Toggle::new("Show HDR", &show_hdr),
         zstack((
             hdr_shapes()
                 .color_space(ColorSpace::Sdr)

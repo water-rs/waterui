@@ -28,7 +28,9 @@ pub fn view(model: Model) -> impl View {
         vstack((
             parts::section_header("Logs", "Records emitted by the target application."),
             hstack((
-                TextField::new(&filter).prompt("Filter"),
+                TextField::new("Filter", &filter)
+                    .hide_label()
+                    .prompt("Filter"),
                 level_picker(&minimum),
             ))
             .spacing(12.0),

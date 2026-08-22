@@ -76,7 +76,7 @@ fn disabled_scope_reaches_every_control_in_the_subtree(ui: UiBuilder) {
                 toggle("Flag", &flag),
                 slider(label("Amount"), &amount),
                 stepper("Count", &value),
-                TextField::new(&text).label("Note"),
+                TextField::new("Note", &text),
             ))
             .disabled(true),
         )
@@ -200,7 +200,7 @@ fn toggle_accessibility_role_is_switch(ui: UiBuilder) {
     let enabled = Binding::bool(false);
     let enabled_for_view = enabled;
 
-    let mut app = ui.mount(move || control_shell(Toggle::new(&enabled_for_view).label("Wi-Fi")));
+    let mut app = ui.mount(move || control_shell(Toggle::new("Wi-Fi", &enabled_for_view)));
 
     app.query()
         .role(Role::SWITCH)
@@ -315,7 +315,7 @@ fn text_field_set_text_updates_binding(ui: UiBuilder) {
 
     let mut app = ui.mount(move || {
         control_shell(vstack((
-            TextField::new(&value_for_view).label("Name"),
+            TextField::new("Name", &value_for_view),
             waterui::text!("value:{value_for_view}").foreground(Srgb::WHITE),
         )))
     });
@@ -340,7 +340,7 @@ fn text_field_focus_updates_ui_focus(ui: UiBuilder) {
     let value = Binding::container(Str::from(""));
     let value_for_view = value;
 
-    let mut app = ui.mount(move || control_shell(TextField::new(&value_for_view).label("Search")));
+    let mut app = ui.mount(move || control_shell(TextField::new("Search", &value_for_view)));
 
     let selector = Selector::default().role(Role::TEXT_INPUT).label("Search");
     app.query().role(Role::TEXT_INPUT).label("Search").focus();
@@ -358,9 +358,7 @@ fn multi_line_text_field_accepts_newlines_up_to_its_limit(ui: UiBuilder) {
 
     let mut app = ui.mount(move || {
         control_shell(
-            TextField::new(&value)
-                .label("Notes")
-                .line_limit(NonZeroUsize::new(2).expect("two lines")),
+            TextField::new("Notes", &value).line_limit(NonZeroUsize::new(2).expect("two lines")),
         )
     });
 

@@ -34,7 +34,8 @@ fn picker_selection_flow(ui: UiBuilder) {
 
     let mut app = ui.mount(move || {
         form_shell(vstack((
-            Picker::new(picker_items(), &selection_for_view).style(PickerStyle::Menu),
+            Picker::new("Greek letter", picker_items(), &selection_for_view)
+                .style(PickerStyle::Menu),
             waterui::text!("selected:{selection_for_view}").foreground(Srgb::WHITE),
         )))
     });
@@ -80,7 +81,10 @@ fn picker_initial_non_first_selection_uses_matching_item_id(ui: UiBuilder) {
     let selection_for_view = selection.clone();
 
     let mut app = ui.mount(move || {
-        form_shell(Picker::new(picker_items(), &selection_for_view).style(PickerStyle::Menu))
+        form_shell(
+            Picker::new("Greek letter", picker_items(), &selection_for_view)
+                .style(PickerStyle::Menu),
+        )
     });
 
     app.query()

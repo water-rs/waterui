@@ -67,8 +67,8 @@ use waterui_core::{Binding, Str, View};
 ///
 ///     fn view(binding: &Binding<Self>) -> Self::View {
 ///         vstack((
-///             TextField::new(&binding.title),
-///             Toggle::new(&binding.enabled),
+///             TextField::new("Title", &binding.title),
+///             Toggle::new("Enabled", &binding.enabled),
 ///         ))
 ///     }
 /// }
@@ -140,7 +140,7 @@ impl FormBuilder for Str {
 
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, placeholder: Str) -> Self::View {
         with_optional_prompt(
-            waterui_controls::TextField::new(binding).label(label),
+            waterui_controls::TextField::new(label, binding),
             placeholder,
         )
     }
@@ -152,7 +152,7 @@ impl FormBuilder for String {
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, placeholder: Str) -> Self::View {
         let str_binding = map_string_binding(binding);
         with_optional_prompt(
-            waterui_controls::TextField::new(&str_binding).label(label),
+            waterui_controls::TextField::new(label, &str_binding),
             placeholder,
         )
     }
@@ -169,7 +169,7 @@ impl FormBuilder for i32 {
 impl FormBuilder for bool {
     type View = waterui_controls::Toggle;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
-        waterui_controls::Toggle::new(binding).label(label)
+        waterui_controls::Toggle::new(label, binding)
     }
 }
 

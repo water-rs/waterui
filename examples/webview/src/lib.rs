@@ -115,7 +115,7 @@ fn toolbar(
             .title()
             .foreground(theme_color::Foreground),
         hstack((
-            TextField::new(&address),
+            TextField::new("Address", &address).hide_label(),
             button("Go")
                 .style(ButtonStyle::Bordered)
                 .action(
@@ -141,7 +141,7 @@ fn toolbar(
             button("Stop").action(|proxy: WebViewProxy| proxy.stop()),
         ))
         .spacing(8.0),
-        Toggle::new(&allow_redirects).label(text("Allow redirects")),
+        Toggle::new(text("Allow redirects"), &allow_redirects),
         button("Get Title (JS)")
             .style(ButtonStyle::Bordered)
             .action_async(

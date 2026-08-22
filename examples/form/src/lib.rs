@@ -105,11 +105,9 @@ fn scene(
                 text("Manual Form Controls").sub_headline(),
                 "Building forms manually with individual controls",
                 // TextField with label and placeholder
-                TextField::new(&custom_name)
-                    .label("Username")
-                    .prompt("Enter your username"),
+                TextField::new("Username", &custom_name).prompt("Enter your username"),
                 // Toggle with label
-                Toggle::new(&custom_enabled).label("Enable Feature"),
+                Toggle::new("Enable Feature", &custom_enabled),
                 // Stepper with custom range
                 stepper("Item Count", &custom_count).range(0..=100).step(5),
                 // Slider with label
