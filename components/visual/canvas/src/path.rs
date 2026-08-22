@@ -18,13 +18,17 @@ use super::conversions::{point_to_kurbo, rect_to_kurbo};
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # use waterui_canvas::{DrawingContext, Path};
+/// # fn draw(ctx: &mut DrawingContext<'_>) {
 /// let mut path = Path::new();
 /// path.move_to(Point::new(10.0, 10.0));
 /// path.line_to(Point::new(100.0, 10.0));
 /// path.line_to(Point::new(100.0, 100.0));
 /// path.close();
 /// ctx.fill_path(&path);
+/// # }
 /// ```
 pub struct Path {
     inner: kurbo::BezPath,

@@ -12,11 +12,12 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use waterui_canvas::Canvas;
-//! use waterui_graphics::color::Srgb;
+//! ```rust
 //! use waterui::prelude::*;
+//! use waterui_canvas::{Canvas, DrawingContext};
+//! use waterui_graphics::color::Srgb;
 //!
+//! # fn scene() -> Canvas {
 //! Canvas::new(|ctx: &mut DrawingContext| {
 //!     // Fill a rectangle
 //!     let rect = Rect::from_size(Size::new(200.0, 150.0));
@@ -30,9 +31,8 @@
 //!     ctx.fill_rect(Rect::from_size(Size::new(50.0, 50.0)));
 //!     ctx.restore();
 //! })
+//! # }
 //! ```
-//!
-//! /// Drawing state management for Canvas.
 
 extern crate alloc;
 
@@ -116,11 +116,15 @@ impl Canvas {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_canvas::Canvas;
+    /// # fn dot() -> Canvas {
     /// Canvas::new(|ctx| {
     ///     ctx.set_fill_style(waterui_graphics::color::Srgb::new_u8(242, 140, 168));
     ///     ctx.fill_circle(Point::new(50.0, 50.0), 25.0);
     /// })
+    /// # }
     /// ```
     #[must_use]
     pub fn new<F>(draw: F) -> Self
@@ -403,12 +407,15 @@ impl DrawingContext<'_> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui_canvas::DrawingContext;
+    /// # fn draw(ctx: &mut DrawingContext<'_>) {
     /// ctx.save();
     /// ctx.translate(100.0, 50.0);
     /// ctx.rotate(0.785);
     /// // ... draw with transform ...
     /// ctx.restore(); // Back to original state
+    /// # }
     /// ```
     pub fn save(&mut self) {
         self.state_stack.push(self.current_state.clone());
@@ -736,11 +743,14 @@ impl DrawingContext<'_> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui_canvas::DrawingContext;
+    /// # fn draw(ctx: &mut DrawingContext<'_>) {
     /// let mut gradient = ctx.create_linear_gradient(0.0, 0.0, 100.0, 100.0);
     /// gradient.add_color_stop(0.0, waterui_graphics::color::Srgb::new(1.0, 0.0, 0.0));
     /// gradient.add_color_stop(1.0, waterui_graphics::color::Srgb::new(0.0, 0.0, 1.0));
     /// ctx.set_fill_style(gradient);
+    /// # }
     /// ```
     #[must_use]
     pub const fn create_linear_gradient(
@@ -763,11 +773,14 @@ impl DrawingContext<'_> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui_canvas::DrawingContext;
+    /// # fn draw(ctx: &mut DrawingContext<'_>) {
     /// let mut gradient = ctx.create_radial_gradient(50.0, 50.0, 10.0, 50.0, 50.0, 50.0);
     /// gradient.add_color_stop(0.0, waterui_graphics::color::Srgb::new(1.0, 1.0, 1.0));
     /// gradient.add_color_stop(1.0, waterui_graphics::color::Srgb::new(0.0, 0.0, 0.0));
     /// ctx.set_fill_style(gradient);
+    /// # }
     /// ```
     #[must_use]
     pub const fn create_radial_gradient(
@@ -790,12 +803,15 @@ impl DrawingContext<'_> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui_canvas::DrawingContext;
+    /// # fn draw(ctx: &mut DrawingContext<'_>) {
     /// let mut gradient = ctx.create_conic_gradient(0.0, 50.0, 50.0);
     /// gradient.add_color_stop(0.0, waterui_graphics::color::Srgb::new(1.0, 0.0, 0.0));
     /// gradient.add_color_stop(0.5, waterui_graphics::color::Srgb::new(0.0, 1.0, 0.0));
     /// gradient.add_color_stop(1.0, waterui_graphics::color::Srgb::new(0.0, 0.0, 1.0));
     /// ctx.set_fill_style(gradient);
+    /// # }
     /// ```
     #[must_use]
     pub const fn create_conic_gradient(&self, start_angle: f32, x: f32, y: f32) -> ConicGradient {
@@ -812,9 +828,14 @@ impl DrawingContext<'_> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_canvas::{CanvasImage, DrawingContext, ImageError};
+    /// # fn draw(ctx: &mut DrawingContext<'_>, png_data: &[u8]) -> Result<(), ImageError> {
     /// let image = CanvasImage::from_bytes(png_data)?;
     /// ctx.draw_image(&image, Point::new(10.0, 10.0));
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn draw_image(&mut self, image: &CanvasImage, pos: impl IntoSignal<Point>) {
         let pos = self.resolve_signal(pos);
@@ -831,10 +852,15 @@ impl DrawingContext<'_> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_canvas::{CanvasImage, DrawingContext, ImageError};
+    /// # fn draw(ctx: &mut DrawingContext<'_>, png_data: &[u8]) -> Result<(), ImageError> {
     /// let image = CanvasImage::from_bytes(png_data)?;
-    /// let dest = Rect::new(Point::ZERO, Size::new(200.0, 150.0));
+    /// let dest = Rect::new(Point::zero(), Size::new(200.0, 150.0));
     /// ctx.draw_image_scaled(&image, dest);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn draw_image_scaled(&mut self, image: &CanvasImage, dest: impl IntoSignal<Rect>) {
         let dest = self.resolve_signal(dest);
@@ -875,12 +901,17 @@ impl DrawingContext<'_> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_canvas::{CanvasImage, DrawingContext, ImageError};
+    /// # fn draw(ctx: &mut DrawingContext<'_>, png_data: &[u8]) -> Result<(), ImageError> {
     /// let sprite_sheet = CanvasImage::from_bytes(png_data)?;
     /// // Draw top-left 32x32 sprite at position (100, 100) scaled to 64x64
-    /// let src = Rect::new(Point::ZERO, Size::new(32.0, 32.0));
+    /// let src = Rect::new(Point::zero(), Size::new(32.0, 32.0));
     /// let dest = Rect::new(Point::new(100.0, 100.0), Size::new(64.0, 64.0));
     /// ctx.draw_image_sub(&sprite_sheet, src, dest);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn draw_image_sub(
         &mut self,
@@ -947,8 +978,11 @@ impl DrawingContext<'_> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui_canvas::{DrawingContext, FontSpec, FontWeight};
+    /// # fn draw(ctx: &mut DrawingContext<'_>) {
     /// ctx.set_font(FontSpec::new("Arial", 24.0).with_weight(FontWeight::Bold));
+    /// # }
     /// ```
     pub fn set_font(&mut self, font: FontSpec) {
         self.current_state.font = font;
@@ -961,9 +995,14 @@ impl DrawingContext<'_> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_canvas::DrawingContext;
+    /// # fn draw(ctx: &mut DrawingContext<'_>) {
     /// let metrics = ctx.measure_text("Hello World");
-    /// println!("Text width: {}", metrics.width);
+    /// // Centre the string horizontally in a 320pt-wide canvas.
+    /// ctx.draw_text("Hello World", Point::new((320.0 - metrics.width) / 2.0, 40.0));
+    /// # }
     /// ```
     #[must_use]
     pub fn measure_text(&mut self, text: &str) -> TextMetrics {
