@@ -369,7 +369,7 @@ fn a_builder_link_in_a_path_stack_pops_without_touching_the_path(ui: UiBuilder) 
     let mounted_path = path.clone();
     let mut app = ui.mount(move || mixed_link_view_with_path(mounted_path.clone()));
 
-    assert!(app.query().role(Role::BUTTON).label("Open Builder").tap());
+    app.query().role(Role::BUTTON).label("Open Builder").tap();
     app.query()
         .role(Role::LABEL)
         .label("builder content")
@@ -379,7 +379,7 @@ fn a_builder_link_in_a_path_stack_pops_without_touching_the_path(ui: UiBuilder) 
         "a builder link must not write a route"
     );
 
-    assert!(app.query().role(Role::BUTTON).label("Back").tap());
+    app.query().role(Role::BUTTON).label("Back").tap();
     assert!(
         app.wait_for(
             &[app.expect_exists(Selector::default().role(Role::BUTTON).label("Open Builder"))],
@@ -398,14 +398,12 @@ fn a_builder_link_above_a_route_unwinds_in_order(ui: UiBuilder) {
     let mounted_path = path.clone();
     let mut app = ui.mount(move || mixed_link_view_with_path(mounted_path.clone()));
 
-    assert!(app.query().role(Role::BUTTON).label("Open Value").tap());
+    app.query().role(Role::BUTTON).label("Open Value").tap();
     assert_eq!(path.snapshot(), vec![TestRoute::First]);
-    assert!(
-        app.query()
-            .role(Role::BUTTON)
-            .label("Open Nested Builder")
-            .tap()
-    );
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open Nested Builder")
+        .tap();
     app.query()
         .role(Role::LABEL)
         .label("nested builder content")
@@ -416,7 +414,7 @@ fn a_builder_link_above_a_route_unwinds_in_order(ui: UiBuilder) {
         "the builder entry sits above the route without changing it"
     );
 
-    assert!(app.query().role(Role::BUTTON).label("Back").tap());
+    app.query().role(Role::BUTTON).label("Back").tap();
     assert!(
         app.wait_for(
             &[app.expect_exists(
@@ -434,7 +432,7 @@ fn a_builder_link_above_a_route_unwinds_in_order(ui: UiBuilder) {
         "popping the builder entry must not consume the route"
     );
 
-    assert!(app.query().role(Role::BUTTON).label("Back").tap());
+    app.query().role(Role::BUTTON).label("Back").tap();
     assert!(
         app.wait_for(
             &[app.expect_exists(Selector::default().role(Role::BUTTON).label("Open Value"))],
