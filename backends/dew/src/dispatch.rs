@@ -397,10 +397,12 @@ fn build_unmeasured_node(
         let text = *view
             .downcast::<Native<TextConfig>>()
             .expect("dew TextConfig downcast must match its type id");
+        let config = text.into_inner();
         return Box::new(TextNode {
-            content: WatchedSignal::new(text.into_inner().content, renderer.signals()),
+            content: WatchedSignal::new(config.content, renderer.signals()),
             env: env.clone(),
             cache: RefCell::new(TextLayoutCache::default()),
+            line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
         });
     }
     if type_id == TypeId::of::<Str>() {
@@ -685,6 +687,8 @@ struct TextNode {
     content: WatchedSignal<Computed<StyledStr>>,
     env: Environment,
     cache: RefCell<TextLayoutCache>,
+    /// Maximum laid-out lines, from `TextConfig::line_limit`.
+    line_limit: Option<usize>,
 }
 
 impl DewNode for TextNode {
@@ -695,6 +699,7 @@ impl DewNode for TextNode {
         let ((width, height), outcome) = cache.measure(
             revision,
             TextLayoutKey::new(proposal.width, foreground),
+            self.line_limit,
             || {
                 state.borrow_mut().build_styled_layout(
                     &self.content.get(),
@@ -717,6 +722,7 @@ impl DewNode for TextNode {
         let outcome = self.cache.borrow_mut().emit(
             revision,
             TextLayoutKey::new(max_width, foreground),
+            self.line_limit,
             transform,
             &mut renderer.list,
             || {
@@ -742,12 +748,16 @@ impl DewNode for StrNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
         let foreground = theme::foreground(&self.env);
         let mut cache = self.cache.borrow_mut();
-        let ((width, height), outcome) =
-            cache.measure(0, TextLayoutKey::new(proposal.width, foreground), || {
+        let ((width, height), outcome) = cache.measure(
+            0,
+            TextLayoutKey::new(proposal.width, foreground),
+            None,
+            || {
                 state
                     .borrow_mut()
                     .build_plain_layout(&self.value, proposal.width, foreground)
-            });
+            },
+        );
         let dimensions = ViewDimensions::new(Size::new(width, height));
         state.borrow_mut().record_layout(outcome);
         dimensions
@@ -760,6 +770,7 @@ impl DewNode for StrNode {
         let outcome = self.cache.borrow_mut().emit(
             0,
             TextLayoutKey::new(max_width, foreground),
+            None,
             transform,
             &mut renderer.list,
             || {

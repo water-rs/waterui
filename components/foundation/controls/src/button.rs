@@ -310,7 +310,13 @@ where
     Action: FnMut(&Environment) + 'static,
 {
     ButtonConfig {
-        label: button.label,
+        // A button label stays one truncated line — the SwiftUI and Material
+        // baseline — instead of folding into a paragraph under compression.
+        // Applied here so themed hooks and native backends agree, while an
+        // explicit `Text::line_limit` from the application still wins.
+        label: button
+            .label
+            .default_text_line_limit(core::num::NonZeroUsize::MIN),
         action: Box::new(button.action),
         style: button.style,
         size: button.size,

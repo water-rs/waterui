@@ -215,13 +215,14 @@ fn measure_view_dimensions_with_proposal_with_budget(
         );
     }
     if let Some(text) = view.downcast_ref::<Text>() {
+        let resolved = text.resolve(&scoped_env);
         return HydrolysisRenderer::measure_text_dimensions(
             state,
-            text.resolve(&scoped_env).content.get(),
-            text.resolve(&scoped_env).paragraph_alignment.get(),
+            resolved.content.get(),
+            resolved.paragraph_alignment.get(),
             &scoped_env,
             proposal.width,
-            None,
+            resolved.line_limit.map(core::num::NonZeroUsize::get),
         );
     }
     if let Some(label) = view.downcast_ref::<SemanticLabel>() {

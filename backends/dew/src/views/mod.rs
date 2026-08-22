@@ -98,7 +98,7 @@ impl LabelText {
         }
         let key = TextLayoutKey::new(None, theme::foreground(env));
         let mut cache = self.cache.borrow_mut();
-        let ((width, height), outcome) = cache.measure(self.content.revision(), key, || {
+        let ((width, height), outcome) = cache.measure(self.content.revision(), key, None, || {
             state
                 .borrow_mut()
                 .build_styled_layout(&self.content.get(), env, None, key.brush)
@@ -141,7 +141,7 @@ impl LabelText {
         let (list, state) = renderer.list_and_state();
         // Vertical centring needs the laid-out height, which is only known
         // once a layout for this key has existed.
-        let ((_, height), outcome) = cache.measure(revision, key, || {
+        let ((_, height), outcome) = cache.measure(revision, key, None, || {
             state
                 .borrow_mut()
                 .build_styled_layout(&self.content.get(), env, max_width, brush)
@@ -149,7 +149,7 @@ impl LabelText {
         state.borrow_mut().record_layout(outcome);
         let dy = ((rect.height() - f64::from(height)) / 2.0).max(0.0);
         let transform = ctx.transform * Affine::translate((rect.x0, rect.y0 + dy));
-        let outcome = cache.emit(revision, key, transform, list, || {
+        let outcome = cache.emit(revision, key, None, transform, list, || {
             state
                 .borrow_mut()
                 .build_styled_layout(&self.content.get(), env, max_width, brush)

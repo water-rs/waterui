@@ -19,6 +19,7 @@ fn text_node(content: &'static str) -> RenderNode {
         accessibility_identity: Rc::new(()),
         content: Computed::constant(StyledStr::plain(content)),
         alignment: Computed::constant(HorizontalAlignment::Leading),
+        line_limit: None,
     }))
 }
 

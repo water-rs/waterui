@@ -260,6 +260,9 @@ into_ffi! {
     pub struct WuiText {
         content: *mut WuiComputed<StyledStr>,
         paragraph_alignment: *mut WuiComputed<HorizontalAlignment>,
+        // 0 means no limit; a limited text truncates at its last visible line,
+        // with a trailing ellipsis where the engine's text machinery has one.
+        line_limit: usize,
     }
 }
 

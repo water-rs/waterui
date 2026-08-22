@@ -1,3 +1,5 @@
+use core::num::NonZeroUsize;
+
 use crate::renderer::{HydroNativeView, HydroState, HydrolysisRenderer};
 use nami::Signal;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
@@ -12,7 +14,7 @@ impl HydroNativeView for Native<TextConfig> {
             view.as_inner().paragraph_alignment.get(),
             env,
             None,
-            None,
+            view.as_inner().line_limit.map(NonZeroUsize::get),
         )
         .size
     }
@@ -29,7 +31,7 @@ impl HydroNativeView for Native<TextConfig> {
             view.as_inner().paragraph_alignment.get(),
             env,
             proposal.width,
-            None,
+            view.as_inner().line_limit.map(NonZeroUsize::get),
         )
     }
 }
