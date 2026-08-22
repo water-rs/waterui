@@ -13,7 +13,6 @@ use waterui_webview::{
     Cookie, CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewHandle, bridge,
 };
 
-
 use crate::cdp::{CefCdpSession, protocol};
 use crate::page::{CefController, CefPageConfiguration, CefPageHandle, CefPageMode};
 
@@ -155,7 +154,8 @@ impl WebViewHandle for CefWebViewHandle {
         let session = self.session();
         // Add before removing, so a document that commits between the two runs
         // one of the versions rather than none.
-        let added = session.execute(&protocol::AddScriptToEvaluateOnNewDocument { source: &source });
+        let added =
+            session.execute(&protocol::AddScriptToEvaluateOnNewDocument { source: &source });
         let previous = self.scripts.borrow().get(key).cloned();
         if let Some(identifier) = previous {
             execute_without_result(
