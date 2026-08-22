@@ -75,7 +75,7 @@ fn locale_picker_section(selection: &Binding<&'static str>, system_locale: &Loca
         hstack((
             text!("Chosen Language:"),
             spacer(),
-            Picker::new(available_locales(), selection),
+            Picker::new(text!("Chosen Language:"), available_locales(), selection).hide_label(),
         )),
     ))
 }

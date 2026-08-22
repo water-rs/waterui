@@ -219,11 +219,11 @@ fn validated_form() -> impl View {
 
     vstack((
         ValidatableView::new(
-            Stepper::new(&age_binding).label("Age"),
+            Stepper::new("Age", &age_binding),
             age_range,
         ),
         ValidatableView::new(
-            TextField::new(&email_binding).label("Email"),
+            TextField::new("Email", &email_binding),
             email_pattern,
         ),
     ))
@@ -254,16 +254,12 @@ fn event_form() -> impl View {
     let event_datetime = binding(DateTime::new(2025, 6, 15, 14, 30, 45, 0).unwrap());
 
     vstack((
-        DatePicker::new(&event_date)
-            .label("Date Only")
-            .range(
-                Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap(),
-            ),
-        DatePicker::time(&event_time)
-            .label("Time Only")
+        DatePicker::new("Date Only", &event_date).range(
+            Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap(),
+        ),
+        DatePicker::new("Time Only", &event_time)
             .ty(DatePickerType::HourMinuteAndSecond),
-        DatePicker::datetime(&event_datetime)
-            .label("Date & Time")
+        DatePicker::new("Date & Time", &event_datetime)
             .ty(DatePickerType::DateHourMinuteAndSecond),
     ))
 }
@@ -311,8 +307,8 @@ fn theme_editor() -> impl View {
     let background = Binding::new(Color::rgb(1.0, 1.0, 1.0));
 
     vstack((
-        ColorPicker::new(&primary_color).label("Primary Color"),
-        ColorPicker::new(&background).label("Background"),
+        ColorPicker::new("Primary Color", &primary_color),
+        ColorPicker::new("Background", &background),
     ))
 }
 ```
@@ -329,13 +325,15 @@ use jiff::civil::Date;
 
 fn availability_calendar() -> impl View {
     let available_dates = binding(BTreeSet::<Date>::new());
+    let visible_month = binding(Date::new(2025, 1, 1).unwrap());
 
     vstack((
-        MultiDatePicker::new(&available_dates)
-            .label("Select Available Dates")
-            .range(
-                Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap(),
-            ),
+        MultiDatePicker::new(
+            "Select Available Dates",
+            &available_dates,
+            &visible_month,
+        )
+        .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap()),
         text(available_dates.map(|dates| {
             format!("Selected {} dates", dates.len())
         })),
@@ -362,8 +360,8 @@ impl FormBuilder for TwoColumnForm {
     fn view(binding: &Binding<Self>, _label: AnyView, _placeholder: Str) -> Self::View {
         let projected = binding.project();
         hstack((
-            TextField::new(&projected.left_field).label("Left"),
-            TextField::new(&projected.right_field).label("Right"),
+            TextField::new("Left", &projected.left_field),
+            TextField::new("Right", &projected.right_field),
         ))
     }
 }

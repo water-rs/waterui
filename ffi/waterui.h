@@ -4279,6 +4279,10 @@ typedef struct WuiColorPicker {
  */
 typedef struct WuiPicker {
   /**
+   * Semantic label slot for the picker — see [`WuiLabel`].
+   */
+  struct WuiLabel label;
+  /**
    * The picker's items, rendered as an identity-tracked view collection.
    */
   struct WuiAnyViews *items;

@@ -18,6 +18,11 @@ use crate::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
 #[derive(Debug)]
 pub struct TextFieldConfig {
     /// The label displayed for the text field.
+    ///
+    /// Always present: it is required at construction so assistive technology
+    /// has a name to announce, even when
+    /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
+    /// removes the visible chrome.
     pub label: Label,
     /// The binding to the text value.
     pub value: Binding<StyledStr>,
@@ -79,31 +84,31 @@ pub enum KeyboardType {
 }
 
 impl TextField {
-    /// Creates a new `TextField` with the given value binding.
+    /// Creates a new `TextField` with the given label and value binding.
+    ///
+    /// The label is mandatory — see [the label module](crate::label). It names
+    /// the field for assistive technology and is distinct from
+    /// [`Self::prompt`], which is the placeholder shown inside an empty field.
+    /// Chain [`Self::hide_label`] to drop the visible label while keeping the
+    /// accessibility name.
     #[must_use]
-    pub fn new(value: &Binding<Str>) -> Self {
+    pub fn new(label: impl IntoLabel, value: &Binding<Str>) -> Self {
         let styled_value = map_plain_binding(value);
-        Self::styled(&styled_value)
+        Self::styled(label, &styled_value)
     }
 
-    /// Creates a new `TextField` backed by a styled text binding.
+    /// Creates a new `TextField` with the given label, backed by a styled text
+    /// binding.
     #[must_use]
-    pub fn styled(value: &Binding<StyledStr>) -> Self {
+    pub fn styled(label: impl IntoLabel, value: &Binding<StyledStr>) -> Self {
         Self(TextFieldConfig {
-            label: Label::default(),
+            label: label.into_label(),
             value: value.clone(),
             prompt: Text::default(),
             keyboard: KeyboardType::default(),
             selection_menu: Computed::constant(Vec::new()),
             line_limit: NonZeroUsize::new(1),
         })
-    }
-
-    /// Sets the label for the text field.
-    #[must_use]
-    pub fn label(mut self, label: impl IntoLabel) -> Self {
-        self.0.label = label.into_label();
-        self
     }
 
     /// Sets the maximum number of lines to show.
@@ -181,14 +186,14 @@ impl_label_style_methods!(TextField);
 
 /// Creates a new [`TextField`] with the specified label and value binding.
 pub fn field(label: impl IntoLabel, value: &Binding<Str>) -> TextField {
-    TextField::new(value).label(label)
+    TextField::new(label, value)
 }
 
 fn map_plain_binding(value: &Binding<Str>) -> Binding<StyledStr> {
     Binding::mapping(value, StyledStr::plain, |plain_binding, styled| {
         assert!(
             styled.is_plain(),
-            "TextField::new(&Binding<Str>) cannot accept styled text updates; use TextField::styled(&Binding<StyledStr>)"
+            "TextField::new(label, &Binding<Str>) cannot accept styled text updates; use TextField::styled(label, &Binding<StyledStr>)"
         );
         plain_binding.set(styled.to_plain());
     })
@@ -209,19 +214,19 @@ mod tests {
     #[test]
     fn line_limit_non_one_is_supported() {
         let value = Binding::container(Str::from(""));
-        let _ = TextField::new(&value).line_limit(NonZeroUsize::new(2).unwrap());
+        let _ = TextField::new("Note", &value).line_limit(NonZeroUsize::new(2).unwrap());
     }
 
     #[test]
     fn disable_line_limit_does_not_panic() {
         let value = Binding::container(Str::from(""));
-        let _ = TextField::new(&value).disable_line_limit();
+        let _ = TextField::new("Note", &value).disable_line_limit();
     }
 
     #[test]
     fn styled_constructor_accepts_styled_binding() {
         let styled = Binding::container(StyledStr::plain("a"));
-        let _ = TextField::styled(&styled);
+        let _ = TextField::styled("Body", &styled);
     }
 
     #[test]

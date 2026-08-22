@@ -13,7 +13,7 @@ Two rules shape the whole API surface. **Every control takes a semantic label at
 construction**, because a control with no name is unreachable for screen readers,
 voice control, and command palettes; when the label should not be drawn, hide it
 with `.hide_label()` and it stays in the accessibility tree. And **style is an
-attribute, not a type**: a checkbox is `Toggle::new(&flag).checkbox()`, not a
+attribute, not a type**: a checkbox is `Toggle::new("Sync", &flag).checkbox()`, not a
 separate `Checkbox` component, so switching the presentation never changes what
 the control means.
 
@@ -133,18 +133,17 @@ fn verified_button() -> impl View {
 ### Two constructors per control
 
 `Type::new(...)` is the general constructor and takes the most general input the
-control can render — `Slider::new` and `Stepper::new` take a built `Label`,
-`Toggle::new` and `TextField::new` take only the binding and let you attach the
-label afterwards. The free functions `button`, `toggle`, `slider`, `stepper`,
-`field`, and `label` are the ergonomic entry points: they accept `impl IntoLabel`
-so a string literal is enough.
+control can render — every one of them takes the label first, so a control can
+never be built without a name. The free functions `button`, `toggle`, `slider`,
+`stepper`, `field`, and `label` are the ergonomic entry points: they accept
+`impl IntoLabel` so a string literal is enough.
 
 ```rust,no_run
 use waterui::prelude::*;
 
 fn two_ways(wifi: &Binding<bool>, sync: &Binding<bool>) -> impl View {
     vstack((
-        Toggle::new(wifi).label("Wi-Fi").switch(),
+        Toggle::new("Wi-Fi", wifi).switch(),
         toggle("Sync", sync).checkbox(),
     ))
 }
@@ -257,8 +256,7 @@ use text_field::KeyboardType;
 use waterui::prelude::*;
 
 fn email(value: &Binding<Str>) -> impl View {
-    TextField::new(value)
-        .label("Email")
+    TextField::new("Email", value)
         .prompt("Enter your email")
         .keyboard(KeyboardType::Email)
 }
@@ -270,13 +268,15 @@ fn notes(value: &Binding<Str>) -> impl View {
 }
 
 fn body(value: &Binding<styled::StyledStr>) -> impl View {
-    TextField::styled(value).label("Body").disable_line_limit()
+    TextField::styled("Body", value).disable_line_limit()
 }
 ```
 
 `TextField::new` takes a plain `Binding<Str>` and rejects styled write-back; use
-`TextField::styled` for rich text. `keyboard(...)` is a hint that platforms
-without a software keyboard ignore.
+`TextField::styled` for rich text. Both take the label first, and the prompt
+stays a separate concept: it is the placeholder inside an empty field, not the
+field's name. `keyboard(...)` is a hint that platforms without a software
+keyboard ignore.
 
 ### Menus and commands
 
@@ -331,8 +331,7 @@ The same vocabulary customizes a text field's selection menu:
 use waterui::prelude::*;
 
 fn note(value: &Binding<Str>) -> impl View {
-    TextField::new(value)
-        .label("Note")
+    TextField::new("Note", value)
         .selection_menu(("Translate".action(|| {}), "Define".action(|| {})))
 }
 ```
@@ -344,10 +343,10 @@ fn note(value: &Binding<Str>) -> impl View {
 | Type | Constructors | Notes |
 | --- | --- | --- |
 | `Button<Action>` | `Button::new(Label)`, `button(impl IntoLabel)` | `action` / `action_async`, `style`, `size`; content-sized |
-| `Toggle` | `Toggle::new(&Binding<bool>)`, `toggle(label, &binding)` | `switch()` / `checkbox()` presentation |
+| `Toggle` | `Toggle::new(label, &Binding<bool>)`, `toggle(label, &binding)` | `switch()` / `checkbox()` presentation |
 | `Slider` | `Slider::new(Label, &Binding<f64>)`, `slider(label, &binding)` | `range`, `min_value_label`, `max_value_label` |
 | `Stepper` | `Stepper::new(Label, &Binding<i32>)`, `stepper(label, &binding)` | `range`, `step`, `value_formatter` |
-| `TextField` | `TextField::new(&Binding<Str>)`, `TextField::styled(&Binding<StyledStr>)`, `field(label, &binding)` | `prompt`, `keyboard`, `line_limit`, `selection_menu` |
+| `TextField` | `TextField::new(label, &Binding<Str>)`, `TextField::styled(label, &Binding<StyledStr>)`, `field(label, &binding)` | `prompt`, `keyboard`, `line_limit`, `selection_menu` |
 | `Menu` | `Menu::new(label, impl MenuView)` | Renders as a popup trigger, or nests inside another menu |
 
 ### Labels

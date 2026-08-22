@@ -386,7 +386,7 @@ mod tests {
         fn assert_view<V: View>(_: &V) {}
 
         let value = Binding::container(Str::from(""));
-        let view = ValidatableView::new(TextField::new(&value), Plain(Required));
+        let view = ValidatableView::new(TextField::new("Value", &value), Plain(Required));
         assert_view(&view);
     }
 

@@ -501,10 +501,8 @@ fn buttons_demo(taps: &Binding<i32>) -> impl View {
 fn toggle_demo(wifi: &Binding<bool>, bluetooth: &Binding<bool>) -> impl View {
     vstack((
         note("ToggleStyle switches between a switch and a checkbox."),
-        Toggle::new(wifi).label("Wi-Fi").style(ToggleStyle::Switch),
-        Toggle::new(bluetooth)
-            .label("Bluetooth")
-            .style(ToggleStyle::Checkbox),
+        Toggle::new("Wi-Fi", wifi).style(ToggleStyle::Switch),
+        Toggle::new("Bluetooth", bluetooth).style(ToggleStyle::Checkbox),
         text!("Wi-Fi {wifi} · Bluetooth {bluetooth}").body(),
     ))
     .spacing(12.0)
@@ -535,7 +533,7 @@ fn stepper_demo(quantity: &Binding<i32>) -> impl View {
 fn text_field_demo(name: &Binding<Str>) -> impl View {
     vstack((
         note("TextField binds to reactive text and echoes it live."),
-        TextField::new(name).label("Name").prompt("Type your name"),
+        TextField::new("Name", name).prompt("Type your name"),
         text!("Echo: {name}").body(),
     ))
     .spacing(12.0)
@@ -554,11 +552,11 @@ fn picker_demo(size: &Binding<&'static str>) -> impl View {
     vstack((
         note("PickerStyle renders the same selection as segmented, menu, or radio."),
         text("Segmented").sub_headline(),
-        picker(size_items(), size).style(PickerStyle::Segmented),
+        picker("Size", size_items(), size).style(PickerStyle::Segmented),
         text("Menu").sub_headline(),
-        picker(size_items(), size).style(PickerStyle::Menu),
+        picker("Size", size_items(), size).style(PickerStyle::Menu),
         text("Radio").sub_headline(),
-        picker(size_items(), size).style(PickerStyle::Radio),
+        picker("Size", size_items(), size).style(PickerStyle::Radio),
         text!("Selected: {size}").body(),
     ))
     .spacing(12.0)

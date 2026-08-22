@@ -24,8 +24,12 @@ pub enum ToggleStyle {
 #[non_exhaustive]
 /// Configuration for the `Toggle` component.
 pub struct ToggleConfig {
-    /// The label displayed for the toggle. Default is empty; use
-    /// [`Toggle::label`] to set one.
+    /// The label displayed for the toggle.
+    ///
+    /// Always present: it is required at construction so assistive technology
+    /// has a name to announce, even when
+    /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
+    /// removes the visible chrome.
     pub label: Label,
     /// The binding to the toggle state.
     pub toggle: Binding<bool>,
@@ -36,14 +40,19 @@ pub struct ToggleConfig {
 configurable!(
     /// A control that toggles between on and off states.
     ///
-    /// Toggle displays a switch with an optional label. It's commonly used
+    /// Toggle displays a switch with a label. It's commonly used
     /// for settings that can be turned on or off.
+    ///
+    /// The label is required at construction; see
+    /// [the label module](crate::label) for why. Use
+    /// [`Self::hide_label`] when the surrounding context already explains the
+    /// control — the label stays in the accessibility tree.
     ///
     /// # Layout Behavior
     ///
-    /// With a label: Toggle expands horizontally to fill available space,
-    /// placing the label on the left and switch on the right.
-    /// Without a label: Toggle is content-sized (just the switch).
+    /// With a visible label: Toggle expands horizontally to fill available
+    /// space, placing the label on the left and switch on the right.
+    /// With a hidden label: Toggle is content-sized (just the switch).
     ///
     /// # Examples
     ///
@@ -55,9 +64,9 @@ configurable!(
     /// toggle("Wi-Fi", &is_enabled)
     /// # }
     ///
-    /// # fn bare(dark_mode: Binding<bool>) -> impl View {
-    /// // Toggle without label
-    /// Toggle::new(&dark_mode)
+    /// # fn hidden_label(dark_mode: Binding<bool>) -> impl View {
+    /// // Toggle whose label is announced but not drawn
+    /// Toggle::new("Dark mode", &dark_mode).hide_label()
     /// # }
     ///
     /// # fn settings(notifications: Binding<bool>, sound: Binding<bool>) -> impl View {
@@ -95,21 +104,17 @@ impl ToggleConfig {
 
 impl Toggle {
     #[must_use]
-    /// Creates a new `Toggle` with the specified binding for the toggle state.
+    /// Creates a new `Toggle` with the specified label and binding for the
+    /// toggle state.
     ///
-    /// The toggle has no label by default; use [`Self::label`] to attach one.
-    pub fn new(toggle: &Binding<bool>) -> Self {
+    /// The label is mandatory. To keep it out of the visual chrome without
+    /// losing its accessibility name, chain [`Self::hide_label`].
+    pub fn new(label: impl IntoLabel, toggle: &Binding<bool>) -> Self {
         Self(ToggleConfig {
-            label: Label::default(),
+            label: label.into_label(),
             toggle: toggle.clone(),
             style: ToggleStyle::default(),
         })
-    }
-    #[must_use]
-    /// Sets the label for the toggle.
-    pub fn label(mut self, view: impl IntoLabel) -> Self {
-        self.0.label = view.into_label();
-        self
     }
     #[must_use]
     /// Sets the visual style of the toggle.
@@ -136,5 +141,5 @@ impl_label_style_methods!(Toggle);
 /// Creates a new `Toggle` with the specified label and binding for the toggle state.
 #[must_use]
 pub fn toggle(label: impl IntoLabel, toggle: &Binding<bool>) -> Toggle {
-    Toggle::new(toggle).label(label)
+    Toggle::new(label, toggle)
 }

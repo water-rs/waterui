@@ -88,22 +88,18 @@ This ensures pixel-perfect design implementation across platforms.
 use waterui_layout::{stack, padding::EdgeInsets};
 use waterui_text::text;
 use waterui_controls::TextField;
+use waterui_form::secure::{Secure, SecureField};
 use waterui_reactive::binding;
 use waterui_core::View;
 
 pub fn login_form() -> impl View {
     let username = binding("");
-    let password = binding("");
+    let password = binding(Secure::default());
 
     stack::vstack((
         text("Login").size(24.0).bold(),
-        TextField::new(&username)
-            .label("Username")
-            .prompt("Enter username"),
-        TextField::new(&password)
-            .label("Password")
-            .prompt("Enter password")
-            .secure(true),
+        TextField::new("Username", &username).prompt("Enter username"),
+        SecureField::new("Password", &password),
     ))
     .alignment(stack::HorizontalAlignment::Leading)
     .spacing(16.0)

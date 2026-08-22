@@ -58,10 +58,8 @@ fn form_screen(
             Divider,
             vstack((
                 text("Manual Controls").sub_headline(),
-                TextField::new(&hostname)
-                    .label("Hostname")
-                    .prompt("device-01"),
-                Toggle::new(&enabled).label("Enable Feature"),
+                TextField::new("Hostname", &hostname).prompt("device-01"),
+                Toggle::new("Enable Feature", &enabled),
                 stepper("Retry Count", &retries).range(0..=10).step(1),
                 slider("Signal", &signal),
                 progress(signal.clone()),
