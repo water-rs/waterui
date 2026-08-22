@@ -121,14 +121,15 @@ impl EdgeSet {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// use waterui::prelude::*;
+///
 /// // Extend background to fill entire screen
-/// Color::blue()
-///     .ignore_safe_area(EdgeSet::ALL)
+/// Color::blue().ignore_safe_area(EdgeSet::ALL);
 ///
 /// // Only extend to top (under status bar)
-/// header_view
-///     .ignore_safe_area(EdgeSet::TOP)
+/// let header_view = text!("Inbox");
+/// header_view.ignore_safe_area(EdgeSet::TOP);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IgnoreSafeArea {
