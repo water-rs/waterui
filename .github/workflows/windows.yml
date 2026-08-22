@@ -1,0 +1,92 @@
+name: Windows
+
+# The Windows test leg, split out of `test.yml`.
+#
+# It rotted while compilation was broken and currently has 25 known-failing
+# tests across independent defect classes — tracked in
+# https://github.com/water-rs/waterui/issues/152 — so it reports but does not
+# gate. As a matrix leg it was also the slowest one, which meant every run
+# waited on a result nothing was allowed to act on. On its own daily schedule
+# it still catches a Windows-only regression, without standing in the critical
+# path of the checks that do gate. Fold it back into `test.yml`'s matrix in the
+# same change that closes #152.
+
+on:
+  # Off-peak UTC: hosted-runner demand peaks during US working hours, and an
+  # off-the-hour minute avoids the top-of-hour scheduling backlog.
+  schedule:
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # rust-cache is the only cache layer (see the note in ci.yml).
+  CARGO_INCREMENTAL: 0
+  WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
+
+jobs:
+  test:
+    name: windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 120
+    # Non-gating until #152 is closed; see the file header.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install DirectX Shader Compiler
+        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+      - name: Verify DirectX Shader Compiler
+        run: dxc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-windows-latest
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      # Two crates cannot build here, for reasons that are not bugs:
+      #
+      # waterui-dylib is the dynamic-link anchor — a Rust `dylib` on purpose, so
+      # the preview system can share one copy of the framework across
+      # dynamically loaded preview libraries. That exports every Rust symbol,
+      # 290k of them, and a PE export table stops at 65535. The preview system
+      # targets macOS, the iOS Simulator and Android, not Windows.
+      #
+      # waterui-browser-cef links cef_sandbox from a CEF binary distribution the
+      # runner does not stage. It is still compiled below, through the crate's
+      # own `compile-only` feature, which its build script honours ahead of
+      # `cef-runtime` for exactly this case — so Windows keeps compile coverage
+      # of the backend without provisioning the SDK.
+      #
+      # One full-workspace pass under default features. A workspace-wide
+      # `--all-features` pass is structurally impossible — hydrolysis enforces
+      # "exactly one WebView engine" with a `compile_error!`
+      # (backends/hydrolysis/src/lib.rs), so enabling `webview-system` and
+      # `webview-cef` together can never build.
+      - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --profile ci
+      # The root crate's feature-gated re-export surface, with every feature on.
+      # Root-crate-only scope is what cargo's default package selection does
+      # without `--workspace`, and here that narrowing is exactly right: the
+      # root `waterui` crate is the one crate whose features are all mutually
+      # compatible.
+      - run: cargo nextest run --all-features --profile ci
+      # Compile the CEF backend without its binary distribution.
+      - run: cargo check -p waterui-browser-cef --features compile-only
+      # nextest cannot run doctests, and this workspace has plenty of them.
+      - run: cargo test --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef
+      - name: Upload Test Snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots-windows-latest
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14

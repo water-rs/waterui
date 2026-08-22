@@ -19,50 +19,16 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # sccache caches individual crate compilations, so the third-party graph is
-  # built once and reused across jobs whose feature sets differ. rust-cache only
-  # restores the target directory, which those differing fingerprints miss.
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
-  # Incremental artifacts bypass sccache and bloat the restored cache.
+  # rust-cache is the only cache layer here. GHA-backed sccache used to sit in
+  # front of it and measured a 2-8% hit rate while holding 38% of the
+  # repository's 10GB Actions cache quota, so its main effect was evicting the
+  # rust-cache tarballs that do work and putting every job back on a cold
+  # build. Local development still uses sccache; this is CI-only.
+  # Incremental artifacts are per-machine rebuild state, useless to a fresh
+  # runner, and they bloat the cache that is restored.
   CARGO_INCREMENTAL: 0
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: ./.github/actions/setup-linux-deps
-      - uses: mozilla/sccache-action@v0.0.11
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-ubuntu
-          cache-on-failure: true
-      - run: cargo fmt --all -- --check
-      # The workspace pass runs under default features: a workspace-wide
-      # `--all-features` pass can never build, because hydrolysis enforces
-      # "exactly one WebView engine" with a `compile_error!`
-      # (backends/hydrolysis/src/lib.rs). The second pass lints the root
-      # crate's all-features surface — root-crate-only scope is what cargo's
-      # default package selection does without `--workspace`, and here that
-      # narrowing is exactly right, not an accident: the root `waterui` crate
-      # is the one crate whose features are all mutually compatible.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      # The WPE real-engine tests sit behind a feature, because running them
-      # needs a staged WPE WebKit runtime that only `browser-wpe.yml` provisions
-      # — and that workflow only fires on the paths those tests cover. Neither
-      # pass above compiles them, so lint them here: compiling them costs
-      # nothing extra and keeps them from rotting between real-engine runs.
-      - run: cargo clippy -p waterui-browser-wpe --features real-engine --all-targets -- -D warnings
-
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
@@ -78,10 +44,12 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: ./.github/actions/setup-linux-deps
-      - uses: mozilla/sccache-action@v0.0.11
+      # Its own key: an instrumented build shares no artifacts with the
+      # ordinary ones, so storing it under the shared key would just overwrite
+      # a useful tarball with one nothing else can restore.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-ubuntu
+          shared-key: ci-coverage
           cache-on-failure: true
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
@@ -128,11 +96,15 @@ jobs:
       # build script) and it never runs a GUI/audio/video stack, so this job
       # does not need the full setup-linux-deps package list.
       - run: sudo apt-get update && sudo apt-get install -y nasm
-      - uses: mozilla/sccache-action@v0.0.11
+      # Restore-only: this job and Features share `ci-ubuntu`, and two jobs
+      # saving the same key race for the reservation, so one of them always
+      # loses and uploads nothing. Features owns the write because it builds
+      # the larger graph.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
           cache-on-failure: true
+          save-if: false
       # The audit and deny checks run against the COMMITTED Cargo.lock — the
       # dependency set the workspace actually builds. A `cargo generate-lockfile`
       # step used to precede them; it silently re-resolved everything to the
@@ -171,7 +143,7 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: ./.github/actions/setup-linux-deps
-      - uses: mozilla/sccache-action@v0.0.11
+      # The single writer of `ci-ubuntu` (see Hygiene above).
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
@@ -201,7 +173,6 @@ jobs:
       # `cargo rustc -- -Zunpretty=expanded`, and the exported functions are
       # macro-generated, so the expansion cannot be skipped.
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: mozilla/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ffi-header-macos
