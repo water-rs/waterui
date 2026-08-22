@@ -3,6 +3,7 @@ use alloc::{
     string::{String, ToString},
 };
 use core::fmt;
+use core::num::NonZeroUsize;
 use core::ops::{Add, AddAssign};
 use fmt::Display;
 
@@ -34,6 +35,14 @@ pub struct TextConfig {
     pub content: Computed<StyledStr>,
     /// Paragraph alignment for multiline layout.
     pub paragraph_alignment: Computed<HorizontalAlignment>,
+    /// Maximum number of laid-out lines, or `None` for no limit.
+    ///
+    /// Text that does not fit the limit is truncated at its last visible
+    /// line — with a trailing ellipsis where the backend's native text
+    /// machinery provides one. This is `SwiftUI`'s `lineLimit`: a control
+    /// label capped at one line stays a label under compression instead of
+    /// folding into a paragraph.
+    pub line_limit: Option<NonZeroUsize>,
 }
 
 impl TextConfig {
@@ -43,6 +52,7 @@ impl TextConfig {
         Self {
             content: content.into_signal().map(StyledStr::from).computed(),
             paragraph_alignment: Computed::constant(HorizontalAlignment::Leading),
+            line_limit: None,
         }
     }
 }
@@ -198,6 +208,7 @@ where
                 .map(|(lhs, rhs)| TextConfig {
                     content: lhs.content.zip(&rhs.content).map(|(a, b)| a + b).computed(),
                     paragraph_alignment: lhs.paragraph_alignment,
+                    line_limit: lhs.line_limit,
                 })
                 .computed()
         })
@@ -299,6 +310,10 @@ impl Text {
             TextKind::Signal { resolver } => {
                 let config = resolver(env);
                 TextConfig {
+                    // A plain field cannot be flattened through the config
+                    // signal, so the resolved snapshot's value is the one that
+                    // holds; every authoring path sets it before resolution.
+                    line_limit: config.get().line_limit,
                     content: flatten_signal(config.map(|config| config.content)),
                     paragraph_alignment: flatten_signal(
                         config.map(|config| config.paragraph_alignment),
@@ -475,6 +490,42 @@ impl Text {
         })
     }
 
+    /// Caps the text at `limit` laid-out lines — `SwiftUI`'s `lineLimit`.
+    ///
+    /// Text past the limit is truncated at the last visible line, with a
+    /// trailing ellipsis where the backend's native text machinery provides
+    /// one. Control labels use `NonZeroUsize::MIN` (one line) so a compressed
+    /// button stays a button instead of folding its label into a paragraph.
+    pub fn line_limit(self, limit: NonZeroUsize) -> Self {
+        self.map_config(move |mut config| {
+            config.line_limit = Some(limit);
+            config
+        })
+    }
+
+    /// Removes any line limit, letting the text wrap freely again.
+    pub fn disable_line_limit(self) -> Self {
+        self.map_config(|mut config| {
+            config.line_limit = None;
+            config
+        })
+    }
+
+    /// Caps the text at `limit` lines only when the author set no explicit
+    /// limit of their own.
+    ///
+    /// This is how a control applies its platform baseline — a button label
+    /// stays one truncated line — without overruling a deliberate
+    /// [`Self::line_limit`] from the application.
+    pub fn default_line_limit(self, limit: NonZeroUsize) -> Self {
+        self.map_config(move |mut config| {
+            if config.line_limit.is_none() {
+                config.line_limit = Some(limit);
+            }
+            config
+        })
+    }
+
     /// Sets the font to bold.
     pub fn bold(self) -> Self {
         self.weight(FontWeight::Bold)
@@ -527,6 +578,9 @@ impl View for Text {
             TextKind::Signal { resolver } => {
                 let config = resolver(env);
                 RawText(TextConfig {
+                    // See `Text::resolve`: the limit is a plain field settled
+                    // at authoring time, so the resolved snapshot's value holds.
+                    line_limit: config.get().line_limit,
                     content: flatten_signal(config.map(|config| config.content)),
                     paragraph_alignment: flatten_signal(
                         config.map(|config| config.paragraph_alignment),

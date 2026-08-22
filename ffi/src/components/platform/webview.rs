@@ -333,7 +333,7 @@ pub struct WuiWebViewHandle {
     /// promise it returns, then call the callback with the resolved value.
     ///
     /// Every typed evaluation goes through here, because the shared wrapper in
-    /// `js/eval.js` is `async`: an engine API that does not await — WebKit's
+    /// `js/eval.js` is `async`: an engine API that does not await — `WebKit`'s
     /// `evaluateJavaScript`, `webkit_web_view_evaluate_javascript`,
     /// `WebView.evaluateJavascript` — hands back the promise object instead of
     /// the JSON envelope, and every `eval!`/`exec!` fails while mirrored state

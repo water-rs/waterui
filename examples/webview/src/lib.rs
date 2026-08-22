@@ -172,7 +172,7 @@ fn toolbar(
         .spacing(8.0),
     ))
     .spacing(5.0)
-    .width(250.0)
+    .max_width(420.0)
 }
 
 fn missing_controller_view() -> impl View {
