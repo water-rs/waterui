@@ -42,22 +42,30 @@ configurable!(
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// // Basic stepper (has default label showing value)
-    /// stepper(&quantity)
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_controls::stepper;
+    /// # fn basic(quantity: Binding<i32>) -> impl View {
+    /// // Basic stepper: the label is required, so assistive technology always
+    /// // has something to announce
+    /// stepper("Quantity", &quantity)
+    /// # }
     ///
-    /// // With label and range
-    /// stepper(&count)
-    ///     .label("Items")
+    /// # fn bounded(count: Binding<i32>) -> impl View {
+    /// // With a range and step
+    /// stepper("Items", &count)
     ///     .range(1..=10)
     ///     .step(1)
+    /// # }
     ///
-    /// // In a form row
+    /// # fn row(quantity: Binding<i32>) -> impl View {
+    /// // In a form row, where the row's own text carries the label visually
     /// hstack((
     ///     text("Quantity"),
     ///     spacer(),
-    ///     stepper(&quantity),
+    ///     stepper("Quantity", &quantity).hide_label(),
     /// ))
+    /// # }
     /// ```
     //
     // ═══════════════════════════════════════════════════════════════════════════
