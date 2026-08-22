@@ -898,31 +898,38 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
     )
 }
 
-/// Swift compilation conditions matching the optional FFI features this app
-/// enabled, so the backend compiles exactly the components whose symbols exist.
+/// Swift compilation conditions matching the optional capabilities this app's
+/// graph carries, so the backend compiles exactly the components whose symbols
+/// exist.
 ///
-/// The two lists mirror the feature's default polarity, so a bare `swift build`
-/// of the backend package — no conditions at all — still compiles what a
-/// default-featured app links. A default-off feature gets a positive condition
-/// when enabled; a default-on feature gets a negative condition when disabled.
+/// The decision must come from [`assets::capability_enabled`] — the same
+/// predicate that forwards each capability's feature to the FFI build. The FFI
+/// features travel on the build command line, never into the generated
+/// manifest, so re-resolving `waterui-ffi`'s features from the manifest graph
+/// reads every capability as off and prunes components whose symbols the
+/// dylib does export.
+///
+/// The two lists mirror each capability's default polarity, so a bare
+/// `swift build` of the backend package — no conditions at all — still
+/// compiles what a default-featured app links. A default-off capability gets a
+/// positive condition when carried; a default-on capability gets a negative
+/// condition when dropped.
+///
+/// [`assets::capability_enabled`]: crate::project_model::assets::capability_enabled
 async fn apple_swift_conditions(project: &Project) -> eyre::Result<Vec<String>> {
-    /// Default-off features, named when the app turns them on.
+    /// Default-off capabilities, named when the app's graph carries them.
     const OPTIONAL_COMPONENTS: &[(&str, &str)] = &[("map", "WATERUI_MAP")];
-    /// Default-on features, named when the app turns them off.
+    /// Default-on capabilities, named when the app's graph drops them.
     const DEFAULT_COMPONENTS: &[(&str, &str)] = &[("gpu", "WATERUI_NO_GPU")];
 
     let mut conditions = Vec::new();
-    for (feature, condition) in OPTIONAL_COMPONENTS {
-        if crate::project_model::assets::package_feature_enabled(project, "waterui-ffi", feature)
-            .await?
-        {
+    for (capability, condition) in OPTIONAL_COMPONENTS {
+        if crate::project_model::assets::capability_enabled(project, capability).await? {
             conditions.push(format!("-D{condition}"));
         }
     }
-    for (feature, condition) in DEFAULT_COMPONENTS {
-        if !crate::project_model::assets::package_feature_enabled(project, "waterui-ffi", feature)
-            .await?
-        {
+    for (capability, condition) in DEFAULT_COMPONENTS {
+        if !crate::project_model::assets::capability_enabled(project, capability).await? {
             conditions.push(format!("-D{condition}"));
         }
     }
