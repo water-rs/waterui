@@ -90,8 +90,8 @@ impl SceneEngine {
     /// `create_shader_module` — an adapter that omits it (the Android
     /// emulator's SwiftShader-backed Vulkan, for one) aborts there, long
     /// after this choice was made.
-    const CLASSIC_REQUIREMENTS: wgpu::DownlevelFlags = wgpu::DownlevelFlags::INDIRECT_EXECUTION
-        .union(wgpu::DownlevelFlags::SHADER_F16_IN_F32);
+    const CLASSIC_REQUIREMENTS: wgpu::DownlevelFlags =
+        wgpu::DownlevelFlags::INDIRECT_EXECUTION.union(wgpu::DownlevelFlags::SHADER_F16_IN_F32);
 
     /// The engine this adapter can actually run.
     #[must_use]
