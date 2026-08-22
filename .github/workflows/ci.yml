@@ -209,9 +209,14 @@ jobs:
       # `cargo rustc -- -Zunpretty=expanded`, and the exported functions are
       # macro-generated, so the expansion cannot be skipped.
       - uses: dtolnay/rust-toolchain@nightly
+      # Dependency caches only: the full target tarball measured 0.8GB and, in
+      # a quota squeezed by the two Test tarballs, was evicted before every
+      # single restore — this job has never once hit it. Storing just the
+      # dependency caches keeps the quota pressure off the caches that do hit.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ffi-header-macos
+          cache-targets: false
           cache-on-failure: true
       - name: Regenerate the header
         run: cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
