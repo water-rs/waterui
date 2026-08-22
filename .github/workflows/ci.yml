@@ -192,7 +192,7 @@ jobs:
     # contains them. Regenerating anywhere else would delete them and break the
     # Apple backend, so macOS is the canonical generation host.
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
