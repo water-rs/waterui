@@ -139,7 +139,7 @@ pub fn build(kind: &TokenStream, interpolated: &Interpolated) -> TokenStream {
             #source,
             ::std::vec![
                 #(
-                    ::serde_json::to_value(&(#args))
+                    ::waterui::webview::serde_json::to_value(&(#args))
                         .expect("a value interpolated into JavaScript must serialize")
                 ),*
             ],

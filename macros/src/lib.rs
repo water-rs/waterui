@@ -39,14 +39,38 @@ mod js_api;
 
 /// Exposes an `impl` block to the page.
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::webview::{Json, WebView, serde};
+/// # use waterui::{Binding, Str, Url, View, js_api};
+/// # #[derive(serde::Serialize)]
+/// # #[serde(crate = "waterui::webview::serde")]
+/// # struct Greeting {
+/// #     text: String,
+/// # }
+/// # #[derive(Debug)]
+/// # struct ApiError;
+/// # impl core::fmt::Display for ApiError {
+/// #     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+/// #         f.write_str("api error")
+/// #     }
+/// # }
+/// # type Theme = Str;
+/// # struct App {
+/// #     theme: Binding<Theme>,
+/// # }
 /// #[js_api(namespace = "app")]
 /// impl App {
 ///     fn theme(&self) -> Binding<Theme> { self.theme.clone() }
-///     async fn greet(&self, name: String) -> Result<Json<Greeting>, ApiError> { ... }
+///     async fn greet(&self, name: String) -> Result<Json<Greeting>, ApiError> {
+/// #       let _ = &name;
+///         // ...
+/// #       Ok(Json(Greeting { text: name }))
+///     }
 /// }
 ///
+/// # fn page(url: Url, app: App) -> impl View {
 /// WebView::open(url).serve(app)
+/// # }
 /// ```
 ///
 /// An `async fn` becomes a handler the page calls as
@@ -68,8 +92,14 @@ pub fn js_api(args: TokenStream, input: TokenStream) -> TokenStream {
 
 /// Runs a JavaScript program for its effects.
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::Str;
+/// # use waterui::exec;
+/// # use waterui::webview::{JsError, WebView};
+/// # async fn apply(webview: &WebView, theme: Str) -> Result<(), JsError> {
 /// exec!(webview, "app.setTheme(@{theme})").await?;
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// `@{expr}` holes are passed to the engine as bound arguments rather than
@@ -90,8 +120,13 @@ pub fn exec(input: TokenStream) -> TokenStream {
 
 /// Evaluates a JavaScript expression and decodes its result.
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::eval;
+/// # use waterui::webview::{JsError, WebView};
+/// # async fn title_of(webview: &WebView) -> Result<String, JsError> {
 /// let title: String = eval!(webview, "document.title").await?;
+/// # Ok(title)
+/// # }
 /// ```
 ///
 /// Interpolation works exactly as in [`exec!`].
@@ -109,9 +144,14 @@ pub fn eval(input: TokenStream) -> TokenStream {
 
 /// A JavaScript program read from a file at compile time.
 ///
-/// ```ignore
-/// webview.inject("setup", js_file!("scripts/setup.js"), ScriptInjectionTime::DocumentStart);
-/// exec_file!(webview, "scripts/setup.js").await?;
+/// ```rust
+/// # use waterui::webview::{JsError, WebView};
+/// # use waterui::{exec_file, js_file};
+/// # async fn setup(webview: &WebView) -> Result<(), JsError> {
+/// webview.exec(&js_file!("scripts/setup.js")).await?;
+/// exec_file!(webview, "scripts/setup.js").await?; // the fused form
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// Multi-line JavaScript belongs in a file rather than a string literal, and this
@@ -157,8 +197,11 @@ pub fn exec_file(input: TokenStream) -> TokenStream {
 /// If a binding's local identifier does not match the desired slot key,
 /// alias it explicitly:
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn labelled(local_var: Str) -> impl View {
 /// text!("{slot}", slot = local_var)
+/// # }
 /// ```
 ///
 /// The flow-markdown example's `_text` clone aliases at the top of its
@@ -198,7 +241,7 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::Identifiable;
 ///
 /// #[derive(Clone, Identifiable)]
@@ -386,12 +429,12 @@ fn snake_to_title_case(s: &str) -> String {
 /// - `Debug`
 /// - `FormBuilder`
 /// - `Project` (from `waterui::reactive` for reactive state management)
-/// - `Serialize` and `Deserialize` (from serde, if available)
 ///
 /// # Example
 ///
-/// ```text
-/// use waterui::{form, FormBuilder};
+/// ```rust
+/// use waterui::prelude::*;
+/// use waterui::reactive::binding;
 ///
 /// #[form]
 /// pub struct UserForm {
@@ -404,24 +447,21 @@ fn snake_to_title_case(s: &str) -> String {
 /// }
 ///
 /// fn create_form() -> impl View {
-///     let form_binding = UserForm::binding();
+///     let form_binding: Binding<UserForm> = binding(UserForm::default());
 ///     form(&form_binding)
 /// }
 /// ```
 ///
 /// This is equivalent to manually writing:
 ///
-/// ```text
-/// #[derive(Default, Clone, Debug, FormBuilder)]
-/// #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+/// ```rust
+/// use waterui::prelude::*;
+///
+/// #[derive(Default, Clone, Debug, FormBuilder, Project)]
 /// pub struct UserForm {
 ///     pub name: String,
 ///     pub age: i32,
 ///     pub notifications: bool,
-/// }
-///
-/// impl Project for UserForm {
-///     // ... implementation provided by waterui::reactive derive
 /// }
 /// ```
 #[proc_macro_attribute]
@@ -465,7 +505,7 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-use syn::{Expr, LitStr, Token, Type, parse::Parse, punctuated::Punctuated};
+use syn::{Expr, Token, Type, parse::Parse, punctuated::Punctuated};
 
 /// Derive macro for implementing the `Project` trait on structs.
 ///
@@ -474,7 +514,7 @@ use syn::{Expr, LitStr, Token, Type, parse::Parse, punctuated::Punctuated};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::reactive::{Binding, binding, project::Project};
 /// use waterui_macros::Project;
 ///
@@ -688,355 +728,6 @@ fn derive_project_unit_struct(input: &DeriveInput, waterui: &TokenStream2) -> To
     TokenStream::from(expanded)
 }
 
-/// Input structure for the `s!` macro
-struct SInput {
-    format_str: LitStr,
-    args: Punctuated<Expr, Token![,]>,
-}
-
-impl Parse for SInput {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let format_str: LitStr = input.parse()?;
-        let args = if input.peek(Token![,]) {
-            input.parse::<Token![,]>()?;
-            Punctuated::parse_terminated(input)?
-        } else {
-            Punctuated::new()
-        };
-
-        Ok(Self { format_str, args })
-    }
-}
-
-/// Function-like procedural macro for creating formatted string signals with automatic variable capture.
-///
-/// This macro automatically detects named variables in format strings and captures them from scope.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use waterui_macros::s;
-/// use waterui::reactive::constant;
-///
-/// let name = constant("Alice");
-/// let age = constant(25);
-///
-/// // Automatic variable capture from format string
-/// let msg = s!("Hello {name}, you are {age} years old");
-///
-/// // Positional arguments still work
-/// let msg2 = s!("Hello {}, you are {}", name, age);
-/// ```
-#[proc_macro]
-#[allow(clippy::similar_names, clippy::too_many_lines)]
-pub fn s(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as SInput);
-    let waterui = match waterui_crate_path() {
-        Ok(path) => path,
-        Err(error) => return error.into_compile_error().into(),
-    };
-    let format_str = input.format_str;
-    let format_value = format_str.value();
-
-    // Check for format string issues
-    let (has_positional, has_named, positional_count, named_vars) =
-        analyze_format_string(&format_value);
-
-    // If there are explicit arguments, validate and use positional approach
-    if !input.args.is_empty() {
-        // Check for mixed usage errors
-        if has_named {
-            return syn::Error::new_spanned(
-                &format_str,
-                format!(
-                    "Format string contains named arguments like {{{}}} but you provided positional arguments. \
-                    Either use positional placeholders like {{}} or remove the explicit arguments to use automatic variable capture.",
-                    named_vars.first().unwrap_or(&String::new())
-                )
-            )
-            .to_compile_error()
-            .into();
-        }
-
-        // Check argument count matches placeholders
-        if positional_count != input.args.len() {
-            return syn::Error::new_spanned(
-                &format_str,
-                format!(
-                    "Format string has {} positional placeholders but {} arguments were provided",
-                    positional_count,
-                    input.args.len()
-                ),
-            )
-            .to_compile_error()
-            .into();
-        }
-        let args: Vec<_> = input.args.iter().collect();
-        return match args.len() {
-            1 => {
-                let arg = &args[0];
-                quote! {
-                    {
-                        use #waterui::reactive::SignalExt;
-                        SignalExt::map(#arg.clone(), |arg| #waterui::reactive::__format!(#format_str, arg))
-                    }
-                }
-                .into()
-            }
-            2 => {
-                let arg1 = &args[0];
-                let arg2 = &args[1];
-                quote! {
-                    {
-                        use #waterui::reactive::{SignalExt, zip::zip};
-                        let __arg1 = #arg1.clone();
-                        let __arg2 = #arg2.clone();
-                        SignalExt::map(zip(__arg1, &__arg2), |(arg1, arg2)| {
-                            #waterui::reactive::__format!(#format_str, arg1, arg2)
-                        })
-                    }
-                }
-                .into()
-            }
-            3 => {
-                let arg1 = &args[0];
-                let arg2 = &args[1];
-                let arg3 = &args[2];
-                quote! {
-                    {
-                        use #waterui::reactive::{SignalExt, zip::zip};
-                        let __arg1 = #arg1.clone();
-                        let __arg2 = #arg2.clone();
-                        let __arg3 = #arg3.clone();
-                        let __inner = zip(__arg1, &__arg2);
-                        SignalExt::map(
-                            zip(__inner, &__arg3),
-                            |((arg1, arg2), arg3)| #waterui::reactive::__format!(#format_str, arg1, arg2, arg3)
-                        )
-                    }
-                }
-                .into()
-            }
-            4 => {
-                let arg1 = &args[0];
-                let arg2 = &args[1];
-                let arg3 = &args[2];
-                let arg4 = &args[3];
-                quote! {
-                    {
-                        use #waterui::reactive::{SignalExt, zip::zip};
-                        let __arg1 = #arg1.clone();
-                        let __arg2 = #arg2.clone();
-                        let __arg3 = #arg3.clone();
-                        let __arg4 = #arg4.clone();
-                        let __inner1 = zip(__arg1, &__arg2);
-                        let __inner2 = zip(__arg3, &__arg4);
-                        SignalExt::map(
-                            zip(__inner1, &__inner2),
-                            |((arg1, arg2), (arg3, arg4))| #waterui::reactive::__format!(#format_str, arg1, arg2, arg3, arg4)
-                        )
-                    }
-                }.into()
-            }
-            _ => syn::Error::new_spanned(format_str, "Too many arguments, maximum 4 supported")
-                .to_compile_error()
-                .into(),
-        };
-    }
-
-    // Check for mixed placeholders when no explicit arguments
-    if has_positional && has_named {
-        return syn::Error::new_spanned(
-            &format_str,
-            "Format string mixes positional {{}} and named {{var}} placeholders. \
-            Use either all positional with explicit arguments, or all named for automatic capture.",
-        )
-        .to_compile_error()
-        .into();
-    }
-
-    // If has positional placeholders but no arguments provided
-    if has_positional && input.args.is_empty() {
-        return syn::Error::new_spanned(
-            &format_str,
-            format!(
-                "Format string has {positional_count} positional placeholder(s) {{}} but no arguments provided. \
-                Either provide arguments or use named placeholders like {{variable}} for automatic capture."
-            )
-        )
-        .to_compile_error()
-        .into();
-    }
-
-    // Parse format string to extract variable names for automatic capture
-    let var_names = named_vars;
-
-    // If no variables found, return constant
-    if var_names.is_empty() {
-        return quote! {
-            {
-                use #waterui::reactive::constant;
-                constant(#waterui::reactive::__format!(#format_str))
-            }
-        }
-        .into();
-    }
-
-    // Generate code for named variable capture
-    let var_idents: Vec<syn::Ident> = var_names
-        .iter()
-        .map(|name| syn::Ident::new(name, format_str.span()))
-        .collect();
-
-    match var_names.len() {
-        1 => {
-            let var = &var_idents[0];
-            quote! {
-                {
-                    use #waterui::reactive::SignalExt;
-                    let __var = #var.clone();
-                    SignalExt::map(&__var, |#var| {
-                        #waterui::reactive::__format!(#format_str)
-                    })
-                }
-            }
-            .into()
-        }
-        2 => {
-            let var1 = &var_idents[0];
-            let var2 = &var_idents[1];
-            quote! {
-                {
-                    use #waterui::reactive::{SignalExt, zip::zip};
-                    let __var1 = #var1.clone();
-                    let __var2 = #var2.clone();
-                    let __zipped = zip(__var1, &__var2);
-                    SignalExt::map(&__zipped, |(#var1, #var2)| {
-                        #waterui::reactive::__format!(#format_str)
-                    })
-                }
-            }
-            .into()
-        }
-        3 => {
-            let var1 = &var_idents[0];
-            let var2 = &var_idents[1];
-            let var3 = &var_idents[2];
-            quote! {
-                {
-                    use #waterui::reactive::{SignalExt, zip::zip};
-                    let __var1 = #var1.clone();
-                    let __var2 = #var2.clone();
-                    let __var3 = #var3.clone();
-                    let __inner = zip(__var1, &__var2);
-                    let __zipped = zip(__inner, &__var3);
-                    SignalExt::map(
-                        &__zipped,
-                        |((#var1, #var2), #var3)| {
-                            #waterui::reactive::__format!(#format_str)
-                        }
-                    )
-                }
-            }
-            .into()
-        }
-        4 => {
-            let var1 = &var_idents[0];
-            let var2 = &var_idents[1];
-            let var3 = &var_idents[2];
-            let var4 = &var_idents[3];
-            quote! {
-                {
-                    use #waterui::reactive::{SignalExt, zip::zip};
-                    let __var1 = #var1.clone();
-                    let __var2 = #var2.clone();
-                    let __var3 = #var3.clone();
-                    let __var4 = #var4.clone();
-                    let __inner1 = zip(__var1, &__var2);
-                    let __inner2 = zip(__var3, &__var4);
-                    let __zipped = zip(__inner1, &__inner2);
-                    SignalExt::map(
-                        &__zipped,
-                        |((#var1, #var2), (#var3, #var4))| {
-                            #waterui::reactive::__format!(#format_str)
-                        }
-                    )
-                }
-            }
-            .into()
-        }
-        _ => syn::Error::new_spanned(format_str, "Too many named variables, maximum 4 supported")
-            .to_compile_error()
-            .into(),
-    }
-}
-
-/// Analyze a format string to detect placeholder types and extract variable names
-fn analyze_format_string(format_str: &str) -> (bool, bool, usize, Vec<String>) {
-    let mut has_positional = false;
-    let mut has_named = false;
-    let mut positional_count = 0;
-    let mut named_vars = Vec::new();
-    let mut chars = format_str.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '{' && chars.peek() == Some(&'{') {
-            // Skip escaped braces
-            chars.next();
-        } else if c == '{' {
-            let mut content = String::new();
-            let mut has_content = false;
-
-            while let Some(&next_char) = chars.peek() {
-                if next_char == '}' {
-                    chars.next(); // consume }
-                    break;
-                } else if next_char == ':' {
-                    // Format specifier found, we've captured the name/position part
-                    chars.next(); // consume :
-                    while let Some(&spec_char) = chars.peek() {
-                        if spec_char == '}' {
-                            chars.next(); // consume }
-                            break;
-                        }
-                        chars.next();
-                    }
-                    break;
-                }
-                content.push(chars.next().unwrap());
-                has_content = true;
-            }
-
-            // Analyze the content
-            if !has_content || content.is_empty() {
-                // Empty {} is positional
-                has_positional = true;
-                positional_count += 1;
-            } else if content.chars().all(|ch| ch.is_ascii_digit()) {
-                // Numeric like {0} or {1} is positional
-                has_positional = true;
-                positional_count += 1;
-            } else if content
-                .chars()
-                .next()
-                .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
-            {
-                // Starts with letter or underscore, likely a variable name
-                has_named = true;
-                if !named_vars.contains(&content) {
-                    named_vars.push(content);
-                }
-            } else {
-                // Other cases treat as positional
-                has_positional = true;
-                positional_count += 1;
-            }
-        }
-    }
-
-    (has_positional, has_named, positional_count, named_vars)
-}
-
 /// Attribute macro for enabling view preview functionality.
 ///
 /// This macro marks a function as previewable, generating a C-exported symbol that
@@ -1044,8 +735,9 @@ fn analyze_format_string(format_str: &str) -> (bool, bool, usize, Vec<String>) {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// use waterui::prelude::*;
+/// use waterui::preview;
 ///
 /// // Simple function with no arguments
 /// #[preview]
@@ -1481,15 +1173,18 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 /// bare `offscreen` flag mounts the GPU-backed offscreen runtime (the test
 /// then takes `&mut OffscreenApp`).
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
 /// fn login_view() -> impl View {
 ///     // ...
+/// #   button("Login").action(|| {})
 /// }
 ///
 /// #[waterui::test(login_view, theme = hydrolysis_m3::install, viewport = (360, 320))]
 /// fn login_flow(app: &mut waterui_testing::SemanticApp) {
 ///     app.query().role(waterui_testing::Role::BUTTON).label("Login").tap();
 /// }
+/// # fn main() {}
 /// ```
 ///
 /// # Manual-mount form
@@ -1498,7 +1193,8 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 /// [`UiBuilder`](https://docs.rs/waterui-testing) by value and mounts in its
 /// own body — the form for tests that own `Binding`s the view closes over.
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
 /// #[waterui::test(theme = hydrolysis_m3::install)]
 /// fn stepper_updates_binding(ui: waterui_testing::UiBuilder) {
 ///     let value = Binding::i32(2);
@@ -1507,6 +1203,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 ///     app.query().label("Limited").increment();
 ///     assert_eq!(value.get(), 3);
 /// }
+/// # fn main() {}
 /// ```
 ///
 /// The macro always expands into a regular `#[test]` wrapper.
@@ -1731,15 +1428,18 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 /// `measure`. `theme = <installer>` swaps the theme package and
 /// `viewport = (width, height)` sizes the window.
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
 /// fn dashboard() -> impl View {
 ///     // ...
+/// #   text("Dashboard")
 /// }
 ///
 /// #[waterui::bench(dashboard, theme = hydrolysis_m3::install, viewport = (390, 844), max_p95_us = 8_000)]
 /// fn dashboard_redraw(perf: &mut waterui_testing::PerfApp) {
 ///     perf.measure("steady-redraw", |run| run.redraw());
 /// }
+/// # fn main() {}
 /// ```
 ///
 /// # Manual form
@@ -1749,7 +1449,12 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 /// `PerfReport` — the form for benches that own `Binding`s the view closes
 /// over.
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn counter(value: &Binding<i32>) -> impl View {
+/// #     let value = value.clone();
+/// #     button("Increment").action(move || *value.get_mut() += 1)
+/// # }
 /// #[waterui::bench(theme = hydrolysis_m3::install, max_rebuild_ratio = 0.2)]
 /// fn counter_updates(ui: waterui_testing::UiBuilder) -> waterui_testing::PerfReport {
 ///     let value = Binding::i32(0);
@@ -1761,6 +1466,7 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 ///         });
 ///     })
 /// }
+/// # fn main() {}
 /// ```
 ///
 /// # Budgets

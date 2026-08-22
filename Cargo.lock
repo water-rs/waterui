@@ -13038,6 +13038,7 @@ dependencies = [
 name = "waterui-macros"
 version = "0.2.1"
 dependencies = [
+ "hydrolysis-m3",
  "icu_locale_core",
  "icu_locid",
  "icu_locid_transform",

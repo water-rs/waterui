@@ -160,6 +160,11 @@ pub fn typescript_declarations<A: JsApi>() -> String {
 /// without the calling crate having to depend on `serde` itself.
 #[doc(hidden)]
 pub use serde;
+/// Re-exported for the same reason as [`serde`]: `exec!` and `eval!` serialize
+/// each `@{...}` hole, and the calling crate must not have to depend on
+/// `serde_json` just to write a JavaScript literal.
+#[doc(hidden)]
+pub use serde_json;
 mod big_integers;
 mod message;
 pub use message::{Bytes, HandlerName, IntoJsReply, JsReply, Json};

@@ -602,21 +602,32 @@ fn build_text_config_expr(
 ///
 /// # Syntax
 ///
-/// ```rust,ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn plain() -> impl View {
 /// // Simple text
 /// text!("Hello, World!")
+/// # }
 ///
+/// # fn named(name: Str) -> impl View {
 /// // Named placeholders (captured from scope)
 /// text!("Hello, {name}")
+/// # }
 ///
+/// # fn plural(count: i32) -> impl View {
 /// // Plural source (for CLDR plural rules)
 /// text!("I have {#count} apple")
+/// # }
 ///
+/// # fn homograph() -> impl View {
 /// // Context for homographs
 /// text!("Right" @ "direction")
+/// # }
 ///
+/// # fn explicit(get_name: impl Fn() -> Str) -> impl View {
 /// // Explicit binding
 /// text!("Hello, {name}", name = get_name())
+/// # }
 /// ```
 pub fn text(input: &TokenStream) -> TokenStream {
     let input = match syn::parse::<TextInput>(input.clone()) {
