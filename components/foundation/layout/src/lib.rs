@@ -60,10 +60,11 @@ pub use containers::{
 pub use modifiers::{alignment_guide, background, overlay, padding, safe_area};
 
 pub use divider::Divider;
-pub use spacer::{Spacer, spacer};
+pub use spacer::{Spacer, spacer, spacer_min};
 pub mod stack;
 
-pub use scroll::{ScrollController, ScrollView, scroll};
+pub use grid::{Grid, GridRow, grid, row};
+pub use scroll::{ScrollController, ScrollView, scroll, scroll_both, scroll_horizontal};
 
 pub use alignment_guide::{HorizontalAlignmentGuide, VerticalAlignmentGuide};
 pub use aspect_ratio::{AspectRatio, AspectRatioLayout, ContentMode, aspect_ratio};
