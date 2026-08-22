@@ -19,19 +19,22 @@ use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```rust
+/// use waterui::layout::spacer::spacer_min;
+/// use waterui::prelude::*;
+///
 /// // Push button to trailing edge
 /// hstack((
 ///     text("Title"),
 ///     spacer(),
-///     button("Done", || {}),
-/// ))
+///     button("Done").action(|| {}),
+/// ));
 ///
 /// // Center content with equal spacing
-/// hstack((spacer(), text("Centered"), spacer()))
+/// hstack((spacer(), text("Centered"), spacer()));
 ///
 /// // Spacer with minimum length (never shrinks below 20pt)
-/// spacer_min(20.0)
+/// spacer_min(20.0);
 /// ```
 //
 // ═══════════════════════════════════════════════════════════════════════════

@@ -5,11 +5,12 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use waterui_layout::{absolute, PinConstraints, UnitPoint, PositionExt};
+//! ```rust
+//! use waterui::prelude::*;
 //!
+//! # fn overlay_stage(badge: impl View, panel: impl View) -> impl View {
 //! absolute((
-//!     Color::gray(),  // Fills container
+//!     Color::grey(), // Fills container
 //!     text("Center").position_in(UnitPoint::CENTER),
 //!     badge.position_in_offset(
 //!         UnitPoint::TOP_TRAILING,
@@ -18,6 +19,7 @@
 //!     ),
 //!     panel.pin(PinConstraints::all(16.0)),
 //! ))
+//! # }
 //! ```
 
 use alloc::collections::BTreeSet;
@@ -435,8 +437,11 @@ pub trait PositionExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// text("Hello").position(100.0, 50.0)  // center at (100, 50)
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # fn placed() -> impl View {
+    /// text("Hello").position(100.0, 50.0) // center at (100, 50)
+    /// # }
     /// ```
     fn position(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> PositionedChild<Self> {
         self.position_anchor(UnitPoint::CENTER, x, y)
@@ -446,8 +451,11 @@ pub trait PositionExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # fn placed() -> impl View {
     /// text("Hello").position_anchor(UnitPoint::TOP_LEADING, 10.0, 10.0)
+    /// # }
     /// ```
     fn position_anchor(
         self,
@@ -474,8 +482,11 @@ pub trait PositionExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # fn placed() -> impl View {
     /// text("Centered").position_in(UnitPoint::CENTER)
+    /// # }
     /// ```
     fn position_in(self, position: UnitPoint) -> PositionedChild<Self> {
         self.position_in_anchor(position, position)
@@ -485,9 +496,12 @@ pub trait PositionExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # fn placed(view: impl View) -> impl View {
     /// // Place view's top-left at parent's center
     /// view.position_in_anchor(UnitPoint::TOP_LEADING, UnitPoint::CENTER)
+    /// # }
     /// ```
     fn position_in_anchor(self, anchor: UnitPoint, position: UnitPoint) -> PositionedChild<Self> {
         PositionedChild {
@@ -509,13 +523,16 @@ pub trait PositionExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # fn placed(fab: impl View) -> impl View {
     /// // FAB at bottom-right with 16pt inset
     /// fab.position_in_offset(
     ///     UnitPoint::BOTTOM_TRAILING,
     ///     UnitPoint::BOTTOM_TRAILING,
     ///     -16.0, -16.0
     /// )
+    /// # }
     /// ```
     fn position_in_offset(
         self,
@@ -541,7 +558,9 @@ pub trait PositionExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # fn pinned(background: impl View, badge: impl View) {
     /// // Fill parent with 12pt inset
     /// background.pin(PinConstraints::all(12.0));
     ///
@@ -553,6 +572,7 @@ pub trait PositionExt: View + Sized {
     ///         .width(28.0)
     ///         .height(28.0)
     /// );
+    /// # }
     /// ```
     fn pin(self, constraints: PinConstraints) -> PositionedChild<Self> {
         PositionedChild {
@@ -579,12 +599,15 @@ impl<V: View + Sized> PositionExt for V {}
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn stage(fab: impl View) -> impl View {
 /// absolute((
-///     Color::gray(),  // Fills automatically (StretchAxis::Both)
+///     Color::grey(), // Fills automatically (StretchAxis::Both)
 ///     text("Centered").position_in(UnitPoint::CENTER),
 ///     fab.position_in_offset(UnitPoint::BOTTOM_TRAILING, UnitPoint::BOTTOM_TRAILING, -16.0, -16.0),
 /// ))
+/// # }
 /// ```
 pub struct Absolute<C> {
     contents: C,
@@ -621,12 +644,15 @@ impl<C: TupleViews + 'static> View for Absolute<C> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn stage(background: impl View, icon: impl View) -> impl View {
 /// absolute((
 ///     background,
 ///     text("Hello").position(50.0, 100.0),
 ///     icon.position_in(UnitPoint::CENTER),
 /// ))
+/// # }
 /// ```
 #[must_use]
 pub const fn absolute<C: TupleViews>(contents: C) -> Absolute<C> {

@@ -23,30 +23,39 @@ use crate::{
 /// Use an `HStack` to arrange views side-by-side. The stack sizes itself to fit
 /// its contents, distributing available space among its children.
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn greeting() -> impl View {
 /// hstack((
 ///     text("Hello"),
 ///     text("World"),
 /// ))
+/// # }
 /// ```
 ///
 /// You can customize the spacing between children and their vertical alignment:
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn spaced() -> impl View {
 /// HStack::new(VerticalAlignment::Top, 20.0, (
 ///     text("First"),
 ///     text("Second"),
 /// ))
+/// # }
 /// ```
 ///
 /// Use [`spacer()`](crate::spacer()) to push content to the sides:
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn toolbar() -> impl View {
 /// hstack((
 ///     text("Leading"),
 ///     spacer(),
 ///     text("Trailing"),
 /// ))
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct HStack<C> {

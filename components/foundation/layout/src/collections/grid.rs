@@ -309,19 +309,27 @@ impl GridRow {
 /// Use a `Grid` to create a two-dimensional layout. You define the number of columns,
 /// and the grid automatically arranges your content into rows.
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::layout::grid::{grid, row};
+/// # use waterui::prelude::*;
+/// # fn table() -> impl View {
 /// grid(2, [
 ///     row((text("A1"), text("A2"))),
 ///     row((text("B1"), text("B2"))),
 /// ])
+/// # }
 /// ```
 ///
 /// Customize spacing and alignment:
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::layout::grid::{Grid, GridRow};
+/// # use waterui::prelude::*;
+/// # fn gallery(rows: Vec<GridRow>) -> impl View {
 /// Grid::new(3, rows)
 ///     .spacing(16.0)
 ///     .alignment(Alignment::Leading)
+/// # }
 /// ```
 ///
 /// The grid sizes columns equally based on available width, and row heights

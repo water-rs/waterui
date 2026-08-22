@@ -68,7 +68,9 @@ where
 /// Use a `ScrollView` when you have content that might not fit in the available space.
 /// The view automatically enables scrolling in the specified direction.
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn feed() -> impl View {
 /// scroll(
 ///     vstack((
 ///         text("Item 1"),
@@ -77,18 +79,27 @@ where
 ///         // ... many more items
 ///     ))
 /// )
+/// # }
 /// ```
 ///
 /// By default, `ScrollView` scrolls vertically. For horizontal scrolling:
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::layout::scroll::scroll_horizontal;
+/// # use waterui::prelude::*;
+/// # fn carousel(long_content: impl View) -> impl View {
 /// scroll_horizontal(long_content)
+/// # }
 /// ```
 ///
 /// Or both directions:
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::layout::scroll::scroll_both;
+/// # use waterui::prelude::*;
+/// # fn canvas(large_image: impl View) -> impl View {
 /// scroll_both(large_image)
+/// # }
 /// ```
 #[derive(Debug)]
 pub struct ScrollView {

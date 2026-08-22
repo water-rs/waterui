@@ -30,17 +30,16 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use waterui_layout::{stack, spacer};
-//! use waterui_text::text;
+//! ```rust
+//! use waterui::prelude::*;
 //!
-//! pub fn toolbar() -> impl waterui_core::View {
-//!     stack::hstack((
+//! pub fn toolbar() -> impl View {
+//!     hstack((
 //!         text("WaterUI"),
 //!         spacer(),
-//!         stack::vstack((text("Docs"), text("Blog"))),
+//!         vstack((text("Docs"), text("Blog"))),
 //!     ))
-//!     .spacing(8.0)  // 8pt spacing - same as Figma/Sketch
+//!     .spacing(8.0) // 8pt spacing - same as Figma/Sketch
 //! }
 //! ```
 //!

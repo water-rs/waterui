@@ -224,20 +224,26 @@ impl Layout for ZStackLayout {
 /// Use a `ZStack` when you want to layer views on top of each other. The stack
 /// sizes itself to fit its largest child.
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn banner() -> impl View {
 /// zstack((
 ///     Color::blue(),
 ///     text("Overlay Text"),
 /// ))
+/// # }
 /// ```
 ///
 /// You can control how children align within the stack:
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// # fn aligned(background_view: impl View, content_view: impl View) -> impl View {
 /// ZStack::new(Alignment::TopLeading, (
 ///     background_view,
 ///     content_view,
 /// ))
+/// # }
 /// ```
 ///
 /// **Note:** If you only need a decorative background without affecting layout size,
