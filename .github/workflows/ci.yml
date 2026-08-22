@@ -29,6 +29,35 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # The developer's iteration signal: format, workspace clippy, and the
+  # default-features test pass on one warm runner. Everything else in this
+  # file is the asynchronous safety net — it still runs on every push, but
+  # nobody has to wait for it to keep working. This job restores the ubuntu
+  # Test leg's cache and never saves (save-if: false), so it costs no quota
+  # and cannot race the leg that owns the key.
+  quick:
+    name: Quick
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-ubuntu-latest
+          save-if: false
+      - uses: taiki-e/install-action@nextest
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo nextest run --workspace --profile ci
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
