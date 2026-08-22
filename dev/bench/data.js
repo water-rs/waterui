@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787376967853,
+  "lastUpdate": 1787376970225,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -573,6 +573,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 16020,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "committer": {
+            "email": "me@lexo.cool",
+            "name": "Lexo Liu",
+            "username": "lexoliu"
+          },
+          "distinct": true,
+          "id": "1137964cc408a463bc55be3ea2e7de0060cb1be1",
+          "message": "fix(ci): gate the 10-bit visual on adapter capability and unblock two red jobs\n\nThree independent reds from run 32550974672. The Coverage job's adapter\nlacks TEXTURE_FORMAT_16BIT_NORM, so the P010 color-visual export died in\nDevice::create_texture; the 10-bit visual is genuinely unrenderable there\n(the documented required_media_features contract), so the test now skips\nthat one export with a warning instead of asking wgpu for a texture the\ndevice cannot carry. The Linux-only browser-wpe lint failure wanted a\nPanics section on DmaBufFrame::with_visible_size; documented. The FFI\nHeader job finished its work but was killed by its own 30-minute cap on a\ncache-miss day (30m21s); raised to 45. Also records the no-silent-waits\nrule in AGENTS.md: waiters emit a heartbeat or re-arm within ~50 minutes\nbecause the prompt cache TTL is one hour.",
+          "timestamp": "2026-08-22T01:11:36-04:00",
+          "tree_id": "eaf59144c927241fc0785a4f44bc3074a2fa2262",
+          "url": "https://github.com/water-rs/waterui/commit/1137964cc408a463bc55be3ea2e7de0060cb1be1"
+        },
+        "date": 1787376969497,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 583060,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 454977,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 14101,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 11871,
             "unit": "us"
           }
         ]
