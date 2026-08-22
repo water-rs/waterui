@@ -46,10 +46,17 @@ jobs:
       - uses: ./.github/actions/setup-linux-deps
       # Its own key: an instrumented build shares no artifacts with the
       # ordinary ones, so storing it under the shared key would just overwrite
-      # a useful tarball with one nothing else can restore.
+      # a useful tarball with one nothing else can restore. The target dir is
+      # deliberately NOT cached: the instrumented tarball measures 3-5GB, and
+      # together with the two Test tarballs that oversubscribes the 10GB cache
+      # quota — every run would then evict one of the three and put a Test leg
+      # back on a 60-minute cold build. Coverage recompiles each run (~42min,
+      # which it already did when it was being evicted 4 runs out of 4) but
+      # only stores the ~0.2GB dependency caches, so the Test legs stay warm.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-coverage
+          cache-targets: false
           cache-on-failure: true
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
