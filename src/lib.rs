@@ -59,8 +59,7 @@ pub mod prelude {
         AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, View,
         ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop,
         entry, env, error, filter, form, fullscreen, gesture, gradient, id, layout, locale,
-        metadata, navigation, reactive, regional, shape, signal, style, task, text, widget,
-        window,
+        metadata, navigation, reactive, regional, shape, signal, style, task, text, widget, window,
     };
 
     pub use crate::include_markdown;
