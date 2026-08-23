@@ -30,3 +30,23 @@ slow-timeout = { period = "120s", terminate-after = 5 }
 [[profile.ci.overrides]]
 filter = "test(waterui_bench_)"
 slow-timeout = { period = "300s", terminate-after = 8 }
+
+# The Windows leg, which has no GPU.
+#
+# wgpu waits for the last submission to complete when a device is destroyed,
+# through a fixed ladder of timeouts totalling 6.3s (`wgpu-core`'s
+# `device/queue.rs`), and panics if it runs out — "We timed out while waiting on
+# the last successful submission to complete!". There is no env var for it.
+#
+# A hosted Windows runner falls back to a software adapter, and nextest gives
+# every test its own process and its own device, so four of them rasterizing at
+# once is enough to blow that budget. It is the *teardown* that fails, not the
+# test: every one of #152's remaining failures is a GPU-backed test panicking on
+# drop. Halving the parallelism halves the simultaneous device count.
+#
+# This is the coarse instrument. The precise one is letting a test declare that
+# it needs a GPU, so those alone are capped or skipped; that needs a marker the
+# repository does not have yet.
+[profile.ci-windows]
+inherits = "ci"
+test-threads = 2
