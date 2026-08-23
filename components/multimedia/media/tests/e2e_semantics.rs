@@ -2,6 +2,16 @@
 
 use std::time::Duration;
 
+/// How long a live photo's motion may take to play out and hand the still back.
+///
+/// This is wall-clock — `SemanticApp::wait_for` pumps against `Instant::now()` —
+/// and playback advances a frame at a time. On a machine with no GPU a frame
+/// costs orders of magnitude more than on one with a real adapter, so a budget
+/// tuned to hardware buys far fewer frames there and the playback never reaches
+/// its end. Generous rather than tight: the assertion is that the motion
+/// finishes and the still returns, not that it does so quickly.
+const MOTION_PLAYBACK_BUDGET: Duration = Duration::from_secs(120);
+
 use hydrolysis_m3::install as install_m3;
 use image::ImageEncoder as _;
 use waterui::Binding;
@@ -202,7 +212,7 @@ fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder) {
     let motion_gone =
         app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(
-        app.wait_for(&[motion_gone], WaitOptions::new(Duration::from_secs(10))),
+        app.wait_for(&[motion_gone], WaitOptions::new(MOTION_PLAYBACK_BUDGET)),
         WaitResult::Completed,
         "completed motion playback must return to the still photo"
     );
@@ -221,7 +231,7 @@ fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder) {
     let motion_gone =
         app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(
-        app.wait_for(&[motion_gone], WaitOptions::new(Duration::from_secs(10))),
+        app.wait_for(&[motion_gone], WaitOptions::new(MOTION_PLAYBACK_BUDGET)),
         WaitResult::Completed,
         "replayed motion must also stop after one pass"
     );
