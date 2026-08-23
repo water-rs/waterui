@@ -5,8 +5,12 @@
 //!
 //! # Architecture
 //!
-//! Safe area is entirely handled by the **native backend**. Rust code only provides
-//! metadata hints via `IgnoreSafeArea`.
+//! Placing native views against the device insets is the **native backend's**
+//! job, and [`IgnoreSafeArea`] is the metadata hint that opts a view out of it.
+//! Layers that `WaterUI` lays out itself — the window's snackbar and overlay
+//! hosts, which a backend sees as one Rust-laid-out container — cannot be inset
+//! from the outside, so a backend publishes the window's insets through
+//! [`SafeAreaInsets`] and those layers pad themselves.
 //!
 //! # Native Backend Responsibilities
 //!
@@ -17,7 +21,10 @@
 //!    - Allow the view to extend edge-to-edge for those edges
 //! 3. **Handle changes**: Re-layout when safe area changes (keyboard, rotation, etc.)
 
-use waterui_core::metadata::MetadataKey;
+use nami::{Computed, SignalExt, signal::IntoComputed};
+use waterui_core::{Environment, metadata::MetadataKey};
+
+use super::padding::EdgeInsets;
 
 /// Specifies which edges should ignore safe area insets.
 ///
@@ -168,5 +175,107 @@ impl IgnoreSafeArea {
         Self {
             edges: EdgeSet::HORIZONTAL,
         }
+    }
+}
+
+/// The window's safe area, published by the platform backend.
+///
+/// A backend that knows its device insets — the notch, the status bar, the home
+/// indicator — installs them here once per window and republishes on rotation.
+/// Rust-side layers that the backend cannot inset for itself, such as the
+/// window's snackbar and overlay hosts, read the value out of the environment
+/// and pad themselves. Backends with no such concept install nothing and
+/// [`SafeAreaInsets::resolve`] answers zero, which is the correct answer for a
+/// desktop window.
+///
+/// This does not replace [`IgnoreSafeArea`]: that stays the hint a backend reads
+/// to let a view span the full screen, and native chrome containers keep
+/// insetting their own content. `SafeAreaInsets` exists for the layers `WaterUI`
+/// lays out itself.
+#[derive(Debug, Clone)]
+pub struct SafeAreaInsets(Computed<EdgeInsets>);
+
+impl SafeAreaInsets {
+    /// Wraps a reactive inset signal.
+    #[must_use]
+    pub fn new(insets: impl IntoComputed<EdgeInsets>) -> Self {
+        Self(insets.into_computed())
+    }
+
+    /// The reactive insets carried by this scope.
+    #[must_use]
+    pub const fn signal(&self) -> &Computed<EdgeInsets> {
+        &self.0
+    }
+
+    /// The insets in force at this position, or zero when no backend published
+    /// any.
+    #[must_use]
+    pub fn resolve(env: &Environment) -> Computed<EdgeInsets> {
+        env.get::<Self>().map_or_else(
+            || EdgeInsets::default().into_computed(),
+            |scope| scope.0.clone(),
+        )
+    }
+
+    /// The insets in force at this position plus a constant `margin`.
+    ///
+    /// This is what an overlay layer wants: clear of the hardware, and then
+    /// clear of the window edge by the theme's own spacing.
+    #[must_use]
+    pub fn resolve_with_margin(env: &Environment, margin: EdgeInsets) -> Computed<EdgeInsets> {
+        Self::resolve(env)
+            .map(move |insets| insets + margin.clone())
+            .into_computed()
+    }
+
+    /// Publishes `insets` to the subtree rendered from `env`.
+    pub fn install(env: &mut Environment, insets: impl IntoComputed<EdgeInsets>) {
+        env.insert(Self::new(insets));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EdgeInsets, SafeAreaInsets};
+    use nami::{Signal, binding};
+    use waterui_core::Environment;
+
+    #[test]
+    fn resolves_to_zero_when_no_backend_published_insets() {
+        let env = Environment::new();
+        assert_eq!(SafeAreaInsets::resolve(&env).get(), EdgeInsets::default());
+    }
+
+    #[test]
+    fn resolved_insets_track_the_published_signal() {
+        let published = binding(EdgeInsets::new(59.0, 34.0, 0.0, 0.0));
+        let mut env = Environment::new();
+        SafeAreaInsets::install(&mut env, published.clone());
+
+        let resolved = SafeAreaInsets::resolve(&env);
+        assert_eq!(resolved.get().top(), 59.0);
+
+        // Rotation: the same signal reports the new insets without the
+        // consuming subtree being rebuilt.
+        published.set(EdgeInsets::new(0.0, 21.0, 59.0, 59.0));
+        assert_eq!(resolved.get().top(), 0.0);
+        assert_eq!(resolved.get().leading(), 59.0);
+    }
+
+    #[test]
+    fn margin_stacks_on_top_of_the_published_insets() {
+        let mut env = Environment::new();
+        SafeAreaInsets::install(&mut env, EdgeInsets::new(59.0, 34.0, 0.0, 0.0));
+
+        let padded = SafeAreaInsets::resolve_with_margin(&env, EdgeInsets::all(16.0));
+        assert_eq!(padded.get(), EdgeInsets::new(75.0, 50.0, 16.0, 16.0));
+    }
+
+    #[test]
+    fn margin_alone_applies_without_a_backend() {
+        let env = Environment::new();
+        let padded = SafeAreaInsets::resolve_with_margin(&env, EdgeInsets::all(16.0));
+        assert_eq!(padded.get(), EdgeInsets::all(16.0));
     }
 }

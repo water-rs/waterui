@@ -349,109 +349,12 @@ pub unsafe extern "C" fn waterui_theme_font(
 }
 
 // ============================================================================
-// Watcher call functions for native-controlled reactive signals
+// Watcher notify/release pairs for native-controlled reactive signals
 // ============================================================================
 
-use crate::reactive::WuiWatcher;
-
-/// Calls a `ColorScheme` watcher with the given value.
-/// Used by native code to notify Rust when color scheme changes.
-/// # Safety
-/// The watcher pointer must be valid.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_call_watcher_color_scheme(
-    watcher: *const WuiWatcher<theme::ColorScheme>,
-    value: WuiColorScheme,
-) {
-    // SAFETY: the caller contract requires `watcher` to be a valid handle alive for
-    // this call; it is only borrowed.
-    unsafe {
-        let watcher = crate::borrow_ffi(watcher);
-        let rust_value: theme::ColorScheme = value.into();
-        let metadata = waterui::reactive::watcher::Metadata::default();
-        watcher.call(rust_value, metadata);
-    }
-}
-
-/// Drops a `ColorScheme` watcher.
-/// # Safety
-/// The watcher pointer must be valid.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_drop_watcher_color_scheme(
-    watcher: *mut WuiWatcher<theme::ColorScheme>,
-) {
-    // SAFETY: the caller contract makes `watcher` an owning pointer from the matching
-    // constructor that has not been dropped.
-    unsafe {
-        drop(Box::from_raw(watcher));
-    }
-}
-
-/// Calls a `ResolvedColor` watcher with the given value.
-/// Used by native code to notify Rust when a color value changes.
-/// # Safety
-/// The watcher pointer must be valid.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_call_watcher_resolved_color(
-    watcher: *const WuiWatcher<ResolvedColor>,
-    value: WuiResolvedColor,
-) {
-    // SAFETY: the caller contract requires `watcher` to be a valid handle alive for
-    // this call; it is only borrowed.
-    unsafe {
-        let watcher = crate::borrow_ffi(watcher);
-        let rust_value = value.into_rust();
-        let metadata = waterui::reactive::watcher::Metadata::default();
-        watcher.call(rust_value, metadata);
-    }
-}
-
-/// Drops a `ResolvedColor` watcher.
-/// # Safety
-/// The watcher pointer must be valid.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_drop_watcher_resolved_color(
-    watcher: *mut WuiWatcher<ResolvedColor>,
-) {
-    // SAFETY: the caller contract makes `watcher` an owning pointer from the matching
-    // constructor that has not been dropped.
-    unsafe {
-        drop(Box::from_raw(watcher));
-    }
-}
-
-/// Calls a `ResolvedFont` watcher with the given value.
-/// Used by native code to notify Rust when a font value changes.
-/// # Safety
-/// The watcher pointer must be valid.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_call_watcher_resolved_font(
-    watcher: *const WuiWatcher<ResolvedFont>,
-    value: WuiResolvedFont,
-) {
-    // SAFETY: the caller contract requires `watcher` to be a valid handle alive for
-    // this call; it is only borrowed.
-    unsafe {
-        let watcher = crate::borrow_ffi(watcher);
-        let rust_value = value.into_rust();
-        let metadata = waterui::reactive::watcher::Metadata::default();
-        watcher.call(rust_value, metadata);
-    }
-}
-
-/// Drops a `ResolvedFont` watcher.
-/// # Safety
-/// The watcher pointer must be valid.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_drop_watcher_resolved_font(
-    watcher: *mut WuiWatcher<ResolvedFont>,
-) {
-    // SAFETY: the caller contract makes `watcher` an owning pointer from the matching
-    // constructor that has not been dropped.
-    unsafe {
-        drop(Box::from_raw(watcher));
-    }
-}
+crate::ffi_watcher_notify!(theme::ColorScheme, WuiColorScheme, color_scheme);
+crate::ffi_watcher_notify!(ResolvedColor, WuiResolvedColor, resolved_color);
+crate::ffi_watcher_notify!(ResolvedFont, WuiResolvedFont, resolved_font);
 
 #[cfg(all(test, feature = "c-api"))]
 mod tests {
