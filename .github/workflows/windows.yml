@@ -35,7 +35,11 @@ jobs:
   test:
     name: windows-latest
     runs-on: windows-latest
-    timeout-minutes: 120
+    # 180 rather than 120: this leg reports rather than gates, and a job that
+    # hits its cap is *cancelled* — which never uploads its logs, so an
+    # over-running experiment tells you nothing at all about why. Headroom is
+    # cheaper than a blind run.
+    timeout-minutes: 180
     # Non-gating until #152 is closed; see the file header.
     continue-on-error: true
     steps:
@@ -73,14 +77,14 @@ jobs:
       # "exactly one WebView engine" with a `compile_error!`
       # (backends/hydrolysis/src/lib.rs), so enabling `webview-system` and
       # `webview-cef` together can never build.
-      - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --profile ci
+      - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --profile ci-windows
         continue-on-error: true
       # The root crate's feature-gated re-export surface, with every feature on.
       # Root-crate-only scope is what cargo's default package selection does
       # without `--workspace`, and here that narrowing is exactly right: the
       # root `waterui` crate is the one crate whose features are all mutually
       # compatible.
-      - run: cargo nextest run --all-features --profile ci
+      - run: cargo nextest run --all-features --profile ci-windows
         continue-on-error: true
       # Compile the CEF backend without its binary distribution.
       - run: cargo check -p waterui-browser-cef --features compile-only
