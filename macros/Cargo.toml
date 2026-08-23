@@ -33,5 +33,9 @@ waterui-testing.workspace = true
 
 [lints]
 workspace = true
+# icu_locid/icu_locid_transform are used by generated code rather than by this
+# crate's own source; hydrolysis-m3 is reachable only from doc examples (the #[waterui::test]
+# snippets install its theme) and cargo-machete does not analyze doctests, so
+# it reads as unused.
 [package.metadata.cargo-machete]
-ignored = ["icu_locid", "icu_locid_transform"]
+ignored = ["icu_locid", "icu_locid_transform", "hydrolysis-m3"]
