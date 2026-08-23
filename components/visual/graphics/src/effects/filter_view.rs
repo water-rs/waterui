@@ -258,11 +258,16 @@ impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// use filtrate::filters::{Brightness, Contrast};
+    /// use waterui::prelude::*;
+    ///
+    /// # fn softened(my_view: impl View) -> impl View {
     /// my_view
     ///     .blur(10.0)
-    ///     .then(Brightness(0.2))
-    ///     .then(Contrast(1.5))
+    ///     .then(Brightness(0.2_f32))
+    ///     .then(Contrast(1.5_f32))
+    /// # }
     /// ```
     #[must_use]
     pub fn then<F2: Filter>(self, filter: F2) -> Filtered<V, FilterAdapter<Chain<F, F2>>> {
@@ -616,13 +621,19 @@ pub trait FilterViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
     /// // Static value
+    /// # fn fixed(my_view: impl View) -> impl View {
     /// my_view.blur(10.0)
+    /// # }
     ///
     /// // Reactive value with animation
-    /// let radius = binding(10.0);
+    /// # fn animated(my_view: impl View) -> impl View {
+    /// let radius: Binding<f32> = binding(10.0);
     /// my_view.blur(radius.animated())
+    /// # }
     /// ```
     fn blur<T: IntoSignalF32>(self, radius: T) -> Filtered<Self, Blur> {
         Filtered::new(

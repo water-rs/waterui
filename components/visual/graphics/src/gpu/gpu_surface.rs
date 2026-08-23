@@ -512,14 +512,22 @@ impl<'a> GpuFrame<'a> {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
+///
 /// struct TriangleRenderer {
-///     pipeline: Option<wgpu::RenderPipeline>,
+///     vertices: Option<wgpu::Buffer>,
 /// }
 ///
 /// impl GpuView for TriangleRenderer {
 ///     async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
-///         self.pipeline = Some(ctx.device.create_render_pipeline(&...));
+///         // Anything created here persists across frames.
+///         self.vertices = Some(ctx.device.create_buffer(&wgpu::BufferDescriptor {
+///             label: Some("triangle vertices"),
+///             size: 3 * 8,
+///             usage: wgpu::BufferUsages::VERTEX,
+///             mapped_at_creation: false,
+///         }));
 ///     }
 ///
 ///     fn render(&mut self, frame: &mut GpuFrame) {
@@ -968,13 +976,19 @@ impl<T: GpuView> GpuViewImpl for T {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// use waterui_graphics::gpu_surface::{GpuSurface, GpuView};
+///
 /// // Fill available space
-/// GpuSurface::new(MyRenderer::default())
+/// # fn filling(my_renderer: impl GpuView) -> impl View {
+/// GpuSurface::new(my_renderer)
+/// # }
 ///
 /// // Fixed size
-/// GpuSurface::new(MyRenderer::default())
-///     .frame(width: 400.0, height: 300.0)
+/// # fn sized(my_renderer: impl GpuView) -> impl View {
+/// GpuSurface::new(my_renderer).width(400.0).height(300.0)
+/// # }
 /// ```
 pub struct GpuSurface {
     /// The GPU view that handles rendering (type-erased).
@@ -1017,8 +1031,12 @@ impl GpuSurface {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// let surface = GpuSurface::new(MyRenderer::default());
+    /// ```rust
+    /// # use waterui_graphics::gpu_surface::{GpuSurface, GpuView};
+    /// # fn make(my_renderer: impl GpuView) -> GpuSurface {
+    /// let surface = GpuSurface::new(my_renderer);
+    /// # surface
+    /// # }
     /// ```
     #[must_use]
     pub fn new<R: GpuView>(view: R) -> Self {
