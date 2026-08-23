@@ -158,7 +158,42 @@ fn process_exists(pid: u32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn process_exists(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, FALSE, WAIT_TIMEOUT};
+    // `SYNCHRONIZE` is a *standard* access right, shared by every kernel object
+    // type, so `windows-sys` emits it exactly once — under the first module
+    // whose metadata needed it, which happens to be file access rights. It is
+    // the same bit a process handle takes.
+    use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+    };
+
+    // Pid 0 is the System Idle Process, which no application is.
+    if pid == 0 {
+        return false;
+    }
+    let access = PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE as PROCESS_ACCESS_RIGHTS;
+    // SAFETY: `OpenProcess` takes no pointer and returns a handle or null.
+    let handle = unsafe { OpenProcess(access, FALSE, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    // A process handle is signalled once the process exits, so a zero-timeout
+    // wait that times out is the process still running. `GetExitCodeProcess`
+    // would be the obvious alternative and is wrong here: it reports
+    // `STILL_ACTIVE` (259), which a live process can also legitimately exit
+    // with, and the two are then indistinguishable.
+    //
+    // SAFETY: the handle came from the call above and is closed below.
+    let alive = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
+    // SAFETY: as above; the handle is not used again.
+    unsafe { CloseHandle(handle) };
+    alive
+}
+
+#[cfg(not(any(unix, windows)))]
 fn process_exists(_pid: u32) -> bool {
     // Without a cheap portable check, assume the process is alive and let the
     // connection attempt be the thing that fails.
