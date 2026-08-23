@@ -107,16 +107,17 @@ impl TooltipContent {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// use waterui::color::Srgb;
 /// use waterui_chart::{Tooltip, TooltipContent};
 ///
 /// Tooltip::new(
 ///     TooltipContent::new()
 ///         .title("Point Data")
 ///         .value("X", "10.5")
-///         .value("Y", "25.3")
+///         .value("Y", "25.3"),
 /// )
-/// .background(Srgb::from_hex("#1F2937"))
+/// .background(Srgb::from_hex("#1F2937"));
 /// ```
 #[derive(Debug)]
 pub struct Tooltip {
