@@ -12,11 +12,13 @@ use crate::Filter;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::Brightness;
 ///
 /// // Static brightness
-/// let bright = Brightness(0.2);
+/// let bright = Brightness(0.2_f32);
+/// # assert_eq!(bright.params(), [0.2]);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, shader = "color/adjustment/brightness.wgsl")]

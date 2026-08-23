@@ -10,7 +10,8 @@ use crate::Filter;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::Convolution3x3;
 ///
 /// // Sharpen
@@ -19,6 +20,7 @@ use crate::Filter;
 ///     -1.0,      5.0, -1.0,
 ///      0.0,     -1.0, 0.0,
 /// ]);
+/// # assert_eq!(sharpen.params().len(), 9);
 /// ```
 #[derive(Debug, Clone, Filter)]
 #[filter(spatial, shader = "image/convolution/convolution3x3.wgsl")]

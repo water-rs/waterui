@@ -12,10 +12,12 @@ use crate::Filter;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::Sepia;
 ///
-/// let vintage = Sepia(0.8);
+/// let vintage = Sepia(0.8_f32);
+/// # assert_eq!(vintage.params(), [0.8]);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, shader = "color/transform/sepia.wgsl")]

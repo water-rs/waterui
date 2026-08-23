@@ -12,11 +12,14 @@ use crate::Filter;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::Saturation;
 ///
-/// let desaturated = Saturation(0.5);
-/// let vibrant = Saturation(1.5);
+/// let desaturated = Saturation(0.5_f32);
+/// let vibrant = Saturation(1.5_f32);
+/// # assert_eq!(desaturated.params(), [0.5]);
+/// # assert_eq!(vibrant.params(), [1.5]);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, shader = "color/transform/saturation.wgsl")]

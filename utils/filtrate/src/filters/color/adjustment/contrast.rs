@@ -12,10 +12,12 @@ use crate::Filter;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::Contrast;
 ///
-/// let high_contrast = Contrast(1.5);
+/// let high_contrast = Contrast(1.5_f32);
+/// # assert_eq!(high_contrast.params(), [1.5]);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, shader = "color/adjustment/contrast.wgsl")]

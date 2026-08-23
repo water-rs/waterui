@@ -7,10 +7,12 @@ use crate::Filter;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::Median3x3;
 ///
 /// let denoised = Median3x3;
+/// # assert_eq!(denoised.params().len(), 0);
 /// ```
 #[derive(Debug, Clone, Copy, Default, Filter)]
 #[filter(spatial, shader = "image/convolution/median3x3.wgsl")]

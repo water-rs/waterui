@@ -12,11 +12,13 @@ use crate::Filter;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::HueRotation;
 ///
 /// // Rotate 180 degrees (complementary colors)
-/// let complement = HueRotation(180.0);
+/// let complement = HueRotation(180.0_f32);
+/// # assert_eq!(complement.params(), [180.0]);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, shader = "color/transform/hue_rotation.wgsl")]

@@ -11,10 +11,12 @@ use crate::Filter;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::Prewitt;
 ///
 /// let edges = Prewitt;
+/// # assert_eq!(edges.params().len(), 0);
 /// ```
 #[derive(Debug, Clone, Copy, Default, Filter)]
 #[filter(spatial, shader = "image/convolution/prewitt.wgsl")]

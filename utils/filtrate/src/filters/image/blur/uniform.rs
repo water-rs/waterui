@@ -14,11 +14,14 @@ use crate::{Filter, FilterParam, SignalVisitor, StageCollector};
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::Blur;
 ///
-/// let soft = Blur(5.0);
-/// let heavy = Blur(20.0);
+/// let soft = Blur(5.0_f32);
+/// let heavy = Blur(20.0_f32);
+/// // One radius, applied by both separable passes.
+/// # assert_eq!(soft.params(), [5.0, 5.0]);
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Blur<T>(pub T);
