@@ -1288,7 +1288,11 @@ async fn resolve_linked_runtime_packages(
             .exec()
     })
     .await?;
-    let application_manifest = std::fs::canonicalize(&manifest_path)?;
+    // `dunce`, not `std::fs::canonicalize`: on Windows the standard one returns
+    // an extended-length path (`\\?\D:\...`), while `cargo metadata` reports the
+    // plain one, so comparing the two never matched and the package below was
+    // always "omitted" (part of #152). Everywhere else this is `canonicalize`.
+    let application_manifest = dunce::canonicalize(&manifest_path)?;
     let root = metadata
         .packages
         .iter()
