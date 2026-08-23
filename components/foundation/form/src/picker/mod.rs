@@ -1,7 +1,7 @@
 pub mod color;
 pub use color::ColorPicker;
 pub mod date;
-pub use date::DatePicker;
+pub use date::{DatePicker, DatePickerType};
 pub mod file;
 pub mod multi_date;
 pub use multi_date::{MultiDatePicker, MultiDatePickerConfig};

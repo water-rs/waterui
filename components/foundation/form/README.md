@@ -24,10 +24,10 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-waterui-form = "0.1.0"
+waterui-form = "0.2.1"
 
 # Optional: enable serde support
-waterui-form = { version = "0.1.0", features = ["serde"] }
+waterui-form = { version = "0.2.1", features = ["serde"] }
 ```
 
 ## Quick Start
@@ -38,7 +38,7 @@ The most common use case is deriving `FormBuilder` on a struct:
 use waterui::prelude::*;
 use waterui_form::{FormBuilder, form};
 
-#[derive(Default, Clone, Debug, FormBuilder)]
+#[derive(Default, Clone, Debug, FormBuilder, Project)]
 struct UserProfile {
     /// Enter your full name
     name: String,
@@ -52,9 +52,8 @@ fn profile_form() -> impl View {
     let form_binding = UserProfile::binding();
     vstack((
         form(&form_binding),
-        button("Save", move || {
-            tracing::debug!("Profile: {:?}", form_binding.get());
-        }),
+        button("Save")
+            .action(move || tracing::debug!("Profile: {:?}", form_binding.get())),
     ))
 }
 ```
@@ -98,6 +97,11 @@ The macro requires the struct to have named fields and generates an implementati
 Forms use `Binding<T>` from the `nami` crate for reactive state. The `Project` trait (auto-derived alongside `FormBuilder`) allows accessing individual field bindings:
 
 ```rust
+# use waterui::prelude::*;
+# use waterui_form::FormBuilder;
+# #[derive(Default, Clone, Debug, FormBuilder, Project)]
+# struct UserProfile { name: String, age: i32 }
+# fn demo() {
 let form_binding = UserProfile::binding();
 let projected = form_binding.project();
 
@@ -107,6 +111,7 @@ projected.age.set(30);
 
 // Read entire form state
 let profile = form_binding.get();
+# }
 ```
 
 ## Examples
@@ -119,7 +124,7 @@ Initialize a form with existing data instead of defaults:
 use waterui::prelude::*;
 use waterui_form::{FormBuilder, form};
 
-#[derive(Default, Clone, Debug, FormBuilder)]
+#[derive(Default, Clone, Debug, FormBuilder, Project)]
 struct LoginForm {
     username: String,
     password: String,
@@ -130,11 +135,11 @@ fn login_view() -> impl View {
         username: "me@lexo.cool".to_string(),
         password: String::new(),
     };
-    let form_binding = Binding::new(initial);
+    let form_binding: Binding<LoginForm> = binding(initial);
 
     vstack((
         form(&form_binding),
-        button("Login", move || {
+        button("Login").action(move || {
             let credentials = form_binding.get();
             tracing::debug!("Logging in as: {}", credentials.username);
         }),
@@ -150,7 +155,7 @@ Use projected bindings to display live form data:
 use waterui::prelude::*;
 use waterui_form::{FormBuilder, form};
 
-#[derive(Default, Clone, Debug, FormBuilder)]
+#[derive(Default, Clone, Debug, FormBuilder, Project)]
 struct ContactForm {
     /// Your full name
     name: String,
@@ -181,13 +186,13 @@ use waterui::prelude::*;
 use waterui_form::secure::{Secure, SecureField, secure};
 
 fn password_form() -> impl View {
-    let password = Binding::new(Secure::default());
-    let confirm = Binding::new(Secure::default());
+    let password = binding(Secure::default());
+    let confirm = binding(Secure::default());
 
     vstack((
         SecureField::new("Password", &password),
         secure("Confirm Password", &confirm),
-        button("Create Account", move || {
+        button("Create Account").action(move || {
             let hash = password.get().hash();
             tracing::debug!("Password hash: {}", hash);
         }),
@@ -211,8 +216,8 @@ use waterui_form::valid::{Validator, ValidatableView};
 use regex::Regex;
 
 fn validated_form() -> impl View {
-    let age_binding = Binding::new(0i32);
-    let email_binding = Binding::new(String::new());
+    let age_binding = binding(0i32);
+    let email_binding = binding(String::new());
 
     let age_range = 18..=100;
     let email_pattern = Regex::new(r"^[^@]+@[^@]+\.[^@]+$").unwrap();
@@ -303,8 +308,8 @@ use waterui_form::picker::ColorPicker;
 use waterui::color::Color;
 
 fn theme_editor() -> impl View {
-    let primary_color = Binding::new(Color::rgb(0.0, 0.5, 1.0));
-    let background = Binding::new(Color::rgb(1.0, 1.0, 1.0));
+    let primary_color = binding(Color::rgb(0.0, 0.5, 1.0));
+    let background = binding(Color::rgb(1.0, 1.0, 1.0));
 
     vstack((
         ColorPicker::new("Primary Color", &primary_color),
@@ -410,7 +415,7 @@ None. The crate works out-of-the-box with no feature flags.
 
 - **`serde`** - Enables `Serialize` and `Deserialize` derives on form types
   ```toml
-  waterui-form = { version = "0.1.0", features = ["serde"] }
+  waterui-form = { version = "0.2.1", features = ["serde"] }
   ```
 
 
