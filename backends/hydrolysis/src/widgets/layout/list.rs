@@ -26,8 +26,13 @@ use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_text::Text;
 
 use crate::renderer::lazy::VirtualExtentIndex;
+use crate::renderer::resolved_color_to_peniko;
 use crate::widgets::{draw_scroll_indicators, widget_theme};
+use nami::SignalExt as _;
 use nami::watcher::BoxWatcherGuard;
+use waterui::theme::color;
+use waterui_backend_core::widget::{Brush, DrawContext as _};
+use waterui_core::resolve::Resolvable as _;
 
 /// The stable per-row id used to key the retained content sub-view cache, matching
 /// the id `ListConfig::contents` (a `SharedAnyViews<ListItem>`) yields per index.
@@ -698,6 +703,7 @@ pub(crate) fn list_accessibility(
                 row_node.set_label(label);
             }
             row_node.add_action(AccessibilityAction::Focus);
+            row_node.set_selected(renderer.read_signal(&item.selected));
             if let Some(row_node_id) = renderer.register_accessibility_child_node_with_key(
                 key_base + A11Y_KEY_ROW,
                 row_node,
@@ -946,10 +952,24 @@ pub(crate) fn render_list_parts(
         // rides the swipe displacement; only the revealed dismiss background
         // stays anchored to the slot.
         let row_rect = row_slot + vello::kurbo::Vec2::new(swipe_dx, 0.0);
+        let selected = ctx.renderer_mut().read_signal(&item.selected);
+        // The fill is the theme's own `SelectionContainer` token rather than a
+        // `WidgetTheme` entry: the row's content already flips to
+        // `SelectionForeground` against it (see `selection_themed` in the list
+        // component), so the pair has to come from the same place.
+        let selection_fill = selected.then(|| {
+            resolved_color_to_peniko(
+                ctx.renderer_mut()
+                    .read_signal(&color::SelectionContainer.resolve(&row_env).computed()),
+            )
+        });
         {
             let theme = widget_theme(env);
             let mut draw = ctx.draw_context();
             theme.draw_list_row_background(&mut draw, row_rect, index % 2 == 1);
+            if let Some(fill) = selection_fill {
+                draw.fill_rect(row_rect, &Brush::Solid(fill));
+            }
             if lifted_id == Some(row_id) {
                 theme.draw_list_row_lifted(&mut draw, row_rect, REORDER_LIFT_ELEVATION);
             }
