@@ -1175,3 +1175,100 @@ mod tests {
             attached_surface_format(&capabilities, Some(wgpu::TextureFormat::Rgba16Float), true);
     }
 }
+
+/// A GPU surface rendered offscreen into RGBA8 pixels.
+///
+/// The buffer is owned by Rust and freed by
+/// [`waterui_gpu_surface_offscreen_free`].
+#[repr(C)]
+pub struct WuiOffscreenImage {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Row-major RGBA8 pixels, `width * height * 4` bytes, or null on failure.
+    pub rgba8: *mut u8,
+    /// Length of `rgba8` in bytes.
+    pub len: usize,
+}
+
+/// Renders a GPU surface offscreen once and reads back RGBA8 pixels, consuming
+/// the surface.
+///
+/// A backend needs this wherever platform chrome takes an image rather than a
+/// view — an Android tab bar item, for one, whose `Drawable` cannot host a
+/// `SurfaceView` because that composites in its own layer rather than in the
+/// view tree, so capturing it from the view tree yields nothing.
+///
+/// This ENDS the surface: a `GpuSurface` owns its renderer and rendering
+/// offscreen consumes it, so the state draws nothing afterwards. That fits a
+/// view built to become an image and nothing else; a surface that must keep
+/// drawing into a window must not be passed here.
+///
+/// Returns a zeroed image when the surface cannot be rendered; `rgba8` is null
+/// then and nothing needs freeing.
+///
+/// # Safety
+///
+/// `state` must be a valid state from `waterui_gpu_surface_create`, alive for
+/// this call and never rendered again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_into_offscreen_image(
+    state: *mut WuiGpuSurfaceState,
+    width: u32,
+    height: u32,
+) -> WuiOffscreenImage {
+    use waterui_graphics::gpu_surface::{OffscreenRenderConfig, OffscreenSize};
+
+    let empty = WuiOffscreenImage {
+        width: 0,
+        height: 0,
+        rgba8: core::ptr::null_mut(),
+        len: 0,
+    };
+    // SAFETY: the caller contract requires a valid, live state for this call.
+    let state = unsafe { &mut *state };
+    let Ok(size) = OffscreenSize::try_from_pixels(width, height) else {
+        return empty;
+    };
+    // The surface leaves its slot and does not come back: rendering offscreen
+    // consumes it, which is what makes this a one-shot.
+    let Some(GpuSurfaceSemantic {
+        gpu_surface,
+        mut env,
+    }) = state.semantic.borrow_mut().take()
+    else {
+        return empty;
+    };
+    let config = OffscreenRenderConfig::new(size);
+    let rendered =
+        pollster::block_on(gpu_surface.render_offscreen(&state.runtime, config, &mut env));
+    let Ok(output) = rendered else {
+        return empty;
+    };
+    let mut rgba8 = output.rgba8.into_boxed_slice();
+    let image = WuiOffscreenImage {
+        width: output.width,
+        height: output.height,
+        rgba8: rgba8.as_mut_ptr(),
+        len: rgba8.len(),
+    };
+    core::mem::forget(rgba8);
+    image
+}
+
+/// Frees pixels returned by [`waterui_gpu_surface_render_offscreen`].
+///
+/// # Safety
+///
+/// `image` must be one this module returned, freed at most once. An image whose
+/// `rgba8` is null needs no call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_offscreen_free(image: WuiOffscreenImage) {
+    if image.rgba8.is_null() {
+        return;
+    }
+    // SAFETY: the caller contract requires the image to come from this module, where
+    // the buffer was leaked from a boxed slice of exactly `len` bytes.
+    drop(unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(image.rgba8, image.len)) });
+}
