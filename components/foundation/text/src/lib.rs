@@ -19,4 +19,5 @@ pub mod styled;
 
 /// Core text component.
 pub mod text;
+pub use styled::StyledStr;
 pub use text::{Formatter, IntoText, Text, TextConfig, text};
