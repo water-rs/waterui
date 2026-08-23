@@ -447,6 +447,35 @@ impl GpuRuntime {
     }
 }
 
+impl Drop for SharedGpuContext {
+    /// Drains the device before it is destroyed.
+    ///
+    /// `wgpu` waits for the last submission when a device goes away, through a
+    /// fixed ladder of timeouts totalling 6.3 seconds
+    /// (`wgpu-core`'s `device/queue.rs`), and *panics* when it runs out —
+    /// destroying resources the GPU is still reading would be undefined
+    /// behaviour, so it refuses. That budget assumes hardware. A software
+    /// adapter rasterizing a heavy scene routinely needs longer, which is what
+    /// took down every GPU-backed test on a runner with no GPU.
+    ///
+    /// Waiting here removes the deadline rather than widening it: by the time
+    /// `wgpu`'s own wait runs there is nothing left to wait for. The wait is
+    /// indefinite on purpose — the work completes unless the driver itself is
+    /// wedged, and a wedged driver is a condition for the caller's own timeout
+    /// to catch, not something to paper over with a second arbitrary deadline.
+    fn drop(&mut self) {
+        // A device with nothing outstanding returns immediately, so this costs
+        // nothing in the ordinary case.
+        let drained = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        if let Err(error) = drained {
+            tracing::warn!("GPU device did not drain before teardown: {error}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{required_device_limits, required_media_features};
