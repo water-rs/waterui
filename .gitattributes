@@ -1,0 +1,36 @@
+# Line endings are part of this repository's content, not a per-platform
+# preference. Several tests assert on text this repository generates from
+# committed templates, and on a Windows checkout with the default
+# `core.autocrlf=true` those templates arrive with CRLF, so the generated text
+# gains a `\r` before every newline and the assertions stop matching — nine of
+# the failures in #152 are exactly that. Normalizing here makes every checkout
+# byte-identical.
+* text=auto eol=lf
+
+# The Gradle wrapper's Windows launcher is a batch file, which needs CRLF to
+# run at all.
+*.bat text eol=crlf
+
+# Binary assets must never be touched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.mp4 binary
+*.mov binary
+*.wav binary
+*.mp3 binary
+*.zip binary
+*.jar binary
+*.wasm binary
+
+# Vendored verbatim from upstream; its bytes are the license text as published.
+components/icon/material/LICENSE-ICONS -text
