@@ -252,7 +252,6 @@ macro_rules! ffi_watcher {
 macro_rules! ffi_watcher_notify {
     ($ty:ty, $ffi:ty, $ident:tt) => {
         pastey::paste! {
-            #[cfg(feature = "c-api")]
             #[doc = concat!("Delivers `value` to a `", stringify!($ty), "` watcher.")]
             ///
             /// # Safety
@@ -272,7 +271,6 @@ macro_rules! ffi_watcher_notify {
                 }
             }
 
-            #[cfg(feature = "c-api")]
             #[doc = concat!("Releases a `", stringify!($ty), "` watcher.")]
             ///
             /// # Safety
