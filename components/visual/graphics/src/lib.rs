@@ -49,6 +49,7 @@ pub use shader_surface::ShaderSurface;
 #[cfg(feature = "gpu")]
 pub use shared_context::{
     GpuRuntime, SceneEngine, SharedContextError, SharedGpuContext, SharedSceneRenderer,
+    drain_device_before_teardown,
 };
 
 #[cfg(feature = "gpu")]

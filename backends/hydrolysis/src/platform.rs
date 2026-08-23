@@ -347,6 +347,10 @@ pub trait PlatformWindow: 'static {
 }
 
 /// Headless offscreen rendering surface.
+///
+/// This owns its device to the end of its life, so it drains it on the way out
+/// — see `drain_device_before_teardown`. Every headless test builds one of
+/// these, and on a runner without a GPU they were the ones dying on drop.
 pub struct OffscreenSurface {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
@@ -355,6 +359,12 @@ pub struct OffscreenSurface {
     height: u32,
     format: wgpu::TextureFormat,
     last_presented: Option<wgpu::Texture>,
+}
+
+impl Drop for OffscreenSurface {
+    fn drop(&mut self) {
+        waterui_graphics::shared_context::drain_device_before_teardown(&self.device);
+    }
 }
 
 fn should_force_fallback_adapter() -> bool {
