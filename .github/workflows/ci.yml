@@ -38,7 +38,10 @@ jobs:
   quick:
     name: Quick
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 60 rather than 45: a push that touches the root crate rebuilds most of
+    # the workspace even from a warm cache, and the first such run measured
+    # 45m17s — killed by its own cap with the suite mid-run.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
