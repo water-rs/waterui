@@ -15,13 +15,15 @@ use crate::locale::Locale;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use waterui_locale::{LocalizedDisplay, Length, Meter, locales};
+/// ```rust
+/// use waterui_locale::{Length, LocalizedDisplay, Meter, locales};
 ///
 /// let distance = Length::<Meter>::new(18.0);
 ///
-/// // Format with different locales
-/// assert_eq!(distance.to_localized_string(&locales::EN), "18 m");
+/// // Format with different locales. The unit symbol follows the number with
+/// // no separator; CLDR would put a space in before a Latin-script symbol,
+/// // which this hand-rolled unit table does not yet do.
+/// assert_eq!(distance.to_localized_string(&locales::EN), "18m");
 /// assert_eq!(distance.to_localized_string(&locales::ZH_CN), "18米");
 /// assert_eq!(distance.to_localized_string(&locales::JA), "18メートル");
 /// ```
@@ -144,8 +146,8 @@ impl<T: LocalizedDisplay> Display for LocalizedArgument<'_, T> {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use waterui_locale::{LocalizedList, LocalizedDisplay, locales};
+/// ```rust
+/// use waterui_locale::{LocalizedDisplay, LocalizedList, locales};
 ///
 /// let items = LocalizedList(&["Apple", "Banana", "Orange"]);
 ///
