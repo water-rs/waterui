@@ -1,7 +1,6 @@
 //! GTK4 Navigation components implementation.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use gtk4::Widget;
@@ -616,7 +615,8 @@ fn cached_split_host_switcher(
                     // thing evicted.
                     let mut widgets = widgets.borrow_mut();
                     if let Some(index) = widgets.get_index_of(&selected) {
-                        widgets.move_index(index, widgets.len() - 1);
+                        let youngest = widgets.len() - 1;
+                        widgets.move_index(index, youngest);
                     }
                     widget
                 },
