@@ -30,3 +30,19 @@ slow-timeout = { period = "120s", terminate-after = 5 }
 [[profile.ci.overrides]]
 filter = "test(waterui_bench_)"
 slow-timeout = { period = "300s", terminate-after = 8 }
+
+# GPU-backed tests on a machine with no GPU.
+#
+# The same reasoning as the bench override above, for the same reason: a heavy
+# scene on a software rasterizer runs at seconds per frame, and these tests draw
+# a great many. Once the teardown panic was fixed (`drain_device_before_teardown`)
+# they stopped failing fast and started genuinely waiting for the rasterizer, so
+# on a slow runner they crossed the 600s ceiling and the watchdog killed a run
+# that was working.
+#
+# A raised ceiling is safe to apply broadly, unlike a concurrency cap: it only
+# ever affects a test that would otherwise be terminated, and costs nothing for
+# the ones that finish in milliseconds.
+[[profile.ci.overrides]]
+filter = 'package(hydrolysis) or package(hydrolysis-m3)'
+slow-timeout = { period = "120s", terminate-after = 15 }
