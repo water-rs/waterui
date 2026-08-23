@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! # `WaterUI` Media Components
 //!
 //! This crate provides media handling and display components for the `WaterUI` framework.
@@ -73,6 +74,7 @@ pub mod video {
 }
 pub use {
     live::LivePhoto,
+    media_picker::MediaPicker,
     photo::Photo,
     // `ContentMode` is deliberately not re-exported unqualified: the layout crate
     // owns that name in the prelude for its ratio-box fill mode. Video's own
