@@ -7,6 +7,23 @@ description: Manage isolated development workspaces for substantial code changes
 
 Use this skill before making substantial changes to WaterUI. Treat the WaterUI checkout you are working in as the canonical source repository. For substantial work, do not edit it directly; create a private workspace first.
 
+## One Active Workspace Per Session — Hard Limit
+
+A session holds AT MOST ONE active workspace at a time. This is a hard rule,
+not a preference: every slot carries a full clone plus a tens-of-gigabytes
+Cargo `target/`, and the machine does not have the storage or CPU for several
+of them building in parallel — six concurrent slots once filled the disk and
+crashed the host. The slot model is built for SERIAL reuse: do one task, run
+`finish_workspace.sh` to merge and release the slot, then take the SAME slot
+back — warm — for the next task. That reuse is the entire point of the fixed
+slot paths. Fanning tasks out across multiple slots multiplies storage and
+build cost for no throughput gain (parallel workspace builds contend for the
+same cores and caches) and is forbidden. If a queue has many tasks, they wait
+their turn; "gated on the active workspace" is the correct state for every
+task beyond the first. Subagents count: do not spawn several agents that each
+create their own workspace — at most one build-heavy agent, holding the one
+active workspace, at a time.
+
 ## Run The Workflow
 
 1. Decide whether the task requires isolation.
