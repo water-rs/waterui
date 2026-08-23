@@ -23,5 +23,14 @@ serde_json.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# `kill(pid, 0)` has no Windows equivalent, so the liveness check there opens
+# the process and asks whether its handle has been signalled.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
 [lints]
 workspace = true
