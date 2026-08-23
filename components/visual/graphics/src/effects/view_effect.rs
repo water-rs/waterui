@@ -162,20 +162,24 @@ impl ViewEffectOutput<'_> {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// use waterui_graphics::{EffectRenderer, ViewEffectContext, ViewEffectInput, ViewEffectOutput};
+///
 /// struct BlurEffect {
-///     pipeline: Option<wgpu::RenderPipeline>,
-///     bind_group_layout: Option<wgpu::BindGroupLayout>,
 ///     sampler: Option<wgpu::Sampler>,
 ///     blur_radius: f32,
 /// }
 ///
 /// impl EffectRenderer for BlurEffect {
 ///     fn setup(&mut self, ctx: &ViewEffectContext) -> impl Future<Output = ()> {
-///         // Create pipeline, bind group layout, sampler
-///         self.bind_group_layout = Some(ctx.device.create_bind_group_layout(&...));
-///         self.sampler = Some(ctx.device.create_sampler(&...));
-///         self.pipeline = Some(ctx.device.create_render_pipeline(&...));
+///         // Create pipeline, bind group layout, sampler — everything created
+///         // here lives as long as the effect does.
+///         self.sampler = Some(ctx.device.create_sampler(&wgpu::SamplerDescriptor {
+///             label: Some("blur sampler"),
+///             mag_filter: wgpu::FilterMode::Linear,
+///             min_filter: wgpu::FilterMode::Linear,
+///             ..Default::default()
+///         }));
 ///         async {}
 ///     }
 ///
@@ -297,19 +301,19 @@ impl OutputSize {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use waterui::prelude::*;
+/// use waterui_graphics::{EffectRenderer, OutputSize, ViewEffect};
+///
 /// // Apply a blur effect to any view
-/// ViewEffect::new(
-///     text("Hello, World!"),
-///     BlurEffect::new(10.0),
-/// )
+/// # fn blurred(blur: impl EffectRenderer) -> impl View {
+/// ViewEffect::new(text("Hello, World!"), blur)
+/// # }
 ///
 /// // Scale output for higher quality effects
-/// ViewEffect::new(
-///     my_complex_view(),
-///     SharpenEffect::new(),
-/// )
-/// .output_size(OutputSize::Scale(2.0))
+/// # fn sharpened(my_complex_view: impl View, sharpen: impl EffectRenderer) -> impl View {
+/// ViewEffect::new(my_complex_view, sharpen).output_size(OutputSize::Scale(2.0))
+/// # }
 /// ```
 pub struct ViewEffect<V: View, E: EffectRenderer> {
     /// The view to capture and apply effect to.
@@ -338,8 +342,13 @@ impl<V: View, E: EffectRenderer> ViewEffect<V, E> {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// let effected = ViewEffect::new(my_view(), BlurEffect::new(5.0));
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_graphics::{EffectRenderer, ViewEffect};
+    /// # fn stage(my_view: impl View, blur: impl EffectRenderer) -> impl View {
+    /// let effected = ViewEffect::new(my_view, blur);
+    /// # effected
+    /// # }
     /// ```
     #[must_use]
     pub fn new(content: V, effect: E) -> Self {
@@ -357,14 +366,20 @@ impl<V: View, E: EffectRenderer> ViewEffect<V, E> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_graphics::{EffectRenderer, OutputSize, ViewEffect};
     /// // Double resolution for sharper effects
+    /// # fn scaled(view: impl View, effect: impl EffectRenderer) -> impl View {
     /// ViewEffect::new(view, effect)
     ///     .output_size(OutputSize::Scale(2.0))
+    /// # }
     ///
     /// // Fixed size output
+    /// # fn fixed(view: impl View, effect: impl EffectRenderer) -> impl View {
     /// ViewEffect::new(view, effect)
     ///     .output_size(OutputSize::Fixed { width: 1920, height: 1080 })
+    /// # }
     /// ```
     #[must_use]
     pub const fn output_size(mut self, size: OutputSize) -> Self {
