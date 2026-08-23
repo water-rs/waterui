@@ -47,6 +47,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
+          # Only the integration branches write cache generations. A pull
+          # request reads them and saves nothing: every distinct fingerprint
+          # would otherwise mint a generation that is never reclaimed, and the
+          # stale ones evict the Test tarballs that decide whether a leg is
+          # warm (16 min) or cold (66 min).
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       # Lint before testing: it is the cheapest failure to produce, and the one
       # a contributor is most likely to hit, so it should not wait behind the
