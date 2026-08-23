@@ -77,14 +77,14 @@ jobs:
       # "exactly one WebView engine" with a `compile_error!`
       # (backends/hydrolysis/src/lib.rs), so enabling `webview-system` and
       # `webview-cef` together can never build.
-      - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --profile ci-windows
+      - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --profile ci
         continue-on-error: true
       # The root crate's feature-gated re-export surface, with every feature on.
       # Root-crate-only scope is what cargo's default package selection does
       # without `--workspace`, and here that narrowing is exactly right: the
       # root `waterui` crate is the one crate whose features are all mutually
       # compatible.
-      - run: cargo nextest run --all-features --profile ci-windows
+      - run: cargo nextest run --all-features --profile ci
         continue-on-error: true
       # Compile the CEF backend without its binary distribution.
       - run: cargo check -p waterui-browser-cef --features compile-only
