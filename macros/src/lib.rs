@@ -145,17 +145,28 @@ pub fn eval(input: TokenStream) -> TokenStream {
 /// A JavaScript program read from a file at compile time.
 ///
 /// ```rust
-/// # use waterui::webview::{JsError, WebView};
+/// # use waterui::webview::{JsError, ScriptInjectionTime, WebView, WebViewOpen};
 /// # use waterui::{exec_file, js_file};
 /// # async fn setup(webview: &WebView) -> Result<(), JsError> {
 /// webview.exec(&js_file!("scripts/setup.js")).await?;
 /// exec_file!(webview, "scripts/setup.js").await?; // the fused form
 /// # Ok(())
 /// # }
+/// # fn on_every_page() -> WebViewOpen {
+/// WebView::open("https://waterui.dev").inject(
+///     "setup",
+///     js_file!("scripts/setup.js"),
+///     ScriptInjectionTime::DocumentStart,
+/// )
+/// # }
 /// ```
 ///
 /// Multi-line JavaScript belongs in a file rather than a string literal, and this
 /// is how it gets there.
+///
+/// The same program runs either way. `exec` sends it once to a page that is
+/// already loaded; `inject` registers it to run on every load, rendering it
+/// through `JsProgram::standalone_script` on the way.
 #[proc_macro]
 pub fn js_file(input: TokenStream) -> TokenStream {
     let file = syn::parse_macro_input!(input as javascript::ScriptFile);
