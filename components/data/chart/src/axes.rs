@@ -76,13 +76,19 @@ impl Default for AxisPadding {
 ///
 /// # Example
 ///
-/// ```ignore
-/// use waterui_chart::{BarChart, ChartExt, AxisConfig, TickFormat};
+/// ```rust
+/// # use waterui::prelude::*;
+/// use waterui_chart::{AxisConfig, BarChart, ChartExt, DataBounds, DataPoint, TickFormat};
 ///
-/// BarChart::new(&data)
+/// # fn revenue() -> impl View {
+/// # let points = vec![DataPoint::new(0.0, 100.0), DataPoint::new(1.0, 150.0)];
+/// # let bounds = DataBounds::from_points(&points);
+/// # let data = binding(points);
+/// BarChart::new(data)
 ///     .axes(bounds)
 ///     .y_axis(AxisConfig::new().tick_count(5).show_grid())
 ///     .x_axis(AxisConfig::new().format(TickFormat::SI))
+/// # }
 /// ```
 pub struct ChartAxes<C> {
     chart: C,
@@ -448,11 +454,16 @@ pub trait ChartExt: View + Sized {
     /// Bounds accept a constant or any signal, so axis labels update
     /// automatically when reactive bounds change:
     ///
-    /// ```ignore
-    /// let data = binding(vec![...]);
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # use waterui_chart::{BarChart, ChartExt, DataBounds, DataPoint};
+    /// # fn revenue() -> impl View {
+    /// let data: Binding<Vec<DataPoint>> =
+    ///     binding(vec![DataPoint::new(0.0, 100.0), DataPoint::new(1.0, 150.0)]);
     /// let bounds = data.map(|d| DataBounds::from_points(&d));
     ///
-    /// BarChart::new(&data).axes(bounds)
+    /// BarChart::new(data).axes(bounds)
+    /// # }
     /// ```
     fn axes(self, bounds: impl IntoComputed<DataBounds>) -> ChartAxes<Self> {
         ChartAxes::new(self, bounds)

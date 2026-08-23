@@ -66,7 +66,8 @@ pub enum LegendOrientation {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// use waterui::color::Srgb;
 /// use waterui_chart::{Legend, LegendItem, LegendPosition};
 ///
 /// Legend::new(vec![
@@ -74,7 +75,7 @@ pub enum LegendOrientation {
 ///     LegendItem::new("Revenue", Srgb::from_hex("#EF4444")),
 /// ])
 /// .position(LegendPosition::TopRight)
-/// .marker_size(12.0)
+/// .marker_size(12.0);
 /// ```
 #[derive(Debug)]
 pub struct Legend {

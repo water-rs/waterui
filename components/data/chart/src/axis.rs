@@ -17,7 +17,7 @@ use waterui_text::{IntoText, Text};
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// use waterui_chart::{AxisConfig, TickFormat};
 ///
 /// let config = AxisConfig::new()
