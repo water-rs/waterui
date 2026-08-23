@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787468694116,
+  "lastUpdate": 1787468696245,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -747,6 +747,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 14078,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "id": "04ed5ab566eafcc707f7f56eb8ffb969e16fbd18",
+          "message": "chore(cli): repin the android backend to the split-pane fix",
+          "timestamp": "2026-08-23T06:14:50Z",
+          "url": "https://github.com/water-rs/waterui/commit/04ed5ab566eafcc707f7f56eb8ffb969e16fbd18"
+        },
+        "date": 1787468695830,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 650091,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 537027,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 20726,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 15428,
             "unit": "us"
           }
         ]
