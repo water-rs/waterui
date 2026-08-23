@@ -558,13 +558,29 @@ impl GtkNavigationControllerInner {
     }
 }
 
+/// How many split destinations keep their rendered widget.
+///
+/// Caching one is what preserves a page's scroll position and half-typed input
+/// when the user comes back to it, so the cache has to hold more than the
+/// current one. It must not hold *every* destination ever visited, though: that
+/// is a whole rendered subtree, its signal handlers and its captured
+/// environment, retained for the life of the split — a gallery browsed a
+/// thousand deep retains a thousand of them.
+///
+/// Eight covers the back-and-forth people actually do. Beyond that the least
+/// recently shown one is dropped and rebuilt if it is ever wanted again, losing
+/// only that page's transient state.
+const SPLIT_DESTINATION_CACHE_CAPACITY: usize = 8;
+
 fn cached_split_host_switcher(
     host: gtk4::Box,
     env: Environment,
     placeholder: AnyViewBuilder<AnyView>,
     destination: impl Fn(Id) -> AnyView + 'static,
 ) -> Rc<dyn Fn(Option<Id>)> {
-    let widgets = Rc::new(RefCell::new(BTreeMap::<Option<Id>, Widget>::new()));
+    // Insertion-ordered so the front is the least recently shown: a hit moves
+    // its entry to the back, and eviction takes from the front.
+    let widgets = Rc::new(RefCell::new(indexmap::IndexMap::<Option<Id>, Widget>::new()));
     let destination = Rc::new(destination);
     Rc::new(move |selected| {
         let host = host.clone();
@@ -576,16 +592,35 @@ fn cached_split_host_switcher(
             // Resolve the cached widget before building, so the shared borrow is
             // released before the miss path takes a mutable one.
             let existing = widgets.borrow().get(&selected).cloned();
-            let widget = existing.unwrap_or_else(|| {
-                let view =
-                    selected.map_or_else(|| placeholder.build(), |selected| destination(selected));
-                let mut renderer = GtkRenderer::new();
-                let widget = renderer.render_any(view, &env);
-                widget.set_hexpand(true);
-                widget.set_vexpand(true);
-                widgets.borrow_mut().insert(selected, widget.clone());
-                widget
-            });
+            let widget = existing.map_or_else(
+                || {
+                    let view = selected
+                        .map_or_else(|| placeholder.build(), |selected| destination(selected));
+                    let mut renderer = GtkRenderer::new();
+                    let widget = renderer.render_any(view, &env);
+                    widget.set_hexpand(true);
+                    widget.set_vexpand(true);
+                    let mut widgets = widgets.borrow_mut();
+                    if widgets.len() == SPLIT_DESTINATION_CACHE_CAPACITY {
+                        // Dropping the last handle is the whole teardown: GTK
+                        // frees the widget tree, and the Rust closures the
+                        // renderer attached go with it. The evicted entry is
+                        // never the one on screen — that one was just touched.
+                        let _ = widgets.shift_remove_index(0);
+                    }
+                    widgets.insert(selected, widget.clone());
+                    widget
+                },
+                |widget| {
+                    // A hit is a use: move it to the back so it is not the next
+                    // thing evicted.
+                    let mut widgets = widgets.borrow_mut();
+                    if let Some(index) = widgets.get_index_of(&selected) {
+                        widgets.move_index(index, widgets.len() - 1);
+                    }
+                    widget
+                },
+            );
             clear_box_children(&host);
             host.append(&widget);
         });

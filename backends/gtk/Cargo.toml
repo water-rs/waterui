@@ -32,6 +32,8 @@ waterui-chromium = { workspace = true, optional = true }
 waterui-browser-cef = { workspace = true, optional = true }
 waterui-browser-wpe = { workspace = true, optional = true }
 nami.workspace = true
+# Insertion order is the eviction order for the split destination cache.
+indexmap = "2"
 num-traits = "0.2"
 tracing.workspace = true
 pin-project-lite.workspace = true
