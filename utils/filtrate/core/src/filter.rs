@@ -13,14 +13,63 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use filtrate_core::{Filter, FilterExt};
+//! ```rust
+//! use filtrate_core::{Chain, Filter, FilterExt, StageCollector};
 //!
+//! # struct Grayscale(f32);
+//! # impl Filter for Grayscale {
+//! #     const COLOR_ONLY: bool = true;
+//! #     type Params = [f32; 1];
+//! #     fn params(&self) -> [f32; 1] {
+//! #         [self.0]
+//! #     }
+//! #     fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
+//! #         collector.color_fragment("// WGSL: mix(rgb, luma, params[0]);", 1);
+//! #     }
+//! # }
+//! # struct Invert;
+//! # impl Filter for Invert {
+//! #     const COLOR_ONLY: bool = true;
+//! #     type Params = [f32; 0];
+//! #     fn params(&self) -> [f32; 0] {
+//! #         []
+//! #     }
+//! #     fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
+//! #         collector.color_fragment("// WGSL: rgb = 1.0 - rgb;", 0);
+//! #     }
+//! # }
+//! # struct Blur(f32);
+//! # impl Filter for Blur {
+//! #     const COLOR_ONLY: bool = false;
+//! #     type Params = [f32; 1];
+//! #     fn params(&self) -> [f32; 1] {
+//! #         [self.0]
+//! #     }
+//! #     fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
+//! #         collector.spatial_shader("// WGSL: neighbourhood average.", 1);
+//! #     }
+//! # }
+//! # struct Brightness(f32);
+//! # impl Filter for Brightness {
+//! #     const COLOR_ONLY: bool = true;
+//! #     type Params = [f32; 1];
+//! #     fn params(&self) -> [f32; 1] {
+//! #         [self.0]
+//! #     }
+//! #     fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
+//! #         collector.color_fragment("// WGSL: rgb += params[0];", 1);
+//! #     }
+//! # }
 //! // Build a filter chain. Type encodes fusion potential.
 //! let chain = Grayscale(1.0)
 //!     .then(Invert)         // Fuses with Grayscale
 //!     .then(Blur(5.0))      // Separate pass (spatial filter)
 //!     .then(Brightness(0.2));
+//!
+//! // The spatial link keeps the whole chain from collapsing into one pass,
+//! // while `Grayscale` + `Invert` on their own still fuse.
+//! assert!(!<Chain<Chain<Chain<Grayscale, Invert>, Blur>, Brightness>>::COLOR_ONLY);
+//! assert!(<Chain<Grayscale, Invert>>::COLOR_ONLY);
 //! ```
 
 use crate::{ParamArray, SignalVisitor, StageCollector, visitor::OffsetVisitor};

@@ -10,14 +10,20 @@
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// use filtrate_core::ParamArray;
+///
+/// let mut buffer = [0.0_f32; 3];
+///
 /// // Single filter with one param
 /// let brightness_params: [f32; 1] = [0.5];
 /// brightness_params.write_to(&mut buffer);
+/// assert_eq!(buffer[0], 0.5);
 ///
 /// // Chained filters with nested tuple params
 /// let chain_params: ([f32; 1], [f32; 2]) = ([0.5], [0.3, 0.1]);
 /// chain_params.write_to(&mut buffer);
+/// assert_eq!(buffer, [0.5, 0.3, 0.1]);
 /// ```
 pub trait ParamArray {
     /// The number of f32 values in this param array.
