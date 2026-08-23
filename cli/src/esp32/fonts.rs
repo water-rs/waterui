@@ -122,19 +122,21 @@ fn ranges_key(ranges: &str) -> u64 {
 mod tests {
     use super::*;
 
-    /// Host font files the subsetting tests exercise, first hit wins —
-    /// the same stand-ins the dew work simulation uses.
-    const HOST_FONT_CANDIDATES: &[&str] = &[
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-    ];
+    /// The font these tests subset.
+    ///
+    /// It is the one this repository ships for testing rather than whatever
+    /// the host has installed: a list of absolute paths only ever covers the
+    /// platforms someone remembered, and Windows was not one of them, so both
+    /// tests here failed on it outright (part of #152). A committed font also
+    /// makes the size assertion below mean something — it compares against a
+    /// known font rather than whichever one the machine happened to offer.
+    const TEST_FONT: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../testing/fonts/Roboto-Regular.ttf"
+    ));
 
     fn host_font() -> Vec<u8> {
-        HOST_FONT_CANDIDATES
-            .iter()
-            .find_map(|path| std::fs::read(path).ok())
-            .unwrap_or_else(|| panic!("no host font found at any of {HOST_FONT_CANDIDATES:?}"))
+        TEST_FONT.to_vec()
     }
 
     /// The subset must shrink dramatically while keeping a working cmap for
