@@ -19,8 +19,8 @@ pub use icu_plurals::PluralCategory;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use waterui_locale::{select_plural, locales, PluralCategory};
+/// ```rust
+/// use waterui_locale::{PluralCategory, locales, select_plural};
 ///
 /// // English: 1 → One, 2+ → Other
 /// assert_eq!(select_plural(&locales::EN, &1), PluralCategory::One);
@@ -76,8 +76,8 @@ pub fn select_plural<N: ToPrimitive + ?Sized>(locale: &Locale, n: &N) -> PluralC
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use waterui_locale::{valid_categories, locales};
+/// ```rust
+/// use waterui_locale::{PluralCategory, locales, valid_categories};
 ///
 /// // Chinese only has Other
 /// let zh_cats = valid_categories(&locales::ZH_CN);

@@ -41,5 +41,9 @@ iana-time-zone.workspace = true
 [features]
 default = []
 
+[dev-dependencies]
+# `text!` expands against `::waterui`, so the crate-level example needs it.
+waterui.workspace = true
+
 [lints]
 workspace = true

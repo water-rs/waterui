@@ -13030,6 +13030,7 @@ dependencies = [
  "sys-locale",
  "toml 1.1.4+spec-1.1.0",
  "tracing",
+ "waterui",
  "waterui-core",
  "waterui-str",
 ]
