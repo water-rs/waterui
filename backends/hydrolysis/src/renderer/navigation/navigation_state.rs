@@ -58,6 +58,12 @@ pub(crate) struct HydroNavigationEntry {
     pub(crate) identity: u64,
     pub(crate) content: RetainedSubview,
     pub(crate) state: NavigationDestinationState,
+    /// What this destination asked to arrive with, if it asked for anything.
+    ///
+    /// A matched transition names a pair that differs per destination, so the
+    /// stack cannot name it once for all of them; the entry carries what its
+    /// own destination declared, and the stack's style is the fallback.
+    pub(crate) transition: Option<AnyNavigationTransition>,
 }
 
 impl HydroNavigationEntry {
@@ -66,6 +72,7 @@ impl HydroNavigationEntry {
             bar,
             content,
             state,
+            transition,
         } = view;
         Self {
             identity,
@@ -73,8 +80,10 @@ impl HydroNavigationEntry {
                 bar,
                 content,
                 state: NavigationDestinationState::default(),
+                transition: None,
             })),
             state,
+            transition,
         }
     }
 }

@@ -1133,12 +1133,15 @@ impl NavigationStackRenderState {
             bar,
             content,
             state,
+            // The root is never pushed, so it has no arrival to style.
+            transition: _,
         } = resolve_navigation_root(unresolved_root, env);
         self.background = Some(Color::new(Background).resolve(env));
         self.root = Some(RetainedSubview::new(AnyView::new(NavigationView {
             bar,
             content,
             state: NavigationDestinationState::default(),
+            transition: None,
         })));
         Some(state)
     }
@@ -1515,9 +1518,36 @@ pub(crate) fn render_navigation_stack_parts(
                     .get(&previous_identity)
                     .cloned()
                     .expect("hydrolysis navigation transition requires previous scene");
+                // A destination may declare how it arrives, and a matched
+                // transition has to: the pair it names differs per destination,
+                // so the stack cannot name it once for all of them. The moving
+                // destination owns the motion in both directions — arriving on a
+                // push, leaving on a pop — so a pop replays what the departing
+                // one declared, which is what makes the two halves symmetric.
+                let moving_identity = if direction == NavigationTransitionDirection::Push {
+                    active_identity
+                } else {
+                    previous_identity
+                };
+                let declared = entries
+                    .borrow()
+                    .iter()
+                    .find(|entry| entry.identity == moving_identity)
+                    .and_then(|entry| entry.transition.clone());
+                let style = declared
+                    .or_else(|| {
+                        // On a pop the departing entry has already left
+                        // `entries`; it is held here until its teardown runs,
+                        // which is the only place its declaration survives.
+                        slot.pending_removed
+                            .iter()
+                            .find(|entry| entry.identity == moving_identity)
+                            .and_then(|entry| entry.transition.clone())
+                    })
+                    .unwrap_or_else(|| transition_style.clone());
                 slot.transition = Some(
                     crate::renderer::navigation_state::NavigationTransitionState::new(
-                        transition_style.clone(),
+                        style,
                         direction,
                         from_scene,
                         active_scene.clone(),
