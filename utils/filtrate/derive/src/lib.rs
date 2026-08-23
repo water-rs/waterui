@@ -27,6 +27,13 @@
 //!
 //! # Example
 //!
+//! The example is `ignore`d because it cannot compile here: the generated
+//! `collect_stages` expands to
+//! `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/", <path>))`,
+//! so the shader must live in the crate that writes the `#[derive]`, and a
+//! proc-macro crate has no `src/shaders/`. The compiled version of this
+//! example lives in `filtrate::filters`, next to the shaders it names.
+//!
 //! ```ignore
 //! use filtrate_core::FilterParam;
 //! use filtrate_derive::Filter;
