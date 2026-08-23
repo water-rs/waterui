@@ -533,11 +533,15 @@ fn extract_zip(archive: &Path, destination: &Path) -> eyre::Result<()> {
                     target.display()
                 );
             }
+            // Each arm owns its own control flow: the `bail!` below diverges, so
+            // a shared `continue` after it is dead code on that platform.
             #[cfg(unix)]
-            std::os::unix::fs::symlink(target, output)?;
+            {
+                std::os::unix::fs::symlink(target, output)?;
+                continue;
+            }
             #[cfg(not(unix))]
             bail!("browser runtime archive contains a symbolic link on an unsupported host");
-            continue;
         }
         let mut file = File::create(&output)?;
         std::io::copy(&mut entry, &mut file)?;

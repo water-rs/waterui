@@ -2417,7 +2417,10 @@ async fn write_generated_cargo_toml(base_dir: &Path, toml_string: String) -> io:
 
 /// Apple backend templates.
 pub mod apple {
-    use super::{Path, TemplateContext, TemplateNamespace, embedded, fs, io, scaffold_dir};
+    use super::{Path, TemplateContext, TemplateNamespace, embedded, io, scaffold_dir};
+    // Only the unix arm below marks the build script executable.
+    #[cfg(unix)]
+    use super::fs;
 
     /// Write all Apple templates to the given directory.
     ///

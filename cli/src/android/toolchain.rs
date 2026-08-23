@@ -2404,30 +2404,52 @@ impl Toolchain for Kotlin {
         let kotlinc_path = Self::detect_path()
             .await
             .ok_or_else(|| ToolchainError::fixable(KotlinInstallation))?;
+        Self::reject_non_executable(kotlinc_path).await
+    }
+}
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = smol::unblock({
-                let kotlinc_path = kotlinc_path.clone();
-                move || std::fs::metadata(&kotlinc_path)
-            })
-            .await
-            {
-                let permissions = metadata.permissions();
-                if permissions.mode() & 0o111 == 0 {
-                    return Err(ToolchainError::unfixable(
-                        "Kotlin compiler (kotlinc) is not executable",
-                        format!(
-                            "The kotlinc script at '{}' does not have execute permission. Fix it with: sudo chmod +x '{}'",
-                            kotlinc_path.display(),
-                            kotlinc_path.display()
-                        ),
-                    ));
-                }
-            }
+impl Kotlin {
+    /// Rejects a `kotlinc` the current user cannot run.
+    ///
+    /// Only unix carries an execute bit, so elsewhere finding the file is the
+    /// whole check — hence the two bodies rather than one with the permission
+    /// half wrapped in `cfg`, which left the path unread on every other
+    /// platform and tripped an unused-variable lint nobody was running.
+    #[cfg(unix)]
+    async fn reject_non_executable(
+        kotlinc_path: PathBuf,
+    ) -> Result<(), ToolchainError<KotlinInstallation>> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let Ok(metadata) = smol::unblock({
+            let kotlinc_path = kotlinc_path.clone();
+            move || std::fs::metadata(&kotlinc_path)
+        })
+        .await
+        else {
+            return Ok(());
+        };
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(ToolchainError::unfixable(
+                "Kotlin compiler (kotlinc) is not executable",
+                format!(
+                    "The kotlinc script at '{}' does not have execute permission. Fix it with: sudo chmod +x '{}'",
+                    kotlinc_path.display(),
+                    kotlinc_path.display()
+                ),
+            ));
         }
+        Ok(())
+    }
 
+    #[cfg(not(unix))]
+    #[expect(
+        clippy::unused_async,
+        reason = "mirrors the unix body, which awaits a blocking metadata read"
+    )]
+    async fn reject_non_executable(
+        _kotlinc_path: PathBuf,
+    ) -> Result<(), ToolchainError<KotlinInstallation>> {
         Ok(())
     }
 }
