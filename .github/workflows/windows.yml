@@ -73,12 +73,6 @@ jobs:
       # "exactly one WebView engine" with a `compile_error!`
       # (backends/hydrolysis/src/lib.rs), so enabling `webview-system` and
       # `webview-cef` together can never build.
-      # Windows-only code is invisible to every other leg: `cfg(windows)` bodies
-      # are not compiled elsewhere, so a lint that fires only there reaches
-      # nobody. Running clippy before the tests also puts the cheapest failure
-      # first. Same crate exclusions and the same reasons as the test pass.
-      - name: Clippy
-        run: cargo clippy --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
       - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --profile ci
       # The root crate's feature-gated re-export surface, with every feature on.
       # Root-crate-only scope is what cargo's default package selection does
@@ -90,6 +84,13 @@ jobs:
       - run: cargo check -p waterui-browser-cef --features compile-only
       # nextest cannot run doctests, and this workspace has plenty of them.
       - run: cargo test --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef
+      # Windows-only code is invisible to every other leg: a `cfg(windows)` body
+      # is compiled nowhere else, so a lint that fires only there reaches
+      # nobody. It runs *after* the tests deliberately: a failing step skips
+      # every step behind it, and this leg exists for its test results — putting
+      # the lint first hid all of them behind three stale warnings.
+      - name: Clippy
+        run: cargo clippy --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
