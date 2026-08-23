@@ -47,3 +47,8 @@ waterui.workspace = true
 
 [lints]
 workspace = true
+
+# `waterui` is reachable only from a doc example, and cargo-machete does not
+# analyze doctests, so it reads as unused.
+[package.metadata.cargo-machete]
+ignored = ["waterui"]
