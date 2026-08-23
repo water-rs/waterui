@@ -11038,33 +11038,33 @@ void waterui_gpu_surface_set_input(struct WuiGpuSurfaceState *state,
                                    struct WuiGpuSurfaceInput input);
 
 /**
- * Renders a GPU surface offscreen at `size` and reads back RGBA8 pixels.
+ * Renders a GPU surface offscreen once and reads back RGBA8 pixels, consuming
+ * the surface.
  *
  * A backend needs this wherever platform chrome takes an image rather than a
- * view — an Android tab bar item, for one, whose `Drawable` cannot host a live
+ * view — an Android tab bar item, for one, whose `Drawable` cannot host a
  * `SurfaceView` because that composites in its own layer rather than in the
- * view tree.
+ * view tree, so capturing it from the view tree yields nothing.
+ *
+ * This ENDS the surface: a `GpuSurface` owns its renderer and rendering
+ * offscreen consumes it, so the state draws nothing afterwards. That fits a
+ * view built to become an image and nothing else; a surface that must keep
+ * drawing into a window must not be passed here.
  *
  * Returns a zeroed image when the surface cannot be rendered; `rgba8` is null
  * then and nothing needs freeing.
  *
  * # Safety
  *
- * - `surface` must be a valid, unconsumed descriptor from
- *   `waterui_force_as_gpu_surface`; this consumes it.
- * - `env` must be valid for this call.
- *
- * # Panics
- *
- * Panics if the descriptor was already consumed.
+ * `state` must be a valid state from `waterui_gpu_surface_create`, alive for
+ * this call and never rendered again.
  */
-struct WuiOffscreenImage waterui_gpu_surface_render_offscreen(struct WuiGpuSurface *surface,
-                                                              const struct WuiEnv *env,
-                                                              uint32_t width,
-                                                              uint32_t height);
+struct WuiOffscreenImage waterui_gpu_surface_into_offscreen_image(struct WuiGpuSurfaceState *state,
+                                                                  uint32_t width,
+                                                                  uint32_t height);
 
 /**
- * Frees pixels returned by [`waterui_gpu_surface_render_offscreen`].
+ * Frees pixels returned by [`waterui_gpu_surface_into_offscreen_image`].
  *
  * # Safety
  *

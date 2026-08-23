@@ -1181,6 +1181,7 @@ mod tests {
 /// The buffer is owned by Rust and freed by
 /// [`waterui_gpu_surface_offscreen_free`].
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiOffscreenImage {
     /// Width in pixels.
     pub width: u32,
@@ -1257,7 +1258,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_into_offscreen_image(
     image
 }
 
-/// Frees pixels returned by [`waterui_gpu_surface_render_offscreen`].
+/// Frees pixels returned by [`waterui_gpu_surface_into_offscreen_image`].
 ///
 /// # Safety
 ///
