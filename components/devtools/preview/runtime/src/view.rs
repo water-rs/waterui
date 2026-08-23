@@ -443,6 +443,12 @@ impl DylibCache {
         self.libraries.get(id)
     }
 
+    /// Records a library that also exists on disk.
+    ///
+    /// Loading a preview dylib is a unix-only path — the preview system targets
+    /// macOS, the iOS Simulator and Android — so both callers sit behind
+    /// `cfg(unix)` and this is dead code anywhere else.
+    #[cfg(unix)]
     fn insert_persistent(&mut self, id: DylibId, library: PreviewLibrary) {
         self.disk_present.insert(id);
         self.insert_loaded(id, library);
