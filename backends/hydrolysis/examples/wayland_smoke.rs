@@ -38,7 +38,11 @@ fn main_view() -> impl View {
 }
 
 fn app() -> App {
-    let env = Environment::new();
+    // Widgets read their fonts and colors out of the environment, and a bare
+    // `Environment` has neither, so every text view panics on the first frame.
+    // The generated projects install this too.
+    let mut env = Environment::new();
+    hydrolysis_m3::install_defaults(&mut env);
     App::new(main_view, env).title("Hydrolysis Wayland Smoke")
 }
 

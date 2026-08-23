@@ -4919,6 +4919,7 @@ dependencies = [
  "ctrlc",
  "executor-core 0.7.1",
  "futures",
+ "hydrolysis-m3",
  "image",
  "jiff",
  "js-sys",
