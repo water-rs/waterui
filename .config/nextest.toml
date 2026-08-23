@@ -30,3 +30,26 @@ slow-timeout = { period = "120s", terminate-after = 5 }
 [[profile.ci.overrides]]
 filter = "test(waterui_bench_)"
 slow-timeout = { period = "300s", terminate-after = 8 }
+
+# GPU-backed tests, throttled only where there is no GPU.
+#
+# wgpu waits for the last submission when a device is destroyed, through a fixed
+# 6.3s ladder of timeouts (`wgpu-core`'s `device/queue.rs`), and panics when it
+# runs out. There is no environment variable for it, so the only lever is how
+# many devices rasterize at once. Every failure left in #152 is a GPU-backed
+# test panicking on *drop*, on a Windows runner that has no GPU and falls back
+# to a software adapter.
+#
+# The group covers the three packages that own those tests plus the benches,
+# which is a quarter of the workspace — the rest keeps full parallelism. Capping
+# every test instead pushed the leg past its timeout and it was cancelled, which
+# loses the logs and tells you nothing.
+[test-groups]
+gpu = { max-threads = 2 }
+
+[profile.ci-windows]
+inherits = "ci"
+
+[[profile.ci-windows.overrides]]
+filter = 'package(hydrolysis) or package(hydrolysis-m3) or package(waterui-media) or test(waterui_bench_)'
+test-group = 'gpu'
