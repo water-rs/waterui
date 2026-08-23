@@ -12785,6 +12785,7 @@ dependencies = [
  "glib",
  "glow",
  "gtk4",
+ "indexmap 2.14.0",
  "libloading 0.9.0",
  "nami 0.10.1",
  "native-executor",
