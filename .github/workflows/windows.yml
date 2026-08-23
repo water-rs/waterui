@@ -43,6 +43,8 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: Install DirectX Shader Compiler
         uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
       - name: Verify DirectX Shader Compiler
@@ -71,6 +73,12 @@ jobs:
       # "exactly one WebView engine" with a `compile_error!`
       # (backends/hydrolysis/src/lib.rs), so enabling `webview-system` and
       # `webview-cef` together can never build.
+      # Windows-only code is invisible to every other leg: `cfg(windows)` bodies
+      # are not compiled elsewhere, so a lint that fires only there reaches
+      # nobody. Running clippy before the tests also puts the cheapest failure
+      # first. Same crate exclusions and the same reasons as the test pass.
+      - name: Clippy
+        run: cargo clippy --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
       - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --profile ci
       # The root crate's feature-gated re-export surface, with every feature on.
       # Root-crate-only scope is what cargo's default package selection does
