@@ -12,13 +12,27 @@
 //!
 //! ## Usage
 //!
-//! ```rust,ignore
-//! use waterui_locale::{text, locales};
+//! Application text goes through `waterui`'s `text!` macro, which resolves
+//! translations and CLDR plural categories against the effective locale:
 //!
-//! let count = 5;
-//! let greeting = text!("I have {#count} apple");
+//! ```rust
+//! use waterui::prelude::*;
+//!
+//! # fn apples(count: i32) -> impl View {
 //! // With en: "I have 5 apples"
 //! // With zh: "我有5个苹果"
+//! text!("I have {#count} apple")
+//! # }
+//! ```
+//!
+//! This crate is the runtime underneath it: locale identification and
+//! fallback, plural-category selection, and locale-aware formatting.
+//!
+//! ```rust
+//! use waterui_locale::{PluralCategory, locales, select_plural};
+//!
+//! assert_eq!(select_plural(&locales::EN, &1), PluralCategory::One);
+//! assert_eq!(select_plural(&locales::EN, &5), PluralCategory::Other);
 //! ```
 
 #![forbid(unsafe_code)]
@@ -33,10 +47,11 @@ mod system;
 
 // Re-exports
 pub use catalog::TranslationCatalog;
+pub use format::number::{Currency, format_currency, format_number, format_percent};
 pub use format::unit::{Feet, Kilometer, Length, LengthUnit, Meter, Mile};
 pub use format::{LocalizedArgument, LocalizedDisplay, LocalizedList};
 pub use locale::{Locale, locales};
-pub use plural::{PluralCategory, select_plural};
+pub use plural::{PluralCategory, select_plural, valid_categories};
 
 /// Returns the Unicode layout direction for a locale.
 #[must_use]
