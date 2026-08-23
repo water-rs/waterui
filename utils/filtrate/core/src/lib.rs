@@ -33,14 +33,36 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use filtrate_core::{Filter, FilterExt};
-//! use filtrate::filters::{Grayscale, Invert, Blur, Brightness};
+//! A filter is pure data: a parameter layout plus the GPU stages those
+//! parameters feed. The built-in filters in `filtrate` are written exactly
+//! this way (through `#[derive(Filter)]`), and a hand-written one composes
+//! with them:
 //!
-//! let chain = Grayscale(1.0)
-//!     .then(Invert)
-//!     .then(Blur(5.0))
-//!     .then(Brightness(0.2));
+//! ```rust
+//! use filtrate_core::{Chain, Filter, FilterExt, StageCollector};
+//!
+//! struct Brightness(f32);
+//!
+//! impl Filter for Brightness {
+//!     const COLOR_ONLY: bool = true;
+//!     type Params = [f32; 1];
+//!
+//!     fn params(&self) -> [f32; 1] {
+//!         [self.0]
+//!     }
+//!
+//!     fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
+//!         // Real filters hand over a WGSL file through `include_str!`.
+//!         collector.color_fragment("// WGSL: rgb += params[0];", 1);
+//!     }
+//! }
+//!
+//! let chain = Brightness(0.2).then(Brightness(-0.1));
+//!
+//! // Both links are color-only, so the chain stays fusable into one pass,
+//! // and its parameters nest one array per link.
+//! assert!(<Chain<Brightness, Brightness>>::COLOR_ONLY);
+//! assert_eq!(chain.params(), ([0.2], [-0.1]));
 //! ```
 
 mod animation;
