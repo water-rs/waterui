@@ -1831,3 +1831,64 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDrop<'l
     }
     drop(wrapper);
 }
+
+/// Renders a GPU surface offscreen once and returns ARGB pixels for `Bitmap`.
+///
+/// Android chrome that takes a `Drawable` — a tab bar item, a menu entry —
+/// cannot host a live `SurfaceView`, because that composites in its own layer
+/// rather than in the view tree, so capturing it from the tree yields nothing.
+///
+/// This consumes the surface: it is for a view built to become an image, not
+/// for one that must keep drawing.
+///
+/// The array is `[width, height, pixel…]` in `Bitmap.Config.ARGB_8888` order,
+/// so one call carries the whole image. An empty array means it could not be
+/// rendered.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceIntoOffscreenImage<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    statePtr: jlong,
+    width: jint,
+    height: jint,
+) -> jintArray {
+    super::with_env(&mut env, |env| {
+        // SAFETY: the caller hands over a live state pointer from gpuSurfaceCreate.
+        let image = unsafe {
+            crate::components::gpu_surface::waterui_gpu_surface_into_offscreen_image(
+                statePtr as *mut crate::components::gpu_surface::WuiGpuSurfaceState,
+                width.max(0) as u32,
+                height.max(0) as u32,
+            )
+        };
+        if image.rgba8.is_null() {
+            let array = env
+                .new_int_array(0)
+                .expect("gpuSurfaceIntoOffscreenImage: failed to allocate empty jintArray");
+            return array.into_raw();
+        }
+        // SAFETY: a non-null image owns exactly `len` bytes until it is freed below.
+        let bytes = unsafe { core::slice::from_raw_parts(image.rgba8, image.len) };
+        let mut values: Vec<jint> = Vec::with_capacity(bytes.len() / 4 + 2);
+        values.push(image.width as jint);
+        values.push(image.height as jint);
+        // RGBA8 from the renderer, ARGB_8888 for Bitmap: the same bytes in a
+        // different order, so the pack is a rotation rather than a conversion.
+        values.extend(bytes.chunks_exact(4).map(|px| {
+            let (r, g, b, a) = (px[0] as u32, px[1] as u32, px[2] as u32, px[3] as u32);
+            ((a << 24) | (r << 16) | (g << 8) | b) as jint
+        }));
+        // SAFETY: the image came from the call above, and this is its only free.
+        unsafe { crate::components::gpu_surface::waterui_gpu_surface_offscreen_free(image) };
+        let array = env
+            .new_int_array(values.len())
+            .expect("gpuSurfaceIntoOffscreenImage: failed to allocate jintArray");
+        array
+            .set_region(env, 0, &values)
+            .expect("gpuSurfaceIntoOffscreenImage: failed to write pixels into jintArray");
+        array.into_raw()
+    })
+}
