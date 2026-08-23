@@ -2404,7 +2404,19 @@ impl Toolchain for Kotlin {
         let kotlinc_path = Self::detect_path()
             .await
             .ok_or_else(|| ToolchainError::fixable(KotlinInstallation))?;
-        Self::reject_non_executable(kotlinc_path).await
+        // Only unix carries an execute bit, so elsewhere finding the file is
+        // the whole check. Both arms are tail expressions rather than an early
+        // `return` under one `cfg`, which would leave the other arm as dead
+        // code on the platform that does compile it.
+        #[cfg(unix)]
+        {
+            Self::reject_non_executable(kotlinc_path).await
+        }
+        #[cfg(not(unix))]
+        {
+            drop(kotlinc_path);
+            Ok(())
+        }
     }
 }
 
@@ -2439,17 +2451,6 @@ impl Kotlin {
                 ),
             ));
         }
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    #[expect(
-        clippy::unused_async,
-        reason = "mirrors the unix body, which awaits a blocking metadata read"
-    )]
-    async fn reject_non_executable(
-        _kotlinc_path: PathBuf,
-    ) -> Result<(), ToolchainError<KotlinInstallation>> {
         Ok(())
     }
 }
