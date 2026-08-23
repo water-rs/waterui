@@ -6657,6 +6657,31 @@ typedef struct WuiGpuSurfaceInput {
 } WuiGpuSurfaceInput;
 
 /**
+ * A GPU surface rendered offscreen into RGBA8 pixels.
+ *
+ * The buffer is owned by Rust and freed by
+ * [`waterui_gpu_surface_offscreen_free`].
+ */
+typedef struct WuiOffscreenImage {
+  /**
+   * Width in pixels.
+   */
+  uint32_t width;
+  /**
+   * Height in pixels.
+   */
+  uint32_t height;
+  /**
+   * Row-major RGBA8 pixels, `width * height * 4` bytes, or null on failure.
+   */
+  uint8_t *rgba8;
+  /**
+   * Length of `rgba8` in bytes.
+   */
+  uintptr_t len;
+} WuiOffscreenImage;
+
+/**
  * FFI representation of output size.
  */
 typedef enum WuiOutputSize_Tag {
@@ -11011,6 +11036,42 @@ void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
  */
 void waterui_gpu_surface_set_input(struct WuiGpuSurfaceState *state,
                                    struct WuiGpuSurfaceInput input);
+
+/**
+ * Renders a GPU surface offscreen at `size` and reads back RGBA8 pixels.
+ *
+ * A backend needs this wherever platform chrome takes an image rather than a
+ * view — an Android tab bar item, for one, whose `Drawable` cannot host a live
+ * `SurfaceView` because that composites in its own layer rather than in the
+ * view tree.
+ *
+ * Returns a zeroed image when the surface cannot be rendered; `rgba8` is null
+ * then and nothing needs freeing.
+ *
+ * # Safety
+ *
+ * - `surface` must be a valid, unconsumed descriptor from
+ *   `waterui_force_as_gpu_surface`; this consumes it.
+ * - `env` must be valid for this call.
+ *
+ * # Panics
+ *
+ * Panics if the descriptor was already consumed.
+ */
+struct WuiOffscreenImage waterui_gpu_surface_render_offscreen(struct WuiGpuSurface *surface,
+                                                              const struct WuiEnv *env,
+                                                              uint32_t width,
+                                                              uint32_t height);
+
+/**
+ * Frees pixels returned by [`waterui_gpu_surface_render_offscreen`].
+ *
+ * # Safety
+ *
+ * `image` must be one this module returned, freed at most once. An image whose
+ * `rgba8` is null needs no call.
+ */
+void waterui_gpu_surface_offscreen_free(struct WuiOffscreenImage image);
 
 /**
  * # Safety
