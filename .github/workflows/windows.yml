@@ -79,12 +79,16 @@ jobs:
       # `webview-cef` together can never build.
       - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --profile ci
         continue-on-error: true
-      # The root crate's feature-gated re-export surface, with every feature on.
+      # The root crate's feature-gated re-export surface. `--features all` rather
+      # than `--all-features`: the latter turns on `dynamic_linking`, which pulls
+      # in `waterui-dylib`, and that crate exports 77k symbols against a PE
+      # export table limit of 65535 — it cannot link here, which is why the
+      # workspace pass above excludes it. This step had never once run.
       # Root-crate-only scope is what cargo's default package selection does
       # without `--workspace`, and here that narrowing is exactly right: the
       # root `waterui` crate is the one crate whose features are all mutually
       # compatible.
-      - run: cargo nextest run --all-features --profile ci
+      - run: cargo nextest run --features all --profile ci
         continue-on-error: true
       # Compile the CEF backend without its binary distribution.
       - run: cargo check -p waterui-browser-cef --features compile-only
