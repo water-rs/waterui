@@ -29,38 +29,12 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # The developer's iteration signal: format, workspace clippy, and the
-  # default-features test pass on one warm runner. Everything else in this
-  # file is the asynchronous safety net — it still runs on every push, but
-  # nobody has to wait for it to keep working. This job restores the ubuntu
-  # Test leg's cache and never saves (save-if: false), so it costs no quota
-  # and cannot race the leg that owns the key.
-  quick:
-    name: Quick
-    runs-on: ubuntu-latest
-    # 60 rather than 45: a push that touches the root crate rebuilds most of
-    # the workspace even from a warm cache, and the first such run measured
-    # 45m17s — killed by its own cap with the suite mid-run.
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: ./.github/actions/setup-linux-deps
-        with:
-          gpu: "true"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: test-ubuntu-latest
-          save-if: false
-      - uses: taiki-e/install-action@nextest
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo nextest run --workspace --profile ci
-
+  # The developer's iteration signal is the first three steps of
+  # `Test / ubuntu-latest` — format, workspace clippy, workspace tests, in that
+  # order, cheapest failure first. A separate "Quick" job used to run exactly
+  # those three on a second runner off the same cache key; it reached them no
+  # sooner, because it had to compile the same graph to get there, so all it
+  # bought was a duplicate build on every push.
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
