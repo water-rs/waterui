@@ -3,6 +3,7 @@
 //! This crate provides a comprehensive form system for `WaterUI` applications with ergonomic
 //! macros and type-safe form building capabilities.
 
+#![doc = include_str!("../README.md")]
 #![no_std]
 extern crate alloc;
 #[cfg(feature = "std")]

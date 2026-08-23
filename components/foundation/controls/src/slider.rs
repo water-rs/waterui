@@ -85,6 +85,15 @@ impl SliderConfig {
 }
 
 impl Slider {
+    /// The binding this slider reads and writes.
+    ///
+    /// Exposed so a validator can wrap the control by splicing a filtered
+    /// binding in front of its value, the way a text field allows.
+    #[must_use]
+    pub const fn value_binding(&mut self) -> &mut Binding<f64> {
+        &mut self.0.value
+    }
+
     /// Creates a new [`Slider`] with the given semantic label, bound to `value`.
     ///
     /// The default range is `0.0..=1.0`; use [`Slider::range`] to override.

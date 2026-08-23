@@ -162,12 +162,52 @@ impl<V: Validatable, T> ValidatableView<V, T> {
 }
 impl_error!(NotMatch, "Value does not match the required pattern.");
 
-impl<T> Validator<T> for Regex
-where
-    T: AsRef<str>,
-{
+/// A styled string carries its characters in styled runs, so it cannot lend a
+/// `&str` and is matched through its plain text instead; every other string
+/// type goes through the blanket implementation below.
+impl Validator<StyledStr> for Regex {
     type Err = NotMatch;
-    fn validate(&self, value: T) -> Result<(), Self::Err> {
+
+    fn validate(&self, value: StyledStr) -> Result<(), Self::Err> {
+        if self.is_match(&value.to_plain()) {
+            Ok(())
+        } else {
+            Err(NotMatch)
+        }
+    }
+}
+
+/// Matching is defined per string type rather than over `AsRef<str>`, because
+/// `StyledStr` — the value a text field holds — stores its characters in styled
+/// runs and cannot lend a `&str`, so it needs the implementation above and a
+/// blanket one would collide with it.
+impl Validator<Str> for Regex {
+    type Err = NotMatch;
+
+    fn validate(&self, value: Str) -> Result<(), Self::Err> {
+        if self.is_match(&value) {
+            Ok(())
+        } else {
+            Err(NotMatch)
+        }
+    }
+}
+
+impl Validator<&'static str> for Regex {
+    type Err = NotMatch;
+
+    fn validate(&self, value: &'static str) -> Result<(), Self::Err> {
+        if self.is_match(value) {
+            Ok(())
+        } else {
+            Err(NotMatch)
+        }
+    }
+}
+
+impl Validator<String> for Regex {
+    type Err = NotMatch;
+    fn validate(&self, value: String) -> Result<(), Self::Err> {
         self.is_match(value.as_ref()).then_some(()).ok_or(NotMatch)
     }
 }
@@ -322,6 +362,22 @@ where
 
 impl Validatable for TextField {
     type Value = StyledStr;
+
+    fn validable(&mut self) -> &mut Binding<Self::Value> {
+        self.value_binding()
+    }
+}
+
+impl Validatable for waterui_controls::Stepper {
+    type Value = i32;
+
+    fn validable(&mut self) -> &mut Binding<Self::Value> {
+        self.value_binding()
+    }
+}
+
+impl Validatable for waterui_controls::Slider {
+    type Value = f64;
 
     fn validable(&mut self) -> &mut Binding<Self::Value> {
         self.value_binding()

@@ -116,6 +116,14 @@ impl Stepper {
         self
     }
 
+    /// The binding this stepper reads and writes.
+    ///
+    /// Exposed for the same reason a text field exposes its own: a validator
+    /// wraps the control by splicing a filtered binding in front of its value.
+    pub const fn value_binding(&mut self) -> &mut Binding<i32> {
+        &mut self.0.value
+    }
+
     /// Sets a formatter for the inline value display. The semantic label is
     /// unaffected.
     #[must_use]
