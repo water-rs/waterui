@@ -44,15 +44,23 @@ use waterui_core::{
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```rust
+/// use waterui::prelude::*;
+///
 /// // Fills entire container
+/// # fn filled() -> impl View {
 /// Color::blue()
+/// # }
 ///
 /// // Constrained to specific size
-/// Color::red().frame().width(100.0).height(50.0)
+/// # fn sized() -> impl View {
+/// Color::red().width(100.0).height(50.0)
+/// # }
 ///
 /// // As a background
+/// # fn labelled() -> impl View {
 /// text("Hello").background(Color::yellow())
+/// # }
 /// ```
 //
 // ═══════════════════════════════════════════════════════════════════════════

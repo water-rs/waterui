@@ -6,20 +6,24 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use waterui::graphics::shader;
+//! ```rust
+//! use waterui_graphics::shader;
+//! use waterui_graphics::shader_surface::ShaderSurface;
 //!
-//! // Load shader from file (recommended)
-//! shader!("shaders/effect.wgsl")
+//! // Load shader from file (recommended). The path is relative to the
+//! // calling crate's `src/`, so this one names a shader this crate ships.
+//! let from_file = shader!("shaders/flowing_gradient.wgsl");
 //!
 //! // Inline shader
-//! ShaderSurface::new(r#"
+//! let inline = ShaderSurface::new(
+//!     r#"
 //!     @fragment
 //!     fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 //!         let t = uniforms.time;
 //!         return vec4<f32>(uv.x, uv.y, sin(t), 1.0);
 //!     }
-//! "#)
+//! "#,
+//! );
 //! ```
 //!
 //! # Built-in Uniforms
@@ -73,13 +77,16 @@ impl ShaderSurface {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// ShaderSurface::new(r#"
+    /// ```rust
+    /// # use waterui_graphics::shader_surface::ShaderSurface;
+    /// ShaderSurface::new(
+    ///     r#"
     ///     @fragment
     ///     fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     ///         return vec4<f32>(uv, 0.5, 1.0);
     ///     }
-    /// "#)
+    /// "#,
+    /// );
     /// ```
     #[must_use]
     pub fn new(fragment_shader: impl Into<Cow<'static, str>>) -> Self {
@@ -124,21 +131,22 @@ impl waterui_core::View for ShaderSurface {
 /// Creates a [`ShaderSurface`] from a shader file path.
 ///
 /// This macro loads the shader source at compile time using `include_str!`
-/// and creates a `ShaderSurface` with it.
+/// and creates a `ShaderSurface` with it. The path is resolved against the
+/// calling crate's `src/` directory.
 ///
 /// # Example
 ///
-/// ```ignore
-/// use waterui::graphics::shader;
+/// ```rust
+/// # use waterui::prelude::*;
+/// use waterui_graphics::shader;
 ///
-/// // Load shader from file relative to the current source file
-/// let surface = shader!("shaders/flame.wgsl");
+/// // Load a shader file, resolved against the calling crate's `src/`
+/// let surface = shader!("shaders/flowing_gradient.wgsl");
 ///
 /// // Use in a view
-/// vstack((
-///     text("My Effect"),
-///     shader!("effects/glow.wgsl"),
-/// ))
+/// # fn effect() -> impl View {
+/// vstack((text("My Effect"), shader!("shaders/mesh_gradient.wgsl")))
+/// # }
 /// ```
 #[macro_export]
 macro_rules! shader {
