@@ -5,7 +5,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```rust
 //! use waterui_media::Photo;
 //! use waterui_media::url::Url;
 //!
@@ -38,10 +38,11 @@ use zenwave::{Client, Method, redirect::FollowRedirect};
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// use waterui_media::Photo;
+/// use waterui_media::url::Url;
 ///
-/// Photo::new("https://www.rust-lang.org/logos/rust-logo-512x512.png")
+/// Photo::new(Url::parse("https://www.rust-lang.org/logos/rust-logo-512x512.png").unwrap());
 /// ```
 pub struct Photo {
     /// The URL of the image to display.
@@ -115,23 +116,28 @@ impl Photo {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```rust
     /// use waterui::prelude::*;
+    /// use waterui_media::url::Url;
     /// use waterui_media::{Photo, photo::Event};
     ///
+    /// # fn gallery() -> impl View {
+    /// # let url = Url::parse("https://www.rust-lang.org/logos/rust-logo-512x512.png").unwrap();
     /// // Plain callback — no extractors.
-    /// let photo = Photo::new(url).on_event(|event: Event| match event {
+    /// let photo = Photo::new(url.clone()).on_event(|event: Event| match event {
     ///     Event::Loaded => tracing::debug!("Image loaded!"),
     ///     Event::Error(msg) => tracing::debug!("Error: {msg}"),
     /// });
     ///
     /// // Extractor-based callback — pulls a binding via `State<T>`.
-    /// let last_status = binding(String::new());
+    /// let last_status: Binding<String> = binding(String::new());
     /// let photo = Photo::new(url)
     ///     .on_event(|event: Event, State(last): State<Binding<String>>| {
     ///         last.set(format!("{event:?}"));
     ///     })
     ///     .state(&last_status);
+    /// # photo
+    /// # }
     /// ```
     #[must_use]
     pub fn on_event<H, A>(mut self, handler: H) -> Self

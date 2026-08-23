@@ -21,7 +21,7 @@
 //! ## Examples
 //!
 //! ### Basic Photo
-//! ```rust,ignore
+//! ```rust
 //! use waterui_media::{Photo, url::Url};
 //!
 //! let url = Url::parse("https://waterui.dev/favicon.ico").unwrap();
@@ -29,8 +29,8 @@
 //! ```
 //!
 //! ### Video with Controls
-//! ```rust,ignore
-//! use waterui_media::{video, video_player, url::Url};
+//! ```rust
+//! use waterui_media::{url::Url, video, video_player};
 //!
 //! let url = Url::parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4").unwrap();
 //! let _video = video::video(url.clone());
@@ -38,7 +38,7 @@
 //! ```
 //!
 //! ### Unified Media Type
-//! ```rust,ignore
+//! ```rust
 //! use waterui_media::{Media, live::LivePhotoSource, url::Url};
 //!
 //! let image = Media::Image(Url::parse("https://waterui.dev/favicon.ico").unwrap());
@@ -106,7 +106,7 @@ use crate::live::LivePhotoSource;
 ///
 /// # Examples
 ///
-/// ```text
+/// ```rust
 /// use waterui_media::{Media, live::LivePhotoSource, url::Url};
 ///
 /// let image = Media::Image(Url::parse("https://waterui.dev/favicon.ico").unwrap());
