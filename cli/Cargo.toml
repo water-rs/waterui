@@ -30,6 +30,9 @@ name = "water"
 path = "src/terminal/main.rs"
 
 [dependencies]
+# Windows `canonicalize` returns extended-length paths that no other tool
+# reports; `dunce` gives the plain one and is `canonicalize` elsewhere.
+dunce = "1.0"
 cargo_metadata = "0.23.1"
 image = "0.25"  # For PNG reading/writing and pixel manipulation (diff feature)
 cargo_toml = "1.0.0"
