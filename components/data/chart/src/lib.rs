@@ -12,12 +12,13 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use waterui::Binding;
-//! use waterui::graphics::color::Srgb;
+//! ```rust
+//! use waterui::color::Srgb;
+//! use waterui::prelude::*;
 //! use waterui_chart::{BarChart, DataPoint};
 //!
-//! let data = Binding::container(vec![
+//! # fn sales() -> impl View {
+//! let data = binding(vec![
 //!     DataPoint::new(0.0, 100.0),
 //!     DataPoint::new(1.0, 150.0),
 //!     DataPoint::new(2.0, 80.0),
@@ -25,6 +26,7 @@
 //!
 //! BarChart::new(data)
 //!     .color(Srgb::from_hex("#3B82F6"))
+//! # }
 //! ```
 
 extern crate alloc;
