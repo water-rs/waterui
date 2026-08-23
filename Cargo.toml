@@ -259,9 +259,17 @@ navigation-restoration = [
 flow-markdown = ["waterui-internal/flow-markdown", "waterui-dylib?/flow-markdown"]
 std = ["waterui-internal/std", "waterui-dylib?/std"]
 dynamic_linking = ["dep:waterui-dylib"]
+# Every feature the framework offers an application. `dynamic_linking` is
+# deliberately absent: it is a build strategy — one shared copy of the framework
+# for the preview system — not a capability, and `waterui-dylib` exports more
+# symbols than a PE export table can hold, so a Windows build of it cannot link
+# at all. `--all-features` therefore cannot be used on Windows; `--features all`
+# is what CI asks for instead.
 all = [
     "std",
     "gpu",
+    "inspector",
+    "inspector-signals",
     "assets",
     "media",
     "webview",
