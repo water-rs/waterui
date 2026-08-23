@@ -1,10 +1,10 @@
 # waterui-macros
 
-Procedural macros for the WaterUI framework, providing automatic derive implementations and code generation for forms, reactive projections, and preview functionality.
+Procedural macros for the `WaterUI` framework, providing automatic derive implementations and code generation for forms, reactive projections, and preview functionality.
 
 ## Overview
 
-This crate is the macro engine behind WaterUI's ergonomic APIs. It provides four main categories of macros:
+This crate is the macro engine behind `WaterUI`'s ergonomic APIs. It provides four main categories of macros:
 
 1. **Form Generation** - Automatically generate UI forms from Rust structs with `#[derive(FormBuilder)]` and `#[form]`
 2. **Reactive Projections** - Decompose struct bindings into per-field bindings with `#[derive(Project)]`
@@ -93,13 +93,16 @@ Convenience attribute macro that combines multiple common derives for form struc
 
 **Equivalent to:**
 
-```rust
+```text
 #[derive(Default, Clone, Debug, FormBuilder, Project)]
 ```
 
 **Example from `examples/form/src/lib.rs`:**
 
 ```rust
+use waterui::prelude::*;
+use waterui::form::form;
+
 #[form]
 struct AppSettings {
     /// Application theme brightness
@@ -184,7 +187,7 @@ fn sidebar() -> impl View {
 **How it works:**
 
 1. Generates a C-exported symbol that returns the view:
-   ```rust
+   ```text
    #[unsafe(no_mangle)]
    pub unsafe extern "C" fn waterui_preview_my_crate_sidebar() -> *mut WuiAnyView
    ```
@@ -202,7 +205,7 @@ water preview sidebar --platform macos --output sidebar.png
 
 #### `#[waterui::test(view_fn)]`
 
-Attribute macro that wraps a WaterUI semantic test into a standard Rust `#[test]`.
+Attribute macro that wraps a `WaterUI` semantic test into a standard Rust `#[test]`.
 
 `view_fn` must be a no-arg function returning `impl View`, which lets one function be shared by
 preview and tests.
@@ -273,7 +276,7 @@ This is a proc-macro crate with no optional features. All macros are always avai
 
 - **Rust Edition**: 2024
 - **Dependencies**: `syn ^2.0`, `quote ^1.0`, `proc-macro2 ^1.0`
-- **Workspace Integration**: Part of the WaterUI workspace, follows workspace lints (clippy pedantic + nursery)
+- **Workspace Integration**: Part of the `WaterUI` workspace, follows workspace lints (clippy pedantic + nursery)
 
 ### Compile-Time Validation
 

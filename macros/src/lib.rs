@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! Procedural macros for `WaterUI` framework.
 //!
 //! This crate provides derive macros and procedural macros for the `WaterUI` framework,

@@ -1,10 +1,10 @@
 # waterui-cli
 
-Cross-platform build orchestration and development tooling for WaterUI applications.
+Cross-platform build orchestration and development tooling for `WaterUI` applications.
 
 ## Overview
 
-`waterui-cli` is the command-line interface that powers the `water` binary, the primary tool for building, running, and managing WaterUI applications across iOS, macOS, and Android. It abstracts platform-specific build systems (Xcode for Apple, Gradle for Android) and provides a unified developer experience with device management, project scaffolding, and instant view previews.
+`waterui-cli` is the command-line interface that powers the `water` binary, the primary tool for building, running, and managing `WaterUI` applications across iOS, macOS, and Android. It abstracts platform-specific build systems (Xcode for Apple, Gradle for Android) and provides a unified developer experience with device management, project scaffolding, and instant view previews.
 
 The crate is split into two components:
 - **Library** (`src/lib.rs`): Core abstractions for platforms, devices, builds, and project management
@@ -14,7 +14,7 @@ This separation ensures all business logic lives in the library, while the termi
 
 ## Installation
 
-Install the CLI from source within the WaterUI workspace:
+Install the CLI from source within the `WaterUI` workspace:
 
 ```bash
 cargo install --path cli
@@ -28,7 +28,7 @@ cargo build -p waterui-cli
 
 ## Quick Start
 
-Create a new WaterUI project and run it on iOS Simulator:
+Create a new `WaterUI` project and run it on iOS Simulator:
 
 ```bash
 # Create a new project
@@ -64,7 +64,7 @@ water preview dashboard --platform macos --frame 800x600 --output dashboard.png
 
 Mark functions with `#[preview]` to make them previewable:
 
-```rust
+```text
 use waterui::prelude::*;
 
 #[preview]
@@ -84,30 +84,25 @@ The preview system generates symbols with the format `waterui_preview_{crate_nam
 
 ### Platform Abstraction
 
-The `Platform` trait represents a build target (iOS, macOS, Android with different ABIs). Each platform implementation handles:
+A build target is a `TargetPlatform` — an enum of the concrete targets
+(`MacOS`, `IOS`, `IOSSimulator`, `TvOS`, `Android`, …) paired with a
+`TargetBackend` naming which backend renders it (`Apple`, `Android`, `Gtk4`,
+`Hydrolysis`, …). It replaced an earlier `Platform` trait: the set of targets
+is fixed and known, so an enum says so, and the per-target work — scanning for
+devices, building for the triple, packaging into a `.app` or `.apk`, cleaning —
+lives in the module for that platform rather than behind an associated type.
 
-- **Device scanning**: Enumerate connected devices and emulators
-- **Building**: Compile Rust library for the target triple
-- **Packaging**: Generate platform-specific artifacts (`.app`, `.apk`)
-- **Cleaning**: Remove build artifacts
-
-Example from `src/platform.rs`:
-
-```rust
-pub trait Platform: Send {
-    type Toolchain: Toolchain;
-    type Device: Device;
-
-    fn scan(&self) -> impl Future<Output = eyre::Result<Vec<Self::Device>>> + Send;
-    fn build(&self, project: &Project, options: BuildOptions) -> impl Future<Output = eyre::Result<PathBuf>> + Send;
-    fn package(&self, project: &Project, options: PackageOptions) -> impl Future<Output = eyre::Result<Artifact>> + Send;
-    fn clean(&self, project: &Project) -> impl Future<Output = eyre::Result<()>> + Send;
-    fn triple(&self) -> Triple;
-    fn toolchain(&self) -> Self::Toolchain;
+```text
+pub enum TargetPlatform {
+    MacOS,
+    IOS,
+    IOSSimulator,
+    TvOS,
+    TvOSSimulator,
+    Android,
+    // …
 }
 ```
-
-Implementations: `ApplePlatform` (iOS, macOS, simulators), `AndroidPlatform` (arm64-v8a, x86_64, etc.)
 
 ### Device Management
 
@@ -116,11 +111,11 @@ The `Device` trait represents something that can run an app (simulator, emulator
 1. **Launch**: Boot the emulator/simulator (no-op for physical devices)
 2. **Run**: Install and execute the artifact, returning a `Running` stream
 
-Example from `src/device.rs`:
+Example from `src/workflows/device.rs`:
 
-```rust
-pub trait Device: Send {
-    type Platform: Platform;
+```text
+pub trait Device: Sized + Send {
+    fn name(&self) -> &str;
 
     fn launch(&self) -> impl Future<Output = eyre::Result<()>> + Send;
     fn run(&self, artifact: Artifact, options: RunOptions) -> impl Future<Output = Result<Running, FailToRun>> + Send;
@@ -150,7 +145,7 @@ The `RustBuild` type wraps `cargo build` with platform-specific configuration:
 
 The `Toolchain` trait checks for required dependencies and provides installation plans:
 
-```rust
+```text
 pub trait Toolchain: Send + Sync {
     type Installation: Installation;
     fn check(&self) -> impl Future<Output = Result<(), ToolchainError<Self::Installation>>> + Send;
@@ -184,16 +179,16 @@ water devices --platform ios
 water run --platform ios --device "iPhone 15 Pro"
 ```
 
-### Create Project with Local WaterUI Development
+### Create Project with Local `WaterUI` Development
 
 ```bash
 water create my-app --waterui-path /path/to/waterui --backends apple,android
 ```
 
-This creates a project that uses the local WaterUI repository.
+This creates a project that uses the local `WaterUI` repository.
 
-When the `water` CLI itself was built from a local, non-release WaterUI checkout and you run
-`water create` from somewhere inside the WaterUI repository, it automatically detects the repo
+When the `water` CLI itself was built from a local, non-release `WaterUI` checkout and you run
+`water create` from somewhere inside the `WaterUI` repository, it automatically detects the repo
 root and uses it as the local `waterui_path`. Use `--waterui-path` explicitly when running that
 development CLI outside the repository.
 
@@ -234,7 +229,7 @@ This validates toolchain dependencies (Xcode, Android SDK, Rust targets).
 - **`apple`**: Apple platform, devices, and backend
 - **`android`**: Android platform, devices, and backend
 - **`brew`**: Homebrew package management utilities
-- **`water_dir`**: Global WaterUI directory management
+- **`water_dir`**: Global `WaterUI` directory management
 - **`utils`**: Command execution helpers
 
 ### Terminal (`src/terminal/`)

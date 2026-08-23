@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! `WaterUI` CLI library for managing cross-platform builds and development workflows.
 pub mod android;
 pub mod apple;
