@@ -66,6 +66,15 @@ pub struct NavigationView {
     /// Reactive and callback state associated with this destination.
     #[doc(hidden)]
     pub state: NavigationDestinationState,
+    /// How this destination arrives, when it wants something other than the
+    /// motion its stack declared.
+    ///
+    /// A stack-wide transition cannot name a *matched* pair, because the pair
+    /// differs per destination: a gallery's tile and the page it opens share an
+    /// identity that the next tile does not. Declaring it here is what lets each
+    /// destination name its own — the same place SwiftUI puts it.
+    #[doc(hidden)]
+    pub transition: Option<AnyNavigationTransition>,
 }
 
 impl Debug for NavigationView {
@@ -75,6 +84,7 @@ impl Debug for NavigationView {
             .field("bar", &self.bar)
             .field("content", &self.content)
             .field("state", &self.state)
+            .field("transition", &self.transition)
             .finish()
     }
 }
@@ -1349,7 +1359,30 @@ impl NavigationView {
             bar,
             content: AnyView::new(content),
             state: NavigationDestinationState::default(),
+            transition: Option::None,
         }
+    }
+
+    /// Sets how this destination arrives, overriding its stack's transition.
+    ///
+    /// A stack-wide transition cannot name a matched pair, because the pair
+    /// differs per destination — a gallery's tile and the page it opens share an
+    /// identity the next tile does not:
+    ///
+    /// ```rust
+    /// use waterui::navigation::{NavigationView, navigation_transition};
+    /// use waterui::prelude::*;
+    /// use waterui_core::id::Id;
+    ///
+    /// # fn photo_id(index: i32) -> Id { Id::try_from(index + 1).expect("non-zero") }
+    /// fn photo_page(index: i32) -> NavigationView {
+    ///     NavigationView::new("Photo", text!("photo {index}"))
+    ///         .transition(navigation_transition::zoom(photo_id(index)))
+    /// }
+    /// ```
+    pub fn transition(mut self, transition: impl NavigationTransition) -> Self {
+        self.transition = Some(AnyNavigationTransition::new(transition));
+        self
     }
 
     /// Sets the display mode for the navigation bar title.
