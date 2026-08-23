@@ -1856,10 +1856,14 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceIntoOff
     height: jint,
 ) -> jintArray {
     super::with_env(&mut env, |env| {
+        // `gpuSurfaceCreate` hands Java the JNI wrapper, not the surface state
+        // itself, so unwrap before the shared entry point — casting the handle
+        // straight across reads the wrapper's own fields as the state's.
+        let wrapper = unsafe { &*(statePtr as *mut JniGpuSurfaceState) };
         // SAFETY: the caller hands over a live state pointer from gpuSurfaceCreate.
         let image = unsafe {
             crate::components::gpu_surface::waterui_gpu_surface_into_offscreen_image(
-                statePtr as *mut crate::components::gpu_surface::WuiGpuSurfaceState,
+                wrapper.state,
                 width.max(0) as u32,
                 height.max(0) as u32,
             )
