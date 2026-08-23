@@ -8,10 +8,12 @@ use crate::Filter;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::Invert;
 ///
 /// let inverted = Invert;
+/// # assert_eq!(inverted.params().len(), 0);
 /// ```
 #[derive(Debug, Clone, Copy, Default, Filter)]
 #[filter(color_only, shader = "color/transform/invert.wgsl")]

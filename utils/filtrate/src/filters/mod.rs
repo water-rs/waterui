@@ -3,6 +3,29 @@
 //! Each filter is a pure data struct implementing the [`Filter`](crate::Filter) trait.
 //! Filters with `COLOR_ONLY = true` can be automatically fused with adjacent
 //! color-only filters for better performance.
+//!
+//! # Declaring one
+//!
+//! Every built-in filter is written with [`#[derive(Filter)]`](crate::Filter):
+//! one attribute names the pass kind and the WGSL source (resolved against the
+//! declaring crate's `src/shaders/`), and the fields flatten into the parameter
+//! array in declaration order.
+//!
+//! ```rust
+//! use filtrate::{Filter, FilterParam};
+//!
+//! #[derive(Filter)]
+//! #[filter(color_only, shader = "color/adjustment/brightness.wgsl")]
+//! struct Brighten<T>(T);
+//!
+//! #[derive(Filter)]
+//! #[filter(spatial, shader = "image/convolution/sobel.wgsl")]
+//! struct Edges;
+//!
+//! assert!(Brighten::<f32>::COLOR_ONLY);
+//! assert!(!Edges::COLOR_ONLY);
+//! assert_eq!(Brighten(0.2_f32).params(), [0.2]);
+//! ```
 
 mod color;
 mod distortion;

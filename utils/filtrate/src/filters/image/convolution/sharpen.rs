@@ -13,11 +13,14 @@ use crate::Filter;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::Sharpen;
 ///
-/// let subtle = Sharpen(0.5);
-/// let crisp = Sharpen(1.5);
+/// let subtle = Sharpen(0.5_f32);
+/// let crisp = Sharpen(1.5_f32);
+/// # assert_eq!(subtle.params(), [0.5]);
+/// # assert_eq!(crisp.params(), [1.5]);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
 #[filter(spatial, shader = "image/convolution/sharpen.wgsl")]

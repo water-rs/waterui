@@ -24,11 +24,13 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use filtrate::{Filter, FilterExt};
+//! ```rust
 //! use filtrate::filters::{Blur, Brightness};
+//! use filtrate::{Filter, FilterExt};
 //!
-//! let chain = Blur(5.0).then(Brightness(0.1));
+//! let chain = Blur(5.0_f32).then(Brightness(0.1_f32));
+//! # // A chain's params nest, one array per link, in application order.
+//! # assert_eq!(chain.params(), ([5.0, 5.0], [0.1]));
 //! ```
 
 mod compiled_shaders;

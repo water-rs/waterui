@@ -11,11 +11,13 @@ use crate::Filter;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// # use filtrate::Filter;
 /// use filtrate::filters::Vignette;
 ///
-/// let subtle = Vignette(0.8, 0.3);
-/// let dramatic = Vignette(0.3, 0.1);
+/// let subtle = Vignette(0.8_f32, 0.3_f32);
+/// let dramatic = Vignette(0.3_f32, 0.1_f32);
+/// # assert_eq!(subtle.params(), [0.8, 0.3]);
 /// ```
 #[derive(Debug, Clone, Copy, Filter)]
 #[filter(color_only, shader = "color/effect/vignette.wgsl")]
