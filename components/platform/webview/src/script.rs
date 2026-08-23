@@ -113,6 +113,39 @@ impl JsProgram {
     pub fn wrapped_call(&self) -> String {
         wrap(self.source.as_str(), self.args())
     }
+
+    /// Renders the program as one self-contained script, depending on nothing
+    /// `WaterUI` installed.
+    ///
+    /// [`wrapped_call`](Self::wrapped_call) is for the two APIs that hand a
+    /// backend a function body and wait for an answer. Injection has neither: a
+    /// script registered with [`WebViewOpen::inject`](crate::WebViewOpen::inject)
+    /// is a whole program the engine runs on every page load, before the bridge
+    /// is guaranteed to exist and with nobody to receive an envelope. So this
+    /// drops the wrapper and keeps only the part that binds arguments: an async
+    /// IIFE whose parameters are the `__wa0`, `__wa1`, … names the macros already
+    /// substituted for the source's `@{...}` holes, applied to the same JSON
+    /// array literal `wrapped_call` inlines. The argument path is therefore the
+    /// one `__wateruiEval` takes — `fn.apply(null, args)` over an inlined JSON
+    /// array — minus the envelope, so a program means the same thing injected as
+    /// it does executed.
+    ///
+    /// This is what `From<JsProgram> for Str` uses, which is why a program can be
+    /// handed straight to `inject`.
+    #[must_use]
+    pub fn standalone_script(&self) -> String {
+        let parameters = parameters(self.args());
+        let arguments = arguments(self.args());
+        let source = self.source.as_str();
+        format!("(async ({parameters}) => {{ {source} }}).apply(null, {arguments});")
+    }
+}
+
+/// Renders the program for injection; see [`JsProgram::standalone_script`].
+impl From<JsProgram> for Str {
+    fn from(program: JsProgram) -> Self {
+        Self::from(program.standalone_script())
+    }
 }
 
 /// Builds `return __wateruiEval(async (__wa0, …) => { … }, [args]);`.
@@ -126,13 +159,37 @@ impl JsProgram {
 /// the backend has to await. Returning it from an async function body is the
 /// shape every engine's awaiting API takes.
 fn wrap(body: &str, args: &[serde_json::Value]) -> String {
-    let parameters = (0..args.len())
+    let parameters = parameters(args);
+    let arguments = arguments(args);
+    format!("return globalThis.__wateruiEval(async ({parameters}) => {{ {body} }}, {arguments});")
+}
+
+/// The parameter list binding one argument each, in order.
+///
+/// The names match what the `exec!`/`eval!` macros write in place of a `@{...}`
+/// hole, which is the whole reason an argument reaches the source at all.
+fn parameters(args: &[serde_json::Value]) -> String {
+    (0..args.len())
         .map(|index| format!("__wa{index}"))
         .collect::<Vec<_>>()
-        .join(",");
-    let args =
-        serde_json::to_string(args).expect("interpolated JavaScript arguments must serialize");
-    format!("return globalThis.__wateruiEval(async ({parameters}) => {{ {body} }}, {args});")
+        .join(",")
+}
+
+/// Serializes the arguments as the JavaScript array literal the source is
+/// applied to.
+///
+/// U+2028 and U+2029 are ordinary characters inside a JSON string but were line
+/// terminators in JavaScript source until ES2019, where they end a string
+/// literal and leave the rest of the script unparseable. Which engine runs this
+/// is the backend's business and not always a current one, so they are escaped
+/// unconditionally. The escape denotes the same character to a JSON reader,
+/// and the raw one can only ever appear inside a string, so replacing it blind
+/// cannot touch anything else.
+fn arguments(args: &[serde_json::Value]) -> String {
+    serde_json::to_string(args)
+        .expect("interpolated JavaScript arguments must serialize")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
 }
 
 /// Why evaluating JavaScript failed.
@@ -228,7 +285,15 @@ impl JsOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::{JsError, JsExpr, JsOutcome};
+    use super::{JsError, JsExpr, JsOutcome, JsProgram};
+    use serde_json::json;
+    use waterui_str::Str;
+
+    /// Builds the program `exec!("app.set(@{a}, @{b})")` expands to: the macro has
+    /// already replaced each `@{...}` hole with a positional parameter name.
+    fn program(source: &'static str, args: Vec<serde_json::Value>) -> JsProgram {
+        JsProgram::__from_parts(source, args)
+    }
 
     fn outcome(json: &str) -> JsOutcome {
         serde_json::from_str(json).expect("well-formed outcome")
@@ -298,5 +363,78 @@ mod tests {
             "{call}"
         );
         assert!(call.trim_end().ends_with(");"), "{call}");
+    }
+
+    /// The parameters are the names the macro substituted for the holes, and the
+    /// values reach them the way `__wateruiEval` delivers them: applied from an
+    /// inlined JSON array.
+    #[test]
+    fn a_standalone_script_binds_each_hole_positionally() {
+        let script =
+            program("app.set(__wa0, __wa1);", vec![json!("dark"), json!(2)]).standalone_script();
+        assert_eq!(
+            script,
+            r#"(async (__wa0,__wa1) => { app.set(__wa0, __wa1); }).apply(null, ["dark",2]);"#
+        );
+    }
+
+    /// The same values, spelled the same way, whichever rendering runs them —
+    /// which is what makes injecting a program mean what executing it means.
+    #[test]
+    fn both_renderings_inline_the_same_arguments() {
+        let program = program("app.set(__wa0);", vec![json!({ "seen": true })]);
+        let arguments = r#"[{"seen":true}]"#;
+        assert!(program.standalone_script().contains(arguments));
+        assert!(program.wrapped_call().contains(arguments));
+    }
+
+    #[test]
+    fn a_program_without_arguments_takes_no_parameters() {
+        assert_eq!(
+            program("document.title = 'hi';", Vec::new()).standalone_script(),
+            "(async () => { document.title = 'hi'; }).apply(null, []);"
+        );
+    }
+
+    /// A string argument is JSON, so its quotes and newlines are escaped rather
+    /// than closing the literal or ending the line — the property that keeps an
+    /// interpolated value from being read as source.
+    #[test]
+    fn a_string_argument_cannot_break_out_of_its_literal() {
+        let script = program(
+            "log(__wa0);",
+            vec![json!("\");\nalert('pwned');//"), json!("a\tb")],
+        )
+        .standalone_script();
+        assert!(
+            script.contains(r#"["\");\nalert('pwned');//","a\tb"]"#),
+            "{script}"
+        );
+        assert!(!script.contains('\n'), "{script}");
+    }
+
+    /// U+2028 and U+2029 pass through `serde_json` raw: legal JSON, and a line
+    /// terminator to a pre-ES2019 JavaScript parser, which would end the string
+    /// literal and leave the rest of the script unparseable.
+    #[test]
+    fn line_separators_are_escaped_in_both_renderings() {
+        let program = program("log(__wa0);", vec![json!("before\u{2028}\u{2029}after")]);
+        let escaped = "[\"before\\u2028\\u2029after\"]";
+        for script in [program.standalone_script(), program.wrapped_call()] {
+            assert!(script.contains(escaped), "{script}");
+            assert!(!script.contains('\u{2028}'), "{script}");
+            assert!(!script.contains('\u{2029}'), "{script}");
+        }
+    }
+
+    /// What `WebViewOpen::inject` relies on: a program converts to the script it
+    /// renders, so it can be passed where a `Str` is expected.
+    #[test]
+    fn converting_to_a_string_renders_the_standalone_script() {
+        let program = program("app.ready(__wa0);", vec![json!(true)]);
+        assert_eq!(
+            Str::from(program.clone()),
+            Str::from(program.standalone_script())
+        );
     }
 }
