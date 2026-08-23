@@ -68,7 +68,6 @@ crate::ffi_computed_ctor!(EdgeInsets, WuiEdgeInsets, edge_insets);
 /// The signal pointer must be an owning pointer from
 /// `waterui_new_computed_edge_insets`, and `env` a valid handle that is not
 /// otherwise borrowed for this call.
-#[cfg(feature = "c-api")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_env_install_safe_area(
     env: *mut WuiEnv,
