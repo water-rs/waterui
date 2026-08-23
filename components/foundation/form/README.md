@@ -1,10 +1,10 @@
 # waterui-form
 
-A comprehensive form building system for WaterUI applications with automatic component generation, validation, and secure data handling.
+A comprehensive form building system for `WaterUI` applications with automatic component generation, validation, and secure data handling.
 
 ## Overview
 
-`waterui-form` provides an ergonomic, type-safe approach to building interactive forms in WaterUI applications. The crate centers around the `FormBuilder` trait, which enables automatic mapping from Rust data structures to platform-native UI components. It includes specialized pickers (color, date, multi-date), secure input handling with automatic memory zeroing, and a flexible validation system.
+`waterui-form` provides an ergonomic, type-safe approach to building interactive forms in `WaterUI` applications. The crate centers around the `FormBuilder` trait, which enables automatic mapping from Rust data structures to platform-native UI components. It includes specialized pickers (color, date, multi-date), secure input handling with automatic memory zeroing, and a flexible validation system.
 
 Key features:
 - **Automatic form generation** via `#[derive(FormBuilder)]` macro
@@ -16,7 +16,7 @@ Key features:
 - **Specialized pickers** - color, date/time, and multi-date selection
 - **Reactive bindings** - forms automatically update when data changes
 
-This crate is part of the WaterUI workspace and integrates tightly with `waterui-core` for reactivity, `waterui-controls` for base components, and `waterui-layout` for composition.
+This crate is part of the `WaterUI` workspace and integrates tightly with `waterui-core` for reactivity, `waterui-controls` for base components, and `waterui-layout` for composition.
 
 ## Installation
 
@@ -65,7 +65,7 @@ This generates a vertical stack with:
 
 ## Core Concepts
 
-### FormBuilder Trait
+### The `FormBuilder` trait
 
 The `FormBuilder` trait is the foundation of the form system. It maps Rust types to UI components:
 
@@ -88,7 +88,7 @@ The derive macro automatically implements `FormBuilder` by:
 1. **Converting field names to labels**: `user_name` → "User Name"
 2. **Extracting doc comments as placeholders**: `/// Enter email` becomes placeholder text
 3. **Mapping field types to components**: Uses the table above
-4. **Arranging fields in a VStack**: Creates a vertical layout of all fields
+4. **Arranging fields in a `VStack`**: Creates a vertical layout of all fields
 
 The macro requires the struct to have named fields and generates an implementation compatible with the `Project` trait for field-level reactive bindings.
 
@@ -169,10 +169,13 @@ fn contact_form_view() -> impl View {
     let form_binding = ContactForm::binding();
     let projected = form_binding.project();
 
+    let name = projected.name;
+    let email = projected.email;
+
     vstack((
         form(&form_binding),
-        text(projected.name.map(|n| format!("Hello, {}!", n))),
-        text(projected.email.map(|e| format!("Email: {}", e))),
+        text!("Hello, {name}!"),
+        text!("Email: {email}"),
     ))
 }
 ```
@@ -190,7 +193,7 @@ fn password_form() -> impl View {
     let confirm = binding(Secure::default());
 
     vstack((
-        SecureField::new("Password", &password),
+        secure("Password", &password),
         secure("Confirm Password", &confirm),
         button("Create Account").action(move || {
             let hash = password.get().hash();
@@ -208,39 +211,27 @@ The `Secure` type:
 
 ### Form Validation
 
-Compose validators to enforce rules on form fields:
+Wrap a control in `ValidatableView` to enforce a rule on the value it holds:
 
 ```rust
 use waterui::prelude::*;
-use waterui_form::valid::{Validator, ValidatableView};
-use regex::Regex;
+use waterui_form::valid::ValidatableView;
 
-fn validated_form() -> impl View {
-    let age_binding = binding(0i32);
-    let email_binding = binding(String::new());
-
-    let age_range = 18..=100;
-    let email_pattern = Regex::new(r"^[^@]+@[^@]+\.[^@]+$").unwrap();
-
-    vstack((
-        ValidatableView::new(
-            Stepper::new("Age", &age_binding),
-            age_range,
-        ),
-        ValidatableView::new(
-            TextField::new("Email", &email_binding),
-            email_pattern,
-        ),
-    ))
+fn validated_age() -> impl View {
+    let age: Binding<i32> = binding(18);
+    ValidatableView::new(stepper("Age", &age), 18..101)
 }
 ```
+
+A control can be validated when it says which binding carries its value —
+the `Validatable` trait — which `TextField`, `Stepper` and `Slider` do.
 
 Validators can be combined:
 - `.and(other)` - both must succeed
 - `.or(other)` - at least one must succeed
 
 Built-in validators:
-- `Range<T>` - validates value is within range
+- `Range<T>` - validates the value is inside a half-open range (`18..101`)
 - `Regex` - validates string matches pattern
 - `Required` - validates `Option<T>` is `Some` or string is non-empty
 
@@ -254,9 +245,9 @@ use waterui_form::picker::{DatePicker, DatePickerType};
 use jiff::civil::{Date, DateTime, Time};
 
 fn event_form() -> impl View {
-    let event_date = binding(Date::new(2025, 6, 15).unwrap());
-    let event_time = binding(Time::new(14, 30, 0, 0).unwrap());
-    let event_datetime = binding(DateTime::new(2025, 6, 15, 14, 30, 45, 0).unwrap());
+    let event_date: Binding<Date> = binding(Date::new(2025, 6, 15).unwrap());
+    let event_time: Binding<Time> = binding(Time::new(14, 30, 0, 0).unwrap());
+    let event_datetime: Binding<DateTime> = binding(DateTime::new(2025, 6, 15, 14, 30, 45, 0).unwrap());
 
     vstack((
         DatePicker::new("Date Only", &event_date).range(
@@ -287,13 +278,14 @@ use waterui_form::Calendar;
 use jiff::civil::Date;
 
 fn trip_calendar() -> impl View {
-    let trip_date = binding(Date::new(2025, 6, 15).unwrap());
+    let trip_date: Binding<Date> = binding(Date::new(2025, 6, 15).unwrap());
+    let visible_month: Binding<Date> = binding(Date::new(2025, 6, 1).unwrap());
+    let selected = trip_date.clone();
 
     vstack((
-        Calendar::new(&trip_date)
-            .label("Trip Date")
+        Calendar::new("Trip Date", &trip_date, &visible_month)
             .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap()),
-        text!("Selected date: {trip_date}"),
+        text!("Selected date: {selected}"),
     ))
 }
 ```
@@ -308,8 +300,8 @@ use waterui_form::picker::ColorPicker;
 use waterui::color::Color;
 
 fn theme_editor() -> impl View {
-    let primary_color = binding(Color::rgb(0.0, 0.5, 1.0));
-    let background = binding(Color::rgb(1.0, 1.0, 1.0));
+    let primary_color = binding(Color::srgb(0, 128, 255));
+    let background = binding(Color::srgb(255, 255, 255));
 
     vstack((
         ColorPicker::new("Primary Color", &primary_color),
@@ -329,8 +321,9 @@ use std::collections::BTreeSet;
 use jiff::civil::Date;
 
 fn availability_calendar() -> impl View {
-    let available_dates = binding(BTreeSet::<Date>::new());
-    let visible_month = binding(Date::new(2025, 1, 1).unwrap());
+    let available_dates: Binding<BTreeSet<Date>> = binding(BTreeSet::new());
+    let visible_month: Binding<Date> = binding(Date::new(2025, 1, 1).unwrap());
+    let count = available_dates.clone().map(|dates| dates.len());
 
     vstack((
         MultiDatePicker::new(
@@ -339,35 +332,35 @@ fn availability_calendar() -> impl View {
             &visible_month,
         )
         .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap()),
-        text(available_dates.map(|dates| {
-            format!("Selected {} dates", dates.len())
-        })),
+        text!("Selected {count} dates"),
     ))
 }
 ```
 
-### Manual FormBuilder Implementation
+### Implementing `FormBuilder` by hand
 
 For custom layouts or specialized behavior, implement `FormBuilder` manually:
 
 ```rust
 use waterui::prelude::*;
+use waterui_controls::IntoLabel;
 use waterui_form::FormBuilder;
 
+#[derive(Clone, Project)]
 struct TwoColumnForm {
-    left_field: String,
-    right_field: String,
+    left_field: Str,
+    right_field: Str,
 }
 
 impl FormBuilder for TwoColumnForm {
-    type View = HStack<(TextField, TextField)>;
+    type View = AnyView;
 
-    fn view(binding: &Binding<Self>, _label: AnyView, _placeholder: Str) -> Self::View {
+    fn view<L: IntoLabel>(binding: &Binding<Self>, _label: L, _placeholder: Str) -> Self::View {
         let projected = binding.project();
-        hstack((
-            TextField::new("Left", &projected.left_field),
-            TextField::new("Right", &projected.right_field),
-        ))
+        AnyView::new(hstack((
+            field("Left", &projected.left_field),
+            field("Right", &projected.right_field),
+        )))
     }
 }
 ```
@@ -443,5 +436,5 @@ The `FormBuilder` derive macro is provided by `waterui-macros`, which is automat
 
 - This crate is `#![no_std]` compatible (uses `extern crate alloc`)
 - All code examples in this README are extracted from actual source code or documentation
-- The crate follows WaterUI's layout contract system - see component source for detailed layout behavior
+- The crate follows `WaterUI`'s layout contract system - see component source for detailed layout behavior
 - Forms are rendered to native platform widgets (UIKit/AppKit on Apple, Android View on Android)
