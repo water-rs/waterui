@@ -1,7 +1,8 @@
 //! Padding layouts that inset a child by fixed edge distances.
 
 use alloc::{vec, vec::Vec};
-use waterui_core::{AnyView, View};
+use nami::{Computed, Signal, signal::IntoComputed, watcher::BoxWatcherGuard};
+use waterui_core::{AnyView, View, layout::LayoutInvalidationCallback};
 
 use crate::{
     HorizontalAlignment, Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView,
@@ -9,16 +10,21 @@ use crate::{
 };
 
 /// Layout that insets its single child by the configured edge values.
+///
+/// The insets are reactive, so a window that republishes its safe area on
+/// rotation (see [`SafeAreaInsets`](super::safe_area::SafeAreaInsets)) moves the
+/// padded content without the subtree being rebuilt.
 #[derive(Debug, Clone)]
 pub struct PaddingLayout {
-    edges: EdgeInsets,
+    edges: Computed<EdgeInsets>,
 }
 
 impl Layout for PaddingLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
+        let edges = self.edges.get();
         // The horizontal and vertical space consumed by padding.
-        let horizontal_padding = self.edges.leading + self.edges.trailing;
-        let vertical_padding = self.edges.top + self.edges.bottom;
+        let horizontal_padding = edges.leading + edges.trailing;
+        let vertical_padding = edges.top + edges.bottom;
 
         // Reduce the proposed size for the child by the padding amount.
         let child_proposal = ProposalSize {
@@ -60,11 +66,12 @@ impl Layout for PaddingLayout {
             return vec![];
         }
 
+        let edges = self.edges.get();
         // Create the child's frame by insetting the parent's bound by the padding amount.
-        let child_origin = Point::new(bounds.x() + self.edges.leading, bounds.y() + self.edges.top);
+        let child_origin = Point::new(bounds.x() + edges.leading, bounds.y() + edges.top);
 
-        let horizontal_padding = self.edges.leading + self.edges.trailing;
-        let vertical_padding = self.edges.top + self.edges.bottom;
+        let horizontal_padding = edges.leading + edges.trailing;
+        let vertical_padding = edges.top + edges.bottom;
 
         let child_size = Size::new(
             (bounds.width() - horizontal_padding).max(0.0),
@@ -95,6 +102,10 @@ impl Layout for PaddingLayout {
             .first()
             .and_then(|child| child.explicit_vertical(alignment))
     }
+
+    fn watch_invalidation(&self, invalidate: LayoutInvalidationCallback) -> Vec<BoxWatcherGuard> {
+        vec![self.edges.watch(move |_| invalidate())]
+    }
 }
 
 /// Insets applied to the four edges of a rectangle.
@@ -113,6 +124,20 @@ impl<T: Into<f64>> From<T> for EdgeInsets {
     fn from(value: T) -> Self {
         let v = value.into() as f32;
         Self::all(v)
+    }
+}
+
+impl core::ops::Add for EdgeInsets {
+    type Output = Self;
+
+    /// Stacks two sets of insets, edge by edge.
+    fn add(self, rhs: Self) -> Self {
+        Self {
+            top: self.top + rhs.top,
+            bottom: self.bottom + rhs.bottom,
+            leading: self.leading + rhs.leading,
+            trailing: self.trailing + rhs.trailing,
+        }
     }
 }
 
@@ -190,15 +215,17 @@ pub struct Padding {
 
 impl Padding {
     /// Wraps a view with custom `edges`.
-    pub fn new(edges: EdgeInsets, content: impl View + 'static) -> Self {
+    pub fn new(edges: impl IntoComputed<EdgeInsets>, content: impl View + 'static) -> Self {
         Self {
-            layout: PaddingLayout { edges },
+            layout: PaddingLayout {
+                edges: edges.into_computed(),
+            },
             content: AnyView::new(content),
         }
     }
 
     /// Consumes the padding and returns the edge insets and content.
-    pub fn into_inner(self) -> (EdgeInsets, AnyView) {
+    pub fn into_inner(self) -> (Computed<EdgeInsets>, AnyView) {
         (self.layout.edges, self.content)
     }
 }
@@ -215,6 +242,9 @@ mod tests {
     use crate::StretchAxis;
     use crate::ViewDimensions;
     use crate::measure_layout;
+    use alloc::rc::Rc;
+    use core::cell::Cell;
+    use nami::binding;
 
     struct MockSubView {
         size: Size,
@@ -257,7 +287,7 @@ mod tests {
     #[test]
     fn test_padding_size() {
         let layout = PaddingLayout {
-            edges: EdgeInsets::all(10.0),
+            edges: EdgeInsets::all(10.0).into_computed(),
         };
 
         let mut child = MockSubView {
@@ -275,7 +305,7 @@ mod tests {
     #[test]
     fn test_padding_placement() {
         let layout = PaddingLayout {
-            edges: EdgeInsets::new(10.0, 20.0, 15.0, 25.0),
+            edges: EdgeInsets::new(10.0, 20.0, 15.0, 25.0).into_computed(),
         };
 
         let mut child = MockSubView {
@@ -296,9 +326,44 @@ mod tests {
     }
 
     #[test]
+    fn reactive_insets_invalidate_and_change_measurement() {
+        let inset = binding(EdgeInsets::all(10.0));
+        let layout = PaddingLayout {
+            edges: inset.clone().into_computed(),
+        };
+
+        let invalidations = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&invalidations);
+        let _guards = layout.watch_invalidation(Rc::new(move || {
+            counted.set(counted.get() + 1);
+        }));
+
+        let child = MockSubView {
+            size: Size::new(50.0, 30.0),
+        };
+        let children: Vec<&dyn SubView> = vec![&child];
+        assert_eq!(
+            layout
+                .size_that_fits(ProposalSize::UNSPECIFIED, &children)
+                .width,
+            70.0
+        );
+
+        inset.set(EdgeInsets::all(20.0));
+
+        assert_eq!(invalidations.get(), 1);
+        assert_eq!(
+            layout
+                .size_that_fits(ProposalSize::UNSPECIFIED, &children)
+                .width,
+            90.0
+        );
+    }
+
+    #[test]
     fn test_padding_offsets_explicit_guides() {
         let layout = PaddingLayout {
-            edges: EdgeInsets::new(10.0, 0.0, 15.0, 0.0),
+            edges: EdgeInsets::new(10.0, 0.0, 15.0, 0.0).into_computed(),
         };
         let child = GuidedSubview {
             size: Size::new(50.0, 30.0),

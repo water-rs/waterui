@@ -240,6 +240,58 @@ macro_rules! ffi_watcher {
     };
 }
 
+/// Generates the notify/release pair a native-controlled signal needs.
+///
+/// [`ffi_watcher!`] lets a backend *create* a watcher; these let it drive one.
+/// `waterui_call_watcher_{ident}` delivers a new value to a watcher `WaterUI`
+/// handed the backend, and `waterui_drop_watcher_{ident}` releases it when the
+/// backend's signal loses its last subscriber. Only types a backend actually
+/// publishes need them, so this is a separate macro rather than part of
+/// [`ffi_computed!`], which every reactive type invokes.
+#[macro_export]
+macro_rules! ffi_watcher_notify {
+    ($ty:ty, $ffi:ty, $ident:tt) => {
+        pastey::paste! {
+            #[cfg(feature = "c-api")]
+            #[doc = concat!("Delivers `value` to a `", stringify!($ty), "` watcher.")]
+            ///
+            /// # Safety
+            /// The watcher pointer must be a valid handle that is alive for this
+            /// call.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [<waterui_call_watcher_ $ident>](
+                watcher: *const $crate::reactive::WuiWatcher<$ty>,
+                value: $ffi,
+            ) {
+                // SAFETY: the caller contract requires `watcher` to be a valid handle
+                // alive for this call; it is only borrowed.
+                unsafe {
+                    let watcher = $crate::borrow_ffi(watcher);
+                    let value = $crate::IntoRust::into_rust(value);
+                    watcher.call(value, waterui::reactive::watcher::Metadata::default());
+                }
+            }
+
+            #[cfg(feature = "c-api")]
+            #[doc = concat!("Releases a `", stringify!($ty), "` watcher.")]
+            ///
+            /// # Safety
+            /// The watcher pointer must be an owning pointer from the matching
+            /// constructor that has not already been dropped.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn [<waterui_drop_watcher_ $ident>](
+                watcher: *mut $crate::reactive::WuiWatcher<$ty>,
+            ) {
+                // SAFETY: the caller contract makes `watcher` an owning pointer from the
+                // matching constructor that has not been dropped.
+                unsafe {
+                    drop(alloc::boxed::Box::from_raw(watcher));
+                }
+            }
+        }
+    };
+}
+
 /// Generates computed FFI support for read-only reactive types.
 ///
 /// When `c-api` feature is enabled, generates C FFI functions.

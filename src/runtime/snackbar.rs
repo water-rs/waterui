@@ -48,6 +48,7 @@ use waterui_core::{AnimationExt, View};
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
+use waterui_layout::safe_area::SafeAreaInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{Alignment, hstack};
 use waterui_layout::{AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
@@ -143,7 +144,11 @@ pub struct SnackbarTheme {
     pub action_label_font: Font,
     /// Inner content padding.
     pub content_padding: EdgeInsets,
-    /// Outer viewport padding.
+    /// Margin between the bar and the window's safe area.
+    ///
+    /// This is spacing only. The hardware insets — notch, status bar, home
+    /// indicator — come from [`SafeAreaInsets`] and are added on top, so a
+    /// theme never has to guess them.
     pub viewport_padding: EdgeInsets,
     /// Gap between message and action.
     pub content_spacing: f32,
@@ -236,8 +241,7 @@ impl SnackbarTheme {
             supporting_text_font: Font::default(),
             action_label_font: Font::default(),
             content_padding: EdgeInsets::symmetric(14.0, 24.0),
-            // Floats clear of the home indicator / window edge.
-            viewport_padding: EdgeInsets::new(16.0, 48.0, 16.0, 16.0),
+            viewport_padding: EdgeInsets::all(16.0),
             content_spacing: 10.0,
             // Content-sized: no minimum, so the banner hugs its text.
             min_width: 0.0,
@@ -993,7 +997,13 @@ impl View for StackedSnackbarView {
             .offset(0.0, item.stack_offset.with_animation(enter_animation)),
         )
         .alignment(position.to_alignment())
-        .padding_with(theme.viewport_padding) // Safe area inset
+        // Clear of the hardware first, then of the window edge by the theme's
+        // own margin. The backend publishes the insets and republishes them on
+        // rotation, so this pads reactively instead of rebuilding the bar.
+        .padding_with(SafeAreaInsets::resolve_with_margin(
+            env,
+            theme.viewport_padding,
+        ))
     }
 }
 
