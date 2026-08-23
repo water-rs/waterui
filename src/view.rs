@@ -503,8 +503,8 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `edge` - The edge insets to apply as padding
-    fn padding_with(self, edge: impl Into<EdgeInsets>) -> Padding {
-        Padding::new(edge.into(), self)
+    fn padding_with(self, edge: impl IntoComputed<EdgeInsets>) -> Padding {
+        Padding::new(edge, self)
     }
 
     /// Adds default padding to this view.

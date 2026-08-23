@@ -11,8 +11,10 @@ use std::time::Duration;
 use hydrolysis_m3::install as install_m3;
 use waterui::Environment;
 use waterui::component::zstack;
+use waterui::layout::padding::EdgeInsets;
+use waterui::layout::safe_area::SafeAreaInsets;
 use waterui::prelude::*;
-use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarTheme};
+use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition, SnackbarTheme};
 use waterui_testing::UiBuilder;
 
 /// The width bounds these tests pin the bar to, distinctive on purpose so an
@@ -78,5 +80,45 @@ fn a_plain_snackbar_hugs_its_message(ui: UiBuilder) {
     assert!(
         message.width() < MIN_WIDTH,
         "a short message stays narrower than the bar's own floor"
+    );
+}
+
+/// A top-positioned bar clears the device's top inset.
+///
+/// The theme's `viewport_padding` is a margin, not a stand-in for hardware:
+/// a bar that only honoured it landed underneath the notch on every phone with
+/// one. The backend publishes the window's safe area, and the bar pads by the
+/// inset *plus* the margin.
+#[waterui::test(viewport = (900, 600))]
+fn a_top_snackbar_clears_the_published_safe_area(ui: UiBuilder) {
+    const TOP_INSET: f32 = 59.0;
+
+    let (manager, overlay) = SnackbarManager::new();
+    let theme = SnackbarTheme {
+        viewport_padding: EdgeInsets::all(16.0),
+        ..SnackbarTheme::default()
+    };
+    let mut env = Environment::new();
+    env.insert(manager.clone());
+    env.insert(theme);
+    SafeAreaInsets::install(&mut env, EdgeInsets::new(TOP_INSET, 34.0, 0.0, 0.0));
+
+    let mut app = ui
+        .theme(install_m3)
+        .environment(env)
+        .mount(move || zstack((text("app content"), overlay.clone())));
+    manager.show(
+        Snackbar::new("Uploaded")
+            .duration(Duration::ZERO)
+            .position(SnackbarPosition::TopCenter),
+    );
+    app.settle();
+
+    let message = app.query().label("Uploaded").single().bounds();
+    assert!(
+        message.y() >= TOP_INSET,
+        "the bar's message starts at y={}, inside the {TOP_INSET}pt top inset — \
+         it is sitting under the notch",
+        message.y()
     );
 }

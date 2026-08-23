@@ -41,7 +41,7 @@ use core::ptr::null_mut;
 pub use drawing::{color, gradient, shape};
 pub use events::{animation, cursor, drag_drop, event, gesture};
 pub use reactivity::reactive;
-pub use runtime::{app, id, theme, views, window};
+pub use runtime::{app, id, safe_area, theme, views, window};
 pub use ty::WuiTypeId;
 
 use alloc::boxed::Box;
