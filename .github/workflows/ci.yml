@@ -88,6 +88,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-coverage
+          # Only the integration branches write cache generations. A pull
+          # request reads them and saves nothing: every distinct fingerprint
+          # would otherwise mint a generation that is never reclaimed, and the
+          # stale ones evict the Test tarballs that decide whether a leg is
+          # warm (16 min) or cold (66 min).
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-targets: false
           cache-on-failure: true
       - uses: taiki-e/install-action@cargo-llvm-cov
@@ -186,6 +192,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
+          # Only the integration branches write cache generations. A pull
+          # request reads them and saves nothing: every distinct fingerprint
+          # would otherwise mint a generation that is never reclaimed, and the
+          # stale ones evict the Test tarballs that decide whether a leg is
+          # warm (16 min) or cold (66 min).
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - uses: taiki-e/install-action@cargo-hack
       # `--feature-powerset` is deliberately absent. The workspace has ~33_800
