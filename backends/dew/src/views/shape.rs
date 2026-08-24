@@ -22,8 +22,8 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_graphics::color::ResolvedColor;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ShapeKind};
 
-use crate::display_list::BEZIER_TOLERANCE;
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal};
+use crate::display_list::BEZIER_TOLERANCE;
 use crate::text::DewState;
 
 /// Resolves a shape into a concrete outline for `bounds`.
@@ -39,9 +39,7 @@ pub fn shape_path(kind: ShapeKind, commands: &[PathCommand], bounds: Rect) -> Be
         // A circle is inscribed in the bounds: centred, its diameter the
         // shorter side. Filling the bounds instead would be an ellipse, and a
         // fully rounded rectangle would be a capsule — neither is a circle.
-        ShapeKind::Circle => {
-            Circle::new(bounds.center(), shorter / 2.0).to_path(BEZIER_TOLERANCE)
-        }
+        ShapeKind::Circle => Circle::new(bounds.center(), shorter / 2.0).to_path(BEZIER_TOLERANCE),
         ShapeKind::Ellipse => Ellipse::from_rect(bounds).to_path(BEZIER_TOLERANCE),
         ShapeKind::RoundedRect { corner_radius } => {
             RoundedRect::from_rect(bounds, scaled(corner_radius)).to_path(BEZIER_TOLERANCE)
@@ -103,7 +101,16 @@ fn custom_path(commands: &[PathCommand], bounds: Rect) -> BezPath {
                 ry,
                 start,
                 sweep,
-            } => append_arc(&mut path, point(cx, cy), rx, ry, start, sweep, width, height),
+            } => append_arc(
+                &mut path,
+                point(cx, cy),
+                rx,
+                ry,
+                start,
+                sweep,
+                width,
+                height,
+            ),
             PathCommand::Close => path.close_path(),
         }
     }
@@ -127,13 +134,7 @@ fn append_arc(
     height: f64,
 ) {
     let radii = (f64::from(radius_x) * width, f64::from(radius_y) * height);
-    let arc = kurbo::Arc::new(
-        center,
-        radii,
-        f64::from(start),
-        f64::from(sweep),
-        0.0,
-    );
+    let arc = kurbo::Arc::new(center, radii, f64::from(start), f64::from(sweep), 0.0);
     let mut segments = arc.append_iter(BEZIER_TOLERANCE);
     // The first element is a `MoveTo` to the arc's start; a path already under
     // construction wants a line there instead, and an empty one wants the move.
@@ -168,12 +169,14 @@ impl DewNode for ShapeNode {
         let path = shape_path(self.kind, &self.commands, ctx.bounds);
         let color = self.fill.get();
         let srgb = color.to_srgb_with_headroom();
-        renderer.list_mut().push(crate::display_list::DrawCommand::FillPath {
-            path,
-            transform: ctx.transform,
-            brush: peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.opacity]).into(),
-            clip: None,
-        });
+        renderer
+            .list_mut()
+            .push(crate::display_list::DrawCommand::FillPath {
+                path,
+                transform: ctx.transform,
+                brush: peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.opacity]).into(),
+                clip: None,
+            });
     }
 
     fn stretch_axis(&self) -> StretchAxis {

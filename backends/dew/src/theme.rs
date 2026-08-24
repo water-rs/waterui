@@ -107,13 +107,22 @@ fn installed<T: 'static>(env: &Environment) -> Option<Computed<ResolvedColor>> {
     env.query::<T, Computed<ResolvedColor>>().cloned()
 }
 
+/// The signal for colour slot `T`, falling back to dew's built-in default.
+///
+/// Widgets that hand a colour to a *subtree* need the signal itself rather
+/// than a sampled value: a tab bar tints its selected item by installing one
+/// of these into the item's environment, so the tint follows the theme without
+/// anything rebuilding.
+pub(crate) fn slot<T: 'static>(env: &Environment, default: Color) -> Computed<ResolvedColor> {
+    installed::<T>(env).unwrap_or_else(|| Computed::constant(resolved(default)))
+}
+
 fn watch<T: 'static>(
     env: &Environment,
     signals: FrameSignals,
     default: Color,
 ) -> WatchedSignal<Computed<ResolvedColor>> {
-    let signal = installed::<T>(env).unwrap_or_else(|| Computed::constant(resolved(default)));
-    WatchedSignal::new(signal, signals)
+    WatchedSignal::new(slot::<T>(env, default), signals)
 }
 
 pub(crate) fn foreground(env: &Environment) -> Color {

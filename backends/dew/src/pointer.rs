@@ -3,8 +3,8 @@
 use core::cell::RefCell;
 use std::rc::Rc;
 
-use kurbo::{Point, Rect};
 use crate::board::PointerSample;
+use kurbo::{Point, Rect};
 
 /// Stateful control input bound to one retained hit-test target.
 ///

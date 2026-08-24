@@ -32,7 +32,7 @@ use waterui_layout::Divider;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-use waterui_navigation::{NavigationStack, NavigationView};
+use waterui_navigation::{NavigationSplitLayout, NavigationStack, NavigationView, TabsLayout};
 use waterui_shape::{ClipShape, ResolvedShape};
 use waterui_text::{TextConfig, styled::StyledStr};
 
@@ -402,6 +402,15 @@ fn build_unmeasured_node(
             .downcast::<Native<NavigationView>>()
             .expect("dew NavigationView downcast must match its type id");
         return views::navigation::build_view(renderer, destination.into_inner(), env, depth + 1);
+    }
+    if type_id == TypeId::of::<Native<NavigationSplitLayout>>() {
+        views::navigation::unsupported_split();
+    }
+    if type_id == TypeId::of::<Native<TabsLayout>>() {
+        let tabs = *view
+            .downcast::<Native<TabsLayout>>()
+            .expect("dew TabsLayout downcast must match its type id");
+        return views::tabs::build(renderer, tabs.into_inner(), env, depth + 1);
     }
     if type_id == TypeId::of::<Native<ResolvedShape>>() {
         let shape = *view

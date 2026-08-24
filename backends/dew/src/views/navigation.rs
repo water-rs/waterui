@@ -276,7 +276,9 @@ impl Chrome {
             || renderer.theme().surface(),
             |color| to_peniko(color.get()),
         );
-        renderer.list_mut().fill(&bar_rect, ctx.transform, background);
+        renderer
+            .list_mut()
+            .fill(&bar_rect, ctx.transform, background);
         let hairline = Rect::new(
             bar_rect.x0,
             bar_rect.y1 - HAIRLINE,
@@ -299,7 +301,12 @@ impl Chrome {
             leading_edge += f64::from(size.width) + BAR_SPACING;
         }
         let mut trailing_edge = row.x1 - BAR_PADDING_X;
-        for (node, size) in self.trailing.iter_mut().rev().zip(layout.trailing.iter().rev()) {
+        for (node, size) in self
+            .trailing
+            .iter_mut()
+            .rev()
+            .zip(layout.trailing.iter().rev())
+        {
             let x = trailing_edge - f64::from(size.width);
             let frame = centered_in(row, x, *size);
             node.render(renderer, ctx.child(frame));
@@ -327,8 +334,7 @@ impl Chrome {
                 true,
             )
         };
-        let title_block =
-            f64::from(layout.title.height) + f64::from(layout.subtitle.height);
+        let title_block = f64::from(layout.title.height) + f64::from(layout.subtitle.height);
         let mut title_y = title_area.y0 + (title_area.height() - title_block).max(0.0) / 2.0;
         for (node, size) in [
             (&mut self.title, layout.title),
@@ -463,7 +469,10 @@ struct StackReceiver {
 
 impl CustomNavigationController for StackReceiver {
     fn apply(&mut self, transaction: NavigationTransaction) {
-        self.pending.transactions.borrow_mut().push_back(transaction);
+        self.pending
+            .transactions
+            .borrow_mut()
+            .push_back(transaction);
         if !self.pending.applying.get() {
             self.signals.request_refresh();
         }
@@ -646,6 +655,18 @@ fn render_destination(entry: Option<&mut Entry>, renderer: &mut DewRenderer, ctx
         ),
     );
     entry.content.render(renderer, ctx.child(content));
+}
+
+/// Reports that a split view has no dew realization.
+///
+/// A split view is two or three columns side by side; the panels dew targets
+/// have room for one, and a silently collapsed column is a worse answer than
+/// saying so. Present the same screens as a [`NavigationStack`] instead.
+pub fn unsupported_split() -> ! {
+    panic!(
+        "dew does not implement NavigationSplitView: a split view needs side-by-side columns \
+         and a panel has room for one, so present those screens as a NavigationStack"
+    )
 }
 
 /// The retained node behind a [`NavigationView`] used on its own.
