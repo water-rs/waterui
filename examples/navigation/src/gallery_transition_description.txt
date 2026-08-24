@@ -1,0 +1,1 @@
+Tapping a tile matches this hero to that tile: the backend runs its native zoom transition, and the platform's back action runs the same transition in reverse.

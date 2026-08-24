@@ -21,6 +21,7 @@ gpu = [
     "dep:bytemuck",
     "dep:num-traits",
     "dep:shaderloom",
+    "dep:waterui-build-support",
 ]
 
 [dependencies]
@@ -34,7 +35,7 @@ num-traits = { version = "0.2", default-features = false, optional = true }
 shaderloom = { workspace = true, optional = true }
 
 [build-dependencies]
-waterui-build-support.workspace = true
+waterui-build-support = { workspace = true, optional = true }
 
 [dev-dependencies]
 waterui.workspace = true

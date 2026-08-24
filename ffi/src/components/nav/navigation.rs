@@ -464,9 +464,7 @@ pub unsafe extern "C" fn waterui_navigation_stack_root(
 /// live controller-scoped environment.
 #[cfg(feature = "android-jni")]
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationStackRoot<
-    'local,
->(
+unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationStackRoot<'local>(
     _env: crate::jni::JNIEnv<'local>,
     _class: crate::jni::JClass<'local>,
     root_ptr: crate::jni::jlong,
@@ -601,7 +599,7 @@ pub unsafe extern "C" fn waterui_drop_split_navigation_detail(
 ///
 /// `ptr` must be a valid owning `WuiNavigationSplitDetail` handle and must not
 /// be used after this call.
-pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropSplitNavigationDetail<
+unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropSplitNavigationDetail<
     'local,
 >(
     _env: crate::jni::JNIEnv<'local>,

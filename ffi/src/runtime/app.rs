@@ -27,6 +27,7 @@ pub struct WuiApp {
 #[cfg(feature = "android-jni")]
 #[doc(hidden)]
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiAndroidAppHandles {
     pub content: *mut c_void,
     pub env: *mut c_void,

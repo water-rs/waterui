@@ -65,7 +65,7 @@ pub extern "C" fn waterui_color_id() -> crate::WuiTypeId {
 
 #[cfg(feature = "android-jni")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_colorId<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_colorId<'local>(
     mut env: crate::jni::JNIEnv<'local>,
     _class: crate::jni::JClass<'local>,
 ) -> crate::jni::jobject {
@@ -82,7 +82,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_colorId<'local>(
 /// `view_ptr` must own a native `Color` view and must not be used again.
 #[cfg(feature = "android-jni")]
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsColor<'local>(
+unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsColor<'local>(
     _env: crate::jni::JNIEnv<'local>,
     _class: crate::jni::JClass<'local>,
     view_ptr: crate::jni::jlong,

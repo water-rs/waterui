@@ -245,7 +245,7 @@ pub fn register_listener(
 ) -> ListenerHandle {
     let listener: Listener = Arc::new(move |context| listener(&context));
 
-    let (id, current) = {
+    let id = {
         let mut state = runtime()
             .state
             .lock()
@@ -255,11 +255,9 @@ pub fn register_listener(
             .next_listener_id
             .checked_add(1)
             .expect("waterui-locale regional listener id overflow");
-        state.listeners.insert(id, listener.clone());
-        (id, state.current.clone())
+        state.listeners.insert(id, listener);
+        id
     };
-
-    listener(current);
 
     ListenerHandle { id: Some(id) }
 }
@@ -501,6 +499,17 @@ mod tests {
         assert_eq!(extract_region("es-419"), Some("419".to_string()));
         assert_eq!(extract_region("zh-Hant"), None);
         assert_eq!(extract_region("en-US-u-hc-h23"), Some("US".to_string()));
+    }
+
+    #[test]
+    fn registering_a_listener_does_not_replay_the_current_value() {
+        let called = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&called);
+        let _listener = register_listener(move |_| {
+            observed.store(true, Ordering::SeqCst);
+        });
+
+        assert!(!called.load(Ordering::SeqCst));
     }
 
     #[test]

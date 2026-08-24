@@ -6,6 +6,7 @@ pub mod fullscreen;
 pub mod inspector;
 pub mod metadata;
 pub mod reactive_ext;
+#[cfg(feature = "snackbar")]
 pub mod snackbar;
 pub mod task;
 pub mod window;

@@ -2,12 +2,14 @@
 
 use std::cell::RefCell;
 
+use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, NodeId, Role, Toggled};
 use kurbo::{Circle, Rect, RoundedRect, Stroke};
 use nami::{Binding, Computed, Signal};
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
+use crate::accessibility::ActionTarget;
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
@@ -40,6 +42,7 @@ struct ToggleNode {
     disabled: WatchedSignal<Computed<bool>>,
     env: Environment,
     pointer: PointerTargetHandle,
+    accessibility_id: NodeId,
 }
 
 struct TogglePointer {
@@ -69,7 +72,11 @@ impl PointerHandler for TogglePointer {
     }
 }
 
-pub fn build(renderer: &DewRenderer, config: ToggleConfig, env: &Environment) -> Box<dyn DewNode> {
+pub fn build(
+    renderer: &mut DewRenderer,
+    config: ToggleConfig,
+    env: &Environment,
+) -> Box<dyn DewNode> {
     require_switch_style(config.style);
     let pointer = PointerTargetHandle::new(TogglePointer {
         toggle: config.toggle.clone(),
@@ -79,6 +86,7 @@ pub fn build(renderer: &DewRenderer, config: ToggleConfig, env: &Environment) ->
     let label = LabelText::new(&config.label, env, renderer.signals());
     let on = WatchedSignal::new(config.toggle.clone(), renderer.signals());
     let disabled = WatchedSignal::new(crate::views::view_disabled(env), renderer.signals());
+    let accessibility_id = renderer.allocate_accessibility_id();
     Box::new(ToggleNode {
         config,
         label,
@@ -86,6 +94,7 @@ pub fn build(renderer: &DewRenderer, config: ToggleConfig, env: &Environment) ->
         disabled,
         env: env.clone(),
         pointer,
+        accessibility_id,
     })
 }
 
@@ -108,6 +117,25 @@ impl DewNode for ToggleNode {
         );
         if !disabled {
             renderer.register_pointer_target(ctx.window_bounds(), self.pointer.clone());
+        }
+        if renderer.accessibility_enabled() {
+            let mut node = AccessibilityNode::new(Role::Switch);
+            node.set_label(self.label.semantic_text());
+            node.set_toggled(if on { Toggled::True } else { Toggled::False });
+            node.add_action(AccessibilityAction::Focus);
+            let target = if disabled {
+                node.set_disabled();
+                None
+            } else {
+                node.add_action(AccessibilityAction::Click);
+                Some(ActionTarget::Toggle(self.config.toggle.clone()))
+            };
+            renderer.register_accessibility_node(
+                self.accessibility_id,
+                node,
+                ctx.window_bounds(),
+                target,
+            );
         }
     }
 

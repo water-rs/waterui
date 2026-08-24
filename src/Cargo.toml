@@ -100,7 +100,7 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
 
 [features]
-default = ["gpu", "assets", "media", "inspector"]
+default = ["gpu", "assets", "media", "inspector", "snackbar"]
 # The devtools Inspector hub and its wire protocol. Default-on for
 # development hosts; embedded firmware disables it — the hub is desktop
 # tooling, and its 64-bit sequence counters do not even exist on RV32
@@ -111,6 +111,9 @@ inspector = ["dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
 # notification. Off by default so release builds pay nothing — see
 # `nami_core::observe`.
 inspector-signals = ["inspector", "nami/observability"]
+# Window-owned transient notifications. Embedded apps that do not select this
+# feature omit the manager, overlay, timers, and code-widget feedback path.
+snackbar = []
 # GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
 # so every existing consumer is unaffected. Disabling it lets a WaterUI app
 # cross-compile lean for embedded targets without the GPU stack.
@@ -158,6 +161,7 @@ all = [
     "map",
     "particle",
     "navigation-restoration",
+    "snackbar",
 ]
 
 [dev-dependencies]

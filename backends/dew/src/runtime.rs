@@ -78,8 +78,10 @@ impl<B: Board> DewRuntime<B> {
         let fonts = board.fonts();
         let signals = waterui_backend_core::frame_signals::FrameSignals::new(board.now());
         let (width, height) = board.display().size();
+        let mut renderer = DewRenderer::new(signals, fonts);
+        renderer.set_accessibility_enabled(board.supports_accessibility());
         Self {
-            renderer: DewRenderer::new(signals, fonts),
+            renderer,
             painter: Painter::new(render_settings),
             scheduler: BandScheduler::new(width, height, band_height),
             board,
@@ -103,6 +105,9 @@ impl<B: Board> DewRuntime<B> {
         let signals = self.renderer.signals();
         let mut input_changed = false;
         if !first {
+            while let Some(request) = self.board.poll_accessibility_action() {
+                input_changed |= self.renderer.handle_accessibility_action(&request);
+            }
             while let Some(sample) = self.board.poll_pointer() {
                 input_changed |= self.renderer.handle_pointer(sample);
             }
@@ -131,6 +136,9 @@ impl<B: Board> DewRuntime<B> {
             self.renderer
                 .refresh_tree(f64::from(width), f64::from(height))
         };
+        if let Some(accessibility) = self.renderer.take_accessibility_tree_update() {
+            self.board.update_accessibility(&accessibility);
+        }
         let dirty = if first {
             vec![Rect::new(0.0, 0.0, f64::from(width), f64::from(height))]
         } else {
