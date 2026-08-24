@@ -14,7 +14,7 @@ use waterui::{
         toggle::{ToggleConfig, ToggleStyle},
     },
 };
-use waterui_core::id::Id;
+use waterui_core::{Native, id::Id};
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::{DatePickerConfig, DatePickerType};
 use waterui_form::picker::multi_date::MultiDatePickerConfig;
@@ -179,7 +179,7 @@ impl IntoFFI for PickerConfig {
             items: crate::views::signal_vec_views(
                 self.items,
                 |items, index| items[index].tag,
-                |item| AnyView::new(ResolvedPickerItem(item)),
+                |item| AnyView::new(Native::new(ResolvedPickerItem(item))),
             ),
             selection: self.selection.into_ffi(),
             style: self.style.into_ffi(),

@@ -13334,7 +13334,6 @@ name = "waterui-video-gpu"
 version = "0.2.1"
 dependencies = [
  "async-channel",
- "dirs",
  "executor-core 0.7.1",
  "futures",
  "futures-timer",
@@ -13348,6 +13347,7 @@ dependencies = [
  "uuid",
  "waterkit-audio",
  "waterkit-codec",
+ "waterkit-fs",
  "waterkit-video",
  "waterui",
  "waterui-build-support",
