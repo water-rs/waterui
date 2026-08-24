@@ -13,8 +13,10 @@
 //! specifying something that will be **resolved** against the current environment. This
 //! enables powerful features like theming and dark mode.
 //!
-//! ```ignore
-//! // This color isn't "#FF0000" - it's "whatever the Accent color is in this environment"
+//! ```text
+//! // This color isn't "#FF0000" - it's "whatever the Accent color is in this
+//! // environment". Shown as text: the authoring layer lives in crates that
+//! // depend on this one, so it cannot be compiled from here.
 //! use waterui::theme::color::Accent;
 //! text("Hello").foreground(Accent)
 //! ```
@@ -67,24 +69,20 @@
 //!
 //! To make a type resolvable, implement the [`Resolvable`](crate::resolve::Resolvable) trait:
 //!
-//! ```ignore
-//! use waterui_core::{Environment, resolve::Resolvable};
+//! ```
 //! use nami::{Computed, Signal};
+//! use waterui_core::{Environment, resolve::Resolvable};
 //!
 //! #[derive(Debug, Clone, Copy)]
 //! pub struct MyToken;
 //!
 //! impl Resolvable for MyToken {
-//!     type Resolved = MyResolvedValue;
+//!     type Resolved = u32;
 //!
 //!     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-//!         // Option 1: Look up a signal from environment
-//!         env.query::<Self, Computed<Self::Resolved>>()
+//!         env.query::<Self, Computed<u32>>()
 //!             .cloned()
-//!             .unwrap_or_else(|| {
-//!                 // Option 2: Return a constant fallback
-//!                 Computed::constant(MyResolvedValue::default())
-//!             })
+//!             .unwrap_or_else(|| Computed::constant(0))
 //!     }
 //! }
 //! ```
@@ -136,24 +134,27 @@ use crate::Environment;
 ///
 /// # Example
 ///
-/// ```ignore
-/// use waterui_core::{Environment, resolve::Resolvable};
+/// ```
 /// use nami::{Computed, Signal};
+/// use waterui_core::{Environment, resolve::Resolvable};
 ///
-/// /// A token representing the primary brand color.
+/// /// A token standing for the primary brand tint, as packed `0xRRGGBB`.
 /// #[derive(Debug, Clone, Copy)]
-/// pub struct BrandColor;
+/// pub struct BrandTint;
 ///
-/// impl Resolvable for BrandColor {
-///     type Resolved = ResolvedColor;
+/// impl Resolvable for BrandTint {
+///     type Resolved = u32;
 ///
 ///     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-///         // Query the environment for a pre-installed signal
-///         env.query::<Self, Computed<ResolvedColor>>()
+///         // Query the environment for a pre-installed signal, and fall back to
+///         // a constant when the backend installed none.
+///         env.query::<Self, Computed<u32>>()
 ///             .cloned()
-///             .unwrap_or_else(|| Computed::constant(ResolvedColor::default()))
+///             .unwrap_or_else(|| Computed::constant(0x0066_CC))
 ///     }
 /// }
+///
+/// let tint = BrandTint.resolve(&Environment::new());
 /// ```
 pub trait Resolvable: Debug + Clone {
     /// The concrete type produced after resolution.
@@ -190,13 +191,23 @@ impl<R: Resolvable + 'static> ResolvableImpl<R::Resolved> for R {
 ///
 /// # Example
 ///
-/// ```ignore
-/// use waterui_core::resolve::AnyResolvable;
+/// ```
+/// use nami::{Computed, Signal};
+/// use waterui_core::{Environment, resolve::{AnyResolvable, Map, Resolvable}};
 ///
-/// // These all resolve to ResolvedColor, but come from different sources
-/// let from_hex = AnyResolvable::new(Srgb::from_hex("#FF0000"));
-/// let from_token = AnyResolvable::new(theme::color::Accent);
-/// let from_computed = AnyResolvable::new(some_color.lighten(0.2));
+/// #[derive(Debug, Clone, Copy)]
+/// struct Accent;
+///
+/// impl Resolvable for Accent {
+///     type Resolved = u32;
+///     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
+///         Computed::constant(0x0066_CC)
+///     }
+/// }
+///
+/// // Both resolve to the same concrete type, from different sources.
+/// let from_token: AnyResolvable<u32> = AnyResolvable::new(Accent);
+/// let from_mapped: AnyResolvable<u32> = AnyResolvable::new(Map::new(Accent, |tint| tint >> 1));
 /// ```
 #[derive(Debug)]
 pub struct AnyResolvable<T> {
@@ -249,14 +260,22 @@ impl<T> AnyResolvable<T> {
 ///
 /// # Example
 ///
-/// ```ignore
-/// use waterui_core::resolve::Map;
+/// ```
+/// use nami::{Computed, Signal};
+/// use waterui_core::{Environment, resolve::{Map, Resolvable}};
 ///
-/// // Create a lighter version of the accent color
-/// let lighter_accent = Map::new(
-///     theme::color::Accent,
-///     |color| color.with_lightness(color.lightness() + 0.2)
-/// );
+/// #[derive(Debug, Clone, Copy)]
+/// struct Accent;
+///
+/// impl Resolvable for Accent {
+///     type Resolved = u32;
+///     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
+///         Computed::constant(0x0066_CC)
+///     }
+/// }
+///
+/// // Halve the accent's brightness without losing reactivity.
+/// let dimmed = Map::new(Accent, |tint| tint >> 1);
 /// ```
 ///
 /// The transformation is applied lazily when the signal emits, so if the underlying

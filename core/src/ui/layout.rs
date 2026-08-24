@@ -17,7 +17,9 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```text
+//! // Shown as text: the authoring layer lives in crates that depend on this
+//! // one, so it cannot be compiled from here.
 //! // In Figma: Button with 16pt horizontal padding, 8pt vertical padding
 //! // In WaterUI: Same values work directly
 //! vstack((

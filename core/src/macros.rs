@@ -20,13 +20,19 @@ macro_rules! impl_debug {
 ///
 /// # Usage
 ///
-/// ```ignore
-/// // Default stretch axis (None)
-/// raw_view!(Str);
+/// ```
+/// use waterui_core::{layout::StretchAxis, raw_view};
 ///
-/// // With explicit stretch axis
-/// raw_view!(Color, StretchAxis::Both);
-/// raw_view!(Spacer, StretchAxis::MainAxis);
+/// // Default stretch axis (None): the view is sized by its content.
+/// struct Badge;
+/// raw_view!(Badge);
+///
+/// // With an explicit stretch axis.
+/// struct Backdrop;
+/// raw_view!(Backdrop, StretchAxis::Both);
+///
+/// struct Divider;
+/// raw_view!(Divider, StretchAxis::Horizontal);
 /// ```
 #[macro_export]
 macro_rules! raw_view {
@@ -72,18 +78,32 @@ macro_rules! raw_view {
 ///
 /// # Usage
 ///
-/// ```ignore
-/// // Default stretch axis (None) - for content-sized views
-/// configurable!(Button, ButtonConfig);
+/// ```
+/// use waterui_core::{configurable, layout::StretchAxis};
 ///
-/// // With explicit stretch axis - for views that expand
+/// // Default stretch axis (None) - for content-sized views.
+/// #[derive(Debug, Default)]
+/// pub struct BadgeConfig {
+///     pub count: u32,
+/// }
+/// configurable!(Badge, BadgeConfig);
+///
+/// // With an explicit stretch axis - for views that expand.
+/// #[derive(Debug, Default)]
+/// pub struct SliderConfig {
+///     pub value: f64,
+/// }
 /// configurable!(Slider, SliderConfig, StretchAxis::Horizontal);
-/// configurable!(Color, ColorConfig, StretchAxis::Both);
 ///
-/// // With dynamic stretch axis (closure) - for runtime-dependent behavior
-/// configurable!(Progress, ProgressConfig, |config| match config.style {
-///     ProgressStyle::Linear => StretchAxis::Horizontal,
-///     ProgressStyle::Circular => StretchAxis::None,
+/// // With a dynamic stretch axis - for runtime-dependent behaviour.
+/// #[derive(Debug, Default)]
+/// pub struct ProgressConfig {
+///     pub circular: bool,
+/// }
+/// configurable!(Progress, ProgressConfig, |config| if config.circular {
+///     StretchAxis::None
+/// } else {
+///     StretchAxis::Horizontal
 /// });
 /// ```
 #[macro_export]
