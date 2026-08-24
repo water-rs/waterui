@@ -30,7 +30,7 @@ use waterui_layout::EdgeSet;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::prelude::*;
 /// use waterui::border::Border;
 ///
@@ -38,7 +38,7 @@ use waterui_layout::EdgeSet;
 /// let border = Border::new(Color::red(), 2.0);
 ///
 /// // Create a rounded border on specific edges
-/// let border = Border::new(Color::gray(), 1.0)
+/// let border = Border::new(Color::grey(), 1.0)
 ///     .corner_radius(8.0)
 ///     .edges(EdgeSet::BOTTOM);
 /// ```
@@ -95,15 +95,15 @@ impl Border {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::border::Border;
     ///
     /// // Border only on bottom edge
-    /// Border::new(Color::gray(), 1.0).edges(EdgeSet::BOTTOM);
+    /// let underline = Border::new(Color::grey(), 1.0).edges(EdgeSet::BOTTOM);
     ///
     /// // Border on horizontal edges (leading and trailing)
-    /// Border::new(Color::gray(), 1.0).edges(EdgeSet::HORIZONTAL);
+    /// let sides = Border::new(Color::grey(), 1.0).edges(EdgeSet::HORIZONTAL);
     /// ```
     #[must_use]
     pub const fn edges(mut self, edges: EdgeSet) -> Self {

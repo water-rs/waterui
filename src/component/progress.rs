@@ -93,7 +93,7 @@ configurable!(
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```rust
     /// // Determinate progress (75% complete)
     /// progress(0.75)
     ///

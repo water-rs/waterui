@@ -25,7 +25,7 @@ pub mod context_menu {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// text!("Right-click me")

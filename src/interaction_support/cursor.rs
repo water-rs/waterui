@@ -5,7 +5,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust
 //! use waterui::prelude::*;
 //! use waterui::cursor::CursorStyle;
 //!

@@ -624,7 +624,7 @@ impl ListItem {
     /// The platform draws its own selection chrome for the row while the
     /// signal is true. Derive the signal from the state that owns selection:
     ///
-    /// ```ignore
+    /// ```rust
     /// ListItem::new(row).selected(selection.map(move |current| current == Some(album)))
     /// ```
     #[must_use]

@@ -9,7 +9,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust
 //! use waterui::prelude::*;
 //!
 //! // Make a view draggable
@@ -139,7 +139,7 @@ impl Draggable {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// .drop_destination(|data: DragData| {
 ///     println!("Received: {:?}", data);
 /// })
@@ -167,7 +167,7 @@ impl DropDestination {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// DropDestination::new(|data: DragData| {
     ///     println!("Dropped: {:?}", data);
     /// })
@@ -208,7 +208,7 @@ pub trait DropDestinationExt {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// let is_hovering = Binding::bool(false);
     ///
     /// view

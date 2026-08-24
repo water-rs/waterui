@@ -13,7 +13,7 @@ use waterui_core::metadata::MetadataKey;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::prelude::*;
 ///
 /// // Make a view transparent to touch events

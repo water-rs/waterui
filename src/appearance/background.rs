@@ -23,7 +23,7 @@
 //! [`View`] — a bare [`LinearGradient`] is neither, so it cannot be passed
 //! directly. Layer a view that draws the gradient instead:
 //!
-//! ```rust,ignore
+//! ```rust
 //! use waterui::prelude::*;
 //!
 //! text!("Hello").background(Color::srgb(20, 40, 80));
@@ -52,10 +52,10 @@ use crate::gradient::{
 ///
 /// Use via the `.background(Material::*)` API rather than directly:
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::prelude::*;
 ///
-/// content.background(Material::Regular);
+/// let frosted = text!("Hello").background(Material::Regular);
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct MaterialBackground(pub Material);
@@ -115,17 +115,18 @@ pub enum Background {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::prelude::*;
+/// use waterui::shape::RoundedRectangle;
 ///
 /// // Frosted glass card
-/// content
+/// let card = text!("Hello")
 ///     .padding()
 ///     .background(Material::Regular)
-///     .clip_shape(RoundedRectangle::new(16.0));
+///     .clip(RoundedRectangle::new(0.1));
 ///
 /// // Subtle blur for overlays
-/// overlay.background(Material::UltraThin);
+/// let overlay = text!("Overlay").background(Material::UltraThin);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Material {
@@ -182,14 +183,14 @@ impl Background {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Frosted glass effect
-    /// content.background(Material::Regular);
+    /// let frosted = text!("Hello").background(Material::Regular);
     ///
     /// // Subtle overlay blur
-    /// overlay.background(Material::UltraThin);
+    /// let subtle = text!("Overlay").background(Material::UltraThin);
     /// ```
     #[must_use]
     pub const fn material(material: Material) -> Self {
@@ -206,15 +207,19 @@ impl Background {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// Background::linear_gradient(
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::background::Background;
+    /// use waterui::gradient::ColorStop;
+    ///
+    /// let gradient = Background::linear_gradient(
     ///     vec![
     ///         ColorStop::new(Color::red(), 0.0),
     ///         ColorStop::new(Color::blue(), 1.0),
     ///     ],
     ///     UnitPoint::TOP,
     ///     UnitPoint::BOTTOM,
-    /// )
+    /// );
     /// ```
     pub fn linear_gradient(
         stops: Vec<ColorStop>,
