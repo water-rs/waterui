@@ -12650,6 +12650,7 @@ dependencies = [
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
+ "waterui-navigation",
  "waterui-shape",
  "waterui-testing",
  "waterui-text",
