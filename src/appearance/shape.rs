@@ -9,13 +9,13 @@
 //! use waterui::shape::*;
 //!
 //! // Clip to a circle
-//! image("avatar.jpg").clip(Circle);
+//! let avatar = Color::blue().clip(Circle);
 //!
 //! // Clip to rounded rectangle
-//! card.clip(RoundedRectangle::new(0.1));
+//! let card = text!("Card").clip(RoundedRectangle::new(0.1));
 //!
 //! // Fill a shape with color
-//! Circle.fill(Color::red());
+//! let dot = Circle.fill(Color::red());
 //! ```
 
 pub use waterui_shape::*;
