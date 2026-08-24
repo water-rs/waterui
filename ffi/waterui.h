@@ -1996,7 +1996,7 @@ typedef struct WuiMetadata_____WuiEnv {
 } WuiMetadata_____WuiEnv;
 
 /**
- * Type alias for Metadata<Environment> FFI struct
+ * Type alias for `Metadata<Environment>` FFI struct
  * Layout: { content: *mut `WuiAnyView`, value: *mut `WuiEnv` }
  */
 typedef struct WuiMetadata_____WuiEnv WuiMetadataEnv;
@@ -2064,7 +2064,7 @@ typedef struct WuiMetadata_WuiSecureMarker {
 } WuiMetadata_WuiSecureMarker;
 
 /**
- * Type alias for Metadata<Secure> FFI struct
+ * Type alias for `Metadata<Secure>` FFI struct
  * Layout: { content: *mut `WuiAnyView`, value: `WuiSecureMarker` }
  */
 typedef struct WuiMetadata_WuiSecureMarker WuiMetadataSecure;
@@ -2096,12 +2096,12 @@ typedef struct WuiMetadata_WuiDynamicRangeMarker {
 } WuiMetadata_WuiDynamicRangeMarker;
 
 /**
- * Type alias for Metadata<StandardDynamicRange> FFI struct.
+ * Type alias for `Metadata<StandardDynamicRange>` FFI struct.
  */
 typedef struct WuiMetadata_WuiDynamicRangeMarker WuiMetadataStandardDynamicRange;
 
 /**
- * Type alias for Metadata<HighDynamicRange> FFI struct.
+ * Type alias for `Metadata<HighDynamicRange>` FFI struct.
  */
 typedef struct WuiMetadata_WuiDynamicRangeMarker WuiMetadataHighDynamicRange;
 
@@ -2255,7 +2255,7 @@ typedef struct WuiMetadata_WuiGestureObserver {
 } WuiMetadata_WuiGestureObserver;
 
 /**
- * Type alias for Metadata<GestureObserver> FFI struct
+ * Type alias for `Metadata<GestureObserver>` FFI struct
  */
 typedef struct WuiMetadata_WuiGestureObserver WuiMetadataGesture;
 
@@ -2323,7 +2323,7 @@ typedef struct WuiMetadata_WuiOnEvent {
 } WuiMetadata_WuiOnEvent;
 
 /**
- * Type alias for Metadata<OnEvent> FFI struct
+ * Type alias for `Metadata<OnEvent>` FFI struct
  */
 typedef struct WuiMetadata_WuiOnEvent WuiMetadataOnEvent;
 
@@ -2362,12 +2362,12 @@ typedef struct WuiMetadata_WuiCursor {
 } WuiMetadata_WuiCursor;
 
 /**
- * Type alias for Metadata<Cursor> FFI struct
+ * Type alias for `Metadata<Cursor>` FFI struct
  */
 typedef struct WuiMetadata_WuiCursor WuiMetadataCursor;
 
 /**
- * FFI-safe representation of `IgnorableMetadata`<`AccessibilityIdentifier`>
+ * FFI-safe representation of `IgnorableMetadata<AccessibilityIdentifier>`
  */
 typedef struct WuiIgnorableMetadataAccessibilityIdentifier {
   /**
@@ -2508,7 +2508,7 @@ typedef struct WuiMetadata_WuiShadow {
 } WuiMetadata_WuiShadow;
 
 /**
- * Type alias for Metadata<Shadow> FFI struct
+ * Type alias for `Metadata<Shadow>` FFI struct
  */
 typedef struct WuiMetadata_WuiShadow WuiMetadataShadow;
 
@@ -2572,7 +2572,7 @@ typedef struct WuiMetadata_WuiBorder {
 } WuiMetadata_WuiBorder;
 
 /**
- * Type alias for Metadata<Border> FFI struct
+ * Type alias for `Metadata<Border>` FFI struct
  */
 typedef struct WuiMetadata_WuiBorder WuiMetadataBorder;
 
@@ -2635,7 +2635,7 @@ typedef struct WuiMetadata_WuiScale {
 } WuiMetadata_WuiScale;
 
 /**
- * Type alias for Metadata<Scale> FFI struct
+ * Type alias for `Metadata<Scale>` FFI struct
  */
 typedef struct WuiMetadata_WuiScale WuiMetadataScale;
 
@@ -2670,7 +2670,7 @@ typedef struct WuiMetadata_WuiRotation {
 } WuiMetadata_WuiRotation;
 
 /**
- * Type alias for Metadata<Rotation> FFI struct
+ * Type alias for `Metadata<Rotation>` FFI struct
  */
 typedef struct WuiMetadata_WuiRotation WuiMetadataRotation;
 
@@ -2705,7 +2705,7 @@ typedef struct WuiMetadata_WuiOffset {
 } WuiMetadata_WuiOffset;
 
 /**
- * Type alias for Metadata<Offset> FFI struct
+ * Type alias for `Metadata<Offset>` FFI struct
  */
 typedef struct WuiMetadata_WuiOffset WuiMetadataOffset;
 
@@ -2736,7 +2736,7 @@ typedef struct WuiMetadata_WuiOpacity {
 } WuiMetadata_WuiOpacity;
 
 /**
- * Type alias for Metadata<Opacity> FFI struct
+ * Type alias for `Metadata<Opacity>` FFI struct
  */
 typedef struct WuiMetadata_WuiOpacity WuiMetadataOpacity;
 
@@ -2775,7 +2775,7 @@ typedef struct WuiMetadata_WuiFocused {
 } WuiMetadata_WuiFocused;
 
 /**
- * Type alias for Metadata<Focused> FFI struct
+ * Type alias for `Metadata<Focused>` FFI struct
  */
 typedef struct WuiMetadata_WuiFocused WuiMetadataFocused;
 
@@ -2805,7 +2805,7 @@ typedef struct WuiMetadata_WuiIgnoreSafeArea {
 } WuiMetadata_WuiIgnoreSafeArea;
 
 /**
- * Type alias for Metadata<IgnoreSafeArea> FFI struct
+ * Type alias for `Metadata<IgnoreSafeArea>` FFI struct
  */
 typedef struct WuiMetadata_WuiIgnoreSafeArea WuiMetadataIgnoreSafeArea;
 
@@ -2815,7 +2815,7 @@ typedef struct WuiMetadata_WuiIgnoreSafeArea WuiMetadataIgnoreSafeArea;
  */
 typedef struct WuiRetain {
   /**
-   * Opaque pointer to the retained value (Box<dyn Any>).
+   * Opaque pointer to the retained value (`Box<dyn Any>`).
    * This must be kept alive and dropped when the view is disposed.
    */
   void *_opaque;
@@ -2837,7 +2837,7 @@ typedef struct WuiMetadata_WuiRetain {
 } WuiMetadata_WuiRetain;
 
 /**
- * Type alias for Metadata<Retain> FFI struct
+ * Type alias for `Metadata<Retain>` FFI struct
  */
 typedef struct WuiMetadata_WuiRetain WuiMetadataRetain;
 
@@ -3072,7 +3072,7 @@ typedef struct WuiMetadata_WuiClipShape {
 } WuiMetadata_WuiClipShape;
 
 /**
- * Type alias for Metadata<ClipShape> FFI struct
+ * Type alias for `Metadata<ClipShape>` FFI struct
  */
 typedef struct WuiMetadata_WuiClipShape WuiMetadataClipShape;
 
@@ -3218,7 +3218,7 @@ typedef struct WuiMetadata_WuiContextMenu {
 } WuiMetadata_WuiContextMenu;
 
 /**
- * Type alias for Metadata<ContextMenu> FFI struct
+ * Type alias for `Metadata<ContextMenu>` FFI struct
  */
 typedef struct WuiMetadata_WuiContextMenu WuiMetadataContextMenu;
 
@@ -3266,7 +3266,7 @@ typedef struct WuiMetadata_WuiDraggable {
 } WuiMetadata_WuiDraggable;
 
 /**
- * Type alias for Metadata<Draggable> FFI struct
+ * Type alias for `Metadata<Draggable>` FFI struct
  */
 typedef struct WuiMetadata_WuiDraggable WuiMetadataDraggable;
 
@@ -3296,12 +3296,12 @@ typedef struct WuiMetadata_WuiDropDestination {
 } WuiMetadata_WuiDropDestination;
 
 /**
- * Type alias for Metadata<DropDestination> FFI struct
+ * Type alias for `Metadata<DropDestination>` FFI struct
  */
 typedef struct WuiMetadata_WuiDropDestination WuiMetadataDropDestination;
 
 /**
- * FFI-safe representation of `IgnorableMetadata`<MaterialBackground>
+ * FFI-safe representation of `IgnorableMetadata<MaterialBackground>`
  */
 typedef struct WuiIgnorableMetadataMaterialBackground {
   /**
@@ -3340,7 +3340,7 @@ typedef struct WuiMetadata_WuiHittable {
 } WuiMetadata_WuiHittable;
 
 /**
- * Type alias for Metadata<Hittable> FFI struct
+ * Type alias for `Metadata<Hittable>` FFI struct
  */
 typedef struct WuiMetadata_WuiHittable WuiMetadataHittable;
 
@@ -5984,7 +5984,7 @@ typedef struct WuiNavigationView {
 } WuiNavigationView;
 
 /**
- * FFI struct for `NavigationStack`<(),()>
+ * FFI struct for `NavigationStack<(), ()>`
  */
 typedef struct WuiNavigationStack {
   /**
@@ -6556,7 +6556,7 @@ typedef struct WuiWebViewHandle {
 typedef struct WuiWebViewHandle (*WuiCreateWebViewFn)(void);
 
 /**
- * FFI representation of a Metadata<AppliedFilter>.
+ * FFI representation of a `Metadata<AppliedFilter>`.
  */
 typedef struct WuiAppliedFilter {
   /**
