@@ -19,9 +19,9 @@ jobs:
       # results, so a cross-platform break costs one round trip per platform.
       fail-fast: false
       matrix:
-        # Windows is not here: it does not gate (25 known failures, #152) yet
-        # was the longest leg, so it defined the critical path of a run that
-        # could not act on its result. It runs on a schedule in `windows.yml`.
+        # Windows is kept in its own gating workflow because it needs platform-
+        # specific exclusions and compile-only CEF coverage. Both workflows run
+        # for the same integration-branch pushes and pull requests.
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
