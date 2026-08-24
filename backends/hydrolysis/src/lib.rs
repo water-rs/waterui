@@ -26,9 +26,9 @@ pub use platform::BrowserWindow;
 #[cfg(feature = "winit")]
 pub use platform::WinitWindow;
 pub use platform::{
-    InputEvent, KeyCode, KeyState, Modifiers, OffscreenSurface, OffscreenWindow, PlatformWindow,
-    PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
-    TextInputState, TouchPhase,
+    InputEvent, KeyCode, KeyState, Modifiers, OffscreenGpuContext, OffscreenSurface,
+    OffscreenWindow, PlatformWindow, PointerButton, PointerKind, SurfaceError, SurfaceFrame,
+    SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase,
 };
 pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
 pub use runner::run;

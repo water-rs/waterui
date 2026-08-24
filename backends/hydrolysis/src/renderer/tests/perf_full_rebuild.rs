@@ -30,7 +30,7 @@ use waterui_core::{AnyView, Binding, Computed};
 
 use super::test_environment;
 use crate::HeadlessRuntime;
-use crate::platform::InputEvent;
+use crate::platform::{InputEvent, OffscreenGpuContext};
 
 use vello::kurbo::Affine;
 use vello::peniko::{Brush, Color, Fill};
@@ -139,14 +139,20 @@ fn percentiles(mut dispatch: Vec<Duration>, mut build: Vec<Duration>) -> Stats {
 /// build. Measure that by building a fresh runtime per sample: each first pump
 /// re-walks + re-measures + re-encodes the whole view tree — the expensive work the
 /// retained tree pays once, versus the per-frame replay below.
-fn measure_rebuild(cards: usize, with_text: bool) -> Stats {
+fn measure_rebuild(gpu: &OffscreenGpuContext, cards: usize, with_text: bool) -> Stats {
     let mut dispatch = Vec::with_capacity(SAMPLE_FRAMES);
     let mut build = Vec::with_capacity(SAMPLE_FRAMES);
     for _ in 0..SAMPLE_FRAMES {
         let builder =
             AnyViewBuilder::<AnyView>::new(move || rebuild_screen(cards, with_text, binding(0u64)));
         let env = test_environment();
-        let mut rt = HeadlessRuntime::new_for_tests(env, builder, WINDOW_W, WINDOW_H);
+        let mut rt = HeadlessRuntime::new_for_tests_on_context(
+            gpu.clone(),
+            env,
+            builder,
+            WINDOW_W,
+            WINDOW_H,
+        );
         let result = rt.pump_at(false, Instant::now());
         assert!(
             result.rebuilt,
@@ -161,10 +167,11 @@ fn measure_rebuild(cards: usize, with_text: bool) -> Stats {
 /// Retained-replay every frame (current scroll/animation cost): scroll-offset
 /// deltas drive `refresh_window_frame`, which skips measure+encode and replays the
 /// retained draw-ops — but still re-registers interaction/accessibility targets.
-fn measure_replay(cards: usize, with_text: bool) -> (Stats, u32) {
+fn measure_replay(gpu: &OffscreenGpuContext, cards: usize, with_text: bool) -> (Stats, u32) {
     let builder = AnyViewBuilder::<AnyView>::new(move || replay_screen(cards, with_text));
     let env = test_environment();
-    let mut rt = HeadlessRuntime::new_for_tests(env, builder, WINDOW_W, WINDOW_H);
+    let mut rt =
+        HeadlessRuntime::new_for_tests_on_context(gpu.clone(), env, builder, WINDOW_W, WINDOW_H);
 
     let start = Instant::now();
     let _ = rt.pump_at(false, start); // initial rebuild establishes the retained frame
@@ -263,6 +270,13 @@ fn pure_vello_encode_floor() {
 #[test]
 fn full_rebuild_vs_retained_replay_cost() {
     let sizes = [15usize, 40, 80, 160];
+    // One device for the whole probe. Every sample below still builds its own
+    // runtime, view tree and renderer — that is what is being measured — but a
+    // wgpu device is neither part of the measurement nor cheap: requesting one
+    // per sample asked this probe alone for close to three hundred devices, and
+    // on a runner whose only adapter is a software rasterizer that exhausted
+    // the machine's memory before the last row size was reached.
+    let gpu = OffscreenGpuContext::new_for_tests_blocking();
 
     eprintln!(
         "\n=== Hydrolysis per-frame cost: full re-dispatch vs retained replay (120Hz budget = {BUDGET_120HZ:?}) ==="
@@ -276,8 +290,8 @@ fn full_rebuild_vs_retained_replay_cost() {
             if with_text { "text" } else { "shapes" }
         );
         for &n in &sizes {
-            let rebuild = measure_rebuild(n, with_text);
-            let (replay, escalated) = measure_replay(n, with_text);
+            let rebuild = measure_rebuild(&gpu, n, with_text);
+            let (replay, escalated) = measure_replay(&gpu, n, with_text);
             let ratio =
                 rebuild.dispatch_median.as_secs_f64() / replay.dispatch_median.as_secs_f64();
             eprintln!(
@@ -297,7 +311,7 @@ fn full_rebuild_vs_retained_replay_cost() {
     // Report-only probe: the decision is read from the table above. Assert only the
     // invariant that makes the numbers meaningful — sampled rebuild frames really
     // did re-dispatch (so their cost is the game-engine-pure per-frame cost).
-    let sanity = measure_rebuild(40, false);
+    let sanity = measure_rebuild(&gpu, 40, false);
     assert!(
         sanity.build_median < sanity.dispatch_median,
         "view construction ({:?}) should be far cheaper than dispatch ({:?})",

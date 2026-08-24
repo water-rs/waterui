@@ -73,9 +73,9 @@ mod inspector;
 pub use window::{FrameCounters, FramePhases, FrameProfile, HeadlessSnapshot};
 
 use crate::env::{parse_bool_env, parse_positive_u64_env};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::platform::OffscreenWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::platform::{OffscreenGpuContext, OffscreenWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::readback::readback_texture_rgba8;
 use crate::renderer::{HydrolysisRenderer, HydrolysisWindowOrigin};

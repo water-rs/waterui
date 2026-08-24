@@ -12,18 +12,24 @@ pub(super) struct HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl HeadlessPlatformWindow {
-    pub(super) fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
-        Self {
-            inner: OffscreenWindow::new(width, height, format),
-            pending_events: VecDeque::new(),
-            redraw_requested: Cell::new(false),
-        }
+    #[cfg(test)]
+    pub(super) fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        Self::on_context(
+            OffscreenGpuContext::new_for_tests_blocking(),
+            width,
+            height,
+            format,
+        )
     }
 
-    #[cfg(any(test, feature = "testing"))]
-    pub(super) fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+    pub(super) fn on_context(
+        gpu: OffscreenGpuContext,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Self {
         Self {
-            inner: OffscreenWindow::new_for_tests(width, height, format),
+            inner: OffscreenWindow::on_context(gpu, width, height, format),
             pending_events: VecDeque::new(),
             redraw_requested: Cell::new(false),
         }
@@ -214,7 +220,10 @@ pub struct HeadlessRuntime {
     runtime: RuntimeWindow<HeadlessPlatformWindow>,
     pending_window_queue: Rc<RefCell<Vec<Window>>>,
     popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow>>,
-    create_platform: fn(u32, u32, wgpu::TextureFormat) -> HeadlessPlatformWindow,
+    /// Every window this runtime opens renders on this one device: the main
+    /// window, and each popup it later vends. Requesting a device per window
+    /// made a runtime that opens a popup pay for two.
+    gpu: OffscreenGpuContext,
     /// Popup windows get their own renderer, which must shape with the same
     /// fonts as the main one — deterministic bundled fonts under a test host,
     /// the app's resource fonts everywhere else.
@@ -246,12 +255,12 @@ impl HeadlessRuntime {
         width: u32,
         height: u32,
     ) -> Self {
-        Self::new_with_platform_window(
+        Self::on_gpu_context(
+            pollster::block_on(OffscreenGpuContext::new()),
             env,
             content,
             width,
             height,
-            HeadlessPlatformWindow::new,
             load_native_resource_fonts,
         )
     }
@@ -281,22 +290,50 @@ impl HeadlessRuntime {
         width: u32,
         height: u32,
     ) -> Self {
-        Self::new_with_platform_window(
+        Self::on_gpu_context(
+            OffscreenGpuContext::new_for_tests_blocking(),
             env,
             content,
             width,
             height,
-            HeadlessPlatformWindow::new_for_tests,
             super::fonts::install_deterministic_test_fonts,
         )
     }
 
-    fn new_with_platform_window(
+    /// Creates a test runtime on an already-requested [`OffscreenGpuContext`].
+    ///
+    /// A wgpu device is expensive to request and, on a runner whose only
+    /// adapter is a software rasterizer, expensive to hold: a probe that builds
+    /// a fresh runtime per sample exhausted the machine requesting one device
+    /// per sample. Such a probe requests one context and passes it to every
+    /// runtime. The device is all that is shared — the view tree, the renderer
+    /// and the retained scene are still built from scratch per runtime, so what
+    /// a measurement observes is unchanged.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn new_for_tests_on_context(
+        gpu: OffscreenGpuContext,
         env: Environment,
         content: AnyViewBuilder<AnyView>,
         width: u32,
         height: u32,
-        create_platform: fn(u32, u32, wgpu::TextureFormat) -> HeadlessPlatformWindow,
+    ) -> Self {
+        Self::on_gpu_context(
+            gpu,
+            env,
+            content,
+            width,
+            height,
+            super::fonts::install_deterministic_test_fonts,
+        )
+    }
+
+    fn on_gpu_context(
+        gpu: OffscreenGpuContext,
+        env: Environment,
+        content: AnyViewBuilder<AnyView>,
+        width: u32,
+        height: u32,
         install_fonts: fn(&mut HydrolysisRenderer),
     ) -> Self {
         let inspector = init_main_thread_executors();
@@ -339,8 +376,12 @@ impl HeadlessRuntime {
             waterui_core::layout::Size::new(width.max(1) as f32, height.max(1) as f32),
         ));
 
-        let mut platform =
-            create_platform(width.max(1), height.max(1), wgpu::TextureFormat::Rgba8Unorm);
+        let mut platform = HeadlessPlatformWindow::on_context(
+            gpu.clone(),
+            width.max(1),
+            height.max(1),
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
@@ -362,7 +403,7 @@ impl HeadlessRuntime {
             ),
             pending_window_queue,
             popup_windows: Vec::new(),
-            create_platform,
+            gpu,
             install_fonts,
             _executor_teardown: DrainExecutorOnDrop(local_executor.clone()),
             local_executor,
@@ -373,7 +414,12 @@ impl HeadlessRuntime {
         let frame = window.frame.get();
         let width = frame.width().max(1.0) as u32;
         let height = frame.height().max(1.0) as u32;
-        let mut platform = (self.create_platform)(width, height, wgpu::TextureFormat::Rgba8Unorm);
+        let mut platform = HeadlessPlatformWindow::on_context(
+            self.gpu.clone(),
+            width,
+            height,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
