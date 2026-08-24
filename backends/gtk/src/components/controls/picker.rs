@@ -28,6 +28,21 @@ impl GtkComponent for Native<PickerConfig> {
         // Create dropdown (model is installed reactively below).
         let dropdown = gtk4::DropDown::new(None::<gtk4::StringList>, gtk4::Expression::NONE);
 
+        // The picker's label names the control. Without it a screen reader
+        // announces only the selected option, which says what was chosen but
+        // never what it was choosing — and the label is mandatory at
+        // construction precisely so that cannot happen.
+        {
+            let label = config
+                .label
+                .clone()
+                .resolve(env)
+                .accessibility_label()
+                .get()
+                .to_plain();
+            dropdown.update_property(&[gtk4::accessible::Property::Label(label.as_str())]);
+        }
+
         // Shared IDs for two-way selection syncing.
         let ids = Rc::new(RefCell::new(Vec::new()));
 
