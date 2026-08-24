@@ -8,14 +8,14 @@
 //!
 //! ```rust
 //! use waterui::prelude::*;
-//! use waterui::window::Window;
+//! use waterui::window::{Window, WindowState};
 //!
 //! // Semi-transparent colored window
-//! Window::new("Tinted", content)
+//! let tinted = Window::new("Tinted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
 //!     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
 //!
 //! // Frosted glass window (opaque window + material blur on content)
-//! Window::new("Frosted", content)
+//! let frosted = Window::new("Frosted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
 //!     .background(Material::Regular);
 //! ```
 
@@ -307,14 +307,14 @@ impl Window {
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::window::Window;
+    /// use waterui::window::{Window, WindowState};
     ///
     /// // Semi-transparent colored window
-    /// Window::new("Tinted", content)
+    /// let tinted = Window::new("Tinted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
     ///     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
     ///
     /// // Frosted glass window (opaque + material blur on content)
-    /// Window::new("Frosted", content)
+    /// let frosted = Window::new("Frosted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
     ///     .background(Material::Regular);
     /// ```
     #[must_use]

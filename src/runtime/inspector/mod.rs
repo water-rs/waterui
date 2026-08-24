@@ -12,7 +12,9 @@
 //! A backend takes the pieces it can feed and ignores the rest:
 //!
 //! ```rust
-//! let Some(inspector) = waterui::inspector::maybe_init_from_env() else { return };
+//! let Some(inspector) = waterui::inspector::maybe_init_from_env("my-backend") else {
+//!     return;
+//! };
 //! let probe = inspector.runtime_probe();          // main-thread occupancy
 //! let frames = inspector.frame_recorder();        // per-frame timings
 //! let trees = inspector.tree_recorder();          // accessibility tree

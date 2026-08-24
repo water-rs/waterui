@@ -28,20 +28,21 @@ use super::content::{ListContent, ListItemSink};
 ///
 /// ```rust
 /// use waterui::component::list::{List, Section, row};
-/// use waterui::text;
+/// use waterui::prelude::*;
 ///
-/// List::content((
+/// let stalls = binding::<i32>(0);
+/// let list = List::content((
 ///     Section::new("Connection").content((
-///         row("Status", connection_label),
-///         row("Endpoint", endpoint_text),
+///         row("Status", text!("Connected")),
+///         row("Endpoint", text!("wss://example.invalid")),
 ///     )),
 ///     Section::new(text!("Activity ({stalls} stalled)"))
 ///         .footer("Updated every poll")
 ///         .content((
-///             row("Polls", polls_text),
-///             row("Stalls", stalls_text),
-///         )),
-/// ))
+///             row("Polls", text!("12")),
+///             row("Stalls", text!("0"))
+///         ))
+/// ));
 /// ```
 #[derive(Debug, Clone)]
 pub struct Section<C> {

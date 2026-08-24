@@ -5,12 +5,17 @@
 //!
 //! # Examples
 //!
-//! ```rust
+//! Building a manager needs a running local executor, so this compiles rather
+//! than runs.
+//!
+//! ```rust,no_run
+//! use core::time::Duration;
+//!
 //! use waterui::prelude::*;
 //! use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 //!
-//! // Get the manager from environment (automatically installed in Window)
-//! let manager = env.get::<SnackbarManager>().unwrap();
+//! // A window installs one into the environment; this builds one directly.
+//! let (manager, _overlay) = SnackbarManager::new();
 //!
 //! // Show a simple message
 //! manager.show(Snackbar::new("File saved"));
@@ -18,7 +23,6 @@
 //! // With icon and action (use a packaged icon crate for portable apps)
 //! manager.show(
 //!     Snackbar::new("Item deleted")
-//!         .icon(mdi::delete())
 //!         .action("Undo", || {})
 //!         .duration(Duration::from_secs(5))
 //! );
@@ -349,9 +353,12 @@ impl core::fmt::Debug for SnackbarAction {
 /// # Examples
 ///
 /// ```rust
-/// Snackbar::new("Message sent")
-///     .icon(SystemIcon::CHECKMARK)
-///     .duration(Duration::from_secs(3))
+/// use core::time::Duration;
+///
+/// use waterui::snackbar::Snackbar;
+///
+/// let snackbar = Snackbar::new("Message sent")
+///     .duration(Duration::from_secs(3));
 /// ```
 #[derive(Clone)]
 pub struct Snackbar {
@@ -435,15 +442,22 @@ impl Snackbar {
     ///
     /// Simple action:
     /// ```rust
-    /// Snackbar::new("Message sent")
-    ///     .action("Undo").handler(|| {})
+    /// use waterui::snackbar::Snackbar;
+    ///
+    /// let snackbar = Snackbar::new("Message sent").action("Undo", || {});
     /// ```
     ///
     /// With injected state:
     /// ```rust
-    /// Snackbar::new("Item deleted")
-    ///     .action("Undo", |State(items): State<Items>| items.restore())
+    /// use waterui::prelude::*;
+    /// use waterui::snackbar::Snackbar;
+    ///
+    /// let items = binding::<Vec<String>>(Vec::new());
+    /// let snackbar = Snackbar::new("Item deleted")
     ///     .state(&items)
+    ///     .action("Undo", |State(items): State<Binding<Vec<String>>>| {
+    ///         items.get_mut().clear();
+    ///     });
     /// ```
     #[must_use]
     pub fn action<Args>(
@@ -546,8 +560,8 @@ struct SnackbarManagerState {
 /// use waterui::prelude::*;
 /// use waterui::snackbar::{Snackbar, SnackbarManager};
 ///
-/// fn my_view(env: &Environment) -> impl View {
-///     let manager = env.get::<SnackbarManager>().unwrap();
+/// fn my_view() -> impl View {
+///     let (manager, _overlay) = SnackbarManager::new();
 ///
 ///     button("Save").action(move || {
 ///         manager.show(Snackbar::new("File saved successfully"));
