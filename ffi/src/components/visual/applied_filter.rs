@@ -69,7 +69,7 @@ impl Drop for ForeignRedrawTarget {
     }
 }
 
-/// FFI representation of a Metadata<AppliedFilter>.
+/// FFI representation of a `Metadata<AppliedFilter>`.
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiAppliedFilter {

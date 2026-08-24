@@ -259,7 +259,7 @@ pub enum WebViewError {
 ///
 /// This struct wraps [`AnyWebViewHandle`] and adds reactive state via nami bindings.
 /// The `can_go_back` and `can_go_forward` bindings are automatically updated when
-/// the native backend emits [`WebViewEvent::StateChanged`] events.
+/// the native backend emits `WebViewEvent::StateChanged` events.
 ///
 /// `WebView` implements [`View`] so it can be used directly in the view hierarchy.
 pub struct WebView {
@@ -513,7 +513,7 @@ impl WebView {
 
     /// Evaluates a JavaScript expression and decodes its result as `T`.
     ///
-    /// Prefer the [`eval!`](waterui_macros::eval) macro, which checks the source
+    /// Prefer the `eval!` macro, which checks the source
     /// is a literal and passes interpolated values out of band.
     ///
     /// # Errors
@@ -536,7 +536,7 @@ impl WebView {
 
     /// Runs a JavaScript program for its effects.
     ///
-    /// Prefer the [`exec!`](waterui_macros::exec) macro.
+    /// Prefer the `exec!` macro.
     ///
     /// # Errors
     ///

@@ -205,7 +205,7 @@ impl Shell {
 
     /// Print a device log with level-appropriate styling.
     ///
-    /// The message should be in format "[TAG] message" for best display.
+    /// The message should be in format `"[TAG] message"` for best display.
     /// Platform is used as a prefix (e.g., "Android", "Apple").
     pub fn device_log(
         &self,
@@ -335,7 +335,7 @@ impl Shell {
     }
 }
 
-/// Parse a log message to extract [TAG] prefix.
+/// Parse a log message to extract the `[TAG]` prefix.
 /// Returns (tag, `rest_of_message`) if found.
 fn parse_log_tag(msg: &str) -> Option<(&str, &str)> {
     let msg = msg.trim();

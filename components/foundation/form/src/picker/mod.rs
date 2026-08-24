@@ -118,7 +118,7 @@ impl Picker {
     /// binding.
     ///
     /// The label is mandatory — see
-    /// [the label module](waterui_controls::label). Chain [`Self::hide_label`]
+    /// [the label module](mod@waterui_controls::label). Chain [`Self::hide_label`]
     /// when the surrounding chrome already names the picker; the label stays in
     /// the accessibility tree.
     pub fn new<T: Ord + Clone + 'static>(

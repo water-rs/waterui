@@ -402,7 +402,7 @@ impl IntoFFI for NativeNavigationTransition {
     }
 }
 
-/// FFI struct for `NavigationStack`<(),()>
+/// FFI struct for `NavigationStack<(), ()>`
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiNavigationStack {
