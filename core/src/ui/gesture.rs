@@ -23,7 +23,9 @@
 //!
 //! ## Example: Video Player with Overlay Controls
 //!
-//! ```ignore
+//! ```text
+//! // Shown as text: the authoring layer lives in crates that depend on this
+//! // one, so it cannot be compiled from here.
 //! // The controls_overlay uses a Spacer to push buttons to the bottom.
 //! // The Spacer is non-interactive, so tapping the video area behind it
 //! // still triggers the VideoPlayer's native controls.
@@ -450,16 +452,22 @@ impl GestureObserver {
     /// # Examples
     ///
     /// Simple action:
-    /// ```rust,ignore
-    /// GestureObserver::new(TapGesture::new(), || {})
+    /// ```
+    /// use waterui_core::gesture::{GestureObserver, TapGesture};
+    ///
+    /// let observer = GestureObserver::new(TapGesture::new(), || {});
     /// ```
     ///
     /// With injected state:
-    /// ```rust,ignore
-    /// GestureObserver::new(
+    /// ```
+    /// use nami::Binding;
+    /// use waterui_core::State;
+    /// use waterui_core::gesture::{GestureObserver, TapGesture};
+    ///
+    /// let observer = GestureObserver::new(
     ///     TapGesture::repeat(2),
     ///     |State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
-    /// )
+    /// );
     /// ```
     #[must_use]
     pub fn new<Args>(gesture: impl Into<Gesture>, action: impl Handler<Args, ()>) -> Self {
