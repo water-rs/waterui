@@ -4,6 +4,7 @@ use core::cell::{Cell, RefCell};
 use core::ops::RangeInclusive;
 use std::rc::Rc;
 
+use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, NodeId, Role};
 use kurbo::{Circle, Rect, RoundedRect, Stroke};
 use nami::{Binding, Computed, Signal};
 
@@ -11,6 +12,7 @@ use waterui_controls::slider::SliderConfig;
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
+use crate::accessibility::ActionTarget;
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal, build_node};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
@@ -35,6 +37,7 @@ struct SliderNode {
     env: Environment,
     track: Rc<Cell<Rect>>,
     pointer: PointerTargetHandle,
+    accessibility_id: NodeId,
 }
 
 struct SliderPointer {
@@ -111,6 +114,7 @@ pub fn build(
         env: env.clone(),
         track,
         pointer,
+        accessibility_id: renderer.allocate_accessibility_id(),
     })
 }
 
@@ -225,6 +229,7 @@ impl DewNode for SliderNode {
             },
             disabled,
         );
+        self.register_accessibility(renderer, ctx.window_bounds(), clamped, disabled);
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -237,6 +242,40 @@ impl DewNode for SliderNode {
 }
 
 impl SliderNode {
+    fn register_accessibility(
+        &self,
+        renderer: &mut DewRenderer,
+        bounds: Rect,
+        value: f64,
+        disabled: bool,
+    ) {
+        if renderer.accessibility_enabled() {
+            let range_start = *self.range.start();
+            let range_end = *self.range.end();
+            let step = (range_end - range_start) / 100.0;
+            let mut node = AccessibilityNode::new(Role::Slider);
+            node.set_label(self.label.semantic_text());
+            node.set_numeric_value(value);
+            node.set_min_numeric_value(range_start);
+            node.set_max_numeric_value(range_end);
+            node.set_numeric_value_step(step);
+            node.add_action(AccessibilityAction::Focus);
+            let target = if disabled {
+                node.set_disabled();
+                None
+            } else {
+                node.add_action(AccessibilityAction::Increment);
+                node.add_action(AccessibilityAction::Decrement);
+                node.add_action(AccessibilityAction::SetValue);
+                Some(ActionTarget::Slider {
+                    value: self.value.signal().clone(),
+                    range: self.range.clone(),
+                    step,
+                })
+            };
+            renderer.register_accessibility_node(self.accessibility_id, node, bounds, target);
+        }
+    }
     fn render_track(
         &self,
         renderer: &mut DewRenderer,

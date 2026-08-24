@@ -5,8 +5,8 @@ use peniko::Color;
 use waterui_backend_core::frame_signals::FrameSignals;
 use waterui_core::Environment;
 use waterui_graphics::color::{
-    AccentColor, AccentForegroundColor, BorderColor, ForegroundColor, MutedForegroundColor,
-    ResolvedColor, Srgb, SurfaceColor, SurfaceVariantColor,
+    AccentColor, AccentForegroundColor, BackgroundColor, BorderColor, ForegroundColor,
+    MutedForegroundColor, ResolvedColor, Srgb, SurfaceColor, SurfaceVariantColor,
 };
 
 use crate::dispatch::WatchedSignal;
@@ -18,9 +18,6 @@ pub const FOREGROUND: Color = Color::from_rgb8(28, 28, 30);
 pub const MUTED_FOREGROUND: Color = Color::from_rgb8(142, 142, 147);
 
 /// Window background behind all content.
-///
-/// Dew draws no implicit background; apps fill it (typically with a
-/// [`waterui_graphics::color::Color`] view) and widgets draw on top.
 pub const BACKGROUND: Color = Color::WHITE;
 
 /// Raised control surface: text-field boxes and stepper buttons.
@@ -45,6 +42,7 @@ pub const THUMB: Color = Color::WHITE;
 /// Theme signals retained for the renderer lifetime. Every slot requests a
 /// frame when it changes, so controls repaint without rebuilding the tree.
 pub(crate) struct ThemePalette {
+    background: WatchedSignal<Computed<ResolvedColor>>,
     foreground: WatchedSignal<Computed<ResolvedColor>>,
     muted_foreground: WatchedSignal<Computed<ResolvedColor>>,
     surface: WatchedSignal<Computed<ResolvedColor>>,
@@ -57,6 +55,7 @@ pub(crate) struct ThemePalette {
 impl ThemePalette {
     pub(crate) fn new(env: &Environment, signals: FrameSignals) -> Self {
         Self {
+            background: watch::<BackgroundColor>(env, signals.clone(), BACKGROUND),
             foreground: watch::<ForegroundColor>(env, signals.clone(), FOREGROUND),
             muted_foreground: watch::<MutedForegroundColor>(env, signals.clone(), MUTED_FOREGROUND),
             surface: watch::<SurfaceColor>(env, signals.clone(), SURFACE),
@@ -71,6 +70,9 @@ impl ThemePalette {
         }
     }
 
+    pub(crate) fn background(&self) -> Color {
+        color(self.background.get())
+    }
     pub(crate) fn foreground(&self) -> Color {
         color(self.foreground.get())
     }

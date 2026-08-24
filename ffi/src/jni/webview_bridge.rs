@@ -28,11 +28,11 @@ use waterui_webview::{CustomWebViewController, WebViewController, WebViewHandle,
 
 use std::{collections::HashMap, sync::Arc};
 
-pub struct AndroidWebViewHandle {
+struct AndroidWebViewHandle {
     jvm: Arc<JavaVM>,
-    pub wrapper: Global<JObject<'static>>,
-    pub event_callback: Option<Rc<WuiFn<WuiWebViewEvent>>>,
-    pub handlers: HashMap<String, Rc<WuiFn<WuiWebViewMessage>>>,
+    wrapper: Global<JObject<'static>>,
+    event_callback: Option<Rc<WuiFn<WuiWebViewEvent>>>,
+    handlers: HashMap<String, Rc<WuiFn<WuiWebViewMessage>>>,
 }
 
 impl AndroidWebViewHandle {
@@ -460,7 +460,7 @@ pub unsafe fn install_android_webview_controller(
     env.0.insert(controller);
 }
 
-pub fn webview_native_view<'local>(env: &mut Env<'local>, handle_ptr: jlong) -> jobject {
+pub(crate) fn webview_native_view<'local>(env: &mut Env<'local>, handle_ptr: jlong) -> jobject {
     let handle = unsafe { &*(handle_ptr as *mut AndroidWebViewHandle) };
     env.call_method(
         &handle.wrapper,
@@ -482,7 +482,7 @@ type JsCallbackFn = unsafe extern "C" fn(*mut (), bool, WuiStr);
 type StringCallbackFn = unsafe extern "C" fn(*mut (), WuiStr);
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeCompleteCookies<
+extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeCompleteCookies<
     'local,
 >(
     mut env: EnvUnowned<'local>,
@@ -507,7 +507,7 @@ pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_native
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeCompleteJsResult<
+extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeCompleteJsResult<
     'local,
 >(
     mut env: EnvUnowned<'local>,
@@ -578,9 +578,7 @@ unsafe extern "C" fn reply_call(
 
 /// Returns the shared bridge script for the Kotlin side to inject.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeBridgeScript<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeBridgeScript<'local>(
     mut env: EnvUnowned<'local>,
     _this: JObject<'local>,
 ) -> jobject {
@@ -595,7 +593,7 @@ pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_native
 /// unknown handler name is rejected back to JavaScript rather than aborting the
 /// application.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeOnBridgeMessage<
+extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeOnBridgeMessage<
     'local,
 >(
     mut env: EnvUnowned<'local>,
@@ -663,7 +661,7 @@ pub extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_native
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_components_NativeWebViewEventCallback_nativeOnEvent<
+extern "system" fn Java_dev_waterui_android_components_NativeWebViewEventCallback_nativeOnEvent<
     'local,
 >(
     mut env: EnvUnowned<'local>,

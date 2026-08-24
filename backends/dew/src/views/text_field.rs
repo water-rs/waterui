@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 
+use accesskit::{Node as AccessibilityNode, NodeId, Role};
 use kurbo::{Rect, RoundedRect, Stroke};
 use nami::Signal;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
@@ -39,10 +40,11 @@ struct TextFieldNode {
     /// The placeholder prompt, subscribed once at build.
     prompt: WatchedSignal<nami::Computed<waterui_text::styled::StyledStr>>,
     env: Environment,
+    accessibility_id: NodeId,
 }
 
 pub fn build(
-    renderer: &DewRenderer,
+    renderer: &mut DewRenderer,
     config: ResolvedTextFieldConfig,
     env: &Environment,
 ) -> Box<dyn DewNode> {
@@ -55,6 +57,7 @@ pub fn build(
         value,
         prompt,
         env: env.clone(),
+        accessibility_id: renderer.allocate_accessibility_id(),
     })
 }
 
@@ -72,6 +75,18 @@ impl DewNode for TextFieldNode {
             &self.value.get(),
             &self.prompt.get(),
         );
+        if renderer.accessibility_enabled() {
+            let value = self.value.get().to_plain();
+            let mut node = AccessibilityNode::new(Role::TextInput);
+            node.set_label(self.label.semantic_text());
+            node.set_value(value.to_string());
+            renderer.register_accessibility_node(
+                self.accessibility_id,
+                node,
+                ctx.window_bounds(),
+                None,
+            );
+        }
     }
 
     fn stretch_axis(&self) -> StretchAxis {

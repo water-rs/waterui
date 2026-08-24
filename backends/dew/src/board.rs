@@ -16,6 +16,7 @@
 #[cfg(feature = "host")]
 use std::collections::VecDeque;
 
+use crate::accessibility::{AccessibilityActionRequest, AccessibilityTreeUpdate};
 use peniko::Blob;
 use vello_cpu::RenderSettings;
 use waterui_backend_core::input::TouchPhase;
@@ -121,6 +122,20 @@ pub trait Board {
     fn poll_pointer(&mut self) -> Option<PointerSample> {
         None
     }
+
+    /// Whether this board has an assistive interface that consumes semantic
+    /// tree updates and can return actions.
+    fn supports_accessibility(&self) -> bool {
+        false
+    }
+
+    /// Publishes the complete semantic tree for the rendered frame.
+    fn update_accessibility(&mut self, _update: &AccessibilityTreeUpdate) {}
+
+    /// Returns the next action requested by the board's assistive interface.
+    fn poll_accessibility_action(&mut self) -> Option<AccessibilityActionRequest> {
+        None
+    }
 }
 
 /// Host board: an in-memory framebuffer driven by the system clock.
@@ -135,6 +150,8 @@ pub trait Board {
 pub struct HostBoard {
     display: BufferDisplay,
     pointer_samples: VecDeque<PointerSample>,
+    accessibility_actions: VecDeque<AccessibilityActionRequest>,
+    accessibility_tree: Option<AccessibilityTreeUpdate>,
     fonts: Vec<Blob<u8>>,
 }
 
@@ -146,6 +163,8 @@ impl HostBoard {
         Self {
             display: BufferDisplay::new(width, height),
             pointer_samples: VecDeque::new(),
+            accessibility_actions: VecDeque::new(),
+            accessibility_tree: None,
             fonts: Vec::new(),
         }
     }
@@ -172,6 +191,17 @@ impl HostBoard {
     pub fn push_pointer(&mut self, sample: PointerSample) {
         self.pointer_samples.push_back(sample);
     }
+
+    /// The most recently published semantic tree.
+    #[must_use]
+    pub const fn accessibility_tree(&self) -> Option<&AccessibilityTreeUpdate> {
+        self.accessibility_tree.as_ref()
+    }
+
+    /// Enqueues an assistive-technology action for the next pump.
+    pub fn push_accessibility_action(&mut self, request: AccessibilityActionRequest) {
+        self.accessibility_actions.push_back(request);
+    }
 }
 
 #[cfg(feature = "host")]
@@ -196,5 +226,17 @@ impl Board for HostBoard {
 
     fn poll_pointer(&mut self) -> Option<PointerSample> {
         self.pointer_samples.pop_front()
+    }
+
+    fn supports_accessibility(&self) -> bool {
+        true
+    }
+
+    fn update_accessibility(&mut self, update: &AccessibilityTreeUpdate) {
+        self.accessibility_tree = Some(update.clone());
+    }
+
+    fn poll_accessibility_action(&mut self) -> Option<AccessibilityActionRequest> {
+        self.accessibility_actions.pop_front()
     }
 }

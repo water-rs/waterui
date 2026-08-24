@@ -11,7 +11,9 @@ pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 mod runtime;
 #[cfg(feature = "inspector")]
 pub use runtime::inspector;
-pub use runtime::{app, entry, error, fullscreen, metadata, snackbar, task, window};
+#[cfg(feature = "snackbar")]
+pub use runtime::snackbar;
+pub use runtime::{app, entry, error, fullscreen, metadata, task, window};
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.
@@ -66,6 +68,7 @@ pub mod prelude {
 
     pub use super::color::*;
     pub use super::fullscreen::*;
+    #[cfg(feature = "snackbar")]
     pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition, SnackbarTheme};
 
     pub use super::gesture::GestureObserver;

@@ -40,6 +40,7 @@
 //! (`dew does not implement …`) are the same kind of authored marker: a
 //! feature awaiting a real Dew implementation, never a silent degradation.
 
+pub mod accessibility;
 pub mod board;
 pub mod compositor;
 pub mod dispatch;
@@ -73,6 +74,7 @@ mod views;
 #[cfg(feature = "host")]
 pub use board::HostBoard;
 pub use board::{Board, FontSources, PointerSample};
+pub use accessibility::{AccessibilityActionRequest, AccessibilityTreeUpdate};
 pub use compositor::{BandIndex, BandScheduler, DeviceRegion};
 pub use dispatch::{DewRenderer, RenderContext};
 #[cfg(feature = "host")]

@@ -3,4 +3,4 @@ waterui_path = "../.."
 [package]
 type = "playground"
 name = "Navigation Example"
-bundle_identifier = "com.waterui.navigation_example"
+bundle_identifier = "dev.waterui.navigation"

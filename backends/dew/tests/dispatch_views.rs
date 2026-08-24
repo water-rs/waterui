@@ -49,42 +49,32 @@ fn vstack_of_colors_splits_the_screen() {
     let pixmap = vello_cpu::Pixmap::from_png(std::io::Cursor::new(png.as_slice()))
         .expect("png decodes back");
     let pixel = |x: usize, y: usize| {
-        let p = pixmap.data()[y * 128 + x];
-        [p.r, p.g, p.b]
+        let pixel = pixmap.data()[y * 128 + x];
+        [pixel.r, pixel.g, pixel.b, pixel.a]
     };
-    let top = pixel(64, 20);
-    let bottom = pixel(64, 108);
-    assert!(
-        top[0] > 150 && top[2] < 100,
-        "top half should be red, got {top:?}"
-    );
-    assert!(
-        bottom[2] > 150 && bottom[0] < 100,
-        "bottom half should be blue, got {bottom:?}"
-    );
+    assert_eq!(pixel(64, 20), [244, 67, 54, 255]);
+    assert_eq!(pixel(64, 108), [33, 150, 243, 255]);
 }
 
-/// Text must produce visible glyphs: dark pixels somewhere in the layout.
+/// Text must produce a real shaped glyph run in the retained display list.
 #[test]
-fn text_renders_visible_glyphs() {
-    let env = support::test_environment();
-    let mut runtime = DewRuntime::new(HostBoard::new(240, 80), env, 16, || {
-        AnyView::new(text("Hello, dew!"))
-    });
-    runtime.pump().expect("first frame renders");
-    let dark_pixels = runtime
-        .board()
-        .framebuffer()
-        .pixels()
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .filter(|px| px[3] == 255 && px[0] < 128)
-        .count();
-    assert!(
-        dark_pixels > 20,
-        "expected visible glyph pixels, found {dark_pixels}"
+fn text_emits_shaped_glyphs() {
+    let mut renderer = waterui_dew::DewRenderer::default();
+    let list = renderer.render_tree(
+        AnyView::new(text("Hello, dew!")),
+        &support::test_environment(),
+        240.0,
+        80.0,
     );
+    let glyphs = list
+        .commands()
+        .iter()
+        .find_map(|placed| match placed.command() {
+            waterui_dew::DrawCommand::GlyphRun { glyphs, .. } => Some(glyphs),
+            _ => None,
+        })
+        .expect("text must emit a GlyphRun command");
+    assert_eq!(glyphs.len(), "Hello, dew!".chars().count());
 }
 
 /// A `Binding` change must trigger exactly one retained refresh whose dirty region

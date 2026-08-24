@@ -51,6 +51,7 @@ system-fonts = ["parley/system"]
 progress = ["dep:waterui"]
 
 [dependencies]
+accesskit = "0.24"
 waterui-core.workspace = true
 waterui-backend-core.workspace = true
 waterui-controls.workspace = true

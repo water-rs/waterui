@@ -98,7 +98,7 @@ macro_rules! ffi_view {
             // :camel → Button, ColorPicker (first letter uppercase, for forceAs prefix)
             #[cfg(all(feature = "android-jni", $jni_id))]
             #[unsafe(no_mangle)]
-            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_ $ident:lower_camel Id>]<'local>(
+            extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_ $ident:lower_camel Id>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
             ) -> $crate::jni::jobject {
@@ -115,7 +115,7 @@ macro_rules! ffi_view {
             /// this call and must not be used afterwards.
             #[cfg(all(feature = "android-jni", $jni_force))]
             #[unsafe(no_mangle)]
-            pub unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAs $ident:camel>]<'local>(
+            unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAs $ident:camel>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
                 view_ptr: $crate::jni::jlong,
@@ -192,7 +192,7 @@ macro_rules! ffi_metadata {
             #[cfg(all(feature = "android-jni", $jni_id))]
             /// JNI: Returns the type ID for this metadata type.
             #[unsafe(no_mangle)]
-            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_metadata $ident:camel Id>]<'local>(
+            extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_metadata $ident:camel Id>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
             ) -> $crate::jni::jobject {
@@ -208,7 +208,7 @@ macro_rules! ffi_metadata {
             /// # Safety
             /// The view pointer must be valid and contain the expected metadata type.
             #[unsafe(no_mangle)]
-            pub unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAsMetadata $ident:camel>]<'local>(
+            unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAsMetadata $ident:camel>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
                 view_ptr: $crate::jni::jlong,
@@ -277,7 +277,7 @@ macro_rules! ffi_ignorable_metadata {
             #[cfg(feature = "android-jni")]
             /// JNI: Returns the type ID for this ignorable metadata type.
             #[unsafe(no_mangle)]
-            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_ignorableMetadata $ident:camel Id>]<'local>(
+            extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_ignorableMetadata $ident:camel Id>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
             ) -> $crate::jni::jobject {
@@ -293,7 +293,7 @@ macro_rules! ffi_ignorable_metadata {
             /// # Safety
             /// The view pointer must be valid and contain the expected ignorable metadata type.
             #[unsafe(no_mangle)]
-            pub unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAsIgnorableMetadata $ident:camel>]<'local>(
+            unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_forceAsIgnorableMetadata $ident:camel>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
                 view_ptr: $crate::jni::jlong,
@@ -383,7 +383,7 @@ macro_rules! opaque {
             /// # Safety
             /// The pointer must be valid and not have been dropped before.
             #[unsafe(no_mangle)]
-            pub unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_drop $ident:camel>]<'local>(
+            unsafe extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_drop $ident:camel>]<'local>(
                 _env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
                 ptr: $crate::jni::jlong,

@@ -42,6 +42,13 @@ impl PointerTargetHandle {
     fn same_target(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
+
+    pub(crate) fn activate(&self, bounds: Rect) -> bool {
+        let point = bounds.center();
+        let mut handler = self.0.borrow_mut();
+        handler.pointer_down(point, bounds);
+        handler.pointer_up(point, bounds)
+    }
 }
 
 struct PointerTarget {

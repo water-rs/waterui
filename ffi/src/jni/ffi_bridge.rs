@@ -30,7 +30,7 @@ unsafe extern "C" {
 
 /// Initialize the WaterUI runtime and return an environment pointer.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_init<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_init<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
 ) -> jlong {
@@ -40,7 +40,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_init<'local>(
 /// Create the application from the environment.
 /// Returns an AppStruct jobject.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_app<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_app<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -67,7 +67,7 @@ fn app_to_java<'local>(env: &mut Env<'local>, app: WuiAndroidAppHandles) -> JObj
 
 /// Get the type ID of a view.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewId<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewId<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     view_ptr: jlong,
@@ -79,7 +79,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewId<'local>(
 
 /// Get the body of a composite view.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewBody<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewBody<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     view_ptr: jlong,
@@ -92,7 +92,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewBody<'local>(
 
 /// Get the stretch axis of a view.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewStretchAxis<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewStretchAxis<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     view_ptr: jlong,
@@ -103,7 +103,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewStretchAxis<'
 
 /// Clone an environment.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_cloneEnv<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_cloneEnv<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -121,7 +121,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_cloneEnv<'local>(
 /// Get the empty type ID.
 /// This is special - () doesn't use ffi_view! macro.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_emptyId<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_emptyId<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
 ) -> jobject {
@@ -132,7 +132,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_emptyId<'local>(
 /// Get the spacer type ID.
 /// Spacer is defined specially in layout.rs.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_spacerId<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_spacerId<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
 ) -> jobject {
@@ -141,7 +141,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_spacerId<'local>(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterId<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterId<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
 ) -> jobject {
@@ -150,7 +150,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterId<'
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectId<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectId<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
 ) -> jobject {
@@ -160,7 +160,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectId<'loc
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webViewId<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webViewId<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
 ) -> jobject {
@@ -175,7 +175,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webViewId<'local>
 ///
 /// `view_ptr` must be a valid owning view pointer whose type id is WebView, and
 /// must not be used after this call.
-pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsWebView<'local>(
+unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsWebView<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     view_ptr: jlong,
@@ -196,7 +196,7 @@ pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsWeb
 ///
 /// `ptr` must be a valid owning `WuiAnyViews` pointer and must not have been
 /// dropped previously.
-pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropAnyViews<'local>(
+unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropAnyViews<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     ptr: jlong,
@@ -215,7 +215,7 @@ pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropAnyVie
 /// `ptr` must be a valid owning `WuiAnyView` pointer and must not have been
 /// consumed or dropped previously.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropAnyView<'local>(
+unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropAnyView<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     ptr: jlong,
@@ -255,7 +255,7 @@ impl AndroidGpuRuntimeCompletion {
 /// Creates the process GPU runtime without blocking the Android main thread.
 #[cfg(feature = "gpu")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuRuntimeCreate<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuRuntimeCreate<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     callback: JObject<'local>,
@@ -278,7 +278,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuRuntimeCreate<
 /// Installs an asynchronously-created GPU runtime into the app environment.
 #[cfg(feature = "gpu")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallGpuRuntime<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallGpuRuntime<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -295,9 +295,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallGpuRunt
 
 /// Install web view controller in the environment.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallWebViewController<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallWebViewController<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,

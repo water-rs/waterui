@@ -2,6 +2,7 @@
 
 use core::cell::RefCell;
 
+use accesskit::{Node as AccessibilityNode, NodeId, Role};
 use kurbo::{Rect, RoundedRect};
 use nami::Computed;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
@@ -22,6 +23,7 @@ struct ProgressNode {
     value_label: Box<dyn DewNode>,
     /// The progress fraction, subscribed once at build.
     value: WatchedSignal<Computed<f64>>,
+    accessibility_id: NodeId,
 }
 
 pub fn build(
@@ -39,6 +41,7 @@ pub fn build(
         label: build_node(renderer, config.label, env, depth),
         value_label: build_node(renderer, config.value_label, env, depth),
         value: WatchedSignal::new(config.value, renderer.signals()),
+        accessibility_id: renderer.allocate_accessibility_id(),
     })
 }
 
@@ -73,6 +76,19 @@ impl DewNode for ProgressNode {
             "dew does not render indeterminate progress"
         );
         let fraction = value.clamp(0.0, 1.0);
+        if renderer.accessibility_enabled() {
+            renderer.register_built_accessibility_node(
+                self.accessibility_id,
+                ctx.window_bounds(),
+                || {
+                    let mut accessibility = AccessibilityNode::new(Role::ProgressIndicator);
+                    accessibility.set_min_numeric_value(0.0);
+                    accessibility.set_max_numeric_value(1.0);
+                    accessibility.set_numeric_value(fraction);
+                    (accessibility, None)
+                },
+            );
+        }
         let bounds = ctx.bounds;
         let label_size = self
             .label

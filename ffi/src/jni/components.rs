@@ -76,7 +76,7 @@ fn require_native_window(
 // ============================================================================
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callAction<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callAction<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     action_ptr: jlong,
@@ -88,7 +88,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callAction<'local
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callSharedAction<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callSharedAction<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     action_ptr: jlong,
@@ -100,7 +100,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callSharedAction<
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gestureFromPtr<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gestureFromPtr<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     gesture_ptr: jlong,
@@ -114,7 +114,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gestureFromPtr<'l
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropGesture<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropGesture<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     gesture_ptr: jlong,
@@ -125,7 +125,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropGesture<'loca
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callIndexAction<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callIndexAction<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     action_ptr: jlong,
@@ -138,7 +138,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callIndexAction<'
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callMoveAction<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callMoveAction<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     action_ptr: jlong,
@@ -634,7 +634,7 @@ unsafe extern "C" fn drop_android_layout_invalidation_target(context: *mut c_voi
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatchInvalidation<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatchInvalidation<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
@@ -663,7 +663,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatchInvali
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatcherDrop<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatcherDrop<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     watcher_ptr: jlong,
@@ -676,7 +676,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutWatcherDrop
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutMeasure<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutMeasure<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
@@ -695,7 +695,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutMeasure<'lo
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutSizeThatFits<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutSizeThatFits<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
@@ -721,7 +721,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutSizeThatFit
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutPlace<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutPlace<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
@@ -765,7 +765,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutPlace<'loca
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackAxis<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackAxis<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
@@ -777,7 +777,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackAx
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackSpacing<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackSpacing<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
@@ -788,7 +788,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackSp
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackHorizontalAlignment<
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackHorizontalAlignment<
     'local,
 >(
     _env: EnvUnowned<'local>,
@@ -803,7 +803,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackHo
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackVerticalAlignment<
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutLazyStackVerticalAlignment<
     'local,
 >(
     _env: EnvUnowned<'local>,
@@ -853,7 +853,7 @@ fn font_slot(slot: jint) -> crate::theme::WuiFontSlot {
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColor<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColor<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -868,7 +868,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColor
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallFont<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallFont<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -882,7 +882,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallFont<
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColorScheme<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColorScheme<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -894,7 +894,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColor
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColor<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColor<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -906,7 +906,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColor<'local
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeFont<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeFont<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -923,7 +923,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeFont<'local>
 /// never a field on an individual control's configuration; every interactive
 /// control reads it from the environment it is already handed.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envDisabled<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envDisabled<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -933,7 +933,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envDisabled<'loca
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColorScheme<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColorScheme<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -947,7 +947,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColorScheme<
 // ============================================================================
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationKindDurationPacked<
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationKindDurationPacked<
     'local,
 >(
     _env: EnvUnowned<'local>,
@@ -971,9 +971,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationKindD
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams12Packed<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams12Packed<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     metadata_ptr: jlong,
@@ -991,9 +989,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParam
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams34Packed<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams34Packed<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     metadata_ptr: jlong,
@@ -1056,7 +1052,7 @@ unsafe extern "C" fn anyviews_watch_drop(data: *mut ()) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsLen<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsLen<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -1066,7 +1062,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsLen<'loca
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetIdsInRange<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetIdsInRange<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -1093,7 +1089,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetIdsInR
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetView<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetView<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -1104,7 +1100,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetView<'
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsWatch<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsWatch<'local>(
     env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -1149,9 +1145,7 @@ fn any_views_watch_range<'local>(
 // ============================================================================
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_colorFromLinearRgbaHeadroom<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_colorFromLinearRgbaHeadroom<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     red: jfloat,
@@ -1167,7 +1161,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_colorFromLinearRg
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_resolveColor<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_resolveColor<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     color_ptr: jlong,
@@ -1183,7 +1177,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_resolveColor<'loc
 // ============================================================================
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_resolveFont<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_resolveFont<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     font_ptr: jlong,
@@ -1200,7 +1194,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_resolveFont<'loca
 // ============================================================================
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callLifecycleHook<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callLifecycleHook<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handler_ptr: jlong,
@@ -1212,7 +1206,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callLifecycleHook
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropLifecycleHook<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropLifecycleHook<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handler_ptr: jlong,
@@ -1222,7 +1216,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropLifecycleHook
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callOnEvent<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callOnEvent<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handler_ptr: jlong,
@@ -1234,7 +1228,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callOnEvent<'loca
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callOnHoverEvent<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callOnHoverEvent<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handler_ptr: jlong,
@@ -1248,7 +1242,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callOnHoverEvent<
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropOnEvent<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropOnEvent<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handler_ptr: jlong,
@@ -1262,7 +1256,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropOnEvent<'loca
 // ============================================================================
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropRetain<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropRetain<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     retain_ptr: jlong,
@@ -1335,7 +1329,7 @@ fn resolved_system_font(size: jfloat, weight: jint) -> ResolvedFont {
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveColorSchemeState<
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveColorSchemeState<
     'local,
 >(
     _env: EnvUnowned<'local>,
@@ -1349,7 +1343,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveCol
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorSchemeStateToComputed<
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorSchemeStateToComputed<
     'local,
 >(
     _env: EnvUnowned<'local>,
@@ -1362,9 +1356,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorSche
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorSchemeStateSet<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorSchemeStateSet<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1375,9 +1367,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorSche
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColorSchemeState<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColorSchemeState<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1387,9 +1377,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColor
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveEdgeInsetsState<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveEdgeInsetsState<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     top: jfloat,
@@ -1406,7 +1394,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveEdg
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveEdgeInsetsStateToComputed<
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveEdgeInsetsStateToComputed<
     'local,
 >(
     _env: EnvUnowned<'local>,
@@ -1419,9 +1407,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveEdgeInset
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveEdgeInsetsStateSet<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveEdgeInsetsStateSet<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1437,9 +1423,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveEdgeInset
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveEdgeInsetsState<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveEdgeInsetsState<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1454,7 +1438,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveEdgeI
 /// never let a bottom bar's background reach under the gesture bar, which is
 /// what Android's edge-to-edge contract asks for.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallSafeArea<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallSafeArea<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -1467,7 +1451,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallSafeAre
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveColorState<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveColorState<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     argb: jint,
@@ -1479,9 +1463,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveCol
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorStateToComputed<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorStateToComputed<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1492,7 +1474,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorStat
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorStateSet<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorStateSet<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1503,7 +1485,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorStat
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColorState<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColorState<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1513,7 +1495,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColor
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveFontState<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveFontState<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     size: jfloat,
@@ -1526,9 +1508,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveFon
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveFontStateToComputed<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveFontStateToComputed<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1538,7 +1518,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveFontState
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveFontStateSet<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveFontStateSet<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1550,7 +1530,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveFontState
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveFontState<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveFontState<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1564,7 +1544,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveFontS
 // ============================================================================
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeHandle<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeHandle<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     webview_ptr: jlong,
@@ -1580,7 +1560,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeHand
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeView<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeView<'local>(
     mut _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle_ptr: jlong,
@@ -1596,9 +1576,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeView
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostAttach<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostAttach<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     bridge_ptr: jlong,
@@ -1615,9 +1593,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfa
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostDrop<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostDrop<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     bridge_ptr: jlong,
@@ -1631,7 +1607,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfa
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostSurfaceDestroyed<
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostSurfaceDestroyed<
     'local,
 >(
     _env: EnvUnowned<'local>,
@@ -1682,7 +1658,7 @@ unsafe extern "C" fn drop_android_gpu_surface_redraw_target(context: *mut c_void
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceCreate<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceCreate<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     owner: JObject<'local>,
@@ -1730,7 +1706,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceCreate<
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceMeasure<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceMeasure<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1752,7 +1728,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceMeasure
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfacePriority<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfacePriority<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1764,7 +1740,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfacePriorit
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceIsReady<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceIsReady<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1778,7 +1754,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceIsReady
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAttach<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAttach<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1813,7 +1789,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAttach<
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDetach<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDetach<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1832,7 +1808,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDetach<
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1853,7 +1829,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInput<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInput<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -1903,7 +1879,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInpu
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDrop<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDrop<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
