@@ -28,7 +28,7 @@ pub const DOCUMENT_START_SCRIPT: &str = concat!(
 
 /// A JavaScript expression that evaluates to a value.
 ///
-/// Build one with [`eval!`](waterui_macros::eval) for a checked literal, or
+/// Build one with `eval!` for a checked literal, or
 /// [`JsExpr::raw`] for source that only exists at runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsExpr {
@@ -38,7 +38,7 @@ pub struct JsExpr {
 
 /// A JavaScript program run for its effects.
 ///
-/// Build one with [`exec!`](crate::exec) or [`js_file!`](crate::js_file) for a
+/// Build one with `exec!` or `js_file!` for a
 /// checked literal or file, or [`JsProgram::raw`] for runtime source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsProgram {

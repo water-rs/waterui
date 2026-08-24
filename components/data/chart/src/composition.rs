@@ -172,7 +172,7 @@ impl<T: Clone + PartialEq + 'static> ChartComposition<T> {
 
 macro_rules! chart_composition_methods {
     ($datum:ty) => {
-        /// Renders reactive content behind the chart using a [`ChartProxy`].
+        /// Renders reactive content behind the chart using a [`ChartProxy`](crate::composition::ChartProxy).
         #[must_use]
         pub fn chart_background<V, F>(mut self, build: F) -> Self
         where
@@ -185,7 +185,7 @@ macro_rules! chart_composition_methods {
             self
         }
 
-        /// Renders reactive content above the chart using a [`ChartProxy`].
+        /// Renders reactive content above the chart using a [`ChartProxy`](crate::composition::ChartProxy).
         #[must_use]
         pub fn chart_overlay<V, F>(mut self, build: F) -> Self
         where

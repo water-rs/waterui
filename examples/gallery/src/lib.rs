@@ -7,7 +7,7 @@
 //! including its style/variant options — so the catalog demonstrates each control's
 //! behavior directly.
 //!
-//! Interactive demo state lives in [`DemoState`], owned at the window scope and
+//! Interactive demo state lives in `DemoState`, owned at the window scope and
 //! threaded into the demos. The split view rebuilds its detail builder on render,
 //! so any state created *inside* a demo would reset; owning it externally keeps the
 //! controls live (a button's counter actually counts, a toggle stays toggled).

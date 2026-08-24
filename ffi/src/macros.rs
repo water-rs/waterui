@@ -133,7 +133,7 @@ macro_rules! ffi_view {
     };
 }
 
-/// Generates FFI functions for Metadata<T> types.
+/// Generates FFI functions for `Metadata<T>` types.
 ///
 /// Unlike `ffi_view!`, this macro does NOT wrap in `Native<T>` because
 /// `Metadata<T>` is stored directly in the view tree (not as a native view).
@@ -144,7 +144,7 @@ macro_rules! ffi_view {
 ///
 /// # Generated Functions (Android-JNI)
 /// - `Java_dev_waterui_android_ffi_WatcherJni_metadata<Ident>Id()` - Returns `TypeIdStruct`
-/// - `Java_dev_waterui_android_ffi_WatcherJni_forceAsMetadata<Ident>()` - Returns struct
+/// - `Java_dev_waterui_android_ffi_WatcherJni_forceAsMetadata<Ident>()` — returns the struct
 #[macro_export]
 macro_rules! ffi_metadata {
     ($ty:ty, $ffi:ty, $ident:tt) => {
@@ -226,7 +226,7 @@ macro_rules! ffi_metadata {
     };
 }
 
-/// Generates FFI functions for `IgnorableMetadata`<T> types.
+/// Generates FFI functions for `IgnorableMetadata<T>` types.
 ///
 /// Similar to `ffi_metadata!`, but for `IgnorableMetadata<T>` which can be
 /// safely ignored by renderers that don't support the metadata type.

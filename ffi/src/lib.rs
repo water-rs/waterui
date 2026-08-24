@@ -793,7 +793,7 @@ impl<T: IntoFFI + MetadataKey> IntoFFI for Metadata<T> {
 // ========== Metadata<Environment> FFI ==========
 // Used by WithEnv to pass a new environment to child views
 
-/// Type alias for Metadata<Environment> FFI struct
+/// Type alias for `Metadata<Environment>` FFI struct
 /// Layout: { content: *mut `WuiAnyView`, value: *mut `WuiEnv` }
 pub type WuiMetadataEnv = WuiMetadata<*mut WuiEnv>;
 
@@ -860,7 +860,7 @@ impl IntoFFI for Secure {
     }
 }
 
-/// Type alias for Metadata<Secure> FFI struct
+/// Type alias for `Metadata<Secure>` FFI struct
 /// Layout: { content: *mut `WuiAnyView`, value: `WuiSecureMarker` }
 pub type WuiMetadataSecure = WuiMetadata<WuiSecureMarker>;
 
@@ -893,10 +893,10 @@ impl IntoFFI for HighDynamicRange {
     }
 }
 
-/// Type alias for Metadata<StandardDynamicRange> FFI struct.
+/// Type alias for `Metadata<StandardDynamicRange>` FFI struct.
 pub type WuiMetadataStandardDynamicRange = WuiMetadata<WuiDynamicRangeMarker>;
 
-/// Type alias for Metadata<HighDynamicRange> FFI struct.
+/// Type alias for `Metadata<HighDynamicRange>` FFI struct.
 pub type WuiMetadataHighDynamicRange = WuiMetadata<WuiDynamicRangeMarker>;
 
 // Generate waterui_metadata_standard_dynamic_range_id()
@@ -921,7 +921,7 @@ ffi_metadata!(
 use crate::gesture::WuiGestureObserver;
 use waterui::gesture::GestureObserver;
 
-/// Type alias for Metadata<GestureObserver> FFI struct
+/// Type alias for `Metadata<GestureObserver>` FFI struct
 pub type WuiMetadataGesture = WuiMetadata<WuiGestureObserver>;
 
 // Generate waterui_metadata_gesture_id() and waterui_force_as_metadata_gesture()
@@ -941,7 +941,7 @@ ffi_metadata!(LifeCycleHook, WuiMetadataLifecycleHook, lifecycle_hook);
 
 // Used to attach interaction event handlers (hover enter/exit) - repeatable handlers
 
-/// Type alias for Metadata<OnEvent> FFI struct
+/// Type alias for `Metadata<OnEvent>` FFI struct
 pub type WuiMetadataOnEvent = WuiMetadata<WuiOnEvent>;
 
 // Generate waterui_metadata_on_event_id() and waterui_force_as_metadata_on_event()
@@ -953,7 +953,7 @@ ffi_metadata!(OnEvent, WuiMetadataOnEvent, on_event);
 use crate::cursor::WuiCursor;
 use waterui::cursor::Cursor;
 
-/// Type alias for Metadata<Cursor> FFI struct
+/// Type alias for `Metadata<Cursor>` FFI struct
 pub type WuiMetadataCursor = WuiMetadata<WuiCursor>;
 
 // Generate waterui_metadata_cursor_id() and waterui_force_as_metadata_cursor()
@@ -969,7 +969,7 @@ use waterui::accessibility::{
     AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
 };
 
-/// FFI-safe representation of `IgnorableMetadata`<`AccessibilityIdentifier`>
+/// FFI-safe representation of `IgnorableMetadata<AccessibilityIdentifier>`
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiIgnorableMetadataAccessibilityIdentifier {
@@ -1274,7 +1274,7 @@ impl IntoFFI for Shadow {
     }
 }
 
-/// Type alias for Metadata<Shadow> FFI struct
+/// Type alias for `Metadata<Shadow>` FFI struct
 pub type WuiMetadataShadow = WuiMetadata<WuiShadow>;
 
 // Generate waterui_metadata_shadow_id() and waterui_force_as_metadata_shadow()
@@ -1311,7 +1311,7 @@ impl IntoFFI for Border {
     }
 }
 
-/// Type alias for Metadata<Border> FFI struct
+/// Type alias for `Metadata<Border>` FFI struct
 pub type WuiMetadataBorder = WuiMetadata<WuiBorder>;
 
 // Generate waterui_metadata_border_id() and waterui_force_as_metadata_border()
@@ -1366,7 +1366,7 @@ impl IntoFFI for Scale {
     }
 }
 
-/// Type alias for Metadata<Scale> FFI struct
+/// Type alias for `Metadata<Scale>` FFI struct
 pub type WuiMetadataScale = WuiMetadata<WuiScale>;
 
 // Generate waterui_metadata_scale_id() and waterui_force_as_metadata_scale()
@@ -1396,7 +1396,7 @@ impl IntoFFI for Rotation {
     }
 }
 
-/// Type alias for Metadata<Rotation> FFI struct
+/// Type alias for `Metadata<Rotation>` FFI struct
 pub type WuiMetadataRotation = WuiMetadata<WuiRotation>;
 
 // Generate waterui_metadata_rotation_id() and waterui_force_as_metadata_rotation()
@@ -1426,7 +1426,7 @@ impl IntoFFI for Offset {
     }
 }
 
-/// Type alias for Metadata<Offset> FFI struct
+/// Type alias for `Metadata<Offset>` FFI struct
 pub type WuiMetadataOffset = WuiMetadata<WuiOffset>;
 
 // Generate waterui_metadata_offset_id() and waterui_force_as_metadata_offset()
@@ -1455,7 +1455,7 @@ impl IntoFFI for Opacity {
     }
 }
 
-/// Type alias for Metadata<Opacity> FFI struct
+/// Type alias for `Metadata<Opacity>` FFI struct
 pub type WuiMetadataOpacity = WuiMetadata<WuiOpacity>;
 
 // Generate waterui_metadata_opacity_id() and waterui_force_as_metadata_opacity()
@@ -1484,7 +1484,7 @@ impl IntoFFI for Focused {
     }
 }
 
-/// Type alias for Metadata<Focused> FFI struct
+/// Type alias for `Metadata<Focused>` FFI struct
 pub type WuiMetadataFocused = WuiMetadata<WuiFocused>;
 
 // Generate waterui_metadata_focused_id() and waterui_force_as_metadata_focused()
@@ -1538,7 +1538,7 @@ impl IntoFFI for IgnoreSafeArea {
     }
 }
 
-/// Type alias for Metadata<IgnoreSafeArea> FFI struct
+/// Type alias for `Metadata<IgnoreSafeArea>` FFI struct
 pub type WuiMetadataIgnoreSafeArea = WuiMetadata<WuiIgnoreSafeArea>;
 
 // Generate waterui_metadata_ignore_safe_area_id() and waterui_force_as_metadata_ignore_safe_area()
@@ -1554,7 +1554,7 @@ use waterui_core::Retain;
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiRetain {
-    /// Opaque pointer to the retained value (Box<dyn Any>).
+    /// Opaque pointer to the retained value (`Box<dyn Any>`).
     /// This must be kept alive and dropped when the view is disposed.
     _opaque: *mut (),
 }
@@ -1582,7 +1582,7 @@ impl IntoFFI for Retain {
     }
 }
 
-/// Type alias for Metadata<Retain> FFI struct
+/// Type alias for `Metadata<Retain>` FFI struct
 pub type WuiMetadataRetain = WuiMetadata<WuiRetain>;
 
 // Generate waterui_metadata_retain_id() and waterui_force_as_metadata_retain()
@@ -1742,7 +1742,7 @@ impl IntoFFI for ClipShape {
     }
 }
 
-/// Type alias for Metadata<ClipShape> FFI struct
+/// Type alias for `Metadata<ClipShape>` FFI struct
 pub type WuiMetadataClipShape = WuiMetadata<WuiClipShape>;
 
 // Generate waterui_metadata_clip_shape_id() and waterui_force_as_metadata_clip_shape()
@@ -2019,7 +2019,7 @@ impl IntoFFI for ResolvedContextMenu {
     }
 }
 
-/// Type alias for Metadata<ContextMenu> FFI struct
+/// Type alias for `Metadata<ContextMenu>` FFI struct
 pub type WuiMetadataContextMenu = WuiMetadata<WuiContextMenu>;
 
 // Generate waterui_metadata_context_menu_id() and waterui_force_as_metadata_context_menu()
@@ -2062,14 +2062,14 @@ use crate::drag_drop::{WuiDraggable, WuiDropDestination};
 #[cfg(feature = "c-api")]
 use waterui::drag_drop::{Draggable, DropDestination};
 
-/// Type alias for Metadata<Draggable> FFI struct
+/// Type alias for `Metadata<Draggable>` FFI struct
 pub type WuiMetadataDraggable = WuiMetadata<WuiDraggable>;
 
 // Generate waterui_metadata_draggable_id() and waterui_force_as_metadata_draggable()
 #[cfg(feature = "c-api")]
 ffi_metadata!(Draggable, WuiMetadataDraggable, draggable);
 
-/// Type alias for Metadata<DropDestination> FFI struct
+/// Type alias for `Metadata<DropDestination>` FFI struct
 pub type WuiMetadataDropDestination = WuiMetadata<WuiDropDestination>;
 
 // Generate waterui_metadata_drop_destination_id() and waterui_force_as_metadata_drop_destination()
@@ -2086,7 +2086,7 @@ ffi_metadata!(
 #[cfg(feature = "c-api")]
 use waterui::background::MaterialBackground;
 
-/// FFI-safe representation of `IgnorableMetadata`<MaterialBackground>
+/// FFI-safe representation of `IgnorableMetadata<MaterialBackground>`
 #[repr(C)]
 #[derive(Debug)]
 #[cfg(feature = "c-api")]
@@ -2140,7 +2140,7 @@ impl IntoFFI for Hittable {
     }
 }
 
-/// Type alias for Metadata<Hittable> FFI struct
+/// Type alias for `Metadata<Hittable>` FFI struct
 pub type WuiMetadataHittable = WuiMetadata<WuiHittable>;
 
 // Generate waterui_metadata_hittable_id() and waterui_force_as_metadata_hittable()

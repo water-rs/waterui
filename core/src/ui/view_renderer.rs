@@ -43,7 +43,7 @@ pub struct RenderResult {
 ///
 /// Native backends implement this to provide view-to-RGBA capture. The method
 /// returns `impl Future`, so implementations write a plain `async fn` — the
-/// object-safe boxing needed to store the renderer in the [`Environment`] is an
+/// object-safe boxing needed to store the renderer in the [`Environment`](crate::Environment) is an
 /// internal detail of [`ViewRenderer`], never part of this contract.
 pub trait CustomViewRenderer: 'static {
     /// Render a view to RGBA bytes.

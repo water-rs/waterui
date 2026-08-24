@@ -88,7 +88,7 @@ pub struct Window {
     /// runtime size limits; embedded (dew) displays are fixed-size — those
     /// targets ignore this.
     ///
-    /// [`Layout`]: waterui_core::ui::Layout
+    /// [`Layout`]: waterui_core::layout::Layout
     pub min_size: Option<Computed<Size>>,
     /// Explicit maximum content size the window can be resized up to.
     ///

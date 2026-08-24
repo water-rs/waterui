@@ -149,7 +149,7 @@ impl HydrolysisRenderer {
 
     /// Build the window render tree from `content`, lay it out at `bounds`, and
     /// flush it into the scene — the render-tree analogue of
-    /// [`HydrolysisRenderer::capture_window_scene`]. The built tree is retained in
+    /// `HydrolysisRenderer::capture_window_scene`. The built tree is retained in
     /// `render_tree` for subsequent per-frame flushes.
     pub fn capture_window_tree(
         &mut self,

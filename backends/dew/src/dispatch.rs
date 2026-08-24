@@ -1,6 +1,6 @@
 //! Persistent `WaterUI` view dispatch for the Dew backend.
 //!
-//! Dew expands each view body exactly once into a retained [`DewNode`] tree.
+//! Dew expands each view body exactly once into a retained `DewNode` tree.
 //! Scalar signals request a refresh; a refresh re-reads those signals, runs
 //! layout, and emits a new display list without evaluating any view body.
 //! [`Dynamic`] is the sole structural seam and replaces only its own child node.
