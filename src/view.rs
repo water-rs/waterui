@@ -94,12 +94,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::metadata::secure::ColorSpace;
     ///
-    /// hdr_shapes().color_space(ColorSpace::Hdr);
-    /// avatar_thumbnail().color_space(ColorSpace::Sdr);
+    /// let wide_gamut = text!("Sunset").color_space(ColorSpace::Hdr);
+    /// let thumbnail = text!("Avatar").color_space(ColorSpace::Sdr);
     /// ```
     fn color_space(self, space: crate::metadata::secure::ColorSpace) -> AnyView {
         use crate::metadata::secure::{ColorSpace, HighDynamicRange, StandardDynamicRange};
@@ -256,7 +256,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // All text in this VStack will be red
@@ -398,11 +398,11 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::cursor::CursorStyle;
     ///
-    /// text!("Click me").cursor(CursorStyle::PointingHand)
+    /// let clickable = text!("Click me").cursor(CursorStyle::PointingHand);
     /// ```
     ///
     /// # Arguments
@@ -621,15 +621,16 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// use waterui::prelude::*;
     /// use waterui::gesture::{GestureObserver, TapGesture};
     ///
-    /// view.gesture_observer(
+    /// let counted = text!("Tap twice").gesture_observer(
     ///     GestureObserver::new(
     ///         TapGesture::repeat(2),
     ///         |State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
     ///     )
-    /// )
+    /// );
     /// ```
     fn gesture_observer(self, observer: GestureObserver) -> Metadata<GestureObserver> {
         Metadata::new(self, observer)
@@ -775,7 +776,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Simple border on all edges
@@ -794,7 +795,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::border::Border;
     ///
@@ -817,19 +818,19 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Scale uniformly to 150%
-    /// view.scale(1.5, 1.5);
+    /// let bigger = text!("Hello").scale(1.5, 1.5);
     ///
     /// // Scale X only (stretch horizontally)
-    /// view.scale(2.0, 1.0);
+    /// let wider = text!("Hello").scale(2.0, 1.0);
     ///
     /// // Animate scale
-    /// let x = binding(1.0).animated();
-    /// let y = binding(1.0).animated();
-    /// view.scale(x, y);
+    /// let x = binding::<f32>(1.0).animated();
+    /// let y = binding::<f32>(1.0).animated();
+    /// let animated = text!("Hello").scale(x, y);
     /// ```
     fn scale(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale> {
         Metadata::new(self, Scale::xy(x, y))
@@ -844,12 +845,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::style::Anchor;
     ///
     /// // Scale from top-left corner
-    /// view.scale_from(0.5, 0.5, Anchor::TOP_LEFT);
+    /// let shrunk = text!("Hello").scale_from(0.5, 0.5, Anchor::TOP_LEFT);
     /// ```
     fn scale_from(
         self,
@@ -869,15 +870,15 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Rotate 45 degrees
-    /// view.rotation(45.0);
+    /// let tilted = text!("Hello").rotation(45.0);
     ///
     /// // Animate rotation
-    /// let angle = binding(0.0).animated();
-    /// view.rotation(angle);
+    /// let angle = binding::<f32>(0.0).animated();
+    /// let spinning = text!("Hello").rotation(angle);
     /// ```
     fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation> {
         Metadata::new(self, Rotation::degrees(degrees))
@@ -891,12 +892,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::style::Anchor;
     ///
     /// // Rotate around top-left corner
-    /// view.rotation_from(45.0, Anchor::TOP_LEFT);
+    /// let tilted = text!("Hello").rotation_from(45.0, Anchor::TOP_LEFT);
     /// ```
     fn rotation_from(self, degrees: impl IntoSignalF32, anchor: Anchor) -> Metadata<Rotation> {
         Metadata::new(self, Rotation::degrees_from(degrees, anchor))
@@ -912,15 +913,15 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Move view by (10, 20) points
-    /// view.offset(10.0, 20.0);
+    /// let nudged = text!("Hello").offset(10.0, 20.0);
     ///
     /// // Animate offset
-    /// let x = binding(0.0).animated();
-    /// view.offset(x, 0.0);
+    /// let x = binding::<f32>(0.0).animated();
+    /// let sliding = text!("Hello").offset(x, 0.0);
     /// ```
     fn offset(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Offset> {
         Metadata::new(self, Offset::new(x, y))
@@ -937,15 +938,15 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::shape::*;
     ///
-    /// // Clip image to a circle
-    /// image("avatar.jpg").clip(Circle);
+    /// // Clip a view to a circle
+    /// let avatar = Color::red().clip(Circle);
     ///
     /// // Clip to rounded rectangle
-    /// card.clip(RoundedRectangle::new(0.1));
+    /// let card = text!("Card").clip(RoundedRectangle::new(0.1));
     ///
     /// // Custom triangle shape
     /// let triangle = Path::new()
@@ -970,7 +971,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// text!("Right-click me")
@@ -1000,15 +1001,15 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Extend background to fill entire screen
-    /// Color::red()
+    /// let backdrop = Color::red()
     ///     .ignore_safe_area(EdgeSet::ALL);
     ///
     /// // Only extend to top (under status bar)
-    /// header_view
+    /// let header = text!("Title")
     ///     .ignore_safe_area(EdgeSet::TOP);
     /// ```
     fn ignore_safe_area(self, edges: EdgeSet) -> Metadata<IgnoreSafeArea> {
@@ -1060,7 +1061,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::drag_drop::DragData;
     ///
@@ -1078,7 +1079,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::drag_drop::DragData;
     ///
@@ -1089,6 +1090,8 @@ pub trait ViewExt: View + Sized {
     ///     });
     ///
     /// // With injected state
+    /// let items = binding::<Vec<String>>(Vec::new());
+    /// let count = binding::<i32>(0);
     /// text!("Drop here")
     ///     .state(&items)
     ///     .state(&count)
@@ -1096,7 +1099,7 @@ pub trait ViewExt: View + Sized {
     ///         |State(items): State<Binding<Vec<String>>>,
     ///          State(count): State<Binding<i32>>,
     ///          data: DragData| {
-    ///             items.update(|v| v.push(data.as_str().to_string()));
+    ///             items.get_mut().push(data.as_str().to_string());
     ///             *count.get_mut() += 1;
     ///         },
     ///     );
@@ -1118,15 +1121,15 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Make a view transparent to touch events
-    /// text("Click through me")
+    /// let passthrough = text!("Click through me")
     ///     .hittable(false);
     ///
     /// // Reactive hit testing control
-    /// let can_interact = binding(true);
+    /// let can_interact = binding::<bool>(true);
     /// button("Click me").action(|| {})
     ///     .hittable(can_interact);
     /// ```
@@ -1149,7 +1152,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Disable a button
@@ -1157,9 +1160,10 @@ pub trait ViewExt: View + Sized {
     ///     .disabled(true);
     ///
     /// // Reactive disable based on form validity
-    /// let is_submitting = binding(false);
+    /// let is_submitting = binding::<bool>(false);
+    /// let name = binding::<Str>(Str::default());
     /// vstack((
-    ///     TextField::new("Name", name),
+    ///     TextField::new("Name", &name),
     ///     button("Submit").action(|| {}),
     /// )).disabled(is_submitting);
     /// ```
@@ -1188,8 +1192,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// text("Hover Me!")
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// let hover_count = binding::<i32>(0);
+    /// let is_hovered = binding::<bool>(false);
+    /// let hoverable = text!("Hover Me!")
     ///     .state(&hover_count)
     ///     .state(&is_hovered)
     ///     .on_hover_enter(
@@ -1198,9 +1206,9 @@ pub trait ViewExt: View + Sized {
     ///             hovered.set(true);
     ///         },
     ///     )
-    ///     .on_hover_exit(|_, State(hovered): State<Binding<bool>>| {
+    ///     .on_hover_exit(|State(hovered): State<Binding<bool>>| {
     ///         hovered.set(false);
-    ///     })
+    ///     });
     /// ```
     fn state<T: Clone + 'static>(self, state: &T) -> With<Self, State<T>> {
         With::new(self, State(state.clone()))
