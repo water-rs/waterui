@@ -24,24 +24,14 @@ pub(crate) fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
     // custom transition may report a platform-native projection for Apple and
     // Android while still resolving its own frames here.
     let retained = frame.style.retained();
-    if let RetainedNavigationTransition::MatchedGeometry(id) = retained {
-        if matched_geometry_is_drawable(&frame, id) {
-            draw_matched_navigation_transition(frame, id);
-            return;
-        }
-        tracing::warn!(
-            "navigation zoom {id:?} has no drawable geometry on both pages; \
-             falling back to the platform transition"
-        );
-    }
     #[allow(clippy::cast_possible_truncation)]
     let progress = frame.progress as f32;
     let resolved = match retained {
-        // A matched transition only reaches here when its geometry was not
-        // drawable; it has no frames of its own to resolve, so the platform
-        // motion is what it degrades to.
-        RetainedNavigationTransition::PlatformDefault
-        | RetainedNavigationTransition::MatchedGeometry(_) => material_shared_axis_x_frame(
+        RetainedNavigationTransition::MatchedGeometry(id) => {
+            draw_matched_navigation_transition(frame, id);
+            return;
+        }
+        RetainedNavigationTransition::PlatformDefault => material_shared_axis_x_frame(
             progress,
             frame.direction,
             frame.motion.shared_axis_slide_distance,
@@ -104,34 +94,6 @@ fn material_shared_axis_x_frame(
             ..NavigationTransitionLayer::IDENTITY
         },
     }
-}
-
-/// Whether both halves of a matched transition were drawn, with usable geometry.
-///
-/// A matched element registers while it is *painted*
-/// (`tree/flush.rs::flush_navigation_transition_element`), so a virtualized
-/// list never registers a row outside its viewport. Scrolling the matched row
-/// away is ordinary use, not an authoring mistake, and the fast-fail rule is
-/// for the unexpected — so this is a question, not an assertion. A zero-sized
-/// element is treated the same way: there is no geometry to animate between.
-fn matched_geometry_is_drawable(
-    frame: &NavigationTransitionFrame<'_>,
-    id: waterui_core::id::Id,
-) -> bool {
-    let (from, to) = match frame.direction {
-        NavigationTransitionDirection::Push => (
-            frame.from_scene.sources.get(&id),
-            frame.to_scene.destinations.get(&id),
-        ),
-        NavigationTransitionDirection::Pop => (
-            frame.from_scene.destinations.get(&id),
-            frame.to_scene.sources.get(&id),
-        ),
-    };
-    let has_area = |element: &NavigationMatchedElement| {
-        element.bounds.width() > 0.0 && element.bounds.height() > 0.0
-    };
-    from.is_some_and(has_area) && to.is_some_and(has_area)
 }
 
 fn draw_matched_navigation_transition(
