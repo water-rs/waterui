@@ -328,6 +328,16 @@ placements (`PrimaryAction`, `TopBarLeading`, `BottomBar`, `Confirmation`,
 back gesture with `.navigation_pop_enabled(signal)`, and react to a real one with
 `.on_navigation_pop_attempted(…)`.
 
+How a destination *arrives* is a modifier on the destination too:
+`.transition(navigation_transition::zoom(id))`, `…::fade()`, `…::none()`. Put it
+on the stack only when every push should move the same way — a **matched** zoom
+belongs on the destination, because the pair it names differs per destination:
+tile 3 and the page it opens share an identity tile 4 does not. Mark the two
+halves of the pair with `.navigation_transition_source(id)` on the tile and
+`.navigation_transition_destination(id)` on the hero. A destination that says
+nothing inherits the stack's, and a pair the page does not actually show falls
+back to the platform default rather than failing.
+
 `examples/navigation` is the worked example for all of it.
 
 ### Embedded browsers
