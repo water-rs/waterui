@@ -82,7 +82,7 @@ fn append_shape(
         // shorter side.
         ShapeKind::Circle => append_ellipse(cr, width / 2.0, height / 2.0, limit, limit),
         ShapeKind::Ellipse => {
-            append_ellipse(cr, width / 2.0, height / 2.0, width / 2.0, height / 2.0)
+            append_ellipse(cr, width / 2.0, height / 2.0, width / 2.0, height / 2.0);
         }
         ShapeKind::RoundedRect { corner_radius } => {
             let radius = scaled(corner_radius);
