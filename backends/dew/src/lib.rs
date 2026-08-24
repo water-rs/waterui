@@ -71,10 +71,10 @@ pub mod text;
 pub mod theme;
 mod views;
 
+pub use accessibility::{AccessibilityActionRequest, AccessibilityTreeUpdate};
 #[cfg(feature = "host")]
 pub use board::HostBoard;
 pub use board::{Board, FontSources, PointerSample};
-pub use accessibility::{AccessibilityActionRequest, AccessibilityTreeUpdate};
 pub use compositor::{BandIndex, BandScheduler, DeviceRegion};
 pub use dispatch::{DewRenderer, RenderContext};
 #[cfg(feature = "host")]
