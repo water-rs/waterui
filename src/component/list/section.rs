@@ -26,7 +26,7 @@ use super::content::{ListContent, ListItemSink};
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::component::list::{List, Section, row};
 /// use waterui::text;
 ///

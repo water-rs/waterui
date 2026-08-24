@@ -18,7 +18,7 @@
 //!
 //! ### Quick Start
 //!
-//! ```ignore
+//! ```rust
 //! use waterui::{Environment, theme::{Theme, ColorScheme, ColorSettings}};
 //! use waterui_core::plugin::Plugin;
 //! use nami::binding;
@@ -47,7 +47,7 @@
 //! Theme tokens are unit structs that implement `Resolvable`. Use them directly
 //! with view modifiers:
 //!
-//! ```ignore
+//! ```rust
 //! use waterui::theme::color::{Foreground, Accent, Background};
 //!
 //! text("Hello, World!")
@@ -118,7 +118,7 @@ use crate::{
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// use waterui::theme::{Theme, ColorScheme};
 /// use nami::binding;
 ///
@@ -151,7 +151,7 @@ impl_constant!(ColorScheme);
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// use waterui::theme::ColorSettings;
 /// use waterui::color::Color;
 ///
@@ -330,7 +330,7 @@ impl ColorSettings {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// use waterui::theme::FontSettings;
 /// use waterui::text::font::ResolvedFont;
 ///
@@ -432,7 +432,7 @@ impl FontSettings {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// use waterui::theme::{Theme, ColorScheme, ColorSettings, FontSettings};
 /// use nami::binding;
 ///
@@ -639,7 +639,7 @@ pub fn installed_color_scheme(env: &Environment) -> Option<Computed<ColorScheme>
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// // Native backend creates a reactive color signal
 /// let dark_mode_color: Computed<ResolvedColor> = native_create_signal();
 ///

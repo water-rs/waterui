@@ -6,7 +6,7 @@
 //! `Material` is delegated to platform backends as `MaterialBackground` metadata
 //! and is best-effort (quality and behavior may vary by platform).
 //!
-//! ```rust,ignore
+//! ```rust
 //! use waterui::prelude::*;
 //! use waterui::window::Window;
 //!
@@ -305,7 +305,7 @@ impl Window {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::window::Window;
     ///

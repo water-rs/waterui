@@ -5,7 +5,7 @@
 //!
 //! # Examples
 //!
-//! ```ignore
+//! ```rust
 //! use waterui::prelude::*;
 //! use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 //!
@@ -348,7 +348,7 @@ impl core::fmt::Debug for SnackbarAction {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```rust
 /// Snackbar::new("Message sent")
 ///     .icon(SystemIcon::CHECKMARK)
 ///     .duration(Duration::from_secs(3))
@@ -434,13 +434,13 @@ impl Snackbar {
     /// # Examples
     ///
     /// Simple action:
-    /// ```rust,ignore
+    /// ```rust
     /// Snackbar::new("Message sent")
     ///     .action("Undo").handler(|| {})
     /// ```
     ///
     /// With injected state:
-    /// ```rust,ignore
+    /// ```rust
     /// Snackbar::new("Item deleted")
     ///     .action("Undo", |State(items): State<Items>| items.restore())
     ///     .state(&items)
@@ -542,7 +542,7 @@ struct SnackbarManagerState {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```rust
 /// use waterui::prelude::*;
 /// use waterui::snackbar::{Snackbar, SnackbarManager};
 ///

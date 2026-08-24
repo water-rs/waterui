@@ -828,8 +828,8 @@ pub trait ViewExt: View + Sized {
     /// let wider = text!("Hello").scale(2.0, 1.0);
     ///
     /// // Animate scale
-    /// let x = binding::<f32>(1.0).animated();
-    /// let y = binding::<f32>(1.0).animated();
+    /// let x = binding::<f32>(1.0_f32).animated();
+    /// let y = binding::<f32>(1.0_f32).animated();
     /// let animated = text!("Hello").scale(x, y);
     /// ```
     fn scale(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale> {
@@ -877,7 +877,7 @@ pub trait ViewExt: View + Sized {
     /// let tilted = text!("Hello").rotation(45.0);
     ///
     /// // Animate rotation
-    /// let angle = binding::<f32>(0.0).animated();
+    /// let angle = binding::<f32>(0.0_f32).animated();
     /// let spinning = text!("Hello").rotation(angle);
     /// ```
     fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation> {
@@ -920,7 +920,7 @@ pub trait ViewExt: View + Sized {
     /// let nudged = text!("Hello").offset(10.0, 20.0);
     ///
     /// // Animate offset
-    /// let x = binding::<f32>(0.0).animated();
+    /// let x = binding::<f32>(0.0_f32).animated();
     /// let sliding = text!("Hello").offset(x, 0.0);
     /// ```
     fn offset(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Offset> {

@@ -6,7 +6,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```rust
 //! use waterui::prelude::*;
 //!
 //! // Create a lazy vertical stack with 1000 items
@@ -38,7 +38,7 @@ impl Lazy {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
     /// let list = Lazy::vstack((0..1000).map(|i| text(format!("Item {}", i))));
     /// ```
     pub fn vstack<V: View>(contents: impl Views<View = V> + 'static) -> impl View {
@@ -85,7 +85,7 @@ impl Lazy {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust
     /// let items = [Item::new(1, "First"), Item::new(2, "Second")];
     /// let list = Lazy::for_each(items, |item| text(item.name));
     /// ```
