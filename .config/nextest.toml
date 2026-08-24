@@ -31,6 +31,24 @@ slow-timeout = { period = "120s", terminate-after = 5 }
 filter = "test(waterui_bench_)"
 slow-timeout = { period = "300s", terminate-after = 8 }
 
+# `trybuild` contract tests, which are compilers rather than tests.
+#
+# Each `cases.pass(...)` / `cases.compile_fail(...)` shells out to a full
+# `cargo build` of a fixture crate that depends on `waterui`, into trybuild's
+# own target directory — so a cold run builds the framework from scratch and
+# blows straight through the general 600s ceiling. Observed on a CI ubuntu run:
+# both contract tests hit `TMT [600.011s]`, were killed, and then passed on the
+# retry in 107s and 184s, because the attempt that was killed is what warmed
+# the cache. The retry made this green while costing 600s of wall clock twice
+# per run.
+#
+# The ceiling is raised rather than the tests changed: they are legitimately
+# slow the first time and fast afterwards, which is exactly what a raised
+# ceiling is for and exactly what a watchdog should not kill.
+[[profile.ci.overrides]]
+filter = 'package(waterui-macros)'
+slow-timeout = { period = "120s", terminate-after = 15 }
+
 # GPU-backed tests on a machine with no GPU.
 #
 # The same reasoning as the bench override above, for the same reason: a heavy
