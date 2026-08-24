@@ -15,6 +15,7 @@ use crate::{
     stack::{
         Axis, VerticalAlignment,
         distribute::{Extent, compress_to_fit, exceeds},
+        stack_stretch_axis,
     },
 };
 
@@ -118,6 +119,15 @@ impl ChildMeasurement {
     }
 }
 
+/// The tallest child above and below the alignment guide.
+///
+/// Every child that reports a height counts, the ones that fill the cross axis
+/// included. Filling means "at least what I measure, and more if you have it",
+/// not "nothing": leaving a filler out of this makes a row of nothing-but-
+/// fillers report zero height, and its parent then hands it zero height to
+/// fill. A child that answers an unbounded height is answering "as much as you
+/// have" rather than naming a size, so it sets no floor here — the fill pass in
+/// [`Layout::place`] is what gives it the row's height.
 fn hstack_intrinsic_cross_metrics(
     measurements: &[ChildMeasurement],
     alignment: VerticalAlignment,
@@ -125,7 +135,10 @@ fn hstack_intrinsic_cross_metrics(
     let mut max_above = 0.0_f32;
     let mut max_below = 0.0_f32;
 
-    for measurement in measurements.iter().filter(|m| !m.stretches_cross_axis()) {
+    for measurement in measurements
+        .iter()
+        .filter(|measurement| measurement.size().height.is_finite())
+    {
         let size = measurement.size();
         let guide = measurement
             .vertical_guide(alignment)
@@ -224,12 +237,14 @@ fn compress_children(
 
 #[allow(clippy::too_many_lines)]
 impl Layout for HStackLayout {
-    /// `HStack` is content-sized on both axes, like `SwiftUI`'s: it never
-    /// claims the cross axis for itself. Filling comes from children that ask
-    /// for it (`Spacer`, greedy frames, `Color`), and a parent placing an
-    /// undersized stack centers it per its alignment.
-    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
-        StretchAxis::None
+    /// An `HStack` claims nothing of its own — a row of labels is content-sized,
+    /// like `SwiftUI`'s, and a parent placing an undersized row centers it per
+    /// its alignment. What it does claim is whatever its children claim: filling
+    /// comes from children that ask for it (`Spacer`, greedy frames, `Color`),
+    /// and the ask has to survive the trip up through every container between
+    /// that child and whoever owns the space.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        stack_stretch_axis(Axis::Horizontal, children)
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
@@ -721,8 +736,12 @@ mod tests {
         assert!((rects[2].x() - 170.0).abs() < f32::EPSILON); // 30 + 140
     }
 
+    /// A child that fills the cross axis still contributes the height it
+    /// measures. Filling means "at least this, and more if you have it": a row
+    /// that reported less than its tallest child would be handed less, and the
+    /// child would fill a box too small for it.
     #[test]
-    fn test_hstack_with_vertical_stretch() {
+    fn a_cross_filling_child_still_sets_the_row_height() {
         // Vertical stretch component in HStack: stretches HEIGHT but has fixed WIDTH
         // This is like a Slider/TextField rotated for use in HStack context
         let layout = HStackLayout {
@@ -751,9 +770,12 @@ mod tests {
         // Width: all children contribute (vertical_stretch doesn't stretch horizontally)
         // = 50 + 10 + 40 + 10 + 80 = 190
         assert!((size.width - 190.0).abs() < f32::EPSILON);
-        // Height: max of non-vertically-stretching children = max(20, 44) = 44
-        // Note: vertical_stretch stretches vertically so its height doesn't contribute
-        assert!((size.height - 44.0).abs() < f32::EPSILON);
+        // Height: max of every child = max(20, 100, 44) = 100
+        assert!(
+            (size.height - 100.0).abs() < f32::EPSILON,
+            "the stretching child's own height has to reach the row, got {}",
+            size.height
+        );
     }
 
     #[test]
