@@ -33,6 +33,7 @@ pub mod scroll;
 pub mod shape;
 pub mod slider;
 pub mod stepper;
+pub mod tabs;
 pub mod text_field;
 pub mod toggle;
 

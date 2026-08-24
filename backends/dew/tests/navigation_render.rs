@@ -80,9 +80,7 @@ fn a_push_presents_in_one_frame_and_nothing_follows() {
     let mut runtime = run(|| {
         NavigationStack::new(NavigationView::new(
             "Root",
-            NavigationLink::new("Open", || {
-                NavigationView::new("Detail", Color::blue())
-            }),
+            NavigationLink::new("Open", || NavigationView::new("Detail", Color::blue())),
         ))
     });
     let frame = tap(&mut runtime, 120.0, 160.0).expect("following a link renders a frame");
@@ -108,9 +106,7 @@ fn going_back_restores_the_covered_destination_with_its_state() {
             "Root",
             vstack((
                 toggle("Remembered", &flag),
-                NavigationLink::new("Open", || {
-                    NavigationView::new("Detail", Color::blue())
-                }),
+                NavigationLink::new("Open", || NavigationView::new("Detail", Color::blue())),
             )),
         ))
     });
@@ -124,10 +120,7 @@ fn going_back_restores_the_covered_destination_with_its_state() {
         observed.get(),
         "the root's state survives being covered and uncovered"
     );
-    assert!(
-        runtime.pump().is_none(),
-        "a pop is instantaneous too"
-    );
+    assert!(runtime.pump().is_none(), "a pop is instantaneous too");
 }
 
 /// A destination that refuses to be popped stays put, and still hears about

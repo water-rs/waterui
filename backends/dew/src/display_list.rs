@@ -790,7 +790,10 @@ mod tests {
         list.pop_clip();
         let command = &list.commands()[0];
         let clip = command.command().clip().expect("the fill records the clip");
-        assert_eq!(clip.regions(), [ClipRegion::Rect(Rect::new(0.0, 0.0, 50.0, 50.0))]);
+        assert_eq!(
+            clip.regions(),
+            [ClipRegion::Rect(Rect::new(0.0, 0.0, 50.0, 50.0))]
+        );
         assert_eq!(clip.bounds(), Rect::new(0.0, 0.0, 50.0, 50.0));
         assert_eq!(command.bounds(), Rect::new(40.0, 40.0, 50.0, 50.0));
         assert_eq!(list.bounds(), Some(Rect::new(40.0, 40.0, 50.0, 50.0)));
