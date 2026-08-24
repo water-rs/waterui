@@ -32,7 +32,7 @@ impl CollectionTransition {
 /// Wraps `content` so every reactive collection within it animates membership
 /// changes with `animation` (see [`CollectionTransition`]).
 ///
-/// Free-function constructor, mirroring [`background`](crate::background) and the
+/// Free-function constructor, mirroring [`background`](fn@crate::background) and the
 /// other layout composers: it scopes the transition to `content`'s subtree
 /// through the environment.
 pub fn collection_transition(content: impl View, animation: Animation) -> impl View {

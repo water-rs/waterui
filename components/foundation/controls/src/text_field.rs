@@ -86,7 +86,7 @@ pub enum KeyboardType {
 impl TextField {
     /// Creates a new `TextField` with the given label and value binding.
     ///
-    /// The label is mandatory — see [the label module](crate::label). It names
+    /// The label is mandatory — see [the label module](mod@crate::label). It names
     /// the field for assistive technology and is distinct from
     /// [`Self::prompt`], which is the placeholder shown inside an empty field.
     /// Chain [`Self::hide_label`] to drop the visible label while keeping the
@@ -146,7 +146,7 @@ impl TextField {
     /// The binding backing this field's text.
     ///
     /// This is the escape hatch that lets wrappers observe or replace the
-    /// field's text source — [`waterui_form::valid::ValidatableView`] uses it to
+    /// field's text source — `waterui_form::valid::ValidatableView` uses it to
     /// splice a validating binding in front of the field.
     #[must_use]
     pub const fn value_binding(&mut self) -> &mut Binding<StyledStr> {

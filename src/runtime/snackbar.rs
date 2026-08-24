@@ -612,7 +612,7 @@ impl SnackbarManager {
     /// Shows a snackbar. Snackbars stack on screen simultaneously, oldest nearest
     /// the anchor edge. Each placement is an independent stack: a snackbar only
     /// interacts with others sharing its [`SnackbarPosition`], and when a
-    /// placement already holds [`MAX_VISIBLE_SNACKBARS`] the oldest *at that
+    /// placement already holds `MAX_VISIBLE_SNACKBARS` the oldest *at that
     /// placement* is dismissed to make room — different placements never evict
     /// each other.
     ///

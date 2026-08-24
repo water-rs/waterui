@@ -1,4 +1,4 @@
-//! [`Scene2D`] over the CPU/GPU split renderer.
+//! [`Scene2D`](crate::Scene2D) over the CPU/GPU split renderer.
 //!
 //! Vello classic rasterizes through a compute pipeline that needs indirect
 //! execution. Some devices have no such thing — the iOS Simulator's Metal is

@@ -197,7 +197,7 @@ impl<T> OpaqueType for WuiBinding<T> {}
 
 /// Generates the C constructor for a native watcher.
 ///
-/// Invoke this directly for binding-only types. [`ffi_computed!`] invokes it
+/// Invoke this directly for binding-only types. [`ffi_computed!`](crate::ffi_computed) invokes it
 /// automatically for computed types.
 #[macro_export]
 macro_rules! ffi_watcher {
@@ -247,7 +247,7 @@ macro_rules! ffi_watcher {
 /// handed the backend, and `waterui_drop_watcher_{ident}` releases it when the
 /// backend's signal loses its last subscriber. Only types a backend actually
 /// publishes need them, so this is a separate macro rather than part of
-/// [`ffi_computed!`], which every reactive type invokes.
+/// [`ffi_computed!`](crate::ffi_computed), which every reactive type invokes.
 #[macro_export]
 macro_rules! ffi_watcher_notify {
     ($ty:ty, $ffi:ty, $ident:tt) => {

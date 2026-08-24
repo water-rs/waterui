@@ -19,7 +19,7 @@ pub struct Args {
     /// Project display name (e.g., "Water Example" creates folder "water-example").
     name: Option<String>,
 
-    /// Bundle identifier (defaults to dev.waterui.<name>).
+    /// Bundle identifier (defaults to `dev.waterui.<name>`).
     #[arg(long)]
     bundle_id: Option<String>,
 
