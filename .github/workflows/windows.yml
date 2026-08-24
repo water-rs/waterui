@@ -1,19 +1,19 @@
 name: Windows
 
-# The Windows test leg, split out of `test.yml`.
-#
-# It rotted while compilation was broken and currently has 25 known-failing
-# tests across independent defect classes — tracked in
-# https://github.com/water-rs/waterui/issues/152 — so it reports but does not
-# gate. As a matrix leg it was also the slowest one, which meant every run
-# waited on a result nothing was allowed to act on. On its own daily schedule
-# it still catches a Windows-only regression, without standing in the critical
-# path of the checks that do gate. Fold it back into `test.yml`'s matrix in the
-# same change that closes #152.
+# The Windows test leg is split out of `test.yml` because it needs platform-
+# specific exclusions and compile-only coverage. It is still a required
+# per-change signal: the workflow runs on the same branches and pull requests
+# as the main CI workflow, and every verification command is gating.
 
 on:
-  # Off-peak UTC: hosted-runner demand peaks during US working hours, and an
-  # off-the-hour minute avoids the top-of-hour scheduling backlog.
+  # Integration branches only: a branch that also has a PR would otherwise run
+  # the whole workflow twice for one commit.
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: ["**"]
+  # Keep a daily default-branch run to catch hosted-runner and toolchain drift
+  # even when the repository itself has not changed.
   schedule:
     - cron: "23 7 * * *"
   workflow_dispatch:
@@ -35,13 +35,9 @@ jobs:
   test:
     name: windows-latest
     runs-on: windows-latest
-    # 180 rather than 120: this leg reports rather than gates, and a job that
-    # hits its cap is *cancelled* — which never uploads its logs, so an
-    # over-running experiment tells you nothing at all about why. Headroom is
-    # cheaper than a blind run.
+    # Windows is the slowest platform and needs additional headroom for cold
+    # hosted-runner builds while remaining a hard gate.
     timeout-minutes: 180
-    # Non-gating until #152 is closed; see the file header.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,7 +74,6 @@ jobs:
       # (backends/hydrolysis/src/lib.rs), so enabling `webview-system` and
       # `webview-cef` together can never build.
       - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --profile ci
-        continue-on-error: true
       # The root crate's feature-gated re-export surface. `--features all` rather
       # than `--all-features`: the latter turns on `dynamic_linking`, which pulls
       # in `waterui-dylib`, and that crate exports 77k symbols against a PE
@@ -89,22 +84,13 @@ jobs:
       # root `waterui` crate is the one crate whose features are all mutually
       # compatible.
       - run: cargo nextest run --features all --profile ci
-        continue-on-error: true
       # Compile the CEF backend without its binary distribution.
       - run: cargo check -p waterui-browser-cef --features compile-only
-        continue-on-error: true
       # nextest cannot run doctests, and this workspace has plenty of them.
       - run: cargo test --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef
-        continue-on-error: true
       # Windows-only code is invisible to every other leg: a `cfg(windows)` body
       # is compiled nowhere else, so a lint that fires only there reaches
       # nobody.
-      #
-      # Every step above carries `continue-on-error` for the same reason this
-      # job does: a failing step otherwise skips the ones behind it, and this
-      # leg reports rather than gates. Putting the lint first once hid the whole
-      # suite behind three stale warnings; letting the suite fail then hid the
-      # lint. Nothing here is allowed to hide anything else.
       - name: Clippy
         run: cargo clippy --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
       - name: Upload Test Snapshots
