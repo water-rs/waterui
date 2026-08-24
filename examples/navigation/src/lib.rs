@@ -363,14 +363,33 @@ fn mark_all_read(State(mail): State<Mail>) {
 /// A native list rather than a stack of rows: lazily realized, swipe-to-delete,
 /// and drag-to-reorder in edit mode, all drawn by the platform's own list.
 fn message_list(mail: Mail) -> impl View {
-    List::for_each(mail.visible(), message_row)
-        .editing(mail.editing.clone())
-        .on_delete(delete_message)
-        .on_move(move_message)
+    List::for_each(mail.visible(), {
+        let mail = mail.clone();
+        move |message| message_row(&mail, message)
+    })
+    .editing(mail.editing.clone())
+    .on_delete(delete_message)
+    .on_move(move_message)
 }
 
-fn message_row(message: Message) -> ListItem {
+fn message_row(mail: &Mail, message: Message) -> ListItem {
     let id = message.id;
+    // The dot has to *derive* from the state that owns it. `List::for_each`
+    // diffs membership by id, so marking every message read changes no ids and
+    // rebuilds no rows: a snapshot of `message.unread` taken here would stay
+    // lit forever while the unread count beside it dropped to zero. Driving
+    // opacity instead of presence also keeps every row's text on the same
+    // baseline, which is the reason the dot hangs outside the text to begin
+    // with.
+    let unread = mail
+        .messages
+        .clone()
+        .map(move |messages| {
+            messages
+                .iter()
+                .any(|candidate| candidate.id == id && candidate.unread)
+        })
+        .computed();
     let announced = Str::from(format!("{}: {}", message.sender, message.subject));
 
     ListItem::new(NavigationLink::value(
@@ -383,9 +402,13 @@ fn message_row(message: Message) -> ListItem {
             // it, so every row's text starts at the same place whether or not
             // it has one — a row that indents itself because it is unread is
             // what a mail list must not do.
+            let unread = unread.clone();
             hstack((
-                hstack((message.unread.then(|| Accent.size(8.0, 8.0).clip(Circle)),))
-                    .size(8.0, 8.0),
+                hstack((Accent
+                    .size(8.0, 8.0)
+                    .clip(Circle)
+                    .opacity(unread.map(|unread| if unread { 1.0 } else { 0.0 })),))
+                .size(8.0, 8.0),
                 vstack((
                     hstack((
                         text(message.sender).sub_headline().foreground(Foreground),
