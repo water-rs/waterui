@@ -9,7 +9,7 @@
 //! Renders icons using icon fonts (webfonts). Simpler and more reliable than SVG.
 //! Requires the icon font to be bundled with your app.
 //!
-//! ```ignore
+//! ```
 //! use waterui_icon::IconGlyph;
 //!
 //! // Material Icons
@@ -26,15 +26,15 @@
 //!
 //! For cross-platform icons, prefer icon-pack crates such as Material, Lucide, Font Awesome, or Native packs.
 //!
-//! ```ignore
+//! ```
 //! use waterui_icon::{SystemIcon, system_icon};
 //!
 //! // Common icons via the function-form module
-//! system_icon::home()
-//! system_icon::settings()
+//! let home = system_icon::home();
+//! let settings = system_icon::settings();
 //!
 //! // Or create from a name
-//! SystemIcon::new("custom.icon.name")
+//! let custom = SystemIcon::new("custom.icon.name");
 //! ```
 //!
 //! ## `Svg` - SVG Icons (requires `svg` feature)
@@ -78,15 +78,15 @@ use waterui_str::Str;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use waterui_icon::{SystemIcon, system_icon};
 ///
 /// // Common icons via the function-form module
-/// system_icon::home()
-/// system_icon::settings()
+/// let home = system_icon::home();
+/// let settings = system_icon::settings();
 ///
 /// // Or create dynamically — note: only meaningful on Apple platforms.
-/// SystemIcon::new("house")
+/// let house = SystemIcon::new("house");
 /// ```
 #[derive(Debug, Clone)]
 pub struct SystemIcon {

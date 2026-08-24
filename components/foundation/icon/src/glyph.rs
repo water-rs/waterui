@@ -6,7 +6,8 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```
+//! use waterui_graphics::color::Color;
 //! use waterui_icon::IconGlyph;
 //!
 //! // Material Icons home icon
@@ -15,11 +16,11 @@
 //! // Font Awesome house icon (solid)
 //! const HOUSE: IconGlyph = IconGlyph::new('\u{f015}', "FontAwesome7Free-Solid");
 //!
-//! // With custom size
-//! HOME.with_size(32.0)
+//! // With a custom size
+//! let large = HOME.with_size(32.0);
 //!
-//! // With explicit color
-//! HOME.color(Color::red())
+//! // With an explicit color
+//! let tinted = HOUSE.color(Color::red());
 //! ```
 
 use waterui_core::{Environment, Str, View};
@@ -46,7 +47,9 @@ fn codepoint_to_string(codepoint: char) -> Str {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
+/// use waterui_core::View;
+/// use waterui_graphics::color::Color;
 /// use waterui_icon::IconGlyph;
 ///
 /// // Define icon constants
