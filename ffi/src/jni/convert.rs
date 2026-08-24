@@ -704,7 +704,7 @@ impl ToJavaStruct for crate::WuiMetadataRetain {
     }
 }
 
-/// MetadataClipShapeStruct(contentPtr: Long, commands: Array<PathCommandStruct>)
+/// MetadataClipShapeStruct(contentPtr: Long, kind: ShapeKindStruct, commands: Array<PathCommandStruct>)
 impl ToJavaStruct for crate::WuiMetadataClipShape {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         // Create PathCommandStruct array
@@ -728,6 +728,7 @@ impl ToJavaStruct for crate::WuiMetadataClipShape {
                 .expect("Failed to set path command element");
         }
 
+        let kind = self.value.kind.to_java_struct(env);
         let class = env
             .find_class(jni_str!(
                 "dev/waterui/android/runtime/MetadataClipShapeStruct"
@@ -736,9 +737,12 @@ impl ToJavaStruct for crate::WuiMetadataClipShape {
         let object = env
             .new_object(
                 &class,
-                jni_sig!("(J[Ldev/waterui/android/runtime/PathCommandStruct;)V"),
+                jni_sig!(
+                    "(JLdev/waterui/android/runtime/ShapeKindStruct;[Ldev/waterui/android/runtime/PathCommandStruct;)V"
+                ),
                 &[
                     JValue::Long(self.content as jlong),
+                    JValue::Object(&kind),
                     JValue::Object(&java_array),
                 ],
             )
