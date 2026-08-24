@@ -11,7 +11,10 @@
 ///
 /// # Example
 ///
-/// ```ignore
+/// Shown as text: the macro is crate-private, and a doctest compiles as its own
+/// crate, so it cannot invoke it.
+///
+/// ```text
 /// ffi_safe!(u32, i32, bool);
 /// ```
 macro_rules! ffi_safe {
@@ -407,7 +410,10 @@ macro_rules! opaque {
 
 /// Derive `IntoFFI` trait for a struct or enum
 /// # Example
-/// ```ignore
+/// Shown as text: the macro is crate-private, and a doctest compiles as its own
+/// crate, so it cannot invoke it.
+///
+/// ```text
 /// into_ffi!{
 ///   ToggleConfig,
 ///   pub struct WuiToggle{

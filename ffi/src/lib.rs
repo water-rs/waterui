@@ -381,7 +381,13 @@ fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>) {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
+/// use waterui_ffi::IntoFFI;
+///
+/// struct MyStruct {
+///     value: u32,
+/// }
+///
 /// impl IntoFFI for MyStruct {
 ///     type FFI = *mut MyStruct;
 ///     fn into_ffi(self) -> Self::FFI {
@@ -440,7 +446,9 @@ pub trait InvalidValue {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
+/// use waterui_ffi::OpaqueType;
+///
 /// struct MyInternalStruct {
 ///     data: Vec<u32>,
 ///     state: String,
@@ -488,7 +496,11 @@ impl<T: OpaqueType> IntoRust for *mut T {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// Shown as text rather than compiled: implementing this for `*mut MyStruct`
+/// is only possible inside this crate, because the orphan rule does not treat a
+/// raw pointer as a fundamental type carrying the local one.
+///
+/// ```text
 /// impl IntoRust for *mut MyStruct {
 ///     type Rust = MyStruct;
 ///
