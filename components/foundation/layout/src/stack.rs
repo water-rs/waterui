@@ -47,6 +47,61 @@ pub use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment
 
 use crate::Layout;
 use nami::Computed;
+use waterui_core::layout::StretchAxis;
+
+/// The stretch axis a stack of `children` claims, along `main`.
+///
+/// A stack claims nothing of its own: a row of labels stays content-sized, as
+/// `SwiftUI`'s does. What it cannot do is stay silent about a child that wants
+/// to fill. A stack's parent hands it the size it reports, and only then does
+/// the stack distribute that size among its children — so a row that holds a
+/// `Color`, a `Spacer` or a filling frame and reports "content-sized" is handed
+/// its own intrinsic size, and the greedy child fills a box of nothing. The
+/// space a child asks for has to be asked for again by every container between
+/// it and whoever owns the space.
+///
+/// `MainAxis` and `CrossAxis` resolve against `main`, the same way each stack's
+/// own child-measurement helpers resolve them.
+pub(crate) fn stack_stretch_axis(main: Axis, children: &[StretchAxis]) -> StretchAxis {
+    let mut fills_main = false;
+    let mut fills_cross = false;
+    for child in children {
+        match child {
+            StretchAxis::None => {}
+            StretchAxis::Both => {
+                fills_main = true;
+                fills_cross = true;
+            }
+            StretchAxis::MainAxis => fills_main = true,
+            StretchAxis::CrossAxis => fills_cross = true,
+            StretchAxis::Horizontal => {
+                if main.is_horizontal() {
+                    fills_main = true;
+                } else {
+                    fills_cross = true;
+                }
+            }
+            StretchAxis::Vertical => {
+                if main.is_vertical() {
+                    fills_main = true;
+                } else {
+                    fills_cross = true;
+                }
+            }
+        }
+    }
+    let (horizontal, vertical) = if main.is_horizontal() {
+        (fills_main, fills_cross)
+    } else {
+        (fills_cross, fills_main)
+    };
+    match (horizontal, vertical) {
+        (true, true) => StretchAxis::Both,
+        (true, false) => StretchAxis::Horizontal,
+        (false, true) => StretchAxis::Vertical,
+        (false, false) => StretchAxis::None,
+    }
+}
 
 /// Defines the axis of a stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
