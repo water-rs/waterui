@@ -6722,31 +6722,6 @@ typedef struct WuiGpuSurfaceInput {
 } WuiGpuSurfaceInput;
 
 /**
- * A GPU surface rendered offscreen into RGBA8 pixels.
- *
- * The buffer is owned by Rust and freed by
- * [`waterui_gpu_surface_offscreen_free`].
- */
-typedef struct WuiOffscreenImage {
-  /**
-   * Width in pixels.
-   */
-  uint32_t width;
-  /**
-   * Height in pixels.
-   */
-  uint32_t height;
-  /**
-   * Row-major RGBA8 pixels, `width * height * 4` bytes, or null on failure.
-   */
-  uint8_t *rgba8;
-  /**
-   * Length of `rgba8` in bytes.
-   */
-  uintptr_t len;
-} WuiOffscreenImage;
-
-/**
  * FFI representation of output size.
  */
 typedef enum WuiOutputSize_Tag {
@@ -11190,42 +11165,6 @@ void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
  */
 void waterui_gpu_surface_set_input(struct WuiGpuSurfaceState *state,
                                    struct WuiGpuSurfaceInput input);
-
-/**
- * Renders a GPU surface offscreen once and reads back RGBA8 pixels, consuming
- * the surface.
- *
- * A backend needs this wherever platform chrome takes an image rather than a
- * view — an Android tab bar item, for one, whose `Drawable` cannot host a
- * `SurfaceView` because that composites in its own layer rather than in the
- * view tree, so capturing it from the view tree yields nothing.
- *
- * This ENDS the surface: a `GpuSurface` owns its renderer and rendering
- * offscreen consumes it, so the state draws nothing afterwards. That fits a
- * view built to become an image and nothing else; a surface that must keep
- * drawing into a window must not be passed here.
- *
- * Returns a zeroed image when the surface cannot be rendered; `rgba8` is null
- * then and nothing needs freeing.
- *
- * # Safety
- *
- * `state` must be a valid state from `waterui_gpu_surface_create`, alive for
- * this call and never rendered again.
- */
-struct WuiOffscreenImage waterui_gpu_surface_into_offscreen_image(struct WuiGpuSurfaceState *state,
-                                                                  uint32_t width,
-                                                                  uint32_t height);
-
-/**
- * Frees pixels returned by [`waterui_gpu_surface_into_offscreen_image`].
- *
- * # Safety
- *
- * `image` must be one this module returned, freed at most once. An image whose
- * `rgba8` is null needs no call.
- */
-void waterui_gpu_surface_offscreen_free(struct WuiOffscreenImage image);
 
 /**
  * # Safety

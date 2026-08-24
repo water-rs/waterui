@@ -1,11 +1,9 @@
-//! A zoom transition whose matched geometry is not on screen.
+//! A zoom transition whose declared matched pair is incomplete.
 //!
-//! A matched element registers while it is *painted*, so a page that never
-//! drew its half of the pair has none to offer — a list that scrolled the row
-//! away, or, as the navigation example does, a stack that applies one zoom to
-//! every destination while only one of six tiles is marked as its source.
-//! That used to panic inside the renderer and take the application down for
-//! what is ordinary use.
+//! Every matched transition names one source and one destination. Silently
+//! substituting a different transition when either half is absent would hide
+//! an invalid declaration, so the renderer fails at the point where it resolves
+//! the pair.
 
 use waterui::navigation::{NavigationLink, NavigationPath, NavigationStack, NavigationView};
 use waterui::navigation::{NavigationTransitionViewExt as _, navigation_transition};
@@ -20,8 +18,8 @@ fn matched_id() -> Id {
     Id::try_from(1).expect("a matched transition id must be non-zero")
 }
 
-/// Only the first link is a matched source; the stack zooms on every push.
-fn gallery() -> impl View {
+/// The transition declares an id whose destination half is absent.
+fn invalid_gallery() -> impl View {
     let matched = NavigationLink::value(text("Matched tile"), Page(0))
         .navigation_transition_source(matched_id());
     let unmatched = NavigationLink::value(text("Unmatched tile"), Page(1));
@@ -38,10 +36,11 @@ fn gallery() -> impl View {
     .transition(navigation_transition::zoom(matched_id()))
 }
 
-/// Pushing from a tile that was never marked must transition, not crash.
+/// An incomplete matched pair is rejected instead of changing transition kind.
 #[waterui::test(theme = hydrolysis_m3::install, viewport = (400, 400))]
-fn a_zoom_without_matched_geometry_falls_back(ui: UiBuilder) {
-    let mut app = ui.mount(gallery);
+#[should_panic(expected = "navigation zoom destination")]
+fn a_zoom_without_matched_geometry_fails_fast(ui: UiBuilder) {
+    let mut app = ui.mount(invalid_gallery);
     app.settle();
 
     let tile = app.query().label("Unmatched tile").single().bounds();
