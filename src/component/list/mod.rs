@@ -625,7 +625,14 @@ impl ListItem {
     /// signal is true. Derive the signal from the state that owns selection:
     ///
     /// ```rust
-    /// ListItem::new(row).selected(selection.map(move |current| current == Some(album)))
+    /// use waterui::component::list::ListItem;
+    /// use waterui::id::Id;
+    /// use waterui::prelude::*;
+    ///
+    /// let album = Id::try_from(1).unwrap();
+    /// let selection = binding::<Option<Id>>(None);
+    /// let item = ListItem::new(text!("Album"))
+    ///     .selected(selection.map(move |current| current == Some(album)));
     /// ```
     #[must_use]
     pub fn selected(mut self, selected: impl IntoComputed<bool>) -> Self {
