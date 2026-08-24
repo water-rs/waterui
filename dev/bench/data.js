@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787557314976,
+  "lastUpdate": 1787557318788,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -873,6 +873,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 14905,
+            "unit": "us"
+          }
+        ]
+      }
+    ],
+    "WaterUI Bench (windows-latest)": [
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "id": "f63a8849bf2789abc192ca3124f806de0172f5b4",
+          "message": "chore(ffi): regenerate the C header after the doc-comment cleanup\n\ncbindgen carries Rust doc comments straight into `waterui.h`, so\nbackticking the generics in them — done so rustdoc would stop reading\n`Metadata<Environment>` as an unclosed HTML tag — changed the generated\nheader too. All three copies move together, and the pins follow.\n\nThe header check is what caught this, which is exactly its job: the\nrustdoc cleanup edited five files under `ffi/` and I did not regenerate.",
+          "timestamp": "2026-08-24T07:17:34Z",
+          "url": "https://github.com/water-rs/waterui/commit/f63a8849bf2789abc192ca3124f806de0172f5b4"
+        },
+        "date": 1787557317966,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 7839174,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 6763646,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 111696,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 54865,
             "unit": "us"
           }
         ]
