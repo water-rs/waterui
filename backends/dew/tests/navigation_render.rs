@@ -15,7 +15,7 @@ use waterui_controls::toggle::toggle;
 use waterui_core::Str;
 use waterui_dew::{DewRenderer, DewRuntime, HostBoard, PointerSample, render_view_png};
 use waterui_navigation::{
-    NavigationLink, NavigationStack, NavigationTitleDisplayMode, NavigationToolbar,
+    NavigationLink, NavigationPath, NavigationStack, NavigationTitleDisplayMode, NavigationToolbar,
     NavigationToolbarItem, NavigationToolbarPlacement, NavigationView,
 };
 
@@ -120,10 +120,16 @@ fn going_back_restores_the_covered_destination_with_its_state() {
     assert!(observed.get(), "the toggle flips on the root screen");
     tap(&mut runtime, 120.0, 84.0);
     // Back is the leading item of the pushed destination's bar.
-    tap(&mut runtime, 30.0, 14.0);
+    let frame = tap(&mut runtime, 30.0, 14.0).expect("going back renders a frame");
     assert!(
         observed.get(),
         "the root's state survives being covered and uncovered"
+    );
+    // The root was retained, not rebuilt: a rebuilt one would have to shape
+    // "Remembered" and "Open" again, and this frame shapes nothing.
+    assert_eq!(
+        frame.work.text_layouts_shaped, 0,
+        "the uncovered root re-uses the text it shaped before it was covered"
     );
     assert!(runtime.pump().is_none(), "a pop is instantaneous too");
 }
@@ -153,6 +159,87 @@ fn a_destination_can_refuse_a_pop() {
     // press, and pressing it reports another attempt.
     tap(&mut runtime, 30.0, 14.0);
     assert_eq!(attempts.get(), 2, "the refused pop left the stack alone");
+}
+
+/// A path-backed stack is driven by its path, not by the controller alone:
+/// pushing a route presents its destination, and the back affordance has to
+/// shorten the path itself — popping only the controller's own count would
+/// leave the path claiming a screen that is no longer on the panel.
+#[test]
+fn a_path_backed_stack_pushes_and_pops_through_its_path() {
+    let path: NavigationPath<u32> = NavigationPath::new();
+    let observed = path.clone();
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(WIDTH, HEIGHT),
+        support::test_environment(),
+        16,
+        {
+            let path = path.clone();
+            move || {
+                AnyView::new(
+                    NavigationStack::with_path(
+                        path.clone(),
+                        NavigationView::new("Rooms", Color::red()),
+                    )
+                    .destination(|room: u32| {
+                        NavigationView::new(text!("Room {room}"), Color::blue())
+                    }),
+                )
+            }
+        },
+    );
+    runtime.pump().expect("the first frame renders");
+
+    path.push(7);
+    assert!(
+        runtime.pump().is_some(),
+        "pushing a route presents its destination"
+    );
+    assert_eq!(observed.len(), 1, "the path holds the pushed route");
+    assert!(
+        runtime.pump().is_none(),
+        "and presenting it leaves nothing running"
+    );
+
+    // Back is the leading item of the pushed destination's bar.
+    tap(&mut runtime, 30.0, 14.0);
+    assert_eq!(
+        observed.len(),
+        0,
+        "going back shortens the path that owns the entry"
+    );
+}
+
+/// A stack built over a path that already holds routes — a session restored
+/// at boot — presents the top one on its first frame.
+#[test]
+fn a_stack_opens_on_the_route_its_path_already_holds() {
+    let path: NavigationPath<u32> = NavigationPath::new();
+    path.push(4);
+    let observed = path.clone();
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(WIDTH, HEIGHT),
+        support::test_environment(),
+        16,
+        move || {
+            AnyView::new(
+                NavigationStack::with_path(
+                    path.clone(),
+                    NavigationView::new("Rooms", Color::red()),
+                )
+                .destination(|room: u32| NavigationView::new(text!("Room {room}"), Color::blue())),
+            )
+        },
+    );
+    runtime.pump().expect("the first frame renders");
+    assert!(
+        runtime.pump().is_none(),
+        "the restored route is already on screen after the first frame"
+    );
+    // The restored destination is a pushed one, so it carries a back
+    // affordance that shortens the path.
+    tap(&mut runtime, 30.0, 14.0);
+    assert_eq!(observed.len(), 0, "going back leaves the root");
 }
 
 /// A destination's whole bar reaches the panel: a trailing item on the item

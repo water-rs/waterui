@@ -78,7 +78,7 @@ pub use dispatch::{DewRenderer, RenderContext};
 #[cfg(feature = "host")]
 pub use display::BufferDisplay;
 pub use display::{DisplayFlush, Rgb565Display, Rgb565Sink};
-pub use display_list::{DisplayList, DrawCommand, PlacedCommand};
+pub use display_list::{Clip, ClipRegion, DisplayList, DrawCommand, PlacedCommand};
 pub use painter::Painter;
 #[cfg(feature = "host")]
 pub use runtime::render_view_png;
