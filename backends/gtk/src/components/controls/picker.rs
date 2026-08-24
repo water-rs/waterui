@@ -35,7 +35,6 @@ impl GtkComponent for Native<PickerConfig> {
         {
             let label = config
                 .label
-                .clone()
                 .resolve(env)
                 .accessibility_label()
                 .get()
