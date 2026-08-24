@@ -2,6 +2,7 @@
 
 use core::cell::RefCell;
 
+use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, NodeId, Role};
 use kurbo::{Rect, RoundedRect, Stroke};
 use nami::{Computed, Signal};
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
@@ -9,6 +10,7 @@ use waterui_core::Environment;
 use waterui_core::handler::BoxedAction;
 use waterui_core::layout::{ProposalSize, Size, ViewDimensions};
 
+use crate::accessibility::ActionTarget;
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
@@ -28,6 +30,7 @@ struct ButtonNode {
     disabled: WatchedSignal<Computed<bool>>,
     env: Environment,
     pointer: PointerTargetHandle,
+    accessibility_id: NodeId,
 }
 
 struct ButtonPointer {
@@ -60,7 +63,11 @@ impl PointerHandler for ButtonPointer {
     }
 }
 
-pub fn build(renderer: &DewRenderer, config: ButtonConfig, env: &Environment) -> Box<dyn DewNode> {
+pub fn build(
+    renderer: &mut DewRenderer,
+    config: ButtonConfig,
+    env: &Environment,
+) -> Box<dyn DewNode> {
     let ButtonConfig {
         label,
         action,
@@ -83,6 +90,7 @@ pub fn build(renderer: &DewRenderer, config: ButtonConfig, env: &Environment) ->
         disabled: WatchedSignal::new(disabled, renderer.signals()),
         env: env.clone(),
         pointer,
+        accessibility_id: renderer.allocate_accessibility_id(),
     })
 }
 
@@ -127,6 +135,31 @@ impl DewNode for ButtonNode {
             .render_with_brush(renderer, ctx, label_rect, &self.env, foreground);
         if !disabled {
             renderer.register_pointer_target(ctx.window_bounds(), self.pointer.clone());
+        }
+        if renderer.accessibility_enabled() {
+            renderer.register_built_accessibility_node(
+                self.accessibility_id,
+                ctx.window_bounds(),
+                || {
+                    let mut node = AccessibilityNode::new(match self.style {
+                        ButtonStyle::Link => Role::Link,
+                        _ => Role::Button,
+                    });
+                    node.set_label(self.label.semantic_text());
+                    node.add_action(AccessibilityAction::Focus);
+                    let target = if disabled {
+                        node.set_disabled();
+                        None
+                    } else {
+                        node.add_action(AccessibilityAction::Click);
+                        Some(ActionTarget::Pointer {
+                            handler: self.pointer.clone(),
+                            bounds: ctx.window_bounds(),
+                        })
+                    };
+                    (node, target)
+                },
+            );
         }
     }
 }

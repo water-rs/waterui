@@ -113,7 +113,7 @@ pub unsafe extern "C" fn waterui_force_as_list_item(view: *mut WuiAnyView) -> Wu
 
 #[cfg(feature = "android-jni")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_listItemId<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_listItemId<'local>(
     mut env: crate::jni::JNIEnv<'local>,
     _class: crate::jni::JClass<'local>,
 ) -> crate::jni::jobject {
@@ -131,7 +131,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_listItemId<'local
 ///
 /// `view_ptr` must be a valid owning `ListItem` view pointer and must not be
 /// used after this call.
-pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsListItem<'local>(
+unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsListItem<'local>(
     mut env: crate::jni::JNIEnv<'local>,
     _class: crate::jni::JClass<'local>,
     view_ptr: crate::jni::jlong,

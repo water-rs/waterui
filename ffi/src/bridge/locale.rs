@@ -86,7 +86,7 @@ pub unsafe extern "C" fn waterui_env_install_locale_tag(
 
 #[cfg(feature = "android-jni")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallLocaleTag<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallLocaleTag<'local>(
     mut jni_env: crate::jni::JNIEnv<'local>,
     _class: crate::jni::JClass<'local>,
     env_ptr: crate::jni::jlong,

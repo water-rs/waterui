@@ -1,10 +1,15 @@
 //! Build-time WGSL validation and `WaterUI` graphics metadata emission.
 
 use std::env;
+#[cfg(feature = "gpu")]
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "gpu")]
+use std::path::Path;
+#[cfg(feature = "gpu")]
+use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(feature = "gpu")]
 fn collect_wgsl_files(root: &Path, out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(root)
         .unwrap_or_else(|error| panic!("failed to read directory {}: {error}", root.display()))
@@ -24,10 +29,12 @@ fn collect_wgsl_files(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+#[cfg(feature = "gpu")]
 fn is_fragment_only_shader(source: &str) -> bool {
     source.contains("@fragment") && !source.contains("@vertex")
 }
 
+#[cfg(feature = "gpu")]
 fn template_default_for_line_prefix(prefix: &str) -> &'static str {
     let line_prefix = prefix
         .rsplit_once('\n')
@@ -45,6 +52,7 @@ fn template_default_for_line_prefix(prefix: &str) -> &'static str {
     "0.0"
 }
 
+#[cfg(feature = "gpu")]
 fn materialize_wgsl_template(source: &str) -> String {
     let mut materialized = String::with_capacity(source.len());
     let mut cursor = 0usize;
@@ -77,6 +85,7 @@ fn materialize_wgsl_template(source: &str) -> String {
     materialized
 }
 
+#[cfg(feature = "gpu")]
 fn validate_wgsl_source(path: &Path, source: &str) {
     let flags = naga::valid::ValidationFlags::all();
     let capabilities = naga::valid::Capabilities::all();
@@ -89,6 +98,7 @@ fn validate_wgsl_source(path: &Path, source: &str) {
         .unwrap_or_else(|error| panic!("WGSL validation error in {}: {error}", path.display()));
 }
 
+#[cfg(feature = "gpu")]
 fn validate_wgsl_shaders(manifest_dir: &Path) {
     let shader_root = manifest_dir.join("src/shaders");
     let prelude_path = shader_root.join("prelude.wgsl");
@@ -119,11 +129,13 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=WATERUI_GRAPHICS_COMMIT");
 
-    let manifest_dir = PathBuf::from(
-        env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set for build script"),
-    );
-    validate_wgsl_shaders(&manifest_dir);
-    if env::var_os("CARGO_FEATURE_GPU").is_some() {
+    #[cfg(feature = "gpu")]
+    {
+        let manifest_dir = PathBuf::from(
+            env::var("CARGO_MANIFEST_DIR")
+                .expect("CARGO_MANIFEST_DIR must be set for build script"),
+        );
+        validate_wgsl_shaders(&manifest_dir);
         let shader_root = manifest_dir.join("src/shaders");
         waterui_build_support::shader::compile_wgsl_shader(
             shader_root.join("animated_mesh_gradient.wgsl"),

@@ -8,7 +8,7 @@ use waterui::prelude::*;
 use waterui_backend_core::input::TouchPhase;
 use waterui_controls::toggle::toggle;
 use waterui_dew::{DewRuntime, HostBoard, PointerSample};
-use waterui_navigation::{NavigationView, Tab, Tabs};
+use waterui_navigation::{NavigationView, Tab, Tabs, tab_style};
 
 mod support;
 
@@ -33,6 +33,26 @@ fn tap(runtime: &mut DewRuntime<HostBoard>, x: f64, y: f64) -> Option<waterui_de
         phase: TouchPhase::Ended,
     });
     runtime.pump()
+}
+
+fn tap_labeled(runtime: &mut DewRuntime<HostBoard>, label: &str) -> Option<waterui_dew::Frame> {
+    let bounds = runtime
+        .board()
+        .accessibility_tree()
+        .expect("a rendered host frame publishes accessibility bounds")
+        .nodes
+        .iter()
+        .find_map(|(_, node)| {
+            (node.label() == Some(label))
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .unwrap_or_else(|| panic!("the visible control `{label}` has accessibility bounds"));
+    tap(
+        runtime,
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    )
 }
 
 /// Selecting a tab shows its page, and coming back shows the first page with
@@ -63,8 +83,7 @@ fn a_tab_keeps_its_page_across_a_round_trip() {
     );
     runtime.pump().expect("the first frame renders");
 
-    // The toggle is the first row of the selected page, under its bar.
-    tap(&mut runtime, 210.0, 43.0);
+    tap_labeled(&mut runtime, "Ready");
     assert!(observed.get(), "the first tab's toggle flips");
 
     // The tab bar splits the foot of the panel in two.
@@ -142,4 +161,49 @@ fn export_tabs_for_visual_review() {
         runtime.board().framebuffer().to_png(),
     )
     .expect("export visual review PNG");
+}
+
+/// Sidebar style places tab targets down the leading edge while retaining the
+/// same lazily opened pages as the bottom-bar realization.
+#[test]
+fn sidebar_tabs_select_and_retain_pages() {
+    let selection = binding(Screen::Now);
+    let observed = selection.clone();
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(480, HEIGHT),
+        support::test_environment(),
+        16,
+        move || {
+            AnyView::new(
+                Tabs::new(
+                    &selection,
+                    vec![
+                        Tab::new(Screen::Now, "Now", || {
+                            NavigationView::new("Now", Color::red())
+                        }),
+                        Tab::new(Screen::Later, "Later", || {
+                            NavigationView::new("Later", Color::blue())
+                        }),
+                    ],
+                )
+                .style(tab_style::sidebar()),
+            )
+        },
+    );
+    runtime.pump().expect("the sidebar's first frame renders");
+    std::fs::write(
+        "/tmp/waterui_dew_tabs_sidebar.png",
+        runtime.board().framebuffer().to_png(),
+    )
+    .expect("export sidebar visual review PNG");
+
+    tap(&mut runtime, 20.0, 180.0).expect("the second sidebar row selects its page");
+    assert_eq!(observed.get(), Screen::Later);
+    assert!(
+        runtime.pump().is_none(),
+        "sidebar selection is instantaneous"
+    );
+
+    tap(&mut runtime, 20.0, 60.0).expect("the first retained page returns");
+    assert_eq!(observed.get(), Screen::Now);
 }

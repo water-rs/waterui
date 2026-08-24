@@ -237,13 +237,14 @@ waterui-testing = { path = "testing" }
 hydrolysis-m3 = { path = "backends/hydrolysis_m3" }
 
 [features]
-default = ["gpu", "assets", "media", "inspector"]
+default = ["gpu", "assets", "media", "inspector", "snackbar"]
 # GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
 # so every existing consumer is unaffected. Disable it to cross-compile a lean
 # WaterUI app for embedded targets without the GPU stack.
 gpu = ["waterui-internal/gpu", "waterui-dylib?/gpu"]
 inspector = ["waterui-internal/inspector", "waterui-dylib?/inspector"]
 inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
+snackbar = ["waterui-internal/snackbar", "waterui-dylib?/snackbar"]
 assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
 media = ["waterui-internal/media", "waterui-dylib?/media", "video"]
 video = ["waterui-internal/video", "waterui-dylib?/video"]
@@ -279,6 +280,7 @@ all = [
     "map",
     "particle",
     "navigation-restoration",
+    "snackbar",
 ]
 
 

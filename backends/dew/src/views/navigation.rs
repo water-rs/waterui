@@ -35,40 +35,43 @@
 //! draws its own bar, which is what makes a bare navigation view usable as a
 //! whole screen.
 //!
-//! **Accessibility.** Dew has no accessibility tree at all today — no backend
-//! code produces one, and `waterui-testing` reads hydrolysis'. Navigation
-//! therefore contributes no semantic surface of its own, and this is a gap to
-//! close rather than a decision: every control the chrome creates (the back
-//! affordance, toolbar items, the search field) is an ordinary `WaterUI`
-//! control built from a semantic [`Label`](waterui_controls::label::Label), so
-//! each already carries the name an accessibility tree would publish once Dew
-//! grows one.
+//! **Accessibility.** Every visible destination publishes an AccessKit
+//! navigation group. Its title, content and ordinary semantic controls — the
+//! back affordance, toolbar items and search field included — are children of
+//! that group. Retained destinations that are not visible publish no nodes.
 //!
-//! **Split views are not implemented.** [`NavigationSplitLayout`] wants two or
-//! three side-by-side columns, and the panels Dew targets have room for one;
-//! reaching one arrives as an explicit panic rather than a silently collapsed
-//! layout.
+//! **A split view adapts from columns to a hierarchy.** Column widths come from
+//! the split's own constraints. When all requested columns fit, Dew presents
+//! them side by side; otherwise it presents the deepest selected destination
+//! across the available bounds with a leading back action that clears the
+//! corresponding selection. Both realizations retain every destination that
+//! has been opened, and moving between them is instantaneous.
 //!
 //! [`NavigationSplitLayout`]: waterui_navigation::NavigationSplitLayout
 
 use core::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque, btree_map};
 use std::rc::Rc;
 
+use accesskit::{Node as AccessibilityNode, NodeId, Role};
 use kurbo::Rect;
-use nami::Computed;
+use nami::{Binding, Computed, Signal};
 use waterui_controls::button::{ButtonStyle, button};
 use waterui_controls::text_field::TextField;
+use waterui_core::id::Id;
 use waterui_core::layout::{
     Point, ProposalSize, Rect as LayoutRect, Size, StretchAxis, ViewDimensions,
 };
-use waterui_core::{AnyView, Environment};
+use waterui_core::{AnyView, Environment, Metadata};
 use waterui_graphics::color::ResolvedColor;
+use waterui_navigation::split::NavigationSplitDetailBuilder;
 use waterui_navigation::{
-    Bar, CustomNavigationController, NavigationController, NavigationDestinationState,
+    Bar, ColumnWidth, CustomNavigationController, NativeNavigationSplitStyle, NavigationController,
+    NavigationDestinationState, NavigationSplitColumnVisibility, NavigationSplitLayout,
     NavigationStack, NavigationTitleDisplayMode, NavigationToolbarPlacement, NavigationTransaction,
     NavigationView, navigation_back_label, resolve_navigation_root,
 };
+use waterui_text::Text;
 
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal, build_node};
 use crate::text::DewState;
@@ -85,11 +88,33 @@ const MIN_BAR_HEIGHT: f64 = 28.0;
 /// Width of the hairline separating chrome from content.
 const HAIRLINE: f64 = 1.0;
 
+fn styled_navigation_title(title: AnyView, display_mode: NavigationTitleDisplayMode) -> AnyView {
+    if title.is::<Metadata<Environment>>() {
+        let metadata = *title
+            .downcast::<Metadata<Environment>>()
+            .expect("navigation title metadata downcast must match its type id");
+        return AnyView::new(Metadata::new(
+            styled_navigation_title(metadata.content, display_mode),
+            metadata.value,
+        ));
+    }
+    let title = match title.downcast::<Text>() {
+        Ok(title) => *title,
+        Err(title) => return title,
+    };
+    AnyView::new(match display_mode {
+        NavigationTitleDisplayMode::Large => title.title(),
+        NavigationTitleDisplayMode::Medium => title.headline(),
+        NavigationTitleDisplayMode::Inline | NavigationTitleDisplayMode::Automatic => title.body(),
+    })
+}
+
 /// One destination: its chrome, its content, and its lifecycle handlers.
 struct Entry {
     chrome: Chrome,
     content: Box<dyn DewNode>,
     state: NavigationDestinationState,
+    accessibility_id: NodeId,
 }
 
 impl Entry {
@@ -109,6 +134,7 @@ impl Entry {
             chrome: Chrome::build(renderer, bar, env, back),
             content: build_node(renderer, content, env, 0),
             state,
+            accessibility_id: renderer.allocate_accessibility_id(),
         }
     }
 }
@@ -123,6 +149,9 @@ struct Chrome {
     /// The back affordance, when this destination sits above the root, then
     /// the destination's own leading toolbar items.
     leading: Vec<Box<dyn DewNode>>,
+    /// A split destination's hierarchy back action. It is shown only when the
+    /// adaptive split is presenting one column.
+    contextual_leading: Option<Box<dyn DewNode>>,
     trailing: Vec<Box<dyn DewNode>>,
     bottom: Vec<Box<dyn DewNode>>,
     search: Option<Box<dyn DewNode>>,
@@ -133,6 +162,7 @@ struct BarLayout {
     height: f64,
     row_height: f64,
     leading: Vec<Size>,
+    contextual_leading: Option<Size>,
     trailing: Vec<Size>,
     title: Size,
     subtitle: Size,
@@ -157,6 +187,13 @@ impl Chrome {
             hidden,
             display_mode,
         } = bar;
+        let display_mode = match display_mode {
+            NavigationTitleDisplayMode::Automatic if back.is_some() => {
+                NavigationTitleDisplayMode::Inline
+            }
+            NavigationTitleDisplayMode::Automatic => NavigationTitleDisplayMode::Large,
+            mode => mode,
+        };
         let mut leading: Vec<Box<dyn DewNode>> = back.into_iter().collect();
         let mut trailing = Vec::new();
         let mut bottom = Vec::new();
@@ -184,9 +221,17 @@ impl Chrome {
             display_mode,
             // Principal content replaces the title outright, which is what the
             // placement means: it is the title area's content.
-            title: principal.unwrap_or_else(|| build_node(renderer, title, env, 0)),
+            title: principal.unwrap_or_else(|| {
+                build_node(
+                    renderer,
+                    styled_navigation_title(title, display_mode),
+                    env,
+                    0,
+                )
+            }),
             subtitle: build_node(renderer, subtitle, env, 0),
             leading,
+            contextual_leading: None,
             trailing,
             bottom,
             search: search.map(|search| {
@@ -203,8 +248,18 @@ impl Chrome {
     }
 
     /// Measures every part of the bar against `width`.
-    fn layout(&self, state: &RefCell<DewState>, width: f64) -> BarLayout {
+    fn layout(
+        &self,
+        state: &RefCell<DewState>,
+        width: f64,
+        show_contextual_leading: bool,
+    ) -> BarLayout {
         let measure = |node: &dyn DewNode| node.measure(state, ProposalSize::UNSPECIFIED).size;
+        let contextual_leading = if show_contextual_leading {
+            self.contextual_leading.as_deref().map(measure)
+        } else {
+            None
+        };
         let leading: Vec<Size> = self
             .leading
             .iter()
@@ -221,8 +276,9 @@ impl Chrome {
             self.display_mode,
             NavigationTitleDisplayMode::Medium | NavigationTitleDisplayMode::Large
         );
-        let tallest_item = leading
+        let tallest_item = contextual_leading
             .iter()
+            .chain(&leading)
             .chain(&trailing)
             .map(|size| f64::from(size.height))
             .fold(0.0_f64, f64::max);
@@ -255,6 +311,7 @@ impl Chrome {
             height: height + HAIRLINE,
             row_height,
             leading,
+            contextual_leading,
             trailing,
             title,
             subtitle,
@@ -263,15 +320,7 @@ impl Chrome {
         }
     }
 
-    /// Draws the bar into the top of `bar_rect` and returns nothing: the
-    /// caller already knows the height from [`Chrome::layout`].
-    fn render(
-        &mut self,
-        renderer: &mut DewRenderer,
-        ctx: RenderContext,
-        bar_rect: Rect,
-        layout: &BarLayout,
-    ) {
+    fn render_background(&self, renderer: &mut DewRenderer, ctx: RenderContext, bar_rect: Rect) {
         let background = self.color.as_ref().map_or_else(
             || renderer.theme().surface(),
             |color| to_peniko(color.get()),
@@ -287,6 +336,18 @@ impl Chrome {
         );
         let border = renderer.theme().border();
         renderer.list_mut().fill(&hairline, ctx.transform, border);
+    }
+
+    /// Draws the bar into the top of `bar_rect` and returns nothing: the
+    /// caller already knows the height from [`Chrome::layout`].
+    fn render(
+        &mut self,
+        renderer: &mut DewRenderer,
+        ctx: RenderContext,
+        bar_rect: Rect,
+        layout: &BarLayout,
+    ) {
+        self.render_background(renderer, ctx, bar_rect);
 
         let row = Rect::new(
             bar_rect.x0,
@@ -295,6 +356,13 @@ impl Chrome {
             bar_rect.y0 + layout.row_height,
         );
         let mut leading_edge = row.x0 + BAR_PADDING_X;
+        if let (Some(node), Some(size)) =
+            (self.contextual_leading.as_mut(), layout.contextual_leading)
+        {
+            let frame = centered_in(row, leading_edge, size);
+            node.render(renderer, ctx.child(frame));
+            leading_edge += f64::from(size.width) + BAR_SPACING;
+        }
         for (node, size) in self.leading.iter_mut().zip(&layout.leading) {
             let frame = centered_in(row, leading_edge, *size);
             node.render(renderer, ctx.child(frame));
@@ -423,8 +491,9 @@ impl Chrome {
     fn patch(&mut self, renderer: &mut DewRenderer) -> bool {
         let mut changed = self.title.patch(renderer) | self.subtitle.patch(renderer);
         for node in self
-            .leading
+            .contextual_leading
             .iter_mut()
+            .chain(&mut self.leading)
             .chain(&mut self.trailing)
             .chain(&mut self.bottom)
             .chain(&mut self.search)
@@ -605,7 +674,7 @@ impl DewNode for StackNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        render_destination(self.entries.last_mut(), renderer, ctx);
+        render_destination(self.entries.last_mut(), renderer, ctx, false);
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -637,11 +706,30 @@ impl DewNode for StackNode {
 
 /// Draws one destination — its bar, its bottom bar, and its content — into
 /// `ctx`.
-fn render_destination(entry: Option<&mut Entry>, renderer: &mut DewRenderer, ctx: RenderContext) {
-    let entry = entry.expect("a navigation stack always retains its root");
+fn render_destination(
+    entry: Option<&mut Entry>,
+    renderer: &mut DewRenderer,
+    ctx: RenderContext,
+    show_contextual_leading: bool,
+) {
+    let entry = entry.expect("a rendered navigation destination must have a retained entry");
     let bounds = ctx.bounds;
-    let bar = (!entry.chrome.hidden())
-        .then(|| entry.chrome.layout(renderer.state_cell(), bounds.width()));
+    if renderer.accessibility_enabled() {
+        renderer.register_accessibility_node(
+            entry.accessibility_id,
+            AccessibilityNode::new(Role::Navigation),
+            ctx.window_bounds(),
+            None,
+        );
+        renderer.push_accessibility_parent(entry.accessibility_id);
+    }
+    let bar = (!entry.chrome.hidden()).then(|| {
+        entry.chrome.layout(
+            renderer.state_cell(),
+            bounds.width(),
+            show_contextual_leading,
+        )
+    });
     let bottom = entry.chrome.bottom_layout(renderer.state_cell());
 
     let bar_height = bar.as_ref().map_or(0.0, |layout| layout.height);
@@ -662,18 +750,484 @@ fn render_destination(entry: Option<&mut Entry>, renderer: &mut DewRenderer, ctx
         ),
     );
     entry.content.render(renderer, ctx.child(content));
+    if renderer.accessibility_enabled() {
+        renderer.pop_accessibility_parent();
+    }
 }
 
-/// Reports that a split view has no dew realization.
-///
-/// A split view is two or three columns side by side; the panels dew targets
-/// have room for one, and a silently collapsed column is a worse answer than
-/// saying so. Present the same screens as a [`NavigationStack`] instead.
-pub fn unsupported_split() -> ! {
-    panic!(
-        "dew does not implement NavigationSplitView: a split view needs side-by-side columns \
-         and a panel has room for one, so present those screens as a NavigationStack"
+/// A retained two- or three-column split. Destination caches are keyed by the
+/// semantic selection identifiers, so a selection round trip restores the
+/// exact node tree that was previously visible.
+struct SplitNode {
+    env: Environment,
+    primary_binding: Binding<Option<Id>>,
+    primary_watch: WatchedSignal<Binding<Option<Id>>>,
+    secondary_binding: Option<Binding<Option<Id>>>,
+    secondary_watch: Option<WatchedSignal<Binding<Option<Id>>>>,
+    visibility: WatchedSignal<Computed<NavigationSplitColumnVisibility>>,
+    column_width: ColumnWidth,
+    style: NativeNavigationSplitStyle,
+    primary: Box<dyn DewNode>,
+    placeholder: Box<dyn DewNode>,
+    content_builder: Option<NavigationSplitDetailBuilder>,
+    detail_builder: NavigationSplitDetailBuilder,
+    content: BTreeMap<Id, Entry>,
+    detail: BTreeMap<Id, Entry>,
+    visible_content: Option<Id>,
+    visible_detail: Option<Id>,
+    primary_revision: u64,
+    secondary_revision: u64,
+    visibility_revision: u64,
+    depth: usize,
+}
+
+#[derive(Clone, Copy)]
+struct SplitDestinationFrame {
+    bounds: Rect,
+    selection: Option<Id>,
+    show_back: bool,
+}
+
+struct SplitPresentation {
+    primary: Option<Rect>,
+    content: Option<SplitDestinationFrame>,
+    detail: Option<SplitDestinationFrame>,
+}
+
+/// Builds Dew's adaptive retained realization of a navigation split.
+pub fn build_split(
+    renderer: &mut DewRenderer,
+    layout: NavigationSplitLayout,
+    env: &Environment,
+    depth: usize,
+) -> Box<dyn DewNode> {
+    let (
+        primary,
+        placeholder,
+        primary_binding,
+        content_builder,
+        secondary_binding,
+        detail_builder,
+        visibility,
+        column_width,
+        style,
+    ) = layout.into_parts();
+    let primary_watch = WatchedSignal::new(primary_binding.clone(), renderer.signals());
+    let secondary_watch = secondary_binding
+        .as_ref()
+        .map(|selection| WatchedSignal::new(selection.clone(), renderer.signals()));
+    Box::new(SplitNode {
+        env: env.clone(),
+        primary_binding,
+        primary_watch,
+        secondary_binding,
+        secondary_watch,
+        visibility: WatchedSignal::new(visibility, renderer.signals()),
+        column_width,
+        style,
+        primary: build_node(renderer, primary.build(), env, depth),
+        placeholder: build_node(renderer, placeholder.build(), env, depth),
+        content_builder,
+        detail_builder,
+        content: BTreeMap::new(),
+        detail: BTreeMap::new(),
+        visible_content: None,
+        visible_detail: None,
+        primary_revision: 0,
+        secondary_revision: 0,
+        visibility_revision: 0,
+        depth,
+    })
+}
+
+fn split_back_button(
+    renderer: &mut DewRenderer,
+    selection: Binding<Option<Id>>,
+    env: &Environment,
+    depth: usize,
+) -> Box<dyn DewNode> {
+    let view = button(navigation_back_label())
+        .style(ButtonStyle::Plain)
+        .action(move || selection.set(None));
+    build_node(renderer, AnyView::new(view), env, depth)
+}
+
+impl SplitNode {
+    const fn is_three_column(&self) -> bool {
+        self.content_builder.is_some()
+    }
+
+    fn detail_selection(&self) -> Option<Id> {
+        self.secondary_binding
+            .as_ref()
+            .map_or_else(|| self.primary_binding.get(), Signal::get)
+    }
+
+    fn ensure_content(&mut self, renderer: &mut DewRenderer, selected: Id) {
+        let builder = self
+            .content_builder
+            .as_ref()
+            .expect("a three-column split must provide its middle-column builder");
+        if let btree_map::Entry::Vacant(slot) = self.content.entry(selected) {
+            let view = builder.build(selected);
+            let back = split_back_button(
+                renderer,
+                self.primary_binding.clone(),
+                &self.env,
+                self.depth,
+            );
+            let mut entry = Entry::build(renderer, view, &self.env, None);
+            entry.chrome.contextual_leading = Some(back);
+            slot.insert(entry);
+        }
+    }
+
+    fn ensure_detail(&mut self, renderer: &mut DewRenderer, selected: Id) {
+        let back_selection = self
+            .secondary_binding
+            .as_ref()
+            .unwrap_or(&self.primary_binding)
+            .clone();
+        if let btree_map::Entry::Vacant(slot) = self.detail.entry(selected) {
+            let back = split_back_button(renderer, back_selection, &self.env, self.depth);
+            let mut entry = Entry::build(
+                renderer,
+                self.detail_builder.build(selected),
+                &self.env,
+                None,
+            );
+            entry.chrome.contextual_leading = Some(back);
+            slot.insert(entry);
+        }
+    }
+
+    fn ensure_selected(&mut self, renderer: &mut DewRenderer) {
+        let primary = self.primary_binding.get();
+        if self.is_three_column()
+            && let Some(selected) = primary
+        {
+            self.ensure_content(renderer, selected);
+        }
+        if let Some(selected) = self.detail_selection() {
+            self.ensure_detail(renderer, selected);
+        }
+    }
+
+    fn preferred_column_width(&self) -> f64 {
+        match self.style {
+            NativeNavigationSplitStyle::Automatic | NativeNavigationSplitStyle::Balanced => {
+                f64::from(self.column_width.ideal())
+            }
+            NativeNavigationSplitStyle::ProminentDetail => f64::from(self.column_width.min()),
+        }
+    }
+
+    fn leading_column_width(&self, bounds: Rect, leading_columns: u32) -> f64 {
+        let minimum = f64::from(self.column_width.min());
+        let detail_minimum = minimum.min(bounds.width());
+        let available = (bounds.width() - detail_minimum).max(0.0);
+        let per_column = available / f64::from(leading_columns);
+        self.preferred_column_width()
+            .clamp(minimum, f64::from(self.column_width.max()))
+            .min(per_column)
+    }
+
+    fn compact_presentation(&self, bounds: Rect) -> SplitPresentation {
+        let primary = self.primary_binding.get();
+        let secondary = self.secondary_binding.as_ref().and_then(Signal::get);
+        if self.is_three_column() {
+            if secondary.is_some() {
+                return SplitPresentation {
+                    primary: None,
+                    content: None,
+                    detail: Some(SplitDestinationFrame {
+                        bounds,
+                        selection: secondary,
+                        show_back: true,
+                    }),
+                };
+            }
+            if primary.is_some() {
+                return SplitPresentation {
+                    primary: None,
+                    content: Some(SplitDestinationFrame {
+                        bounds,
+                        selection: primary,
+                        show_back: true,
+                    }),
+                    detail: None,
+                };
+            }
+        } else if primary.is_some() {
+            return SplitPresentation {
+                primary: None,
+                content: None,
+                detail: Some(SplitDestinationFrame {
+                    bounds,
+                    selection: primary,
+                    show_back: true,
+                }),
+            };
+        }
+        SplitPresentation {
+            primary: Some(bounds),
+            content: None,
+            detail: None,
+        }
+    }
+
+    fn presentation(&self, bounds: Rect) -> SplitPresentation {
+        let primary = self.primary_binding.get();
+        let detail = self.detail_selection();
+        if matches!(
+            self.visibility.get(),
+            NavigationSplitColumnVisibility::DetailOnly
+        ) {
+            return SplitPresentation {
+                primary: None,
+                content: None,
+                detail: Some(SplitDestinationFrame {
+                    bounds,
+                    selection: detail,
+                    show_back: detail.is_some(),
+                }),
+            };
+        }
+
+        let minimum = f64::from(self.column_width.min());
+        if bounds.width() < minimum * 2.0 {
+            return self.compact_presentation(bounds);
+        }
+
+        if !self.is_three_column() {
+            let leading = self.leading_column_width(bounds, 1);
+            return SplitPresentation {
+                primary: Some(Rect::new(
+                    bounds.x0,
+                    bounds.y0,
+                    bounds.x0 + leading,
+                    bounds.y1,
+                )),
+                content: None,
+                detail: Some(SplitDestinationFrame {
+                    bounds: Rect::new(bounds.x0 + leading, bounds.y0, bounds.x1, bounds.y1),
+                    selection: detail,
+                    show_back: false,
+                }),
+            };
+        }
+
+        let show_all = !matches!(
+            self.visibility.get(),
+            NavigationSplitColumnVisibility::DoubleColumn
+        ) && bounds.width() >= minimum * 3.0;
+        let leading_columns = if show_all { 2 } else { 1 };
+        let leading = self.leading_column_width(bounds, leading_columns);
+        if show_all {
+            let primary_bounds = Rect::new(bounds.x0, bounds.y0, bounds.x0 + leading, bounds.y1);
+            let content_bounds = Rect::new(
+                primary_bounds.x1,
+                bounds.y0,
+                primary_bounds.x1 + leading,
+                bounds.y1,
+            );
+            SplitPresentation {
+                primary: Some(primary_bounds),
+                content: Some(SplitDestinationFrame {
+                    bounds: content_bounds,
+                    selection: primary,
+                    show_back: false,
+                }),
+                detail: Some(SplitDestinationFrame {
+                    bounds: Rect::new(content_bounds.x1, bounds.y0, bounds.x1, bounds.y1),
+                    selection: detail,
+                    show_back: false,
+                }),
+            }
+        } else {
+            let leading_bounds = Rect::new(bounds.x0, bounds.y0, bounds.x0 + leading, bounds.y1);
+            let trailing_bounds = Rect::new(leading_bounds.x1, bounds.y0, bounds.x1, bounds.y1);
+            if primary.is_none() {
+                SplitPresentation {
+                    primary: Some(leading_bounds),
+                    content: Some(SplitDestinationFrame {
+                        bounds: trailing_bounds,
+                        selection: None,
+                        show_back: false,
+                    }),
+                    detail: None,
+                }
+            } else {
+                SplitPresentation {
+                    primary: None,
+                    content: Some(SplitDestinationFrame {
+                        bounds: leading_bounds,
+                        selection: primary,
+                        show_back: false,
+                    }),
+                    detail: Some(SplitDestinationFrame {
+                        bounds: trailing_bounds,
+                        selection: detail,
+                        show_back: false,
+                    }),
+                }
+            }
+        }
+    }
+
+    fn reconcile_visible(&mut self, next_content: Option<Id>, next_detail: Option<Id>) {
+        let env = self.env.clone();
+        if self.visible_content != next_content {
+            if let Some(previous) = self.visible_content
+                && let Some(entry) = self.content.get_mut(&previous)
+            {
+                entry.state.disappeared(&env);
+            }
+            if let Some(selected) = next_content {
+                self.content
+                    .get_mut(&selected)
+                    .expect("visible split content must be retained")
+                    .state
+                    .appeared(&env);
+            }
+            self.visible_content = next_content;
+        }
+        if self.visible_detail != next_detail {
+            if let Some(previous) = self.visible_detail
+                && let Some(entry) = self.detail.get_mut(&previous)
+            {
+                entry.state.disappeared(&env);
+            }
+            if let Some(selected) = next_detail {
+                self.detail
+                    .get_mut(&selected)
+                    .expect("visible split detail must be retained")
+                    .state
+                    .appeared(&env);
+            }
+            self.visible_detail = next_detail;
+        }
+    }
+}
+
+fn render_split_destination(
+    entries: &mut BTreeMap<Id, Entry>,
+    placeholder: &mut dyn DewNode,
+    renderer: &mut DewRenderer,
+    ctx: RenderContext,
+    frame: SplitDestinationFrame,
+) {
+    if let Some(selected) = frame.selection {
+        let entry = entries
+            .get_mut(&selected)
+            .expect("selected split destination must be retained before rendering");
+        render_destination(
+            Some(entry),
+            renderer,
+            ctx.child(rect_frame(frame.bounds)),
+            frame.show_back,
+        );
+    } else {
+        placeholder.render(renderer, ctx.child(rect_frame(frame.bounds)));
+    }
+}
+
+const fn rect_frame(rect: Rect) -> LayoutRect {
+    LayoutRect::new(
+        Point::new(to_f32(rect.x0), to_f32(rect.y0)),
+        Size::new(to_f32(rect.width()), to_f32(rect.height())),
     )
+}
+
+impl DewNode for SplitNode {
+    fn measure(&self, _state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        ))
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        self.ensure_selected(renderer);
+        let presentation = self.presentation(ctx.bounds);
+        let next_content = presentation
+            .content
+            .as_ref()
+            .and_then(|frame| frame.selection);
+        let next_detail = presentation
+            .detail
+            .as_ref()
+            .and_then(|frame| frame.selection);
+        self.reconcile_visible(next_content, next_detail);
+
+        let mut dividers = Vec::new();
+        if let Some(bounds) = presentation.primary {
+            self.primary.render(renderer, ctx.child(rect_frame(bounds)));
+            if bounds.x1 < ctx.bounds.x1 {
+                dividers.push(bounds.x1);
+            }
+        }
+        if let Some(frame) = presentation.content {
+            let edge = frame.bounds.x1;
+            render_split_destination(
+                &mut self.content,
+                self.placeholder.as_mut(),
+                renderer,
+                ctx,
+                frame,
+            );
+            if edge < ctx.bounds.x1 {
+                dividers.push(edge);
+            }
+        }
+        if let Some(frame) = presentation.detail {
+            render_split_destination(
+                &mut self.detail,
+                self.placeholder.as_mut(),
+                renderer,
+                ctx,
+                frame,
+            );
+        }
+        let border = renderer.theme().border();
+        for x in dividers {
+            let divider = Rect::new(x, ctx.bounds.y0, x + HAIRLINE, ctx.bounds.y1);
+            renderer.list_mut().fill(&divider, ctx.transform, border);
+        }
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+
+    fn patch(&mut self, renderer: &mut DewRenderer) -> bool {
+        self.ensure_selected(renderer);
+        let primary_revision = self.primary_watch.revision();
+        let secondary_revision = self
+            .secondary_watch
+            .as_ref()
+            .map_or(0, WatchedSignal::revision);
+        let visibility_revision = self.visibility.revision();
+        let structural = primary_revision != self.primary_revision
+            || secondary_revision != self.secondary_revision
+            || visibility_revision != self.visibility_revision;
+        self.primary_revision = primary_revision;
+        self.secondary_revision = secondary_revision;
+        self.visibility_revision = visibility_revision;
+
+        let mut changed = self.primary.patch(renderer) | self.placeholder.patch(renderer);
+        if let Some(selected) = self.primary_binding.get()
+            && let Some(entry) = self.content.get_mut(&selected)
+        {
+            changed |= entry.chrome.patch(renderer) | entry.content.patch(renderer);
+        }
+        if let Some(selected) = self.detail_selection()
+            && let Some(entry) = self.detail.get_mut(&selected)
+        {
+            changed |= entry.chrome.patch(renderer) | entry.content.patch(renderer);
+        }
+        changed | structural
+    }
 }
 
 /// The retained node behind a [`NavigationView`] used on its own.
@@ -708,7 +1262,7 @@ impl DewNode for DestinationNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        render_destination(Some(&mut self.entry), renderer, ctx);
+        render_destination(Some(&mut self.entry), renderer, ctx, false);
     }
 
     fn stretch_axis(&self) -> StretchAxis {

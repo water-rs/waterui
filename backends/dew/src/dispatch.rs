@@ -9,6 +9,9 @@ use core::any::TypeId;
 use core::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use accesskit::{
+    ActionRequest as AccessibilityActionRequest, Node as AccessibilityNode, NodeId, Role,
+};
 use kurbo::{Affine, Rect};
 use nami::{Computed, Signal};
 #[cfg(feature = "progress")]
@@ -36,6 +39,7 @@ use waterui_navigation::{NavigationSplitLayout, NavigationStack, NavigationView,
 use waterui_shape::{ClipShape, ResolvedShape};
 use waterui_text::{TextConfig, styled::StyledStr};
 
+use crate::accessibility::{AccessibilityBuilder, ActionTarget};
 use crate::display_list::DisplayList;
 use crate::pointer::{PointerRouter, PointerTargetHandle};
 use crate::text::{DewState, TextLayoutCache, TextLayoutKey};
@@ -172,6 +176,8 @@ pub struct DewRenderer {
     state: RefCell<DewState>,
     list: DisplayList,
     pointer: PointerRouter,
+    accessibility: AccessibilityBuilder,
+    accessibility_enabled: bool,
     root: Option<Box<dyn DewNode>>,
     theme: Option<theme::ThemePalette>,
 }
@@ -208,6 +214,8 @@ impl DewRenderer {
             state: RefCell::new(DewState::new(fonts)),
             list: DisplayList::new(),
             pointer: PointerRouter::default(),
+            accessibility: AccessibilityBuilder::default(),
+            accessibility_enabled: true,
             root: None,
             theme: None,
         }
@@ -217,6 +225,14 @@ impl DewRenderer {
     #[must_use]
     pub fn signals(&self) -> FrameSignals {
         self.signals.clone()
+    }
+
+    pub(crate) const fn set_accessibility_enabled(&mut self, enabled: bool) {
+        self.accessibility_enabled = enabled;
+    }
+
+    pub(crate) const fn accessibility_enabled(&self) -> bool {
+        self.accessibility_enabled
     }
 
     /// Builds a fresh retained root and renders its first display list.
@@ -249,12 +265,25 @@ impl DewRenderer {
             .expect("Dew refresh requires an initialized retained root");
         self.list.clear();
         self.pointer.begin_frame();
+        if self.accessibility_enabled {
+            self.accessibility
+                .begin_frame(Rect::new(0.0, 0.0, width, height));
+        }
+        let background = self.theme().background();
+        self.list.fill(
+            &Rect::new(0.0, 0.0, width, height),
+            Affine::IDENTITY,
+            background,
+        );
         // Discard measure counters left over from tree construction so the
         // frame reports only its own work.
         self.state.borrow_mut().take_work();
         root.patch(self);
         root.render(self, RenderContext::root(width, height));
         self.pointer.finish_frame();
+        if self.accessibility_enabled {
+            self.accessibility.finish_frame();
+        }
         self.root = Some(root);
         let measure_work = self.state.borrow_mut().take_work();
         self.list.add_work(measure_work);
@@ -281,6 +310,71 @@ impl DewRenderer {
 
     pub(crate) fn handle_pointer(&mut self, sample: crate::board::PointerSample) -> bool {
         self.pointer.dispatch(sample)
+    }
+
+    pub(crate) const fn allocate_accessibility_id(&mut self) -> NodeId {
+        self.accessibility.allocate_id()
+    }
+
+    pub(crate) fn register_accessibility_node(
+        &mut self,
+        id: NodeId,
+        node: AccessibilityNode,
+        bounds: Rect,
+        target: Option<ActionTarget>,
+    ) {
+        if self.accessibility_enabled {
+            self.accessibility.register(id, node, bounds, target);
+        }
+    }
+
+    #[inline(never)]
+    pub(crate) fn register_built_accessibility_node(
+        &mut self,
+        id: NodeId,
+        bounds: Rect,
+        build: impl FnOnce() -> (AccessibilityNode, Option<ActionTarget>),
+    ) {
+        let (node, target) = build();
+        self.accessibility.register(id, node, bounds, target);
+    }
+
+    pub(crate) fn push_accessibility_parent(&mut self, id: NodeId) {
+        if self.accessibility_enabled {
+            self.accessibility.push_parent(id);
+        }
+    }
+
+    pub(crate) fn pop_accessibility_parent(&mut self) {
+        if self.accessibility_enabled {
+            self.accessibility.pop_parent();
+        }
+    }
+
+    pub(crate) const fn push_accessibility_suppression(&mut self) {
+        if self.accessibility_enabled {
+            self.accessibility.push_suppression();
+        }
+    }
+
+    pub(crate) const fn pop_accessibility_suppression(&mut self) {
+        if self.accessibility_enabled {
+            self.accessibility.pop_suppression();
+        }
+    }
+
+    pub(crate) fn handle_accessibility_action(
+        &mut self,
+        request: &AccessibilityActionRequest,
+    ) -> bool {
+        self.accessibility.handle_action(request)
+    }
+
+    pub(crate) fn take_accessibility_tree_update(
+        &mut self,
+    ) -> Option<crate::AccessibilityTreeUpdate> {
+        self.accessibility_enabled
+            .then(|| self.accessibility.take_update())
     }
 }
 
@@ -404,7 +498,10 @@ fn build_unmeasured_node(
         return views::navigation::build_view(renderer, destination.into_inner(), env, depth + 1);
     }
     if type_id == TypeId::of::<Native<NavigationSplitLayout>>() {
-        views::navigation::unsupported_split();
+        let split = *view
+            .downcast::<Native<NavigationSplitLayout>>()
+            .expect("dew NavigationSplitLayout downcast must match its type id");
+        return views::navigation::build_split(renderer, split.into_inner(), env, depth + 1);
     }
     if type_id == TypeId::of::<Native<TabsLayout>>() {
         let tabs = *view
@@ -434,6 +531,7 @@ fn build_unmeasured_node(
             env: env.clone(),
             cache: RefCell::new(TextLayoutCache::default()),
             line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
+            accessibility_id: renderer.allocate_accessibility_id(),
         });
     }
     if type_id == TypeId::of::<Str>() {
@@ -443,6 +541,7 @@ fn build_unmeasured_node(
                 .expect("dew Str downcast must match its type id"),
             cache: RefCell::new(TextLayoutCache::default()),
             env: env.clone(),
+            accessibility_id: renderer.allocate_accessibility_id(),
         });
     }
     if type_id == TypeId::of::<Native<Spacer>>() {
@@ -749,6 +848,7 @@ struct TextNode {
     cache: RefCell<TextLayoutCache>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
     line_limit: Option<usize>,
+    accessibility_id: NodeId,
 }
 
 impl DewNode for TextNode {
@@ -798,6 +898,17 @@ impl DewNode for TextNode {
             },
         );
         renderer.state.borrow_mut().record_layout(outcome);
+        if renderer.accessibility_enabled() {
+            renderer.register_built_accessibility_node(
+                self.accessibility_id,
+                ctx.window_bounds(),
+                || {
+                    let mut node = AccessibilityNode::new(Role::Label);
+                    node.set_value(self.content.get().to_plain().to_string());
+                    (node, None)
+                },
+            );
+        }
     }
 }
 
@@ -805,6 +916,7 @@ struct StrNode {
     value: Str,
     cache: RefCell<TextLayoutCache>,
     env: Environment,
+    accessibility_id: NodeId,
 }
 
 impl DewNode for StrNode {
@@ -844,6 +956,17 @@ impl DewNode for StrNode {
             },
         );
         renderer.state.borrow_mut().record_layout(outcome);
+        if renderer.accessibility_enabled() {
+            renderer.register_built_accessibility_node(
+                self.accessibility_id,
+                ctx.window_bounds(),
+                || {
+                    let mut node = AccessibilityNode::new(Role::Label);
+                    node.set_value(self.value.to_string());
+                    (node, None)
+                },
+            );
+        }
     }
 }
 
@@ -881,6 +1004,10 @@ impl<S: Signal> WatchedSignal<S> {
 
     pub(crate) fn get(&self) -> S::Output {
         self.signal.get()
+    }
+
+    pub(crate) const fn signal(&self) -> &S {
+        &self.signal
     }
 
     pub(crate) fn revision(&self) -> u64 {

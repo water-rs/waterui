@@ -82,7 +82,7 @@ unsafe extern "C" fn jni_navigation_drop(data: *mut ()) {
 
 /// Installs a navigation controller with a Java callback into the environment.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallNavigationController<
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallNavigationController<
     'local,
 >(
     mut env: EnvUnowned<'local>,
@@ -115,9 +115,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallNavigat
 
 /// Checks if the environment has a navigation controller installed.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envHasNavigationController<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envHasNavigationController<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -128,7 +126,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envHasNavigationC
 
 /// Requests a user/system pop before Android begins a non-interactive transition.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationRequestPop<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationRequestPop<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -145,9 +143,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationRequest
 
 /// Commits an Android predictive pop already completed by the native stack.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationCompleteNativePop<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationCompleteNativePop<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -164,9 +160,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationComplet
 
 /// Acknowledges successful completion of the current Android transaction.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransitionCompleted<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransitionCompleted<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -182,9 +176,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransit
 
 /// Acknowledges cancellation of the current Android transaction.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransitionCancelled<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransitionCancelled<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -204,7 +196,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationTransit
 
 /// Extracts the NavigationView content from a tab.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_tabContent<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_tabContent<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     content_ptr: jlong,
@@ -222,9 +214,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_tabContent<'local
 
 /// Resolves split detail content from a selected identifier.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_splitNavigationDetailContent<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_splitNavigationDetailContent<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     detail_ptr: jlong,

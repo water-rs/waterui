@@ -1,6 +1,6 @@
 //! Explicit GPU runtime ownership across native backends.
 
-use executor_core::spawn_local;
+use executor_core::{spawn, spawn_local};
 use waterui_graphics::shared_context::GpuRuntime;
 
 #[cfg(all(feature = "c-api", any(target_os = "macos", target_os = "ios")))]
@@ -23,10 +23,23 @@ pub type WuiGpuRuntimeCreateCallback =
 pub type WuiGpuRuntimeCreateContextDrop = unsafe extern "C" fn(context: *mut ());
 
 pub fn create_gpu_runtime(complete: impl FnOnce(GpuRuntime) + 'static) {
-    spawn_local(async move {
+    let (sender, receiver) = async_channel::bounded(1);
+    spawn(async move {
         let runtime = GpuRuntime::new()
             .await
             .unwrap_or_else(|error| panic!("GPU runtime creation failed: {error}"));
+        sender
+            .send(runtime)
+            .await
+            .expect("GPU runtime receiver dropped before creation completed");
+    })
+    .detach();
+
+    spawn_local(async move {
+        let runtime = receiver
+            .recv()
+            .await
+            .expect("GPU runtime creation task ended without producing a runtime");
         complete(runtime);
     })
     .detach();

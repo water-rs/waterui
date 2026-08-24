@@ -362,7 +362,7 @@ macro_rules! ffi_computed {
             #[cfg(feature = "android-jni")]
             /// JNI: Drops a computed
             #[unsafe(no_mangle)]
-            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_dropComputed $ident:camel>]<'local>(
+            extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_dropComputed $ident:camel>]<'local>(
                 _env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
                 computed_ptr: $crate::jni::jlong,
@@ -373,7 +373,7 @@ macro_rules! ffi_computed {
             #[cfg(feature = "android-jni")]
             /// JNI: Watches for changes in a computed
             #[unsafe(no_mangle)]
-            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_watchComputed $ident:camel>]<'local>(
+            extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_watchComputed $ident:camel>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
                 computed_ptr: $crate::jni::jlong,
@@ -566,7 +566,7 @@ macro_rules! ffi_binding {
             #[cfg(feature = "android-jni")]
             /// JNI: Drops a binding
             #[unsafe(no_mangle)]
-            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_dropBinding $ident:camel>]<'local>(
+            extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_dropBinding $ident:camel>]<'local>(
                 _env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
                 binding_ptr: $crate::jni::jlong,
@@ -577,7 +577,7 @@ macro_rules! ffi_binding {
             #[cfg(feature = "android-jni")]
             /// JNI: Watches for changes in a binding
             #[unsafe(no_mangle)]
-            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_watchBinding $ident:camel>]<'local>(
+            extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_watchBinding $ident:camel>]<'local>(
                 mut env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
                 binding_ptr: $crate::jni::jlong,
@@ -738,7 +738,7 @@ macro_rules! jni_binding_primitive {
         pastey::paste! {
             #[cfg(feature = "android-jni")]
             #[unsafe(no_mangle)]
-            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_readBinding $binding_name:camel>]<'local>(
+            extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_readBinding $binding_name:camel>]<'local>(
                 _env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
                 binding_ptr: $crate::jni::jlong,
@@ -750,7 +750,7 @@ macro_rules! jni_binding_primitive {
 
             #[cfg(feature = "android-jni")]
             #[unsafe(no_mangle)]
-            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_setBinding $binding_name:camel>]<'local>(
+            extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_setBinding $binding_name:camel>]<'local>(
                 _env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
                 binding_ptr: $crate::jni::jlong,
@@ -771,7 +771,7 @@ macro_rules! jni_computed_primitive {
         pastey::paste! {
             #[cfg(feature = "android-jni")]
             #[unsafe(no_mangle)]
-            pub extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_readComputed $computed_name:camel>]<'local>(
+            extern "system" fn [<Java_dev_waterui_android_ffi_WatcherJni_readComputed $computed_name:camel>]<'local>(
                 _env: $crate::jni::JNIEnv<'local>,
                 _class: $crate::jni::JClass<'local>,
                 computed_ptr: $crate::jni::jlong,

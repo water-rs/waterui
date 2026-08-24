@@ -1,5 +1,7 @@
 use core::error::Error;
-use waterui_core::{State, View};
+#[cfg(feature = "snackbar")]
+use waterui_core::State;
+use waterui_core::View;
 use waterui_graphics::color::Color;
 use waterui_layout::{
     spacer,
@@ -17,6 +19,7 @@ use waterui_text::{
 use executor_core::spawn_local;
 
 use crate::ViewExt;
+#[cfg(feature = "snackbar")]
 use crate::snackbar::{Snackbar, SnackbarManager};
 
 /// Copies text to the system clipboard.
@@ -119,12 +122,7 @@ impl View for Code {
                         .bold()
                         .foreground(Color::srgb_f32(0.85, 0.86, 0.9)),
                     spacer(),
-                    text("Copy")
-                        .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
-                        .on_tap(move |State(snackbar): State<SnackbarManager>| {
-                            copy_to_clipboard(&content_for_copy);
-                            snackbar.show(Snackbar::new("Copied to clipboard"));
-                        }),
+                    copy_button(content_for_copy),
                 )),
                 text(styled),
             ),
@@ -132,6 +130,23 @@ impl View for Code {
         .padding()
         .background(Color::srgb_f32(0.15, 0.15, 0.18))
     }
+}
+
+#[cfg(feature = "snackbar")]
+fn copy_button(content: String) -> impl View {
+    text("Copy")
+        .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
+        .on_tap(move |State(snackbar): State<SnackbarManager>| {
+            copy_to_clipboard(&content);
+            snackbar.show(Snackbar::new("Copied to clipboard"));
+        })
+}
+
+#[cfg(not(feature = "snackbar"))]
+fn copy_button(content: String) -> impl View {
+    text("Copy")
+        .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
+        .on_tap(move || copy_to_clipboard(&content))
 }
 
 /// Convenience constructor for creating a [`Code`] view inline.

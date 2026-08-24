@@ -7,16 +7,23 @@
 use core::cell::Cell;
 use std::rc::Rc;
 
+use kurbo::Rect;
 use nami::binding;
+use peniko::Brush;
+use waterui::Plugin as _;
+use waterui::color::{ResolvedColor, Srgb};
 use waterui::prelude::*;
+use waterui::theme::{ColorSettings, Theme};
 use waterui_backend_core::input::TouchPhase;
-use waterui_controls::button::button;
 use waterui_controls::toggle::toggle;
 use waterui_core::Str;
-use waterui_dew::{DewRenderer, DewRuntime, HostBoard, PointerSample, render_view_png};
+use waterui_dew::{
+    DewRenderer, DewRuntime, DisplayList, DrawCommand, HostBoard, PlacedCommand, PointerSample,
+};
 use waterui_navigation::{
-    NavigationLink, NavigationPath, NavigationStack, NavigationTitleDisplayMode, NavigationToolbar,
-    NavigationToolbarItem, NavigationToolbarPlacement, NavigationView,
+    NavigationLink, NavigationPath, NavigationSplitView, NavigationStack,
+    NavigationTitleDisplayMode, NavigationToolbar, NavigationToolbarItem,
+    NavigationToolbarPlacement, NavigationView,
 };
 
 mod support;
@@ -39,6 +46,26 @@ fn tap(runtime: &mut DewRuntime<HostBoard>, x: f64, y: f64) -> Option<waterui_de
     runtime.pump()
 }
 
+fn tap_labeled(runtime: &mut DewRuntime<HostBoard>, label: &str) -> Option<waterui_dew::Frame> {
+    let bounds = runtime
+        .board()
+        .accessibility_tree()
+        .expect("a rendered host frame publishes accessibility bounds")
+        .nodes
+        .iter()
+        .find_map(|(_, node)| {
+            (node.label() == Some(label))
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .unwrap_or_else(|| panic!("the visible control `{label}` has accessibility bounds"));
+    tap(
+        runtime,
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    )
+}
+
 fn run(build: impl Fn() -> NavigationStack<(), ()> + 'static) -> DewRuntime<HostBoard> {
     let mut runtime = DewRuntime::new(
         HostBoard::new(WIDTH, HEIGHT),
@@ -50,31 +77,137 @@ fn run(build: impl Fn() -> NavigationStack<(), ()> + 'static) -> DewRuntime<Host
     runtime
 }
 
+const fn solid_color(command: &PlacedCommand) -> Option<peniko::Color> {
+    match command.command() {
+        DrawCommand::FillPath {
+            brush: Brush::Solid(color),
+            ..
+        } => Some(*color),
+        _ => None,
+    }
+}
+
+const fn exact_f64(left: f64, right: f64) -> bool {
+    left.to_bits() == right.to_bits()
+}
+
+const fn exact_f32(left: f32, right: f32) -> bool {
+    left.to_bits() == right.to_bits()
+}
+
+fn assert_exact_f64(left: f64, right: f64) {
+    assert_eq!(left.to_bits(), right.to_bits());
+}
+
+fn solid_fill_bounds(list: &DisplayList, color: peniko::Color) -> Vec<Rect> {
+    list.commands()
+        .iter()
+        .filter(|command| solid_color(command) == Some(color))
+        .map(PlacedCommand::bounds)
+        .collect()
+}
+
+fn display_srgb(red: u8, green: u8, blue: u8) -> peniko::Color {
+    let resolved = ResolvedColor::from_srgb(Srgb::new_u8(red, green, blue));
+    let srgb = resolved.to_srgb_with_headroom();
+    peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.opacity])
+}
+
+fn only_solid_fill(list: &DisplayList, color: peniko::Color) -> Rect {
+    let bounds = solid_fill_bounds(list, color);
+    assert_eq!(bounds.len(), 1, "expected exactly one {color:?} fill");
+    bounds[0]
+}
+
+fn assert_root_background(list: &DisplayList) {
+    let first = list
+        .commands()
+        .first()
+        .expect("every Dew frame begins with its root background");
+    assert!(solid_color(first).is_some());
+    assert_eq!(
+        first.bounds(),
+        Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT))
+    );
+}
+
+fn full_width_solid_fills(list: &DisplayList, width: f64) -> Vec<Rect> {
+    list.commands()
+        .iter()
+        .skip(1)
+        .filter_map(|command| {
+            let bounds = command.bounds();
+            (solid_color(command).is_some()
+                && exact_f64(bounds.x0, 0.0)
+                && exact_f64(bounds.x1, width))
+            .then_some(bounds)
+        })
+        .collect()
+}
+
 /// A stack renders its root destination's content under the bar, and the bar
 /// is drawn as chrome above it.
 #[test]
 fn a_stack_draws_its_root_under_a_bar() {
-    let png = render_view_png(
-        || NavigationStack::new(NavigationView::new("Settings", Color::red())),
-        support::test_environment(),
-        WIDTH,
-        HEIGHT,
+    let mut renderer = DewRenderer::default();
+    let list = renderer.render_tree(
+        AnyView::new(NavigationStack::new(NavigationView::new(
+            "Settings",
+            Color::srgb(255, 0, 0),
+        ))),
+        &support::test_environment(),
+        f64::from(WIDTH),
+        f64::from(HEIGHT),
     );
-    let pixmap =
-        vello_cpu::Pixmap::from_png(std::io::Cursor::new(png.as_slice())).expect("png decodes");
-    let pixel = |x: usize, y: usize| {
-        let p = pixmap.data()[y * WIDTH as usize + x];
-        [p.r, p.g, p.b]
+    assert_root_background(&list);
+    let content = only_solid_fill(&list, display_srgb(255, 0, 0));
+    let bars = full_width_solid_fills(&list, f64::from(WIDTH))
+        .into_iter()
+        .filter(|bounds| bounds.height() > 1.0 && *bounds != content)
+        .collect::<Vec<_>>();
+    let [bar] = bars.as_slice() else {
+        panic!("navigation emits exactly one top surface")
     };
-    let content = pixel(120, 200);
-    assert!(
-        content[0] > 150 && content[2] < 100,
-        "the destination's content fills the area under the bar, got {content:?}"
+    assert_exact_f64(bar.x0, 0.0);
+    assert_exact_f64(bar.y0, 0.0);
+    assert_exact_f64(bar.x1, f64::from(WIDTH));
+    assert_eq!(
+        content,
+        Rect::new(0.0, bar.y1, f64::from(WIDTH), f64::from(HEIGHT))
     );
-    let bar = pixel(120, 4);
+}
+
+/// The backend owns the window background, and the retained root observes the
+/// theme signal without rebuilding its view tree.
+#[test]
+fn root_background_tracks_the_dynamic_theme() {
+    let background = binding(ResolvedColor::from_srgb(Srgb::new(1.0, 0.0, 0.0)));
+    let mut environment = support::test_environment();
+    Theme::new()
+        .colors(ColorSettings::new().background(background.clone()))
+        .install(&mut environment);
+    let mut runtime = DewRuntime::new(HostBoard::new(WIDTH, HEIGHT), environment, 16, || {
+        AnyView::new(())
+    });
+    runtime.pump().expect("the red background renders");
+    assert_eq!(runtime.board().framebuffer().pixel(0, 0), [255, 0, 0, 255]);
+    assert_eq!(
+        runtime.board().framebuffer().pixel(WIDTH - 1, HEIGHT - 1),
+        [255, 0, 0, 255]
+    );
+
+    background.set(ResolvedColor::from_srgb(Srgb::new(0.0, 0.0, 1.0)));
+    runtime
+        .pump()
+        .expect("changing the background signal renders one new frame");
+    assert_eq!(runtime.board().framebuffer().pixel(0, 0), [0, 0, 255, 255]);
+    assert_eq!(
+        runtime.board().framebuffer().pixel(WIDTH - 1, HEIGHT - 1),
+        [0, 0, 255, 255]
+    );
     assert!(
-        !(bar[0] > 150 && bar[2] < 100),
-        "the bar covers the top strip rather than the content, got {bar:?}"
+        runtime.pump().is_none(),
+        "the theme update settles in one frame"
     );
 }
 
@@ -115,10 +248,9 @@ fn going_back_restores_the_covered_destination_with_its_state() {
             )),
         ))
     });
-    // The toggle is the first row under the bar, the link the row below it.
-    tap(&mut runtime, 210.0, 43.0);
+    tap_labeled(&mut runtime, "Remembered");
     assert!(observed.get(), "the toggle flips on the root screen");
-    tap(&mut runtime, 120.0, 84.0);
+    tap_labeled(&mut runtime, "Open");
     // Back is the leading item of the pushed destination's bar.
     let frame = tap(&mut runtime, 30.0, 14.0).expect("going back renders a frame");
     assert!(
@@ -251,16 +383,16 @@ fn a_bar_places_every_part_it_declares() {
     let mut renderer = DewRenderer::default();
     let list = renderer.render_tree(
         AnyView::new(NavigationStack::new(
-            NavigationView::new("Rooms", vstack((text("Kitchen"), text("Bedroom"))))
+            NavigationView::new("Rooms", Color::srgb(0, 255, 255))
                 .searchable(&query, "Find a room")
                 .navigation_toolbar(NavigationToolbar::new(vec![
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
-                        button("Add").action(|| {}),
+                        Color::srgb(255, 0, 255).width(12.0).height(8.0),
                     ),
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::BottomBar,
-                        button("Edit").action(|| {}),
+                        Color::srgb(255, 255, 0).width(14.0).height(6.0),
                     ),
                 ]))
                 .navigation_title_display_mode(NavigationTitleDisplayMode::Large),
@@ -269,45 +401,73 @@ fn a_bar_places_every_part_it_declares() {
         f64::from(WIDTH),
         f64::from(HEIGHT),
     );
-    let commands = list.commands();
     let height = f64::from(HEIGHT);
     let width = f64::from(WIDTH);
+    assert_root_background(&list);
 
-    assert!(
-        commands.iter().any(|placed| {
-            let bounds = placed.bounds();
-            bounds.y0 > height - 48.0 && bounds.width() > width - 4.0
-        }),
-        "the bottom bar covers the foot of the screen"
+    let content = only_solid_fill(&list, display_srgb(0, 255, 255));
+    let mut bars: Vec<Rect> = full_width_solid_fills(&list, width)
+        .into_iter()
+        .filter(|bounds| bounds.height() > 1.0 && *bounds != content)
+        .collect();
+    bars.sort_by(|left, right| left.y0.total_cmp(&right.y0));
+    let [top_bar, bottom_bar] = bars.as_slice() else {
+        panic!("navigation emits exactly one top and one bottom surface")
+    };
+    assert_exact_f64(top_bar.y0, 0.0);
+    assert_exact_f64(bottom_bar.y1, height);
+
+    assert_eq!(content, Rect::new(0.0, top_bar.y1, width, bottom_bar.y0));
+
+    let trailing = only_solid_fill(&list, display_srgb(255, 0, 255));
+    assert_exact_f64(trailing.width(), 12.0);
+    assert_exact_f64(trailing.height(), 8.0);
+    assert_exact_f64(trailing.x1, width - 8.0);
+    assert_eq!(top_bar.intersect(trailing), trailing);
+
+    let bottom_item = only_solid_fill(&list, display_srgb(255, 255, 0));
+    assert_exact_f64(bottom_item.width(), 14.0);
+    assert_exact_f64(bottom_item.height(), 6.0);
+    assert_exact_f64(bottom_item.center().x, bottom_bar.center().x);
+    assert_eq!(bottom_bar.intersect(bottom_item), bottom_item);
+
+    let border: Vec<Rect> = full_width_solid_fills(&list, width)
+        .into_iter()
+        .filter(|bounds| exact_f64(bounds.height(), 1.0))
+        .collect();
+    assert_eq!(
+        border,
+        vec![
+            Rect::new(0.0, top_bar.y1 - 1.0, width, top_bar.y1),
+            Rect::new(0.0, bottom_bar.y0, width, bottom_bar.y0 + 1.0),
+        ]
     );
-    assert!(
-        commands.iter().any(|placed| {
-            let bounds = placed.bounds();
-            bounds.y0 > height - 44.0 && bounds.x0 > 40.0 && bounds.x1 < width - 40.0
-        }),
-        "the bottom-bar item is drawn inside it"
-    );
-    assert!(
-        commands.iter().any(|placed| {
-            let bounds = placed.bounds();
-            bounds.y0 < 36.0 && bounds.x1 > width - 12.0 && bounds.width() < width / 2.0
-        }),
-        "the trailing toolbar item sits at the right of the item row"
-    );
-    assert!(
-        commands.iter().any(|placed| {
-            let bounds = placed.bounds();
-            bounds.y0 > 36.0 && bounds.y1 < 80.0 && bounds.x0 < 20.0
-        }),
-        "a large title takes its own row beneath the items, aligned to the leading edge"
-    );
-    assert!(
-        commands.iter().any(|placed| {
-            let bounds = placed.bounds();
-            bounds.y0 > 60.0 && bounds.y1 < 110.0 && bounds.width() > width - 24.0
-        }),
-        "the search field spans the bar beneath the title"
-    );
+
+    let title_sizes: Vec<f32> = list
+        .commands()
+        .iter()
+        .filter_map(|placed| match placed.command() {
+            DrawCommand::GlyphRun { font_size, .. } => Some(*font_size),
+            _ => None,
+        })
+        .collect();
+    let title = list
+        .commands()
+        .iter()
+        .find(|placed| {
+            matches!(placed.command(), DrawCommand::GlyphRun { font_size, .. } if exact_f32(*font_size, 24.0))
+        })
+        .unwrap_or_else(|| panic!("the large title uses the configured title font: {title_sizes:?}"));
+    assert_eq!(top_bar.intersect(title.bounds()), title.bounds());
+
+    let search = list
+        .commands()
+        .iter()
+        .filter(|command| solid_color(command).is_some())
+        .map(PlacedCommand::bounds)
+        .find(|bounds| exact_f64(bounds.x0, 8.0) && exact_f64(bounds.x1, width - 8.0))
+        .expect("the search field owns the exact inset bar width");
+    assert_eq!(top_bar.intersect(search), search);
 }
 
 /// Visual review artifact: a destination with a bar and content, then the
@@ -331,10 +491,143 @@ fn export_navigation_for_visual_review() {
         runtime.board().framebuffer().to_png(),
     )
     .expect("export the root screen");
-    tap(&mut runtime, 120.0, 100.0).expect("following the link renders a frame");
+    tap_labeled(&mut runtime, "Schedule").expect("following the link renders a frame");
     std::fs::write(
         "/tmp/waterui_dew_navigation_pushed.png",
         runtime.board().framebuffer().to_png(),
     )
     .expect("export the pushed screen");
+}
+
+/// A two-column split retains each opened detail rather than rebuilding it
+/// after the selection passes through the placeholder.
+#[test]
+fn a_split_retains_details_across_selection_round_trips() {
+    let selection = binding(None::<u32>);
+    let observed = selection.clone();
+    let builds = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&builds);
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(600, HEIGHT),
+        support::test_environment(),
+        16,
+        move || {
+            let counted = Rc::clone(&counted);
+            AnyView::new(NavigationSplitView::new(
+                &selection,
+                Color::red(),
+                move |room: u32| {
+                    counted.set(counted.get() + 1);
+                    NavigationView::new(text!("Room {room}"), Color::blue())
+                },
+            ))
+        },
+    );
+    runtime.pump().expect("the split's first frame renders");
+
+    observed.set(Some(7));
+    runtime
+        .pump()
+        .expect("selecting a detail renders one frame");
+    observed.set(None);
+    runtime
+        .pump()
+        .expect("clearing selection shows the placeholder");
+    observed.set(Some(7));
+    runtime
+        .pump()
+        .expect("reselecting the retained detail renders one frame");
+
+    assert_eq!(builds.get(), 1, "the detail node is retained by its id");
+    assert!(
+        runtime.pump().is_none(),
+        "split selection changes are instantaneous"
+    );
+}
+
+/// A split narrower than two declared minimum columns becomes a hierarchy;
+/// its contextual back action clears selection and returns to the primary.
+#[test]
+fn a_compact_split_navigates_back_to_its_primary() {
+    let selection = binding(None::<u32>);
+    let observed = selection.clone();
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(200, HEIGHT),
+        support::test_environment(),
+        16,
+        move || {
+            AnyView::new(NavigationSplitView::new(
+                &selection,
+                Color::red(),
+                |room: u32| NavigationView::new(text!("Room {room}"), Color::blue()),
+            ))
+        },
+    );
+    runtime.pump().expect("the compact primary renders");
+    observed.set(Some(3));
+    runtime.pump().expect("the compact detail renders");
+
+    tap(&mut runtime, 24.0, 14.0).expect("the contextual back action renders the primary");
+    assert_eq!(
+        observed.get(),
+        None,
+        "back clears the selection that presented the detail"
+    );
+}
+
+/// Three-column splits retain middle and detail destinations independently.
+#[test]
+fn a_three_column_split_retains_both_destination_levels() {
+    let primary = binding(Some(1_u32));
+    let secondary = binding(Some(10_u32));
+    let observed_primary = primary.clone();
+    let observed_secondary = secondary.clone();
+    let content_builds = Rc::new(Cell::new(0));
+    let detail_builds = Rc::new(Cell::new(0));
+    let counted_content = Rc::clone(&content_builds);
+    let counted_detail = Rc::clone(&detail_builds);
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(900, HEIGHT),
+        support::test_environment(),
+        16,
+        move || {
+            let counted_content = Rc::clone(&counted_content);
+            let counted_detail = Rc::clone(&counted_detail);
+            AnyView::new(NavigationSplitView::three_column(
+                &primary,
+                &secondary,
+                Color::red(),
+                move |section: u32| {
+                    counted_content.set(counted_content.get() + 1);
+                    NavigationView::new(text!("Section {section}"), Color::green())
+                },
+                move |item: u32| {
+                    counted_detail.set(counted_detail.get() + 1);
+                    NavigationView::new(text!("Item {item}"), Color::blue())
+                },
+            ))
+        },
+    );
+    runtime.pump().expect("all three columns render");
+    std::fs::write(
+        "/tmp/waterui_dew_navigation_split.png",
+        runtime.board().framebuffer().to_png(),
+    )
+    .expect("export split visual review PNG");
+    assert_eq!(content_builds.get(), 1);
+    assert_eq!(detail_builds.get(), 1);
+
+    observed_primary.set(Some(2));
+    runtime.pump().expect("the new middle destination renders");
+    observed_primary.set(Some(1));
+    runtime
+        .pump()
+        .expect("the retained middle destination returns");
+    observed_secondary.set(None);
+    runtime.pump().expect("the detail placeholder renders");
+    observed_secondary.set(Some(10));
+    runtime.pump().expect("the retained detail returns");
+
+    assert_eq!(content_builds.get(), 2, "each middle id is built once");
+    assert_eq!(detail_builds.get(), 1, "the detail id is built once");
 }

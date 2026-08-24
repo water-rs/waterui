@@ -782,13 +782,13 @@ fn full_screen_repaint_is_bus_bound_below_thirty_fps() {
 /// The factor is a modeling estimate in the same spirit as
 /// [`ChipBudget`]'s cycle costs, and it is calibrated against evidence in
 /// both directions: real `opt-level=2` firmware renders a full facade app in
-/// a 48 KiB task on an emulated ESP32-C3, while this unoptimized host
-/// pipeline overflows the S3's 160 KiB task stack and first fits between
-/// 320 KiB and 384 KiB (the deepest path is the first frame's build → label
-/// emit → parley shaping chain). 3× (480 KiB) passes with bounded margin, so
-/// recursion-depth growth still trips the gate; optimized builds use the
-/// chip's stack unscaled.
-const DEBUG_STACK_FACTOR: u64 = 3;
+/// a 48 KiB task on an emulated ESP32-C3, and the current optimized host
+/// pipeline passes with the ESP32-S3's unscaled 160 KiB stack. The current
+/// unoptimized pipeline overflows at 480 KiB and passes at 640 KiB (the
+/// deepest path is the first frame's build → label emit → parley shaping
+/// chain). Optimized builds therefore keep the device stack unchanged; only
+/// debug builds receive the measured 4× allowance.
+const DEBUG_STACK_FACTOR: u64 = 4;
 
 /// The work-budgeted embedded simulation.
 ///

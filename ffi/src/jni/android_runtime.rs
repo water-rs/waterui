@@ -10,7 +10,7 @@ struct AndroidContextOwner {
 
 /// Install the Activity-backed Android context used by WaterKit.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_initializeAndroidContext<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_initializeAndroidContext<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     activity: JObject<'local>,
@@ -36,7 +36,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_initializeAndroid
 
 /// Release the Activity-backed Android context.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_releaseAndroidContext<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_releaseAndroidContext<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     owner: jlong,

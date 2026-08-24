@@ -12629,6 +12629,7 @@ dependencies = [
 name = "waterui-dew"
 version = "0.1.0"
 dependencies = [
+ "accesskit",
  "async-executor",
  "esp-idf-svc",
  "executor-core 0.7.1",

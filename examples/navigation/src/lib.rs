@@ -719,13 +719,9 @@ fn photo_page(index: usize) -> NavigationView {
             // not a point value.
             .clip(RoundedRectangle::new(0.06))
             .navigation_transition_destination(photo_transition(index)),
-        text(
-            "Tapping a tile matches this hero to that tile: the backend runs \
-             its native zoom transition, and the platform's interactive back \
-             gesture drives the same transition in reverse.",
-        )
-        .caption()
-        .foreground(MutedForeground),
+        text(include_str!("gallery_transition_description.txt"))
+            .caption()
+            .foreground(MutedForeground),
     ))
     .spacing(12.0)
     .padding_with(EdgeInsets::all(16.0))

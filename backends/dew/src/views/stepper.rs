@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 
+use accesskit::{Action as AccessibilityAction, Node as AccessibilityNode, NodeId, Role};
 use kurbo::{Line, Rect, RoundedRect, Stroke};
 use nami::{Binding, Computed, Signal};
 use waterui_controls::stepper::StepperConfig;
@@ -9,6 +10,7 @@ use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_text::styled::StyledStr;
 
+use crate::accessibility::ActionTarget;
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
@@ -51,6 +53,7 @@ struct StepperNode {
     env: Environment,
     decrement: PointerTargetHandle,
     increment: PointerTargetHandle,
+    accessibility_id: NodeId,
 }
 
 impl StepperNode {
@@ -101,7 +104,11 @@ impl PointerHandler for StepperPointer {
     }
 }
 
-pub fn build(renderer: &DewRenderer, config: StepperConfig, env: &Environment) -> Box<dyn DewNode> {
+pub fn build(
+    renderer: &mut DewRenderer,
+    config: StepperConfig,
+    env: &Environment,
+) -> Box<dyn DewNode> {
     let decrement = PointerTargetHandle::new(StepperPointer {
         value: config.value.clone(),
         step: config.step.clone(),
@@ -123,6 +130,7 @@ pub fn build(renderer: &DewRenderer, config: StepperConfig, env: &Environment) -
         .map(|formatter| WatchedSignal::new(formatter, renderer.signals()));
     let value = WatchedSignal::new(config.value.clone(), renderer.signals());
     let step = WatchedSignal::new(config.step.clone(), renderer.signals());
+    let accessibility_id = renderer.allocate_accessibility_id();
     Box::new(StepperNode {
         config,
         label,
@@ -132,6 +140,7 @@ pub fn build(renderer: &DewRenderer, config: StepperConfig, env: &Environment) -
         env: env.clone(),
         decrement,
         increment,
+        accessibility_id,
     })
 }
 
@@ -159,6 +168,32 @@ impl DewNode for StepperNode {
             ctx.transform.transform_rect_bbox(plus),
             self.increment.clone(),
         );
+        if renderer.accessibility_enabled() {
+            let start = *self.config.range.start();
+            let end = *self.config.range.end();
+            let current = self.value.get().clamp(start, end);
+            let step = self.step.get();
+            let mut node = AccessibilityNode::new(Role::SpinButton);
+            node.set_label(self.label.semantic_text());
+            node.set_numeric_value(f64::from(current));
+            node.set_min_numeric_value(f64::from(start));
+            node.set_max_numeric_value(f64::from(end));
+            node.set_numeric_value_step(f64::from(step));
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Increment);
+            node.add_action(AccessibilityAction::Decrement);
+            node.add_action(AccessibilityAction::SetValue);
+            renderer.register_accessibility_node(
+                self.accessibility_id,
+                node,
+                ctx.window_bounds(),
+                Some(ActionTarget::Stepper {
+                    value: self.config.value.clone(),
+                    step: self.config.step.clone(),
+                    range: self.config.range.clone(),
+                }),
+            );
+        }
     }
 
     fn stretch_axis(&self) -> StretchAxis {

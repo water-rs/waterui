@@ -26,8 +26,11 @@ use waterui_video_gpu::{AndroidVideoSurfaceBridge, AndroidVideoSurfaceHost};
 /// JNI projection of the self-drawn player's Android secure-surface wrapper.
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiAndroidVideoSurfaceHost {
+    /// Content rendered above the platform secure video surface.
     pub content: *mut crate::WuiAnyView,
+    /// Bridge that owns the Android video surface lifecycle.
     pub bridge: *mut AndroidVideoSurfaceBridge,
 }
 

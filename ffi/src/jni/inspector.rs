@@ -29,7 +29,7 @@ unsafe fn environment<'a>(env_ptr: jlong) -> Option<&'a WuiEnv> {
 /// Asked before showing "Inspect element", so a release build shows nothing
 /// rather than an entry that does nothing.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_isAvailable<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_isAvailable<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -46,7 +46,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_isAvailable<'lo
 /// A phone is inspected from the developer's computer, so this reports where to
 /// attach rather than launching anything on the device.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_open<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_open<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -63,7 +63,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_open<'local>(
 
 /// Reveals one accessibility node in the inspector.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_inspectNode<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_inspectNode<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,
@@ -87,7 +87,7 @@ pub extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_inspectNode<'lo
 ///
 /// Android walks its view hierarchy only when the answer is yes.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_wantsTree<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_wantsTree<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     env_ptr: jlong,

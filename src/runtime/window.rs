@@ -29,12 +29,13 @@ use waterui_layout::{Point, Rect, Size};
 use waterui_str::Str;
 
 use crate::app::application_name;
+#[cfg(feature = "snackbar")]
+use crate::snackbar::SnackbarManager;
 use crate::{
     ViewExt,
     background::{Material, MaterialBackground},
     component::label::LabelDisplayMode,
     prelude::FullScreenOverlayManager,
-    snackbar::SnackbarManager,
 };
 
 /// Represents a window in the UI.
@@ -220,20 +221,23 @@ impl Window {
     ) -> Self {
         let default_frame = Rect::new(Point::zero(), Size::new(800.0, 600.0));
         let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
+        #[cfg(feature = "snackbar")]
         let (snackbar_manager, snackbar_view) = SnackbarManager::new();
         let content = AnyViewBuilder::new(move || {
             let overlay_manager = overlay_manager.clone();
+            #[cfg(feature = "snackbar")]
             let snackbar_manager = snackbar_manager.clone();
-            AnyView::new(
-                content
-                    .build()
-                    .overlay(overlay_view.clone())
-                    .overlay(snackbar_view.clone())
-                    .with(overlay_manager.clone())
-                    .with(snackbar_manager.clone())
-                    .state(&overlay_manager)
-                    .state(&snackbar_manager),
-            )
+            let content = content
+                .build()
+                .overlay(overlay_view.clone())
+                .with(overlay_manager.clone())
+                .state(&overlay_manager);
+            #[cfg(feature = "snackbar")]
+            let content = content
+                .overlay(snackbar_view.clone())
+                .with(snackbar_manager.clone())
+                .state(&snackbar_manager);
+            AnyView::new(content)
         });
 
         Self {

@@ -94,6 +94,12 @@ impl LabelText {
         matches!(self.display_mode, LabelDisplayMode::Hidden)
     }
 
+    /// The label text exposed to assistive technology, including labels whose
+    /// visual display mode is hidden.
+    pub(crate) fn semantic_text(&self) -> String {
+        self.content.get().to_plain().to_string()
+    }
+
     /// Measures the label at its intrinsic width.
     pub fn measure(&self, state: &RefCell<DewState>, env: &Environment) -> Size {
         if self.is_hidden() {
@@ -219,7 +225,13 @@ mod tests {
         waterui_testing::install_test_executor();
         let mut renderer = DewRenderer::default();
         let list = renderer.render_tree(AnyView::new(view), &Environment::new(), width, height);
-        list.commands().to_vec()
+        let (background, commands) = list
+            .commands()
+            .split_first()
+            .expect("Dew display list starts with the window background");
+        assert_color_near(solid_brush(background), theme::BACKGROUND);
+        assert_eq!(background.bounds(), Rect::new(0.0, 0.0, width, height));
+        commands.to_vec()
     }
 
     fn solid_brush(placed: &crate::display_list::PlacedCommand) -> peniko::Color {
@@ -334,14 +346,14 @@ mod tests {
             40.0,
         );
         assert_color_near(
-            solid_brush(&commands.commands()[0]),
+            solid_brush(&commands.commands()[1]),
             peniko::Color::from_rgb8(255, 0, 0),
         );
 
         accent.set(ResolvedColor::from_srgb(Srgb::new(0.0, 0.0, 1.0)));
         let commands = renderer.refresh_tree(200.0, 40.0);
         assert_color_near(
-            solid_brush(&commands.commands()[0]),
+            solid_brush(&commands.commands()[1]),
             peniko::Color::from_rgb8(0, 0, 255),
         );
     }
