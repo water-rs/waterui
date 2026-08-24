@@ -416,17 +416,22 @@ impl<F> UseEnv<F> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use waterui_core::env::use_env;
+/// ```
+/// use nami::Binding;
+/// use waterui_core::{State, env::use_env, raw_view};
 ///
-/// // Extract a specific type from environment
-/// let view = use_env(|theme: Theme| {
-///     text!("Current theme: {}", theme.name())
-/// });
+/// // A leaf view that keeps the binding rather than reading it, so the value
+/// // stays reactive.
+/// struct Counter(Binding<i32>);
+/// raw_view!(Counter);
 ///
-/// // Extract multiple types using a tuple
-/// let view = use_env(|(nav, db): (NavigationController, Database)| {
-///     // ...
+/// // Extract one value from the environment.
+/// let view = use_env(|State(count): State<Binding<i32>>| Counter(count));
+///
+/// // Extract several at once with a tuple.
+/// let pair = use_env(|(State(count), State(step)): (State<Binding<i32>>, State<Binding<i32>>)| {
+///     let _ = step;
+///     Counter(count)
 /// });
 /// ```
 ///

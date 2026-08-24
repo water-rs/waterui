@@ -13,7 +13,7 @@
 //! ### Declarative View System
 //!
 //! The [`View`] trait forms the foundation of the UI component model:
-//! ```rust,ignore
+//! ```text
 //! pub trait View: 'static {
 //!     fn body(self, env: &Environment) -> impl View;
 //! }
