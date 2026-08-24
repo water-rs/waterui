@@ -11,9 +11,9 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_core::{AnyView, Environment};
 use waterui_navigation::{
-    Bar, CustomNavigationController, NativeNavigationTransition, NavigationController,
-    NavigationSplitLayout, NavigationStack, NavigationToolbarPlacement, NavigationTransaction,
-    NavigationView, navigation_back_label, resolve_navigation_root,
+    AnyNavigationTransition, Bar, CustomNavigationController, NativeNavigationTransition,
+    NavigationController, NavigationSplitLayout, NavigationStack, NavigationToolbarPlacement,
+    NavigationTransaction, NavigationView, navigation_back_label, resolve_navigation_root,
 };
 
 use crate::component::GtkComponent;
@@ -203,7 +203,7 @@ impl GtkComponent for NavigationView {
     }
 }
 
-/// Projects a resolved WaterUI transition onto the GTK stack that will run it.
+/// Projects a resolved `WaterUI` transition onto the GTK stack that will run it.
 ///
 /// GTK animates a stack switch with whatever type the stack carries at that
 /// moment, so this is set before each push and pop rather than once.
@@ -455,7 +455,7 @@ impl GtkNavigationControllerInner {
         let transition = content
             .transition
             .as_ref()
-            .map_or(self.stack_transition, |declared| declared.native());
+            .map_or(self.stack_transition, AnyNavigationTransition::native);
         apply_stack_transition(&self.stack, transition);
 
         let mut renderer = GtkRenderer::new();
