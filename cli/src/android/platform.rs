@@ -384,6 +384,17 @@ impl AndroidPlatform {
     /// # Errors
     /// Returns an error if the build fails.
     pub async fn build(&self, project: &Project, options: BuildOptions) -> eyre::Result<PathBuf> {
+        // Android cannot share the Rust runtime between the application and a
+        // loadable module. `-Cprefer-dynamic` links `std` from the toolchain's
+        // prebuilt dylib, and rustup ships that one with 4 KB-aligned LOAD
+        // segments; a device with 16 KB pages rejects it, and a debuggable build
+        // is told so in an "Android App Compatibility" dialog. Nothing here can
+        // realign a prebuilt, and giving the two objects a static copy each
+        // would give the process two allocators, two panic runtimes and two sets
+        // of thread-locals. So the runtime is linked in, which is what a
+        // packaged build already does — the `-z max-page-size=16384` below then
+        // covers everything the package ships.
+        let options = options.with_static_runtime();
         // Resolve fonts BEFORE cargo build - this ensures icons.json is downloaded
         // for crates like fontawesome7 that need it during build.rs
         let font_declarations = crate::assets::scan_fonts(project).await?;
@@ -652,9 +663,6 @@ async fn configure_android_rust_build(
         // Devices with 16 KB pages (Pixel 9 class and Play's 2025 requirement)
         // refuse or warn on 4 KB-aligned LOAD segments.
         .with_rustc_flag("-Clink-arg=-Wl,-z,max-page-size=16384");
-    if options.linkage() == RustLinkage::SharedRuntime {
-        build = build.with_feature("dev").with_preferred_dynamic_linking();
-    }
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }

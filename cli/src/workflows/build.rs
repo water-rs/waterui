@@ -324,6 +324,17 @@ impl BuildOptions {
         }
     }
 
+    /// Link the Rust runtime in, whatever the caller asked for.
+    ///
+    /// A platform whose loader cannot accept the toolchain's prebuilt runtime
+    /// says so here rather than at the link step, so that the target directory
+    /// and the staged libraries agree with what is actually built.
+    #[must_use]
+    pub const fn with_static_runtime(mut self) -> Self {
+        self.linkage = RustLinkage::Static;
+        self
+    }
+
     /// Create options for a self-contained package build.
     #[must_use]
     pub const fn packaging(release: bool) -> Self {

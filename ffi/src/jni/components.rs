@@ -1286,6 +1286,10 @@ struct ReactiveFontState {
     binding: waterui::Binding<ResolvedFont>,
 }
 
+struct ReactiveEdgeInsetsState {
+    binding: waterui::Binding<waterui_layout::padding::EdgeInsets>,
+}
+
 #[inline]
 fn reactive_state<'a, T>(state_ptr: jlong) -> &'a T {
     unsafe { crate::borrow_ffi(state_ptr as *const T) }
@@ -1380,6 +1384,86 @@ pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColor
 ) {
     let state = state_ptr as *mut ReactiveColorSchemeState;
     unsafe { drop(Box::from_raw(state)) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveEdgeInsetsState<
+    'local,
+>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    top: jfloat,
+    bottom: jfloat,
+    leading: jfloat,
+    trailing: jfloat,
+) -> jlong {
+    let state = ReactiveEdgeInsetsState {
+        binding: waterui::reactive::binding(waterui_layout::padding::EdgeInsets::new(
+            top, bottom, leading, trailing,
+        )),
+    };
+    Box::into_raw(Box::new(state)) as jlong
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveEdgeInsetsStateToComputed<
+    'local,
+>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+) -> jlong {
+    let state = reactive_state::<ReactiveEdgeInsetsState>(state_ptr);
+    let computed = state.binding.computed();
+    computed.into_ffi() as jlong
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveEdgeInsetsStateSet<
+    'local,
+>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+    top: jfloat,
+    bottom: jfloat,
+    leading: jfloat,
+    trailing: jfloat,
+) {
+    let state = reactive_state::<ReactiveEdgeInsetsState>(state_ptr);
+    state.binding.set(waterui_layout::padding::EdgeInsets::new(
+        top, bottom, leading, trailing,
+    ));
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveEdgeInsetsState<
+    'local,
+>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+) {
+    let state = state_ptr as *mut ReactiveEdgeInsetsState;
+    unsafe { drop(Box::from_raw(state)) };
+}
+
+/// Installs the window's safe area into the environment.
+///
+/// The root view publishes here instead of padding itself: a padded root can
+/// never let a bottom bar's background reach under the gesture bar, which is
+/// what Android's edge-to-edge contract asks for.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallSafeArea<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    env_ptr: jlong,
+    signal_ptr: jlong,
+) {
+    let wui_env = env_ptr as *mut crate::WuiEnv;
+    let signal =
+        signal_ptr as *mut crate::reactive::WuiComputed<waterui_layout::padding::EdgeInsets>;
+    unsafe { crate::runtime::safe_area::waterui_env_install_safe_area(wui_env, signal) };
 }
 
 #[unsafe(no_mangle)]
