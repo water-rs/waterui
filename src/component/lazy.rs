@@ -7,10 +7,11 @@
 //! # Usage
 //!
 //! ```rust
+//! use waterui::component::lazy::Lazy;
 //! use waterui::prelude::*;
 //!
 //! // Create a lazy vertical stack with 1000 items
-//! let list = Lazy::vstack((0..1000).map(|i| text(format!("Item {}", i))));
+//! let list = Lazy::vstack((0..1000).map(|i| text!("Item {i}")).collect::<Vec<_>>());
 //! ```
 
 use nami::{Computed, collection::Collection};
@@ -39,7 +40,10 @@ impl Lazy {
     /// # Example
     ///
     /// ```rust
-    /// let list = Lazy::vstack((0..1000).map(|i| text(format!("Item {}", i))));
+    /// use waterui::component::lazy::Lazy;
+    /// use waterui::prelude::*;
+    ///
+    /// let list = Lazy::vstack((0..1000).map(|i| text!("Item {i}")).collect::<Vec<_>>());
     /// ```
     pub fn vstack<V: View>(contents: impl Views<View = V> + 'static) -> impl View {
         scroll(LazyContainer::new(VStackLayout::default(), contents))
@@ -86,8 +90,29 @@ impl Lazy {
     /// # Example
     ///
     /// ```rust
-    /// let items = [Item::new(1, "First"), Item::new(2, "Second")];
-    /// let list = Lazy::for_each(items, |item| text(item.name));
+    /// use waterui::component::lazy::Lazy;
+    /// use waterui::prelude::*;
+    /// use waterui::id::Id;
+    ///
+    /// #[derive(Clone)]
+    /// struct Item {
+    ///     id: Id,
+    ///     name: &'static str,
+    /// }
+    ///
+    /// impl waterui_core::id::Identifiable for Item {
+    ///     type Id = Id;
+    ///
+    ///     fn id(&self) -> Id {
+    ///         self.id
+    ///     }
+    /// }
+    ///
+    /// let items = vec![
+    ///     Item { id: Id::try_from(1).unwrap(), name: "First" },
+    ///     Item { id: Id::try_from(2).unwrap(), name: "Second" },
+    /// ];
+    /// let list = Lazy::for_each(items, |item| text::text(item.name));
     /// ```
     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
     where

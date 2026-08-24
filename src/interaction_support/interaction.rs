@@ -17,11 +17,11 @@ use waterui_core::metadata::MetadataKey;
 /// use waterui::prelude::*;
 ///
 /// // Make a view transparent to touch events
-/// text("Click through me")
+/// let passthrough = text!("Click through me")
 ///     .hittable(false);
 ///
 /// // Reactive hit testing control
-/// let can_interact = binding(true);
+/// let can_interact = binding::<bool>(true);
 /// button("Click me").action(|| {})
 ///     .hittable(can_interact);
 /// ```

@@ -94,17 +94,20 @@ configurable!(
     /// # Examples
     ///
     /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::component::progress::{loading, progress};
+    ///
     /// // Determinate progress (75% complete)
-    /// progress(0.75)
+    /// let bar = progress(0.75);
     ///
     /// // Circular spinner
-    /// progress(0.5).circular()
+    /// let ring = progress(0.5).circular();
     ///
     /// // Indeterminate loading spinner
-    /// loading()
+    /// let spinner = loading();
     ///
     /// // With custom label
-    /// progress(0.3).label("Downloading...")
+    /// let labelled = progress(0.3).label("Downloading...");
     /// ```
     //
     // ═══════════════════════════════════════════════════════════════════════════

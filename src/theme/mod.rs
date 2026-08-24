@@ -19,6 +19,7 @@
 //! ### Quick Start
 //!
 //! ```rust
+//! use waterui::color::Srgb;
 //! use waterui::{Environment, theme::{Theme, ColorScheme, ColorSettings}};
 //! use waterui_core::plugin::Plugin;
 //! use nami::binding;
@@ -31,14 +32,14 @@
 //!     .install(&mut env);
 //!
 //! // Or use a reactive binding that follows system preference
-//! let system_scheme = binding(ColorScheme::Light);
+//! let system_scheme = binding::<ColorScheme>(ColorScheme::Light);
 //! Theme::new()
 //!     .color_scheme(system_scheme.clone())
 //!     .install(&mut env);
 //!
 //! // Customize specific colors
 //! Theme::new()
-//!     .colors(ColorSettings::new().accent(my_accent_color))
+//!     .colors(ColorSettings::new().accent(Srgb::from_hex("#0066CC")))
 //!     .install(&mut env);
 //! ```
 //!
@@ -48,11 +49,12 @@
 //! with view modifiers:
 //!
 //! ```rust
-//! use waterui::theme::color::{Foreground, Accent, Background};
+//! use waterui::prelude::*;
+//! use waterui::theme::color::{Background, Foreground};
 //!
-//! text("Hello, World!")
+//! let themed = text!("Hello, World!")
 //!     .foreground(Foreground)  // Uses theme's foreground color
-//!     .background(Background)  // Uses theme's background color
+//!     .background(Background); // Uses theme's background color
 //! ```
 //!
 //! ### Available Tokens
@@ -152,12 +154,12 @@ impl_constant!(ColorScheme);
 /// # Example
 ///
 /// ```rust
+/// use waterui::color::Srgb;
 /// use waterui::theme::ColorSettings;
-/// use waterui::color::Color;
 ///
 /// let colors = ColorSettings::new()
-///     .accent(my_accent_color)
-///     .foreground(my_text_color);
+///     .accent(Srgb::from_hex("#0066CC"))
+///     .foreground(Srgb::from_hex("#111111"));
 /// ```
 #[derive(Default, Debug)]
 pub struct ColorSettings {
@@ -331,12 +333,12 @@ impl ColorSettings {
 /// # Example
 ///
 /// ```rust
+/// use waterui::text::font::{FontWeight, ResolvedFont};
 /// use waterui::theme::FontSettings;
-/// use waterui::text::font::ResolvedFont;
 ///
 /// let fonts = FontSettings::new()
-///     .body(my_body_font)
-///     .title(my_title_font);
+///     .body(ResolvedFont::new(16.0, FontWeight::Normal))
+///     .title(ResolvedFont::new(28.0, FontWeight::Bold));
 /// ```
 #[derive(Default, Debug)]
 pub struct FontSettings {
@@ -433,15 +435,21 @@ impl FontSettings {
 /// # Example
 ///
 /// ```rust
-/// use waterui::theme::{Theme, ColorScheme, ColorSettings, FontSettings};
 /// use nami::binding;
+/// use waterui::Environment;
+/// use waterui::color::Srgb;
+/// use waterui::text::font::{FontWeight, ResolvedFont};
+/// use waterui::theme::{ColorScheme, ColorSettings, FontSettings, Theme};
+/// use waterui_core::plugin::Plugin;
+///
+/// let mut env = Environment::new();
 ///
 /// // Create a theme with reactive color scheme
-/// let scheme = binding(ColorScheme::Light);
+/// let scheme = binding::<ColorScheme>(ColorScheme::Light);
 /// Theme::new()
 ///     .color_scheme(scheme)
-///     .colors(ColorSettings::new().accent(my_accent))
-///     .fonts(FontSettings::new().body(my_body_font))
+///     .colors(ColorSettings::new().accent(Srgb::from_hex("#0066CC")))
+///     .fonts(FontSettings::new().body(ResolvedFont::new(16.0, FontWeight::Normal)))
 ///     .install(&mut env);
 /// ```
 #[derive(Default, Debug)]
@@ -640,8 +648,16 @@ pub fn installed_color_scheme(env: &Environment) -> Option<Computed<ColorScheme>
 /// # Example
 ///
 /// ```rust
-/// // Native backend creates a reactive color signal
-/// let dark_mode_color: Computed<ResolvedColor> = native_create_signal();
+/// use nami::Computed;
+/// use waterui::Environment;
+/// use waterui::color::ResolvedColor;
+/// use waterui::theme::{color, install_color_signal};
+///
+/// let mut env = Environment::new();
+///
+/// // A backend supplies a reactive colour for the slot.
+/// let dark_mode_color: Computed<ResolvedColor> =
+///     Computed::constant(ResolvedColor::default());
 ///
 /// // Install it for the Foreground slot
 /// install_color_signal::<color::Foreground>(&mut env, dark_mode_color);

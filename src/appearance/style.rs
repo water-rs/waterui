@@ -257,14 +257,14 @@ impl Default for Anchor {
 /// use waterui::prelude::*;
 ///
 /// // Scale from center (default)
-/// view.scale(1.5)
+/// let bigger = text!("Hello").scale(1.5, 1.5);
 ///
 /// // Scale from top-left corner
-/// view.scale_from(1.5, Anchor::TOP_LEFT)
+/// let cornered = text!("Hello").scale_from(1.5, 1.5, Anchor::TOP_LEFT);
 ///
 /// // Animate scale
-/// let factor = Binding::container(1.0).with(Animation::spring(300.0, 15.0));
-/// view.scale(factor)
+/// let factor = binding::<f32>(1.0_f32).animated();
+/// let pulsing = text!("Hello").scale(factor, 1.0);
 /// ```
 #[derive(Debug)]
 pub struct Scale {
@@ -337,14 +337,14 @@ impl Scale {
 /// use waterui::prelude::*;
 ///
 /// // Rotate around center (default)
-/// view.rotation(45.0)
+/// let tilted = text!("Hello").rotation(45.0);
 ///
 /// // Rotate around top-left corner
-/// view.rotation_from(45.0, Anchor::TOP_LEFT)
+/// let cornered = text!("Hello").rotation_from(45.0, Anchor::TOP_LEFT);
 ///
 /// // Animate rotation
-/// let angle = Binding::container(0.0).with(Animation::spring(300.0, 15.0));
-/// view.rotation(angle)
+/// let angle = binding::<f32>(0.0_f32).animated();
+/// let spinning = text!("Hello").rotation(angle);
 /// ```
 #[derive(Debug)]
 pub struct Rotation {
@@ -391,11 +391,11 @@ impl Rotation {
 /// use waterui::prelude::*;
 ///
 /// // Move view by (10, 20) points
-/// view.offset(10.0, 20.0)
+/// let nudged = text!("Hello").offset(10.0, 20.0);
 ///
 /// // Animate offset
-/// let x = Binding::container(0.0).with(Animation::spring(300.0, 15.0));
-/// view.offset(x, 0.0)
+/// let x = binding::<f32>(0.0_f32).animated();
+/// let sliding = text!("Hello").offset(x, 0.0);
 /// ```
 #[derive(Debug)]
 pub struct Offset {

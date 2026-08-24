@@ -10,16 +10,15 @@
 //! use waterui::cursor::CursorStyle;
 //!
 //! // Static cursor
-//! text!("Click me").cursor(CursorStyle::PointingHand)
+//! let clickable = text!("Click me").cursor(CursorStyle::PointingHand);
 //!
 //! // Reactive cursor based on state
-//! let is_dragging = Binding::bool(false);
-//! let is_dragging_for_cursor = is_dragging.clone();
-//! view.cursor(Computed::new(move || if is_dragging_for_cursor.get() {
+//! let is_dragging = binding::<bool>(false);
+//! let draggable = text!("Drag me").cursor(is_dragging.map(|dragging| if dragging {
 //!     CursorStyle::ClosedHand
 //! } else {
 //!     CursorStyle::OpenHand
-//! }))
+//! }));
 //! ```
 
 use nami::{Computed, impl_constant, signal::IntoComputed};
