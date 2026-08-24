@@ -358,7 +358,7 @@ fn build_unmeasured_node(
                 build_node(renderer, child, env, depth + 1)
             })
             .collect();
-        return Box::new(ContainerNode { layout, children });
+        return Box::new(ContainerNode::new(layout, children));
     }
     if type_id == TypeId::of::<Native<FixedContainer>>() {
         let native = *view
@@ -369,7 +369,7 @@ fn build_unmeasured_node(
             .into_iter()
             .map(|child| build_node(renderer, child, env, depth + 1))
             .collect();
-        return Box::new(ContainerNode { layout, children });
+        return Box::new(ContainerNode::new(layout, children));
     }
     if type_id == TypeId::of::<Dynamic>() {
         let dynamic = *view
@@ -536,6 +536,23 @@ impl SubView for NodeSubview<'_> {
 struct ContainerNode {
     layout: Box<dyn waterui_core::layout::Layout>,
     children: Vec<Box<dyn DewNode>>,
+    /// Scratch for the children's stretch axes, reused across calls.
+    ///
+    /// A layout pass asks a container for its stretch axis many times a frame,
+    /// and dew's budget is heap traffic per frame: a fresh `Vec` per ask cost
+    /// more allocations than the whole rest of the frame put together (the
+    /// vending-machine simulation is the gate that says so).
+    child_axes: RefCell<Vec<StretchAxis>>,
+}
+
+impl ContainerNode {
+    fn new(layout: Box<dyn waterui_core::layout::Layout>, children: Vec<Box<dyn DewNode>>) -> Self {
+        Self {
+            layout,
+            children,
+            child_axes: RefCell::new(Vec::new()),
+        }
+    }
 }
 
 impl DewNode for ContainerNode {
@@ -574,6 +591,17 @@ impl DewNode for ContainerNode {
         for (child, frame) in self.children.iter_mut().zip(frames) {
             child.render(renderer, ctx.child(frame));
         }
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        // Asked of the layout, with what the children currently claim: a
+        // container that answered for itself would swallow its children's
+        // claims, and its parent would hand a row of colours the row's own
+        // intrinsic size — nothing — for those colours to fill.
+        let mut child_axes = self.child_axes.borrow_mut();
+        child_axes.clear();
+        child_axes.extend(self.children.iter().map(|child| child.stretch_axis()));
+        self.layout.stretch_axis(&child_axes)
     }
 
     fn patch(&mut self, renderer: &mut DewRenderer) -> bool {
