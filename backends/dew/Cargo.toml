@@ -56,6 +56,9 @@ waterui-backend-core.workspace = true
 waterui-controls.workspace = true
 waterui-graphics.workspace = true
 waterui-layout.workspace = true
+# Navigation is `no_std` and pulls no renderer of its own, so it stays in the
+# lean firmware graph: a device with two screens needs a way between them.
+waterui-navigation.workspace = true
 # Default features off: the shape crate's default is a wgpu-backed morph
 # renderer, and dew's graph is GPU-free by design.
 waterui-shape = { workspace = true, default-features = false }

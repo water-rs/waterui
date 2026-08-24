@@ -32,6 +32,7 @@ use waterui_layout::Divider;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
+use waterui_navigation::{NavigationStack, NavigationView};
 use waterui_shape::{ClipShape, ResolvedShape};
 use waterui_text::{TextConfig, styled::StyledStr};
 
@@ -389,6 +390,18 @@ fn build_unmeasured_node(
         return Box::new(ColorNode {
             color: WatchedSignal::new(color.into_inner().resolve(env), renderer.signals()),
         });
+    }
+    if type_id == TypeId::of::<Native<NavigationStack<(), ()>>>() {
+        let stack = *view
+            .downcast::<Native<NavigationStack<(), ()>>>()
+            .expect("dew NavigationStack downcast must match its type id");
+        return views::navigation::build_stack(renderer, stack.into_inner(), env);
+    }
+    if type_id == TypeId::of::<Native<NavigationView>>() {
+        let destination = *view
+            .downcast::<Native<NavigationView>>()
+            .expect("dew NavigationView downcast must match its type id");
+        return views::navigation::build_view(renderer, destination.into_inner(), env, depth + 1);
     }
     if type_id == TypeId::of::<Native<ResolvedShape>>() {
         let shape = *view
