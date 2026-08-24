@@ -1795,3 +1795,97 @@ fn test_hstack_keeps_nested_stack_content_sized_and_centered() {
     );
     assert_eq!(rects[1].height(), 20.0);
 }
+
+// ============================================================================
+// Nested stacks: a child's ask has to survive the trip up
+// ============================================================================
+
+/// A nested stack driven by a real layout, exactly as a backend presents one:
+/// it measures through that layout and answers for its stretch axis with what
+/// its children currently claim. [`NestedStackView`] above states an answer
+/// directly; this one derives it, which is what the relay has to get right.
+struct RealNestedStackView<L: Layout> {
+    layout: L,
+    children: Vec<SpacerView>,
+}
+
+impl<L: Layout> SubView for RealNestedStackView<L> {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let refs: Vec<&dyn SubView> = self.children.iter().map(|c| c as &dyn SubView).collect();
+        ViewDimensions::new(self.layout.size_that_fits(proposal, &refs))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        let axes: Vec<StretchAxis> = self.children.iter().map(SubView::stretch_axis).collect();
+        self.layout.stretch_axis(&axes)
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+fn greedy_row() -> RealNestedStackView<HStackLayout> {
+    RealNestedStackView {
+        layout: HStackLayout {
+            alignment: VerticalAlignment::Center,
+            spacing: Computed::constant(0.0),
+        },
+        children: vec![SpacerView, SpacerView],
+    }
+}
+
+/// A row of nothing but greedy children is itself greedy. Anything else and
+/// the ask dies one level up: the row's parent hands it the row's own
+/// intrinsic size — nothing — and the greedy children fill nothing.
+#[test]
+fn a_row_of_fillers_asks_for_space_on_their_behalf() {
+    assert_eq!(greedy_row().stretch_axis(), StretchAxis::Both);
+}
+
+/// A row of content-sized children stays content-sized. A stack claims what
+/// its children claim and nothing more, so the rows of a toolbar do not start
+/// fighting their column for height.
+#[test]
+fn a_row_of_labels_stays_content_sized() {
+    let row: RealNestedStackView<HStackLayout> = RealNestedStackView {
+        layout: HStackLayout {
+            alignment: VerticalAlignment::Center,
+            spacing: Computed::constant(0.0),
+        },
+        children: Vec::new(),
+    };
+    assert_eq!(row.stretch_axis(), StretchAxis::None);
+}
+
+/// The end-to-end shape of the defect: two rows of greedy children inside a
+/// column split the column's height between them. Before a stack relayed what
+/// its children asked for, each row reported — and was given — zero height,
+/// and a screen built this way rendered nothing at all.
+#[test]
+fn rows_of_fillers_share_the_column_they_sit_in() {
+    let column = VStackLayout {
+        alignment: HorizontalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+    let top = greedy_row();
+    let bottom = greedy_row();
+    let children: Vec<&dyn SubView> = vec![&top, &bottom];
+
+    let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
+    let rects = column.place(bounds, &children);
+
+    assert_eq!(rects.len(), 2);
+    for rect in &rects {
+        assert!(
+            (rect.height() - 50.0).abs() < f32::EPSILON,
+            "each row takes half the column, got {}",
+            rect.height()
+        );
+        assert!(
+            (rect.width() - 200.0).abs() < f32::EPSILON,
+            "and the full width, got {}",
+            rect.width()
+        );
+    }
+}

@@ -14,6 +14,7 @@ use crate::{
     stack::{
         Axis,
         distribute::{Extent, compress_to_fit, exceeds},
+        stack_stretch_axis,
     },
 };
 
@@ -72,17 +73,25 @@ impl ChildMeasurement {
     }
 }
 
+/// The widest child either side of the alignment guide.
+///
+/// Every child that reports a width counts, the ones that fill the cross axis
+/// included. Filling means "at least what I measure, and more if you have it",
+/// not "nothing": leaving a filler out of this makes a column of nothing-but-
+/// fillers report zero width, and its parent then hands it zero width to fill.
+/// A child that answers an unbounded width is answering "as much as you have"
+/// rather than naming a size, so it sets no floor here — the fill pass in
+/// [`Layout::place`] is what gives it the column's width.
 fn vstack_intrinsic_cross_metrics(
     measurements: &[ChildMeasurement],
     alignment: HorizontalAlignment,
-    include_cross_axis_stretch: bool,
 ) -> (f32, f32) {
     let mut max_leading = 0.0_f32;
     let mut max_trailing = 0.0_f32;
 
     for measurement in measurements
         .iter()
-        .filter(|m| include_cross_axis_stretch || !m.stretches_cross_axis())
+        .filter(|measurement| measurement.size().width.is_finite())
     {
         let size = measurement.size();
         let guide = measurement
@@ -201,12 +210,11 @@ impl Layout for VStackLayout {
             intrinsic_height
         };
 
-        // Width: when proposal.width is zero (min size query), include ALL children's widths
-        // to ensure container can't shrink below any child's minimum.
-        // Otherwise, exclude cross-axis stretching children from intrinsic width calculation.
+        // Width: every child's width counts, so the column can never report less
+        // than the widest thing in it.
         let is_min_size_query = proposal.width == Some(0.0);
         let (max_leading, max_trailing) =
-            vstack_intrinsic_cross_metrics(&measurements, self.alignment, is_min_size_query);
+            vstack_intrinsic_cross_metrics(&measurements, self.alignment);
         let max_width = max_leading + max_trailing;
 
         // VStack stretches horizontally (cross-axis), so use proposed width when available
@@ -285,7 +293,7 @@ impl Layout for VStackLayout {
         });
         let guide_line = has_explicit_alignment_guides.then(|| {
             let (intrinsic_leading, _intrinsic_trailing) =
-                vstack_intrinsic_cross_metrics(&measurements, self.alignment, false);
+                vstack_intrinsic_cross_metrics(&measurements, self.alignment);
             bounds.x() + intrinsic_leading
         });
 
@@ -363,12 +371,14 @@ impl Layout for VStackLayout {
         None
     }
 
-    /// `VStack` is content-sized on both axes, like `SwiftUI`'s: it never
-    /// claims the cross axis for itself. Filling comes from children that ask
-    /// for it (`Spacer`, greedy frames, `Color`), and a parent placing an
-    /// undersized stack centers it per its alignment.
-    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
-        StretchAxis::None
+    /// A `VStack` claims nothing of its own — a column of labels is
+    /// content-sized, like `SwiftUI`'s, and a parent placing an undersized
+    /// column centers it per its alignment. What it does claim is whatever its
+    /// children claim: filling comes from children that ask for it (`Spacer`,
+    /// greedy frames, `Color`), and the ask has to survive the trip up through
+    /// every container between that child and whoever owns the space.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        stack_stretch_axis(Axis::Vertical, children)
     }
 
     fn watch_invalidation(
@@ -657,8 +667,12 @@ mod tests {
         assert!((rects[2].y() - 170.0).abs() < f32::EPSILON); // 30 + 140
     }
 
+    /// A child that fills the cross axis still contributes the width it
+    /// measures. Filling means "at least this, and more if you have it": a
+    /// column that reported less than its widest child would be handed less,
+    /// and the child would fill a box too small for it.
     #[test]
-    fn test_vstack_with_horizontal_stretch() {
+    fn a_cross_filling_child_still_sets_the_column_width() {
         // TextField-like component: stretches horizontally but has fixed height
         let layout = VStackLayout {
             alignment: HorizontalAlignment::Center,
@@ -682,18 +696,22 @@ mod tests {
 
         let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
-        // Width: max of non-horizontal-stretching children = max(50, 80) = 80
-        // Note: text_field stretches horizontally so its width doesn't contribute
-        assert!((size.width - 80.0).abs() < f32::EPSILON);
+        // Width: max of every child = max(50, 100, 80) = 100
+        assert!(
+            (size.width - 100.0).abs() < f32::EPSILON,
+            "the text field's own width has to reach the column, got {}",
+            size.width
+        );
         // Height: all children contribute (text_field doesn't stretch vertically)
         // = 20 + 10 + 40 + 10 + 44 = 124
         assert!((size.height - 124.0).abs() < f32::EPSILON);
     }
 
+    /// A column never reports less than its widest child, whichever way it is
+    /// asked. The minimum a window may shrink to and the size the column wants
+    /// are the same question about the same children.
     #[test]
-    fn test_vstack_min_size_query_includes_all_children() {
-        // When ProposalSize::ZERO is used (min size query), ALL children's widths
-        // should be included, even stretching ones. This is essential for window min size.
+    fn a_column_reports_its_widest_child_however_it_is_asked() {
         let layout = VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(10.0),
@@ -714,22 +732,19 @@ mod tests {
 
         let children: Vec<&dyn SubView> = vec![&mut label, &mut toggle, &mut button];
 
-        // With ZERO proposal (min size query), toggle's width SHOULD be included
+        // Width: max of every child = max(50, 200, 80) = 200
         let min_size = layout.size_that_fits(ProposalSize::ZERO, &children);
-        // Width: max of ALL children = max(50, 200, 80) = 200
         assert!(
             (min_size.width - 200.0).abs() < f32::EPSILON,
-            "Min size query should include stretching children's widths, got {}",
+            "a window cannot shrink below the toggle, got {}",
             min_size.width
         );
 
-        // Verify existing behavior: UNSPECIFIED excludes stretching children
         let children2: Vec<&dyn SubView> = vec![&mut label, &mut toggle, &mut button];
         let intrinsic_size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children2);
-        // Width: max of non-stretching children = max(50, 80) = 80
         assert!(
-            (intrinsic_size.width - 80.0).abs() < f32::EPSILON,
-            "Unspecified proposal should exclude stretching children's widths, got {}",
+            (intrinsic_size.width - 200.0).abs() < f32::EPSILON,
+            "and it wants the same width when nothing constrains it, got {}",
             intrinsic_size.width
         );
     }

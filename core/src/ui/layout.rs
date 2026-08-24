@@ -876,10 +876,13 @@ pub trait Layout: Debug + Any {
     /// Which axis this container stretches to fill available space, given what
     /// its children said about themselves.
     ///
-    /// Stacks are content-sized, so they answer `None` and let a child that wants
-    /// to fill say so. A layout that is transparent to its content — a background,
-    /// an overlay, an alignment guide — answers with that content's axis, and a
-    /// frame answers from its own constraints.
+    /// A container claims nothing of its own, but it must relay what its children
+    /// claim: a stack of labels is content-sized, while a stack holding something
+    /// greedy answers with that child's axis. A container that stayed silent would
+    /// be handed its own intrinsic size by its parent, and the greedy child inside
+    /// it would then fill a box of nothing. A layout that is transparent to its
+    /// content — a background, an overlay, an alignment guide — answers with that
+    /// content's axis, and a frame answers from its own constraints.
     ///
     /// `children` carries each child's own [`StretchAxis`] in order. Passing it is
     /// what lets a transparent layout answer from live state: without it such a
