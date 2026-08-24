@@ -8,10 +8,11 @@
 //! between the two engines.
 //!
 //! Clipping is retained per command: while a clip is active (see
-//! [`DisplayList::push_clip`]), every pushed command records the effective
-//! window-coordinate clip rectangle. Keeping the clip on the command rather
-//! than as a structural layer preserves the flat, pairwise-diffable shape
-//! of the list, so scroll viewports do not degrade dirty-region tracking.
+//! [`DisplayList::push_clip`] and [`DisplayList::push_clip_shape`]), every
+//! pushed command records the [`Clip`] in force. Keeping the clip on the
+//! command rather than as a structural layer preserves the flat,
+//! pairwise-diffable shape of the list, so scroll viewports do not degrade
+//! dirty-region tracking.
 
 use std::sync::Arc;
 
@@ -19,6 +20,92 @@ use kurbo::{Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use peniko::Brush;
 
 use crate::stats::FrameWork;
+
+/// One clip in force, in window coordinates.
+#[derive(Debug, Clone)]
+pub enum ClipRegion {
+    /// An axis-aligned rectangle: scroll viewports, control fills, and every
+    /// shape whose geometry is exactly a rectangle.
+    Rect(Rect),
+    /// A shape mask, from `.clip(Circle)` and the other non-rectangular kinds.
+    Shape {
+        /// Window-coordinate outline of the mask.
+        ///
+        /// Shared rather than owned: a clipped subtree re-emits its commands
+        /// every frame, and the frame diff proves two clips equal by this
+        /// pointer instead of comparing the path element by element.
+        path: Arc<BezPath>,
+        /// Bounding box of `path`, cached because dirty-region arithmetic asks
+        /// for it once per command and once per band.
+        bounds: Rect,
+    },
+}
+
+impl ClipRegion {
+    /// Window-coordinate bounding box of the region.
+    #[must_use]
+    pub const fn bounds(&self) -> Rect {
+        match self {
+            Self::Rect(rect) => *rect,
+            Self::Shape { bounds, .. } => *bounds,
+        }
+    }
+}
+
+impl PartialEq for ClipRegion {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Rect(left), Self::Rect(right)) => left == right,
+            (
+                Self::Shape {
+                    path: left,
+                    bounds: left_bounds,
+                },
+                Self::Shape {
+                    path: right,
+                    bounds: right_bounds,
+                },
+            ) => left_bounds == right_bounds && (Arc::ptr_eq(left, right) || left == right),
+            _ => false,
+        }
+    }
+}
+
+/// The clips in force for one command, outermost first.
+///
+/// Dew retains the whole stack rather than folding it into one region: two
+/// rectangles intersect exactly, but a circle and a rounded rectangle do not
+/// without a boolean path operation — precisely the work an MCU frame cannot
+/// afford. Replaying the stack costs the rasterizer one clip layer per entry
+/// and keeps the mask exact. The regions are shared, so every command under
+/// one clip carries a pointer rather than a copy.
+#[derive(Debug, Clone)]
+pub struct Clip {
+    regions: Arc<[ClipRegion]>,
+    bounds: Rect,
+}
+
+impl Clip {
+    /// The regions to apply, outermost first.
+    #[must_use]
+    pub fn regions(&self) -> &[ClipRegion] {
+        &self.regions
+    }
+
+    /// Intersection of every region's bounding box: the box outside which the
+    /// clip passes no pixel.
+    #[must_use]
+    pub const fn bounds(&self) -> Rect {
+        self.bounds
+    }
+}
+
+impl PartialEq for Clip {
+    fn eq(&self, other: &Self) -> bool {
+        self.bounds == other.bounds
+            && (Arc::ptr_eq(&self.regions, &other.regions) || self.regions == other.regions)
+    }
+}
 
 /// One retained draw operation, in window coordinates.
 #[derive(Debug, Clone)]
@@ -31,8 +118,8 @@ pub enum DrawCommand {
         transform: Affine,
         /// Paint for the fill.
         brush: Brush,
-        /// Window-coordinate clip rectangle, when one was active.
-        clip: Option<Rect>,
+        /// The clip in force when the command was pushed.
+        clip: Option<Clip>,
     },
     /// Strokes `path` (after `transform`) with `brush`.
     StrokePath {
@@ -44,8 +131,8 @@ pub enum DrawCommand {
         stroke: Stroke,
         /// Paint for the stroke.
         brush: Brush,
-        /// Window-coordinate clip rectangle, when one was active.
-        clip: Option<Rect>,
+        /// The clip in force when the command was pushed.
+        clip: Option<Clip>,
     },
     /// Fills one shaped glyph run (after `transform`) with `brush`.
     GlyphRun {
@@ -69,8 +156,8 @@ pub enum DrawCommand {
         brush: Brush,
         /// Pre-computed local bounds of the run (text layout box).
         bounds: Rect,
-        /// Window-coordinate clip rectangle, when one was active.
-        clip: Option<Rect>,
+        /// The clip in force when the command was pushed.
+        clip: Option<Clip>,
     },
 }
 
@@ -107,16 +194,16 @@ impl DrawCommand {
                     .unwrap_or(*bounds),
             ),
         };
-        self.clip().map_or(raw, |clip| raw.intersect(clip))
+        self.clip().map_or(raw, |clip| raw.intersect(clip.bounds()))
     }
 
-    /// The window-coordinate clip rectangle recorded for this command.
+    /// The clip recorded for this command when it was pushed.
     #[must_use]
-    pub const fn clip(&self) -> Option<Rect> {
+    pub const fn clip(&self) -> Option<&Clip> {
         match self {
             Self::FillPath { clip, .. }
             | Self::StrokePath { clip, .. }
-            | Self::GlyphRun { clip, .. } => *clip,
+            | Self::GlyphRun { clip, .. } => clip.as_ref(),
         }
     }
 
@@ -139,7 +226,7 @@ impl DrawCommand {
         }
     }
 
-    const fn clip_mut(&mut self) -> &mut Option<Rect> {
+    const fn clip_mut(&mut self) -> &mut Option<Clip> {
         match self {
             Self::FillPath { clip, .. }
             | Self::StrokePath { clip, .. }
@@ -281,7 +368,7 @@ impl DrawCommand {
                     new_glyphs.as_ref(),
                     new_bounds.as_ref(),
                     *old_transform,
-                    *old_clip,
+                    old_clip.as_ref(),
                 )
             }
             _ => vec![self.bounds().union(other.bounds())],
@@ -334,7 +421,7 @@ fn changed_glyph_bounds(
     new_glyphs: &[vello_cpu::Glyph],
     new_bounds: &[Rect],
     transform: Affine,
-    clip: Option<Rect>,
+    clip: Option<&Clip>,
 ) -> Vec<Rect> {
     assert_eq!(
         old_glyphs.len(),
@@ -372,9 +459,9 @@ fn changed_glyph_bounds(
     dirty
 }
 
-fn window_glyph_bounds(bounds: Rect, transform: Affine, clip: Option<Rect>) -> Rect {
+fn window_glyph_bounds(bounds: Rect, transform: Affine, clip: Option<&Clip>) -> Rect {
     let transformed = transform.transform_rect_bbox(bounds);
-    clip.map_or(transformed, |clip| transformed.intersect(clip))
+    clip.map_or(transformed, |clip| transformed.intersect(clip.bounds()))
 }
 
 fn stroke_eq(a: &Stroke, b: &Stroke) -> bool {
@@ -450,7 +537,10 @@ impl PartialEq for PlacedCommand {
 pub struct DisplayList {
     commands: Vec<PlacedCommand>,
     bounds: Option<Rect>,
-    clip_stack: Vec<Rect>,
+    clip_stack: Vec<ClipRegion>,
+    /// The stack shared with every command pushed until it next changes,
+    /// rebuilt once per clip push or pop rather than once per command.
+    clip: Option<Clip>,
     work: FrameWork,
 }
 
@@ -498,13 +588,10 @@ impl DisplayList {
 
     /// Appends a raw command, recording the active clip.
     ///
-    /// When a clip is active, it is intersected with any clip the command
-    /// already carries.
+    /// The list owns clipping: commands are built clip-free and receive the
+    /// clip in force when they are pushed.
     pub fn push(&mut self, mut command: DrawCommand) {
-        if let Some(active) = self.clip_stack.last().copied() {
-            let clip = command.clip_mut();
-            *clip = Some(clip.map_or(active, |own| own.intersect(active)));
-        }
+        command.clip_mut().clone_from(&self.clip);
         let bounds = command.bounds();
         self.push_placed(command, bounds);
     }
@@ -520,10 +607,9 @@ impl DisplayList {
     /// clipping differently.
     pub fn push_placed(&mut self, mut command: DrawCommand, bounds: Rect) {
         let mut bounds = bounds;
-        if let Some(active) = self.clip_stack.last().copied() {
-            let clip = command.clip_mut();
-            *clip = Some(clip.map_or(active, |own| own.intersect(active)));
-            bounds = bounds.intersect(active);
+        command.clip_mut().clone_from(&self.clip);
+        if let Some(active) = &self.clip {
+            bounds = bounds.intersect(active.bounds());
         }
         if bounds.width() > 0.0 && bounds.height() > 0.0 {
             self.bounds = Some(self.bounds.map_or(bounds, |current| current.union(bounds)));
@@ -532,13 +618,13 @@ impl DisplayList {
         self.commands.push(PlacedCommand { command, bounds });
     }
 
-    /// The clip rectangle currently in force, if any.
+    /// The clip currently in force, if any.
     ///
     /// Nodes emitting pre-placed commands need it to reproduce what
     /// [`DisplayList::push`] would have recorded.
     #[must_use]
-    pub fn active_clip(&self) -> Option<Rect> {
-        self.clip_stack.last().copied()
+    pub const fn active_clip(&self) -> Option<&Clip> {
+        self.clip.as_ref()
     }
 
     /// Work accumulated while building this list.
@@ -555,17 +641,41 @@ impl DisplayList {
 
     /// Pushes a window-coordinate clip rectangle.
     ///
-    /// Nested clips intersect; every command pushed until the matching
-    /// [`DisplayList::pop_clip`] records the effective rectangle.
+    /// Nested clips compose; every command pushed until the matching
+    /// [`DisplayList::pop_clip`] records the whole stack.
     pub fn push_clip(&mut self, clip: Rect) {
-        let effective = self
-            .clip_stack
-            .last()
-            .map_or(clip, |current| current.intersect(clip));
-        self.clip_stack.push(effective);
+        self.push_clip_region(ClipRegion::Rect(clip));
     }
 
-    /// Pops the innermost clip pushed by [`DisplayList::push_clip`].
+    /// Pushes a window-coordinate shape mask.
+    ///
+    /// The path is shared with the node that built it, so a retained clip
+    /// re-emitted every frame allocates nothing and diffs by pointer.
+    pub fn push_clip_shape(&mut self, path: Arc<BezPath>) {
+        let bounds = path.bounding_box();
+        self.push_clip_region(ClipRegion::Shape { path, bounds });
+    }
+
+    fn push_clip_region(&mut self, region: ClipRegion) {
+        self.clip_stack.push(region);
+        self.clip = Some(self.build_clip());
+    }
+
+    fn build_clip(&self) -> Clip {
+        let bounds = self
+            .clip_stack
+            .iter()
+            .map(ClipRegion::bounds)
+            .reduce(|current, next| current.intersect(next))
+            .expect("a clip is built only while the stack holds a region");
+        Clip {
+            regions: Arc::from(self.clip_stack.as_slice()),
+            bounds,
+        }
+    }
+
+    /// Pops the innermost clip pushed by [`DisplayList::push_clip`] or
+    /// [`DisplayList::push_clip_shape`].
     ///
     /// # Panics
     ///
@@ -574,6 +684,7 @@ impl DisplayList {
         self.clip_stack
             .pop()
             .expect("DisplayList::pop_clip without a matching push_clip");
+        self.clip = (!self.clip_stack.is_empty()).then(|| self.build_clip());
     }
 
     /// The retained commands in draw order, each with its cached bounds.
@@ -601,6 +712,7 @@ impl DisplayList {
         self.commands.clear();
         self.bounds = None;
         self.clip_stack.clear();
+        self.clip = None;
         self.work = FrameWork::ZERO;
     }
 }
@@ -677,10 +789,9 @@ mod tests {
         );
         list.pop_clip();
         let command = &list.commands()[0];
-        assert_eq!(
-            command.command().clip(),
-            Some(Rect::new(0.0, 0.0, 50.0, 50.0))
-        );
+        let clip = command.command().clip().expect("the fill records the clip");
+        assert_eq!(clip.regions(), [ClipRegion::Rect(Rect::new(0.0, 0.0, 50.0, 50.0))]);
+        assert_eq!(clip.bounds(), Rect::new(0.0, 0.0, 50.0, 50.0));
         assert_eq!(command.bounds(), Rect::new(40.0, 40.0, 50.0, 50.0));
         assert_eq!(list.bounds(), Some(Rect::new(40.0, 40.0, 50.0, 50.0)));
     }
@@ -779,10 +890,18 @@ mod tests {
         );
         list.pop_clip();
         list.pop_clip();
+        let clip = list.commands()[0]
+            .command()
+            .clip()
+            .expect("the fill records both clips");
         assert_eq!(
-            list.commands()[0].command().clip(),
-            Some(Rect::new(25.0, 25.0, 50.0, 50.0))
+            clip.regions(),
+            [
+                ClipRegion::Rect(Rect::new(0.0, 0.0, 50.0, 50.0)),
+                ClipRegion::Rect(Rect::new(25.0, 25.0, 100.0, 100.0)),
+            ]
         );
+        assert_eq!(clip.bounds(), Rect::new(25.0, 25.0, 50.0, 50.0));
     }
 
     #[test]

@@ -32,6 +32,7 @@ use waterui_layout::Divider;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
+use waterui_shape::{ClipShape, ResolvedShape};
 use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::display_list::DisplayList;
@@ -325,6 +326,12 @@ fn build_unmeasured_node(
         // measurement cache underneath the one this call is already wrapped in.
         return build_unmeasured_node(renderer, content, &value, depth + 1);
     }
+    if type_id == TypeId::of::<Metadata<ClipShape>>() {
+        let Metadata { content, value } = *view
+            .downcast::<Metadata<ClipShape>>()
+            .expect("dew clip metadata downcast must match its type id");
+        return views::shape::build_clip(value, build_node(renderer, content, env, depth + 1));
+    }
     if type_id == TypeId::of::<Metadata<Retain>>() {
         let Metadata { content, value } = *view
             .downcast::<Metadata<Retain>>()
@@ -386,6 +393,12 @@ fn build_unmeasured_node(
         return Box::new(ColorNode {
             color: WatchedSignal::new(color.into_inner().resolve(env), renderer.signals()),
         });
+    }
+    if type_id == TypeId::of::<Native<ResolvedShape>>() {
+        let shape = *view
+            .downcast::<Native<ResolvedShape>>()
+            .expect("dew ResolvedShape downcast must match its type id");
+        return views::shape::build(renderer, shape.into_inner());
     }
     if type_id == TypeId::of::<Native<ResolvedColor>>() {
         let color = *view
