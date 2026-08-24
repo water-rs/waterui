@@ -73,12 +73,12 @@ struct StepperPointer {
 }
 
 impl PointerHandler for StepperPointer {
-    fn pointer_down(&mut self, _point: kurbo::Point, _bounds: Rect, _env: &Environment) -> bool {
+    fn pointer_down(&mut self, _point: kurbo::Point, _bounds: Rect) -> bool {
         self.armed = true;
         false
     }
 
-    fn pointer_up(&mut self, point: kurbo::Point, bounds: Rect, _env: &Environment) -> bool {
+    fn pointer_up(&mut self, point: kurbo::Point, bounds: Rect) -> bool {
         if !core::mem::take(&mut self.armed) || !bounds.contains(point) {
             return false;
         }
@@ -95,7 +95,7 @@ impl PointerHandler for StepperPointer {
         true
     }
 
-    fn pointer_cancel(&mut self, _env: &Environment) -> bool {
+    fn pointer_cancel(&mut self) -> bool {
         self.armed = false;
         false
     }

@@ -4,25 +4,28 @@ use core::cell::RefCell;
 use std::rc::Rc;
 
 use kurbo::{Point, Rect};
-use waterui_core::Environment;
-
 use crate::board::PointerSample;
 
 /// Stateful control input bound to one retained hit-test target.
+///
+/// A handler carries whatever environment it needs: the one its node was built
+/// in, which is the only one that answers correctly for a control inside a
+/// scope — a navigation stack's controller, a disabled subtree, a themed
+/// section. The router deliberately has none to hand out.
 pub trait PointerHandler {
-    fn pointer_down(&mut self, _point: Point, _bounds: Rect, _env: &Environment) -> bool {
+    fn pointer_down(&mut self, _point: Point, _bounds: Rect) -> bool {
         false
     }
 
-    fn pointer_move(&mut self, _point: Point, _bounds: Rect, _env: &Environment) -> bool {
+    fn pointer_move(&mut self, _point: Point, _bounds: Rect) -> bool {
         false
     }
 
-    fn pointer_up(&mut self, _point: Point, _bounds: Rect, _env: &Environment) -> bool {
+    fn pointer_up(&mut self, _point: Point, _bounds: Rect) -> bool {
         false
     }
 
-    fn pointer_cancel(&mut self, _env: &Environment) -> bool {
+    fn pointer_cancel(&mut self) -> bool {
         false
     }
 }
@@ -93,11 +96,11 @@ impl PointerRouter {
         }
     }
 
-    pub(super) fn dispatch(&mut self, sample: PointerSample, env: &Environment) -> bool {
+    pub(super) fn dispatch(&mut self, sample: PointerSample) -> bool {
         let point = Point::new(sample.x, sample.y);
         match sample.phase {
             waterui_backend_core::input::TouchPhase::Started => {
-                let mut changed = self.cancel_active(env);
+                let mut changed = self.cancel_active();
                 let Some(target) = self
                     .targets
                     .iter()
@@ -114,7 +117,7 @@ impl PointerRouter {
                     .handler
                     .0
                     .borrow_mut()
-                    .pointer_down(point, active.bounds, env);
+                    .pointer_down(point, active.bounds);
                 self.active = Some(active);
                 changed
             }
@@ -124,7 +127,7 @@ impl PointerRouter {
                         .handler
                         .0
                         .borrow_mut()
-                        .pointer_move(point, active.bounds, env)
+                        .pointer_move(point, active.bounds)
                 })
             }
             waterui_backend_core::input::TouchPhase::Ended => {
@@ -135,16 +138,16 @@ impl PointerRouter {
                     .handler
                     .0
                     .borrow_mut()
-                    .pointer_up(point, active.bounds, env)
+                    .pointer_up(point, active.bounds)
             }
-            waterui_backend_core::input::TouchPhase::Cancelled => self.cancel_active(env),
+            waterui_backend_core::input::TouchPhase::Cancelled => self.cancel_active(),
         }
     }
 
-    fn cancel_active(&mut self, env: &Environment) -> bool {
+    fn cancel_active(&mut self) -> bool {
         let Some(active) = self.active.take() else {
             return false;
         };
-        active.handler.0.borrow_mut().pointer_cancel(env)
+        active.handler.0.borrow_mut().pointer_cancel()
     }
 }

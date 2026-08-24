@@ -34,24 +34,27 @@ struct ButtonPointer {
     action: BoxedAction<()>,
     disabled: Computed<bool>,
     armed: bool,
+    /// The environment this button was built in — the one its action's
+    /// extractors have to resolve against.
+    env: Environment,
 }
 
 impl PointerHandler for ButtonPointer {
-    fn pointer_down(&mut self, _point: kurbo::Point, _bounds: Rect, _env: &Environment) -> bool {
+    fn pointer_down(&mut self, _point: kurbo::Point, _bounds: Rect) -> bool {
         self.armed = !self.disabled.get();
         false
     }
 
-    fn pointer_up(&mut self, point: kurbo::Point, bounds: Rect, env: &Environment) -> bool {
+    fn pointer_up(&mut self, point: kurbo::Point, bounds: Rect) -> bool {
         let activate =
             core::mem::take(&mut self.armed) && bounds.contains(point) && !self.disabled.get();
         if activate {
-            (self.action)(env);
+            (self.action)(&self.env);
         }
         activate
     }
 
-    fn pointer_cancel(&mut self, _env: &Environment) -> bool {
+    fn pointer_cancel(&mut self) -> bool {
         self.armed = false;
         false
     }
@@ -71,6 +74,7 @@ pub fn build(renderer: &DewRenderer, config: ButtonConfig, env: &Environment) ->
         action,
         disabled: disabled.clone(),
         armed: false,
+        env: env.clone(),
     });
     let label = LabelText::new(&label, env, renderer.signals());
     Box::new(ButtonNode {
