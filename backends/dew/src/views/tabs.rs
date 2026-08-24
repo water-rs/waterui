@@ -285,14 +285,22 @@ const fn frame(x: f64, y: f64, size: Size) -> LayoutRect {
 }
 
 impl TabsNode {
-    /// The index of the selected tab, or the first one when the selection
-    /// names a tab that is not in this container.
+    /// The index of the selected tab.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the selection names a tab this container does not hold.
+    /// The tabs and the selection binding share one `Mapping`, so that cannot
+    /// happen by accident, and showing some other tab instead would hide the
+    /// mistake behind a screen the app never asked for.
     fn selected(&self) -> usize {
         let selected = self.selection.get();
         self.items
             .iter()
             .position(|item| item.id == selected)
-            .unwrap_or(0)
+            .unwrap_or_else(|| {
+                panic!("dew tab selection {selected:?} names no tab in this container")
+            })
     }
 
     /// Opens the selected tab's page if this is the first time it is shown.

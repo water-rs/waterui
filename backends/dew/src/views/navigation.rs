@@ -501,9 +501,16 @@ pub fn build_stack(
     let mut child_env = env.clone();
     child_env.insert(controller.clone());
 
+    // A stack over a path that already holds routes — a session restored at
+    // boot — projects them while the root is being resolved, before this node
+    // exists. The frame doing the building patches the node it just built, so
+    // those transactions are applied in it: asking for another frame would
+    // only render the screen that this one is already producing.
+    pending.applying.set(true);
     let root = resolve_navigation_root(stack.into_inner(), &child_env);
     let mut entry = Entry::build(renderer, root, &child_env, None);
     entry.state.appeared(&child_env);
+    pending.applying.set(false);
     Box::new(StackNode {
         controller,
         env: child_env,
