@@ -94,8 +94,8 @@ pub(crate) fn picker_accessibility(
                 let mut node = AccessibilityNode::new(
                     renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ComboBox),
                 );
-                let label = renderer
-                    .resolve_accessibility_label(env, Some(selected_text.as_str().to_owned()));
+                let default_label = renderer.accessibility_label_from_label(&picker.label, env);
+                let label = renderer.resolve_accessibility_label(env, default_label);
                 if let Some(label) = label {
                     node.set_label(label);
                 }
@@ -156,7 +156,8 @@ pub(crate) fn picker_accessibility(
                 let mut group = AccessibilityNode::new(
                     renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
                 );
-                let group_label = renderer.resolve_accessibility_label(env, None);
+                let default_label = renderer.accessibility_label_from_label(&picker.label, env);
+                let group_label = renderer.resolve_accessibility_label(env, default_label);
                 if let Some(label) = group_label {
                     group.set_label(label);
                 }
