@@ -516,10 +516,67 @@ fn kind_clip_shape(kind: ShapeKind, bounds: vello::kurbo::Rect) -> Option<Regula
     match kind {
         ShapeKind::Rect => Some(RegularClipShape::Rect(bounds)),
         ShapeKind::RoundedRect { corner_radius } => uniform(corner_radius),
-        ShapeKind::Capsule | ShapeKind::Circle => uniform(0.5),
-        // An ellipse is not a rounded rect, and uneven corners need the path
-        // mask; both stay on the general route.
-        ShapeKind::Ellipse | ShapeKind::UnevenRoundedRect { .. } | ShapeKind::CustomPath => None,
+        ShapeKind::Capsule => uniform(0.5),
+        // A circle is *inscribed* in the bounds, so only a square one is a
+        // rounded rect: elsewhere `uniform(0.5)` describes a stadium filling
+        // the bounds, which is what a capsule is and what a circle is not. The
+        // fill path builds a real `kurbo::Circle`, and a clip that disagreed
+        // with its own fill is the bug this guard closes.
+        ShapeKind::Circle if bounds.width() == bounds.height() => uniform(0.5),
+        // An ellipse is not a rounded rect, a non-square circle is not either,
+        // and uneven corners need the path mask; all stay on the general route.
+        ShapeKind::Circle
+        | ShapeKind::Ellipse
+        | ShapeKind::UnevenRoundedRect { .. }
+        | ShapeKind::CustomPath => None,
+    }
+}
+
+#[cfg(test)]
+mod clip_shape_tests {
+    use super::{RegularClipShape, ShapeKind, kind_clip_shape};
+    use vello::kurbo::Rect;
+
+    /// A square circle is exactly a rounded rect whose corner is half the
+    /// side, so the fast clip is allowed to take it.
+    #[test]
+    fn a_square_circle_takes_the_rounded_rect_fast_path() {
+        let bounds = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let clip = kind_clip_shape(ShapeKind::Circle, bounds);
+        assert!(
+            matches!(
+                clip,
+                Some(RegularClipShape::RoundedRect {
+                    corner_width,
+                    corner_height,
+                    ..
+                }) if (corner_width - 50.0).abs() < f64::EPSILON
+                    && (corner_height - 50.0).abs() < f64::EPSILON
+            ),
+            "a square circle should clip as a rounded rect with a half-side corner, got {clip:?}"
+        );
+    }
+
+    /// On a wider-than-tall rect the same shortcut would describe a stadium,
+    /// which is a capsule and not the inscribed circle the fill draws.
+    #[test]
+    fn a_non_square_circle_does_not_take_the_fast_path() {
+        let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+        assert!(
+            kind_clip_shape(ShapeKind::Circle, bounds).is_none(),
+            "a non-square circle must fall through to the path mask so the clip \
+             matches the inscribed circle the fill builds"
+        );
+    }
+
+    /// A capsule *is* the stadium, on any aspect ratio.
+    #[test]
+    fn a_capsule_takes_the_fast_path_at_any_aspect_ratio() {
+        let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+        assert!(matches!(
+            kind_clip_shape(ShapeKind::Capsule, bounds),
+            Some(RegularClipShape::RoundedRect { .. })
+        ));
     }
 }
 
