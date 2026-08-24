@@ -532,12 +532,13 @@ impl DewNode for ContainerNode {
                 .iter()
                 .map(|subview| subview as &dyn SubView)
                 .collect::<Vec<_>>();
-            let proposal = proposal_from_bounds(ctx.bounds);
-            // Deliberately unmemoized: dew's budget is heap traffic per frame, not
-            // CPU, and its containers are small enough that re-probing a child costs
-            // less than the wrapper's allocations. See `vending_performance`.
-            let size = self.layout.size_that_fits(proposal, &refs);
-            self.layout.place(LayoutRect::from_size(size), &refs)
+            // Placed at the size the parent assigned, never at this layout's own
+            // measurement of itself: a stack is content-sized on its cross axis
+            // (`HStack::stretch_axis` is `None`, like SwiftUI's), so re-measuring
+            // here would shrink a row of cross-stretching children — a row of
+            // colours, say — to zero height and draw nothing. Distributing the
+            // assigned box among the children is exactly what `place` is for.
+            self.layout.place(placement_rect(ctx.bounds), &refs)
         };
         for (child, frame) in self.children.iter_mut().zip(frames) {
             child.render(renderer, ctx.child(frame));
@@ -839,6 +840,16 @@ impl DewNode for EmptyNode {
     fn stretch_axis(&self) -> StretchAxis {
         self.stretch
     }
+}
+
+/// The box a container distributes among its children: the one its parent
+/// placed it in.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "logical-pixel geometry is far below f32 precision limits"
+)]
+fn placement_rect(bounds: Rect) -> LayoutRect {
+    LayoutRect::from_size(Size::new(bounds.width() as f32, bounds.height() as f32))
 }
 
 #[expect(
