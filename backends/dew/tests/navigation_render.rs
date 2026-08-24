@@ -10,9 +10,14 @@ use std::rc::Rc;
 use nami::binding;
 use waterui::prelude::*;
 use waterui_backend_core::input::TouchPhase;
+use waterui_controls::button::button;
 use waterui_controls::toggle::toggle;
-use waterui_dew::{DewRuntime, HostBoard, PointerSample, render_view_png};
-use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
+use waterui_core::Str;
+use waterui_dew::{DewRenderer, DewRuntime, HostBoard, PointerSample, render_view_png};
+use waterui_navigation::{
+    NavigationLink, NavigationStack, NavigationTitleDisplayMode, NavigationToolbar,
+    NavigationToolbarItem, NavigationToolbarPlacement, NavigationView,
+};
 
 mod support;
 
@@ -148,6 +153,74 @@ fn a_destination_can_refuse_a_pop() {
     // press, and pressing it reports another attempt.
     tap(&mut runtime, 30.0, 14.0);
     assert_eq!(attempts.get(), 2, "the refused pop left the stack alone");
+}
+
+/// A destination's whole bar reaches the panel: a trailing item on the item
+/// row, a large title on its own row beneath it, a search field under that,
+/// and a bottom-bar item at the foot of the screen.
+#[test]
+fn a_bar_places_every_part_it_declares() {
+    let query = binding(Str::from("Bed"));
+    let mut renderer = DewRenderer::default();
+    let list = renderer.render_tree(
+        AnyView::new(NavigationStack::new(
+            NavigationView::new("Rooms", vstack((text("Kitchen"), text("Bedroom"))))
+                .searchable(&query, "Find a room")
+                .navigation_toolbar(NavigationToolbar::new(vec![
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarTrailing,
+                        button("Add").action(|| {}),
+                    ),
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::BottomBar,
+                        button("Edit").action(|| {}),
+                    ),
+                ]))
+                .navigation_title_display_mode(NavigationTitleDisplayMode::Large),
+        )),
+        &support::test_environment(),
+        f64::from(WIDTH),
+        f64::from(HEIGHT),
+    );
+    let commands = list.commands();
+    let height = f64::from(HEIGHT);
+    let width = f64::from(WIDTH);
+
+    assert!(
+        commands.iter().any(|placed| {
+            let bounds = placed.bounds();
+            bounds.y0 > height - 48.0 && bounds.width() > width - 4.0
+        }),
+        "the bottom bar covers the foot of the screen"
+    );
+    assert!(
+        commands.iter().any(|placed| {
+            let bounds = placed.bounds();
+            bounds.y0 > height - 44.0 && bounds.x0 > 40.0 && bounds.x1 < width - 40.0
+        }),
+        "the bottom-bar item is drawn inside it"
+    );
+    assert!(
+        commands.iter().any(|placed| {
+            let bounds = placed.bounds();
+            bounds.y0 < 36.0 && bounds.x1 > width - 12.0 && bounds.width() < width / 2.0
+        }),
+        "the trailing toolbar item sits at the right of the item row"
+    );
+    assert!(
+        commands.iter().any(|placed| {
+            let bounds = placed.bounds();
+            bounds.y0 > 36.0 && bounds.y1 < 80.0 && bounds.x0 < 20.0
+        }),
+        "a large title takes its own row beneath the items, aligned to the leading edge"
+    );
+    assert!(
+        commands.iter().any(|placed| {
+            let bounds = placed.bounds();
+            bounds.y0 > 60.0 && bounds.y1 < 110.0 && bounds.width() > width - 24.0
+        }),
+        "the search field spans the bar beneath the title"
+    );
 }
 
 /// Visual review artifact: a destination with a bar and content, then the
