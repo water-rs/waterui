@@ -23,11 +23,11 @@ waterui-text.workspace = true
 waterkit-video.workspace = true
 waterkit-codec.workspace = true
 waterkit-audio = { workspace = true, features = ["streaming"] }
+waterkit-fs.workspace = true
 futures.workspace = true
 executor-core.workspace = true
 nami.workspace = true
 num-traits = { version = "0.2", default-features = false }
-dirs.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 wgpu.workspace = true

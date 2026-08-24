@@ -24,6 +24,7 @@ use waterkit_codec::{
     ColorOutputTarget, DecodedFrame, DecodedFrameUploader, DecodedPixelLayout,
     GpuFrame as DecodedGpuFrame, VideoColorUniform, video_color_uniform,
 };
+use waterkit_fs::WaterFs;
 #[cfg(target_os = "android")]
 use waterkit_video::AndroidOffloadAudioController;
 use waterkit_video::streaming::{
@@ -5789,7 +5790,7 @@ fn local_source_path(url: &Url) -> PathBuf {
 }
 
 fn cached_remote_asset_path(url: &Url, default_extension: &str) -> PathBuf {
-    let cache_root = dirs::cache_dir()
+    let cache_root = WaterFs::cache_dir()
         .expect("self-drawn video playback requires a platform cache directory")
         .join("waterui")
         .join("video");

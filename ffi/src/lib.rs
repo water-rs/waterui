@@ -49,7 +49,7 @@ use executor_core::{init_global_executor, init_local_executor};
 #[cfg(target_vendor = "apple")]
 use waterkit_audio as _;
 use waterui::{AnyView, Str, View};
-use waterui_core::Metadata;
+use waterui_core::{Metadata, Native};
 #[cfg(all(not(target_vendor = "apple"), feature = "map"))]
 pub use waterui_map_gpu;
 pub use waterui_video;
@@ -1998,7 +1998,7 @@ pub(crate) fn menu_items_views(
     items: nami::Computed<alloc::vec::Vec<ResolvedMenuItem>>,
 ) -> *mut WuiAnyViews {
     signal_vec_views(items, menu_item_identity, |item| {
-        AnyView::new(ResolvedMenuItemView(item))
+        AnyView::new(Native::new(ResolvedMenuItemView(item)))
     })
 }
 
