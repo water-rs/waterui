@@ -1029,6 +1029,14 @@ typedef enum WuiNavigationTransitionKind {
    * A caller-supplied custom transition.
    */
   WuiNavigationTransitionKind_Custom = 4,
+  /**
+   * The destination declared nothing; use the stack's transition.
+   *
+   * Only a `WuiNavigationView` carries this. A matched transition names a
+   * pair that differs per destination, so a destination may declare its own —
+   * and most do not, which is what this says.
+   */
+  WuiNavigationTransitionKind_Inherit = 5,
 } WuiNavigationTransitionKind;
 
 /**
@@ -5934,24 +5942,6 @@ typedef struct WuiNavigationDestinationState {
 } WuiNavigationDestinationState;
 
 /**
- *C ABI mirror of `NavigationView`.
- */
-typedef struct WuiNavigationView {
-  /**
-   *Mirrors the `bar` field of `NavigationView`.
-   */
-  struct WuiBar bar;
-  /**
-   *Mirrors the `content` field of `NavigationView`.
-   */
-  struct WuiAnyView *content;
-  /**
-   *Mirrors the `state` field of `NavigationView`.
-   */
-  struct WuiNavigationDestinationState state;
-} WuiNavigationView;
-
-/**
  * FFI representation of a navigation push/pop transition and its source anchor.
  */
 typedef struct WuiNavigationTransition {
@@ -5965,6 +5955,33 @@ typedef struct WuiNavigationTransition {
    */
   int32_t source_id;
 } WuiNavigationTransition;
+
+/**
+ * C ABI mirror of `NavigationView`.
+ *
+ * Hand-written rather than `into_ffi!` because `transition` is not a field
+ * mapping: a destination that declared nothing crosses as `Inherit` rather
+ * than as an absent value the C ABI has no room for.
+ */
+typedef struct WuiNavigationView {
+  /**
+   * Mirrors the `bar` field of `NavigationView`.
+   */
+  struct WuiBar bar;
+  /**
+   * Mirrors the `content` field of `NavigationView`.
+   */
+  struct WuiAnyView *content;
+  /**
+   * Mirrors the `state` field of `NavigationView`.
+   */
+  struct WuiNavigationDestinationState state;
+  /**
+   * How this destination asked to arrive, or `Inherit` when it asked for
+   * nothing and the stack's transition stands.
+   */
+  struct WuiNavigationTransition transition;
+} WuiNavigationView;
 
 /**
  * FFI struct for `NavigationStack`<(),()>

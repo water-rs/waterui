@@ -21,12 +21,41 @@ use waterui_navigation::{
 };
 use waterui_text::styled::StyledStr;
 
-into_ffi! {
-    NavigationView,
-    pub struct WuiNavigationView {
-        bar: WuiBar,
-        content: *mut WuiAnyView,
-        state: WuiNavigationDestinationState,
+/// C ABI mirror of `NavigationView`.
+///
+/// Hand-written rather than `into_ffi!` because `transition` is not a field
+/// mapping: a destination that declared nothing crosses as `Inherit` rather
+/// than as an absent value the C ABI has no room for.
+#[derive(Debug)]
+#[repr(C)]
+pub struct WuiNavigationView {
+    /// Mirrors the `bar` field of `NavigationView`.
+    pub bar: WuiBar,
+    /// Mirrors the `content` field of `NavigationView`.
+    pub content: *mut WuiAnyView,
+    /// Mirrors the `state` field of `NavigationView`.
+    pub state: WuiNavigationDestinationState,
+    /// How this destination asked to arrive, or `Inherit` when it asked for
+    /// nothing and the stack's transition stands.
+    pub transition: WuiNavigationTransition,
+}
+
+impl IntoFFI for NavigationView {
+    type FFI = WuiNavigationView;
+    fn into_ffi(self) -> Self::FFI {
+        let transition = self.transition.as_ref().map_or(
+            WuiNavigationTransition {
+                kind: WuiNavigationTransitionKind::Inherit,
+                source_id: 0,
+            },
+            |transition| transition.native().into_ffi(),
+        );
+        WuiNavigationView {
+            bar: self.bar.into_ffi(),
+            content: self.content.into_ffi(),
+            state: self.state.into_ffi(),
+            transition,
+        }
     }
 }
 
@@ -325,6 +354,12 @@ pub enum WuiNavigationTransitionKind {
     None = 3,
     /// A caller-supplied custom transition.
     Custom = 4,
+    /// The destination declared nothing; use the stack's transition.
+    ///
+    /// Only a `WuiNavigationView` carries this. A matched transition names a
+    /// pair that differs per destination, so a destination may declare its own —
+    /// and most do not, which is what this says.
+    Inherit = 5,
 }
 
 /// FFI representation of a navigation push/pop transition and its source anchor.

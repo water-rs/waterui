@@ -649,16 +649,19 @@ fn album_detail(album: Album) -> NavigationView {
 // Gallery: a matched zoom transition between the grid and the photo
 // ---------------------------------------------------------------------------
 
-/// One stable id ties a tapped tile to the page it opens.
-fn photo_transition() -> Id {
-    Id::try_from(1).expect("transition id must be non-zero")
+/// One stable id per photo ties a tapped tile to the page it opens.
+///
+/// A matched pair belongs to one destination, not to the stack: tile 3 and the
+/// page it opens share an identity that tile 4 does not. So every photo gets its
+/// own id, and each page names the one it arrives by.
+fn photo_transition(index: usize) -> Id {
+    Id::try_from(i32::try_from(index).expect("photo index must fit an id") + 1)
+        .expect("transition id must be non-zero")
 }
 
 fn gallery_stack() -> impl View {
     NavigationStack::with_path(NavigationPath::<PhotoRoute>::new(), gallery_root())
         .destination(|PhotoRoute(index)| photo_page(index))
-        // The platform's own zoom / shared-element transition, matched by id.
-        .transition(navigation_transition::zoom(photo_transition()))
 }
 
 fn gallery_root() -> NavigationView {
@@ -681,12 +684,8 @@ fn photo_tile(index: usize) -> AnyView {
         PhotoRoute(index),
     );
 
-    if index == 0 {
-        tile.navigation_transition_source(photo_transition())
-            .anyview()
-    } else {
-        tile.anyview()
-    }
+    tile.navigation_transition_source(photo_transition(index))
+        .anyview()
 }
 
 fn photo_page(index: usize) -> NavigationView {
@@ -696,9 +695,9 @@ fn photo_page(index: usize) -> NavigationView {
             // A `RoundedRectangle` radius is a fraction of the shorter side,
             // not a point value.
             .clip(RoundedRectangle::new(0.06))
-            .navigation_transition_destination(photo_transition()),
+            .navigation_transition_destination(photo_transition(index)),
         text(
-            "Tapping the first tile matches this hero to it: the backend runs \
+            "Tapping a tile matches this hero to that tile: the backend runs \
              its native zoom transition, and the platform's interactive back \
              gesture drives the same transition in reverse.",
         )
@@ -709,6 +708,8 @@ fn photo_page(index: usize) -> NavigationView {
     .padding_with(EdgeInsets::all(16.0))
     .title(format!("Photo {index}"))
     .inline_title()
+    // The declaration lives on the destination, because the pair it names does.
+    .transition(navigation_transition::zoom(photo_transition(index)))
 }
 
 /// Six flat swatches standing in for photographs.

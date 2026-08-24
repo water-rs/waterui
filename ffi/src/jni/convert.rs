@@ -1504,7 +1504,7 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
             .expect("NavigationViewStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(Ldev/waterui/android/runtime/BarStruct;JJJJJJ)V"),
+            jni_sig!("(Ldev/waterui/android/runtime/BarStruct;JJJJJJII)V"),
             &[
                 JValue::Object(&bar),
                 JValue::Long(self.content as jlong),
@@ -1513,6 +1513,8 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
                 JValue::Long(self.state.appear as jlong),
                 JValue::Long(self.state.disappear as jlong),
                 JValue::Long(self.state.pop as jlong),
+                JValue::Int(self.transition.kind as i32),
+                JValue::Int(self.transition.source_id),
             ],
         )
         .expect("Failed to create NavigationViewStruct")

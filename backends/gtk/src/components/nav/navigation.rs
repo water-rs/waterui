@@ -203,6 +203,29 @@ impl GtkComponent for NavigationView {
     }
 }
 
+/// Projects a resolved WaterUI transition onto the GTK stack that will run it.
+///
+/// GTK animates a stack switch with whatever type the stack carries at that
+/// moment, so this is set before each push and pop rather than once.
+fn apply_stack_transition(stack: &gtk4::Stack, transition: NativeNavigationTransition) {
+    match transition {
+        // GTK has no shared-element transition, so a zoom arrives as the
+        // platform default rather than as nothing at all.
+        NativeNavigationTransition::Automatic | NativeNavigationTransition::Zoom(_) => {
+            stack.set_transition_type(gtk4::StackTransitionType::SlideLeftRight);
+            stack.set_transition_duration(250);
+        }
+        NativeNavigationTransition::Fade => {
+            stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+            stack.set_transition_duration(250);
+        }
+        NativeNavigationTransition::None | NativeNavigationTransition::Custom => {
+            stack.set_transition_type(gtk4::StackTransitionType::None);
+            stack.set_transition_duration(0);
+        }
+    }
+}
+
 impl GtkComponent for NavigationStack<(), ()> {
     fn render(self, env: &Environment, renderer: &mut GtkRenderer) -> Widget {
         let transition = self.transition_style().native();
@@ -243,20 +266,7 @@ impl GtkComponent for NavigationStack<(), ()> {
         let gtk_stack = gtk4::Stack::new();
         gtk_stack.set_hexpand(true);
         gtk_stack.set_vexpand(true);
-        match transition {
-            NativeNavigationTransition::Automatic | NativeNavigationTransition::Zoom(_) => {
-                gtk_stack.set_transition_type(gtk4::StackTransitionType::SlideLeftRight);
-                gtk_stack.set_transition_duration(250);
-            }
-            NativeNavigationTransition::Fade => {
-                gtk_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
-                gtk_stack.set_transition_duration(250);
-            }
-            NativeNavigationTransition::None | NativeNavigationTransition::Custom => {
-                gtk_stack.set_transition_type(gtk4::StackTransitionType::None);
-                gtk_stack.set_transition_duration(0);
-            }
-        }
+        apply_stack_transition(&gtk_stack, transition);
         container.append(&gtk_stack);
         let bottom_holder = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         container.append(&bottom_holder);
@@ -272,6 +282,7 @@ impl GtkComponent for NavigationStack<(), ()> {
             bottom_holder,
             back_button.clone(),
             scoped_css,
+            transition,
             &child_env,
         );
         let navigation_controller = NavigationController::new(controller.clone());
@@ -319,6 +330,8 @@ struct GtkNavigationControllerInner {
     bottom_holder: gtk4::Box,
     back_button: gtk4::Button,
     color_css: ScopedCss,
+    /// What the stack declared, for destinations that declare nothing.
+    stack_transition: NativeNavigationTransition,
     view_stack: Vec<NavigationViewState>,
     active_bar_guards: Vec<nami::watcher::BoxWatcherGuard>,
     next_id: usize,
@@ -327,6 +340,10 @@ struct GtkNavigationControllerInner {
 
 struct NavigationViewState {
     id: String,
+    /// The motion this destination arrives and leaves by, already resolved
+    /// against the stack's. A push is animated by the destination arriving, a
+    /// pop by the one leaving, so both halves of a round trip use this one.
+    transition: NativeNavigationTransition,
     title_widget: Option<gtk4::Widget>,
     leading_widget: Option<gtk4::Widget>,
     trailing_widget: Option<gtk4::Widget>,
@@ -348,6 +365,7 @@ impl GtkNavigationController {
         bottom_holder: gtk4::Box,
         back_button: gtk4::Button,
         color_css: ScopedCss,
+        stack_transition: NativeNavigationTransition,
         env: &Environment,
     ) -> Self {
         Self {
@@ -361,8 +379,10 @@ impl GtkNavigationController {
                 bottom_holder,
                 back_button,
                 color_css,
+                stack_transition,
                 view_stack: vec![NavigationViewState {
                     id: "root".to_string(),
+                    transition: stack_transition,
                     title_widget: None,
                     leading_widget: None,
                     trailing_widget: None,
@@ -432,6 +452,11 @@ impl GtkNavigationControllerInner {
     fn push(&mut self, content: NavigationView) {
         let id = format!("view_{}", self.next_id);
         self.next_id += 1;
+        let transition = content
+            .transition
+            .as_ref()
+            .map_or(self.stack_transition, |declared| declared.native());
+        apply_stack_transition(&self.stack, transition);
 
         let mut renderer = GtkRenderer::new();
         let content_widget = renderer.render_any(content.content, &self.env);
@@ -446,6 +471,7 @@ impl GtkNavigationControllerInner {
 
         self.view_stack.push(NavigationViewState {
             id,
+            transition,
             title_widget: Some(bar.title),
             leading_widget: bar.leading,
             trailing_widget: bar.trailing,
@@ -461,10 +487,11 @@ impl GtkNavigationControllerInner {
             return;
         }
 
-        if let Some(current) = self.view_stack.pop()
-            && let Some(child) = self.stack.child_by_name(&current.id)
-        {
-            self.stack.remove(&child);
+        if let Some(current) = self.view_stack.pop() {
+            apply_stack_transition(&self.stack, current.transition);
+            if let Some(child) = self.stack.child_by_name(&current.id) {
+                self.stack.remove(&child);
+            }
         }
 
         if let Some(previous) = self.view_stack.last() {
