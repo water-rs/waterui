@@ -13,6 +13,7 @@
 //! the engine: it renders into an in-memory framebuffer driven by the system
 //! clock, requiring no cross-compilation or hardware.
 
+#[cfg(feature = "host")]
 use std::collections::VecDeque;
 
 use peniko::Blob;
