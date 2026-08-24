@@ -75,15 +75,15 @@ impl SliderPointer {
 }
 
 impl PointerHandler for SliderPointer {
-    fn pointer_down(&mut self, point: kurbo::Point, _bounds: Rect, _env: &Environment) -> bool {
+    fn pointer_down(&mut self, point: kurbo::Point, _bounds: Rect) -> bool {
         self.update(point)
     }
 
-    fn pointer_move(&mut self, point: kurbo::Point, _bounds: Rect, _env: &Environment) -> bool {
+    fn pointer_move(&mut self, point: kurbo::Point, _bounds: Rect) -> bool {
         self.update(point)
     }
 
-    fn pointer_up(&mut self, point: kurbo::Point, _bounds: Rect, _env: &Environment) -> bool {
+    fn pointer_up(&mut self, point: kurbo::Point, _bounds: Rect) -> bool {
         self.update(point)
     }
 }

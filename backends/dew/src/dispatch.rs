@@ -278,12 +278,8 @@ impl DewRenderer {
         self.pointer.register(bounds, handler);
     }
 
-    pub(crate) fn handle_pointer(
-        &mut self,
-        sample: crate::board::PointerSample,
-        env: &Environment,
-    ) -> bool {
-        self.pointer.dispatch(sample, env)
+    pub(crate) fn handle_pointer(&mut self, sample: crate::board::PointerSample) -> bool {
+        self.pointer.dispatch(sample)
     }
 }
 
@@ -861,16 +857,8 @@ impl DewNode for EmptyNode {
     clippy::cast_possible_truncation,
     reason = "logical-pixel geometry is far below f32 precision limits"
 )]
-fn placement_rect(bounds: Rect) -> LayoutRect {
+const fn placement_rect(bounds: Rect) -> LayoutRect {
     LayoutRect::from_size(Size::new(bounds.width() as f32, bounds.height() as f32))
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "logical-pixel geometry is far below f32 precision limits"
-)]
-pub(crate) fn proposal_from_bounds(bounds: Rect) -> ProposalSize {
-    ProposalSize::new(Some(bounds.width() as f32), Some(bounds.height() as f32))
 }
 
 #[expect(
