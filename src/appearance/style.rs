@@ -253,7 +253,7 @@ impl Default for Anchor {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::prelude::*;
 ///
 /// // Scale from center (default)
@@ -333,7 +333,7 @@ impl Scale {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::prelude::*;
 ///
 /// // Rotate around center (default)
@@ -387,7 +387,7 @@ impl Rotation {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::prelude::*;
 ///
 /// // Move view by (10, 20) points

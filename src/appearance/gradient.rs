@@ -13,24 +13,27 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```rust
 //! use waterui::prelude::*;
-//! use waterui::gradient::{LinearGradient, ColorStop, UnitPoint};
+//! use waterui::gradient::{ColorStop, LinearGradient, MeshGradient, MeshVertex, UnitPoint};
 //!
 //! // Linear gradient from top to bottom
-//! text!("Hello")
-//!     .background(LinearGradient::new(
-//!         vec![
-//!             ColorStop::new(Color::red(), 0.0),
-//!             ColorStop::new(Color::blue(), 1.0),
-//!         ],
-//!         UnitPoint::TOP,
-//!         UnitPoint::BOTTOM,
-//!     ));
+//! let banner = LinearGradient::new(
+//!     vec![
+//!         ColorStop::new(Color::red(), 0.0),
+//!         ColorStop::new(Color::blue(), 1.0),
+//!     ],
+//!     UnitPoint::TOP,
+//!     UnitPoint::BOTTOM,
+//! );
 //!
-//! // Animated mesh gradient
-//! let phase = binding(0.0f32);
-//! MeshGradient::new(3, 3, vec![/* vertices */]);
+//! // A mesh gradient needs exactly width × height vertices
+//! let mesh = MeshGradient::new(2, 2, vec![
+//!     MeshVertex::at(0.0, 0.0, Color::red()),
+//!     MeshVertex::at(1.0, 0.0, Color::green()),
+//!     MeshVertex::at(0.0, 1.0, Color::blue()),
+//!     MeshVertex::at(1.0, 1.0, Color::yellow()),
+//! ]);
 //! ```
 
 use core::f32::consts::FRAC_1_SQRT_2;
@@ -47,15 +50,16 @@ pub use waterui_layout::UnitPoint;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::gradient::ColorStop;
-/// use waterui::Color;
+/// use waterui::prelude::*;
 ///
 /// // Static color stop at the start
 /// let stop = ColorStop::new(Color::red(), 0.0);
 ///
 /// // Animated color stop
-/// let animated_color = some_binding.map(|v| if v { Color::green() } else { Color::red() });
+/// let toggled = binding::<bool>(false);
+/// let animated_color = toggled.map(|v| if v { Color::green() } else { Color::red() });
 /// let animated_stop = ColorStop::new(animated_color, 0.5);
 /// ```
 #[derive(Debug, Clone)]
@@ -92,7 +96,7 @@ impl ColorStop {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::gradient::{LinearGradient, ColorStop, UnitPoint};
 /// use waterui::Color;
 ///
@@ -168,15 +172,15 @@ impl LinearGradient {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::gradient::{RadialGradient, ColorStop, UnitPoint};
 /// use waterui::Color;
 ///
 /// // Circular gradient from white center to dark edges
 /// let gradient = RadialGradient::new(
 ///     vec![
-///         ColorStop::new(Color::white(), 0.0),
-///         ColorStop::new(Color::black(), 1.0),
+///         ColorStop::new(Color::srgb(255, 255, 255), 0.0),
+///         ColorStop::new(Color::srgb(0, 0, 0), 1.0),
 ///     ],
 ///     UnitPoint::CENTER,
 ///     0.0,  // Start at center
@@ -233,7 +237,7 @@ impl RadialGradient {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::gradient::{AngularGradient, ColorStop, UnitPoint};
 /// use waterui::Color;
 ///
@@ -245,7 +249,7 @@ impl RadialGradient {
 ///         ColorStop::new(Color::green(), 0.33),
 ///         ColorStop::new(Color::cyan(), 0.5),
 ///         ColorStop::new(Color::blue(), 0.67),
-///         ColorStop::new(Color::magenta(), 0.83),
+///         ColorStop::new(Color::purple(), 0.83),
 ///         ColorStop::new(Color::red(), 1.0),
 ///     ],
 ///     UnitPoint::CENTER,
@@ -309,17 +313,17 @@ impl AngularGradient {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui::gradient::MeshVertex;
-/// use waterui::Color;
+/// use waterui::prelude::*;
 ///
 /// // Static vertex
-/// let vertex = MeshVertex::new((0.5, 0.5), Color::red());
+/// let vertex = MeshVertex::new((0.5_f32, 0.5_f32), Color::red());
 ///
 /// // Animated position
-/// let phase = binding(0.0f32);
-/// let animated_pos = phase.map(|p| (0.5 + 0.1 * p.sin(), 0.5));
-/// let animated_vertex = MeshVertex::new(animated_pos, Color::white());
+/// let phase = binding::<f32>(0.0_f32);
+/// let animated_pos = phase.map(|p| (0.5 + 0.1 * p.sin(), 0.5_f32));
+/// let animated_vertex = MeshVertex::new(animated_pos, Color::srgb(255, 255, 255));
 /// ```
 #[derive(Debug, Clone)]
 pub struct MeshVertex {
@@ -369,9 +373,11 @@ impl MeshVertex {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
+/// use core::f32::consts::PI;
+///
 /// use waterui::gradient::{MeshGradient, MeshVertex};
-/// use waterui::Color;
+/// use waterui::prelude::*;
 ///
 /// // Simple 2x2 mesh (4 vertices)
 /// let mesh = MeshGradient::new(2, 2, vec![
@@ -382,7 +388,7 @@ impl MeshVertex {
 /// ]);
 ///
 /// // Animated 3x3 mesh
-/// let phase = binding(0.0f32);
+/// let phase = binding::<f32>(0.0_f32);
 /// let center_pos = phase.map(|p| {
 ///     (0.5 + 0.1 * (p * 2.0 * PI).sin(),
 ///      0.5 + 0.1 * (p * 2.0 * PI).cos())
@@ -393,7 +399,7 @@ impl MeshVertex {
 ///     MeshVertex::at(0.5, 0.0, Color::orange()),
 ///     MeshVertex::at(1.0, 0.0, Color::yellow()),
 ///     MeshVertex::at(0.0, 0.5, Color::pink()),
-///     MeshVertex::new(center_pos, Color::white()), // Animated center!
+///     MeshVertex::new(center_pos, Color::srgb(255, 255, 255)), // Animated center!
 ///     MeshVertex::at(1.0, 0.5, Color::green()),
 ///     MeshVertex::at(0.0, 1.0, Color::purple()),
 ///     MeshVertex::at(0.5, 1.0, Color::blue()),
