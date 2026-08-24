@@ -60,9 +60,36 @@ and move on. This explicitly covers:
 Say plainly in the commit message and to the user that the defect was
 pre-existing, so the diff stays understandable, then fix it. Keep the fix scoped
 to the defect itself — repairing a bug is not licence to refactor the area
-around it. If the correct fix turns out to be large or architectural, surface it
-with a concrete recommendation and let the user decide, rather than either
-silently expanding the change or quietly abandoning it.
+around it.
+
+**Fix the root. Never adjust your own code to avoid a bug you just found.** The
+tempting move — the one that must not happen — is to leave the defect standing
+and quietly steer around it: giving a view an explicit size because the
+container that should have sized it collapses, picking different inputs for a
+test because the honest ones trip the bug, adding a `.frame()`, a constant, a
+retry, a guard, or an extra argument whose only job is to keep the broken path
+from being taken. That is a workaround even when the resulting line looks
+idiomatic and even when it is one character long, and it is worse than leaving
+the bug alone, because the reproduction disappears with it: the next person sees
+green tests and working screens over a defect nobody can find any more. If you
+caught it, you are holding the only reproduction there is — keep it, and fix
+what it points at.
+
+Two consequences worth stating outright:
+
+- **A gallery, snapshot, or example that renders wrong is a bug report.** Do not
+  make it render right by construction. Restore the honest version once the root
+  is fixed, and keep it as the regression test.
+- **"This needs approval" is not a place to stop working.** Foundations
+  (Principle 10) still need the user's decision before you change them, so
+  present the diagnosis and the exact fix you propose and ask — but present it as
+  the question it is, never as a footnote under a change you shipped by routing
+  around the defect. If the user tells you to fix it, fix it at the root; a
+  second workaround after that answer is a straight violation.
+
+If the correct fix genuinely is large or architectural, surface it with a
+concrete recommendation and let the user decide, rather than either silently
+expanding the change or quietly abandoning it.
 
 Keep the change set strictly scoped to the task.
 

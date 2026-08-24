@@ -147,20 +147,15 @@ fn export_shapes_for_visual_review() {
     let png = render_view_png(
         || {
             vstack((
+                hstack((fill_red(Circle), Capsule.fill(Color::blue()))).spacing(16.0),
                 hstack((
-                    fill_red(Circle).size(120.0, 60.0),
-                    Capsule.fill(Color::blue()).size(120.0, 60.0),
-                ))
-                .spacing(16.0),
-                hstack((
-                    RoundedRectangle::new(0.5)
-                        .fill(Color::green())
-                        .size(120.0, 60.0),
-                    Color::cyan().clip(Circle).size(120.0, 60.0),
+                    RoundedRectangle::new(0.5).fill(Color::green()),
+                    Color::cyan().clip(Circle),
                 ))
                 .spacing(16.0),
             ))
             .spacing(16.0)
+            .padding()
         },
         support::test_environment(),
         320,
