@@ -12,7 +12,7 @@ use kurbo::{Affine, Rect, Shape};
 use vello_cpu::{Image, ImageSource, Pixmap, RenderContext, RenderMode, RenderSettings, Resources};
 
 use crate::compositor::DeviceRegion;
-use crate::display_list::{BEZIER_TOLERANCE, DisplayList, DrawCommand};
+use crate::display_list::{BEZIER_TOLERANCE, Clip, ClipRegion, DisplayList, DrawCommand};
 use crate::stats::FrameWork;
 
 /// The rasterizer: owns the persistent `vello_cpu` resources (glyph atlas,
@@ -164,16 +164,9 @@ impl Painter {
             }
             work.command_band_draws += 1;
             let command = placed.command();
-            let clip = command.clip();
-            if let Some(clip) = clip {
-                if clip.width() <= 0.0 || clip.height() <= 0.0 {
-                    continue;
-                }
-                // The clip rectangle is in window coordinates, so it only
-                // needs the region shift, not the command transform.
-                ctx.set_transform(shift);
-                ctx.push_clip_path(&clip.to_path(BEZIER_TOLERANCE));
-            }
+            let Some(clip_depth) = push_clip_layers(ctx, command.clip(), shift) else {
+                continue;
+            };
             match command {
                 DrawCommand::FillPath {
                     path,
@@ -226,7 +219,7 @@ impl Painter {
                         );
                 }
             }
-            if clip.is_some() {
+            for _ in 0..clip_depth {
                 ctx.pop_clip_path();
             }
         }
@@ -234,6 +227,31 @@ impl Painter {
         slot.context.render_to_pixmap(resources, &mut slot.pixmap);
         &slot.pixmap
     }
+}
+
+/// Pushes every clip layer in force for a command, returning how many were
+/// pushed, or [`None`] when the clip admits no pixel at all.
+///
+/// Clips are in window coordinates, so they only need the region shift, not
+/// the command transform. Each region becomes one layer: their intersection is
+/// the mask, and the rasterizer computes it exactly rather than approximating
+/// it with a boolean path operation.
+fn push_clip_layers(ctx: &mut RenderContext, clip: Option<&Clip>, shift: Affine) -> Option<usize> {
+    let Some(clip) = clip else {
+        return Some(0);
+    };
+    let bounds = clip.bounds();
+    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+        return None;
+    }
+    ctx.set_transform(shift);
+    for region in clip.regions() {
+        match region {
+            ClipRegion::Rect(rect) => ctx.push_clip_path(&rect.to_path(BEZIER_TOLERANCE)),
+            ClipRegion::Shape { path, .. } => ctx.push_clip_path(path),
+        }
+    }
+    Some(clip.regions().len())
 }
 
 /// Sets the context paint, converting and caching image brushes once.
