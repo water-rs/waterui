@@ -26,9 +26,9 @@ use crate::theme;
 
 pub mod button;
 pub mod divider;
+pub mod navigation;
 #[cfg(feature = "progress")]
 pub mod progress;
-pub mod navigation;
 pub mod scroll;
 pub mod shape;
 pub mod slider;
