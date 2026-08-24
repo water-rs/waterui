@@ -119,7 +119,10 @@ impl LabelText {
         rect: Rect,
         env: &Environment,
     ) {
-        let foreground = renderer.theme().foreground();
+        // The label's own scope, not the window's: measurement already asks
+        // the same question there, and painting a different colour than the
+        // one measured also re-shapes the text a second time every frame.
+        let foreground = theme::foreground(env);
         self.render_with_brush(renderer, ctx, rect, env, foreground);
     }
 

@@ -738,7 +738,10 @@ impl DewNode for TextNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        let foreground = renderer.theme().foreground();
+        // Scoped, exactly as `measure` reads it: a subtree that installs its
+        // own foreground has to be painted in it, and a render that disagreed
+        // with the measurement would re-shape the text a second time.
+        let foreground = theme::foreground(&self.env);
         let revision = self.content.revision();
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
@@ -787,7 +790,7 @@ impl DewNode for StrNode {
     }
 
     fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
-        let foreground = renderer.theme().foreground();
+        let foreground = theme::foreground(&self.env);
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         let outcome = self.cache.borrow_mut().emit(
