@@ -104,7 +104,7 @@ impl<B: Board> DewRuntime<B> {
         let mut input_changed = false;
         if !first {
             while let Some(sample) = self.board.poll_pointer() {
-                input_changed |= self.renderer.handle_pointer(sample, &self.env);
+                input_changed |= self.renderer.handle_pointer(sample);
             }
         }
         if input_changed {
