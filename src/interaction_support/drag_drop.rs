@@ -10,16 +10,17 @@
 //! # Example
 //!
 //! ```rust
+//! use waterui::drag_drop::DragData;
 //! use waterui::prelude::*;
 //!
 //! // Make a view draggable
-//! text("Drag me!")
+//! let source = text!("Drag me!")
 //!     .draggable(DragData::text("Hello, World!"));
 //!
 //! // Create a drop destination that receives the dropped data
-//! text("Drop here")
+//! let target = text!("Drop here")
 //!     .drop_destination(|data: DragData| {
-//!         println!("Received: {:?}", data);
+//!         let _received = data;
 //!     });
 //! ```
 
@@ -140,9 +141,12 @@ impl Draggable {
 /// # Example
 ///
 /// ```rust
-/// .drop_destination(|data: DragData| {
-///     println!("Received: {:?}", data);
-/// })
+/// use waterui::drag_drop::DragData;
+/// use waterui::prelude::*;
+///
+/// let target = text!("Drop here").drop_destination(|data: DragData| {
+///     let _received = data;
+/// });
 /// ```
 pub struct DropDestination {
     /// Callback invoked when data is dropped onto this view.
@@ -168,9 +172,11 @@ impl DropDestination {
     /// # Example
     ///
     /// ```rust
-    /// DropDestination::new(|data: DragData| {
-    ///     println!("Dropped: {:?}", data);
-    /// })
+    /// use waterui::drag_drop::{DragData, DropDestination};
+    ///
+    /// let destination = DropDestination::new(|data: DragData| {
+    ///     let _dropped = data;
+    /// });
     /// ```
     pub fn new<Args>(on_drop: impl Handler<Args, ()>) -> Self {
         Self {
@@ -209,12 +215,17 @@ pub trait DropDestinationExt {
     /// # Example
     ///
     /// ```rust
-    /// let is_hovering = Binding::bool(false);
+    /// use waterui::drag_drop::{DragData, DropDestinationExt};
+    /// use waterui::prelude::*;
     ///
-    /// view
-    ///     .drop_destination()
-    ///     .on_drop_simple(|data| handle_drop(data))
-    ///     .drop_hover(&is_hovering)
+    /// let is_hovering = binding::<bool>(false);
+    ///
+    /// // `drop_hover` extends the metadata a `drop_destination` produces.
+    /// let target = text!("Drop here")
+    ///     .drop_destination(|data: DragData| {
+    ///         let _dropped = data;
+    ///     })
+    ///     .drop_hover(&is_hovering);
     /// ```
     #[must_use]
     fn drop_hover(self, is_hovering: &Binding<bool>) -> Self;

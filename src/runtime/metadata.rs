@@ -28,11 +28,11 @@ pub mod context_menu {
     /// ```rust
     /// use waterui::prelude::*;
     ///
-    /// text!("Right-click me")
+    /// let menu = text!("Right-click me")
     ///     .context_menu(vec![
     ///         "Copy".action(|| {}),
     ///         "Paste".action(|| {}),
-    ///     ])
+    ///     ]);
     /// ```
     #[derive(Debug)]
     pub struct ContextMenu {
