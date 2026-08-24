@@ -2,15 +2,12 @@
 
 use nami::{Computed, Signal};
 use peniko::Color;
-use waterui::theme::{
-    color::{
-        Accent, AccentForeground, Border, Foreground, MutedForeground, Surface, SurfaceVariant,
-    },
-    installed_color_signal,
-};
 use waterui_backend_core::frame_signals::FrameSignals;
 use waterui_core::Environment;
-use waterui_graphics::color::{ResolvedColor, Srgb};
+use waterui_graphics::color::{
+    AccentColor, AccentForegroundColor, BorderColor, ForegroundColor, MutedForegroundColor,
+    ResolvedColor, Srgb, SurfaceColor, SurfaceVariantColor,
+};
 
 use crate::dispatch::WatchedSignal;
 
@@ -60,13 +57,17 @@ pub(crate) struct ThemePalette {
 impl ThemePalette {
     pub(crate) fn new(env: &Environment, signals: FrameSignals) -> Self {
         Self {
-            foreground: watch::<Foreground>(env, signals.clone(), FOREGROUND),
-            muted_foreground: watch::<MutedForeground>(env, signals.clone(), MUTED_FOREGROUND),
-            surface: watch::<Surface>(env, signals.clone(), SURFACE),
-            border: watch::<Border>(env, signals.clone(), BORDER),
-            accent: watch::<Accent>(env, signals.clone(), ACCENT),
-            accent_foreground: watch::<AccentForeground>(env, signals.clone(), ACCENT_FOREGROUND),
-            track: watch::<SurfaceVariant>(env, signals, TRACK),
+            foreground: watch::<ForegroundColor>(env, signals.clone(), FOREGROUND),
+            muted_foreground: watch::<MutedForegroundColor>(env, signals.clone(), MUTED_FOREGROUND),
+            surface: watch::<SurfaceColor>(env, signals.clone(), SURFACE),
+            border: watch::<BorderColor>(env, signals.clone(), BORDER),
+            accent: watch::<AccentColor>(env, signals.clone(), ACCENT),
+            accent_foreground: watch::<AccentForegroundColor>(
+                env,
+                signals.clone(),
+                ACCENT_FOREGROUND,
+            ),
+            track: watch::<SurfaceVariantColor>(env, signals, TRACK),
         }
     }
 
@@ -96,18 +97,27 @@ impl ThemePalette {
     }
 }
 
+/// The signal installed for color slot `T`, if a theme installed one.
+///
+/// Theme installation mirrors every slot into `waterui-graphics`' own slot
+/// keys, so reading them here is equivalent to asking the `waterui` facade —
+/// and it keeps the facade, with the visual component stack behind it, out of
+/// the lean firmware graph (`default-features = false`).
+fn installed<T: 'static>(env: &Environment) -> Option<Computed<ResolvedColor>> {
+    env.query::<T, Computed<ResolvedColor>>().cloned()
+}
+
 fn watch<T: 'static>(
     env: &Environment,
     signals: FrameSignals,
     default: Color,
 ) -> WatchedSignal<Computed<ResolvedColor>> {
-    let signal =
-        installed_color_signal::<T>(env).unwrap_or_else(|| Computed::constant(resolved(default)));
+    let signal = installed::<T>(env).unwrap_or_else(|| Computed::constant(resolved(default)));
     WatchedSignal::new(signal, signals)
 }
 
 pub(crate) fn foreground(env: &Environment) -> Color {
-    installed_color_signal::<Foreground>(env).map_or(FOREGROUND, |signal| color(signal.get()))
+    installed::<ForegroundColor>(env).map_or(FOREGROUND, |signal| color(signal.get()))
 }
 
 fn resolved(color: Color) -> ResolvedColor {

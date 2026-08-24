@@ -12,7 +12,9 @@
 //! host ([`HostBoard`]) and on-chip.
 
 use kurbo::Rect;
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{AnyView, Environment};
+#[cfg(feature = "host")]
+use waterui_core::View;
 
 use crate::board::Board;
 #[cfg(feature = "host")]
