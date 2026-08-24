@@ -33,6 +33,10 @@ shaderloom = "0.1"
 shaderloom = { version = "0.1", features = ["build"] }
 ```
 
+The snippets below are shown rather than compiled: they run in a `build.rs`,
+`include!` a file that only exists in `OUT_DIR` after that build script has run,
+or need a live `wgpu` adapter.
+
 Compile a WGSL module from `build.rs`:
 
 ```rust,ignore
