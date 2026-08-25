@@ -267,7 +267,21 @@ fn pure_vello_encode_floor() {
     }
 }
 
+/// Report-only, and deliberately out of the gating test run.
+///
+/// It builds a fresh runtime per sample — 278 of them — and each one builds its
+/// own `vello::Renderer`, which compiles roughly thirty compute pipelines. On a
+/// runner whose only adapter is a software rasterizer that is some eight
+/// thousand JIT-compiled shaders, and the machine runs out of memory before the
+/// probe finishes. The numbers it prints are read by a person deciding an
+/// architecture question, not asserted by CI, so it is run on demand:
+///
+/// ```text
+/// cargo nextest run -p hydrolysis --run-ignored all \
+///     -E 'test(full_rebuild_vs_retained_replay_cost)' --no-capture
+/// ```
 #[test]
+#[ignore = "report-only probe: builds 278 runtimes and exhausts a software-rasterizer runner"]
 fn full_rebuild_vs_retained_replay_cost() {
     let sizes = [15usize, 40, 80, 160];
     // One device for the whole probe. Every sample below still builds its own
