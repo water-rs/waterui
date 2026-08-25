@@ -208,27 +208,10 @@ pub(crate) struct ContentSizeLimits {
     pub(crate) maximum: Option<LayoutSize>,
 }
 
-impl Drop for HydrolysisRenderer {
-    fn drop(&mut self) {
-        // Back to the device pool it came from, so the next window on this
-        // device reuses its pipelines instead of compiling a fresh set.
-        if let (Some(pool), Some(renderer)) =
-            (self.renderer_pool.take(), self.vello_renderer.take())
-        {
-            pool.give_back(renderer);
-        }
-    }
-}
-
 /// Core hydrolysis renderer state.
 pub struct HydrolysisRenderer {
     state: HydroState,
-    /// Owned outright while this renderer lives, and handed back to
-    /// [`renderer_pool`](Self::renderer_pool) on drop when it came from one.
-    /// `Option` only so `Drop` can move it out.
-    vello_renderer: Option<vello::Renderer>,
-    /// The device pool this renderer was lent from, if any.
-    renderer_pool: Option<Arc<crate::platform::VelloRendererPool>>,
+    vello_renderer: vello::Renderer,
     scene: vello::Scene,
     transient_scene: Option<vello::Scene>,
     compositor: Compositor,
@@ -327,50 +310,30 @@ impl HydrolysisRenderer {
         core::mem::take(&mut self.subview_structural_change)
     }
 
-    /// The borrowed `vello::Renderer`. Present for this renderer's whole life;
-    /// `Drop` is the only thing that takes it.
-    pub(crate) fn vello_renderer_mut(&mut self) -> &mut vello::Renderer {
-        self.vello_renderer
-            .as_mut()
-            .expect("hydrolysis renderer used after its vello renderer was returned")
-    }
-
-    /// Builds a renderer that owns its `vello::Renderer` for its whole life.
-    ///
-    /// Prefer [`Self::on_surface`] where a surface is in hand: pipelines belong
-    /// to the device, and a process that creates renderers in sequence should
-    /// reuse them rather than compile a fresh set each time.
     #[must_use]
     pub fn new(device: &wgpu::Device) -> Self {
-        Self::new_with_options(device, crate::platform::default_vello_options())
-    }
-
-    /// Borrows a `vello::Renderer` from the surface's device pool.
-    ///
-    /// The renderer goes back to the pool when this one drops, so windows
-    /// opened and closed in sequence keep reusing the same compiled pipelines.
-    #[must_use]
-    pub fn on_surface(surface: &dyn crate::platform::SurfaceProvider) -> Self {
-        let pool = Arc::clone(surface.renderer_pool());
-        let vello_renderer = pool.take(surface.device());
-        let mut renderer = Self::from_vello_renderer(vello_renderer);
-        renderer.renderer_pool = Some(pool);
-        renderer
+        Self::new_with_options(
+            device,
+            vello::RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::area_only(),
+                // Hydrolysis is the high-end, multi-core renderer: let vello parallelize
+                // pipeline initialization across all available cores instead of pinning
+                // it to a single thread.
+                num_init_threads: std::thread::available_parallelism().ok(),
+                pipeline_cache: None,
+            },
+        )
     }
 
     #[must_use]
     pub fn new_with_options(device: &wgpu::Device, options: vello::RendererOptions) -> Self {
         let vello_renderer =
             vello::Renderer::new(device, options).expect("failed to create hydrolysis renderer");
-        Self::from_vello_renderer(vello_renderer)
-    }
-
-    fn from_vello_renderer(vello_renderer: vello::Renderer) -> Self {
         let frame_instant = Instant::now();
         Self {
             state: HydroState::default(),
-            vello_renderer: Some(vello_renderer),
-            renderer_pool: None,
+            vello_renderer,
             scene: vello::Scene::new(),
             transient_scene: None,
             compositor: Compositor::default(),
