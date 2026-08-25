@@ -12081,6 +12081,7 @@ dependencies = [
  "half",
  "image",
  "jni 0.22.4",
+ "libc",
  "moxcms",
  "ndk",
  "ndk-sys",

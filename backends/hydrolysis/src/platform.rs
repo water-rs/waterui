@@ -444,6 +444,13 @@ impl OffscreenGpuContext {
 }
 
 /// Headless offscreen rendering surface.
+///
+/// Dropping one lets the device reclaim the textures it allocated. That is a
+/// non-blocking maintain, not the full drain the device gets at teardown: a
+/// process that builds surfaces in sequence must not leave every surface's
+/// allocations outstanding until the last one goes away — on a software
+/// rasterizer that runs the machine out of memory — but neither should each
+/// drop wait out the queued work of the other surfaces sharing the device.
 pub struct OffscreenSurface {
     gpu: OffscreenGpuContext,
     width: u32,
@@ -682,6 +689,15 @@ fn log_selected_adapter(context: &str, adapter: &wgpu::Adapter) {
         adapter = ?info,
         "selected wgpu adapter"
     );
+}
+
+impl Drop for OffscreenSurface {
+    fn drop(&mut self) {
+        self.last_presented = None;
+        if let Err(error) = self.gpu.inner.device.poll(wgpu::PollType::Poll) {
+            tracing::warn!("offscreen surface did not reclaim GPU resources: {error}");
+        }
+    }
 }
 
 impl core::fmt::Debug for OffscreenSurface {
