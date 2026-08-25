@@ -430,7 +430,7 @@ impl WinitRunner {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::on_surface(surface)
+            HydrolysisRenderer::new(surface.device())
         };
         super::load_native_resource_fonts(&mut renderer);
         let mut runtime =

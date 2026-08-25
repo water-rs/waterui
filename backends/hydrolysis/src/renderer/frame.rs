@@ -67,13 +67,8 @@ impl HydrolysisRenderer {
     }
 
     pub fn reset_scene(&mut self) {
-        let images = core::mem::take(&mut self.compositor.active_filter_images);
-        let vello_renderer = self
-            .vello_renderer
-            .as_mut()
-            .expect("hydrolysis renderer used after its vello renderer was returned");
-        for image in images {
-            vello_renderer.unregister_texture(image);
+        for image in self.compositor.active_filter_images.drain(..) {
+            self.vello_renderer.unregister_texture(image);
         }
         self.hit_test.reset_scene();
         self.gesture_engine.clear_targets();
@@ -223,7 +218,7 @@ impl HydrolysisRenderer {
     }
 
     pub fn vello_renderer(&mut self) -> &mut vello::Renderer {
-        self.vello_renderer_mut()
+        &mut self.vello_renderer
     }
 
     pub fn set_frame_resources(
