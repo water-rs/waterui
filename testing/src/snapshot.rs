@@ -123,6 +123,11 @@ impl TestHost {
         );
         renderer.clear_frame_resources();
         surface.present(frame);
+        drop(renderer);
+        drop(platform);
+        // Both owners of this render's GPU resources are gone; let the device
+        // release them before the next render allocates its own.
+        self.gpu.reclaim();
 
         Snapshot {
             width: self.width.max(1),
