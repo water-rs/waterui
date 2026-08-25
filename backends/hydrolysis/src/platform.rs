@@ -364,12 +364,21 @@ pub trait PlatformWindow: 'static {
 /// one of these, and on a runner without a GPU they were the ones dying on drop.
 #[derive(Clone, Debug)]
 pub struct OffscreenGpuContext {
+    /// Shared so the device is drained once, when the last surface using it
+    /// goes away. `drain_device_before_teardown` blocks until the device is
+    /// idle with no timeout, so running it per clone would make every surface's
+    /// drop wait out the work of every *other* surface still on that device.
+    inner: std::sync::Arc<OffscreenGpuContextInner>,
+}
+
+#[derive(Debug)]
+struct OffscreenGpuContextInner {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
 }
 
-impl Drop for OffscreenGpuContext {
+impl Drop for OffscreenGpuContextInner {
     fn drop(&mut self) {
         waterui_graphics::shared_context::drain_device_before_teardown(&self.device);
     }
@@ -425,9 +434,11 @@ impl OffscreenGpuContext {
             .expect("hydrolysis offscreen surface: failed to request wgpu device");
 
         Self {
-            adapter,
-            device,
-            queue,
+            inner: std::sync::Arc::new(OffscreenGpuContextInner {
+                adapter,
+                device,
+                queue,
+            }),
         }
     }
 }
@@ -778,36 +789,39 @@ or run on a host with a compute-capable GPU.{fallback_hint}",
 
 impl SurfaceProvider for OffscreenSurface {
     fn adapter(&self) -> &wgpu::Adapter {
-        &self.gpu.adapter
+        &self.gpu.inner.adapter
     }
 
     fn device(&self) -> &wgpu::Device {
-        &self.gpu.device
+        &self.gpu.inner.device
     }
 
     fn queue(&self) -> &wgpu::Queue {
-        &self.gpu.queue
+        &self.gpu.inner.queue
     }
 
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
         let texture = self.last_presented.take().unwrap_or_else(|| {
-            self.gpu.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("hydrolysis-offscreen-frame"),
-                size: wgpu::Extent3d {
-                    width: self.width,
-                    height: self.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            })
+            self.gpu
+                .inner
+                .device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("hydrolysis-offscreen-frame"),
+                    size: wgpu::Extent3d {
+                        width: self.width,
+                        height: self.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Ok(SurfaceFrame::Offscreen { texture, view })
