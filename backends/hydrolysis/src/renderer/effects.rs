@@ -541,7 +541,7 @@ impl HydrolysisRenderer {
                 .encode_output(
                     device,
                     queue,
-                    &mut self.vello_renderer,
+                    self.vello_renderer.as_mut().expect("vello renderer taken"),
                     width,
                     height,
                     encoder,

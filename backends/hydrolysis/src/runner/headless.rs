@@ -403,7 +403,7 @@ impl HeadlessRuntime {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.device())
+            HydrolysisRenderer::on_surface(surface)
         };
         install_fonts(&mut renderer);
 
@@ -442,7 +442,7 @@ impl HeadlessRuntime {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.device())
+            HydrolysisRenderer::on_surface(surface)
         };
         (self.install_fonts)(&mut renderer);
         RuntimeWindow::new(

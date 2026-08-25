@@ -288,7 +288,7 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.device())
+            HydrolysisRenderer::on_surface(surface)
         };
         load_web_fonts(&mut renderer).await;
         let runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);

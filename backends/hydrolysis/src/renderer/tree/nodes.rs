@@ -706,7 +706,7 @@ impl ViewEffectNode {
         }
 
         let image = runtime.register_output_image(
-            &mut renderer.vello_renderer,
+            renderer.vello_renderer_mut(),
             output_texture,
             output_width,
             output_height,
@@ -776,7 +776,7 @@ impl AppliedFilterNode {
         let (image, needs_redraw) = self.runtime.borrow_mut().render_output(
             &device,
             &queue,
-            &mut renderer.vello_renderer,
+            renderer.vello_renderer_mut(),
             width,
             height,
         );

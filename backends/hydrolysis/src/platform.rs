@@ -286,6 +286,77 @@ fn acquire_surface_texture(
 }
 
 /// Rendering surface abstraction consumed by hydrolysis runner/renderer.
+/// The `vello::Renderer`s built on one device, lent out and handed back.
+///
+/// A renderer owns the compute pipelines that rasterize a scene, and those
+/// belong to the device rather than to any one window — the same reason
+/// `waterui_graphics::SharedSceneRenderer` exists a layer down. Building one
+/// per window is invisible in an application with a window or two and ruinous
+/// in a process that creates hundreds in sequence: each one compiles about
+/// thirty pipelines, and on a software rasterizer that is enough JIT-compiled
+/// code to exhaust the machine.
+///
+/// A pool rather than a shared renderer behind a lock, because `vello::Renderer`
+/// is `!Sync` and because the filter and nested-surface paths render
+/// re-entrantly — a borrow held across those calls would deadlock. A borrower
+/// owns its renderer outright for as long as it holds it, exactly as the
+/// parallel-encode pool already does, so concurrent windows simply take
+/// different renderers and never contend.
+#[derive(Default)]
+pub struct VelloRendererPool {
+    idle: std::sync::Mutex<Vec<vello::Renderer>>,
+}
+
+impl core::fmt::Debug for VelloRendererPool {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let idle = self.idle.lock().map(|idle| idle.len());
+        formatter
+            .debug_struct("VelloRendererPool")
+            .field("idle", &idle.unwrap_or_default())
+            .finish()
+    }
+}
+
+impl VelloRendererPool {
+    /// Takes an idle renderer, building one only when none is free.
+    pub fn take(&self, device: &wgpu::Device) -> vello::Renderer {
+        let idle = self
+            .idle
+            .lock()
+            .expect("hydrolysis renderer pool poisoned")
+            .pop();
+        idle.unwrap_or_else(|| {
+            vello::Renderer::new(device, default_vello_options())
+                .expect("failed to create hydrolysis vello renderer")
+        })
+    }
+
+    /// Returns a renderer for the next borrower.
+    pub fn give_back(&self, renderer: vello::Renderer) {
+        self.idle
+            .lock()
+            .expect("hydrolysis renderer pool poisoned")
+            .push(renderer);
+    }
+}
+
+/// The options every hydrolysis `vello::Renderer` is built with.
+///
+/// One set per device, because pooled renderers are handed to whichever window
+/// asks next and must be interchangeable.
+#[must_use]
+pub fn default_vello_options() -> vello::RendererOptions {
+    vello::RendererOptions {
+        use_cpu: false,
+        antialiasing_support: vello::AaSupport::area_only(),
+        // Hydrolysis is the high-end, multi-core renderer: let vello parallelize
+        // pipeline initialization across all available cores instead of pinning
+        // it to a single thread.
+        num_init_threads: std::thread::available_parallelism().ok(),
+        pipeline_cache: None,
+    }
+}
+
 pub trait SurfaceProvider {
     fn adapter(&self) -> &wgpu::Adapter;
     fn device(&self) -> &wgpu::Device;
@@ -295,6 +366,8 @@ pub trait SurfaceProvider {
     fn size(&self) -> (u32, u32);
     fn format(&self) -> wgpu::TextureFormat;
     fn resize(&mut self, width: u32, height: u32);
+    /// The renderer pool belonging to this surface's device.
+    fn renderer_pool(&self) -> &std::sync::Arc<VelloRendererPool>;
 }
 
 /// Window abstraction consumed by hydrolysis runner.
@@ -376,6 +449,9 @@ struct OffscreenGpuContextInner {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// One pool per device, so every surface built on this context lends from
+    /// the same set of renderers.
+    renderer_pool: std::sync::Arc<VelloRendererPool>,
 }
 
 impl Drop for OffscreenGpuContextInner {
@@ -451,6 +527,7 @@ impl OffscreenGpuContext {
                 adapter,
                 device,
                 queue,
+                renderer_pool: std::sync::Arc::default(),
             }),
         }
     }
@@ -887,6 +964,10 @@ impl SurfaceProvider for OffscreenSurface {
             self.last_presented = None;
         }
     }
+
+    fn renderer_pool(&self) -> &std::sync::Arc<VelloRendererPool> {
+        &self.gpu.inner.renderer_pool
+    }
 }
 
 /// Headless platform window backed by an offscreen texture.
@@ -1101,6 +1182,8 @@ mod winit_impl {
         adapter: wgpu::Adapter,
         device: wgpu::Device,
         queue: wgpu::Queue,
+        /// One pool per device, shared by every window opened on it.
+        renderer_pool: std::sync::Arc<super::VelloRendererPool>,
     }
 
     pub struct WinitSurface {
@@ -1209,6 +1292,7 @@ mod winit_impl {
                             adapter,
                             device,
                             queue,
+                            renderer_pool: std::sync::Arc::default(),
                         },
                         surface,
                     )
@@ -1245,6 +1329,10 @@ mod winit_impl {
     }
 
     impl SurfaceProvider for WinitSurface {
+        fn renderer_pool(&self) -> &std::sync::Arc<super::VelloRendererPool> {
+            &self.gpu.renderer_pool
+        }
+
         fn adapter(&self) -> &wgpu::Adapter {
             &self.gpu.adapter
         }
