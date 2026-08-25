@@ -1143,7 +1143,7 @@ impl HydrolysisRenderer {
             height,
             antialiasing_method: vello::AaConfig::Area,
         };
-        self.vello_renderer
+        self.vello_renderer_mut()
             .render_to_texture(device, queue, scene, &leased.view, &params)
             .expect("hydrolysis renderer: failed to render vello layer scene");
         leased

@@ -329,7 +329,7 @@ fn runtime_window_sized(
     platform.apply_properties(&window);
     let renderer = {
         let surface = platform.surface();
-        HydrolysisRenderer::new(surface.device())
+        HydrolysisRenderer::on_surface(surface)
     };
     RuntimeWindow::new(
         window,
@@ -434,7 +434,7 @@ fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
     platform.apply_properties(&window);
     let renderer = {
         let surface = platform.surface();
-        HydrolysisRenderer::new(surface.device())
+        HydrolysisRenderer::on_surface(surface)
     };
     RuntimeWindow::new(
         window,
@@ -471,6 +471,10 @@ impl RecoveringSurface {
 }
 
 impl SurfaceProvider for RecoveringSurface {
+    fn renderer_pool(&self) -> &std::sync::Arc<crate::platform::VelloRendererPool> {
+        self.inner.renderer_pool()
+    }
+
     fn adapter(&self) -> &wgpu::Adapter {
         self.inner.adapter()
     }
