@@ -233,6 +233,24 @@ pub struct HeadlessRuntime {
     /// still-queued spawned work while this thread's locals are intact, so no
     /// runnable is ever dropped during thread-local teardown.
     _executor_teardown: DrainExecutorOnDrop,
+    /// Declared after everything that owns GPU resources, for the same reason.
+    /// Fields drop in declaration order and `RuntimeWindow` holds its platform
+    /// window before its renderer, so a reclaim run from the surface's own drop
+    /// happens while the renderer still holds its pipelines and buffers — which
+    /// is why a probe building hundreds of runtimes on one device still ran the
+    /// machine out of memory. From here, both are already gone.
+    _gpu_reclaim: ReclaimGpuOnDrop,
+}
+
+/// Lets the device release a runtime's GPU resources once the runtime is gone.
+#[cfg(not(target_arch = "wasm32"))]
+struct ReclaimGpuOnDrop(OffscreenGpuContext);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for ReclaimGpuOnDrop {
+    fn drop(&mut self) {
+        self.0.reclaim();
+    }
 }
 
 /// Drains the thread-shared executor when the owning runtime drops.
@@ -403,9 +421,10 @@ impl HeadlessRuntime {
             ),
             pending_window_queue,
             popup_windows: Vec::new(),
-            gpu,
             install_fonts,
             _executor_teardown: DrainExecutorOnDrop(local_executor.clone()),
+            _gpu_reclaim: ReclaimGpuOnDrop(gpu.clone()),
+            gpu,
             local_executor,
         }
     }

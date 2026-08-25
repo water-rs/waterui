@@ -385,6 +385,19 @@ impl Drop for OffscreenGpuContextInner {
 }
 
 impl OffscreenGpuContext {
+    /// Lets the device release everything dropped since the last call.
+    ///
+    /// Non-blocking: it processes the destruction queue rather than waiting for
+    /// the device to go idle. Call it once the renderer and surface that used
+    /// this device are both gone — a process that builds and drops many of them
+    /// in sequence otherwise keeps every one of their allocations outstanding
+    /// until the device itself is torn down.
+    pub fn reclaim(&self) {
+        if let Err(error) = self.inner.device.poll(wgpu::PollType::Poll) {
+            tracing::warn!("GPU device did not reclaim dropped resources: {error}");
+        }
+    }
+
     /// Requests a context on the adapter WaterUI would render an application on.
     pub async fn new() -> Self {
         Self::new_with_adapter_selection(AdapterSelection::PRODUCTION).await
@@ -694,9 +707,7 @@ fn log_selected_adapter(context: &str, adapter: &wgpu::Adapter) {
 impl Drop for OffscreenSurface {
     fn drop(&mut self) {
         self.last_presented = None;
-        if let Err(error) = self.gpu.inner.device.poll(wgpu::PollType::Poll) {
-            tracing::warn!("offscreen surface did not reclaim GPU resources: {error}");
-        }
+        self.gpu.reclaim();
     }
 }
 
