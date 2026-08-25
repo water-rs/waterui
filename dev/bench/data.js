@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787642683081,
+  "lastUpdate": 1787642685510,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -1001,6 +1001,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 54865,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "id": "611d807a69a841dfe6dd7aab650deb1aa669f666",
+          "message": "fix(hydrolysis): reclaim GPU memory after the renderer is gone, not before\n\nThe previous attempt put the reclaim in `OffscreenSurface`'s own drop, where\nit cannot do its job: `RuntimeWindow` declares its platform window before its\nrenderer, fields drop in declaration order, so the surface goes first and the\npoll runs while Vello still holds every pipeline and buffer it allocated.\nWindows kept running out of memory in the perf probe, which builds and drops\n278 runtimes on one device.\n\n`OffscreenGpuContext::reclaim` is now explicit, and `HeadlessRuntime` holds a\nguard declared after everything that owns GPU resources — the same reason\n`_executor_teardown` sits where it does — so the device is asked to release a\nruntime's allocations once that runtime is entirely gone. `TestHost::render`\ndrops its renderer and window and reclaims before returning, so a host that\nrenders repeatedly does not accumulate either.\n\nThe surface keeps its own reclaim for a bare surface with no renderer above\nit; that is all it can see from there.\n\nWindows was down to this one test: 1683 passed, 1 failed. Locally 41 tests\npass and the probe reports the same ratios in 22s.",
+          "timestamp": "2026-08-25T04:39:57Z",
+          "url": "https://github.com/water-rs/waterui/commit/611d807a69a841dfe6dd7aab650deb1aa669f666"
+        },
+        "date": 1787642684810,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 7852057,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 6967028,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 86124,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 50033,
             "unit": "us"
           }
         ]
