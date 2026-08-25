@@ -64,3 +64,29 @@ slow-timeout = { period = "120s", terminate-after = 15 }
 [[profile.ci.overrides]]
 filter = 'package(hydrolysis) or package(hydrolysis-m3)'
 slow-timeout = { period = "120s", terminate-after = 15 }
+
+# How many wgpu devices may exist at once on the Windows runner.
+#
+# Nearly every test package here mounts a `waterui-testing` host, and each host
+# requests its own `wgpu::Device`. On a runner with a real GPU that is cheap; on
+# `windows-latest` there is no GPU at all, so every device is a WARP device
+# living in the machine's 16 GB alongside three others on its four cores. The
+# suite ran out: `selected_tooltip_exposes_accessibility_labels` and its
+# neighbours failed in `request_device` with `Core(Device(OutOfMemory))`,
+# exhausted their retries, and the same tests passed on retry in earlier runs —
+# the signature of sitting exactly at a memory limit rather than of a defect.
+#
+# A cap, not a skip: every test still runs, two at a time instead of four, so
+# the peak number of live WARP devices halves. This lengthens the Windows job,
+# which is the cost of the runner having no GPU.
+#
+# Scoped to Windows because it is the only platform without one — the Linux
+# runners rasterize on llvmpipe, which is far cheaper per device, and macOS has
+# Metal.
+[test-groups.gpu-device]
+max-threads = 2
+
+[[profile.ci.overrides]]
+platform = 'cfg(target_os = "windows")'
+filter = 'all()'
+test-group = 'gpu-device'
