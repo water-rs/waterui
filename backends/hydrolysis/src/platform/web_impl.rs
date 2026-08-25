@@ -30,8 +30,6 @@ pub struct BrowserSurface {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    /// One pool per device, shared by every window opened on it.
-    renderer_pool: std::sync::Arc<crate::platform::VelloRendererPool>,
 }
 
 impl core::fmt::Debug for BrowserSurface {
@@ -87,16 +85,11 @@ impl BrowserSurface {
             device,
             queue,
             config,
-            renderer_pool: std::sync::Arc::default(),
         }
     }
 }
 
 impl SurfaceProvider for BrowserSurface {
-    fn renderer_pool(&self) -> &std::sync::Arc<crate::platform::VelloRendererPool> {
-        &self.renderer_pool
-    }
-
     fn adapter(&self) -> &wgpu::Adapter {
         &self.adapter
     }
