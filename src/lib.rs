@@ -217,7 +217,8 @@ pub use nami as reactive;
 pub use nami::SignalExt;
 #[doc(inline)]
 pub use reactive::{Binding, Computed, Signal, binding, signal};
-pub use runtime::reactive_ext::AnimationExt;
+#[doc(inline)]
+pub use waterui_core::AnimationExt;
 
 pub use waterui_core::plugin::Plugin;
 /// Graphics primitives including GPU rendering surface.

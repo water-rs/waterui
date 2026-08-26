@@ -42,14 +42,21 @@ When a domain has a sensible default, expose three layers:
 
 - A **sugar method** with no arguments: `.animated()` for "default animation",
   `.padding()` for "default padding".
-- A **named explicit method** that takes the relevant value: `.with_animation(animation)`,
-  `.padding_with(value)`. Reads better at the call site than the generic
-  primitive when the metadata kind is the point.
+- A **named explicit method** that takes the relevant value: `.padding_with(value)`.
+  Reads better at the call site than the generic primitive when the metadata
+  kind is the point.
 - A **generic primitive** that accepts any payload: `.with(metadata)`. Stays
   underneath as the universal escape hatch.
 
 Do not delete sugar in the name of "one way to do it". Sugar is what makes
 call sites readable; minimalism of API surface is not the goal.
+
+The middle layer has to earn its place, though. A named explicit method that is
+a straight rename of the generic primitive — same receiver, same argument, same
+return — buys nothing and costs a second name that can be imported separately
+and resolve differently. `AnimationExt::with_animation(animation)` was exactly
+that alias for `SignalExt::with(animation)` and was removed; animations attach
+with `.with(animation)`.
 
 ---
 
