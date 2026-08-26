@@ -9,8 +9,9 @@ use std::{
 };
 
 use crate::build_info::{
-    ANDROID_BACKEND, APPLE_BACKEND, DEW_VERSION, GTK_BACKEND_VERSION, HYDROLYSIS_VERSION,
-    PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, WATERUI_FFI_VERSION, WATERUI_VERSION,
+    ANDROID_BACKEND, APPLE_BACKEND, DEW_VERSION, GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION,
+    HYDROLYSIS_VERSION, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, WATERUI_CORE_VERSION,
+    WATERUI_FFI_VERSION, WATERUI_VERSION,
 };
 use askama::Template;
 
@@ -944,9 +945,10 @@ define_scaffold_templates! {
 mod tests {
     use super::{
         ANDROID_BACKEND, APPLE_BACKEND, BrowserTemplateContext, Esp32TemplateEntry,
-        GTK_BACKEND_VERSION, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, TemplateContext,
-        TemplateNamespace, embedded, jitpack_dependency_coordinate, normalize_path_for_config,
-        preview_ffi, render_scaffold_template,
+        GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION,
+        TemplateContext, TemplateNamespace, WATERUI_CORE_VERSION, embedded,
+        jitpack_dependency_coordinate, normalize_path_for_config, preview_ffi,
+        render_scaffold_template,
     };
     use crate::project::WebViewBackend;
     use crate::project_types::{BundleIdentifier, CrateName};
@@ -1454,6 +1456,17 @@ mod tests {
         assert_eq!(
             native_dependencies["waterui-preview-protocol"]["version"].as_str(),
             Some(PREVIEW_PROTOCOL_VERSION),
+        );
+        // Each of these is a separately versioned package. Borrowing a sibling's
+        // constant reads fine while the numbers happen to coincide and emits an
+        // unresolvable requirement the moment one of them bumps on its own.
+        assert_eq!(
+            native_dependencies["waterui-core"]["version"].as_str(),
+            Some(WATERUI_CORE_VERSION),
+        );
+        assert_eq!(
+            native_dependencies["hydrolysis-m3"]["version"].as_str(),
+            Some(HYDROLYSIS_M3_VERSION),
         );
         let features = native_dependencies["hydrolysis"]["features"]
             .as_array()
@@ -2589,9 +2602,10 @@ pub mod hydrolysis {
     use super::{
         GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
         GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection,
-        HYDROLYSIS_VERSION, NativeBackendDependencyPathKind, NativeBackendDependencySpec,
-        PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, Path, TemplateContext, TemplateNamespace,
-        WATERUI_VERSION, embedded, io, scaffold_dir, write_generated_cargo_toml,
+        HYDROLYSIS_M3_VERSION, HYDROLYSIS_VERSION, NativeBackendDependencyPathKind,
+        NativeBackendDependencySpec, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, Path,
+        TemplateContext, TemplateNamespace, WATERUI_CORE_VERSION, WATERUI_VERSION, embedded, io,
+        scaffold_dir, write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
 
@@ -2791,7 +2805,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui-core",
-                            WATERUI_VERSION,
+                            WATERUI_CORE_VERSION,
                             &[],
                             Some(NativeBackendDependencyPathKind::WorkspaceSubdir("core")),
                         ),
@@ -2859,7 +2873,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis-m3",
-                            HYDROLYSIS_VERSION,
+                            HYDROLYSIS_M3_VERSION,
                             &[],
                             Some(NativeBackendDependencyPathKind::BackendsSubdir(
                                 "hydrolysis_m3",
@@ -2904,7 +2918,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis-m3",
-                            HYDROLYSIS_VERSION,
+                            HYDROLYSIS_M3_VERSION,
                             &[],
                             Some(NativeBackendDependencyPathKind::BackendsSubdir(
                                 "hydrolysis_m3",
