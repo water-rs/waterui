@@ -32,8 +32,8 @@ tracing.workspace = true
 waterui-build-support.workspace = true
 
 [dev-dependencies]
-waterui.workspace = true
-waterui-testing.workspace = true
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
 
 # `waterui-build-support` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]

@@ -54,7 +54,7 @@ keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
 
 [lib]
-path = "src/runtime/facade.rs"
+path = "facade.rs"
 
 [workspace.package]
 version = "0.3.0"
@@ -341,13 +341,7 @@ block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae8
 # vello 0.9 loses the Vulkan device on Mali (select's discarded arm computes an
 # underflowed workgroup-array index; Mali page-faults on it). Fixed upstream in
 # linebender/vello#1817; drop this patch when a release containing it ships.
-vello = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow" }
-# From the same checkout, so both engines are built from one tree.
-vello_hybrid = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow" }
-# `waterui-graphics` names glifo directly and `vello_hybrid` exposes its glyph
-# builder types. Keep both edges on the same checkout while this Vello patch is
-# active; published manifests still resolve the matching crates.io releases.
-glifo = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow" }
+vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
 
 # Arm's proprietary Vulkan driver (r54p2 on Pixel 9 Pro / Android 16)
 # rasterizes as if viewport heights were positive, ignoring the negative-height

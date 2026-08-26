@@ -26,8 +26,8 @@ waterui-build-support.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true
-waterui.workspace = true
-waterui-testing.workspace = true
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
 
 [lints]
 workspace = true

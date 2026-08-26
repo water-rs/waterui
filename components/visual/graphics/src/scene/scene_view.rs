@@ -468,7 +468,6 @@ impl SceneSurfaceRenderer {
                         height: frame.height,
                     },
                     &frame.view,
-                    None,
                     &vello_hybrid::TextureBindings::new(),
                 )
                 .expect("SceneView hybrid render failed");

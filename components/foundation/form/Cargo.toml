@@ -41,9 +41,9 @@ default = ["std"]
 std = []
 
 [dev-dependencies]
-hydrolysis-m3.workspace = true
-waterui.workspace = true
-waterui-testing.workspace = true
+hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
 
 
 [lints]

@@ -22,8 +22,8 @@ vello.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "avif", "tiff"] }
 
 [dev-dependencies]
-waterui.workspace = true
-waterui-testing.workspace = true
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
 pollster.workspace = true
 wgpu.workspace = true
 
