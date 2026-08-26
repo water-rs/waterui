@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/water-rs/waterui/compare/graphics-v0.2.1...graphics-v0.3.0) - 2026-08-25
+
+### Added
+
+- Added GPU-first scene composition, shared shader artifacts, color-management support, and portable renderer integration.
+
 ## [0.2.1](https://github.com/water-rs/waterui/compare/graphics-v0.2.0...graphics-v0.2.1) - 2025-12-14
 
 ### Fixed

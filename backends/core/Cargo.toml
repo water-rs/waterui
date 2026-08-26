@@ -26,7 +26,7 @@ widgets = [
 gestures = ["dep:waterui"]
 
 [dependencies]
-waterui = { version = "0.2.1", path = "../..", default-features = false, optional = true }
+waterui = { version = "0.3.0", path = "../..", default-features = false, optional = true }
 waterui-core.workspace = true
 waterui-controls = { workspace = true, optional = true }
 waterui-form = { workspace = true, optional = true }

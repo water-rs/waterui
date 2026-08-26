@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/water-rs/waterui/compare/navigation-v0.2.1...navigation-v0.3.0) - 2026-08-25
+
+### Added
+
+- Added restoration-ready navigation state, platform chrome projection, and precise reactive collection updates.
+
 ## [0.2.1](https://github.com/water-rs/waterui/compare/navigation-v0.2.0...navigation-v0.2.1) - 2025-12-14
 
 ### Fixed
