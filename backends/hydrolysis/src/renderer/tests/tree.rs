@@ -9,7 +9,7 @@ use vello::kurbo::{Affine, Rect};
 use waterui::ViewExt as _;
 use waterui_controls::button::button;
 use waterui_core::layout::{HorizontalAlignment, Size};
-use waterui_core::{AnimationExt as _, AnyView};
+use waterui_core::{AnyView, SignalExt as _};
 use waterui_layout::stack::{VStackLayout, vstack};
 use waterui_text::styled::StyledStr;
 
@@ -1068,11 +1068,7 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
     let view = AnyView::new(
         ().size(40.0, 40.0)
             .on_appear(move || opacity_for_appear.set(1.0))
-            .opacity(
-                opacity
-                    .clone()
-                    .with_animation(Animation::linear(Duration::from_millis(250))),
-            ),
+            .opacity(opacity.with(Animation::linear(Duration::from_millis(250)))),
     );
 
     let env = test_environment();
