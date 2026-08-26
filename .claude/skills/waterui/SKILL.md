@@ -29,6 +29,11 @@ Read the file that matches the task. Each is self-contained; none reference each
 
 When an API is still unclear, the compiled examples in `examples/*/src/lib.rs` of the
 WaterUI repository are ground truth — they are built in CI, so they are never stale.
+The prose companion to this skill is the book at <https://book.waterui.dev>, which goes
+deeper on the topics here and covers ones this skill does not (plugins, resolvers and
+hooks, shaders, error handling, library authoring). Each book release is pinned to an
+exact WaterUI commit, shown in the book itself — check that pin against the version you
+depend on before copying from it.
 
 ## The five rules
 
@@ -298,6 +303,44 @@ clearer than a long `when` chain.
 
 Frame modifiers (`.size`, `.width`) take plain `f32`; visual modifiers (`.opacity`,
 `.scale`, `.visible`, `.disabled`) take signals — pass bindings straight in.
+
+### The Environment
+
+`Environment` is a type-indexed container that flows down the view tree: the type *is* the
+key, so there is no registration step and no string names. It carries the theme, the
+locale, and any service your app installs, which is how a deeply nested button reaches
+shared configuration without every intermediate function taking it as a parameter.
+
+```rust
+use waterui::env::use_env;
+
+#[derive(Clone)]
+struct ApiClient { base_url: Str }
+waterui::impl_extractor!(ApiClient);          // makes it a handler/`use_env` parameter
+
+// Seeding, usually in `app(env)`:
+env.insert(client);                            // in place
+env.with(client);                              // in place, chains
+let scoped = env.extending(client);            // non-mutating overlay
+
+// Reading, from a view:
+use_env(|client: ApiClient| text!("API: {url}", url = Binding::container(client.base_url)))
+
+// Reading, from a handler — same extractors, no ceremony:
+button("Send").action(|client: ApiClient| send(&client))
+```
+
+Inserting the same type twice replaces the earlier value; `Store<K, V>` pairs a value with
+a marker type when one type genuinely needs several roles. `.install(plugin)` scopes a
+value to a subtree rather than the whole app.
+
+Extraction is fast-fail: a missing type panics with a message naming it. That is
+deliberate — wrap the parameter in `Option<T>` where absence is legitimate. It is also why
+a hand-built `Environment::new()` needs a theme installed before it can render themed
+views; theme tokens panic rather than falling back to a guessed color.
+
+`.state(&value)` from rule 3 is the same machinery with a narrower scope: it installs into
+the environment of one view, and `State<T>` reads it back.
 
 ### Accessibility is part of construction
 
