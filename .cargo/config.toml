@@ -9,4 +9,3 @@ filtrate = { path = "utils/filtrate" }
 nami = { path = "utils/nami" }
 nami-core = { path = "utils/nami/core" }
 nami-derive = { path = "utils/nami/derive" }
-shaderloom = { path = "utils/shaderloom" }
