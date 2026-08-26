@@ -95,6 +95,10 @@ pub use material_color_utils::dynamic::{
     color_spec::{Platform as MaterialColorPlatform, SpecVersion as MaterialColorSpecVersion},
     variant::Variant as MaterialColorVariant,
 };
+/// The ARGB seed color the Material You generators take (`Argb(0xAARRGGBB)`),
+/// re-exported so `install_with_seed` / `MaterialColorSource::new` are callable
+/// without naming the color-utils crate directly.
+pub use material_color_utils::utils::color_utils::Argb;
 pub use material_divider::{MaterialDivider, material_divider};
 pub use material_list::{MaterialList, MaterialListItem, material_list, material_list_item};
 pub use material_menu::{
@@ -125,10 +129,6 @@ pub use theme::colors::{
     MaterialColorMode, MaterialColorScheme, MaterialColorSchemes, MaterialColorSource,
     MaterialContrastLevel, MaterialRoleColor,
 };
-/// The ARGB seed color the Material You generators take (`Argb(0xAARRGGBB)`),
-/// re-exported so `install_with_seed` / `MaterialColorSource::new` are callable
-/// without naming the color-utils crate directly.
-pub use material_color_utils::utils::color_utils::Argb;
 /// The Material Design 3 motion token scale — the duration and easing tokens
 /// this theme's component motion is built from, re-exported so app and backend
 /// code can animate on the same scale instead of re-deriving the numbers.
