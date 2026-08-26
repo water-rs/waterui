@@ -1,6 +1,6 @@
 [package]
 name = "waterui-cli"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
@@ -13,8 +13,8 @@ keywords.workspace = true
 categories.workspace = true
 
 [package.metadata.waterui-scaffold]
-waterui-version = "0.2.1"
-waterui-ffi-version = "0.2.1"
+waterui-version = "0.3.0"
+waterui-ffi-version = "0.3.0"
 hydrolysis-version = "0.1.0"
 waterui-dew-version = "0.1.0"
 waterui-gtk-version = "0.1.0"
@@ -84,8 +84,8 @@ ignore = "0.4"
 remove_dir_all = "1.0"
 waterui-assets.workspace = true
 waterui-assets-planner.workspace = true
-waterui-preview-protocol = { path = "../components/devtools/preview/protocol" }
-waterui-inspector-protocol = { path = "../components/devtools/inspector/protocol" }
+waterui-preview-protocol.workspace = true
+waterui-inspector-protocol.workspace = true
 tempfile = "3.27"
 walkdir = "2.5"
 pathdiff = "0.2"

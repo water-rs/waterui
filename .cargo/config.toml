@@ -2,7 +2,11 @@
 linker = "rust-lld"
 rustflags = ["-Clinker-flavor=lld-link"]
 
-# Keep the independently publishable WaterKit workspace on the registry contract while
-# resolving the co-developed Filtrate package from this superproject during local work.
+# Keep independently publishable workspaces on registry contracts while resolving
+# co-developed packages from this superproject during local work.
 [patch.crates-io]
 filtrate = { path = "utils/filtrate" }
+nami = { path = "utils/nami" }
+nami-core = { path = "utils/nami/core" }
+nami-derive = { path = "utils/nami/derive" }
+shaderloom = { path = "utils/shaderloom" }
