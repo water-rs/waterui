@@ -25,7 +25,7 @@ waterui-graphics = { workspace = true, features = ["gpu"] }
 
 [dev-dependencies]
 pollster.workspace = true
-waterui-testing.workspace = true
+waterui-testing = { path = "../../testing" }
 
 [package.metadata.waterui.assets]
 
