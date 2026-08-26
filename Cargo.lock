@@ -9970,7 +9970,6 @@ dependencies = [
  "waterui-icons-lucide",
  "waterui-icons-material-icon",
  "waterui-locale",
- "waterui-map",
  "waterui-map-gpu",
  "waterui-testing",
  "waterui-url",
