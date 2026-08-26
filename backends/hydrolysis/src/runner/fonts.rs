@@ -88,7 +88,7 @@ impl ResourceFontFamilies {
 /// Test text used to shape against whatever the host OS discovered, so a
 /// layout assertion tuned on one platform's metrics failed on another's fonts
 /// and every snapshot golden was platform-specific. The test hosts shape with
-/// exactly the Roboto files under `testing/fonts` instead — system discovery
+/// exactly the Roboto files bundled with this crate instead — system discovery
 /// off, identical metrics on every runner. Characters outside Roboto's
 /// coverage shape as missing glyphs on purpose: a test that needs another
 /// script should say so loudly rather than silently depending on the host's
@@ -101,19 +101,19 @@ pub(crate) fn install_deterministic_test_fonts(renderer: &mut crate::renderer::H
     const FONTS: &[(&str, &[u8])] = &[
         (
             "Roboto-Regular.ttf",
-            include_bytes!("../../../../testing/fonts/Roboto-Regular.ttf"),
+            include_bytes!("../../test-fonts/Roboto-Regular.ttf"),
         ),
         (
             "Roboto-Medium.ttf",
-            include_bytes!("../../../../testing/fonts/Roboto-Medium.ttf"),
+            include_bytes!("../../test-fonts/Roboto-Medium.ttf"),
         ),
         (
             "Roboto-Bold.ttf",
-            include_bytes!("../../../../testing/fonts/Roboto-Bold.ttf"),
+            include_bytes!("../../test-fonts/Roboto-Bold.ttf"),
         ),
         (
             "Roboto-Italic.ttf",
-            include_bytes!("../../../../testing/fonts/Roboto-Italic.ttf"),
+            include_bytes!("../../test-fonts/Roboto-Italic.ttf"),
         ),
     ];
 
