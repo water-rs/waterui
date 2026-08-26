@@ -36,7 +36,6 @@ waterui-icons-lucide.workspace = true
 waterui-canvas.workspace = true                              # media.md, Canvas
 waterui-graphics = { workspace = true, features = ["gpu"] }  # styling.md, GPU gradients
 waterui-locale.workspace = true                              # i18n.md, formatting
-waterui-map.workspace = true                                 # media.md, maps
 waterui-map-gpu.workspace = true                             # media.md, tile source
 waterui-url.workspace = true                                 # media.md, MapGpuOptions
 waterkit-permission.workspace = true                         # project.md, runtime permissions
