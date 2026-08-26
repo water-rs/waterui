@@ -140,3 +140,27 @@ fn derived_form_edits_flow_back_into_the_struct_binding(ui: UiBuilder) {
         "toggle flips must reach the derived struct binding"
     );
 }
+
+/// One field is the arity the derive used to get wrong. `#(T),*` over a single
+/// field emits `(V)` — a parenthesised type, not a one-element tuple — so the
+/// generated associated type claimed `VStack<(V,)>` while the body built
+/// `VStack<((V,),)>`, and a single-field form did not compile at all.
+#[waterui::form]
+struct Nickname {
+    /// What to call you.
+    nickname: String,
+}
+
+#[waterui::test(theme = install_m3)]
+fn single_field_derived_form_edits_flow_back_into_the_struct_binding(ui: UiBuilder) {
+    let nickname = Binding::container(Nickname::default());
+    let nickname_for_view = nickname.clone();
+    let mut app = ui.mount(move || waterui::form::form(&nickname_for_view));
+
+    app.query().role(Role::TEXT_INPUT).set_text("Ada");
+    assert_eq!(
+        nickname.get().nickname,
+        "Ada",
+        "a one-field derived form must still wire its only control to the binding"
+    );
+}
