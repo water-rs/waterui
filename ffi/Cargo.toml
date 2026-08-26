@@ -1,7 +1,7 @@
 [package]
 name = "waterui-ffi"
 build = "build.rs"
-version = "0.2.1"
+version = "0.3.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -17,7 +17,7 @@ categories = ["gui", "api-bindings"]
 # included), and Cargo forbids a member from turning them off. The FFI crate
 # must not re-root the GPU stack when the app opted out, so it declares the
 # dependency itself and forwards `gpu` explicitly.
-waterui = { version = "0.2.1", path = "..", default-features = false, features = ["assets", "media", "inspector"] }
+waterui = { version = "0.3.0", path = "..", default-features = false, features = ["assets", "media", "inspector"] }
 waterui-core.workspace = true
 waterui-text.workspace = true
 waterui-controls.workspace = true

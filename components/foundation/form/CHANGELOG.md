@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/water-rs/waterui/compare/form-v0.2.1...form-v0.3.0) - 2026-08-25
+
+### Changed
+
+- Updated form composition and platform dialog integration for the 0.3 signal-aware control contracts.
+
 ## [0.2.1](https://github.com/water-rs/waterui/compare/form-v0.2.0...form-v0.2.1) - 2025-12-14
 
 ### Fixed

@@ -1,6 +1,6 @@
 [package]
 name = "waterui-cli"
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
