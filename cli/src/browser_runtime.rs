@@ -759,7 +759,7 @@ async fn write_cef_sbom(path: &Path, version: &str, created: &str) -> eyre::Resu
 
 fn runtime_manifest_url(configuration: &SourceConfiguration) -> String {
     format!(
-        "{}/cli-v{}/browser-runtime-manifest.json",
+        "{}/waterui-cli-v{}/browser-runtime-manifest.json",
         configuration.release_base_url,
         env!("CARGO_PKG_VERSION")
     )
@@ -847,7 +847,7 @@ mod tests {
         assert_eq!(
             runtime_manifest_url(&configuration),
             format!(
-                "https://github.com/water-rs/waterui/releases/download/cli-v{}/browser-runtime-manifest.json",
+                "https://github.com/water-rs/waterui/releases/download/waterui-cli-v{}/browser-runtime-manifest.json",
                 env!("CARGO_PKG_VERSION")
             )
         );

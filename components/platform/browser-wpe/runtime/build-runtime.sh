@@ -24,15 +24,17 @@ glib_dependencies_url="$(configuration_value glib_dependencies_url)"
 glib_dependencies_sha256="$(configuration_value glib_dependencies_sha256)"
 released="$(configuration_value released)"
 maximum_glibc="$(configuration_value maximum_glibc)"
+minimum_gcc="$(configuration_value minimum_gcc)"
 smoke_timeout_seconds="$(configuration_value smoke_timeout_seconds)"
 cli_wpe_version="$(
     sed -n 's/^wpe_version = "\([^"]*\)"$/\1/p' "$repo_root/cli/src/browser_runtime.toml"
 )"
 
-if [[ -z "$version" || -z "$source_url" || -z "$source_sha256" || -z "$glib_dependencies_url" || -z "$glib_dependencies_sha256" || -z "$released" || -z "$maximum_glibc" || -z "$smoke_timeout_seconds" ]]; then
+if [[ -z "$version" || -z "$source_url" || -z "$source_sha256" || -z "$glib_dependencies_url" || -z "$glib_dependencies_sha256" || -z "$released" || -z "$maximum_glibc" || -z "$minimum_gcc" || -z "$smoke_timeout_seconds" ]]; then
     echo "invalid WPE runtime source configuration" >&2
     exit 1
 fi
+
 if [[ "$cli_wpe_version" != "$version" ]]; then
     echo "WPE runtime source version $version does not match CLI version $cli_wpe_version" >&2
     exit 1
@@ -50,6 +52,28 @@ case "$(uname -m)" in
         exit 1
         ;;
 esac
+
+c_compiler="${CC:-cc}"
+cxx_compiler="${CXX:-c++}"
+command -v "$c_compiler" >/dev/null || {
+    echo "WPE runtime C compiler is unavailable: $c_compiler" >&2
+    exit 1
+}
+command -v "$cxx_compiler" >/dev/null || {
+    echo "WPE runtime C++ compiler is unavailable: $cxx_compiler" >&2
+    exit 1
+}
+compiler_banner="$($c_compiler --version | head -n 1)"
+if [[ "$compiler_banner" != *gcc* && "$compiler_banner" != *GCC* ]]; then
+    echo "WPE runtime requires GCC $minimum_gcc or newer; $c_compiler is $compiler_banner" >&2
+    exit 1
+fi
+actual_gcc="$($c_compiler -dumpfullversion -dumpversion)"
+oldest_gcc="$(printf '%s\n%s\n' "$actual_gcc" "$minimum_gcc" | sort -V | head -n 1)"
+if [[ "$oldest_gcc" != "$minimum_gcc" ]]; then
+    echo "WPE WebKit $version requires GCC $minimum_gcc or newer; $c_compiler reports $actual_gcc" >&2
+    exit 1
+fi
 
 actual_glibc="$(getconf GNU_LIBC_VERSION | awk '{print $2}')"
 highest_glibc="$(printf '%s\n%s\n' "$actual_glibc" "$maximum_glibc" | sort -V | tail -n 1)"
@@ -125,6 +149,8 @@ cmake \
     -DCMAKE_INSTALL_PREFIX="$prefix" \
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DCMAKE_INSTALL_LIBEXECDIR=libexec \
+    -DCMAKE_C_COMPILER="$c_compiler" \
+    -DCMAKE_CXX_COMPILER="$cxx_compiler" \
     -DBWRAP_EXECUTABLE=/usr/bin/bwrap \
     -DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy \
     -DENABLE_API_TESTS=OFF \
@@ -148,6 +174,8 @@ cmake \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$prefix" \
+    -DCMAKE_C_COMPILER="$c_compiler" \
+    -DCMAKE_CXX_COMPILER="$cxx_compiler" \
     -DCMAKE_PREFIX_PATH="$prefix"
 cmake --build "$bridge_build_directory"
 cmake --install "$bridge_build_directory"

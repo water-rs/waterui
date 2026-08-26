@@ -10,4 +10,5 @@ glib_dependencies_url = "https://raw.githubusercontent.com/WebKit/WebKit/wpewebk
 glib_dependencies_sha256 = "2b0b863757efe70a5e4d0050e85172cc63befb1c4e35d5d5099ab6181e7b4ac0"
 released = "2026-07-13T00:00:00Z"
 maximum_glibc = "2.35"
+minimum_gcc = "12.2"
 smoke_timeout_seconds = "60"
