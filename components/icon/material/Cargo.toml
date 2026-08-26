@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Material Design icons for WaterUI (Pictogrammers @mdi/svg)"
 keywords = ["icons", "material", "mdi", "waterui"]
 categories = ["gui"]
-readme = "README.md"
+readme = "../../../README.md"
 
 [features]
 default = ["svg"]
