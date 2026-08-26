@@ -48,7 +48,7 @@ use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, shared_action
 use waterui_core::id::Identifiable;
 use waterui_core::plugin::Plugin;
 use waterui_core::views::ForEach;
-use waterui_core::{AnimationExt, View};
+use waterui_core::{SignalExt, View};
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
@@ -1001,14 +1001,11 @@ impl View for StackedSnackbarView {
             )
             .shadow(ambient_shadow)
             .shadow(shadow)
-            .opacity(item.opacity.with_animation(enter_animation.clone()))
+            .opacity(item.opacity.with(enter_animation.clone()))
             // Entrance slide and reflow shift are independent animated
             // bindings (each has a stable identity, so each animates).
-            .offset(
-                0.0,
-                item.entrance_offset.with_animation(enter_animation.clone()),
-            )
-            .offset(0.0, item.stack_offset.with_animation(enter_animation)),
+            .offset(0.0, item.entrance_offset.with(enter_animation.clone()))
+            .offset(0.0, item.stack_offset.with(enter_animation)),
         )
         .alignment(position.to_alignment())
         // Clear of the hardware first, then of the window edge by the theme's
