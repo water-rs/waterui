@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787729080219,
+  "lastUpdate": 1787729082576,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -999,6 +999,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 16968,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "id": "cca2121dd858429296cbac21a77c9ea5b9d023b8",
+          "message": "ci: cap how many wgpu devices Windows creates at once\n\n`selected_tooltip_exposes_accessibility_labels` failed in `request_device`\nwith `Core(Device(OutOfMemory))`, exhausting all three retries, and its\nneighbours in the same file were reported flaky in the same run — passing\nonly on a retry. Tests that fail when run beside others and pass when run\nagain are not broken tests; they are tests at a resource limit.\n\nThe resource is wgpu devices. Nearly every test package mounts a\n`waterui-testing` host and each host requests its own device, so nextest's\ndefault of one test per core means four live devices. `windows-latest` has\nno GPU, so all four are WARP devices sharing the machine's 16 GB, and the\nsuite ran out.\n\nCapped at two on Windows through a test group, which is the only way to\nexpress this per-platform — `test-threads` is profile-wide. Every test still\nruns; the peak number of live WARP devices halves. Confirmed inert\nelsewhere: `nextest show-config test-groups` reports \"(no matches)\" on\nmacOS, and the Linux runners rasterize on llvmpipe, which is far cheaper per\ndevice.\n\nThis lengthens the Windows job. That is the cost of a runner with no GPU,\nand it buys a result that means something.",
+          "timestamp": "2026-08-25T17:41:55Z",
+          "url": "https://github.com/water-rs/waterui/commit/cca2121dd858429296cbac21a77c9ea5b9d023b8"
+        },
+        "date": 1787729082039,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 659033,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 505557,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 20485,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 14676,
             "unit": "us"
           }
         ]
