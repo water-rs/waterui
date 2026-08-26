@@ -235,7 +235,7 @@ water run --platform android
 water run --platform linux --backend hydrolysis
 
 # Create a playground for quick experimentation
-water create --playground --name my-playground
+water create "My Playground" --mode playground
 
 # Preview a view function (renders to PNG without running full app)
 water preview my_view --platform macos --path ./app --output preview.png
@@ -320,7 +320,7 @@ WaterUI ships two self-drawn (non-native) renderers at deliberately opposite des
 
 The `water` CLI orchestrates builds across platforms:
 
-- `water create` - Scaffold new project (supports `--playground` for quick experiments)
+- `water create` - Scaffold new project (supports `--mode playground` for quick experiments)
 - `water run` - Build and deploy to device/simulator
 - `water build <target>` - Compile Rust library for platform (called by Xcode/Gradle)
 - `water package` - Package built artifacts for distribution
