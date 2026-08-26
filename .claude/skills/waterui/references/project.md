@@ -4,7 +4,9 @@
 
 - Creating a project
 - Project shape
+- `Cargo.toml`: features that matter
 - `Water.toml`
+- Permissions: declaring and requesting
 - Assets and the app icon
 - Running and building
 - Platforms and backends
@@ -35,6 +37,8 @@ my-app/
 ├── Cargo.toml
 ├── assets/
 │   └── Icon.svg         # single source for every platform icon
+├── i18n/                # optional: translation catalogs, one TOML per locale
+│   └── en-US.toml       #   (see references/i18n.md)
 └── src/
     └── lib.rs
 ```
@@ -59,6 +63,28 @@ pub fn app(env: Environment) -> App {
     App::new(move || content(state.clone()), env)
 }
 ```
+
+Take `mut env` when the app installs things (a `Theme`, `MapGpuOptions`, an `ApiClient`).
+
+## `Cargo.toml`: features that matter
+
+Generated projects carry a `dev` feature that forwards to `waterui/dynamic_linking`:
+
+```toml
+[features]
+dev = ["waterui/dynamic_linking"]
+```
+
+Keep it. `dynamic_linking` builds the app as a dylib against a shared framework copy,
+which is what `water preview` and the fast dev loop link against — the difference between
+a seconds-scale and a minutes-scale edit-to-render cycle. Every compiled example in the
+WaterUI repository declares exactly this stanza; a hand-added crate that omits it gets
+cold static builds and a preview pipeline that cannot load it. It is a build strategy,
+not a capability — release builds ignore it.
+
+Component features (`chart`, `map`, `webview`, …) are covered in
+`references/components.md`, including the direct-crate alternative
+(`waterui-chart` instead of `waterui = { features = ["chart"] }`).
 
 ## `Water.toml`
 
@@ -91,6 +117,14 @@ enable = true
 description = "Required to show user location on the map"
 ```
 
+The `[theme]` slots seed the same tokens described in `references/styling.md`, so setting
+them once here themes the whole app on every backend.
+
+When developing against a local WaterUI checkout, add `waterui_path = "../.."` at the top
+level so backends resolve locally instead of from the registry.
+
+## Permissions: declaring and requesting
+
 Permission keys: `internet`, `camera`, `microphone`, `location`, `coarse_location`,
 `storage`, `write_storage`, `photo_library`, `contacts`, `calendars`, `bluetooth`,
 `bluetooth_admin`, `vibrate`, `wake_lock`. The CLI translates each into the right platform
@@ -100,11 +134,31 @@ is what the user actually reads in the system prompt — write it for them.
 Missing `internet` is a common and confusing failure: Android denies DNS outright, so every
 request fails with a resolution error rather than a permission error.
 
-The `[theme]` slots seed the same tokens described in `references/styling.md`, so setting
-them once here themes the whole app on every backend.
+Declaring a permission is half the story — camera, microphone, and location must also be
+**requested at runtime** through the `waterkit-permission` crate (a direct dependency),
+from an async handler, never from a view body:
 
-When developing against a local WaterUI checkout, add `waterui_path = "../.."` at the top
-level so backends resolve locally instead of from the registry.
+```rust
+use waterkit_permission::{Permission, PermissionStatus, check, request};
+
+button("Enable microphone")
+    .action_async(|State(granted): State<Binding<bool>>| async move {
+        let status = check(Permission::Microphone).await;       // infallible
+        let status = if matches!(status, PermissionStatus::Granted) {
+            status
+        } else {
+            match request(Permission::Microphone).await {       // fallible: Result
+                Ok(s) => s,
+                Err(_) => return,
+            }
+        };
+        granted.set(matches!(status, PermissionStatus::Granted));
+    })
+    .state(&granted)
+```
+
+Match `PermissionStatus` with a wildcard arm. On denial, leave the gated feature closed
+and tell the user how to retry — do not fall back to pretending it works.
 
 ## Assets and the app icon
 
@@ -161,9 +215,12 @@ not in conditional app code.
 ## Logging and debugging
 
 Use `tracing`, never `println!` — printed output does not reach the device log pipeline.
+You do not need `tracing` in your own `Cargo.toml`: the whole crate is re-exported as
+`waterui::log`:
 
 ```rust
-tracing::debug!(?value, "recomputed layout");
+waterui::log::debug!(?value, "recomputed layout");
+waterui::log::info!("saved");
 ```
 
 ```bash

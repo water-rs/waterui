@@ -6,6 +6,7 @@
 - Creating state
 - Transforming signals
 - Combining signals
+- Constants as signals
 - Projecting struct fields
 - Feeding signals to views
 - Reading state in handlers
@@ -13,7 +14,7 @@
 - Reactive collections
 - Conditionals
 - `Dynamic` and `watch` — the escape hatch
-- Async and lifecycle
+- Async, tasks, and lifecycle
 
 ## Signal vocabulary
 
@@ -46,15 +47,20 @@ let ratio = Binding::f64(1.5);                  // bool f32 f64 i32 i64 isize u3
 let flag  = Binding::bool(false);
 let name  = Binding::container(Str::from("Ada"));  // any Clone type
 let items = Binding::container(Vec::<Row>::new());
+let status = Binding::container("Waiting…");    // Binding<&'static str> — fine for status text
 
-let pane: Binding<Pane> = binding(Pane::Inbox); // general form
+let sel: Binding<Option<Selected>> = Binding::default();   // empty optional selection
+let pane: Binding<Pane> = binding(Pane::Inbox);            // general form
+let ws = binding::<WindowState>(WindowState::default());   // …or pin T with a turbofish
 ```
 
-`Binding::new` does not exist. The typed constructors are the reliable default:
-`binding(v)` is declared as `binding<T>(value: impl Into<T>)`, so `T` cannot be inferred
-from the argument alone. It works when something downstream pins the type — an
-annotation, a struct field of known type, or a control such as `toggle(.., &b)` /
-`slider(.., &b)` — and otherwise produces "type annotations needed".
+`Binding::new` does not exist. `binding(v)` is declared as `binding<T>(value: impl
+Into<T>)`, so `T` cannot be inferred from the argument alone — it works when something
+downstream pins the type: a `let` annotation, a turbofish, a struct field, a control such
+as `toggle(.., &b)`, or a helper parameter typed `&Binding<i32>`. When a helper with a
+typed parameter consumes the binding, plain `binding(0)` / `binding(false)` is the
+idiomatic spelling — no typed constructor needed. A `#[form]` struct has the cleanest
+form of all: `Settings::binding()` (from `FormBuilder`), which needs no annotation.
 
 Writing:
 
@@ -67,8 +73,10 @@ flag.toggle();                  // bool convenience
 
 ## Transforming signals
 
-These are methods on any signal (from `SignalExt`). They are cheap and do not clone the
-source — `count.not()` reads naturally, no `.clone()` needed.
+These are methods on any signal (from `SignalExt`, which the prelude re-exports). They
+take `&self` and do not consume or clone the source — `count.not()` and
+`hovered.select(..)` read naturally with no `.clone()` first. Clone only when a finished
+signal is *moved* into two places (e.g. passed to `.scale(x, y)` twice).
 
 ```rust
 // core
@@ -98,9 +106,14 @@ source — `count.not()` reads naturally, no `.clone()` needed.
 .debounce(Duration::from_millis(300))   .throttle(Duration::from_millis(16))
 ```
 
+`.select(a, b)` needs both arms to be one concrete type — convert theme tokens or `Srgb`
+values to `Color` first (`let on: Color = Accent.into();`).
+
 `Binding<T>` additionally has binding-specific helpers that produce *writable* results:
-`.range(0..=10)`, `.clamp(..)`, `.filter(..)`, `.mapping(getter, setter)`,
-`.bidirectional_select(a, b)`, `.unwrap_or(d)`, `.reverse()`.
+`.range(0..=10)`, `.clamp(..)`, `.filter(..)`, `.bidirectional_select(a, b)`,
+`.unwrap_or(d)`, `.reverse()`. The general two-way transform is an **associated
+function**, not a method — `Binding::mapping(&source, getter, setter)` — and its setter
+receives the *source binding* to write back through, not a `&mut` slot.
 
 ## Combining signals
 
@@ -110,8 +123,32 @@ let ready = loaded.and(&authorized);
 let label = count.zip(&unit).map(|(n, u)| format!("{n} {u}"));
 ```
 
-`.zip` pairs two signals; chain it for three or more. Call `.computed()` at the end when
-you need a nameable `Computed<T>` to store in a struct.
+`.zip` takes the other signal by reference; chain it for three or more. Chaining
+left-associates, so the closure destructures **nested** pairs, not a flat tuple:
+
+```rust
+let config = a.zip(&b).zip(&c).zip(&d)
+    .map(|(((a, b), c), d)| build_config(a, b, c, d))
+    .computed();
+```
+
+Call `.computed()` at the end when you need a nameable `Computed<T>` to store in a struct.
+
+## Constants as signals
+
+`impl IntoComputed<T>` accepts a plain `T`, and nami pre-declares the primitives,
+`String`, `Duration`, `Vec<T>`, `BTreeMap`, and `BTreeSet` as constant signals. Two
+pieces close the gaps:
+
+```rust
+use waterui::reactive::impl_constant;
+
+impl_constant!(ChartMode);              // your own Clone type as a constant signal
+let dates = Computed::constant(decorated_dates());   // a nameable, shareable constant Computed<T>
+```
+
+Without `impl_constant!`, passing a custom enum where `impl IntoComputed<T>` is expected
+fails to compile; without `Computed::constant`, there is no way to *name* a constant one.
 
 ## Projecting struct fields
 
@@ -122,9 +159,9 @@ change to one field does not invalidate readers of the others.
 
 ```rust
 #[form]
-struct Settings { name: String, volume: f64, dark: bool }
+struct Settings { name: Str, volume: f64, dark: bool }   // text fields bind Str, not String
 
-let settings: Binding<Settings> = binding(Settings::default());
+let settings = Settings::binding();
 
 vstack((
     field("Name", &settings.project().name),
@@ -149,7 +186,8 @@ Photo::new(url).blur(radius.clone()).saturation(sat.clone())
 text!("{status}")
 ```
 
-`.clone()` on a `Binding` clones a handle, not the value — it is cheap and expected.
+`.clone()` on a `Binding` clones a handle, not the value — it is cheap and expected when
+a signal is moved into a modifier and used again afterwards.
 
 ## Reading state in handlers
 
@@ -170,11 +208,26 @@ Handler parameters are extractors. Besides `State<T>`:
 - Custom types: `#[derive(Clone)] struct ApiClient; impl_extractor!(ApiClient);` then take
   `client: ApiClient` as a parameter directly.
 - Context extractors supplied by components, e.g. `Navigator<Route>`, `ListDelete`,
-  `ListMove`, `State<SnackbarManager>`.
+  `ListMove`, `State<SnackbarManager>`, `WebViewProxy`, `DragData`.
 
 ```rust
 fn delete_row(ListDelete(index): ListDelete, State(state): State<Editor>) {
     let _ = state.rows.remove(index);
+}
+```
+
+To accept a caller-supplied action in your *own* reusable view function, take the handler
+generically and pass it through:
+
+```rust
+use waterui::Handler;
+
+fn drawer_item<F, Args>(title: &'static str, action: F) -> impl View
+where
+    F: Handler<Args, ()> + 'static,
+    Args: 'static,
+{
+    text(title).padding().on_tap(action)
 }
 ```
 
@@ -194,11 +247,20 @@ view.scale(animated.clone(), animated.clone())
 ```
 
 Curves: `Animation::linear(d)`, `ease_in(d)`, `ease_out(d)`, `ease_in_out(d)`,
-`spring(stiffness, damping)`, `bezier(d, x1, y1, x2, y2)`.
-`.animated()` is shorthand for `ease_in_out(250ms)`.
+`spring(stiffness, damping)`, `bezier(d, x1, y1, x2, y2)`, and `Animation::default()`
+(the system default). `.with(animation)` is the one attachment spelling to use.
+`.animated()` (prelude) attaches the *system-default* animation — do not import a second
+`AnimationExt` from `waterui::animation`: it carries a same-named `animated()` with
+different timing, and which one runs then depends on which trait is in scope.
 
 Because the animation rides on the signal, any signal can be animated — including derived
-ones: `active.select(1.2_f32, 1.0).with(Animation::spring(300.0, 15.0))`.
+ones — and independently-animated signals compose:
+
+```rust
+let hover_scale = hovered.select(1.05_f32, 1.0).with(Animation::spring(400.0, 15.0));
+let drop_bounce = bounce.with(Animation::spring(500.0, 10.0));
+let combined = hover_scale.zip(&drop_bounce).map(|(a, b)| a * b);   // still animated
+```
 
 ## Reactive collections
 
@@ -209,9 +271,10 @@ rather than a whole-collection invalidation.
 use waterui::component::lazy::Lazy;
 use waterui::reactive::collection::List as ReactiveList;
 
-let rows = ReactiveList::<Row>::new();
-rows.push(Row { id: 1, title: "First".into() });
-rows.remove(0);
+let rows = ReactiveList::from(seed_vec);   // bulk-seed in one move — not a push loop
+rows.push(Row { id: 9, title: "Last".into() });
+rows.insert(0, Row { id: 0, title: "First".into() });   // positional splice, id-diffed
+let _ = rows.remove(0);              // #[must_use] — bind the removed value
 let snapshot = rows.snapshot();      // Vec<Row>, for read-only work
 let _ = rows.replace(new_vec);       // wholesale swap, still diffed by id
 
@@ -220,11 +283,29 @@ Lazy::hstack(ForEach::new(rows.clone(), row_view))
 ```
 
 `ForEach` implements `Views` (a collection of views), not `View`, so a container has to
-consume it. `Lazy::for_each` / `Lazy::vstack` / `Lazy::hstack` are those containers for
-plain stacks, and `List::for_each` is the platform list control.
+consume it. `Lazy::for_each` / `Lazy::vstack` / `Lazy::hstack` defer realization;
+`VStack::for_each` / `HStack::for_each` build an ordinary stack over the same collection
+when you want stack modifiers and eager layout (see components.md for
+`collection_transition`, which animates membership changes).
 
-Items must derive `Identifiable` with an `#[id]` field — that id is the diffing key, so
-it must be stable across updates of the same logical row.
+Items must derive `Identifiable` (`use waterui::Identifiable;` — the derive is not in the
+prelude) with an `#[id]` field that is stable across updates of the same logical row.
+
+A **derived** row set — filtered, sorted, or joined from other state — is wrapped in
+`SignalCollection`, which adapts any `Signal<Output = Vec<T>>` into a diffable
+collection. This is the answer to "filter a list as the user types"; without it the only
+road is `watch` over a `Vec`, which rule 4 forbids:
+
+```rust
+use waterui::reactive::collection::SignalCollection;
+
+let visible = SignalCollection::new(
+    messages.zip(&query).map(|(all, q)| {
+        all.into_iter().filter(|m| m.subject.contains(q.as_str())).collect::<Vec<_>>()
+    }),
+);
+List::for_each(visible, message_row)
+```
 
 A *fixed* set of items does not need any of this: an array or `Vec` works directly with
 `List::for_each` and `ForEach::new`.
@@ -254,7 +335,10 @@ when(!is_loading.clone(), || content())
 ```
 
 `when` reconstructs the branch that becomes active — state inside a branch does not
-survive switching away and back. That is rule 5, and it is intended.
+survive switching away and back. That is rule 5, and it is intended. When tearing a view
+down is itself costly or lossy (a `ParticleSystem` restarts its simulation, a GPU view
+re-uploads), prefer keeping every layer mounted and cross-fading their `.opacity`
+signals instead of switching branches.
 
 ## `Dynamic` and `watch` — the escape hatch
 
@@ -269,11 +353,22 @@ Before writing one, check all three replacements:
 |---|---|
 | Text that changes | `text!("{value}")` |
 | A property that changes | pass the signal to the modifier or component |
-| A set of views that changes | `ForEach` / `List` |
+| A set of views that changes | `ForEach` / `List` / `SignalCollection` |
 
-`Dynamic` is legitimate when a handler must swap in a genuinely different view *object*
-that no signal-aware API can express — for example replacing a media view when its source
-URL changes:
+The associated-function spelling `Dynamic::watch(signal, closure)` is the same thing as
+the free `watch(..)`; the closure takes the value by move and must return one uniform
+type, so heterogeneous arms erase with `AnyView::new(..)`:
+
+```rust
+Dynamic::watch(mode.clone(), |mode| match mode {
+    ChartMode::Bar => AnyView::new(bar_chart()),
+    ChartMode::Line => AnyView::new(line_chart()),
+})
+```
+
+That usage is legitimate — the arms are genuinely different view types and this is
+structural control flow, not a stand-in for a reactive property. The other legitimate
+form is a handler-driven swap through `Dynamic::new()`:
 
 ```rust
 let (handler, slot) = Dynamic::new();
@@ -283,9 +378,6 @@ button("Load")
         |State(url): State<Binding<Str>>,
          State(blur): State<Binding<f64>>,
          State(h): State<DynamicHandler>| {
-            // Photo takes impl IntoComputed<Url>; Url is From<&'static str>, so a
-            // runtime string has to be parsed — and a bad URL is reported here rather
-            // than silently reaching the image loader as a local path.
             let Ok(parsed) = url.get().as_str().parse::<Url>() else { return };
             h.set(Photo::new(parsed).blur(blur.clone()));
         },
@@ -301,7 +393,7 @@ Even there, keep the *reactive* properties reactive — the replacement above is
 `.blur(blur.clone())`, not `.blur(blur.get())`, so the slider keeps working without
 another swap.
 
-## Async and lifecycle
+## Async, tasks, and lifecycle
 
 ```rust
 button("Fetch")
@@ -310,12 +402,37 @@ button("Fetch")
     })
     .state(&result);
 
-view.task(async { warm_cache().await });   // runs while the view is alive
-view.on_appear(|| tracing::debug!("shown"));
+view.task(async { warm_cache().await });   // runs while the view is alive; dropped with it
+view.on_appear(|| waterui::log::debug!("shown"));
 view.on_disappear(|| ());
-view.on_change(&query, |new_value| tracing::debug!(?new_value));
+view.on_change(&query, |new_value| waterui::log::debug!(?new_value));
 ```
 
+`.on_change(&signal, f)` takes the signal by reference and a plain `Fn(T)` closure — the
+new value arrives **by value**, and this is an ordinary closure, not an extractor handler,
+so it reaches state by capturing cloned bindings.
+
+Free-standing async work — from a synchronous handler, or a background loop driving a
+binding — goes through `waterui::task`:
+
+```rust
+use waterui::task::{sleep, spawn_local};
+
+spawn_local(async move {
+    sleep(Duration::from_millis(200)).await;   // the async sleep — never std::thread::sleep
+    bounce.set(1.0);
+})
+.detach();
+```
+
+Two rules there: `spawn_local` is the right spawn for UI work (the future may hold
+non-`Send` state), and the returned handle **cancels the future when dropped** — a
+fire-and-forget task must be `.detach()`ed or it silently dies on the spot. For a
+cancellable stream (an LLM feed, a poller), keep a revision counter in a binding and have
+the loop return when the revision moves on.
+
 Futures run on the UI thread's local executor, so they may hold non-`Send` state — but
-they must never block. Anything CPU-bound belongs on a worker, with the result delivered
-back through a `Binding`.
+they must never block. Anything CPU-bound belongs on a worker (`waterui::task::spawn`),
+with the result delivered back through a `Binding`. Clippy's `future_not_send` fires on
+async helpers holding UI state; that is the sanctioned case for a narrowly scoped
+`#[expect(clippy::future_not_send, reason = "UI-thread state")]` on the item.
