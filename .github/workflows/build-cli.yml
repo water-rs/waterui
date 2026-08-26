@@ -121,6 +121,9 @@ jobs:
     if: needs.check.outputs.should_build == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
+    env:
+      CC: gcc-12
+      CXX: g++-12
     strategy:
       fail-fast: false
       matrix:
@@ -138,6 +141,11 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+          gcc-version: "12"
 
       - uses: Swatinem/rust-cache@v2
         with:

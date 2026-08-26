@@ -15,6 +15,12 @@ inputs:
       run headless on a GitHub-hosted runner with no real GPU.
     required: false
     default: "false"
+  gcc-version:
+    description: >
+      Install this GCC/G++ major. The caller selects it through explicit
+      CC/CXX values. Leave empty for jobs that use the runner default.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -26,6 +32,9 @@ runs:
         packages="nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev"
         if [ "${{ inputs.gpu }}" = "true" ]; then
           packages="$packages mesa-vulkan-drivers libvulkan1"
+        fi
+        if [ -n "${{ inputs.gcc-version }}" ]; then
+          packages="$packages gcc-${{ inputs.gcc-version }} g++-${{ inputs.gcc-version }}"
         fi
         echo "packages=$packages" >> "$GITHUB_OUTPUT"
 
