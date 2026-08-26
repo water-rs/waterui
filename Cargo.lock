@@ -9853,6 +9853,8 @@ dependencies = [
 [[package]]
 name = "shaderloom"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef95e00f176da60d5e802773d563a7a263d24e99bcb91c07488ebeabfd8d7851"
 dependencies = [
  "naga 30.0.0",
  "wgpu",
