@@ -1,0 +1,31 @@
+name: Release preflight
+
+# Guards the one failure this repository cannot undo: publishing a version
+# whose number already exists on crates.io while its contents have moved on.
+# crates.io versions are immutable, so a missed bump ships a crate that no
+# longer matches what consumers compile against.
+#
+# release-plz already runs this check when it prepares a release PR. This job
+# exists because that is exactly what lapsed once: with no working path from
+# the release branch, release-pr never ran, and `filtrate-core 0.1.0` was
+# rewritten in place while a different 0.1.0 stayed live on crates.io.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semver:
+    name: Local API vs published baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
