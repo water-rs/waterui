@@ -318,18 +318,17 @@ animation — built for LLM output. `flow_markdown(source)` takes
 ```rust
 use waterui::prelude::flow_markdown::FlowMarkdownConfig;
 
-let config = Computed::constant(
-    FlowMarkdownConfig::default()
-        .stream(FlowStreamMode::AppendOnly)             // source only ever grows: the LLM fast path
-        .preset(FlowAnimationPreset::AssistantDefault)  // | Minimal | None
-        .token_fade_in(Some(Animation::ease_out(Duration::from_millis(180)))),
-);
+let config = FlowMarkdownConfig::default()
+    .stream(FlowStreamMode::AppendOnly)             // source only ever grows: the LLM fast path
+    .preset(FlowAnimationPreset::AssistantDefault)  // | Minimal | None
+    .token_fade_in(Some(Animation::ease_out(Duration::from_millis(180))));
 flow_markdown(markdown.clone()).configuration(config)
 ```
 
 `.configuration(..)` takes a *signal* of config — derive one from your control bindings
-to retune animation live, or lift a fixed config with `Computed::constant` as above (a
-bare `FlowMarkdownConfig` is not a constant signal). Per-element overrides:
+to retune animation live. A fixed config goes in bare, as above: `FlowMarkdownConfig` is
+itself a constant signal, so it needs no `Computed::constant` wrapper. Per-element
+overrides:
 `.override_animation(FlowElementKind::Text, FlowAnimationPolicy::Typewriter { cps: 40,
 batch_ms: 24, fade_in: None })` — `fade_in` is an `Option<Animation>`, not a bool; kinds
 are `Text | Heading | ListItem | Quote | Link`. The config is a move-builder — reassign
