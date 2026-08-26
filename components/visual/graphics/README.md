@@ -25,7 +25,7 @@ Or via the main `waterui` crate:
 
 ```toml
 [dependencies]
-waterui = "0.2"
+waterui = "0.3"
 ```
 
 ## Quick Start

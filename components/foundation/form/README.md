@@ -24,7 +24,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-waterui-form = "0.2.1"
+waterui-form = "0.3"
 
 # Optional: enable serde support
 waterui-form = { version = "0.2.1", features = ["serde"] }

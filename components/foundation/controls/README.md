@@ -29,7 +29,7 @@ them from its prelude — every example below assumes `use waterui::prelude::*;`
 
 ```toml
 [dependencies]
-waterui = "0.2"
+waterui = "0.3"
 ```
 
 Depend on the crate directly only when building a component library that must not
@@ -37,7 +37,7 @@ pull in the full framework:
 
 ```toml
 [dependencies]
-waterui-controls = "0.2"
+waterui-controls = "0.3"
 ```
 
 There are no Cargo features; the whole control set is always available.
