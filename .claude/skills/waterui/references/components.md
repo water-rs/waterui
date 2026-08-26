@@ -12,21 +12,33 @@ and `snackbar`. `webview`, `chart`, `barcode`, `map`, `particle`, `flow-markdown
 waterui = { version = "…", features = ["chart", "map", "barcode"] }
 ```
 
+Two more manifest facts worth knowing:
+
+- Feature-gated modules are re-exports of standalone crates, and depending on the crate
+  directly (`waterui-chart`, `waterui-map`, `waterui-barcode`) instead of enabling the
+  feature is equally valid — the compiled examples do exactly that. So "could not find
+  `chart` in `waterui`" has two fixes, not one.
+- `default-features = false` is a real pattern for lean builds, but then *every* needed
+  feature must be listed explicitly. Inside a Cargo workspace, feature unification from
+  sibling crates can make an under-declared manifest compile anyway — a green build there
+  is not evidence the manifest is right.
+
 ## Contents
 
 - Naming conventions
 - Layout containers
+- Absolute placement and overlays
 - Scrolling
 - Controls
+- Menus, commands, context menus
 - Text
 - Lists and collections
 - Forms and pickers
 - Overlays: snackbars, cards, suspense, full screen
-- Media
-- Graphics and codes
-- Data: charts and maps
-- Embedded web content
 - Accessibility modifiers
+
+Media, web views, GPU graphics, charts, and maps have their own reference:
+[media.md](media.md).
 
 ## Naming conventions
 
@@ -38,10 +50,16 @@ Two entry points per component, deliberately:
   (`impl IntoLabel`, `impl IntoText`) so string literals flow into the localized text
   pipeline and pick up correct default accessibility semantics.
 
-Prefer the lowercase form in app code. Reach for `Type::new` when the label must be a
-composed view rather than text.
+The types behind the everyday lowercase constructors: `button` → `Button`, `toggle` →
+`Toggle`, `slider` → `Slider`, `stepper` → `Stepper`, `field` → **`TextField`** (not
+`Field`), `progress` → `Progress`, `picker` → `Picker`, `label` → `Label`. All are in the
+prelude, and the control constructors take the same `(impl IntoLabel, &Binding<T>)` shape
+as their lowercase forms.
 
-There is no `Type::custom(...)` anywhere; if you find yourself looking for one, `new` is it.
+There is no `Type::custom(...)` anywhere; if you find yourself looking for one, `new` is
+it. Two named exceptions: `FilePicker::open(..)` is that type's constructor (it opens
+files), and `progress(..)` takes its label as a `.label(..)` modifier rather than a first
+argument — the one control that does.
 
 ## Layout containers
 
@@ -56,13 +74,20 @@ Common modifiers on stacks:
 ```rust
 .spacing(8.0)
 .alignment(HorizontalAlignment::Leading)   // VerticalAlignment on hstack
-.padding()  /  .padding_with(EdgeInsets::symmetric(10.0, 16.0))
+.padding()  /  .padding_with(16.0)  /  .padding_with(EdgeInsets::symmetric(10.0, 16.0))
 ```
 
-Children are a tuple for a fixed set. For a runtime-length static set, collect:
+`.padding_with` takes `impl IntoComputed<EdgeInsets>`: a bare number, an `EdgeInsets`, or
+a signal of one. Argument orders are traps worth memorizing —
+`EdgeInsets::new(top, bottom, leading, trailing)` (not CSS order) and
+`EdgeInsets::symmetric(vertical, horizontal)`.
+
+Children are a tuple for a fixed set. For a runtime-length static set, collect — the
+iterator item must be a single concrete type, so heterogeneous helpers return `AnyView`:
 
 ```rust
 let row: HStack<_> = tabs.iter().map(|t| button(t.label())).collect();
+let tiles: VStack<_> = (0..6).map(photo_tile).collect();   // photo_tile: fn(usize) -> AnyView
 ```
 
 Spacing and separation:
@@ -70,19 +95,65 @@ Spacing and separation:
 ```rust
 spacer()                    // flexible, absorbs leftover space
 spacer_min(12.0)            // flexible with a floor
-spacer().height(16.0)       // fixed gap
+spacer().height(16.0)       // fixed vertical gap; .width(12.0) for horizontal
 Divider                     // a separator line (a unit struct, no call)
 ```
 
-Grid:
+Frame modifiers exist per-axis as well as paired:
 
 ```rust
-grid(columns, rows)         // rows: impl IntoIterator<Item = GridRow>
+.size(w, h) / .width(w) / .height(h)               // plain f32
+.min_size(w, h) / .max_size(w, h)
+.min_width(w) / .min_height(h)                     // single-axis floors (plain f32)
+.max_width(w) / .max_height(h)                     // accept signals (IntoSignalF32)
+.max_width(f32::INFINITY)                          // idiom: stretch to full container width
 ```
 
-Absolute placement — `AbsoluteLayout` hands every child the full bounds of its parent.
-That is what a window-filling overlay layer needs; a content-sized `zstack` mis-anchors
-its children as soon as the window is larger than the content.
+`.min_width`/`.min_height` are how you reserve stage space for a scaled or rotated child
+that overflows its intrinsic size.
+
+Safe areas: content is inset from notches and home indicators by default; a full-bleed
+layer opts out with `.ignore_safe_area(EdgeSet::ALL)` (per-edge: `EdgeSet` has
+`top`/`leading`/`bottom`/`trailing` fields and `ALL`/`NONE` consts).
+
+Grid — note the import and the `row` name collision with the list row builder:
+
+```rust
+use waterui::layout::grid::{grid as layout_grid, row as grid_row};
+
+layout_grid(3, [
+    grid_row((a, b, c)),
+    grid_row((d, e)),          // short rows are fine
+])
+.spacing(10.0)
+```
+
+## Absolute placement and overlays
+
+`absolute((a, b, c))` fills its parent and hands every child the full bounds — what a
+window-filling overlay layer needs; a content-sized `zstack` mis-anchors its children as
+soon as the window is larger than the content. Children place themselves with the
+`PositionExt` methods (in the prelude):
+
+```rust
+use waterui::layout::PinConstraints;   // not in the prelude (PositionExt is)
+
+absolute((
+    map_view().pin(PinConstraints::all(0.0)),                 // stretch to fill
+    status_panel().size(220.0, 64.0).position_in_offset(
+        UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING,       // anchor on child, position in parent
+        16.0, 16.0,                                           // offsets — these are signal slots
+    ),
+    controls().position_in(UnitPoint::BOTTOM_TRAILING),
+))
+```
+
+For a two-view stack where one just floats above the other, the `overlay` free function
+is simpler — sizing follows the base:
+
+```rust
+overlay(player, buffering_indicator).height(360.0)
+```
 
 ## Scrolling
 
@@ -108,40 +179,96 @@ offset.scroll_to(Point::new(0.0, 2_400.0));
 ## Controls
 
 Every control's first argument is its accessibility label. That is a requirement of the
-API, not a convention.
+API, not a convention. To hide a label *visually* while keeping it for assistive tech and
+for `waterui-testing` queries, use the display-mode API — never drop the label:
+
+```rust
+slider("Sensitivity", &level).range(0.5..=3.0).hide_label()   // exists on every labeled control
+button(label("Locate").icon(lucide::locate_fixed())).label_style(LabelDisplayMode::IconOnly)
+toolbar_row().install(LabelDisplayMode::IconOnly)             // scope a mode to a whole subtree
+```
+
+`LabelDisplayMode` variants: `Automatic`, `TitleAndIcon`, `TitleOnly`, `IconOnly`,
+`Hidden`. `.hide_label()` is the shorthand for `Hidden`. `IconOnly` panics at render time
+on a label with no icon, so install it only on subtrees whose labels all carry `.icon(..)`.
+The label text remains the test-query key even when hidden.
 
 ```rust
 button("Save")                              // Button<fn(&Environment)>
     .action(handler)                        // -> Button<impl FnMut(&Environment)>
     .action_async(|| async { … })
-    .style(ButtonStyle::Plain)              // also .bordered() .bordered_prominent() .plain()
+    .style(ButtonStyle::Plain)              // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
     .state(&value)                          // inject handler state (repeatable)
 
+button(text!("{edit_label}"))               // a text! satisfies IntoLabel: reactive button titles need no watch
+
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
-slider("Volume", &level).range(0.0..=1.0)   // &Binding<f64>
+Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox
+slider("Volume", &level).range(0.0..=1.0)   // &Binding<f64>; range is RangeInclusive<f64>
 stepper("Quantity", &count)                 // &Binding<i32>
+stepper("Items", &count).range(0..=100).step(5)   // range: impl RangeBounds<i32>; step takes a signal
 field("Email", &address)                    // &Binding<Str>
+TextField::new("Username", &name).prompt("Enter your username")   // placeholder ≠ label
 progress(fraction)                          // impl IntoComputed<f64>
+progress(fraction).label("Downloading")     // its label is a modifier — the one exception
 loading()                                   // indeterminate progress
 ```
 
-`Label` composes text with an icon, and is what `impl IntoLabel` resolves to:
+Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.bordered()`,
+`.bordered_prominent()` — must come *before* `.action(..)`, which changes the button's
+type parameter. `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
+pointing-hand cursor on pointer platforms. Switch and checkbox map to different
+accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to tests.
+
+`Label` composes text with an icon; `Label::new` makes a whole composed row read as one
+accessibility node:
 
 ```rust
-use waterui::component::label::label;
+use waterui::component::label::label;       // also in the prelude
+use waterui_icons_material_icon as mdi;     // icons come from an icon-set crate (styling.md)
 
 label("Compose").icon(mdi::pencil())
-label("Delete").icon(mdi::trash()).trailing()   // icon after the text
+label("Delete").icon(mdi::delete()).trailing()      // icon after the text; .leading() is the default side
+label("Mode").icon(mdi::tune()).display_mode(LabelDisplayMode::TitleAndIcon)
+
+// General form: semantic text + arbitrary content, ONE node for assistive tech.
+// The content is a builder closure — it may run again, so clone what it captures.
+Label::new(text!("{sender}, {subject}"), move || message_row(message.clone()))
 ```
 
-Menus and commands:
+`.icon(..)` accepts any cloneable view, not only an icon-set glyph.
+
+## Menus, commands, context menus
+
+`Menu` is a view (a popup surface) whose items are a `MenuView`: tuples, arrays, `Vec`,
+or `Option` of `Command`, `Button`, `Divider`, or a nested `Menu`:
 
 ```rust
-use waterui::component::menu::{Command, Menu, MenuItem, Shortcut, ShortcutModifiers};
+Menu::new("Choose an Option", (
+    "Option A"
+        .action(|State(sel): State<Binding<String>>| sel.set("A".into()))
+        .state(&selected),
+    Divider,                                   // becomes a separator inside a menu
+    Menu::new("More", ( "Nested".action(nested_handler), )),
+))
 ```
 
-A `Button` converts into `MenuItem` and `Command`, so one definition can serve a toolbar,
-a menu, and a keyboard shortcut.
+That `"Option A".action(..)` is `CommandExt`, blanket-implemented for every
+`impl IntoLabel`: the receiver is the *label* and the result is a `Command` — not a
+button. `Command` has its own builder chain: `.state(&value)`, `.disabled(signal)`,
+`.selected(signal)`, `.shortcut(Shortcut)`. A `Button` also converts into `MenuItem` and
+`Command`, so one definition can serve a toolbar, a menu, and a keyboard shortcut.
+
+`.context_menu(items)` attaches a long-press / right-click menu to ANY view and takes the
+same `MenuView` content. Attach `.state(..)` to each command, not to the menu:
+
+```rust
+text("Long press me").padding().context_menu((
+    "Copy".action(copy_handler).state(&clipboard),
+    Divider,
+    "Paste".action(paste_handler).state(&clipboard),
+))
+```
 
 ## Text
 
@@ -151,21 +278,62 @@ text!("Reactive {value}")
 text!("{n} items", n = count.clone())
 ```
 
+`text!` is also the translation pipeline — the whole literal is a catalog key, plurals use
+a `{#count}` selector, and slot arguments are moved into the macro (pre-clone signals you
+still need). See [i18n.md](i18n.md).
+
 Both carry the full font API:
 
 ```rust
 .title() .headline() .sub_headline() .body() .caption() .footnote()
-.size(18.0) .bold() .italic() .font(font) .foreground(color)
+.size(18.0) .bold() .italic(true) .font(font::Caption) .foreground(color)
 ```
 
-Richer text lives in `waterui::widget`:
+`.bold()` takes no argument; `.italic(..)` takes a bool — a signal of one works too.
+
+`.font(..)` takes a slot struct from the prelude's `font` module — `font::Title`,
+`Headline`, `Subheadline` (note the spelling; the method is `.sub_headline()`), `Body`,
+`Caption`, `Footnote` — the form to use when the style is chosen dynamically. On `Text`,
+`.size(..)` is the *font* size, is reactive (`impl IntoSignal<f64>`), and **shadows** the
+two-argument frame `.size(w, h)` — to give a text a frame, use `.width(..)`/`.height(..)`
+or size its container.
+
+Richer text:
 
 ```rust
 use waterui::widget::{Code, RichText, code, rich_text};
+
+include_markdown!("guide.md")               // compile-time: expands to RichText::from_markdown(include_str!(..))
+RichText::from_markdown(runtime_str)        // runtime markdown -> RichText
 ```
 
-`FlowMarkdown` (feature `flow-markdown`) renders streaming markdown with per-element
-animation — built for LLM output that arrives token by token.
+`include_markdown!` resolves the path against the calling source file and is used bare
+(never `waterui::include_markdown!`), like `text!`.
+
+`FlowMarkdown` (feature `flow-markdown`) renders *streaming* markdown with per-element
+animation — built for LLM output. `flow_markdown(source)` takes
+`impl IntoComputed<Str>`, so pass the `Binding<Str>` itself and keep appending to it;
+`.configuration(..)` also takes a signal, so animation settings retune live:
+
+```rust
+use waterui::prelude::flow_markdown::FlowMarkdownConfig;
+
+let config = Computed::constant(
+    FlowMarkdownConfig::default()
+        .stream(FlowStreamMode::AppendOnly)             // source only ever grows: the LLM fast path
+        .preset(FlowAnimationPreset::AssistantDefault)  // | Minimal | None
+        .token_fade_in(Some(Animation::ease_out(Duration::from_millis(180)))),
+);
+flow_markdown(markdown.clone()).configuration(config)
+```
+
+`.configuration(..)` takes a *signal* of config — derive one from your control bindings
+to retune animation live, or lift a fixed config with `Computed::constant` as above (a
+bare `FlowMarkdownConfig` is not a constant signal). Per-element overrides:
+`.override_animation(FlowElementKind::Text, FlowAnimationPolicy::Typewriter { cps: 40,
+batch_ms: 24, fade_in: None })` — `fade_in` is an `Option<Animation>`, not a bool; kinds
+are `Text | Heading | ListItem | Quote | Link`. The config is a move-builder — reassign
+it in loops.
 
 ## Lists and collections
 
@@ -174,7 +342,9 @@ realization, swipe-to-delete, reordering, sections, selection).
 
 ```rust
 use waterui::component::lazy::Lazy;
+use waterui::component::list::{ListDelete, ListMove};   // NOT in the prelude
 use waterui::views::ForEach;
+use waterui::Identifiable;                              // the derive is NOT in the prelude
 
 #[derive(Clone, Identifiable)]
 struct Record { #[id] id: u64, title: Str }
@@ -188,43 +358,64 @@ List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
     .on_delete(|ListDelete(i), State(s): State<AppState>| { let _ = s.rows.remove(i); })
     .on_move(|ListMove(m), State(s): State<AppState>| { /* m.from(), m.to() */ })
     .scroll_controller(&controller)
+```
 
-// Heterogeneous / sectioned static content. Rows are *builders*, so the list can
-// rebuild a row when it is realized again.
+`ListDelete(index)` destructures to a `usize`; `ListMove(m)` exposes `.from()`/`.to()`.
+
+For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
+modifiers, `VStack`/`HStack` have `for_each` too, and `collection_transition` animates
+membership changes (insert/remove fade and collapse along the stack axis):
+
+```rust
+use waterui::layout::collection_transition;
+use waterui::layout::stack::VStack;
+
+let drawer = VStack::for_each(rows.clone(), row_view).spacing(4.0);
+collection_transition(drawer, Animation::ease_in_out(Duration::from_millis(250)))
+```
+
+Heterogeneous / sectioned static content — rows are *builders*, so the list can rebuild a
+row when it is realized again. `row` and `detail_row` take **two** arguments (label,
+value) and may sit directly in the content tuple:
+
+```rust
 List::content((
     Section::new("Recent")
         .footer("Sub-pages push onto this tab's own stack.")
         .content((
             || ListItem::new(text("Today")),
-            || ListItem::new(text("Yesterday")),
+            row("Streak", "14 days"),                    // Row is valid content directly
+            detail_row("Last entry", "Yesterday"),
         )),
     || ListItem::new(text("Footer")),
 ))
 ```
 
 `ListItem` modifiers: `.deletable(signal)`, `.selected(signal)`, `.section(section)`.
-`Section::new(label).footer(text).content(rows)` builds a section.
-Convenience row builders: `row("Title")`, `detail_row("Title", "Detail")`.
+`List::for_each` requires `C::Item: Identifiable`; `List::content` takes the structural
+tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
+keeping the id ranges of different variants disjoint.
 
-`List::for_each` requires `C::Item: Identifiable`; `List::content` takes a structural
-tree of rows, sections, tuples, arrays, and `Option`s, so it is the one to use when rows
-are heterogeneous or carry section markers.
+When the row set is *derived* — filtered or sorted from other state — do not fall back to
+`watch`: wrap the derived signal in `SignalCollection` (see
+[reactivity.md](reactivity.md), Reactive collections).
 
 ## Forms and pickers
 
 `#[form]` on a struct derives `Default`, `Clone`, `Debug`, `FormBuilder`, and `Project` —
-so the struct gains both a generated form UI and per-field bindings.
+so the struct gains a generated form UI, per-field bindings, and an inference-free
+constructor:
 
 ```rust
 #[form]
 struct Settings {
-    /// Doc comments become field labels.
-    display_name: String,
+    /// Doc comments become field labels. Text fields bind `Str`, not `String`.
+    display_name: Str,
     volume: f64,
     notifications: bool,
 }
 
-let settings: Binding<Settings> = binding(Settings::default());
+let settings = Settings::binding();              // Binding<Settings>, no annotation needed
 form(&settings)                                  // whole generated form
 field("Name", &settings.project().display_name)  // or drive one field yourself
 ```
@@ -232,30 +423,58 @@ field("Name", &settings.project().display_name)  // or drive one field yourself
 Pickers:
 
 ```rust
-use waterui::form::picker::{Picker, PickerStyle};
+use waterui::form::picker::{Picker, PickerItem, PickerStyle, picker};
 use waterui::form::picker::color::ColorPicker;
 use waterui::form::picker::date::{DatePicker, DatePickerType};
 use waterui::form::picker::file::FilePicker;
 use waterui::form::picker::multi_date::MultiDatePicker;
+use waterui::form::Calendar;
 
-// Options are views carrying their value via .tag(..). The picker is generic over
-// your own type; it never asks you to construct an Id.
-let options: Vec<_> = Fruit::all().map(|(f, name)| text(name).tag(f)).collect();
+// Options are views carrying their value via .tag(..). The tag type is T: Ord + Clone.
+// PickerItem<T> is the nameable item type — an array of them works without collect().
+fn sizes() -> [PickerItem<&'static str>; 3] {
+    [text("Small").tag("S"), text("Medium").tag("M"), text("Large").tag("L")]
+}
 
-Picker::new("Sort by", options, &selection)      // &Binding<Fruit>
-    .style(PickerStyle::Menu)                    // Automatic | Menu | Radio
+picker("Size", sizes(), &choice)                 // ergonomic constructor
+Picker::new(text!("Sort by"), options, &choice)  // labels may be localized text!
+    .style(PickerStyle::Menu)                    // Automatic | Menu | Radio | Segmented
+    .hide_label()
 ```
 
 Picker style is an attribute, never a separate type — there is no `RadioPicker`. The same
 holds for toggles (switch vs checkbox) and lists (plain vs inset vs sidebar).
 
-`DatePicker` binds typed `jiff` date/time values rather than strings.
+Date and color pickers bind typed values; `jiff` is **your** dependency (WaterUI does not
+re-export it), and its constructors are fallible:
+
+```rust
+// Cargo.toml: jiff = "…"
+use jiff::civil::Date;
+
+DatePicker::new("Date", &date)                   // T: DatePickable picks the presentation
+    .ty(DatePickerType::DateHourMinuteAndSecond) // override; also HourMinuteAndSecond etc.
+    .range(min..=max)                            // clamps the bound value immediately
+
+Calendar::new("Trip Date", &date, &visible_month)      // TWO bindings: selection + shown month
+    .range(start..=end)
+    .decorated(marked_days.clone())                    // impl IntoComputed<BTreeSet<Date>> — passive dots
+
+MultiDatePicker::new("Available", &date_set, &visible_month)   // Binding<BTreeSet<Date>>
+
+ColorPicker::new("Accent", &color).with_alpha().with_hdr()     // Binding<Color>
+FilePicker::open("Select Files", &urls).max_count(5)           // Binding<Vec<Url>>; constructor is `open`
+```
+
+Seeding a `Binding<Color>` from a constant: `binding(Color::from(Srgb::from_hex("#4A84F6")))`.
+A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new())`.
 
 ## Overlays: snackbars, cards, suspense, full screen
 
 Every `Window` installs a `SnackbarManager`; reach it from any handler.
 
 ```rust
+use core::time::Duration;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 
 button("Save").action(|State(m): State<SnackbarManager>| {
@@ -274,108 +493,31 @@ Placements are independent stacks: a top snackbar never evicts a bottom one, and
 at one placement stack and reflow.
 
 ```rust
+use waterui::widget::accordion;                        // not in the prelude
+
 card(content).title("Summary").subtitle("This week")   // Card
 suspense(async { load().await })                       // takes a future, not a closure
 accordion(header, || body())                           // disclosure
+view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
 
 `FullScreenOverlayManager` presents modal, window-filling content.
 
-## Media
-
-```rust
-use waterui::media::{Photo, Url};
-
-Photo::new("https://waterui.dev/logo.png")   // impl IntoComputed<Url>; Url: From<&'static str>
-    .blur(radius.clone())
-    .saturation(sat.clone())
-    .on_event(|event| match event {
-        PhotoEvent::Loaded => …,
-        PhotoEvent::Error(msg) => …,
-    })
-
-video_player(item)                       // impl Into<MediaItem>
-MediaPicker::new(&selection)             // &Binding<Option<media_picker::Selected>>
-```
-
-A runtime string is not a `Url` — parse it, and report the failure rather than letting a
-bad address reach the loader as a local path:
-
-```rust
-let Ok(parsed) = entered.get().as_str().parse::<Url>() else { return };
-Photo::new(parsed)
-```
-
-## Graphics and codes
-
-```rust
-Canvas::new(|ctx: &mut DrawingContext| { /* immediate-mode drawing */ })
-
-use waterui::barcode::Barcode;           // feature = "barcode"
-Barcode::qr("https://waterui.dev").size(120.0, 120.0)
-Barcode::code128("012345").size(160.0, 60.0)
-
-use waterui::svg::Svg;
-Svg::new(source)
-
-ParticleSystem::new(..)                  // feature = "particle"
-GpuSurface::new(renderer)                // custom wgpu rendering
-```
-
-Shapes are views that fill the space they are given; `.fill()` and `.clip()` are the two
-ways to use them — the styling reference covers them.
-
-## Data: charts and maps
-
-```rust
-use waterui::chart::{BarChart, ChartExt, DataPoint, LineChart, PieChart};  // feature = "chart"
-// plus Area, Scatter, Bubble, Radar, Heatmap, Contour, Candlestick, Gauge, Depth,
-// each with a matching lowercase constructor (`bar_chart`, `pie_chart`, …).
-```
-
-```rust
-use waterui::map::{Annotation, Coordinate, Map, Region};
-
-let center = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
-Map::new(Region::new(center, 0.05, 0.05))         // impl IntoComputed<Region>
-Annotation::new(center, "Office")
-```
-
-`Coordinate::from_degrees` returns a `Result` — an out-of-range latitude or longitude is an
-error you handle, not a value that silently clamps.
-
-Maps need network access and, for user location, location permission — declare both in
-`Water.toml`; the project reference covers permissions.
-
-## Embedded web content
-
-```rust
-use waterui::webview::{ScriptInjectionTime, Url, WebView, WebViewEvent, WebViewProxy};
-
-WebView::open("https://waterui.dev")
-    .redirects_enabled(allow.clone())
-    .user_agent(ua.clone())
-    .on_event(handle_event)
-```
-
-The whole web view is described before it exists — the builder records the URL, redirect
-policy, injected scripts, and handlers the page can call back into. Drive a live page
-through `WebViewProxy`, which is extracted inside a handler exactly the way `State<T>` is.
-
-Engine selection is a project setting (`webview_backend` in `Water.toml`), not a code
-decision. `waterui-chromium` is a separate, heavier component for when the application
-needs a full Chromium surface, headless pages, screenshots, or DevTools Protocol access.
-
 ## Accessibility modifiers
 
 ```rust
+use waterui::accessibility::{AccessibilityRole, AccessibilityState};
+
 .a11y_label("Delete message")          // override the derived label
 .a11y_id("inbox.row.3")                // stable automation id — reaches XCUITest and Android
-.a11y_role(role)
+.a11y_role(AccessibilityRole::Button)
 .a11y_hidden(true)                     // decorative only
-.a11y_state(state) / .a11y_state_signal(signal)
-.a11y_children(..)
+.a11y_state_signal(active.map(|a| AccessibilityState::new().selected(a)))
 ```
+
+The idiom for a composed row that should read as a single node: `.a11y_hidden(true)` on
+the inner content, then `.a11y_role(..)` + `.a11y_label(..)` on the wrapper — or better,
+build it with `Label::new(semantic_text, || content)`, which does this for you.
 
 `.a11y_id` is the escape hatch for views that are hard to label meaningfully; the same
 identifier is what `waterui-testing` queries with `.identifier(..)`. Prefer a real label
