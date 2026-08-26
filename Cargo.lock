@@ -4414,6 +4414,22 @@ dependencies = [
 [[package]]
 name = "glifo"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "282a26c1e23de04bdab3e34a21b6f877a479b96737792516b9b8b8f69b6661be"
+dependencies = [
+ "bytemuck",
+ "foldhash 0.2.0",
+ "hashbrown 0.17.1",
+ "log",
+ "peniko",
+ "skrifa 0.44.0",
+ "smallvec",
+ "vello_common 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "glifo"
+version = "0.3.0"
 source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
@@ -4423,7 +4439,7 @@ dependencies = [
  "peniko",
  "skrifa 0.44.0",
  "smallvec",
- "vello_common 0.2.0",
+ "vello_common 0.2.0 (git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow)",
 ]
 
 [[package]]
@@ -4924,7 +4940,7 @@ dependencies = [
  "jiff",
  "js-sys",
  "lru",
- "nami 0.10.1",
+ "nami",
  "native-executor",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
@@ -6989,7 +7005,7 @@ dependencies = [
 
 [[package]]
 name = "nami"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "async-channel",
  "async-io",
@@ -6997,57 +7013,23 @@ dependencies = [
  "futures-core",
  "gloo-timers 0.4.0",
  "log",
- "nami-core 0.3.2",
- "nami-derive 0.2.2",
- "num-traits",
- "pin-project-lite",
-]
-
-[[package]]
-name = "nami"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ea3c6c9cac343baaa8a7801e6af852e6fd55eb902b882fe5f598248642ab3b0"
-dependencies = [
- "async-channel",
- "async-io",
- "executor-core 0.6.0",
- "futures-core",
- "gloo-timers 0.3.0",
- "log",
- "nami-core 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "nami-derive 0.2.3",
+ "nami-core",
+ "nami-derive",
  "num-traits",
  "pin-project-lite",
 ]
 
 [[package]]
 name = "nami-core"
-version = "0.3.2"
-
-[[package]]
-name = "nami-core"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e64acaa7e5bbf879196d55455516a30bbe8a065aa9cd8f32fbaa84f8f1550ae"
+version = "0.3.3"
 
 [[package]]
 name = "nami-derive"
-version = "0.2.2"
+version = "0.2.4"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
-]
-
-[[package]]
-name = "nami-derive"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b6adda941f75a72f198303d8883ddd41a210e23f00fb368c282fa247bd862cd"
-dependencies = [
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -11739,6 +11721,21 @@ dependencies = [
 [[package]]
 name = "vello_common"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb2141a2bca6e6d598e471fd4d1d7eed8e020aad6a28187edda07f091a325dd"
+dependencies = [
+ "bytemuck",
+ "fearless_simd",
+ "guillotiere",
+ "log",
+ "peniko",
+ "smallvec",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "vello_common"
+version = "0.2.0"
 source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
@@ -11781,11 +11778,11 @@ version = "0.2.0"
 source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
- "glifo 0.3.0",
+ "glifo 0.3.0 (git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow)",
  "hashbrown 0.17.1",
  "log",
  "thiserror 2.0.20",
- "vello_common 0.2.0",
+ "vello_common 0.2.0 (git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow)",
  "vello_sparse_shaders",
  "wgpu",
 ]
@@ -11978,7 +11975,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-audio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-channel",
  "cpal 0.18.2",
@@ -12012,7 +12009,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-build"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jni 0.22.4",
  "ndk-context",
@@ -12022,7 +12019,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-camera"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-channel",
  "core-graphics-types 0.2.0",
@@ -12054,7 +12051,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-clipboard"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-channel",
  "blocking",
@@ -12074,7 +12071,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-codec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "avif-parse",
  "cros-codecs",
@@ -12109,18 +12106,18 @@ dependencies = [
 
 [[package]]
 name = "waterkit-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "executor-core 0.6.0",
  "jiff",
- "nami 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "nami",
  "thiserror 2.0.20",
  "uuid",
 ]
 
 [[package]]
 name = "waterkit-dialog"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "jni 0.22.4",
@@ -12135,7 +12132,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-fs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-fs",
  "dirs",
@@ -12154,7 +12151,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-haptic"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "jni 0.22.4",
@@ -12169,7 +12166,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-location"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-channel",
  "async-io",
@@ -12190,7 +12187,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-permission"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-channel",
  "futures",
@@ -12209,7 +12206,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-screen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-channel",
  "blocking",
@@ -12232,7 +12229,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-video"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
@@ -12242,7 +12239,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-video-container"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -12256,14 +12253,14 @@ dependencies = [
 
 [[package]]
 name = "waterkit-video-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "waterkit-video-player"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes",
  "async-channel",
@@ -12285,7 +12282,7 @@ dependencies = [
 
 [[package]]
 name = "waterkit-video-streaming"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-fs",
  "base64 0.22.1",
@@ -12364,7 +12361,7 @@ name = "waterui-backend-core"
 version = "0.1.0"
 dependencies = [
  "kurbo 0.13.1",
- "nami 0.10.1",
+ "nami",
  "num-traits",
  "peniko",
  "tracing",
@@ -12385,7 +12382,7 @@ dependencies = [
  "barcoders",
  "bytemuck",
  "fast_qr",
- "nami 0.10.1",
+ "nami",
  "pollster 1.0.1",
  "rxing",
  "shaderloom",
@@ -12448,7 +12445,7 @@ dependencies = [
  "glow",
  "libc",
  "libloading 0.9.0",
- "nami 0.10.1",
+ "nami",
  "num-traits",
  "pollster 1.0.1",
  "serde",
@@ -12480,7 +12477,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "kurbo 0.13.1",
- "nami 0.10.1",
+ "nami",
  "parley",
  "peniko",
  "pollster 1.0.1",
@@ -12499,7 +12496,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "hydrolysis-m3",
- "nami 0.10.1",
+ "nami",
  "num-traits",
  "tracing",
  "waterui",
@@ -12530,7 +12527,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anstream",
  "anstyle",
@@ -12603,7 +12600,7 @@ version = "0.2.1"
 dependencies = [
  "executor-core 0.7.1",
  "hydrolysis-m3",
- "nami 0.10.1",
+ "nami",
  "waterui",
  "waterui-core",
  "waterui-icon",
@@ -12619,7 +12616,7 @@ name = "waterui-core"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "nami 0.10.1",
+ "nami",
  "num-traits",
  "serde",
  "waterui-macros",
@@ -12637,7 +12634,7 @@ dependencies = [
  "fearless_simd",
  "kurbo 0.13.1",
  "log",
- "nami 0.10.1",
+ "nami",
  "native-executor",
  "parley",
  "peniko",
@@ -12679,7 +12676,7 @@ dependencies = [
  "executor-core 0.7.1",
  "jiff",
  "jni 0.22.4",
- "nami 0.10.1",
+ "nami",
  "native-executor",
  "ndk-context",
  "ndk-sys",
@@ -12726,7 +12723,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hydrolysis-m3",
  "jiff",
- "nami 0.10.1",
+ "nami",
  "regex",
  "tracing",
  "waterkit-dialog",
@@ -12754,12 +12751,12 @@ dependencies = [
  "filtrate",
  "filtrate-core",
  "futures",
- "glifo 0.3.0",
+ "glifo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "image",
  "kurbo 0.13.1",
  "mp4parse",
  "naga 30.0.0",
- "nami 0.10.1",
+ "nami",
  "num-traits",
  "parking_lot",
  "pastey 0.2.3",
@@ -12791,7 +12788,7 @@ dependencies = [
  "gtk4",
  "indexmap 2.14.0",
  "libloading 0.9.0",
- "nami 0.10.1",
+ "nami",
  "native-executor",
  "num-traits",
  "pin-project-lite",
@@ -12952,7 +12949,7 @@ dependencies = [
  "futures",
  "libloading 0.9.0",
  "minstant",
- "nami 0.10.1",
+ "nami",
  "native-executor",
  "pastey 0.2.3",
  "pulldown-cmark",
@@ -13009,7 +13006,7 @@ name = "waterui-layout"
 version = "0.2.2"
 dependencies = [
  "hydrolysis-m3",
- "nami 0.10.1",
+ "nami",
  "num-traits",
  "waterui",
  "waterui-core",
@@ -13032,7 +13029,7 @@ dependencies = [
  "icu_provider",
  "icu_time",
  "jiff",
- "nami 0.10.1",
+ "nami",
  "num",
  "serde",
  "sys-locale",
@@ -13065,7 +13062,7 @@ dependencies = [
 name = "waterui-map"
 version = "0.1.0"
 dependencies = [
- "nami 0.10.1",
+ "nami",
  "waterkit-location",
  "waterui",
  "waterui-core",
@@ -13090,7 +13087,7 @@ dependencies = [
  "lru",
  "maplibre-expr",
  "mvt-reader",
- "nami 0.10.1",
+ "nami",
  "native-executor",
  "num-traits",
  "parley",
@@ -13148,7 +13145,7 @@ version = "0.2.1"
 dependencies = [
  "erased-serde",
  "hydrolysis-m3",
- "nami 0.10.1",
+ "nami",
  "serde",
  "serde_json",
  "waterui",
@@ -13225,7 +13222,7 @@ name = "waterui-shape"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "nami 0.10.1",
+ "nami",
  "num-traits",
  "shaderloom",
  "tracing",
@@ -13241,7 +13238,7 @@ dependencies = [
 name = "waterui-str"
 version = "0.2.1"
 dependencies = [
- "nami-core 0.3.2",
+ "nami-core",
  "serde",
 ]
 
@@ -13289,7 +13286,7 @@ dependencies = [
 name = "waterui-text"
 version = "0.2.2"
 dependencies = [
- "nami 0.10.1",
+ "nami",
  "pulldown-cmark",
  "smallvec",
  "syntect",
@@ -13312,8 +13309,8 @@ dependencies = [
  "executor-core 0.7.1",
  "futures",
  "mime_guess",
- "nami 0.10.1",
- "nami-core 0.3.2",
+ "nami",
+ "nami-core",
  "sha2",
  "tracing",
  "waterui-str",
@@ -13324,7 +13321,7 @@ dependencies = [
 name = "waterui-video"
 version = "0.2.1"
 dependencies = [
- "nami 0.10.1",
+ "nami",
  "thiserror 2.0.20",
  "uuid",
  "waterui-core",
@@ -13341,7 +13338,7 @@ dependencies = [
  "futures-timer",
  "hydrolysis-m3",
  "jni 0.22.4",
- "nami 0.10.1",
+ "nami",
  "num-traits",
  "pollster 1.0.1",
  "shaderloom",

@@ -101,8 +101,8 @@ mvt-reader = "2.4.0"
 serde_json = "1.0"
 smallvec = "1.15"
 # Local vendored dependency overrides via git submodule.
-nami = { version = "0.10.1", path = "utils/nami" }
-nami-core = { version = "0.3.2", path = "utils/nami/core" }
+nami = { version = "0.11.0", path = "utils/nami" }
+nami-core = { version = "0.3.3", path = "utils/nami/core" }
 pin-project-lite = "0.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -166,6 +166,9 @@ waterui-inspector-app = { version = "0.1.0", path = "components/devtools/inspect
 waterui-preview-protocol = { version = "0.1.0", path = "components/devtools/preview/protocol" }
 waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui-testing = { path = "testing" }
+waterui-internal = { version = "0.2.1", path = "src", default-features = false }
+waterui-dylib = { version = "0.2.1", path = "utils/dylib", default-features = false }
+hydrolysis = { version = "0.1.0", path = "backends/hydrolysis", default-features = false }
 waterui = { version = "0.2.1", path = "." }
 waterui-build-support = { version = "0.1.0", path = "utils/build_support" }
 shaderloom = { version = "0.1.0", path = "utils/shaderloom" }
@@ -185,7 +188,7 @@ vello_hybrid = { version = "0.2", default-features = false, features = ["std", "
 # Taken from the same checkout as `vello_hybrid`, which vendors it: the crates.io
 # release is a different major version, and a glyph from one is not a glyph from
 # the other.
-glifo = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow", default-features = false, features = ["std"] }
+glifo = { version = "0.3.0", default-features = false, features = ["std"] }
 parley = { version = "0.11", default-features = false }
 vello_svg = "0.10.0"
 kurbo = "0.13"
@@ -228,8 +231,8 @@ dirs = "6"
 
 
 [dependencies]
-waterui-internal = { path = "src", default-features = false }
-waterui-dylib = { path = "utils/dylib", optional = true, default-features = false }
+waterui-internal.workspace = true
+waterui-dylib = { workspace = true, optional = true }
 
 
 [dev-dependencies]

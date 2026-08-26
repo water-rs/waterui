@@ -11,7 +11,7 @@ changelog_update = true
 name = "waterui"
 git_release_name = "v{{ version }}"
 git_tag_name = "v{{ version }}"
-release = false
+changelog_path = "docs/CHANGELOG.md"
 
 [[package]]
 name = "waterui-core"
@@ -104,7 +104,6 @@ git_tag_name = "macros-v{{ version }}"
 [[package]]
 name = "waterui-ffi"
 git_tag_name = "ffi-v{{ version }}"
-release = false
 
 [[package]]
 name = "waterui-cli"

@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Font Awesome 7 Free icons for WaterUI"
 keywords = ["icons", "fontawesome", "fa", "waterui"]
 categories = ["gui"]
-readme = "README.md"
+readme = "../../../README.md"
 
 [features]
 default = ["webfont"]
