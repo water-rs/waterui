@@ -223,6 +223,11 @@ pub struct FlowMarkdownConfig {
     typewriter_token_fade_in: Option<Animation>,
 }
 
+// A configuration value is a signal that never changes, so a bare
+// `FlowMarkdownConfig` satisfies `IntoComputed<FlowMarkdownConfig>` and callers
+// of `FlowMarkdown::configuration` need no `Computed::constant` wrapper.
+nami::impl_constant!(FlowMarkdownConfig);
+
 impl Default for FlowMarkdownConfig {
     fn default() -> Self {
         Self {
@@ -1938,6 +1943,14 @@ mod tests {
             .expect("group should keep visible content");
         assert_eq!(remaining, 0);
         assert_eq!(rich_text_element_text_len(&truncated), 4);
+    }
+
+    #[test]
+    fn configuration_accepts_a_bare_config() {
+        // A plain `FlowMarkdownConfig` is a constant signal, so this compiles
+        // without a `Computed::constant` wrapper at the call site.
+        let view = flow_markdown("hi").configuration(FlowMarkdownConfig::default());
+        assert_eq!(view.config.get().max_pending_bytes, 32 * 1024);
     }
 
     #[test]
