@@ -37,5 +37,5 @@ required-feature = "webfont"
 ignored = ["serde_json", "waterui-build-support"]
 
 [dev-dependencies]
-waterui.workspace = true
-waterui-testing.workspace = true
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }

@@ -162,9 +162,9 @@ web-sys = { version = "0.3", optional = true, features = [
 # The wayland examples need a widget theme; m3 is the one this workspace ships.
 # A dev-dependency back onto a crate that depends on this one is a cycle cargo
 # allows, and it keeps the examples next to the renderer they exercise.
-hydrolysis-m3.workspace = true
-waterui-testing.workspace = true
-waterui-navigation.workspace = true
+hydrolysis-m3 = { path = "../hydrolysis_m3" }
+waterui-testing = { path = "../../testing" }
+waterui-navigation = { path = "../../components/foundation/navigation" }
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 waterui = { path = "../..", default-features = false, features = ["flow-markdown", "gpu"] }
