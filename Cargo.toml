@@ -171,7 +171,7 @@ waterui-dylib = { version = "0.3.0", path = "utils/dylib", default-features = fa
 hydrolysis = { version = "0.1.0", path = "backends/hydrolysis", default-features = false }
 waterui = { version = "0.3.0", path = "." }
 waterui-build-support = { version = "0.1.0", path = "utils/build_support" }
-shaderloom = { version = "0.1.0", path = "utils/shaderloom" }
+shaderloom = "0.1.0"
 hydrolysis-m3 = { version = "0.1.0", path = "backends/hydrolysis_m3" }
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.3.0", path = "macros" }
