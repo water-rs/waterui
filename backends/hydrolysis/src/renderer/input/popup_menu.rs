@@ -7,7 +7,7 @@ use waterui::theme::color::Surface;
 use waterui_backend_core::widget::PickerMetrics;
 use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::{Stepper, button, stepper::stepper};
-use waterui_core::{AnimationExt as _, id::Id};
+use waterui_core::{SignalExt as _, id::Id};
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::{Date, DatePickerType, DateTime};
 use waterui_layout::frame::Frame;
@@ -155,10 +155,10 @@ fn animated_popup_panel(content: impl View, group: PopupMenuStateGroup) -> impl 
     let scale = Binding::f32(0.96);
     let enter_animation = popup_enter_animation();
     content
-        .opacity(opacity.clone().with_animation(enter_animation.clone()))
+        .opacity(opacity.with(enter_animation.clone()))
         .scale(
-            scale.clone().with_animation(enter_animation.clone()),
-            scale.clone().with_animation(enter_animation),
+            scale.with(enter_animation.clone()),
+            scale.with(enter_animation),
         )
         .on_appear(move || {
             opacity.set(0.96);

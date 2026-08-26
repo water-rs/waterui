@@ -336,8 +336,8 @@ AnalyticsPlugin {
 ### Animation
 - `Animation` - Declarative animation specifications
 - `AnimationExt` - Extension trait for reactive values
-- `.animated()` - Apply default animation
-- `.with_animation()` - Apply specific animation
+- `.animated()` - Apply the system-default animation
+- `.with(animation)` - Apply a specific animation (from `SignalExt`)
 
 ## Features
 

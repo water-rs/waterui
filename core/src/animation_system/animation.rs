@@ -30,13 +30,12 @@
 //!
 //! let opacity: nami::Binding<f32> = binding(1.0);
 //!
-//! // Use the .animated() method to apply default animation
-//! let _animated_opacity = opacity.clone().animated();
+//! // Use the .animated() method to apply the system-default animation
+//! let _animated_opacity = opacity.animated();
 //!
-//! // Or specify a specific animation type
+//! // Or attach a specific animation with the generic metadata method
 //! let faded: nami::Binding<f32> = binding(0.0);
-//! let _custom_animated =
-//!     faded.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
+//! let _custom_animated = faded.with(Animation::ease_in_out(Duration::from_millis(300)));
 //! ```
 //!
 //! The system supports two native primitives:
@@ -60,16 +59,15 @@
 //! // Three different ways to animate properties:
 //!
 //! // 1. Default animation (uses system defaults)
-//! let _view1_scale = scale.clone().animated();
+//! let _view1_scale = scale.animated();
 //!
-//! // 2. Custom animation using convenience methods
+//! // 2. Custom animation using a convenience constructor
 //! let expanded: nami::Binding<f32> = binding(2.0);
-//! let _view2_scale =
-//!     expanded.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
+//! let _view2_scale = expanded.with(Animation::ease_in_out(Duration::from_millis(300)));
 //!
-//! // 3. Spring animation using the convenience method
+//! // 3. Spring animation using the convenience constructor
 //! let bouncing: nami::Binding<f32> = binding(0.5);
-//! let _view3_scale = bouncing.with_animation(Animation::spring(100.0, 10.0));
+//! let _view3_scale = bouncing.with(Animation::spring(100.0, 10.0));
 //! ```
 //!
 //! ## Animation Pipeline
@@ -87,7 +85,7 @@
 //! Complex animations can be created by coordinating multiple animated values:
 //!
 //! ```rust
-//! use waterui_core::{animation::Animation, AnimationExt, SignalExt};
+//! use waterui_core::{animation::Animation, SignalExt};
 //! use nami::binding;
 //! use core::time::Duration;
 //!
@@ -95,11 +93,10 @@
 //! let position: nami::Binding<(f32, f32)> = binding((0.0, 0.0));
 //!
 //! // Create a choreographed animation sequence
-//! let animated_opacity =
-//!     opacity.with_animation(Animation::ease_in_out(Duration::from_millis(300)));
+//! let animated_opacity = opacity.with(Animation::ease_in_out(Duration::from_millis(300)));
 //!
 //! // Position animates with a spring physics model
-//! let animated_position = position.with_animation(Animation::spring(100.0, 10.0));
+//! let animated_position = position.with(Animation::spring(100.0, 10.0));
 //!
 //! // Both animated values can be used in views
 //! // The UI framework will automatically handle the animation timing
@@ -128,7 +125,7 @@
 //! let combined = value1
 //!     .zip(&value2)
 //!     .map(|(a, b)| a + b)
-//!     .with_animation(Animation::ease_in_out(Duration::from_millis(250)));
+//!     .with(Animation::ease_in_out(Duration::from_millis(250)));
 //!
 //! drop((opacity, combined)); // Prevent unused variable warnings
 //! ```
@@ -614,28 +611,21 @@ impl Animation {
 
 use nami::signal::WithMetadata;
 
-/// Extension trait providing animation methods for reactive values
+/// Extension trait providing animation methods for reactive values.
+///
+/// This is the only animation extension trait in the framework: `waterui`
+/// re-exports it from its prelude, so `.animated()` means the same thing
+/// everywhere regardless of which import brought the trait into scope.
 pub trait AnimationExt: nami::SignalExt {
-    /// Apply default animation to this reactive value
+    /// Attach the system-default animation to this reactive value.
     ///
-    /// Uses a reasonable default animation (ease-in-out with 250ms duration)
-    fn animated(self) -> WithMetadata<Self, Animation>
-    where
-        Self: Sized,
-    {
-        self.with(Animation::ease_in_out(Duration::from_millis(250)))
-    }
-
-    /// Apply a specific animation to this reactive value
-    ///
-    /// # Arguments
-    ///
-    /// * `animation` - The animation to apply
-    fn with_animation(self, animation: Animation) -> WithMetadata<Self, Animation>
-    where
-        Self: Sized,
-    {
-        self.with(animation)
+    /// Equivalent to `self.with(Animation::Default)`; the backend picks the
+    /// curve and duration that match the platform. To pick an explicit
+    /// animation, use [`nami::SignalExt::with`] directly:
+    /// `value.with(Animation::spring(100.0, 10.0))`.
+    #[track_caller]
+    fn animated(&self) -> WithMetadata<Self, Animation> {
+        self.with(Animation::Default)
     }
 }
 
