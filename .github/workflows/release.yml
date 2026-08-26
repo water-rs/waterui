@@ -11,8 +11,8 @@ permissions:
   pull-requests: write
 
 jobs:
-  release-plz:
-    name: Release
+  release:
+    name: Release unpublished packages
     runs-on: ubuntu-latest
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     outputs:
@@ -25,6 +25,8 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: MarcoIeni/release-plz-action@v0.5
+        with:
+          command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -44,12 +46,33 @@ jobs:
             echo "No waterui-cli-v* tag found on HEAD."
           fi
 
+  release-pr:
+    name: Prepare the next release
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    concurrency:
+      group: release-plz-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: MarcoIeni/release-plz-action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
   build-cli:
     name: Build waterui-cli binaries
-    needs: release-plz
-    if: needs.release-plz.result == 'success' && needs.release-plz.outputs.cli_tag != ''
+    needs: release
+    if: needs.release.result == 'success' && needs.release.outputs.cli_tag != ''
     uses: ./.github/workflows/build-cli.yml
     with:
-      tag: ${{ needs.release-plz.outputs.cli_tag }}
+      tag: ${{ needs.release.outputs.cli_tag }}
     secrets:
       HOMEBREW_PAT: ${{ secrets.HOMEBREW_PAT }}

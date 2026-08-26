@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/water-rs/waterui/compare/v0.2.1...v0.3.0) - 2026-08-25
+
+### Added
+
+- Added precise collection rendering, list selection and mutation, navigation restoration, safe-area overlays, and window-scoped presentation surfaces.
+- Added cross-platform assets, barcode, chart, canvas, map, media, WebView, inspector, preview, accessibility, and UI-testing packages.
+- Added theme tokens and platform-native style projection across Apple, Android, GTK, Hydrolysis, and Dew backends.
+
+### Changed
+
+- Moved the public release cohort to 0.3 and Nami to 0.11; all first-party publish dependencies now carry explicit registry versions.
+- Require semantic labels for `Toggle`, `TextField`, and `Picker`, and accept signal-backed state throughout dynamic controls.
+- Renamed the video aspect-ratio mode to `ContentMode` and made layout growth explicit with `.layout_priority(...)`.
+- Changed URL construction to explicit fallible parsing and made WebView navigation asynchronous with origin-checked messages.
+- Standardized the non-Apple video path on WaterKit/GPU rendering and the portable map path on the GPU vector backend.
+
+### Fixed
+
+- Fixed renderer lifecycle, GPU surface sizing, Android map orientation/device loss, GTK GL setup, and backend theme defaults.
+- Fixed linear barcode generation, text shaping and locale behavior, accessibility identifiers, and state loss from structural rebuilds.
+- Fixed CLI release tag resolution, 0.3 project scaffolds, WPE runtime compiler requirements, and release asset manifest URLs.
+
+See [Migrating to WaterUI 0.3](MIGRATION_0.3.md) for source-level changes and the [release runbook](RELEASING.md) for the staged publish order.
+
 ## [0.2.1](https://github.com/water-rs/waterui/compare/v0.2.0...v0.2.1) - 2025-12-14
 
 ### Fixed
