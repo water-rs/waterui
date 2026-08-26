@@ -8,7 +8,7 @@ Hydrolysis renderer — no simulator, no device, no custom runner.
 
 ```toml
 [dev-dependencies]
-waterui-testing = "0.2"
+waterui-testing = "0.3"
 hydrolysis-m3 = "0.2"
 ```
 
