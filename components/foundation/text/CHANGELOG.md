@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/water-rs/waterui/compare/text-v0.2.2...text-v0.3.0) - 2026-08-25
+
+### Added
+
+- Added locale-aware CJK and RTL behavior, precise reactive text formatting, and reusable shaping caches.
+
 ## [0.2.2](https://github.com/water-rs/waterui/compare/text-v0.2.1...text-v0.2.2) - 2025-12-14
 
 ### Fixed

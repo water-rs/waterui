@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/water-rs/waterui/compare/cli-v0.1.3...waterui-cli-v0.1.4) - 2026-08-25
+
+### Changed
+
+- Updated generated projects to WaterUI and FFI 0.3.
+- Standardized runtime asset lookup on `waterui-cli-v*` release tags.
+
+### Fixed
+
+- Fixed WPE runtime compiler selection and release manifest lookup.
+
 ## [0.1.2](https://github.com/water-rs/waterui/compare/cli-v0.1.1...cli-v0.1.2) - 2025-12-14
 
 ### Fixed

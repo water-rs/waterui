@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/water-rs/waterui/compare/ffi-v0.2.1...ffi-v0.3.0) - 2026-08-25
+
+### Changed
+
+- Aligned the ABI surface with the 0.3 semantic controls, media, navigation, accessibility, and GPU contracts.
+- Kept the GPU stack feature-gated so non-GPU builds do not retain graphics dependencies.
+
 ## [0.2.1](https://github.com/water-rs/waterui/compare/ffi-v0.2.0...ffi-v0.2.1) - 2025-12-14
 
 ### Fixed

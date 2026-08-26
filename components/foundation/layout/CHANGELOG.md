@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/water-rs/waterui/compare/layout-v0.2.2...layout-v0.3.0) - 2026-08-25
+
+### Changed
+
+- Made stack compression and growth explicit through layout priority while preserving stretch intent through type erasure.
+
 ## [0.2.2](https://github.com/water-rs/waterui/compare/layout-v0.2.1...layout-v0.2.2) - 2025-12-14
 
 ### Fixed
