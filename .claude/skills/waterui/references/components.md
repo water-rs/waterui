@@ -315,18 +315,22 @@ use waterui::barcode::Barcode;           // feature = "barcode"
 Barcode::qr("https://waterui.dev").size(120.0, 120.0)
 Barcode::code128("012345").size(160.0, 60.0)
 
+use waterui::svg::Svg;
+Svg::new(source)
+
 ParticleSystem::new(..)                  // feature = "particle"
 GpuSurface::new(renderer)                // custom wgpu rendering
 ```
 
 Shapes are views that fill the space they are given; `.fill()` and `.clip()` are the two
-ways to use them — see `references/styling.md`.
+ways to use them — the styling reference covers them.
 
 ## Data: charts and maps
 
 ```rust
-use waterui_chart::{BarChart, LineChart, PieChart, DataPoint, ChartExt};
-// plus Area, Scatter, Bubble, Radar, Heatmap, Contour, Candlestick, Gauge, Depth
+use waterui::chart::{BarChart, ChartExt, DataPoint, LineChart, PieChart};  // feature = "chart"
+// plus Area, Scatter, Bubble, Radar, Heatmap, Contour, Candlestick, Gauge, Depth,
+// each with a matching lowercase constructor (`bar_chart`, `pie_chart`, …).
 ```
 
 ```rust
@@ -341,7 +345,7 @@ Annotation::new(center, "Office")
 error you handle, not a value that silently clamps.
 
 Maps need network access and, for user location, location permission — declare both in
-`Water.toml`; see `references/project.md`.
+`Water.toml`; the project reference covers permissions.
 
 ## Embedded web content
 
