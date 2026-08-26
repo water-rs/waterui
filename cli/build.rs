@@ -20,6 +20,7 @@ struct ScaffoldVersions {
     waterui_dew: String,
     waterui_gtk: String,
     waterui_preview: String,
+    waterui_preview_protocol: String,
     android_kotlin: String,
 }
 
@@ -89,6 +90,10 @@ fn emit_scaffold_metadata(
     println!(
         "cargo:rustc-env=WATERUI_CLI_WATERUI_PREVIEW_VERSION={}",
         scaffold_metadata.versions.waterui_preview
+    );
+    println!(
+        "cargo:rustc-env=WATERUI_CLI_WATERUI_PREVIEW_PROTOCOL_VERSION={}",
+        scaffold_metadata.versions.waterui_preview_protocol
     );
     println!(
         "cargo:rustc-env=WATERUI_CLI_ANDROID_KOTLIN_VERSION={}",
@@ -169,6 +174,16 @@ fn register_rerun_inputs(workspace_root: Option<&Path>) {
             workspace_root
                 .join("backends")
                 .join("gtk")
+                .join("Cargo.toml")
+                .display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace_root
+                .join("components")
+                .join("devtools")
+                .join("preview")
+                .join("protocol")
                 .join("Cargo.toml")
                 .display()
         );
@@ -263,6 +278,14 @@ fn resolve_scaffold_metadata(
                         .join("runtime")
                         .join("Cargo.toml"),
                 ),
+                waterui_preview_protocol: manifest_package_version(
+                    &workspace_root
+                        .join("components")
+                        .join("devtools")
+                        .join("preview")
+                        .join("protocol")
+                        .join("Cargo.toml"),
+                ),
                 android_kotlin: manifest_scaffold_string(
                     scaffold_metadata,
                     "android-kotlin-version",
@@ -291,6 +314,10 @@ fn resolve_scaffold_metadata(
             waterui_ffi: manifest_scaffold_string(scaffold_metadata, "waterui-ffi-version"),
             waterui_gtk: manifest_scaffold_string(scaffold_metadata, "waterui-gtk-version"),
             waterui_preview: manifest_scaffold_string(scaffold_metadata, "waterui-preview-version"),
+            waterui_preview_protocol: manifest_scaffold_string(
+                scaffold_metadata,
+                "waterui-preview-protocol-version",
+            ),
             android_kotlin: manifest_scaffold_string(scaffold_metadata, "android-kotlin-version"),
             hydrolysis: manifest_scaffold_string(scaffold_metadata, "hydrolysis-version"),
             waterui_dew: manifest_scaffold_string(scaffold_metadata, "waterui-dew-version"),
