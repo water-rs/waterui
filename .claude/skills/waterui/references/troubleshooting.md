@@ -24,7 +24,8 @@ view.opacity(fade.clone())    // reactive
 ```
 
 **Text is stale.** Same cause, wearing a different hat: `text(format!("Count: {}", n.get()))`
-formats once. Use `text!("Count: {n}")`.
+formats once. Use `text!("Count: {n}")`. (Plain `text(format!(..))` over a *non-signal*
+value is fine — the defect is specifically `.get()` on a signal.)
 
 **Typed input resets, or a control loses focus on every keystroke.** Something above it is a
 `watch` that rebuilds the subtree. Replace it — reactive text with `text!`, a reactive
@@ -32,6 +33,8 @@ property by passing the signal, a dynamic set of views with `Lazy::for_each` / `
 
 **A list re-renders entirely when one row changes.** The collection is behind a `watch` over
 a `Vec` instead of a `Lazy::for_each` / `List::for_each` over an `Identifiable` collection.
+For a *derived* row set (filtering, sorting), wrap the signal in `SignalCollection` rather
+than reaching for `watch`.
 
 **Rows shuffle or lose state after an insert.** The `#[id]` field is not stable — it is an
 array index, or regenerated per render. The id is the diffing key and must identify the same
@@ -41,33 +44,67 @@ logical row across updates.
 positionally: the first `.state()` call feeds the first `State<T>` parameter. Reorder, or
 switch to the app-state-struct pattern where one injected struct replaces all of them.
 
+**Rounded corners come out as a capsule.** `RoundedRectangle::new(r)` takes a fraction of
+the shorter side, not points — `new(12.0)` saturates at fully-rounded. Use `new(0.1)`-scale
+values, or `Capsule` when fully-rounded is the intent. Same for `UnevenRoundedRectangle`,
+whose four radii are in reading order (top_leading, top_trailing, bottom_leading,
+bottom_trailing), not clockwise.
+
+**Padding lands on the wrong edges.** `EdgeInsets::new(top, bottom, leading, trailing)` —
+not CSS order — and `EdgeInsets::symmetric(vertical, horizontal)`.
+
+**A background task never runs, or an animation loop dies instantly.** The
+`spawn_local(..)` handle was dropped — it cancels the future on drop. Call `.detach()`.
+
+**An on-demand window never opens (or opens duplicated).** `conditional_window` returns an
+*invisible view that must still be placed in the tree*, and its `WindowPresentation` must
+be created once alongside the state binding — recreating it inside a rebuilt subtree resets
+the open-once guard.
+
 **An animation snapshot shows the end state instead of the transition.** A test used
 `std::thread::sleep`. The animation clock advances with pumped frames, not wall-clock time.
 Use `app.pump_for(duration)`.
+
+**A test's wait "passes" but checks nothing.** The query-chained
+`.wait_for_existence(timeout)` returns a `bool` and does not assert — wrap it in
+`assert!(..)`.
 
 ## Compile errors
 
 | Error | Cause | Fix |
 |---|---|---|
-| `no function or associated item named 'new' found for struct 'Binding'` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::bool(v)` / `Binding::container(v)` |
-| "type annotations needed for `Binding<_>`" after `binding(v)` | `binding` takes `impl Into<T>`, so `T` is unconstrained | use a typed constructor, annotate the `let`, or let a control such as `toggle(.., &b)` pin it |
+| `no function or associated item named 'new' found for struct 'Binding'` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::bool(v)` / `Binding::container(v)`; `Binding::default()` for `Binding<Option<T>>` |
+| "type annotations needed for `Binding<_>`" after `binding(v)` | `binding` takes `impl Into<T>`, so `T` is unconstrained | typed constructor, `let` annotation, turbofish `binding::<T>(v)`, or let a control / typed helper parameter pin it |
 | `cannot find function 'when' in this scope` | not in the prelude | `use waterui::widget::condition::when;` |
 | `cannot find function 'binding' in this scope` | not in the prelude | `use waterui::reactive::binding;` |
+| `cannot find derive macro 'Identifiable'` | the derive is not in the prelude | `use waterui::Identifiable;` |
+| `cannot find type 'ListDelete' / 'ListMove'` | not in the prelude | `use waterui::component::list::{ListDelete, ListMove};` |
+| `cannot find type 'TapGesture' / 'CursorStyle' / 'DragData'` | interaction types are not in the prelude | `use waterui::gesture::…;` / `use waterui::cursor::…;` / `use waterui::drag_drop::…;` |
+| `cannot find type 'PhotoEvent'` | the real name is `photo::Event` | `use waterui::media::photo::Event as PhotoEvent;` |
+| mismatched types on `LongPressGesture::new(Duration::…)` | it takes a `u32` in backend time units | `LongPressGesture::new(500)` |
+| `no method named 'drop_hover'` | it exists only on the value `.drop_destination(..)` returns | chain it directly after `.drop_destination` |
 | `no method named 'is_empty'` on a signal | signal string methods are prefixed | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
+| `no method named 'linear'` found for `Gradient` (or wrong-type stops) | the prelude's `Gradient` is the background enum, not the GPU view | `use waterui_graphics::Gradient;` (crate `waterui-graphics`, feature `gpu`) |
 | type annotations needed on `.select(1.0_f32, 0.3)` | suffixed literal fights inference | `.select(1.0 as f32, 0.3)` |
+| mismatched arms in `.select(TokenA, TokenB)` | both arms must be one concrete type | convert first: `let a: Color = Accent.into();` |
 | `this function takes 2 arguments but 1 was supplied` on `.scale` | transforms are per-axis | `.scale(x, y)`, `.offset(x, y)`, `.size(w, h)` |
-| `the trait bound ...: Identifiable is not satisfied` | collection item lacks an id | `#[derive(Clone, Identifiable)]` with an `#[id]` field |
+| `.size(24)` on a `Text` then `.size(w, h)` fails | `Text::size` (font size) shadows the frame modifier | use `.width(..)`/`.height(..)` on text, or size the container |
+| `this function takes 2 arguments` on `row("Title")` | `row`/`detail_row` take (label, value) | `row("Streak", "14 days")` |
+| wrong `row` / `grid` resolves | list `row` vs grid `row` name collision | `use waterui::layout::grid::{grid as layout_grid, row as grid_row};` |
+| `the trait bound ...: Identifiable is not satisfied` | collection item lacks an id | `#[derive(Clone, Identifiable)]` + `#[id]`, or manual `impl` for enums (disjoint id ranges) |
 | `expected 'Binding<T>', found '&Binding<T>'` (or the reverse) | two-way controls borrow, modifiers own | controls take `&binding`; modifiers take `binding.clone()` |
-| `cannot find macro 'text'` | macro not imported | `use waterui::prelude::*;` then bare `text!` — never `waterui::text!` |
-| `ForEach<..>: View is not satisfied` (or "expected an `FnOnce()` closure") | `ForEach` is a `Views` collection, not a view | `Lazy::for_each(data, f)`, `Lazy::vstack(ForEach::new(..))`, or `List::for_each` |
-| `.title("Inbox")` — "this method takes 0 arguments" | `Text::title()` (font size) shadows the navigation `.title(impl IntoText)` | apply the navigation title to the container, not to a bare `text(..)` |
-| `borrowed data escapes outside of function` on a view helper | views are `'static` | take `&'static str`, `Str`, or `impl IntoText` |
-| `.shadow()` — "takes 1 argument but 0 were supplied" | it takes a shadow | `.shadow(shadow)` |
-| `could not find 'chart' / 'map' / 'barcode' / 'webview' in 'waterui'` | the component is behind a cargo feature | enable it: `waterui = { …, features = ["map"] }` (defaults are `gpu`, `assets`, `media`, `inspector`, `snackbar`) |
-| `the trait bound 'Url: From<Str>' is not satisfied` | `Url` converts from `&'static str` only | parse it: `s.as_str().parse::<Url>()` |
+| `cannot find macro 'text'` | macro not imported | `use waterui::prelude::*;` then bare `text!` — never `waterui::text!` (same rule for `include_markdown!`, `shader!`) |
+| `ForEach<..>: View is not satisfied` (or "expected an `FnOnce()` closure") | `ForEach` is a `Views` collection, not a view | `Lazy::for_each(data, f)`, `VStack::for_each(data, f)`, or `List::for_each` |
+| `.title("Inbox")` — "this method takes 0 arguments" | `Text::title()` (font size) shadows the navigation title | put the nav title on the container, or use `NavigationView::new(title, content)` |
+| `borrowed data escapes outside of function` on a view helper | views are `'static` | take `&'static str` / `Str` / `impl IntoText`; a helper that only *reads* a `&T` during construction can return `impl View + use<>` |
+| `no method named 'map'` on a signal (outside the prelude) | `SignalExt` not in scope | `use waterui::reactive::SignalExt;` |
+| `use of undeclared crate 'tracing'` | logging goes through the re-export | `waterui::log::debug!(..)` — no extra dependency |
+| clippy `future_not_send` on an async helper | UI futures legitimately hold non-`Send` state | item-level `#[expect(clippy::future_not_send, reason = "…")]` |
+| `could not find 'chart' / 'map' / 'barcode' / 'webview' in 'waterui'` | behind a cargo feature | enable it (`features = ["map"]`) or depend on the standalone crate (`waterui-map`) |
+| `the trait bound 'Url: From<Str>' is not satisfied` | `Url` converts from `&'static str` only | `Url::parse(s)` (returns `Option`) — or `Url::parse_user_input(s)` for human-typed addresses |
 | `Computed<Option<View>>` rejected where a view is expected | a *signal* of `Option<View>` is not a view | `when(..)`, or keep the view and use `.visible(signal)` |
 | `text!` rejects an expression in a placeholder | placeholders are i18n slot keys | alias it: `text!("{slot}", slot = expr)` |
-| mismatched types between `if` branches returning views | different concrete view types | `when(..).otherwise(..)`, or `.anyview()` on each arm |
+| mismatched types between `if` branches returning views | different concrete view types | `when(..).otherwise(..)`, or `.anyview()` / `AnyView::new(..)` on each arm |
 
 Do not add crate-, module-, or file-level `allow` attributes to silence a lint. If a lint is
 genuinely a false positive, use a narrowly scoped item-level `expect` with a reason.
@@ -79,6 +116,14 @@ Add `.state(&value)` on the button, or on an ancestor container if several handl
 
 **"Environment value `T` not found".** Same, but for `Use<T>` — the value must be installed
 in the environment (typically in `app(env)`), not passed via `.state()`.
+
+**A panic under `LabelDisplayMode::IconOnly`.** Some label in that subtree has no
+`.icon(..)`. Scope the install more narrowly or give every label an icon.
+
+**`Image::new` panics at construction.** The pixel buffer length must be exactly
+`width * height * 4` (RGBA8). This is fast-fail working as designed — fix the buffer.
+
+**`Id::try_from(0)` fails.** `Id` is non-zero; offset 0-based indices by `+ 1`.
 
 **A Dew backend panic naming an unsupported view.** That is fast-fail working as designed:
 the constrained target genuinely cannot render that view. Choose a supported composition
@@ -100,12 +145,15 @@ the reproduction: the next person sees a working screen over a bug nobody can fi
 container, and keep the failing case as a test.
 
 **An edge-anchored overlay drifts or vanishes when the window grows.** The overlay layer is
-a content-sized `zstack`. A window overlay layer must fill the window — wrap it in
-`AbsoluteLayout` with `StretchAxis::Both`.
+a content-sized `zstack`. A window overlay layer must fill the window — use `absolute(..)`
+and place children with `PositionExt` / `.pin(..)`.
 
 **A rounded rectangle's corners look stretched.** Corner radius comes from the shape kind,
 not from unit-space path commands, which scale with the aspect ratio. Test shape code
 against a deliberately non-square rectangle.
+
+**A GPU map renders nothing.** On GPU/self-drawn backends the map needs a tile source:
+install `MapGpuOptions` into the environment in `app(env)`.
 
 ## Build and run problems
 
@@ -116,12 +164,20 @@ exit. Re-run with `--logs debug` and read the tail.
 missing from `Water.toml`; Android denies resolution outright rather than reporting a
 permission failure.
 
+**`water preview` cannot load the app, or dev rebuilds are cold.** The crate is missing the
+`dev = ["waterui/dynamic_linking"]` feature stanza generated projects carry — see
+`references/project.md`.
+
 **A change to the CLI has no effect.** The `water` on `PATH` is a previously installed
 binary. Reinstall with `cargo install --path cli`, or invoke the freshly built one directly.
 
 **Scrolling or interaction is janky in a dev build only.** Check that the build has a
 release-ish profile; a full stack compiled at `-O0` with debug info is slow in a way that
 looks like a rendering bug.
+
+**A manifest with `default-features = false` compiles in the workspace but not standalone.**
+Sibling crates' feature unification was filling the gap. List every needed feature
+explicitly.
 
 ## Diagnosing without a device
 

@@ -44,10 +44,15 @@ water preview --expr 'vstack((text("Hi").title(), button("Go").action(|| {})))'
 ```
 
 `--expr` compiles the expression into generated preview code with `waterui::prelude::*`
-in scope, so it is a real compile, not a string interpreter.
+in scope, so it is a real compile, not a string interpreter. The preview pipeline links
+the app as a dylib, which is why generated projects carry the
+`dev = ["waterui/dynamic_linking"]` feature (see `references/project.md`).
 
 Keeping the preview function self-contained — owning its own bindings — is what lets the
-same function be embedded in a gallery, previewed, and used by tests.
+same function be embedded in a gallery, previewed, and used by tests. A screen with a
+hardware-backed leaf (camera, GPU capture) stays previewable by parameterizing that leaf:
+the shared body takes `preview: impl View` plus the state, the live constructor passes
+the real surface, and the `#[preview]` function passes a synthetic stand-in.
 
 ## `#[waterui::test]`
 
@@ -114,11 +119,17 @@ Terminate the query:
 .assert_exists()  .assert_not_exists()  .assert_ui_focus()
 .exists() -> bool     .single() -> ElementRef     .all() -> ElementSet
 .optional() -> Option<ElementRef>
+.wait_for_existence(timeout) -> bool      // returns, does NOT assert — wrap in assert!
+.wait_for_nonexistence(timeout) -> bool
 ```
+
+The two `wait_for_*` terminators return a `bool` rather than panicking; called bare they
+are a wait that cannot fail. Always `assert!(query.wait_for_existence(..), "…")`.
 
 Tag views that resist a natural label with `.a11y_id("settings.wifi")` and query
 `.identifier(..)`. The same identifier reaches XCUITest (`accessibilityIdentifier`) and
-Android automation, so it is not test-only scaffolding.
+Android automation, so it is not test-only scaffolding. A control whose label is hidden
+visually (`.hide_label()`) still queries by its label text.
 
 ## Interacting
 
@@ -145,22 +156,27 @@ app.press_character_key_with("a", modifiers);
 
 ## Waiting
 
-Wait on the condition, never on the clock.
+Wait on the condition, never on the clock. A `Selector` is built the same way a query is:
 
 ```rust
+let selector = Selector::default().label("Done");
+
 app.wait_for_existence(&selector, Duration::from_secs(2));
 app.wait_for_nonexistence(&selector, timeout);
 app.wait_for_value_eq(&selector, "Done", timeout);
 app.wait_for(&[app.expect_value_eq(selector, "Done")], WaitOptions::new(timeout));
-app.pump_until(timeout, || some_condition());
 ```
+
+The frame pumps — `app.pump_for(duration)` and `app.pump_until(timeout, || cond())` —
+exist on **`OffscreenApp` only**, not on `SemanticApp`; a `SemanticApp` test waits on
+conditions with the methods above.
 
 **`std::thread::sleep` does not work here and must never appear in a test.** The animation
 clock advances when frames are pumped, not when wall-clock time passes, so a bare sleep
 freezes it: every deferred step then lands at once on the next snapshot, and a capture
 meant to show a transition mid-flight silently shows its end state. The test still passes
 and the image still looks plausible, which is what makes it dangerous. To sample a phase,
-pump: `app.pump_for(Duration::from_millis(120))`.
+pump (offscreen tests): `app.pump_for(Duration::from_millis(120))`.
 
 ## Visual tests and snapshots
 
@@ -175,10 +191,18 @@ fn renders(app: &mut OffscreenApp) {
 }
 ```
 
-Snapshots are written under `WATERUI_TEST_ARTIFACTS_DIR`. "Visual test" means *looking at
-the image*. Pixel-count heuristics, opaque-pixel thresholds, bbox approximations,
-dominant-color checks, and similar proxies do not verify appearance and should not be
-written.
+`capture_snapshot(suite, case, stage)` files the image under
+`WATERUI_TEST_ARTIFACTS_DIR`. When the test needs the pixels in hand or a specific output
+path — an image a human or another tool will look at — take the raw snapshot instead:
+
+```rust
+let shot = app.snapshot();                       // pumps a frame; Snapshot { rgba8, width, height }
+shot.save_png("/tmp/my_view.png").expect("snapshot must be writable");
+```
+
+"Visual test" means *looking at the image*. Pixel-count heuristics, opaque-pixel
+thresholds, bbox approximations, dominant-color checks, and similar proxies do not verify
+appearance and should not be written.
 
 ## `#[waterui::bench]` and `water bench`
 
