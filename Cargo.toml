@@ -152,7 +152,7 @@ waterkit-video = { version = "0.1.0", path = "kit/multimedia/video", features = 
 waterkit-build = { version = "0.1.0", path = "kit/utils/build" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core", default-features = false }
 filtrate = { version = "0.2.0", path = "utils/filtrate" }
-filtrate-core = { version = "0.1.0", path = "utils/filtrate/core" }
+filtrate-core = { version = "0.2.0", path = "utils/filtrate/core" }
 filtrate-derive = { version = "0.1.0", path = "utils/filtrate/derive" }
 waterui-barcode = { version = "0.1.0", path = "components/codes/barcode" }
 waterui-particle = { version = "0.1.0", path = "components/effects/particle" }
