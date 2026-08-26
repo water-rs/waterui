@@ -4,10 +4,14 @@
 pub const CLI_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 /// Exact `waterui` version used when scaffolding registry-based projects.
 pub const WATERUI_VERSION: &str = env!("WATERUI_CLI_WATERUI_VERSION");
+/// Exact `waterui-core` version used when scaffolding registry-based projects.
+pub const WATERUI_CORE_VERSION: &str = env!("WATERUI_CLI_WATERUI_CORE_VERSION");
 /// Exact `waterui-ffi` version used when scaffolding registry-based projects.
 pub const WATERUI_FFI_VERSION: &str = env!("WATERUI_CLI_WATERUI_FFI_VERSION");
 /// Exact `hydrolysis` version used when scaffolding registry-based projects.
 pub const HYDROLYSIS_VERSION: &str = env!("WATERUI_CLI_HYDROLYSIS_VERSION");
+/// Exact `hydrolysis-m3` version used when scaffolding registry-based projects.
+pub const HYDROLYSIS_M3_VERSION: &str = env!("WATERUI_CLI_HYDROLYSIS_M3_VERSION");
 /// Exact `waterui-dew` version used when scaffolding registry-based projects.
 pub const DEW_VERSION: &str = env!("WATERUI_CLI_WATERUI_DEW_VERSION");
 /// Exact `waterui-gtk` version used when scaffolding registry-based projects.
@@ -144,10 +148,18 @@ mod tests {
             package_version(&workspace_root.join("ffi/Cargo.toml")),
         );
         assert_eq!(
+            manifest_scaffold_field(&cli_manifest, "waterui-core-version"),
+            package_version(&workspace_root.join("core/Cargo.toml")),
+        );
+        assert_eq!(
             scaffold_metadata["hydrolysis-version"]
                 .as_str()
                 .expect("missing package.metadata.waterui-scaffold.hydrolysis-version"),
             package_version(&workspace_root.join("backends/hydrolysis/Cargo.toml")),
+        );
+        assert_eq!(
+            manifest_scaffold_field(&cli_manifest, "hydrolysis-m3-version"),
+            package_version(&workspace_root.join("backends/hydrolysis_m3/Cargo.toml")),
         );
         assert_eq!(
             manifest_scaffold_field(&cli_manifest, "waterui-dew-version"),
