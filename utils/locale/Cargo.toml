@@ -43,7 +43,7 @@ default = []
 
 [dev-dependencies]
 # `text!` expands against `::waterui`, so the crate-level example needs it.
-waterui.workspace = true
+waterui = { path = "../.." }
 
 [lints]
 workspace = true

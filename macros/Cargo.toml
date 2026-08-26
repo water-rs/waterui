@@ -24,12 +24,12 @@ toml = "1.1"
 proc-macro-crate = "3"
 
 [dev-dependencies]
-hydrolysis-m3.workspace = true
+hydrolysis-m3 = { path = "../backends/hydrolysis_m3" }
 trybuild = "1.0"
 # The JavaScript-bridge macros expand against `::waterui::webview`, which is not
 # a default feature; their doc examples cannot compile without it.
-waterui = { workspace = true, features = ["webview"] }
-waterui-testing.workspace = true
+waterui = { path = "..", features = ["webview"] }
+waterui-testing = { path = "../testing" }
 
 [lints]
 workspace = true

@@ -22,8 +22,8 @@ async-channel.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-waterui-testing.workspace = true
-hydrolysis-m3.workspace = true
+waterui-testing = { path = "../../../../testing" }
+hydrolysis-m3 = { path = "../../../../backends/hydrolysis_m3" }
 
 [lints]
 workspace = true

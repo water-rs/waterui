@@ -47,10 +47,10 @@ default = ["std"]
 std = ["waterui-core/std", "dep:waterkit-dialog"]
 
 [dev-dependencies]
-hydrolysis-m3.workspace = true
-waterui.workspace = true
-waterui-testing.workspace = true
-waterkit-codec = { workspace = true, features = ["software-fallback"] }
+hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+waterkit-codec = { path = "../../../kit/multimedia/codec", features = ["software-fallback"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 
 

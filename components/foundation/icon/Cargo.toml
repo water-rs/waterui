@@ -22,8 +22,8 @@ waterui-text.workspace = true
 waterui-svg = { workspace = true, optional = true }
 
 [dev-dependencies]
-waterui.workspace = true
-waterui-testing.workspace = true
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
 
 [lints]
 workspace = true

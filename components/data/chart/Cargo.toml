@@ -26,9 +26,9 @@ tracing.workspace = true
 num-traits = { version = "0.2", default-features = false }
 
 [dev-dependencies]
-hydrolysis-m3.workspace = true
-waterui-testing.workspace = true
-waterui.workspace = true
+hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+waterui-testing = { path = "../../../testing" }
+waterui = { path = "../../.." }
 
 [lints]
 workspace = true

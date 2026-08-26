@@ -4402,7 +4402,8 @@ dependencies = [
 [[package]]
 name = "glifo"
 version = "0.3.0"
-source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "282a26c1e23de04bdab3e34a21b6f877a479b96737792516b9b8b8f69b6661be"
 dependencies = [
  "bytemuck",
  "foldhash 0.2.0",
@@ -11658,7 +11659,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
+source = "git+https://github.com/lexoliu/vello?rev=5e5f538556be16527f67379b105af82f408b747d#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -11693,7 +11694,8 @@ dependencies = [
 [[package]]
 name = "vello_common"
 version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb2141a2bca6e6d598e471fd4d1d7eed8e020aad6a28187edda07f091a325dd"
 dependencies = [
  "bytemuck",
  "fearless_simd",
@@ -11720,7 +11722,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
+source = "git+https://github.com/lexoliu/vello?rev=5e5f538556be16527f67379b105af82f408b747d#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -11732,7 +11734,8 @@ dependencies = [
 [[package]]
 name = "vello_hybrid"
 version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dccbb4221070e7ef92486abef0002a651702f00a52d6be532249a0fa0eb3e9ba"
 dependencies = [
  "bytemuck",
  "glifo 0.3.0",
@@ -11747,7 +11750,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
+source = "git+https://github.com/lexoliu/vello?rev=5e5f538556be16527f67379b105af82f408b747d#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
  "log",
@@ -11759,7 +11762,8 @@ dependencies = [
 [[package]]
 name = "vello_sparse_shaders"
 version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86e5fd6b8d73d641ffe8522f05e2d5a7f23620005dfc1a7f49488790b9970267"
 dependencies = [
  "wesl",
  "wesl-macros",
