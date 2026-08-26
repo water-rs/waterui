@@ -399,10 +399,16 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
 
     let field_types = fields.iter().map(|field| &field.ty);
 
-    // Generate the implementation
+    // Generate the implementation.
+    //
+    // The trailing comma inside the inner repetition matters: `#(T),*` over a
+    // single field emits `(V)`, which is a parenthesized type rather than a
+    // one-element tuple, so a single-field form declared `VStack<(V,)>` while
+    // `#view_body` built `VStack<((V,),)>`. Spelling the repetition the same
+    // way the body does keeps the two in step at every arity, including zero.
     let expanded = quote! {
         impl #waterui::FormBuilder for #name {
-            type View = #waterui::component::stack::VStack<((#(<#field_types as #waterui::FormBuilder>::View),*),)>;
+            type View = #waterui::component::stack::VStack<((#(<#field_types as #waterui::FormBuilder>::View,)*),)>;
 
             fn view<L: #waterui::component::IntoLabel>(
                 binding: &#waterui::Binding<Self>,
