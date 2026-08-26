@@ -10,7 +10,7 @@ use std::{
 
 use crate::build_info::{
     ANDROID_BACKEND, APPLE_BACKEND, DEW_VERSION, GTK_BACKEND_VERSION, HYDROLYSIS_VERSION,
-    PREVIEW_VERSION, WATERUI_FFI_VERSION, WATERUI_VERSION,
+    PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, WATERUI_FFI_VERSION, WATERUI_VERSION,
 };
 use askama::Template;
 
@@ -944,9 +944,9 @@ define_scaffold_templates! {
 mod tests {
     use super::{
         ANDROID_BACKEND, APPLE_BACKEND, BrowserTemplateContext, Esp32TemplateEntry,
-        GTK_BACKEND_VERSION, PREVIEW_VERSION, TemplateContext, TemplateNamespace, embedded,
-        jitpack_dependency_coordinate, normalize_path_for_config, preview_ffi,
-        render_scaffold_template,
+        GTK_BACKEND_VERSION, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, TemplateContext,
+        TemplateNamespace, embedded, jitpack_dependency_coordinate, normalize_path_for_config,
+        preview_ffi, render_scaffold_template,
     };
     use crate::project::WebViewBackend;
     use crate::project_types::{BundleIdentifier, CrateName};
@@ -1445,14 +1445,22 @@ mod tests {
         let manifest = cargo_toml
             .parse::<toml::Table>()
             .expect("hydrolysis Cargo.toml should parse");
-        let features =
-            manifest["target"]["cfg(not(target_arch = \"wasm32\"))"]["dependencies"]["hydrolysis"]
-                ["features"]
-                .as_array()
-                .expect("hydrolysis dependency features should be an array")
-                .iter()
-                .map(|feature| feature.as_str().expect("feature should be a string"))
-                .collect::<Vec<_>>();
+        let native_dependencies =
+            &manifest["target"]["cfg(not(target_arch = \"wasm32\"))"]["dependencies"];
+        assert_eq!(
+            native_dependencies["waterui-preview"]["version"].as_str(),
+            Some(PREVIEW_VERSION),
+        );
+        assert_eq!(
+            native_dependencies["waterui-preview-protocol"]["version"].as_str(),
+            Some(PREVIEW_PROTOCOL_VERSION),
+        );
+        let features = native_dependencies["hydrolysis"]["features"]
+            .as_array()
+            .expect("hydrolysis dependency features should be an array")
+            .iter()
+            .map(|feature| feature.as_str().expect("feature should be a string"))
+            .collect::<Vec<_>>();
         assert_eq!(features, ["winit", "webview-cef"]);
         assert_eq!(manifest["package"]["autobins"].as_bool(), Some(false));
         let bins = manifest["bin"]
@@ -2581,9 +2589,9 @@ pub mod hydrolysis {
     use super::{
         GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
         GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection,
-        HYDROLYSIS_VERSION, NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path,
-        TemplateContext, TemplateNamespace, WATERUI_VERSION, embedded, io, scaffold_dir,
-        write_generated_cargo_toml,
+        HYDROLYSIS_VERSION, NativeBackendDependencyPathKind, NativeBackendDependencySpec,
+        PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, Path, TemplateContext, TemplateNamespace,
+        WATERUI_VERSION, embedded, io, scaffold_dir, write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
 
@@ -2798,7 +2806,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui-preview",
-                            WATERUI_VERSION,
+                            PREVIEW_VERSION,
                             &[],
                             Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
                                 "components/devtools/preview/runtime",
@@ -2815,7 +2823,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui-preview-protocol",
-                            WATERUI_VERSION,
+                            PREVIEW_PROTOCOL_VERSION,
                             &[],
                             Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
                                 "components/devtools/preview/protocol",

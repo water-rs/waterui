@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("README.md")]
 extern crate alloc;
 extern crate self as waterui;
 #[macro_use]

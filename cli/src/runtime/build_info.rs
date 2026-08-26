@@ -14,6 +14,8 @@ pub const DEW_VERSION: &str = env!("WATERUI_CLI_WATERUI_DEW_VERSION");
 pub const GTK_BACKEND_VERSION: &str = env!("WATERUI_CLI_WATERUI_GTK_VERSION");
 /// Exact `waterui-preview` version used when scaffolding registry-based projects.
 pub const PREVIEW_VERSION: &str = env!("WATERUI_CLI_WATERUI_PREVIEW_VERSION");
+/// Exact `waterui-preview-protocol` version used when scaffolding registry-based projects.
+pub const PREVIEW_PROTOCOL_VERSION: &str = env!("WATERUI_CLI_WATERUI_PREVIEW_PROTOCOL_VERSION");
 /// Exact Android Kotlin compiler version required by the embedded Android backend/runtime.
 pub const ANDROID_KOTLIN_VERSION: &str = env!("WATERUI_CLI_ANDROID_KOTLIN_VERSION");
 /// Remote Apple backend repository URL used for release scaffolding.
@@ -158,6 +160,12 @@ mod tests {
         assert_eq!(
             manifest_scaffold_field(&cli_manifest, "waterui-preview-version"),
             package_version(&workspace_root.join("components/devtools/preview/runtime/Cargo.toml"))
+        );
+        assert_eq!(
+            manifest_scaffold_field(&cli_manifest, "waterui-preview-protocol-version"),
+            package_version(
+                &workspace_root.join("components/devtools/preview/protocol/Cargo.toml")
+            )
         );
         assert_eq!(
             manifest_scaffold_field(&cli_manifest, "android-kotlin-version"),
