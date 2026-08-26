@@ -1,0 +1,50 @@
+[package]
+name = "skill_snippets"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "Compile gate for the WaterUI user skill's rust code snippets"
+license.workspace = true
+repository.workspace = true
+keywords = ["ui", "framework", "example", "skill"]
+categories = ["gui"]
+publish = false
+
+[features]
+# project.md § "Cargo.toml: features that matter" says every generated project
+# carries exactly this stanza; the harness carries it so the claim is true of it too.
+dev = ["waterui/dynamic_linking"]
+# Exposes the `#[waterui::test]` / `#[waterui::bench]` transcriptions to the
+# compiler. Non-default on purpose: the workspace-wide `cargo nextest run` must
+# never compile or register them — they address elements that do not exist, by
+# design, and would panic if executed. CI compiles them with
+# `cargo check -p skill_snippets --all-targets --features compile-gate-tests`.
+compile-gate-tests = []
+
+[dependencies]
+waterui = { workspace = true, features = [
+    "chart",
+    "map",
+    "barcode",
+    "webview",
+    "particle",
+    "flow-markdown",
+] }
+waterui-icons-material-icon.workspace = true
+waterui-icons-lucide.workspace = true
+# Direct-crate dependencies the skill's own snippets name.
+waterui-canvas.workspace = true                              # media.md, Canvas
+waterui-graphics = { workspace = true, features = ["gpu"] }  # styling.md, GPU gradients
+waterui-locale.workspace = true                              # i18n.md, formatting
+waterui-map.workspace = true                                 # media.md, maps
+waterui-map-gpu.workspace = true                             # media.md, tile source
+waterui-url.workspace = true                                 # media.md, MapGpuOptions
+waterkit-permission.workspace = true                         # project.md, runtime permissions
+jiff.workspace = true                                        # components.md, date pickers
+# Glue only: media.md's `#[js_api]` snippet returns `Json<Greeting>`, which needs
+# `Greeting: Serialize`. media.md's prose now says the app needs `serde`.
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+waterui-testing.workspace = true
+hydrolysis-m3.workspace = true

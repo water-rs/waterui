@@ -1,0 +1,9 @@
+# A second locale, so the catalog exercises more than one file.
+
+"Welcome Desk" = "Willkommensschalter"
+"Hello, {name}" = "Hallo, {name}"
+"Article" = "Artikel"
+
+"$about_blurb" = "WaterUI ist ein plattformuebergreifendes UI-Framework."
+
+"I have {#count} passport stamp" = { one = "Ich habe {count} Passstempel", other = "Ich habe {count} Passstempel" }
