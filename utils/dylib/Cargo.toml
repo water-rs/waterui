@@ -18,7 +18,7 @@ categories.workspace = true
 crate-type = ["dylib", "rlib"]
 
 [dependencies]
-waterui-internal = { path = "../../src", default-features = false }
+waterui-internal.workspace = true
 
 [features]
 default = ["gpu", "assets", "media", "webview", "inspector", "snackbar"]
