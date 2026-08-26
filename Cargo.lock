@@ -1154,8 +1154,7 @@ dependencies = [
 [[package]]
 name = "block"
 version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
+source = "git+https://github.com/Dicklesworthstone/rust-block?rev=b39ae859d1ee8e8cb5eef6a516471f1578d26b96#b39ae859d1ee8e8cb5eef6a516471f1578d26b96"
 
 [[package]]
 name = "block-buffer"
@@ -3401,17 +3400,6 @@ dependencies = [
 
 [[package]]
 name = "executor-core"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0146192f34ae42e189c633893127a0ce3f0af70216d8192c2eba36cbe0c79ab"
-dependencies = [
- "async-channel",
- "async-task",
- "pin-project-lite",
-]
-
-[[package]]
-name = "executor-core"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2de25163ce4b5cac207bec1f1ebf6a1cf3033c7e02bf331e0d31cb50d239d058"
@@ -4414,22 +4402,6 @@ dependencies = [
 [[package]]
 name = "glifo"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "282a26c1e23de04bdab3e34a21b6f877a479b96737792516b9b8b8f69b6661be"
-dependencies = [
- "bytemuck",
- "foldhash 0.2.0",
- "hashbrown 0.17.1",
- "log",
- "peniko",
- "skrifa 0.44.0",
- "smallvec",
- "vello_common 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "glifo"
-version = "0.3.0"
 source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
@@ -4439,7 +4411,7 @@ dependencies = [
  "peniko",
  "skrifa 0.44.0",
  "smallvec",
- "vello_common 0.2.0 (git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow)",
+ "vello_common 0.2.0",
 ]
 
 [[package]]
@@ -4933,7 +4905,7 @@ dependencies = [
  "cfg_aliases 0.2.2",
  "cookie",
  "ctrlc",
- "executor-core 0.7.1",
+ "executor-core",
  "futures",
  "hydrolysis-m3",
  "image",
@@ -7009,7 +6981,7 @@ version = "0.11.0"
 dependencies = [
  "async-channel",
  "async-io",
- "executor-core 0.7.1",
+ "executor-core",
  "futures-core",
  "gloo-timers 0.4.0",
  "log",
@@ -7061,7 +7033,7 @@ dependencies = [
  "async-io",
  "async-task",
  "block2 0.6.2",
- "executor-core 0.7.1",
+ "executor-core",
  "futures-lite",
  "jni 0.21.1",
  "js-sys",
@@ -11721,21 +11693,6 @@ dependencies = [
 [[package]]
 name = "vello_common"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbb2141a2bca6e6d598e471fd4d1d7eed8e020aad6a28187edda07f091a325dd"
-dependencies = [
- "bytemuck",
- "fearless_simd",
- "guillotiere",
- "log",
- "peniko",
- "smallvec",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "vello_common"
-version = "0.2.0"
 source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
@@ -11778,11 +11735,11 @@ version = "0.2.0"
 source = "git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow#5e5f538556be16527f67379b105af82f408b747d"
 dependencies = [
  "bytemuck",
- "glifo 0.3.0 (git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow)",
+ "glifo 0.3.0",
  "hashbrown 0.17.1",
  "log",
  "thiserror 2.0.20",
- "vello_common 0.2.0 (git+https://github.com/lexoliu/vello?branch=fix-select-index-underflow)",
+ "vello_common 0.2.0",
  "vello_sparse_shaders",
  "wgpu",
 ]
@@ -12108,7 +12065,7 @@ dependencies = [
 name = "waterkit-core"
 version = "0.1.1"
 dependencies = [
- "executor-core 0.6.0",
+ "executor-core",
  "jiff",
  "nami",
  "thiserror 2.0.20",
@@ -12317,7 +12274,7 @@ version = "0.1.0"
 dependencies = [
  "blocking",
  "dirs",
- "executor-core 0.7.1",
+ "executor-core",
  "hex",
  "memmap2",
  "sha2",
@@ -12408,7 +12365,7 @@ dependencies = [
  "cef-dll-sys",
  "cookie",
  "dirs",
- "executor-core 0.7.1",
+ "executor-core",
  "futures",
  "libloading 0.9.0",
  "num-traits",
@@ -12440,7 +12397,7 @@ dependencies = [
  "ash",
  "base64 0.22.1",
  "cookie",
- "executor-core 0.7.1",
+ "executor-core",
  "futures",
  "glow",
  "libc",
@@ -12598,7 +12555,7 @@ dependencies = [
 name = "waterui-controls"
 version = "0.3.0"
 dependencies = [
- "executor-core 0.7.1",
+ "executor-core",
  "hydrolysis-m3",
  "nami",
  "waterui",
@@ -12630,7 +12587,7 @@ dependencies = [
  "accesskit",
  "async-executor",
  "esp-idf-svc",
- "executor-core 0.7.1",
+ "executor-core",
  "fearless_simd",
  "kurbo 0.13.1",
  "log",
@@ -12673,7 +12630,7 @@ dependencies = [
  "bytemuck",
  "cbindgen",
  "cookie",
- "executor-core 0.7.1",
+ "executor-core",
  "jiff",
  "jni 0.22.4",
  "nami",
@@ -12751,7 +12708,7 @@ dependencies = [
  "filtrate",
  "filtrate-core",
  "futures",
- "glifo 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "glifo 0.3.0",
  "image",
  "kurbo 0.13.1",
  "mp4parse",
@@ -12780,7 +12737,7 @@ name = "waterui-gtk"
 version = "0.1.0"
 dependencies = [
  "cairo-rs",
- "executor-core 0.7.1",
+ "executor-core",
  "gdk-pixbuf",
  "gdk4",
  "glib",
@@ -12945,7 +12902,7 @@ dependencies = [
  "async-channel",
  "async-fs",
  "cpu-time",
- "executor-core 0.7.1",
+ "executor-core",
  "futures",
  "libloading 0.9.0",
  "minstant",
@@ -13076,7 +13033,7 @@ version = "0.1.0"
 dependencies = [
  "blocking",
  "bytemuck",
- "executor-core 0.7.1",
+ "executor-core",
  "futures",
  "futures-lite",
  "geo",
@@ -13117,7 +13074,7 @@ dependencies = [
  "async-oneshot",
  "base64 0.22.1",
  "blocking",
- "executor-core 0.7.1",
+ "executor-core",
  "filtrate-core",
  "futures",
  "hydrolysis-m3",
@@ -13188,7 +13145,7 @@ dependencies = [
  "async-process",
  "blocking",
  "dispatch",
- "executor-core 0.7.1",
+ "executor-core",
  "futures-lite",
  "image",
  "indexmap 2.14.0",
@@ -13267,7 +13224,7 @@ version = "0.3.0"
 dependencies = [
  "accesskit",
  "bitflags 2.13.1",
- "executor-core 0.7.1",
+ "executor-core",
  "hydrolysis",
  "hydrolysis-m3",
  "image",
@@ -13306,7 +13263,7 @@ version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "dirs",
- "executor-core 0.7.1",
+ "executor-core",
  "futures",
  "mime_guess",
  "nami",
@@ -13333,7 +13290,7 @@ name = "waterui-video-gpu"
 version = "0.3.0"
 dependencies = [
  "async-channel",
- "executor-core 0.7.1",
+ "executor-core",
  "futures",
  "futures-timer",
  "hydrolysis-m3",
@@ -13368,7 +13325,7 @@ dependencies = [
  "blocking",
  "bytemuck",
  "encase",
- "executor-core 0.7.1",
+ "executor-core",
  "futures",
  "num-traits",
  "shaderloom",
@@ -13388,7 +13345,7 @@ version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "cookie",
- "executor-core 0.7.1",
+ "executor-core",
  "hydrolysis-m3",
  "serde",
  "serde_json",
@@ -14805,7 +14762,7 @@ dependencies = [
  "block",
  "dirs",
  "dns-lookup",
- "executor-core 0.7.1",
+ "executor-core",
  "futures-channel",
  "futures-io",
  "futures-rustls",
