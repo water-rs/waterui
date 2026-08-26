@@ -333,6 +333,10 @@ lto = "thin"
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
+# `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
+# static. This pinned fork changes only that declaration to the symbol's byte
+# storage and takes its address as the opaque class pointer.
+block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae859d1ee8e8cb5eef6a516471f1578d26b96" }
 
 # vello 0.9 loses the Vulkan device on Mali (select's discarded arm computes an
 # underflowed workgroup-array index; Mali page-faults on it). Fixed upstream in
@@ -340,6 +344,10 @@ xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e7
 vello = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow" }
 # From the same checkout, so both engines are built from one tree.
 vello_hybrid = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow" }
+# `waterui-graphics` names glifo directly and `vello_hybrid` exposes its glyph
+# builder types. Keep both edges on the same checkout while this Vello patch is
+# active; published manifests still resolve the matching crates.io releases.
+glifo = { git = "https://github.com/lexoliu/vello", branch = "fix-select-index-underflow" }
 
 # Arm's proprietary Vulkan driver (r54p2 on Pixel 9 Pro / Android 16)
 # rasterizes as if viewport heights were positive, ignoring the negative-height
