@@ -15,8 +15,10 @@ const RELEASE_BUILD_KIND: &str = "release";
 
 struct ScaffoldVersions {
     waterui: String,
+    waterui_core: String,
     waterui_ffi: String,
     hydrolysis: String,
+    hydrolysis_m3: String,
     waterui_dew: String,
     waterui_gtk: String,
     waterui_preview: String,
@@ -72,12 +74,20 @@ fn emit_scaffold_metadata(
         scaffold_metadata.versions.waterui
     );
     println!(
+        "cargo:rustc-env=WATERUI_CLI_WATERUI_CORE_VERSION={}",
+        scaffold_metadata.versions.waterui_core
+    );
+    println!(
         "cargo:rustc-env=WATERUI_CLI_WATERUI_FFI_VERSION={}",
         scaffold_metadata.versions.waterui_ffi
     );
     println!(
         "cargo:rustc-env=WATERUI_CLI_HYDROLYSIS_VERSION={}",
         scaffold_metadata.versions.hydrolysis
+    );
+    println!(
+        "cargo:rustc-env=WATERUI_CLI_HYDROLYSIS_M3_VERSION={}",
+        scaffold_metadata.versions.hydrolysis_m3
     );
     println!(
         "cargo:rustc-env=WATERUI_CLI_WATERUI_DEW_VERSION={}",
@@ -167,6 +177,10 @@ fn register_rerun_inputs(workspace_root: Option<&Path>) {
         );
         println!(
             "cargo:rerun-if-changed={}",
+            workspace_root.join("core").join("Cargo.toml").display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
             workspace_root.join("ffi").join("Cargo.toml").display()
         );
         println!(
@@ -202,6 +216,14 @@ fn register_rerun_inputs(workspace_root: Option<&Path>) {
             workspace_root
                 .join("backends")
                 .join("hydrolysis")
+                .join("Cargo.toml")
+                .display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace_root
+                .join("backends")
+                .join("hydrolysis_m3")
                 .join("Cargo.toml")
                 .display()
         );
@@ -261,6 +283,9 @@ fn resolve_scaffold_metadata(
         return ScaffoldMetadata {
             versions: ScaffoldVersions {
                 waterui: manifest_package_version(&workspace_root.join("Cargo.toml")),
+                waterui_core: manifest_package_version(
+                    &workspace_root.join("core").join("Cargo.toml"),
+                ),
                 waterui_ffi: manifest_package_version(
                     &workspace_root.join("ffi").join("Cargo.toml"),
                 ),
@@ -296,6 +321,12 @@ fn resolve_scaffold_metadata(
                         .join("hydrolysis")
                         .join("Cargo.toml"),
                 ),
+                hydrolysis_m3: manifest_package_version(
+                    &workspace_root
+                        .join("backends")
+                        .join("hydrolysis_m3")
+                        .join("Cargo.toml"),
+                ),
                 waterui_dew: manifest_package_version(
                     &workspace_root
                         .join("backends")
@@ -311,6 +342,7 @@ fn resolve_scaffold_metadata(
     ScaffoldMetadata {
         versions: ScaffoldVersions {
             waterui: manifest_scaffold_string(scaffold_metadata, "waterui-version"),
+            waterui_core: manifest_scaffold_string(scaffold_metadata, "waterui-core-version"),
             waterui_ffi: manifest_scaffold_string(scaffold_metadata, "waterui-ffi-version"),
             waterui_gtk: manifest_scaffold_string(scaffold_metadata, "waterui-gtk-version"),
             waterui_preview: manifest_scaffold_string(scaffold_metadata, "waterui-preview-version"),
@@ -320,6 +352,7 @@ fn resolve_scaffold_metadata(
             ),
             android_kotlin: manifest_scaffold_string(scaffold_metadata, "android-kotlin-version"),
             hydrolysis: manifest_scaffold_string(scaffold_metadata, "hydrolysis-version"),
+            hydrolysis_m3: manifest_scaffold_string(scaffold_metadata, "hydrolysis-m3-version"),
             waterui_dew: manifest_scaffold_string(scaffold_metadata, "waterui-dew-version"),
         },
         apple_backend: manifest_backend_reference(scaffold_metadata, "apple-backend"),
