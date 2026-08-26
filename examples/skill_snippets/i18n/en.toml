@@ -1,0 +1,21 @@
+# English catalog for the skill snippet compile gate.
+#
+# Keys are the exact `text!` literals used by the snippets in
+# `.claude/skills/waterui/references/i18n.md`, so the translation path — and in
+# particular the CLDR plural table — is exercised at compile time rather than
+# falling through to the literal.
+
+"Welcome Desk" = "Welcome Desk"
+"Hello, {name}" = "Hello, {name}"
+"Article" = "Article"
+
+# Long passages get a $-prefixed short key instead of a paragraph-as-key.
+"$about_blurb" = "WaterUI is a cross-platform UI framework."
+
+# Plural keys map to a table of CLDR plural categories. The `#` sigil appears
+# only in the key; inside each category value the variable is written plain.
+"I have {#count} passport stamp" = { one = "I have {count} passport stamp", other = "I have {count} passport stamps" }
+
+# Slot-only keys used by the locale-aware formatting snippet.
+"{date}" = "{date}"
+"{distance}" = "{distance}"
