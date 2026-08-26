@@ -28,4 +28,8 @@ jobs:
           fetch-depth: 0
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+      # cargo-semver-checks builds rustdoc for the real crate, so this job needs
+      # the same native libraries a normal build does — without them it dies in
+      # `khronos-egl`'s build script and reports nothing about the API at all.
+      - uses: ./.github/actions/setup-linux-deps
       - uses: obi1kenobi/cargo-semver-checks-action@v2
