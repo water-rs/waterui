@@ -23,7 +23,7 @@ Or use the main WaterUI crate which re-exports text components:
 
 ```toml
 [dependencies]
-waterui = "0.2"
+waterui = "0.3"
 ```
 
 ## Quick Start

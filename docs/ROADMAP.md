@@ -10,24 +10,24 @@
 ## 0.2.0 - Usable
 
 - [x] Fix memory leak — regression tests cover the async task system to guard against regressions.
-- [x] Stabilized the layout system — now exercised by the [`components/layout`](components/layout/) crate.
+- [x] Stabilized the layout system — now exercised by the [`components/foundation/layout`](../components/foundation/layout/) crate.
 - [x] MVP of Android backend
-- [x] CLI — shipped via the [`cli`](cli/) crate; future plugin scaffolding continues under 0.3 milestones.
+- [x] CLI — shipped via the [`cli`](../cli/) crate; future plugin scaffolding continues under 0.3 milestones.
 - [x] Gesture support
 - [x] Preview system
-- [x] ~~ i18n — baseline plugin available in [`plugins/i18n`](plugins/i18n/); cookbook coverage still needed. ~~ We require more work for ergonomics, delaying to v0.3.0
+- [x] Locale and layout-direction foundations — implemented by [`waterui-locale`](../utils/locale/) and the text/layout stack.
 - [x] Styling (Theme system)
 - [ ] Document all completed features in our book (👷WIP)
 
 ## 0.3.0 - Practical
 
-- [x] Media widget — core playback components live in [`components/media`](components/media/)
-- [ ] Resource manager
+- [x] Media widget — core playback components live in [`components/multimedia/media`](../components/multimedia/media/).
+- [x] Resource manager — typed planning, embedding, and runtime loading live in [`components/assets`](../components/assets/).
 - [x] Canvas API
-- [ ] Persistence
-- [ ] Automation UI test
-- [ ] Some platform-specific APIs (notification, camera, etc.)
-- [x] Accessibility
+- [x] Persistence — typed navigation paths support serde restoration and atomic reprojection through [`waterui-navigation`](../components/foundation/navigation/).
+- [x] Automation UI test — accessibility-first interaction, waiting, snapshots, and benchmarks live in [`waterui-testing`](../testing/).
+- [x] Platform-specific APIs — WaterKit provides camera, notification, permission, location, media, identity, and sharing services under [`kit`](../kit/).
+- [x] Accessibility — semantic testing and native backend projection cover the public component model.
 
 ## 0.4.0 - Self-Rendering MVP
 
@@ -35,7 +35,7 @@
 
 ## 0.5.0 - Rich text
 
-- [x] RichText (👷WIP) — base renderer shipped in [`src/widget/rich_text.rs`](src/widget/rich_text.rs); editing support tracked below.
+- [x] RichText (👷WIP) — the base renderer ships in [`components/foundation/text`](../components/foundation/text/); editing support is tracked below.
   - [ ] RichTextField — interactive editing surface, caret management, and selection APIs.
   - [x] Built-in markdown support
 
