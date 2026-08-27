@@ -16,9 +16,8 @@ waterui-macros.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-layout.workspace = true
 waterui-str.workspace = true
-wgpu.workspace = true
 tracing.workspace = true
-vello_svg.workspace = true
+usvg.workspace = true
 kurbo.workspace = true
 peniko.workspace = true
 
@@ -26,6 +25,9 @@ peniko.workspace = true
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
 pollster.workspace = true
+# The engine-parity test drives a headless surface itself, which is the only
+# thing in this crate that touches `wgpu` directly.
+wgpu.workspace = true
 
 [lints]
 workspace = true
