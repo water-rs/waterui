@@ -11073,8 +11073,11 @@ bool waterui_gpu_surface_is_ready(const struct WuiGpuSurfaceState *state);
  * # Arguments
  *
  * * `state` - Pointer to the persistent state from `waterui_gpu_surface_create`
- * * `width` - Current surface width in pixels (from layout)
- * * `height` - Current surface height in pixels (from layout)
+ * * `width` - Current surface width in physical pixels (from layout)
+ * * `height` - Current surface height in physical pixels (from layout)
+ * * `scale` - Physical pixels per logical unit for this frame (2.0 on a
+ *   Retina display). It is passed per frame rather than at attach time
+ *   because it changes when the window moves between displays.
  *
  * # Returns
  *
@@ -11086,9 +11089,12 @@ bool waterui_gpu_surface_is_ready(const struct WuiGpuSurfaceState *state);
  *
  * # Panics
  *
- * Panics if `width` or `height` is zero.
+ * Panics if `width` or `height` is zero, or if `scale` is not positive and finite.
  */
-bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state, uint32_t width, uint32_t height);
+bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state,
+                                uint32_t width,
+                                uint32_t height,
+                                double scale);
 
 /**
  * Starts asynchronous renderer setup for an external Metal render target.
@@ -11105,17 +11111,22 @@ void waterui_gpu_surface_prepare_metal_texture(struct WuiGpuSurfaceState *state,
 /**
  * Render a single frame into an external Metal texture (Apple only).
  *
+ * `width` and `height` are physical pixels; `scale` is how many of them one
+ * logical unit spans, so the renderer can work in the coordinate space the
+ * view was laid out in.
+ *
  * # Safety
  * `state` must be valid, `texture` must point to a `MTLTexture`.
  *
  * # Panics
  *
- * Panics if `texture` is null.
+ * Panics if `texture` is null, or if `scale` is not positive and finite.
  */
 struct WuiGpuCaptureFence *waterui_gpu_surface_render_to_metal_texture(struct WuiGpuSurfaceState *state,
                                                                        void *texture,
                                                                        uint32_t width,
-                                                                       uint32_t height);
+                                                                       uint32_t height,
+                                                                       double scale);
 
 /**
  * Schedules one external capture submission completion and consumes its fence.

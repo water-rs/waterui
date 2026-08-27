@@ -312,6 +312,8 @@ pub(crate) struct DirectGpuSurfaceTarget<'a> {
     pub(crate) format: wgpu::TextureFormat,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    /// Device pixels per logical unit, from the layer's transform.
+    pub(crate) scale: f64,
     pub(crate) pointer: PointerState,
     pub(crate) now: Instant,
 }
@@ -722,6 +724,7 @@ impl EmbeddedGpuSurfaceRuntime {
             output_format,
             layer_width,
             layer_height,
+            layer_device_scale(target.transform),
             pointer,
             self.gesture,
             elapsed,
@@ -764,6 +767,7 @@ impl EmbeddedGpuSurfaceRuntime {
             target.format,
             target.width,
             target.height,
+            target.scale,
             target.pointer,
             self.gesture,
             elapsed,
@@ -940,6 +944,22 @@ fn point_to_clip(point: vello::kurbo::Point, width: u32, height: u32) -> [f32; 2
     let clip_x = ((point.x as f32) / (width as f32)) * 2.0 - 1.0;
     let clip_y = 1.0 - ((point.y as f32) / (height as f32)) * 2.0;
     [clip_x, clip_y]
+}
+
+/// Device pixels per logical unit for a composited layer.
+///
+/// A layer's transform maps logical layout coordinates onto the target's
+/// physical pixel grid — the window's root transform is `Affine::scale(
+/// scale_factor)` and every node transform composes onto it, which is why
+/// [`point_to_clip`] normalizes transformed points by the *physical* target
+/// size. Its uniform scale is therefore exactly the factor
+/// [`edge_length_in_pixels`] applies before rounding: `layer_width ==
+/// round(scale * bounds.width())`. Taking it from the transform rather than
+/// from the rounded pixel ratio keeps the value steady at `2.0` on a Retina
+/// display instead of jittering by a rounding step as the layer resizes, and it
+/// matches what the browser widgets already publish to their own viewports.
+fn layer_device_scale(transform: vello::kurbo::Affine) -> f64 {
+    transform.determinant().abs().sqrt()
 }
 
 fn edge_length_in_pixels(
@@ -1359,6 +1379,7 @@ impl HydrolysisRenderer {
                 format: target.format,
                 width: target.width,
                 height: target.height,
+                scale: layer_device_scale(layer.transform),
                 pointer: project_pointer_into_surface(
                     self.hit_test.pointer_position,
                     self.hit_test.pointer_press_origin,
@@ -1491,6 +1512,13 @@ impl HydrolysisRenderer {
                         transform = ?layer.transform,
                         "compositing Hydrolysis GPU surface layer"
                     );
+                    // A transform that collapses to zero area — a scale
+                    // animation passing through zero — projects the surface
+                    // onto no pixels, so there is nothing to composite and no
+                    // device scale the renderer could draw against.
+                    if layer_device_scale(layer.transform) <= 0.0 {
+                        continue;
+                    }
                     let embedded_target = EmbeddedLayerTarget {
                         width: target.width,
                         height: target.height,

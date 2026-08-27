@@ -657,8 +657,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_is_ready(state: *const WuiGpuSurfac
 /// # Arguments
 ///
 /// * `state` - Pointer to the persistent state from `waterui_gpu_surface_create`
-/// * `width` - Current surface width in pixels (from layout)
-/// * `height` - Current surface height in pixels (from layout)
+/// * `width` - Current surface width in physical pixels (from layout)
+/// * `height` - Current surface height in physical pixels (from layout)
+/// * `scale` - Physical pixels per logical unit for this frame (2.0 on a
+///   Retina display). It is passed per frame rather than at attach time
+///   because it changes when the window moves between displays.
 ///
 /// # Returns
 ///
@@ -670,12 +673,13 @@ pub unsafe extern "C" fn waterui_gpu_surface_is_ready(state: *const WuiGpuSurfac
 ///
 /// # Panics
 ///
-/// Panics if `width` or `height` is zero.
+/// Panics if `width` or `height` is zero, or if `scale` is not positive and finite.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_render(
     state: *mut WuiGpuSurfaceState,
     width: u32,
     height: u32,
+    scale: f64,
 ) -> bool {
     // SAFETY: the caller contract requires `state` to be a valid handle, alive and
     // not otherwise borrowed for this call; the exclusive borrow ends here.
@@ -683,6 +687,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     assert!(
         width > 0 && height > 0,
         "waterui_gpu_surface_render: dimensions must be non-zero"
+    );
+    assert!(
+        scale.is_finite() && scale > 0.0,
+        "waterui_gpu_surface_render: scale must be a positive, finite device-pixel ratio, got {scale}"
     );
 
     // Handle resize if needed
@@ -737,6 +745,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         format,
         width,
         height,
+        scale,
         state.pointer_state,
         state.gesture_state,
         elapsed,
@@ -791,12 +800,16 @@ pub unsafe extern "C" fn waterui_gpu_surface_prepare_metal_texture(
 
 /// Render a single frame into an external Metal texture (Apple only).
 ///
+/// `width` and `height` are physical pixels; `scale` is how many of them one
+/// logical unit spans, so the renderer can work in the coordinate space the
+/// view was laid out in.
+///
 /// # Safety
 /// `state` must be valid, `texture` must point to a `MTLTexture`.
 ///
 /// # Panics
 ///
-/// Panics if `texture` is null.
+/// Panics if `texture` is null, or if `scale` is not positive and finite.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
@@ -804,7 +817,12 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
     texture: *mut core::ffi::c_void,
     width: u32,
     height: u32,
+    scale: f64,
 ) -> *mut WuiGpuCaptureFence {
+    assert!(
+        scale.is_finite() && scale > 0.0,
+        "waterui_gpu_surface_render_to_metal_texture: scale must be a positive, finite device-pixel ratio, got {scale}"
+    );
     // SAFETY: the caller contract requires `state` to be a valid handle that no one
     // else is borrowing for this call.
     let state = unsafe { &mut *state };
@@ -882,6 +900,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
         target_format,
         width,
         height,
+        scale,
         state.pointer_state,
         state.gesture_state,
         elapsed,
