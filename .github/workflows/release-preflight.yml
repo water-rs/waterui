@@ -32,4 +32,21 @@ jobs:
       # the same native libraries a normal build does — without them it dies in
       # `khronos-egl`'s build script and reports nothing about the API at all.
       - uses: ./.github/actions/setup-linux-deps
-      - uses: obi1kenobi/cargo-semver-checks-action@v2
+      # cargo-semver-checks pins the baseline to an exact version, so it needs a
+      # published version that still resolves. A crate can be in the index with
+      # every version yanked — which is where `waterui` sits, 0.2.0 and 0.2.1
+      # both being withdrawn for not compiling — and then the baseline cannot be
+      # selected at all. Ask the index for an unyanked version rather than for
+      # the crate's mere existence.
+      - id: baseline
+        run: |
+          set -euo pipefail
+          if curl -sfL https://index.crates.io/wa/te/waterui \
+               | grep -q '"yanked":false'; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No unyanked waterui on crates.io; this release establishes the baseline."
+          fi
+      - if: steps.baseline.outputs.exists == 'true'
+        uses: obi1kenobi/cargo-semver-checks-action@v2
