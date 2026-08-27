@@ -7,6 +7,7 @@ use std::rc::Rc;
 use executor_core::LocalExecutor;
 use executor_core::async_task::{self, AsyncTask, Runnable};
 
+mod gpu_surface_idle;
 mod gpu_surface_input;
 mod perf_full_rebuild;
 mod perf_scroll;
@@ -95,10 +96,26 @@ impl LocalExecutor for TestLocalExecutor {
 }
 
 pub(crate) fn test_environment() -> Environment {
-    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
         TestLocalExecutor,
     ));
+    themed_test_environment()
+}
+
+/// The same environment, but without pinning this thread's local executor, so
+/// that a [`HeadlessRuntime`](crate::HeadlessRuntime) built with it installs its
+/// own draining one instead.
+///
+/// The first install wins, and building the environment happens before the
+/// runtime that would install a real executor exists, so a test that needs
+/// spawned work to actually *run* — a `GpuView`'s async `setup`, which never
+/// completes on the parking [`TestLocalExecutor`] — has to leave the slot open.
+pub(crate) fn pumped_test_environment() -> Environment {
+    themed_test_environment()
+}
+
+fn themed_test_environment() -> Environment {
+    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     let mut env = Environment::new();
     crate::testing::install_theme(&mut env);
     crate::localization::install(&mut env);
