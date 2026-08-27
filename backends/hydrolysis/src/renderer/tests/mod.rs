@@ -7,6 +7,7 @@ use std::rc::Rc;
 use executor_core::LocalExecutor;
 use executor_core::async_task::{self, AsyncTask, Runnable};
 
+mod gpu_surface_input;
 mod perf_full_rebuild;
 mod perf_scroll;
 mod retained_scene;

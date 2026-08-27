@@ -21,6 +21,9 @@ pub(crate) use waterui_backend_core::{animation, gesture, scroll, time};
 
 pub use engine::{Brush, DrawContext, WidgetTheme};
 pub use gpu_view::{HydrolysisExt, HydrolysisGpuView};
+/// The W3C UI Events key vocabulary this backend speaks, re-exported so hosts
+/// that synthesize key events use the same version of it.
+pub use keyboard_types;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use platform::BrowserWindow;
 #[cfg(feature = "winit")]

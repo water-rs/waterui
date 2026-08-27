@@ -546,6 +546,18 @@ impl HeadlessRuntime {
         changed
     }
 
+    /// Where the runner would anchor the platform's input-method panel.
+    ///
+    /// This is the value the runner hands to
+    /// [`PlatformWindow::sync_text_input_state`](crate::PlatformWindow::sync_text_input_state)
+    /// every frame; a headless host has no panel to place, so tests read it
+    /// from here.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn focused_text_input_state(&self) -> Option<crate::platform::TextInputState> {
+        self.runtime.renderer.focused_text_input_state()
+    }
+
     #[cfg(feature = "accessibility")]
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.runtime.renderer.clear_ui_focus();

@@ -74,8 +74,22 @@ impl HydrolysisRenderer {
         self.text_editing.ime_preedit.clone()
     }
 
+    /// Where the platform should anchor the input-method panel.
+    ///
+    /// A focused embedded surface draws its own caret, so it answers first:
+    /// its view reports the caret in surface-local logical coordinates and the
+    /// live target projects that back into the window.
     #[must_use]
     pub fn focused_text_input_state(&self) -> Option<TextInputState> {
+        if let Some(caret) = self.focused_embedded_ime_caret() {
+            return Some(TextInputState {
+                x: caret.x0,
+                y: caret.y0,
+                width: caret.width().max(1.0),
+                height: caret.height().max(1.0),
+                purpose: crate::platform::TextInputPurpose::Normal,
+            });
+        }
         let target = self.text_editing.focused_target()?;
         Some(TextInputState {
             x: target.cursor_area.x0,

@@ -5,6 +5,7 @@ use waterui::drag_drop::DragData;
 use waterui_backend_core::widget::{
     InteractionFocusBinding, ModalInteraction, WidgetInteractionState,
 };
+use waterui_graphics::input::ScrollUnit;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DropTargetKey {
@@ -165,9 +166,16 @@ pub(crate) type TrackpadPanAction = Rc<RefCell<dyn FnMut(f32, f32, TouchPhase) -
 
 #[derive(Default)]
 pub(crate) struct HitTestState {
-    pub(crate) browser_targets: Vec<BrowserInputTarget>,
-    pub(crate) active_browser_target: Option<BrowserInputTarget>,
-    pub(crate) focused_browser: Option<Rc<dyn BrowserInputHandler>>,
+    /// Surfaces that own the input landing on them — embedded browsers and
+    /// `GpuSurface`s whose view asked for input. Re-emitted every frame.
+    pub(crate) embedded_input_targets: Vec<EmbeddedInputTarget>,
+    /// The target holding the pointer capture, kept across frames.
+    pub(crate) active_embedded_target: Option<EmbeddedInputTarget>,
+    /// The sink holding keyboard focus, kept across frames.
+    pub(crate) focused_embedded_sink: Option<Rc<dyn EmbeddedInputSink>>,
+    /// Whether an input-method composition session is open on the focused
+    /// sink, so pre-edit updates and commits form a well-formed W3C session.
+    pub(crate) embedded_composing: bool,
     pub(crate) native_view_occlusions: Vec<NativeViewOcclusion>,
     pub(crate) pointer_targets: Vec<PointerTarget>,
     pub(crate) active_pointer_target: Option<PointerTarget>,
@@ -206,7 +214,7 @@ pub(crate) struct HitTestState {
 
 impl HitTestState {
     pub(crate) fn reset_scene(&mut self) {
-        self.browser_targets.clear();
+        self.embedded_input_targets.clear();
         self.native_view_occlusions.clear();
         self.pointer_targets.clear();
         self.cursor_targets.clear();
@@ -226,38 +234,46 @@ impl HitTestState {
 
     pub(crate) fn finish_rebuild_frame(&mut self, text_inputs: &[TextInputTarget]) {
         self.interaction.finish_rebuild_frame();
-        self.retire_absent_browser_focus();
+        self.retire_absent_embedded_focus();
         self.publish_native_view_occlusion(text_inputs);
     }
 
-    /// Drops keyboard focus and pointer capture held by a browser that is no
-    /// longer in the scene.
+    /// Drops keyboard focus and pointer capture held by an embedded surface
+    /// that is no longer in the scene.
     ///
-    /// `browser_targets` is emitted afresh every frame, so a focused handler
-    /// missing from it has left the tree. Nothing else clears it: focus was only
-    /// released by a pointer-down that missed every browser, and the handler
-    /// `Rc` kept the pruned page alive, so after navigating away from a web view
-    /// every keystroke went to an invisible document for the rest of the session
-    /// and no shortcut, text field or Escape received anything again.
-    fn retire_absent_browser_focus(&mut self) {
-        let present = |handler: &Rc<dyn BrowserInputHandler>| {
-            self.browser_targets
+    /// `embedded_input_targets` is emitted afresh every frame, so a focused
+    /// sink missing from it has left the tree. Nothing else clears it: focus
+    /// was only released by a pointer-down that missed every surface, and the
+    /// sink kept the pruned page alive, so after navigating away from a web
+    /// view every keystroke went to an invisible document for the rest of the
+    /// session and no shortcut, text field or Escape received anything again.
+    ///
+    /// Presence is decided by [`EmbeddedInputSink::identity`], not by the sink
+    /// allocation: a frame registers freshly built sinks for the same
+    /// surfaces, so comparing allocations would retire focus every frame.
+    fn retire_absent_embedded_focus(&mut self) {
+        let present = |sink: &Rc<dyn EmbeddedInputSink>| {
+            self.embedded_input_targets
                 .iter()
-                .any(|target| Rc::ptr_eq(&target.handler, handler))
+                .any(|target| target.sink.identity() == sink.identity())
         };
         let focus_left = self
-            .focused_browser
+            .focused_embedded_sink
             .as_ref()
-            .is_some_and(|handler| !present(handler));
+            .is_some_and(|sink| !present(sink));
         let capture_left = self
-            .active_browser_target
+            .active_embedded_target
             .as_ref()
-            .is_some_and(|target| !present(&target.handler));
-        if focus_left && let Some(handler) = self.focused_browser.take() {
-            handler.set_focus(false);
+            .is_some_and(|target| !present(&target.sink));
+        if focus_left && let Some(sink) = self.focused_embedded_sink.take() {
+            if self.embedded_composing {
+                self.embedded_composing = false;
+                sink.composition_cancel();
+            }
+            sink.set_focus(false);
         }
         if capture_left {
-            self.active_browser_target = None;
+            self.active_embedded_target = None;
         }
     }
 
@@ -279,7 +295,7 @@ impl HitTestState {
                         .iter()
                         .filter_map(|target| above(target.order, target.bounds)),
                 )
-                .chain(self.browser_targets.iter().filter_map(|target| {
+                .chain(self.embedded_input_targets.iter().filter_map(|target| {
                     above(
                         target.order,
                         target
@@ -642,31 +658,39 @@ impl HydrolysisRenderer {
             Self::target_hit_priority(target.depth, target.order, index)
         });
         if let Some((target, local_position)) =
-            self.browser_target_wins_at(point, top_pointer_priority, focused_priority)
+            self.embedded_target_wins_at(point, top_pointer_priority, focused_priority)
         {
             if self
                 .hit_test
-                .focused_browser
+                .focused_embedded_sink
                 .as_ref()
-                .is_none_or(|focused| !Rc::ptr_eq(focused, &target.handler))
+                .is_none_or(|focused| focused.identity() != target.sink.identity())
             {
                 if let Some(focused) = self
                     .hit_test
-                    .focused_browser
-                    .replace(target.handler.clone())
+                    .focused_embedded_sink
+                    .replace(Rc::clone(&target.sink))
                 {
+                    if self.hit_test.embedded_composing {
+                        self.hit_test.embedded_composing = false;
+                        focused.composition_cancel();
+                    }
                     focused.set_focus(false);
                 }
-                target.handler.set_focus(true);
+                target.sink.set_focus(true);
                 self.set_focused_text_input(None);
                 self.set_keyboard_focus(None, false);
             }
-            target.handler.pointer_move(local_position);
-            target.handler.pointer_button(true, button, local_position);
-            self.hit_test.active_browser_target = Some(target);
+            target.sink.pointer_move(local_position);
+            target.sink.pointer_button(true, button, local_position);
+            self.hit_test.active_embedded_target = Some(target);
             return true;
         }
-        if let Some(focused) = self.hit_test.focused_browser.take() {
+        if let Some(focused) = self.hit_test.focused_embedded_sink.take() {
+            if self.hit_test.embedded_composing {
+                self.hit_test.embedded_composing = false;
+                focused.composition_cancel();
+            }
             focused.set_focus(false);
         }
         let focus_wins = matches!(
@@ -869,16 +893,10 @@ impl HydrolysisRenderer {
             return false;
         }
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
-        if let Some(target) = self.hit_test.active_browser_target.take() {
-            let position = target.local_position(point).unwrap_or_else(|| {
-                let local = target.inverse_transform * point;
-                vello::kurbo::Point::new(
-                    local.x - target.local_bounds.x0,
-                    local.y - target.local_bounds.y0,
-                )
-            });
-            target.handler.pointer_move(position);
-            target.handler.pointer_button(false, button, position);
+        if let Some(target) = self.hit_test.active_embedded_target.take() {
+            let position = target.local_position_unclamped(point);
+            target.sink.pointer_move(position);
+            target.sink.pointer_button(false, button, position);
             self.hit_test.active_pointer = None;
             return true;
         }
@@ -977,7 +995,7 @@ impl HydrolysisRenderer {
     ) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         self.hit_test.pointer_position = Some(point);
-        if self.handle_browser_pointer_move(point) {
+        if self.handle_embedded_pointer_move(point) {
             return true;
         }
         let at = self.frame_instant();
@@ -1305,7 +1323,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
         self.hit_test.active_pointer_target = None;
-        self.hit_test.active_browser_target = None;
+        self.hit_test.active_embedded_target = None;
         self.hit_test.active_pointer = None;
         self.hit_test.pending_pointer_press = None;
         self.hit_test.active_press_bounds = None;
@@ -1346,7 +1364,15 @@ impl HydrolysisRenderer {
 
     pub fn handle_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
-        if self.handle_browser_scroll(point, dx, dy, is_line_delta) {
+        let unit = if is_line_delta {
+            ScrollUnit::Line
+        } else {
+            ScrollUnit::Pixel
+        };
+        // A discrete wheel notch is complete on its own; a pixel-precise wheel
+        // delta arriving through this path carries no phase, so neither ends a
+        // gesture that the surface should settle.
+        if self.handle_embedded_scroll(point, dx, dy, unit, is_line_delta) {
             return true;
         }
         for target in self.hit_test.scroll_targets.iter_mut().rev() {
@@ -1387,6 +1413,10 @@ impl HydrolysisRenderer {
         phase: TouchPhase,
     ) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let finished = matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
+        if self.handle_embedded_scroll(point, dx, dy, ScrollUnit::Pixel, finished) {
+            return true;
+        }
         for target in self.hit_test.trackpad_pan_targets.iter_mut().rev() {
             if target.bounds.contains(point) {
                 return (target.action.borrow_mut())(dx, dy, phase);
