@@ -6,10 +6,7 @@ fn main() {
     let shader_root =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"))
             .join("src/shaders/shared");
-    shaderloom::build::compile_wgsl_shader(
-        shader_root.join("blit.wgsl"),
-        "filter_blit",
-    );
+    shaderloom::build::compile_wgsl_shader(shader_root.join("blit.wgsl"), "filter_blit");
     shaderloom::build::compile_wgsl_shader(
         shader_root.join("multi_input_filter.wgsl"),
         "multi_input_filter",
