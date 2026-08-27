@@ -19,6 +19,7 @@ use waterui_graphics::{
     gpu_surface::RedrawHandle,
     reactive_color::ReactiveColor,
     shader_types::{ShaderVec2, ShaderVec4},
+    single_bind_group_layout, single_bind_group_render_stages,
 };
 
 /// Resolved particle configuration ready for GPU.
@@ -637,15 +638,8 @@ impl GpuView for ParticleRenderer {
             COMPUTE_SHADER.create_entry_point(device, ShaderStage::Compute, "build_grid");
         let simulate_shader =
             COMPUTE_SHADER.create_entry_point(device, ShaderStage::Compute, "simulate_particles");
-        let mut compute_bind_group_layouts = COMPUTE_SHADER.create_bind_group_layouts(device);
-        assert_eq!(
-            compute_bind_group_layouts.len(),
-            1,
-            "particle compute shader must use exactly one bind group"
-        );
-        let compute_bind_group_layout = compute_bind_group_layouts
-            .pop()
-            .expect("one particle compute bind group was asserted");
+        let compute_bind_group_layout =
+            single_bind_group_layout(&COMPUTE_SHADER, device, "the particle compute shader");
         let compute_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Particle Compute PL"),
@@ -729,17 +723,14 @@ impl GpuView for ParticleRenderer {
             )
         });
 
-        let (vertex_shader, fragment_shader) =
-            RENDER_SHADER.create_render_stages(device, "vs_main", "fs_main");
-        let mut render_bind_group_layouts = RENDER_SHADER.create_bind_group_layouts(device);
-        assert_eq!(
-            render_bind_group_layouts.len(),
-            1,
-            "particle render shader must use exactly one bind group"
-        );
-        let render_bind_group_layout = render_bind_group_layouts
-            .pop()
-            .expect("one particle render bind group was asserted");
+        let (vertex_shader, fragment_shader, render_bind_group_layout) =
+            single_bind_group_render_stages(
+                &RENDER_SHADER,
+                device,
+                "the particle render shader",
+                "vs_main",
+                "fs_main",
+            );
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Particle Render PL"),
@@ -900,6 +891,7 @@ mod tests {
         config::{BlendMode, ParticleConfig},
         gpu::{CollisionUniforms, GpuParticle, InteractionUniforms, Uniforms},
     };
+    use core::num::NonZeroU32;
     use encase::{ShaderSize, StorageBuffer};
     use waterui_core::{Binding, Environment, SignalExt};
     use waterui_graphics::{
@@ -915,16 +907,16 @@ mod tests {
 
     fn test_gpu_context(runtime: &GpuRuntime) -> GpuContext<'_> {
         let shared = runtime.context();
-        GpuContext {
-            adapter: &shared.adapter,
-            device: shared.device.as_ref(),
-            queue: shared.queue.as_ref(),
-            surface_format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            shader_cache: shared.shader_cache.as_ref(),
-            scene_renderer: shared.scene_renderer(),
-            msaa_samples: 1,
-            redraw_handle: RedrawHandle::new(),
-        }
+        GpuContext::new(
+            &shared.adapter,
+            shared.device.as_ref(),
+            shared.queue.as_ref(),
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            shared.shader_cache.as_ref(),
+            shared.scene_renderer(),
+            NonZeroU32::MIN,
+            RedrawHandle::new(),
+        )
     }
 
     fn opaque_white() -> ResolvedColor {

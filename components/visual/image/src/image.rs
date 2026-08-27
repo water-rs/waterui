@@ -12,7 +12,7 @@
 //! Image::new(rgba_pixels, 800, 600)
 //! ```
 
-use alloc::borrow::{Cow, ToOwned};
+use alloc::borrow::ToOwned;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -25,7 +25,8 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_core::{Binding, Environment, SignalExt, View};
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuRuntime, GpuSurface, GpuView, OffscreenRenderConfig,
-    OffscreenRenderError, OffscreenRenderOutput, OffscreenRenderOutputHdr,
+    OffscreenRenderError, OffscreenRenderOutput, OffscreenRenderOutputHdr, TextureRowLayout,
+    upload_texture,
 };
 use waterui_layout::frame::Frame;
 
@@ -511,8 +512,6 @@ impl fmt::Debug for ImageRenderer {
 }
 
 impl ImageRenderer {
-    const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-
     const fn new(
         pixels: Vec<u8>,
         width: u32,
@@ -578,31 +577,6 @@ impl ImageRenderer {
             SourcePixelFormat::Rgba8UnormSrgb => 4,
             SourcePixelFormat::Rgba16Float => 8,
         }
-    }
-
-    #[inline]
-    const fn align_bytes_per_row(bytes_per_row: u32) -> u32 {
-        bytes_per_row.div_ceil(Self::COPY_ALIGNMENT) * Self::COPY_ALIGNMENT
-    }
-
-    fn pad_rows_for_upload(
-        pixels: &[u8],
-        unpadded_bpr: u32,
-        padded_bpr: u32,
-        height: u32,
-    ) -> Vec<u8> {
-        debug_assert!(padded_bpr >= unpadded_bpr);
-        debug_assert_eq!(pixels.len(), (unpadded_bpr * height) as usize);
-
-        let mut padded = vec![0u8; (padded_bpr * height) as usize];
-        for row in 0..height as usize {
-            let src_start = row * unpadded_bpr as usize;
-            let src_end = src_start + unpadded_bpr as usize;
-            let dst_start = row * padded_bpr as usize;
-            let dst_end = dst_start + unpadded_bpr as usize;
-            padded[dst_start..dst_end].copy_from_slice(&pixels[src_start..src_end]);
-        }
-        padded
     }
 
     fn create_render_pipeline(
@@ -714,27 +688,15 @@ impl ImageRenderer {
             SourcePixelFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
             SourcePixelFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
         };
-        let bytes_per_pixel = Self::bytes_per_pixel(self.source_pixel_format);
-        let unpadded_bpr = self.width * bytes_per_pixel;
-        let padded_bpr = Self::align_bytes_per_row(unpadded_bpr);
-        let upload_pixels: Cow<'_, [u8]> = if padded_bpr == unpadded_bpr {
-            Cow::Borrowed(pixels.as_slice())
-        } else {
-            Cow::Owned(Self::pad_rows_for_upload(
-                &pixels,
-                unpadded_bpr,
-                padded_bpr,
-                self.height,
-            ))
-        };
+        let row_layout = TextureRowLayout::new(
+            self.width,
+            self.height,
+            Self::bytes_per_pixel(self.source_pixel_format),
+        );
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Image source texture"),
-            size: wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
+            size: row_layout.extent(),
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -743,25 +705,7 @@ impl ImageRenderer {
             view_formats: &[],
         });
 
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            upload_pixels.as_ref(),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bpr),
-                rows_per_image: Some(self.height),
-            },
-            wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-        );
+        upload_texture(queue, &texture, &pixels, row_layout);
 
         let hdr_to_sdr_tonemap =
             should_tonemap_hdr_to_sdr(self.source_pixel_format, self.source_is_hdr, target_format);
