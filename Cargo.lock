@@ -3568,14 +3568,14 @@ dependencies = [
 [[package]]
 name = "filtrate"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bd2ecaa0fba4ef2c21f6a773d5b4530ff6038a5138ac6a6a5498d30bcfb2e64"
 dependencies = [
  "bytemuck",
- "divan",
  "filtrate-core",
  "filtrate-derive",
  "image",
  "num-traits",
- "pollster 1.0.1",
  "shaderloom",
  "thiserror 2.0.20",
  "tracing",
@@ -3585,10 +3585,14 @@ dependencies = [
 [[package]]
 name = "filtrate-core"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27c1b316c214801461fc21a6fe1d9b8baf2c885f43a3cf5e1a86db969433ea9d"
 
 [[package]]
 name = "filtrate-derive"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1122b58ca680672293776e7cfe92450d191c97a00de39fc96c6b1550f033a6d5"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
