@@ -78,8 +78,8 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo clippy -p waterui-browser-wpe --features real-engine --all-targets -- -D warnings
       # The waterui skill's snippet compile gate: every rust fence in
-      # .claude/skills/waterui is transcribed into examples/skill_snippets and
-      # must keep compiling. The non-default feature exposes the test/bench
+      # .claude/skills/waterui is transcribed into .claude/skills/waterui/skill_snippets
+      # and must keep compiling. The non-default feature exposes the test/bench
       # transcriptions to the compiler without registering runnable tests —
       # they address elements that do not exist by design and must never run.
       - name: Skill snippet compile gate
