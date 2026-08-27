@@ -1814,6 +1814,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<'loc
     state_ptr: jlong,
     width: jint,
     height: jint,
+    scale: jfloat,
 ) -> jboolean {
     let state_ptr = state_ptr as *mut JniGpuSurfaceState;
     let wrapper = unsafe { &mut *state_ptr };
@@ -1822,6 +1823,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<'loc
             wrapper.state,
             width as u32,
             height as u32,
+            f64::from(scale),
         )
     };
     needs_redraw
