@@ -12,7 +12,6 @@ mod gpu;
 mod gradients;
 #[cfg(feature = "gpu")]
 mod image;
-#[cfg(feature = "gpu")]
 mod scene;
 #[cfg(feature = "gpu")]
 pub mod shader_types;
@@ -26,8 +25,9 @@ pub use gpu::{gpu_surface, reactive_color, shader_source, shader_surface, shared
 pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
 #[cfg(feature = "gpu")]
 pub use image::{image_analysis, image_decode, image_generator};
-#[cfg(feature = "gpu")]
-pub use scene::{scene_view, scene2d, scene2d_hybrid, scene2d_vello};
+pub use scene::{scene_view, scene2d};
+#[cfg(feature = "vello-scene")]
+pub use scene::{scene2d_hybrid, scene2d_vello};
 
 /// Shared shader sources.
 #[cfg(feature = "gpu")]
@@ -106,13 +106,11 @@ pub use image_generator::{
     LinearGradientGenerator, NoiseGenerator, RadialGradientGenerator, StripeGenerator,
 };
 
-#[cfg(feature = "gpu")]
 pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent};
-#[cfg(feature = "gpu")]
-pub use scene2d::{Glyph, GlyphRun, Scene2D};
-#[cfg(feature = "gpu")]
+pub use scene2d::{Glyph, GlyphRun, Scene2D, SceneRecording};
+#[cfg(feature = "vello-scene")]
 pub use scene2d_hybrid::HybridScene2D;
-#[cfg(feature = "gpu")]
+#[cfg(feature = "vello-scene")]
 pub use scene2d_vello::VelloScene2D;
 
 // Re-export dependencies used by macros

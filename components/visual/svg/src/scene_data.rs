@@ -3,16 +3,15 @@
 /// A parsed SVG document.
 #[derive(Debug)]
 pub struct SvgSceneData {
-    svg_tree: vello_svg::usvg::Tree,
+    svg_tree: usvg::Tree,
 }
 
 impl SvgSceneData {
     /// Parses SVG content.
     #[must_use]
     pub fn parse(svg_content: &str) -> Self {
-        let svg_tree =
-            vello_svg::usvg::Tree::from_str(svg_content, &vello_svg::usvg::Options::default())
-                .expect("failed to parse SVG content");
+        let svg_tree = usvg::Tree::from_str(svg_content, &usvg::Options::default())
+            .expect("failed to parse SVG content");
         let svg_size = svg_tree.size();
         assert!(
             svg_size.width().is_finite()

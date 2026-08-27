@@ -15,14 +15,14 @@ use lru::LruCache;
 use maplibre_expr::{EvaluationContext, Value, evaluate};
 use nami::{Binding, Computed, Signal as _, binding, watcher::BoxWatcherGuard};
 use parley::{FontContext, LayoutContext, PositionedLayoutItem, StyleProperty};
-use peniko::{Brush, Color, Fill};
+use peniko::{Brush, Color, Fill, StyleRef};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use shaderloom::CompiledShader;
 use waterui_core::animation::Animation;
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent, SceneInvalidator,
-    VelloScene2D, gpu_surface::GestureState,
+    Glyph, GlyphRun, GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent,
+    SceneInvalidator, SceneRecording, VelloScene2D, gpu_surface::GestureState,
 };
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapVisibility, Region};
 
@@ -294,7 +294,7 @@ pub struct PreparedMap {
     annotations: Vec<Annotation>,
     location: Option<Location>,
     chrome: MapChrome,
-    cached_base_scene: Option<vello::Scene>,
+    cached_base_scene: Option<SceneRecording>,
     raster_tiles: Arc<Vec<PreparedRasterTile>>,
 }
 
@@ -451,17 +451,15 @@ impl PreparedMap {
         let cached = self
             .cached_base_scene
             .get_or_insert_with(|| build_base_scene(&self.style, self.camera, &self.tiles));
-        scene.append_vello_scene(cached, camera_transform(self.camera, camera));
+        cached.replay(scene, camera_transform(self.camera, camera));
     }
 }
 
-fn build_base_scene(style: &MapStyle, camera: Camera, tiles: &SourceTiles) -> vello::Scene {
-    let mut cached = vello::Scene::new();
-    let mut scene2d = waterui_graphics::VelloScene2D::new(&mut cached);
-    MapPainter::default().paint_base(&mut scene2d, style, camera, tiles);
+fn build_base_scene(style: &MapStyle, camera: Camera, tiles: &SourceTiles) -> SceneRecording {
+    let mut cached = SceneRecording::new();
+    MapPainter::default().paint_base(&mut cached, style, camera, tiles);
     tracing::debug!(
-        paths = cached.encoding().n_paths,
-        segments = cached.encoding().n_path_segments,
+        commands = cached.len(),
         "prepared cached GPU map display list"
     );
     cached
@@ -2630,33 +2628,40 @@ impl MapPainter {
         let transform = Affine::translate(center)
             * Affine::rotate(angle)
             * Affine::translate((-width * 0.5, -height * 0.5));
-        scene.encode_vello(&mut |vello_scene| {
-            for line in layout.lines() {
-                for item in line.items() {
-                    let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
-                        continue;
-                    };
-                    let run = glyph_run.run();
-                    let glyphs = glyphs(&glyph_run);
-                    if halo_width > 0.0 {
-                        vello_scene
-                            .draw_glyphs(run.font())
-                            .brush(Brush::Solid(halo_color))
-                            .transform(transform)
-                            .font_size(run.font_size())
-                            .normalized_coords(run.normalized_coords())
-                            .draw(&Stroke::new(halo_width * 2.0), glyphs.clone().into_iter());
-                    }
-                    vello_scene
-                        .draw_glyphs(run.font())
-                        .brush(Brush::Solid(color))
-                        .transform(transform)
-                        .font_size(run.font_size())
-                        .normalized_coords(run.normalized_coords())
-                        .draw(Fill::NonZero, glyphs.into_iter());
+        let halo_stroke = Stroke::new(halo_width * 2.0);
+        for line in layout.lines() {
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                    continue;
+                };
+                let run = glyph_run.run();
+                let glyphs = glyphs(&glyph_run);
+                // The halo is the same run painted underneath as a thick
+                // stroke, so the fill that follows reads against any basemap.
+                if halo_width > 0.0 {
+                    scene.draw_glyph_run(&GlyphRun {
+                        font: run.font(),
+                        font_size: run.font_size(),
+                        normalized_coords: run.normalized_coords(),
+                        transform,
+                        brush: &Brush::Solid(halo_color),
+                        brush_alpha: 1.0,
+                        style: StyleRef::Stroke(&halo_stroke),
+                        glyphs: &glyphs,
+                    });
                 }
+                scene.draw_glyph_run(&GlyphRun {
+                    font: run.font(),
+                    font_size: run.font_size(),
+                    normalized_coords: run.normalized_coords(),
+                    transform,
+                    brush: &Brush::Solid(color),
+                    brush_alpha: 1.0,
+                    style: StyleRef::Fill(Fill::NonZero),
+                    glyphs: &glyphs,
+                });
             }
-        });
+        }
     }
 
     fn paint_annotations(
@@ -2733,7 +2738,7 @@ impl MapPainter {
     }
 }
 
-fn glyphs(glyph_run: &parley::GlyphRun<'_, [u8; 4]>) -> Vec<vello::Glyph> {
+fn glyphs(glyph_run: &parley::GlyphRun<'_, [u8; 4]>) -> Vec<Glyph> {
     let mut run_x = glyph_run.offset();
     let run_y = glyph_run.baseline();
     glyph_run
@@ -2742,7 +2747,7 @@ fn glyphs(glyph_run: &parley::GlyphRun<'_, [u8; 4]>) -> Vec<vello::Glyph> {
             let x = run_x + glyph.x;
             let y = run_y - glyph.y;
             run_x += glyph.advance;
-            vello::Glyph { id: glyph.id, x, y }
+            Glyph { id: glyph.id, x, y }
         })
         .collect()
 }
@@ -3918,7 +3923,7 @@ mod tests {
             tiles: SourceTiles::default(),
             annotations: Vec::new(),
             location: None,
-            cached_base_scene: Some(vello::Scene::new()),
+            cached_base_scene: Some(SceneRecording::new()),
             raster_tiles: Arc::new(Vec::new()),
         };
         let config = MapConfig {

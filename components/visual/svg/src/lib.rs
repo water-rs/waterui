@@ -3,7 +3,8 @@
 //! This crate provides `Svg`, a view for rendering SVG content using GPU-accelerated
 //! rendering via `SceneView`.
 //!
-//! SVG rendering is backed by Vello for direct GPU vector rendering.
+//! A document is parsed with `usvg` and drawn through the engine-independent
+//! `Scene2D` contract, so it renders on whichever engine the backend supplies.
 
 extern crate alloc;
 
@@ -12,7 +13,7 @@ mod scene_renderer;
 mod tree_renderer;
 
 /// The SVG parser this crate draws from.
-pub use vello_svg::usvg;
+pub use usvg;
 
 /// Scene content that draws an SVG document, for composing an SVG into a scene
 /// that is not a whole view of its own.
