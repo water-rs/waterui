@@ -10,8 +10,5 @@ fn main() {
         shader_root.join("qr_mask_effect.wgsl"),
         "qr_mask_effect",
     );
-    shaderloom::build::compile_wgsl_shader(
-        shader_root.join("qr_render.wgsl"),
-        "qr_render",
-    );
+    shaderloom::build::compile_wgsl_shader(shader_root.join("qr_render.wgsl"), "qr_render");
 }
