@@ -143,6 +143,6 @@ verbatim constraint.
 2. Regenerate the matching module here, following the rules above.
 3. `cargo check -p skill_snippets --all-targets --features compile-gate-tests`
 4. `cargo clippy -p skill_snippets --all-targets -- -D warnings`
-5. `rustfmt --edition 2024 examples/skill_snippets/src/*.rs`
+5. `rustfmt --edition 2024 .claude/skills/waterui/skill_snippets/src/*.rs`
 
 If step 3 fails, the skill is wrong. Fix the skill, not the transcription.

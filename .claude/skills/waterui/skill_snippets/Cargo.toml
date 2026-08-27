@@ -6,7 +6,7 @@ authors = ["Lexo Liu"]
 description = "Compile gate for the WaterUI user skill's rust code snippets"
 license.workspace = true
 repository.workspace = true
-keywords = ["ui", "framework", "example", "skill"]
+keywords = ["ui", "framework", "skill", "compile-gate"]
 categories = ["gui"]
 publish = false
 
