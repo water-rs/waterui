@@ -17,7 +17,6 @@ shaderloom.workspace = true
 wgpu.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
 encase.workspace = true
-tracing.workspace = true
 fastrand = "2.5"
 num-traits = { version = "0.2", default-features = false }
 
@@ -33,4 +32,4 @@ waterui-testing = { path = "../../../testing" }
 workspace = true
 # `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]
-ignored = ["tracing", "shaderloom"]
+ignored = ["shaderloom"]

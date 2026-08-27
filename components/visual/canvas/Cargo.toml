@@ -16,9 +16,7 @@ waterui-graphics = { workspace = true, features = ["gpu"] }
 nami.workspace = true
 kurbo.workspace = true
 peniko.workspace = true
-tracing.workspace = true
 parley = { workspace = true, features = ["system"] }
-vello.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "avif", "tiff"] }
 
 [dev-dependencies]
@@ -29,5 +27,3 @@ wgpu.workspace = true
 
 [lints]
 workspace = true
-[package.metadata.cargo-machete]
-ignored = ["tracing"]

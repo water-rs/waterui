@@ -1335,9 +1335,6 @@ mod tests {
             }
         }
 
-        fn append_vello_scene(&mut self, _scene: &vello::Scene, _transform: Option<kurbo::Affine>) {
-        }
-
         fn reset(&mut self) {}
     }
 

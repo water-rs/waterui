@@ -12,16 +12,16 @@ categories = ["gui"]
 
 [features]
 default = ["gpu"]
+# The `Scene2D` contract needs no rendering engine, so the two engine-backed
+# implementations of it are their own feature: a crate that only draws through
+# the contract, and lets a backend supply the scene, does not pull Vello.
+vello-scene = ["dep:vello", "dep:vello_hybrid", "dep:glifo"]
 gpu = [
+    "vello-scene",
     "dep:filtrate",
     "dep:filtrate-core",
     "dep:futures",
     "dep:wgpu",
-    "dep:vello",
-    "dep:vello_hybrid",
-    "dep:glifo",
-    "dep:kurbo",
-    "dep:peniko",
     "dep:bytemuck",
     "dep:encase",
     "dep:tracing",
@@ -32,7 +32,6 @@ gpu = [
     "dep:mp4parse",
     "dep:shaderloom",
     "dep:naga",
-    "dep:shaderloom",
 ]
 
 [dependencies]
@@ -46,8 +45,8 @@ wgpu = { workspace = true, optional = true }
 vello = { workspace = true, optional = true }
 vello_hybrid = { workspace = true, optional = true }
 glifo = { workspace = true, optional = true }
-kurbo = { workspace = true, optional = true }
-peniko = { workspace = true, optional = true }
+kurbo.workspace = true
+peniko.workspace = true
 bytemuck = { version = "1.25", optional = true }
 encase = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }

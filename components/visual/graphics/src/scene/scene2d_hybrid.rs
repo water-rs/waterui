@@ -181,17 +181,6 @@ impl Scene2D for HybridScene2D<'_> {
         unimplemented!("image brushes in a hybrid scene are not implemented yet");
     }
 
-    fn append_vello_scene(&mut self, _scene: &vello::Scene, _transform: Option<Affine>) {
-        // A scene built for the other engine cannot be replayed into this one:
-        // it is an encoded command buffer, not a recording this can walk. Every
-        // caller that used to hand one over now draws through this trait
-        // instead, which is why this engine can exist at all.
-        panic!(
-            "a pre-built Vello scene cannot be drawn by the hybrid engine; \
-             draw through Scene2D instead"
-        );
-    }
-
     fn reset(&mut self) {
         self.scene.reset();
     }

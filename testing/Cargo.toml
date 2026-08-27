@@ -13,7 +13,6 @@ categories.workspace = true
 
 [dependencies]
 hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
-waterui-canvas.workspace = true
 waterui-core.workspace = true
 waterui.workspace = true
 wgpu.workspace = true
@@ -29,6 +28,7 @@ serde_json = "1.0"
 [dev-dependencies]
 bitflags.workspace = true
 hydrolysis-m3 = { path = "../backends/hydrolysis_m3" }
+waterui-canvas.workspace = true
 
 [lints]
 workspace = true
