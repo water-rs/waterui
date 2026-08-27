@@ -32,6 +32,10 @@ jobs:
         if: steps.detect.outputs.type == 'rust'
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Rust cache
+        if: steps.detect.outputs.type == 'rust'
+        uses: Swatinem/rust-cache@v2
+
       - name: Check Rust dependencies
         if: steps.detect.outputs.type == 'rust'
         run: |
