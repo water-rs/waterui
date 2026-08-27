@@ -977,6 +977,7 @@ fn render_frame(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> bool {
         format,
         size.width,
         size.height,
+        f64::from(area.scale_factor().max(1)),
         pointer,
         gesture,
         elapsed,
