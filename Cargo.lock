@@ -11796,18 +11796,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vello_svg"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41e9fad114de34b1b0cc37fa63d2607899ab42771d831759ab37767de65f73b4"
-dependencies = [
- "image",
- "thiserror 2.0.20",
- "usvg 0.46.0",
- "vello",
-]
-
-[[package]]
 name = "version-compare"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12453,8 +12441,6 @@ dependencies = [
  "parley",
  "peniko",
  "pollster 1.0.1",
- "tracing",
- "vello",
  "waterui",
  "waterui-core",
  "waterui-graphics",
@@ -12470,7 +12456,6 @@ dependencies = [
  "hydrolysis-m3",
  "nami",
  "num-traits",
- "tracing",
  "waterui",
  "waterui-canvas",
  "waterui-core",
@@ -13148,7 +13133,6 @@ dependencies = [
  "num-traits",
  "pollster 1.0.1",
  "shaderloom",
- "tracing",
  "waterui",
  "waterui-core",
  "waterui-graphics",
@@ -13203,7 +13187,6 @@ dependencies = [
  "nami",
  "num-traits",
  "shaderloom",
- "tracing",
  "waterui",
  "waterui-core",
  "waterui-graphics",
@@ -13227,7 +13210,7 @@ dependencies = [
  "peniko",
  "pollster 1.0.1",
  "tracing",
- "vello_svg",
+ "usvg 0.46.0",
  "waterui",
  "waterui-core",
  "waterui-graphics",
