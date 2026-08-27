@@ -15,6 +15,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use num_traits::ToPrimitive;
 
 use crate::color::ResolvedColor;
+use crate::gpu::pipeline::single_bind_group_render_stages;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use crate::shaders::MESH_GRADIENT;
 use encase::{ShaderSize, StorageBuffer, UniformBuffer};
@@ -537,8 +538,13 @@ struct MeshGpuResources {
     reason = "mesh pipeline construction is one ordered graph of layouts, buffers, bindings, and validation"
 )]
 async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> MeshGpuResources {
-    let (vertex_shader, fragment_shader) =
-        MESH_GRADIENT.create_render_stages(ctx.device, "vs_main", "fs_main");
+    let (vertex_shader, fragment_shader, bind_group_layout) = single_bind_group_render_stages(
+        &MESH_GRADIENT,
+        ctx.device,
+        "the mesh gradient shader",
+        "vs_main",
+        "fs_main",
+    );
 
     let uniform_size = <GradientUniforms as ShaderSize>::SHADER_SIZE.get();
     let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -572,16 +578,6 @@ async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> Mesh
     )
     .expect("mesh vertex buffer size must fit usize");
 
-    let mut bind_group_layouts = MESH_GRADIENT.create_bind_group_layouts(ctx.device);
-    assert_eq!(
-        bind_group_layouts.len(),
-        1,
-        "mesh gradient must use exactly one bind group"
-    );
-    let bind_group_layout = bind_group_layouts
-        .pop()
-        .expect("one mesh gradient bind group was asserted");
-
     let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(&format!("{label_prefix} Bind Group")),
         layout: &bind_group_layout,
@@ -609,11 +605,7 @@ async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> Mesh
             immediate_size: 0,
         });
 
-    let blend = if ctx.is_hdr() {
-        None
-    } else {
-        Some(wgpu::BlendState::ALPHA_BLENDING)
-    };
+    let blend = ctx.alpha_blend_state();
 
     let pipeline_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let pipeline = ctx

@@ -831,7 +831,7 @@ impl EmbeddedGpuSurfaceRuntime {
                 surface_format,
                 resources.shader_cache.as_ref(),
                 &resources.scene_renderer,
-                msaa_samples.get(),
+                msaa_samples,
                 redraw_handle,
             );
             surface.setup(&context, &mut env).await;

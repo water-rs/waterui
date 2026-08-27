@@ -10,6 +10,7 @@ use std::time::Instant;
 use encase::{ShaderSize, UniformBuffer};
 
 use crate::color::ResolvedColor;
+use crate::gpu::pipeline::single_bind_group_render_stages;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use crate::shaders::ANIMATED_MESH_GRADIENT;
 use waterui_core::View;
@@ -238,8 +239,13 @@ impl GpuView for AnimatedMeshRenderer {
         ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
     ) -> impl core::future::Future<Output = ()> {
-        let (vertex_shader, fragment_shader) =
-            ANIMATED_MESH_GRADIENT.create_render_stages(ctx.device, "vs_main", "fs_main");
+        let (vertex_shader, fragment_shader, bind_group_layout) = single_bind_group_render_stages(
+            &ANIMATED_MESH_GRADIENT,
+            ctx.device,
+            "the animated mesh gradient shader",
+            "vs_main",
+            "fs_main",
+        );
 
         let uniform_size = <AnimatedMeshUniforms as ShaderSize>::SHADER_SIZE.get();
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -248,16 +254,6 @@ impl GpuView for AnimatedMeshRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
-        let mut bind_group_layouts = ANIMATED_MESH_GRADIENT.create_bind_group_layouts(ctx.device);
-        assert_eq!(
-            bind_group_layouts.len(),
-            1,
-            "animated mesh gradient must use exactly one bind group"
-        );
-        let bind_group_layout = bind_group_layouts
-            .pop()
-            .expect("one animated mesh gradient bind group was asserted");
 
         let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Animated Mesh Gradient Bind Group"),
@@ -276,11 +272,7 @@ impl GpuView for AnimatedMeshRenderer {
                 immediate_size: 0,
             });
 
-        let blend = if ctx.is_hdr() {
-            None
-        } else {
-            Some(wgpu::BlendState::REPLACE)
-        };
+        let blend = ctx.replace_blend_state();
 
         let pipeline = ctx
             .device

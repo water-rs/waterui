@@ -352,24 +352,20 @@ fn start_renderer_setup(state: &WuiGpuSurfaceState, format: wgpu::TextureFormat)
     let setup_ready = Rc::clone(&state.setup_ready);
     let runtime = state.runtime.clone();
     let redraw_handle = state.redraw_handle.clone();
-    let msaa_samples = waterui_graphics::gpu_surface::preferred_msaa_samples(
-        &runtime.context().adapter,
-        format,
-        state.msaa_max_samples,
-    );
+    let msaa_max_samples = state.msaa_max_samples;
 
     spawn_local(async move {
         let gpu = runtime.context();
-        let ctx = GpuContext {
-            adapter: &gpu.adapter,
-            device: &gpu.device,
-            queue: &gpu.queue,
-            surface_format: format,
-            shader_cache: gpu.shader_cache.as_ref(),
-            scene_renderer: gpu.scene_renderer(),
-            msaa_samples,
-            redraw_handle: redraw_handle.clone(),
-        };
+        let ctx = GpuContext::new(
+            &gpu.adapter,
+            &gpu.device,
+            &gpu.queue,
+            format,
+            gpu.shader_cache.as_ref(),
+            gpu.scene_renderer(),
+            msaa_max_samples,
+            redraw_handle.clone(),
+        );
         let GpuSurfaceSemantic { gpu_surface, env } = &mut semantic;
         gpu_surface.setup(&ctx, env).await;
         semantic_slot.replace(Some(semantic));
