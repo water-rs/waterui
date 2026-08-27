@@ -699,7 +699,7 @@ struct SetupInputs {
     queue: wgpu::Queue,
     adapter: wgpu::Adapter,
     format: wgpu::TextureFormat,
-    msaa_samples: u32,
+    msaa_max_samples: NonZeroU32,
     redraw_handle: RedrawHandle,
     env: Environment,
     shader_cache: Arc<WgslModuleCache>,
@@ -753,7 +753,7 @@ impl GpuState {
             queue,
             adapter,
             format,
-            msaa_samples: self.msaa_samples,
+            msaa_max_samples: self.msaa_max_samples,
             redraw_handle: self.redraw_handle.clone(),
             env: self.env.clone(),
             shader_cache,
@@ -785,7 +785,7 @@ fn spawn_renderer_setup(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>, inpu
         queue,
         adapter,
         format,
-        msaa_samples,
+        msaa_max_samples,
         redraw_handle,
         mut env,
         shader_cache,
@@ -797,16 +797,16 @@ fn spawn_renderer_setup(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>, inpu
     gtk4::glib::MainContext::default().spawn_local(WithAreaContextCurrent {
         area: area.clone(),
         future: async move {
-            let ctx = GpuContext {
-                adapter: &adapter,
-                device: &device,
-                queue: &queue,
-                surface_format: format,
-                shader_cache: &shader_cache,
-                scene_renderer: &scene_renderer,
-                msaa_samples,
+            let ctx = GpuContext::new(
+                &adapter,
+                &device,
+                &queue,
+                format,
+                &shader_cache,
+                &scene_renderer,
+                msaa_max_samples,
                 redraw_handle,
-            };
+            );
             gpu_surface.setup(&ctx, &mut env).await;
             {
                 let mut st = state_clone.borrow_mut();

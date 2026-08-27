@@ -6,6 +6,8 @@
 //! `render_to_rgba` — never by the interactive frame loop, which stays
 //! GPU-resident end to end.
 
+use waterui_graphics::TextureRowLayout;
+
 pub(crate) fn readback_texture_rgba8(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -13,14 +15,11 @@ pub(crate) fn readback_texture_rgba8(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
-    const BYTES_PER_PIXEL: u32 = 4;
-    const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let unpadded_bytes_per_row = width * BYTES_PER_PIXEL;
-    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
+    let layout = TextureRowLayout::rgba8(width, height);
 
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("hydrolysis_texture_readback"),
-        size: u64::from(padded_bytes_per_row) * u64::from(height),
+        size: layout.padded_buffer_size(),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -29,25 +28,12 @@ pub(crate) fn readback_texture_rgba8(
         label: Some("hydrolysis_texture_readback_encoder"),
     });
     encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
+        texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bytes_per_row),
-                rows_per_image: Some(height),
-            },
+            layout: layout.buffer_layout(),
         },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
+        layout.extent(),
     );
     queue.submit([encoder.finish()]);
 
@@ -66,15 +52,7 @@ pub(crate) fn readback_texture_rgba8(
         .expect("hydrolysis failed to map texture readback buffer");
 
     let mapped = slice.get_mapped_range();
-    let mut pixels = vec![0u8; (width * height * BYTES_PER_PIXEL) as usize];
-    for row in 0..height as usize {
-        let source_start = row * padded_bytes_per_row as usize;
-        let source_end = source_start + unpadded_bytes_per_row as usize;
-        let destination_start = row * unpadded_bytes_per_row as usize;
-        let destination_end = destination_start + unpadded_bytes_per_row as usize;
-        pixels[destination_start..destination_end]
-            .copy_from_slice(&mapped[source_start..source_end]);
-    }
+    let pixels = layout.unpad_rows(&mapped);
     drop(mapped);
     readback.unmap();
     pixels

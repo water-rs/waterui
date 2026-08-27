@@ -40,7 +40,10 @@ use waterui_core::reactive::watcher::BoxWatcherGuard;
 use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
 use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
-use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, reactive_color::ReactiveColor};
+use waterui_graphics::{
+    GpuContext, GpuFrame, GpuSurface, GpuView, reactive_color::ReactiveColor,
+    single_bind_group_render_stages,
+};
 
 #[cfg(feature = "gpu")]
 const MORPH_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/morph.rs"));
@@ -1071,8 +1074,13 @@ impl GpuView for MorphShapeRenderer {
             self.progress_guard = Some(progress.watch(move |_| redraw.request_redraw()));
         }
 
-        let (vertex_shader, fragment_shader) =
-            MORPH_SHADER.create_render_stages(ctx.device, "vs_main", "fs_main");
+        let (vertex_shader, fragment_shader, bind_group_layout) = single_bind_group_render_stages(
+            &MORPH_SHADER,
+            ctx.device,
+            "the morph shape shader",
+            "vs_main",
+            "fs_main",
+        );
 
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Morph Shape Uniforms"),
@@ -1080,16 +1088,6 @@ impl GpuView for MorphShapeRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
-        let mut bind_group_layouts = MORPH_SHADER.create_bind_group_layouts(ctx.device);
-        assert_eq!(
-            bind_group_layouts.len(),
-            1,
-            "morph shader must use exactly one bind group"
-        );
-        let bind_group_layout = bind_group_layouts
-            .pop()
-            .expect("one morph shader bind group was asserted");
 
         let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Morph Shape Bind Group"),
@@ -1108,11 +1106,7 @@ impl GpuView for MorphShapeRenderer {
                 immediate_size: 0,
             });
 
-        let blend = if ctx.is_hdr() {
-            None
-        } else {
-            Some(wgpu::BlendState::ALPHA_BLENDING)
-        };
+        let blend = ctx.alpha_blend_state();
 
         let pipeline = ctx
             .device

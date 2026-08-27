@@ -46,6 +46,7 @@ use alloc::string::String;
 use core::fmt;
 use core::num::NonZeroU64;
 
+use crate::gpu::pipeline::single_bind_group_render_stages;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use shaderloom::{CompiledShader, CompiledShaderModule};
 
@@ -216,19 +217,14 @@ impl ShaderRenderer {
         ctx: &GpuContext<'_>,
     ) -> (SetupShaderModules, wgpu::BindGroupLayout) {
         if let Some(compiled) = self.compiled_shader {
-            let (vertex, fragment) = compiled.create_render_stages(ctx.device, "vs_main", "main");
-            let mut layouts = compiled.create_bind_group_layouts(ctx.device);
-            assert_eq!(
-                layouts.len(),
-                1,
-                "a compiled ShaderSurface must use exactly one bind group"
+            let (vertex, fragment, layout) = single_bind_group_render_stages(
+                compiled,
+                ctx.device,
+                "a compiled ShaderSurface",
+                "vs_main",
+                "main",
             );
-            return (
-                SetupShaderModules::Compiled { vertex, fragment },
-                layouts
-                    .pop()
-                    .expect("one compiled ShaderSurface bind group was asserted"),
-            );
+            return (SetupShaderModules::Compiled { vertex, fragment }, layout);
         }
 
         let full_shader = self.build_full_shader();
@@ -265,7 +261,7 @@ impl ShaderRenderer {
                 bind_group_layouts: &[Some(bind_group_layout)],
                 immediate_size: 0,
             });
-        let blend = (!ctx.is_hdr()).then_some(wgpu::BlendState::REPLACE);
+        let blend = ctx.replace_blend_state();
         let (vertex_module, vertex_entry_point) = shader.vertex();
         let (fragment_module, fragment_entry_point) = shader.fragment();
 

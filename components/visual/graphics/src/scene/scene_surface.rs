@@ -6,7 +6,6 @@
 //! the device supports.
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
 
 use waterui_core::MainThreadBound;
 
@@ -77,18 +76,17 @@ impl GpuView for SceneSurfaceRenderer {
         ctx: &GpuContext<'_>,
         _env: &mut waterui_core::Environment,
     ) -> impl core::future::Future<Output = ()> {
-        let redraw_handle = ctx.redraw_handle.clone();
         self.content
-            .set_invalidator(Some(Rc::new(move || redraw_handle.request_redraw())));
+            .set_invalidator(Some(ctx.redraw_handle.invalidator()));
 
         // The renderer belongs to the device, so this takes a handle to the
         // shared one rather than building another. Building one per view made a
         // dozen icons compile a dozen copies of the same pipelines and reach a
         // first frame a dozen separate times, which is what icons appearing one
         // after another looks like.
-        self.renderer = Some(alloc::sync::Arc::clone(ctx.scene_renderer));
+        self.renderer = Some(alloc::sync::Arc::clone(ctx.scene_renderer()));
 
-        if ctx.scene_renderer.engine() == SceneEngine::Hybrid {
+        if ctx.scene_renderer().engine() == SceneEngine::Hybrid {
             // The hybrid engine rasterizes through a render pass, so it draws
             // straight into the frame: no storage texture to rasterize into and
             // nothing to blit out of it. Sized on the first frame.
@@ -134,11 +132,7 @@ impl GpuView for SceneSurfaceRenderer {
                 immediate_size: 0,
             });
 
-        let blend = if ctx.is_hdr() {
-            None
-        } else {
-            Some(wgpu::BlendState::ALPHA_BLENDING)
-        };
+        let blend = ctx.alpha_blend_state();
 
         self.blit_pipeline = Some(ctx.device.create_render_pipeline(
             &wgpu::RenderPipelineDescriptor {

@@ -25,6 +25,8 @@ use std::time::Duration;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_core::{Environment, MainThreadBound, Native, NativeView, View};
 
+use crate::gpu::texture::TextureRowLayout;
+use crate::scene_view::SceneInvalidator;
 use crate::shared_context::{GpuRuntime, SceneEngine, SharedSceneRenderer};
 
 type ErasedSetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
@@ -109,11 +111,10 @@ pub struct GpuContext<'a> {
     pub shader_cache: &'a WgslModuleCache,
     /// The scene renderer shared by every vector-drawing view on this device.
     ///
-    /// Owned by the host alongside the device for the same reason as
-    /// `shader_cache`: a renderer's pipelines depend on the device, not on what
-    /// is drawn with them, so a dozen icons share one rather than each building
-    /// its own and reaching a first frame separately.
-    pub scene_renderer: &'a Arc<SharedSceneRenderer>,
+    /// Private on purpose: it is the one member that ties the context to Vello,
+    /// and most `GpuView` implementations never draw a scene. Scene-drawing ones
+    /// reach it through [`GpuContext::scene_renderer`].
+    scene_renderer: &'a Arc<SharedSceneRenderer>,
     /// Preferred MSAA sample count for `surface_format`.
     ///
     /// Prefer [`GpuContext::new`], which derives this from the adapter's
@@ -125,22 +126,6 @@ pub struct GpuContext<'a> {
     /// Clone this during `setup()` and call `request_redraw()` when external
     /// data arrives (e.g., nami signal change, timer, network response).
     pub redraw_handle: RedrawHandle,
-}
-
-/// Largest MSAA sample count the adapter supports for `format`, capped at
-/// `max_samples` and never below 1.
-#[must_use]
-fn supported_msaa_samples(
-    adapter: &wgpu::Adapter,
-    format: wgpu::TextureFormat,
-    max_samples: u32,
-) -> u32 {
-    let flags = adapter.get_texture_format_features(format).flags;
-    [16, 8, 4, 2]
-        .into_iter()
-        .filter(|count| *count <= max_samples)
-        .find(|count| flags.sample_count_supported(*count))
-        .unwrap_or(1)
 }
 
 impl fmt::Debug for GpuContext<'_> {
@@ -171,8 +156,8 @@ impl<'a> GpuContext<'a> {
         queue: &'a wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         shader_cache: &'a WgslModuleCache,
-        scene_renderer: &'a Arc<crate::gpu::shared_context::SharedSceneRenderer>,
-        max_samples: u32,
+        scene_renderer: &'a Arc<SharedSceneRenderer>,
+        max_samples: NonZeroU32,
         redraw_handle: RedrawHandle,
     ) -> Self {
         Self {
@@ -182,7 +167,7 @@ impl<'a> GpuContext<'a> {
             surface_format,
             shader_cache,
             scene_renderer,
-            msaa_samples: supported_msaa_samples(adapter, surface_format, max_samples),
+            msaa_samples: preferred_msaa_samples(adapter, surface_format, max_samples),
             redraw_handle,
         }
     }
@@ -194,6 +179,46 @@ impl<'a> GpuContext<'a> {
             self.surface_format,
             wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
         )
+    }
+
+    /// The scene renderer shared by every vector-drawing view on this device.
+    ///
+    /// Owned by the host alongside the device for the same reason as
+    /// `shader_cache`: a renderer's pipelines depend on the device, not on what
+    /// is drawn with them, so a dozen icons share one rather than each building
+    /// its own and reaching a first frame separately.
+    ///
+    /// Only a `GpuView` that rasterizes a [`Scene2D`](crate::Scene2D) needs it;
+    /// everything else draws with its own pipelines and never calls this.
+    #[must_use]
+    pub const fn scene_renderer(&self) -> &'a Arc<SharedSceneRenderer> {
+        self.scene_renderer
+    }
+
+    /// `blend` on an SDR surface, `None` on an HDR one.
+    ///
+    /// Fixed-function blending operates on the raw target values, so blending
+    /// an extended-range surface crushes highlights instead of compositing
+    /// them; HDR pipelines write their fragments through unblended. Use one of
+    /// the named defaults below unless the pipeline needs a specific blend.
+    #[must_use]
+    pub const fn sdr_blend_state(&self, blend: wgpu::BlendState) -> Option<wgpu::BlendState> {
+        if self.is_hdr() { None } else { Some(blend) }
+    }
+
+    /// The blend state a normal, composited surface draws with.
+    #[must_use]
+    pub const fn alpha_blend_state(&self) -> Option<wgpu::BlendState> {
+        self.sdr_blend_state(wgpu::BlendState::ALPHA_BLENDING)
+    }
+
+    /// The blend state a surface that owns every pixel it covers draws with.
+    ///
+    /// Use this when the fragment shader already produces the final composited
+    /// colour.
+    #[must_use]
+    pub const fn replace_blend_state(&self) -> Option<wgpu::BlendState> {
+        self.sdr_blend_state(wgpu::BlendState::REPLACE)
     }
 }
 
@@ -324,6 +349,17 @@ impl RedrawHandle {
         if let Some(waker) = waker {
             waker();
         }
+    }
+
+    /// A [`SceneInvalidator`] that schedules another frame for this surface.
+    ///
+    /// Scene content installs one during `setup` so a signal watcher firing
+    /// between frames brings the surface back rather than waiting for whatever
+    /// else happens to request a redraw.
+    #[must_use]
+    pub fn invalidator(&self) -> SceneInvalidator {
+        let handle = self.clone();
+        alloc::rc::Rc::new(move || handle.request_redraw())
     }
 
     /// Returns whether a redraw is pending without consuming the request.
@@ -1466,17 +1502,14 @@ async fn readback_texture(
     label: &'static str,
     encoder_label: &'static str,
 ) -> Result<Vec<u8>, OffscreenRenderError> {
-    const COPY_ALIGNMENT: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let layout = TextureRowLayout::new(width, height, bytes_per_pixel);
     let context = runtime.context();
     let device = context.device.as_ref();
     let queue = context.queue.as_ref();
-    let unpadded_bpr = width * bytes_per_pixel;
-    let padded_bpr = unpadded_bpr.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
-    let copy_size = u64::from(padded_bpr) * u64::from(height);
 
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        size: copy_size,
+        size: layout.padded_buffer_size(),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -1485,25 +1518,12 @@ async fn readback_texture(
         label: Some(encoder_label),
     });
     encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
+        texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bpr),
-                rows_per_image: Some(height),
-            },
+            layout: layout.buffer_layout(),
         },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
+        layout.extent(),
     );
     let submission = queue.submit([encoder.finish()]);
 
@@ -1521,14 +1541,7 @@ async fn readback_texture(
         .map_err(|error| OffscreenRenderError::ReadbackMapFailed(error.to_string()))?;
 
     let mapped = slice.get_mapped_range();
-    let mut output = vec![0_u8; (width * height * bytes_per_pixel) as usize];
-    for row in 0..height as usize {
-        let src_start = row * padded_bpr as usize;
-        let src_end = src_start + unpadded_bpr as usize;
-        let dst_start = row * unpadded_bpr as usize;
-        let dst_end = dst_start + unpadded_bpr as usize;
-        output[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
-    }
+    let output = layout.unpad_rows(&mapped);
     drop(mapped);
     buffer.unmap();
     Ok(output)

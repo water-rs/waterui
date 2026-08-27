@@ -1879,12 +1879,9 @@ impl GpuView for MapGpuRenderer {
         reason = "GpuView setup runs on WaterUI's main-thread renderer and receives main-thread UI state"
     )]
     async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
-        let redraw_handle = ctx.redraw_handle.clone();
-        self.map.set_invalidator(Some(Rc::new({
-            let redraw_handle = redraw_handle.clone();
-            move || redraw_handle.request_redraw()
-        })));
-        self.redraw_handle = Some(redraw_handle);
+        self.map
+            .set_invalidator(Some(ctx.redraw_handle.invalidator()));
+        self.redraw_handle = Some(ctx.redraw_handle.clone());
 
         let (pipeline, resources) = create_camera_resources(ctx);
         self.camera_pipeline = Some(pipeline);
