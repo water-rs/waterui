@@ -30,7 +30,7 @@ arkiv = { version = "0.7", features = ["download"] }
 dirs = "6"
 sha2 = "0.11"
 hex = "0.4"
-waterui-build-support.workspace = true
+waterui-icons-codegen.workspace = true
 
 [lints]
 workspace = true
@@ -63,7 +63,7 @@ ignored = [
     "serde",
     "serde_json",
     "sha2",
-    "waterui-build-support",
+    "waterui-icons-codegen",
     "waterui-core",
     "waterui-graphics",
     "waterui-str",

@@ -1,12 +1,12 @@
 [package]
-name = "waterui-build-support"
+name = "waterui-icons-codegen"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
-description = "Shared build-script helpers for WaterUI"
+description = "Build-script code generation for WaterUI icon set crates"
 keywords.workspace = true
 categories.workspace = true
 
@@ -14,7 +14,6 @@ categories.workspace = true
 askama = "0.16"
 heck = "0.5"
 ureq = "3.3"
-shaderloom = { workspace = true, features = ["build"] }
 tracing.workspace = true
 
 [lints]
