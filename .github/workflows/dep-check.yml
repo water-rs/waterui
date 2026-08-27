@@ -1,0 +1,97 @@
+name: Dependency Check
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect project type
+        id: detect
+        run: |
+          if [ -f Cargo.toml ]; then
+            echo "type=rust" >> "$GITHUB_OUTPUT"
+          elif [ -f package.json ]; then
+            echo "type=node" >> "$GITHUB_OUTPUT"
+          elif [ -f Package.swift ]; then
+            echo "type=swift" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Rust
+        if: steps.detect.outputs.type == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Rust dependencies
+        if: steps.detect.outputs.type == 'rust'
+        run: |
+          cargo install cargo-outdated --locked
+          cargo outdated -R --exit-code 1 > outdated.txt 2>&1 || true
+          cat outdated.txt
+
+      - name: Setup Node
+        if: steps.detect.outputs.type == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Check Node dependencies
+        if: steps.detect.outputs.type == 'node'
+        run: |
+          npm install --ignore-scripts 2>/dev/null || true
+          npm outdated --long 2>/dev/null > outdated.txt || true
+          cat outdated.txt
+
+      - name: Check Swift dependencies
+        if: steps.detect.outputs.type == 'swift'
+        run: |
+          swift package show-dependencies 2>/dev/null > outdated.txt || echo "Unable to check Swift dependencies" > outdated.txt
+          cat outdated.txt
+
+      - name: Report
+        if: steps.detect.outputs.type != 'unknown'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create "dependencies" --description "Dependency updates" --color "0075ca" 2>/dev/null || true
+
+          if [ ! -s outdated.txt ]; then
+            echo "No outdated dependencies"
+            existing=$(gh issue list --label "dependencies" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+            if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+              gh issue close "$existing" -c "All dependencies are up to date."
+            fi
+            exit 0
+          fi
+
+          content=$(cat outdated.txt)
+          body=$(cat <<BODY
+          ## Outdated Dependencies
+
+          \`\`\`
+          ${content}
+          \`\`\`
+
+          _Last checked: $(date -u +%Y-%m-%dT%H:%M:%SZ) · updated weekly_
+          BODY
+          )
+
+          existing=$(gh issue list --label "dependencies" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh issue edit "$existing" --body "$body"
+            echo "Updated issue #$existing"
+          else
+            gh issue create --title "Outdated dependencies" --body "$body" --label "dependencies"
+            echo "Created tracking issue"
+          fi
