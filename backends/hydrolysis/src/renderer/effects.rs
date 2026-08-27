@@ -602,7 +602,7 @@ impl HydrolysisRenderer {
         self.node_gpu_surfaces
             .retain(|runtime| Rc::strong_count(runtime) > 1);
         for runtime in &self.node_gpu_surfaces {
-            if runtime.borrow().take_external_redraw_request() {
+            if runtime.borrow_mut().take_external_redraw_request() {
                 requested = true;
             }
         }

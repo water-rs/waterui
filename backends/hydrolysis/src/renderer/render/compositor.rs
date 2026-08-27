@@ -166,17 +166,56 @@ pub(crate) struct EmbeddedGpuSurfaceRuntime {
     msaa_samples: NonZeroU32,
     prefers_hdr: Option<bool>,
     output_format: wgpu::TextureFormat,
-    output_size: (u32, u32),
     output_texture: Option<wgpu::Texture>,
     output_view: Option<wgpu::TextureView>,
     gesture: GestureState,
     trackpad_pan_ending: bool,
     redraw_handle: RedrawHandle,
+    /// An unserved redraw request: the view asked for another frame, input
+    /// reached it, or an off-thread [`RedrawHandle`] fired. The handle's dirty
+    /// flag is consumed by
+    /// [`poll_gpu_surface_redraw_handles`](crate::HydrolysisRenderer::poll_gpu_surface_redraw_handles)
+    /// at the top of the frame, well before the render path runs, so the
+    /// request is recorded here instead of being left on the handle for
+    /// [`Self::prepare_layer`] to find.
+    pending_render: bool,
+    /// What the retained [`Self::output_texture`] currently shows: the inputs
+    /// the view was last rendered with. `None` means the texture holds nothing
+    /// this runtime drew — before the first frame, after a resize or format
+    /// change recreated it, after setup replaced the view's GPU resources, and
+    /// while the surface renders straight into the window instead.
+    ///
+    /// This is the whole of the render-on-demand test: a frame whose inputs
+    /// equal these, with nothing pending, would redraw the same pixels, so it
+    /// composites the texture it already has.
+    rendered_inputs: Option<RenderedFrameInputs>,
     /// First frame instant, fixed when the surface first renders; the frame
     /// clock's origin for `GpuFrame::elapsed`.
     start_time: Option<Instant>,
-    /// Frame instant of the previous render, for `GpuFrame::delta`.
+    /// Frame instant of the previous frame, for `GpuFrame::delta`. Advanced on
+    /// skipped frames too: see [`Self::frame_timing`].
     last_frame_time: Option<Instant>,
+}
+
+/// Everything a rendered frame of an embedded surface depended on, besides the
+/// clock. Two frames agreeing on all of it draw the same pixels, so the second
+/// one does not have to run.
+///
+/// Pointer and gesture belong here because views sample them per frame rather
+/// than requesting a redraw when they change: a particle field that repels
+/// under the cursor, or a shader that highlights on hover, never calls
+/// `GpuFrame::request_redraw`, and would freeze if only explicit requests
+/// re-rendered it.
+///
+/// Comparing the whole struct is deliberate: a field added here without a
+/// matching thought about staleness fails closed (an extra render) rather than
+/// open (a stale texture).
+#[derive(Clone, Copy, PartialEq)]
+struct RenderedFrameInputs {
+    size: (u32, u32),
+    scale: f64,
+    pointer: PointerState,
+    gesture: GestureState,
 }
 
 #[derive(Clone)]
@@ -611,12 +650,13 @@ impl EmbeddedGpuSurfaceRuntime {
             msaa_samples,
             prefers_hdr,
             output_format: wgpu::TextureFormat::Rgba8Unorm,
-            output_size: (1, 1),
             output_texture: None,
             output_view: None,
             gesture: GestureState::new(),
             trackpad_pan_ending: false,
             redraw_handle: RedrawHandle::new(),
+            pending_render: false,
+            rendered_inputs: None,
             start_time: None,
             last_frame_time: None,
         }
@@ -626,6 +666,17 @@ impl EmbeddedGpuSurfaceRuntime {
     /// and returns `(elapsed, delta)` for this frame. Driving the clock from
     /// the frame instant (not wall time) keeps offscreen hosts that pump the
     /// clock deterministic.
+    ///
+    /// The clock runs on every window frame, including the ones
+    /// [`Self::prepare_layer`] skips: `elapsed` is wall-clock from the
+    /// surface's first frame, and `delta` is the step since the previous
+    /// *window* frame rather than since the previous *rendered* one. A skip
+    /// means the view declared its state frozen, so nothing moved during it;
+    /// resuming with one frame's step continues the animation from where it
+    /// paused, where measuring from the last render would hand it the whole
+    /// idle gap (capped at 100ms) and jump it forward by time in which it
+    /// deliberately did not move. A view that animates off `elapsed` requests
+    /// redraws to do so and therefore never skips a frame in the first place.
     fn frame_timing(&mut self, now: Instant) -> (Duration, Duration) {
         let start = *self.start_time.get_or_insert(now);
         let elapsed = now.saturating_duration_since(start);
@@ -640,8 +691,33 @@ impl EmbeddedGpuSurfaceRuntime {
         (elapsed, delta)
     }
 
-    pub(crate) fn take_external_redraw_request(&self) -> bool {
-        self.redraw_handle.take_dirty()
+    /// Consumes an off-thread redraw request, recording it as pending so the
+    /// render path still sees it: the poll that calls this runs at the top of
+    /// the frame and would otherwise be the only thing that ever learns of it.
+    pub(crate) fn take_external_redraw_request(&mut self) -> bool {
+        let requested = self.redraw_handle.take_dirty();
+        self.pending_render |= requested;
+        requested
+    }
+
+    /// Marks the view as owing a frame and wakes the host that would sleep
+    /// through it.
+    fn request_render(&mut self) {
+        self.pending_render = true;
+        self.redraw_handle.request_redraw();
+    }
+
+    /// Folds a finished render's outcome into the pending-render state and
+    /// reports whether the window must schedule another frame for it.
+    ///
+    /// Requests raised *during* the render — by the view itself, or by a signal
+    /// watcher its scene content installed — land on the handle after the
+    /// decision to render was taken, which is why they are collected here
+    /// rather than left for the next frame's poll to race over.
+    fn settle_after_render(&mut self, frame_requested_redraw: bool) -> bool {
+        self.pending_render =
+            take_gpu_surface_redraw_request(frame_requested_redraw, &self.redraw_handle);
+        self.pending_render
     }
 
     /// Whether this surface's view handles its own input.
@@ -663,7 +739,7 @@ impl EmbeddedGpuSurfaceRuntime {
             return;
         };
         surface.input(event);
-        self.redraw_handle.request_redraw();
+        self.request_render();
     }
 
     /// The view's text caret, in logical surface-local coordinates.
@@ -700,7 +776,7 @@ impl EmbeddedGpuSurfaceRuntime {
                 self.trackpad_pan_ending = self.gesture.active;
             }
         }
-        self.redraw_handle.request_redraw();
+        self.request_render();
         true
     }
 
@@ -708,10 +784,19 @@ impl EmbeddedGpuSurfaceRuntime {
         if self.trackpad_pan_ending {
             self.trackpad_pan_ending = false;
             self.gesture.active = false;
-            self.redraw_handle.request_redraw();
+            self.request_render();
         }
     }
 
+    /// Composites this surface into the window, rendering the view first only
+    /// when this frame would produce something the retained output texture does
+    /// not already hold.
+    ///
+    /// The window still redraws its whole scene every frame it runs — that part
+    /// of Hydrolysis is not negotiable — but an embedded surface's texture is
+    /// an *input* to that composite, retained across frames exactly like the
+    /// render tree it hangs in. An idle QR code alongside an animating spinner
+    /// pays one composite, not one render.
     pub(crate) fn prepare_layer(
         &mut self,
         device: &wgpu::Device,
@@ -732,52 +817,78 @@ impl EmbeddedGpuSurfaceRuntime {
         let layer_height =
             edge_length_in_pixels(top_left, bottom_left, target.width, target.height).max(1);
         let output_format = self.output_format;
+        // Recreating the texture discards whatever it held, so a resize or a
+        // format change is itself a reason to render.
         self.ensure_output_target(device, layer_width, layer_height, output_format);
 
         let (elapsed, delta) = self.frame_timing(target.now);
-        let texture = self
-            .output_texture
-            .as_ref()
-            .expect("hydrolysis embedded GpuSurface missing output texture");
         let view = self
             .output_view
             .as_ref()
             .expect("hydrolysis embedded GpuSurface missing output view")
             .clone();
-        let pointer = project_pointer_into_surface(
-            target.pointer_position,
-            target.pointer_press_origin,
-            target.hit_rect,
-            layer_width,
-            layer_height,
-        );
-        let mut frame = GpuFrame::new(
-            device,
-            queue,
-            texture,
-            view.clone(),
-            output_format,
-            layer_width,
-            layer_height,
-            layer_device_scale(target.transform),
-            pointer,
-            self.gesture,
-            elapsed,
-            delta,
-        );
-        assert!(
-            self.setup_complete,
-            "hydrolysis embedded GpuSurface used before setup"
-        );
-        self.surface
-            .as_mut()
-            .expect("hydrolysis embedded GpuSurface missing after setup")
-            .render(&mut frame);
-        let frame_requested_redraw = frame.was_redraw_requested();
-        drop(frame);
-        self.finish_trackpad_pan_frame();
-        let needs_redraw =
-            take_gpu_surface_redraw_request(frame_requested_redraw, &self.redraw_handle);
+        let inputs = RenderedFrameInputs {
+            size: (layer_width, layer_height),
+            scale: layer_device_scale(target.transform),
+            pointer: project_pointer_into_surface(
+                target.pointer_position,
+                target.pointer_press_origin,
+                target.hit_rect,
+                layer_width,
+                layer_height,
+            ),
+            gesture: self.gesture,
+        };
+        // An off-thread handle can fire between this frame's poll and here, so
+        // the handle is consulted again rather than trusting `pending_render`
+        // alone.
+        let externally_requested = self.redraw_handle.take_dirty();
+        let needs_redraw = if self.rendered_inputs == Some(inputs)
+            && !self.pending_render
+            && !externally_requested
+        {
+            tracing::trace!(
+                width = layer_width,
+                height = layer_height,
+                "reusing an embedded Hydrolysis GPU surface's retained texture"
+            );
+            false
+        } else {
+            let texture = self
+                .output_texture
+                .as_ref()
+                .expect("hydrolysis embedded GpuSurface missing output texture");
+            let mut frame = GpuFrame::new(
+                device,
+                queue,
+                texture,
+                view.clone(),
+                output_format,
+                layer_width,
+                layer_height,
+                inputs.scale,
+                inputs.pointer,
+                inputs.gesture,
+                elapsed,
+                delta,
+            );
+            assert!(
+                self.setup_complete,
+                "hydrolysis embedded GpuSurface used before setup"
+            );
+            self.surface
+                .as_mut()
+                .expect("hydrolysis embedded GpuSurface missing after setup")
+                .render(&mut frame);
+            let frame_requested_redraw = frame.was_redraw_requested();
+            drop(frame);
+            self.rendered_inputs = Some(inputs);
+            // Recorded before the pan settles: `inputs` is what the view was
+            // handed, and ending the pan is a gesture change of its own, which
+            // must reach the view on a frame of its own.
+            self.finish_trackpad_pan_frame();
+            self.settle_after_render(frame_requested_redraw)
+        };
         let corners = [
             point_to_clip(top_left, target.width, target.height),
             point_to_clip(top_right, target.width, target.height),
@@ -792,7 +903,15 @@ impl EmbeddedGpuSurfaceRuntime {
         }
     }
 
+    /// Renders the view straight into the window's own texture, for a surface
+    /// that covers the whole window with nothing above or below it.
+    ///
+    /// This path draws somewhere the retained output texture is not, so it
+    /// leaves that texture holding pixels from before: a later frame that
+    /// composites this surface again (an overlay appeared, so it is no longer
+    /// alone) must render, not reuse.
     pub(crate) fn render_direct_to_target(&mut self, target: DirectGpuSurfaceTarget<'_>) -> bool {
+        self.rendered_inputs = None;
         let (elapsed, delta) = self.frame_timing(target.now);
         let mut frame = GpuFrame::new(
             target.device,
@@ -819,7 +938,7 @@ impl EmbeddedGpuSurfaceRuntime {
         let frame_requested_redraw = frame.was_redraw_requested();
         drop(frame);
         self.finish_trackpad_pan_frame();
-        take_gpu_surface_redraw_request(frame_requested_redraw, &self.redraw_handle)
+        self.settle_after_render(frame_requested_redraw)
     }
 
     async fn setup(
@@ -880,6 +999,9 @@ impl EmbeddedGpuSurfaceRuntime {
         runtime.env = Some(env);
         runtime.output_format = surface_format;
         runtime.setup_complete = true;
+        // Setup rebuilds the view's GPU resources, so nothing the old view left
+        // in the output texture is still that view's output.
+        runtime.rendered_inputs = None;
     }
 
     fn ensure_setup(
@@ -925,10 +1047,13 @@ impl EmbeddedGpuSurfaceRuntime {
         height: u32,
         format: wgpu::TextureFormat,
     ) {
-        let needs_recreate = self.output_texture.is_none()
-            || self.output_size != (width, height)
-            || self.output_format != format;
-        if !needs_recreate {
+        // The texture itself is the source of truth for what it can hold:
+        // `setup` assigns `output_format` on its own, so a field comparison
+        // would report a match while the texture is still the previous format.
+        let matches_request = self.output_texture.as_ref().is_some_and(|texture| {
+            texture.width() == width && texture.height() == height && texture.format() == format
+        });
+        if matches_request {
             return;
         }
 
@@ -949,9 +1074,11 @@ impl EmbeddedGpuSurfaceRuntime {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         self.output_format = format;
-        self.output_size = (width, height);
         self.output_texture = Some(texture);
         self.output_view = Some(view);
+        // A fresh texture holds nothing; whatever the view drew at the old size
+        // or format is gone with the texture that held it.
+        self.rendered_inputs = None;
     }
 }
 

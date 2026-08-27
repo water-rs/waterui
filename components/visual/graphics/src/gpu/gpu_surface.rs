@@ -228,7 +228,7 @@ impl<'a> GpuContext<'a> {
 /// Provides information about the current pointer position and press state,
 /// enabling GPU renderers to implement hover effects, hit detection, and
 /// interactive feedback directly in shaders.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PointerState {
     /// Current pointer position in surface-local coordinates (pixels).
     /// `None` if the pointer is not over this surface.
@@ -259,7 +259,7 @@ impl PointerState {
 /// Tracks multi-touch gestures like pinch-to-zoom, pan/drag, and double-tap.
 /// `GpuSurface` automatically listens to gestures routed through itself and
 /// native backends forward the resulting snapshot to the renderer each frame.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct GestureState {
     /// Cumulative pinch scale factor (1.0 = no scaling).
     /// Updated continuously during pinch gestures.
