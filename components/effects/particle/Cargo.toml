@@ -22,7 +22,7 @@ fastrand = "2.5"
 num-traits = { version = "0.2", default-features = false }
 
 [build-dependencies]
-waterui-build-support.workspace = true
+shaderloom = { workspace = true, features = ["build"] }
 
 [dev-dependencies]
 pollster.workspace = true
@@ -31,6 +31,6 @@ waterui-testing = { path = "../../../testing" }
 
 [lints]
 workspace = true
-# `waterui-build-support` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]
-ignored = ["tracing", "waterui-build-support"]
+ignored = ["tracing", "shaderloom"]

@@ -18,10 +18,10 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::Path;
-use waterui_build_support::icons::{
+use waterui_icons_codegen::icons::{
     FontFamily, GlyphConst, IconEntry, IconModule, SvgConst, write_icon_module,
 };
-use waterui_build_support::{is_http_url, load_cached_text, rust_const_name, rust_fn_name};
+use waterui_icons_codegen::{is_http_url, load_cached_text, rust_const_name, rust_fn_name};
 
 /// Material Design Icons version
 const MDI_VERSION: &str = "7.4.47";

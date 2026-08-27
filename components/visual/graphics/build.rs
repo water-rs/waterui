@@ -137,19 +137,19 @@ fn main() {
         );
         validate_wgsl_shaders(&manifest_dir);
         let shader_root = manifest_dir.join("src/shaders");
-        waterui_build_support::shader::compile_wgsl_shader(
+        shaderloom::build::compile_wgsl_shader(
             shader_root.join("animated_mesh_gradient.wgsl"),
             "animated_mesh_gradient",
         );
-        waterui_build_support::shader::compile_wgsl_shader(
+        shaderloom::build::compile_wgsl_shader(
             shader_root.join("mesh_gradient.wgsl"),
             "mesh_gradient",
         );
-        waterui_build_support::shader::compile_wgsl_shader(
+        shaderloom::build::compile_wgsl_shader(
             shader_root.join("image_generator.wgsl"),
             "image_generator",
         );
-        waterui_build_support::shader::compile_wgsl_shader(shader_root.join("blit.wgsl"), "blit");
+        shaderloom::build::compile_wgsl_shader(shader_root.join("blit.wgsl"), "blit");
         let flowing_gradient_source = format!(
             "{}{}",
             fs::read_to_string(shader_root.join("prelude.wgsl"))
@@ -157,7 +157,7 @@ fn main() {
             fs::read_to_string(shader_root.join("flowing_gradient.wgsl"))
                 .expect("failed to read flowing gradient fragment")
         );
-        waterui_build_support::shader::compile_wgsl_source(
+        shaderloom::build::compile_wgsl_source(
             "shaders/flowing_gradient.wgsl#shader_surface",
             &flowing_gradient_source,
             "flowing_gradient",
