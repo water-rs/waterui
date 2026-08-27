@@ -18,6 +18,7 @@ default = ["gpu"]
 vello-scene = ["dep:vello", "dep:vello_hybrid", "dep:glifo"]
 gpu = [
     "vello-scene",
+    "dep:keyboard-types",
     "dep:filtrate",
     "dep:filtrate-core",
     "dep:futures",
@@ -46,6 +47,7 @@ vello = { workspace = true, optional = true }
 vello_hybrid = { workspace = true, optional = true }
 glifo = { workspace = true, optional = true }
 kurbo.workspace = true
+keyboard-types = { workspace = true, optional = true }
 peniko.workspace = true
 bytemuck = { version = "1.25", optional = true }
 encase = { workspace = true, optional = true }

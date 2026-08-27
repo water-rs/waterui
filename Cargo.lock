@@ -4910,6 +4910,7 @@ dependencies = [
  "image",
  "jiff",
  "js-sys",
+ "keyboard-types",
  "lru",
  "nami",
  "native-executor",
@@ -4930,6 +4931,7 @@ dependencies = [
  "tiny_http",
  "tracing",
  "tracing-subscriber",
+ "ui-events-winit",
  "unicode-segmentation",
  "vello",
  "wasm-bindgen",
@@ -5979,6 +5981,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
 dependencies = [
  "cpufeatures 0.2.17",
+]
+
+[[package]]
+name = "keyboard-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
+dependencies = [
+ "bitflags 2.13.1",
+ "serde",
 ]
 
 [[package]]
@@ -11384,6 +11396,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ui-events"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3e29e3e199888d594edd191c5917a2d5c1893b8bf20076c2bf4df7a40a2ee71"
+dependencies = [
+ "dpi",
+ "keyboard-types",
+ "kurbo 0.13.1",
+]
+
+[[package]]
+name = "ui-events-winit"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de12c5f7e256ff97aa9a710a5e2fb345bb59302c98d77a3d2f249100d92145d4"
+dependencies = [
+ "ui-events",
+ "web-time",
+ "winit",
+]
+
+[[package]]
 name = "uncased"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12712,6 +12746,7 @@ dependencies = [
  "futures",
  "glifo 0.3.0",
  "image",
+ "keyboard-types",
  "kurbo 0.13.1",
  "mp4parse",
  "naga 30.0.0",

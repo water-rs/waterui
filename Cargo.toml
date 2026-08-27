@@ -98,6 +98,12 @@ geo-types = "0.7"
 lru = "0.16"
 maplibre-expr = "0.3.2"
 mvt-reader = "2.4.0"
+# W3C UI Events key/code/modifier vocabulary, shared by the GPU-surface input
+# contract and every backend that feeds it.
+keyboard-types = { version = "0.8.3", default-features = false }
+# winit -> `keyboard-types` translation, maintained alongside `keyboard-types`
+# by the Linebender/rust-windowing side. Keeps the key/code tables out of here.
+ui-events-winit = "0.3.0"
 serde_json = "1.0"
 smallvec = "1.15"
 # Local vendored dependency overrides via git submodule.

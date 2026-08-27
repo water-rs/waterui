@@ -50,6 +50,8 @@ unicode-segmentation = "1.12"
 async-task = "4.7"
 native-executor.workspace = true
 winit = { version = "0.30", optional = true }
+keyboard-types.workspace = true
+ui-events-winit = { workspace = true, optional = true }
 accesskit = { version = "0.24", optional = true }
 waterui-inspector-protocol.workspace = true
 accesskit_winit = { version = "0.33.2", optional = true }
@@ -218,6 +220,7 @@ chromium = [
 winit = [
     "accessibility",
     "dep:winit",
+    "dep:ui-events-winit",
     "dep:accesskit_winit",
     "dep:ctrlc",
     "dep:objc2",

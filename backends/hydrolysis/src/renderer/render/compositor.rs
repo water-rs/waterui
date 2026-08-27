@@ -10,6 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use shaderloom::WgslModuleCache;
+use waterui_graphics::input::SurfaceInputEvent;
 
 const GPU_SURFACE_COMPOSITOR_SHADER: CompiledShader =
     include!(concat!(env!("OUT_DIR"), "/gpu_surface_compositor.rs"));
@@ -157,6 +158,11 @@ pub(crate) struct EmbeddedGpuSurfaceRuntime {
     surface: Option<GpuSurface>,
     env: Option<Environment>,
     setup_complete: bool,
+    /// Whether the view handles its own keyboard, IME, pointer and scroll
+    /// input. Sampled once at construction: the surface is moved out for the
+    /// duration of async setup, and a target that disappeared for those frames
+    /// would drop the focus it holds.
+    wants_input_events: bool,
     msaa_samples: NonZeroU32,
     prefers_hdr: Option<bool>,
     output_format: wgpu::TextureFormat,
@@ -592,6 +598,7 @@ impl GpuSurfaceCompositorState {
 impl EmbeddedGpuSurfaceRuntime {
     pub(crate) fn new(surface: GpuSurface, env: &Environment) -> Self {
         let msaa_samples = surface.msaa_sample_limit();
+        let wants_input_events = surface.wants_input_events();
         let prefers_hdr = surface.resolved_hdr_preference().or_else(|| {
             env.get::<DynamicRangePreference>()
                 .map(|preference| preference.0)
@@ -600,6 +607,7 @@ impl EmbeddedGpuSurfaceRuntime {
             surface: Some(surface),
             env: Some(env.clone()),
             setup_complete: false,
+            wants_input_events,
             msaa_samples,
             prefers_hdr,
             output_format: wgpu::TextureFormat::Rgba8Unorm,
@@ -634,6 +642,33 @@ impl EmbeddedGpuSurfaceRuntime {
 
     pub(crate) fn take_external_redraw_request(&self) -> bool {
         self.redraw_handle.take_dirty()
+    }
+
+    /// Whether this surface's view handles its own input.
+    pub(crate) const fn wants_input_events(&self) -> bool {
+        self.wants_input_events
+    }
+
+    /// Delivers one backend-neutral input event to the view.
+    ///
+    /// Input reaching a surface whose view is still being set up has no
+    /// receiver: the view is moved out for the duration of that async setup.
+    pub(crate) fn input(&mut self, event: &SurfaceInputEvent) {
+        let Some(surface) = self.surface.as_mut() else {
+            tracing::trace!(
+                target: "waterui::hydrolysis::input",
+                event = ?event,
+                "dropped an input event for a GpuSurface that is still setting up"
+            );
+            return;
+        };
+        surface.input(event);
+        self.redraw_handle.request_redraw();
+    }
+
+    /// The view's text caret, in logical surface-local coordinates.
+    pub(crate) fn ime_caret(&self) -> Option<vello::kurbo::Rect> {
+        self.surface.as_ref().and_then(GpuSurface::ime_caret)
     }
 
     pub(crate) fn handle_trackpad_pan(&mut self, dx: f32, dy: f32, phase: TouchPhase) -> bool {

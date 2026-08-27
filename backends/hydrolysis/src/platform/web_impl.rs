@@ -479,6 +479,9 @@ fn register_listeners(
                 pending_events.borrow_mut().push(InputEvent::Key {
                     key: map_keyboard_key(&event),
                     native: None,
+                    logical_key: map_w3c_key(&event),
+                    physical_code: map_w3c_code(&event),
+                    repeat: event.repeat(),
                     state: KeyState::Pressed,
                     modifiers: map_modifiers_from_keyboard(&event),
                 });
@@ -502,6 +505,9 @@ fn register_listeners(
             pending_events.borrow_mut().push(InputEvent::Key {
                 key: map_keyboard_key(&event),
                 native: None,
+                logical_key: map_w3c_key(&event),
+                physical_code: map_w3c_code(&event),
+                repeat: event.repeat(),
                 state: KeyState::Released,
                 modifiers: map_modifiers_from_keyboard(&event),
             });
@@ -693,6 +699,11 @@ fn register_listeners(
                         pending_events.borrow_mut().push(InputEvent::Key {
                             key: KeyCode::Named("Backspace".to_string()),
                             native: None,
+                            logical_key: keyboard_types::Key::Named(
+                                keyboard_types::NamedKey::Backspace,
+                            ),
+                            physical_code: keyboard_types::Code::Backspace,
+                            repeat: event.repeat(),
                             state: KeyState::Pressed,
                             modifiers,
                         });
@@ -708,6 +719,9 @@ fn register_listeners(
                         pending_events.borrow_mut().push(InputEvent::Key {
                             key: KeyCode::Named("Tab".to_string()),
                             native: None,
+                            logical_key: keyboard_types::Key::Named(keyboard_types::NamedKey::Tab),
+                            physical_code: keyboard_types::Code::Tab,
+                            repeat: event.repeat(),
                             state: KeyState::Pressed,
                             modifiers,
                         });
@@ -768,6 +782,8 @@ fn register_listeners(
                 composing.set(true);
                 pending_events.borrow_mut().push(InputEvent::ImePreedit {
                     text: composition_text(event),
+                    // The DOM composition events report no caret offset.
+                    caret: None,
                 });
                 redraw_requested.set(true);
                 schedule_frame();
@@ -788,6 +804,8 @@ fn register_listeners(
                     .expect("hydrolysis web platform: compositionupdate event had unexpected type");
                 pending_events.borrow_mut().push(InputEvent::ImePreedit {
                     text: composition_text(event),
+                    // The DOM composition events report no caret offset.
+                    caret: None,
                 });
                 redraw_requested.set(true);
                 schedule_frame();
@@ -872,6 +890,22 @@ fn map_modifiers_from_keyboard(event: &KeyboardEvent) -> Modifiers {
         alt: event.alt_key(),
         super_key: event.meta_key(),
     }
+}
+
+/// The DOM `key` attribute already *is* the W3C UI Events logical key.
+fn map_w3c_key(event: &KeyboardEvent) -> keyboard_types::Key {
+    event
+        .key()
+        .parse()
+        .unwrap_or_else(|_| keyboard_types::Key::Named(keyboard_types::NamedKey::Unidentified))
+}
+
+/// The DOM `code` attribute already *is* the W3C UI Events physical code.
+fn map_w3c_code(event: &KeyboardEvent) -> keyboard_types::Code {
+    event
+        .code()
+        .parse()
+        .unwrap_or(keyboard_types::Code::Unidentified)
 }
 
 fn map_keyboard_key(event: &KeyboardEvent) -> KeyCode {
