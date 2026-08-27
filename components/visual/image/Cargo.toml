@@ -23,7 +23,7 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 mp4-atom = "0.14.0"
 
 [build-dependencies]
-waterui-build-support.workspace = true
+shaderloom = { workspace = true, features = ["build"] }
 
 [dev-dependencies]
 waterui = { path = "../../.." }
@@ -32,6 +32,6 @@ waterui-testing = { path = "../../../testing" }
 [lints]
 workspace = true
 
-# `waterui-build-support` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]
-ignored = ["waterui-build-support"]
+ignored = ["shaderloom"]

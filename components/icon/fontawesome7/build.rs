@@ -21,10 +21,10 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use waterui_build_support::icons::{
+use waterui_icons_codegen::icons::{
     FontFamily, GlyphConst, IconEntry, IconModule, SvgConst, ViewboxConst, write_icon_module,
 };
-use waterui_build_support::{rust_const_name, rust_fn_name};
+use waterui_icons_codegen::{rust_const_name, rust_fn_name};
 
 /// Font Awesome version
 const FA_VERSION: &str = "7.1.0";

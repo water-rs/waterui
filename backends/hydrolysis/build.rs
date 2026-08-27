@@ -5,7 +5,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let manifest_dir =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"));
-    waterui_build_support::shader::compile_wgsl_shader(
+    shaderloom::build::compile_wgsl_shader(
         manifest_dir.join("src/shaders/gpu_surface_compositor.wgsl"),
         "gpu_surface_compositor",
     );

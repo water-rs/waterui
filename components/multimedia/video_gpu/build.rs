@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    waterui_build_support::shader::compile_wgsl_source(
+    shaderloom::build::compile_wgsl_source(
         "waterkit-codec/yuv_to_rgba.wgsl",
         waterkit_codec::YUV_COLOR_SHADER_WGSL,
         "video_yuv",
@@ -20,7 +20,7 @@ fn main() {
             spherical_path.display()
         )
     });
-    waterui_build_support::shader::compile_wgsl_source(
+    shaderloom::build::compile_wgsl_source(
         "waterkit-codec/yuv_to_rgba.wgsl+spherical_video_render.wgsl",
         &format!("{}{spherical}", waterkit_codec::YUV_COLOR_SHADER_WGSL),
         "video_yuv_spherical",

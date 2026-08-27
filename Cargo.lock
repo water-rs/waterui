@@ -3579,7 +3579,6 @@ dependencies = [
  "shaderloom",
  "thiserror 2.0.20",
  "tracing",
- "waterui-build-support",
  "wgpu",
 ]
 
@@ -3626,7 +3625,6 @@ version = "0.1.0"
 dependencies = [
  "shaderloom",
  "waterui",
- "waterui-build-support",
  "wgpu",
 ]
 
@@ -4942,7 +4940,6 @@ dependencies = [
  "waterui-backend-core",
  "waterui-browser-cef",
  "waterui-browser-wpe",
- "waterui-build-support",
  "waterui-canvas",
  "waterui-chromium",
  "waterui-controls",
@@ -12033,7 +12030,6 @@ dependencies = [
  "waterkit-camera",
  "waterkit-permission",
  "waterui",
- "waterui-build-support",
  "wgpu",
 ]
 
@@ -12376,7 +12372,6 @@ dependencies = [
  "shaderloom",
  "thiserror 2.0.20",
  "waterui",
- "waterui-build-support",
  "waterui-core",
  "waterui-graphics",
  "waterui-testing",
@@ -12446,17 +12441,6 @@ dependencies = [
  "waterui-url",
  "waterui-webview",
  "wgpu",
-]
-
-[[package]]
-name = "waterui-build-support"
-version = "0.1.0"
-dependencies = [
- "askama",
- "heck 0.5.0",
- "shaderloom",
- "tracing",
- "ureq 3.4.0",
 ]
 
 [[package]]
@@ -12757,7 +12741,6 @@ dependencies = [
  "vello",
  "vello_hybrid",
  "waterui",
- "waterui-build-support",
  "waterui-core",
  "waterui-testing",
  "wgpu",
@@ -12817,6 +12800,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-icons-codegen"
+version = "0.1.0"
+dependencies = [
+ "askama",
+ "heck 0.5.0",
+ "tracing",
+ "ureq 3.4.0",
+]
+
+[[package]]
 name = "waterui-icons-fontawesome7"
 version = "0.1.0"
 dependencies = [
@@ -12826,10 +12819,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "waterui-build-support",
  "waterui-core",
  "waterui-graphics",
  "waterui-icon",
+ "waterui-icons-codegen",
  "waterui-str",
  "waterui-svg",
  "waterui-text",
@@ -12841,8 +12834,8 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "waterui",
- "waterui-build-support",
  "waterui-icon",
+ "waterui-icons-codegen",
  "waterui-testing",
 ]
 
@@ -12854,8 +12847,8 @@ dependencies = [
  "serde",
  "serde_json",
  "waterui",
- "waterui-build-support",
  "waterui-icon",
+ "waterui-icons-codegen",
  "waterui-testing",
 ]
 
@@ -12886,7 +12879,6 @@ dependencies = [
  "tracing",
  "waterkit-codec",
  "waterui",
- "waterui-build-support",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
@@ -13089,7 +13081,6 @@ dependencies = [
  "tracing",
  "url",
  "vello",
- "waterui-build-support",
  "waterui-core",
  "waterui-graphics",
  "waterui-map",
@@ -13159,7 +13150,6 @@ dependencies = [
  "shaderloom",
  "tracing",
  "waterui",
- "waterui-build-support",
  "waterui-core",
  "waterui-graphics",
  "waterui-testing",
@@ -13215,7 +13205,6 @@ dependencies = [
  "shaderloom",
  "tracing",
  "waterui",
- "waterui-build-support",
  "waterui-core",
  "waterui-graphics",
  "waterui-testing",
@@ -13337,7 +13326,6 @@ dependencies = [
  "waterkit-fs",
  "waterkit-video",
  "waterui",
- "waterui-build-support",
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
@@ -13363,7 +13351,6 @@ dependencies = [
  "tracing",
  "waterkit-audio",
  "waterui",
- "waterui-build-support",
  "waterui-core",
  "waterui-graphics",
  "waterui-testing",

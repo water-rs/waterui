@@ -170,7 +170,7 @@ waterui-internal = { version = "0.3.0", path = "src", default-features = false }
 waterui-dylib = { version = "0.3.0", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.1.0", path = "backends/hydrolysis", default-features = false }
 waterui = { version = "0.3.0", path = "." }
-waterui-build-support = { version = "0.1.0", path = "utils/build_support" }
+waterui-icons-codegen = { version = "0.1.0", path = "components/icon/codegen" }
 shaderloom = "0.1.0"
 hydrolysis-m3 = { version = "0.1.0", path = "backends/hydrolysis_m3" }
 native-executor = { version = "0.8.0" }
