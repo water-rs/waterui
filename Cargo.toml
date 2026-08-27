@@ -12,8 +12,6 @@ members = [
     "components/platform/*",
     "components/visual/*",
     "utils/*",
-    "utils/filtrate/core",
-    "utils/filtrate/derive",
     "src",
     "testing",
     "ffi",
@@ -157,9 +155,9 @@ waterkit-codec = { version = "0.1.0", path = "kit/multimedia/codec", default-fea
 waterkit-video = { version = "0.1.0", path = "kit/multimedia/video", features = ["streaming"] }
 waterkit-build = { version = "0.1.0", path = "kit/utils/build" }
 waterui-backend-core = { version = "0.1.0", path = "backends/core", default-features = false }
-filtrate = { version = "0.2.0", path = "utils/filtrate" }
-filtrate-core = { version = "0.2.0", path = "utils/filtrate/core" }
-filtrate-derive = { version = "0.1.0", path = "utils/filtrate/derive" }
+filtrate = "0.2.0"
+filtrate-core = "0.2.0"
+filtrate-derive = "0.1.0"
 waterui-barcode = { version = "0.1.0", path = "components/codes/barcode" }
 waterui-particle = { version = "0.1.0", path = "components/effects/particle" }
 waterui-chart = { version = "0.1.0", path = "components/data/chart" }
