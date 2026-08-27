@@ -25,6 +25,7 @@ use std::time::Duration;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_core::{Environment, MainThreadBound, Native, NativeView, View};
 
+use crate::gpu::input::SurfaceInputEvent;
 use crate::gpu::texture::TextureRowLayout;
 use crate::scene_view::SceneInvalidator;
 use crate::shared_context::{GpuRuntime, SceneEngine, SharedSceneRenderer};
@@ -647,6 +648,38 @@ pub trait GpuView: 'static {
         None
     }
 
+    /// Whether this view handles its own keyboard, IME, pointer and scroll
+    /// input.
+    ///
+    /// A view that draws interactive content — a browser engine, a terminal, a
+    /// text editor — returns `true`, and the backend then routes the events
+    /// that land on its layer to [`GpuView::input`] instead of treating the
+    /// surface as inert pixels. Views that only draw (the common case) leave
+    /// this `false`, so nothing changes for them: no focus is claimed, no
+    /// keystroke is intercepted, and the surrounding `WaterUI` widgets keep
+    /// every event.
+    fn wants_input_events(&self) -> bool {
+        false
+    }
+
+    /// Handles one input event.
+    ///
+    /// Only called when [`GpuView::wants_input_events`] returns `true`. Every
+    /// position in the event is logical and surface-local: this view's own
+    /// top-left is `(0, 0)`. See [`SurfaceInputEvent`] for the vocabulary.
+    fn input(&mut self, event: &SurfaceInputEvent) {
+        let _ = event;
+    }
+
+    /// Where this view's text caret is, in logical surface-local coordinates.
+    ///
+    /// Backends position the input-method candidate window with it, so a view
+    /// that accepts composed text should report its caret. `None` means the
+    /// view has no caret to place the panel against.
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
+        None
+    }
+
     /// Measure the view for a layout proposal.
     ///
     /// GPU views default to filling the proposed size (stretch). Override for
@@ -1018,6 +1051,9 @@ trait GpuViewImpl: 'static {
     fn stretch_axis(&self) -> StretchAxis;
     fn priority(&self) -> i32;
     fn preferred_surface_hdr(&self) -> Option<bool>;
+    fn wants_input_events(&self) -> bool;
+    fn input(&mut self, event: &SurfaceInputEvent);
+    fn ime_caret(&self) -> Option<kurbo::Rect>;
 }
 
 impl<T: GpuView> GpuViewImpl for T {
@@ -1047,6 +1083,18 @@ impl<T: GpuView> GpuViewImpl for T {
 
     fn preferred_surface_hdr(&self) -> Option<bool> {
         GpuView::preferred_surface_hdr(self)
+    }
+
+    fn wants_input_events(&self) -> bool {
+        GpuView::wants_input_events(self)
+    }
+
+    fn input(&mut self, event: &SurfaceInputEvent) {
+        GpuView::input(self, event);
+    }
+
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
+        GpuView::ime_caret(self)
     }
 }
 
@@ -1430,6 +1478,32 @@ impl GpuSurface {
     #[must_use]
     pub fn priority(&self) -> i32 {
         self.renderer.priority()
+    }
+
+    /// Whether the GPU view handles its own input.
+    ///
+    /// A backend holding this surface asks once per registration and, when it
+    /// answers `true`, routes the events landing on the surface's layer to
+    /// [`Self::input`].
+    #[must_use]
+    pub fn wants_input_events(&self) -> bool {
+        self.renderer.wants_input_events()
+    }
+
+    /// Delivers one input event to the GPU view.
+    ///
+    /// Positions must already be logical and surface-local — the backend owns
+    /// that projection, the view never sees window coordinates.
+    pub fn input(&mut self, event: &SurfaceInputEvent) {
+        self.renderer.input(event);
+    }
+
+    /// The GPU view's text caret, in logical surface-local coordinates.
+    ///
+    /// Backends place the input-method candidate window with it.
+    #[must_use]
+    pub fn ime_caret(&self) -> Option<kurbo::Rect> {
+        self.renderer.ime_caret()
     }
 }
 

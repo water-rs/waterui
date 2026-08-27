@@ -346,6 +346,10 @@ impl A11yDriver for HydrolysisA11yDriver {
             .as_mut()
             .expect("waterui-testing key_press requested before runtime initialization");
         runtime.push_input_event(InputEvent::Key {
+            logical_key: key.to_w3c_key(),
+            // A synthesized keystroke has no physical key behind it.
+            physical_code: hydrolysis::keyboard_types::Code::Unidentified,
+            repeat: false,
             key,
             native: None,
             state: KeyState::Pressed,

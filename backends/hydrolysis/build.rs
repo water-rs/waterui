@@ -68,5 +68,15 @@ fn main() {
                 hydrolysis_cef_webview
             )
         },
+        // The engines that take their input through the renderer's embedded
+        // input targets, i.e. everything except the macOS system webview,
+        // which is a native subview and receives input from AppKit itself.
+        hydrolysis_browser_input: {
+            any(
+                hydrolysis_linux_wpe_webview,
+                hydrolysis_cef_webview,
+                feature = "chromium"
+            )
+        },
     }
 }

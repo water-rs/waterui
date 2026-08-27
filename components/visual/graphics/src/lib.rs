@@ -21,7 +21,8 @@ pub use color::{Color, Colorspace, ResolvedColor};
 pub use effects::{filter_view, view_effect};
 #[cfg(feature = "gpu")]
 pub use gpu::{
-    gpu_surface, pipeline, reactive_color, shader_source, shader_surface, shared_context, texture,
+    gpu_surface, input, pipeline, reactive_color, shader_source, shader_surface, shared_context,
+    texture,
 };
 #[cfg(feature = "gpu")]
 pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
@@ -44,6 +45,10 @@ pub use filtrate::multi_input as multi_input_filter;
 pub use gpu_surface::{
     GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
     OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSize, PointerState, RedrawHandle,
+};
+#[cfg(feature = "gpu")]
+pub use input::{
+    Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
 
 #[cfg(feature = "gpu")]
