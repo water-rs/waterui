@@ -14,10 +14,10 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
-use waterui_build_support::icons::{
+use waterui_icons_codegen::icons::{
     FontFamily, IconEntry, IconModule, SvgConst, write_icon_module,
 };
-use waterui_build_support::{is_http_url, load_cached_text, rust_const_name, rust_fn_name};
+use waterui_icons_codegen::{is_http_url, load_cached_text, rust_const_name, rust_fn_name};
 
 /// Lucide icons version
 const LUCIDE_VERSION: &str = "0.562.0";

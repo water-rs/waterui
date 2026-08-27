@@ -49,7 +49,7 @@ waterui-url = { workspace = true, features = ["std"] }
 wgpu.workspace = true
 
 [build-dependencies]
-waterui-build-support.workspace = true
+shaderloom = { workspace = true, features = ["build"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }
@@ -76,6 +76,6 @@ workspace = true
 [package.metadata.waterui.permissions]
 internet = { reason = "downloads map styles and vector tiles" }
 
-# `waterui-build-support` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]
-ignored = ["getrandom", "waterui-build-support"]
+ignored = ["getrandom", "shaderloom"]
