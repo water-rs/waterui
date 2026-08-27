@@ -4,8 +4,11 @@ rustflags = ["-Clinker-flavor=lld-link"]
 
 # Keep independently publishable workspaces on registry contracts while resolving
 # co-developed packages from this superproject during local work.
+#
+# Nami is not here: it is published, and a `[patch]` replaces a crate for every
+# version requirement in the graph — including the published baseline that
+# cargo-semver-checks builds to compare against. Patching it made the 0.2.1
+# baseline compile against Nami 0.11 and fail, so the release preflight could
+# never report on the facade crate at all.
 [patch.crates-io]
 filtrate = { path = "utils/filtrate" }
-nami = { path = "utils/nami" }
-nami-core = { path = "utils/nami/core" }
-nami-derive = { path = "utils/nami/derive" }

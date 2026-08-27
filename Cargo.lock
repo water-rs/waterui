@@ -6979,6 +6979,8 @@ dependencies = [
 [[package]]
 name = "nami"
 version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "358d5812e714a56e95eefd43c659c42a5d1b0e720bb27b05703ec62bac42e57c"
 dependencies = [
  "async-channel",
  "async-io",
@@ -6995,10 +6997,14 @@ dependencies = [
 [[package]]
 name = "nami-core"
 version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a70d1da3e07e48053148d4e32d49274c9249ab710ec26e9f10570e175a647ec"
 
 [[package]]
 name = "nami-derive"
 version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be47b9c916ede3a11eb0cdc93376571827bdc7be5ac9d342bfe143d1b0790c11"
 dependencies = [
  "proc-macro2",
  "quote",
