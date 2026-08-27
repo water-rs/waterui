@@ -358,11 +358,7 @@ impl GpuView for WaveformRenderer {
             immediate_size: 0,
         });
 
-        let blend = if ctx.is_hdr() {
-            None
-        } else {
-            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
-        };
+        let blend = ctx.sdr_blend_state(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Waveform Render Pipeline"),

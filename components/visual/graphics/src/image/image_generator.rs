@@ -1,5 +1,6 @@
 use crate::GpuRuntime;
 use crate::color::Srgb;
+use crate::gpu::pipeline::single_bind_group_render_stages;
 use crate::gpu_surface::{
     GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenSize,
 };
@@ -158,17 +159,13 @@ impl GpuView for GeneratorRenderer {
         reason = "GpuView setup is confined to the render thread and borrows its device context"
     )]
     async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
-        let (vertex_shader, fragment_shader) =
-            IMAGE_GENERATOR.create_render_stages(ctx.device, "vs_main", "fs_main");
-        let mut bind_group_layouts = IMAGE_GENERATOR.create_bind_group_layouts(ctx.device);
-        assert_eq!(
-            bind_group_layouts.len(),
-            1,
-            "image generator shader must use exactly one bind group"
+        let (vertex_shader, fragment_shader, bind_group_layout) = single_bind_group_render_stages(
+            &IMAGE_GENERATOR,
+            ctx.device,
+            "the image generator shader",
+            "vs_main",
+            "fs_main",
         );
-        let bind_group_layout = bind_group_layouts
-            .pop()
-            .expect("one image generator bind group was asserted");
         let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Image Generator Uniforms"),
             size: size_of::<GeneratorUniforms>() as u64,
@@ -207,7 +204,7 @@ impl GpuView for GeneratorRenderer {
                     entry_point: Some(fragment_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
-                        blend: (!ctx.is_hdr()).then_some(wgpu::BlendState::REPLACE),
+                        blend: ctx.replace_blend_state(),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
