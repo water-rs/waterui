@@ -31,6 +31,7 @@ use waterui_core::layout::{
 use waterui_core::views::Views;
 use waterui_core::{AnyView, Environment, MainThreadBound, Metadata, Native, Retain, Str, View};
 use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::{SceneView, SceneViewMergeToParent};
 use waterui_layout::Divider;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::scroll::ScrollView;
@@ -246,8 +247,13 @@ impl DewRenderer {
         width: f64,
         height: f64,
     ) -> DisplayList {
-        self.theme = Some(theme::ThemePalette::new(env, self.signals()));
-        self.root = Some(build_node(self, view, env, 0));
+        // Dew draws scene content itself, through its own `Scene2D` over the
+        // rasterizer, so a `SceneView` must reach the dispatcher as a native
+        // leaf instead of resolving to the GPU surface it would otherwise fall
+        // back on — dew's graph has no GPU in it at all.
+        let env = env.extending(SceneViewMergeToParent);
+        self.theme = Some(theme::ThemePalette::new(&env, self.signals()));
+        self.root = Some(build_node(self, view, &env, 0));
         self.refresh_tree(width, height)
     }
 
@@ -514,6 +520,12 @@ fn build_unmeasured_node(
             .downcast::<Native<ResolvedShape>>()
             .expect("dew ResolvedShape downcast must match its type id");
         return views::shape::build(renderer, shape.into_inner());
+    }
+    if type_id == TypeId::of::<Native<SceneView>>() {
+        let scene = *view
+            .downcast::<Native<SceneView>>()
+            .expect("dew SceneView downcast must match its type id");
+        return views::scene::build(renderer, scene.into_inner());
     }
     if type_id == TypeId::of::<Native<ResolvedColor>>() {
         let color = *view

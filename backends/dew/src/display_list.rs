@@ -159,6 +159,29 @@ pub enum DrawCommand {
         /// The clip in force when the command was pushed.
         clip: Option<Clip>,
     },
+    /// Replays an engine-neutral scene recording (after `transform`).
+    ///
+    /// This is how self-drawn scene content — a `Canvas` drawing, an SVG
+    /// document — reaches the screen. The recording is built by the content
+    /// itself through [`waterui_graphics::Scene2D`], in coordinates local to
+    /// the view, and dew replays it into its rasterizer band by band exactly
+    /// as it replays every other command.
+    ///
+    /// The recording is shared rather than owned for the same reason a glyph
+    /// run's glyphs are: a scene that did not change is re-emitted every frame
+    /// and must compare equal by pointer, so an unchanged canvas dirties
+    /// nothing. Content rebuilds its recording only when it invalidates or is
+    /// resized, which is what gives it a fresh pointer.
+    Scene {
+        /// The commands to replay, in view-local coordinates.
+        recording: Arc<waterui_graphics::SceneRecording>,
+        /// Local-to-window transform applied to every replayed command.
+        transform: Affine,
+        /// The view-local box the content was built for.
+        bounds: Rect,
+        /// The clip in force when the command was pushed.
+        clip: Option<Clip>,
+    },
 }
 
 impl DrawCommand {
@@ -193,6 +216,13 @@ impl DrawCommand {
                     .reduce(|current, glyph| current.union(glyph))
                     .unwrap_or(*bounds),
             ),
+            // A scene draws inside the box it was built for: the node emits it
+            // under a clip of exactly that box, which is also what the
+            // `GpuSurface` realization of the same content does by rendering
+            // into a texture of that size.
+            Self::Scene {
+                transform, bounds, ..
+            } => transform.transform_rect_bbox(*bounds),
         };
         self.clip().map_or(raw, |clip| raw.intersect(clip.bounds()))
     }
@@ -203,7 +233,8 @@ impl DrawCommand {
         match self {
             Self::FillPath { clip, .. }
             | Self::StrokePath { clip, .. }
-            | Self::GlyphRun { clip, .. } => clip.as_ref(),
+            | Self::GlyphRun { clip, .. }
+            | Self::Scene { clip, .. } => clip.as_ref(),
         }
     }
 
@@ -222,6 +253,9 @@ impl DrawCommand {
             }
             | Self::GlyphRun {
                 transform: current, ..
+            }
+            | Self::Scene {
+                transform: current, ..
             } => *current = transform,
         }
     }
@@ -230,7 +264,8 @@ impl DrawCommand {
         match self {
             Self::FillPath { clip, .. }
             | Self::StrokePath { clip, .. }
-            | Self::GlyphRun { clip, .. } => clip,
+            | Self::GlyphRun { clip, .. }
+            | Self::Scene { clip, .. } => clip,
         }
     }
 }
@@ -300,6 +335,24 @@ impl PartialEq for DrawCommand {
                     && (Arc::ptr_eq(g1, g2) || glyphs_eq(g1, g2))
                     && (Arc::ptr_eq(gb1, gb2) || gb1 == gb2)
             }
+            (
+                Self::Scene {
+                    recording: r1,
+                    transform: t1,
+                    bounds: b1,
+                    clip: c1,
+                },
+                Self::Scene {
+                    recording: r2,
+                    transform: t2,
+                    bounds: b2,
+                    clip: c2,
+                },
+                // Scene recordings compare by identity alone. Their commands
+                // are opaque to dew — comparing them element by element would
+                // cost more than rasterizing the scene, and content that did
+                // not change hands back the very same recording.
+            ) => Arc::ptr_eq(r1, r2) && t1 == t2 && b1 == b2 && c1 == c2,
             _ => false,
         }
     }

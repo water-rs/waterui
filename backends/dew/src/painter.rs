@@ -7,9 +7,18 @@
 //! rasterizing into a context exactly the size of the region — sparse-strip
 //! rasterization only pays for covered pixels, so this is cheap even though
 //! the full scene is replayed.
+//!
+//! It is also where dew implements [`Scene2D`]: [`CpuScene`] projects the
+//! engine-neutral scene contract straight onto the rasterizer, which is what
+//! lets `Canvas` drawings and SVG documents render here with no engine of
+//! their own. Confining it to this module is the same rule as everything else
+//! about `vello_cpu`, and the reason a scene reaches the painter as an opaque
+//! recording rather than as display-list commands.
 
-use kurbo::{Affine, Rect, Shape};
+use kurbo::{Affine, BezPath, Rect, Shape, Stroke};
+use peniko::{BlendMode, Brush, Fill, ImageBrush, StyleRef};
 use vello_cpu::{Image, ImageSource, Pixmap, RenderContext, RenderMode, RenderSettings, Resources};
+use waterui_graphics::{GlyphRun, Scene2D, SceneRecording};
 
 use crate::compositor::DeviceRegion;
 use crate::display_list::{BEZIER_TOLERANCE, Clip, ClipRegion, DisplayList, DrawCommand};
@@ -218,6 +227,13 @@ impl Painter {
                                 .map(|(glyph, _)| *glyph),
                         );
                 }
+                DrawCommand::Scene {
+                    recording,
+                    transform,
+                    ..
+                } => {
+                    replay_scene(ctx, resources, images, recording, shift * *transform);
+                }
             }
             for _ in 0..clip_depth {
                 ctx.pop_clip_path();
@@ -277,6 +293,191 @@ fn set_brush(images: &mut Vec<CachedImage>, ctx: &mut RenderContext, brush: &pen
                 sampler: image.sampler,
             });
         }
+    }
+}
+
+/// Replays a scene recording into the rasterizer, positioned by `transform`.
+///
+/// The recording is opaque to the display list, so the whole of it is replayed
+/// whenever a band it touches is rasterized — exactly like every other
+/// command. The context's drawing state is saved and restored around the
+/// replay because a scene sets fill rules, strokes and paint transforms that
+/// no other command sets, and a later command inheriting them would be painted
+/// wrong.
+///
+/// # Panics
+///
+/// Panics when the recording leaves layers unpopped. Scene content owns its
+/// layer stack, and an unbalanced one would corrupt every command rasterized
+/// after it in the same band.
+fn replay_scene(
+    ctx: &mut RenderContext,
+    resources: &mut Resources,
+    images: &mut Vec<CachedImage>,
+    recording: &SceneRecording,
+    transform: Affine,
+) {
+    let saved = ctx.save_current_state();
+    let depth = {
+        let mut scene = CpuScene {
+            ctx,
+            resources,
+            images,
+            depth: 0,
+        };
+        recording.replay(&mut scene, Some(transform));
+        scene.depth
+    };
+    assert_eq!(
+        depth, 0,
+        "dew scene content left {depth} layer(s) unpopped: every push must have a matching pop"
+    );
+    ctx.restore_state(saved);
+}
+
+/// Dew's [`Scene2D`]: engine-neutral scene commands painted directly into the
+/// `vello_cpu` rasterizer.
+///
+/// This is the whole of dew's scene support. Everything a scene can express —
+/// filled and stroked paths, gradient and image brushes, clip and compositing
+/// layers, glyph runs — maps onto a rasterizer primitive, so content written
+/// against the contract draws here exactly as it draws on a GPU engine.
+struct CpuScene<'a> {
+    ctx: &'a mut RenderContext,
+    resources: &'a mut Resources,
+    images: &'a mut Vec<CachedImage>,
+    /// Layers pushed and not yet popped, checked at the end of a replay.
+    depth: usize,
+}
+
+impl CpuScene<'_> {
+    /// Sets the paint for the next draw, including the brush-relative
+    /// transform that positions a gradient independently of its shape.
+    fn paint(&mut self, brush: &Brush, brush_transform: Option<Affine>) {
+        set_brush(self.images, self.ctx, brush);
+        // `vello_cpu` encodes a paint against `transform * paint_transform`,
+        // which is exactly what `Scene2D` means by a brush transform.
+        match brush_transform {
+            Some(transform) => self.ctx.set_paint_transform(transform),
+            None => self.ctx.reset_paint_transform(),
+        }
+    }
+}
+
+impl Scene2D for CpuScene<'_> {
+    fn fill(
+        &mut self,
+        fill: Fill,
+        transform: Affine,
+        brush: &Brush,
+        brush_transform: Option<Affine>,
+        shape: &BezPath,
+    ) {
+        self.ctx.set_transform(transform);
+        self.ctx.set_fill_rule(fill);
+        self.paint(brush, brush_transform);
+        self.ctx.fill_path(shape);
+    }
+
+    fn stroke(
+        &mut self,
+        stroke: &Stroke,
+        transform: Affine,
+        brush: &Brush,
+        brush_transform: Option<Affine>,
+        shape: &BezPath,
+    ) {
+        self.ctx.set_transform(transform);
+        self.ctx.set_stroke(stroke.clone());
+        self.paint(brush, brush_transform);
+        self.ctx.stroke_path(shape);
+    }
+
+    fn push_layer(
+        &mut self,
+        fill: Fill,
+        blend: BlendMode,
+        alpha: f32,
+        transform: Affine,
+        clip: &BezPath,
+    ) {
+        self.ctx.set_transform(transform);
+        self.ctx.set_fill_rule(fill);
+        self.ctx
+            .push_layer(Some(clip), Some(blend), Some(alpha), None, None);
+        self.depth += 1;
+    }
+
+    fn push_clip_layer(&mut self, fill: Fill, transform: Affine, clip: &BezPath) {
+        self.ctx.set_transform(transform);
+        self.ctx.set_fill_rule(fill);
+        self.ctx.push_layer(Some(clip), None, None, None, None);
+        self.depth += 1;
+    }
+
+    fn pop_layer(&mut self) {
+        assert!(
+            self.depth > 0,
+            "dew scene content popped a layer it never pushed"
+        );
+        self.depth -= 1;
+        self.ctx.pop_layer();
+    }
+
+    fn draw_image(&mut self, image: &ImageBrush, transform: Affine) {
+        // An image is a rectangle of the image's own pixel size painted with
+        // the image as its brush — the lowering every `Scene2D` engine uses.
+        let bounds = Rect::new(
+            0.0,
+            0.0,
+            f64::from(image.image.width),
+            f64::from(image.image.height),
+        );
+        self.fill(
+            Fill::NonZero,
+            transform,
+            &Brush::Image(image.clone()),
+            None,
+            &bounds.to_path(BEZIER_TOLERANCE),
+        );
+    }
+
+    fn draw_glyph_run(&mut self, run: &GlyphRun<'_>) {
+        self.ctx.set_transform(run.transform);
+        let brush = if run.brush_alpha < 1.0 {
+            run.brush.clone().multiply_alpha(run.brush_alpha)
+        } else {
+            run.brush.clone()
+        };
+        self.paint(&brush, None);
+        // The style has to be in force before the builder borrows the context.
+        match run.style {
+            StyleRef::Fill(fill) => self.ctx.set_fill_rule(fill),
+            StyleRef::Stroke(stroke) => self.ctx.set_stroke(stroke.clone()),
+        }
+        let glyphs = run.glyphs.iter().map(|glyph| vello_cpu::Glyph {
+            id: glyph.id,
+            x: glyph.x,
+            y: glyph.y,
+        });
+        let builder = self
+            .ctx
+            .glyph_run(self.resources, run.font)
+            .font_size(run.font_size)
+            .normalized_coords(run.normalized_coords)
+            .hint(true);
+        match run.style {
+            StyleRef::Fill(_) => builder.fill_glyphs(glyphs),
+            StyleRef::Stroke(_) => builder.stroke_glyphs(glyphs),
+        }
+    }
+
+    fn reset(&mut self) {
+        // `reset` clears a recording's commands; this scene has none, because
+        // it paints each command into the rasterizer as it arrives. Content
+        // that resets mid-draw would be asking for pixels already rasterized
+        // to be taken back, which no immediate-mode target can do.
+        panic!("dew paints scene commands as they arrive and has no recording to reset");
     }
 }
 
@@ -489,6 +690,155 @@ mod tests {
             [
                 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
             ]
+        );
+    }
+
+    /// An opaque backdrop with a half-transparent scene layer over it: the
+    /// layer is a real compositing layer, so the pixels under it are the blend
+    /// of the two, not either one alone.
+    fn layered_scene() -> DisplayList {
+        let mut recording = SceneRecording::new();
+        let cover = Rect::new(0.0, 0.0, 64.0, 64.0).to_path(BEZIER_TOLERANCE);
+        recording.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            0.5,
+            Affine::IDENTITY,
+            &cover,
+        );
+        recording.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Color::from_rgb8(255, 255, 255).into(),
+            None,
+            &Rect::new(16.0, 16.0, 48.0, 48.0).to_path(BEZIER_TOLERANCE),
+        );
+        recording.pop_layer();
+
+        let mut list = DisplayList::new();
+        list.fill(
+            &Rect::new(0.0, 0.0, 64.0, 64.0),
+            Affine::IDENTITY,
+            Color::from_rgb8(0, 0, 0),
+        );
+        list.push(DrawCommand::Scene {
+            recording: std::sync::Arc::new(recording),
+            transform: Affine::IDENTITY,
+            bounds: Rect::new(0.0, 0.0, 64.0, 64.0),
+            clip: None,
+        });
+        list
+    }
+
+    /// A scene's compositing layer is honoured, not flattened into a per-shape
+    /// alpha — a white square at half opacity over black is mid grey.
+    #[test]
+    fn a_scene_layer_composites_its_opacity() {
+        let pixmap = rasterize(
+            &layered_scene(),
+            DeviceRegion {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            },
+        );
+        let data = pixmap.data_as_u8_slice();
+        let pixel = |x: usize, y: usize| {
+            let i = (y * 64 + x) * 4;
+            [data[i], data[i + 1], data[i + 2], data[i + 3]]
+        };
+        assert_eq!(pixel(4, 4), [0, 0, 0, 255], "outside the layer stays black");
+        let inside = pixel(32, 32);
+        assert_eq!(inside[3], 255);
+        assert!(
+            (120..=136).contains(&inside[0]),
+            "half-opacity white over black is mid grey, got {inside:?}"
+        );
+    }
+
+    /// A scene rasterized band by band must match a single pass exactly:
+    /// its layers composite within each band over the same backdrop, so no
+    /// seam may appear where a band boundary crosses one.
+    #[test]
+    fn banded_scene_render_matches_single_pass() {
+        let list = layered_scene();
+        let full = rasterize(
+            &list,
+            DeviceRegion {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            },
+        );
+        let full_data = full.data_as_u8_slice();
+        let scheduler = BandScheduler::new(64, 64, 16);
+        let mut painter = Painter::default();
+        for band in scheduler.schedule(&[Rect::new(0.0, 0.0, 64.0, 64.0)]) {
+            let pixmap = rasterize_with(&mut painter, &list, band);
+            let band_data = pixmap.data_as_u8_slice();
+            for row in 0..band.height as usize {
+                let band_row =
+                    &band_data[row * band.width as usize * 4..(row + 1) * band.width as usize * 4];
+                let full_start = ((band.y as usize + row) * 64 + band.x as usize) * 4;
+                let full_row = &full_data[full_start..full_start + band.width as usize * 4];
+                assert_eq!(band_row, full_row, "scene band seam mismatch at row {row}");
+            }
+        }
+    }
+
+    /// A scene must not leak its drawing state into the commands rasterized
+    /// after it: the even-odd rule it leaves behind would punch a hole in the
+    /// next fill, which is drawn from a self-overlapping path here precisely so
+    /// the two rules disagree.
+    #[test]
+    fn a_scene_does_not_leak_its_state_into_later_commands() {
+        let mut recording = SceneRecording::new();
+        recording.fill(
+            Fill::EvenOdd,
+            Affine::IDENTITY,
+            &Color::from_rgb8(10, 10, 10).into(),
+            None,
+            &Rect::new(0.0, 0.0, 4.0, 4.0).to_path(BEZIER_TOLERANCE),
+        );
+
+        let mut overlapping = Rect::new(0.0, 0.0, 32.0, 32.0).to_path(BEZIER_TOLERANCE);
+        overlapping.extend(Rect::new(8.0, 8.0, 24.0, 24.0).to_path(BEZIER_TOLERANCE));
+
+        let mut list = DisplayList::new();
+        list.push(DrawCommand::Scene {
+            recording: std::sync::Arc::new(recording),
+            transform: Affine::IDENTITY,
+            bounds: Rect::new(0.0, 0.0, 4.0, 4.0),
+            clip: None,
+        });
+        list.fill(
+            &overlapping,
+            Affine::IDENTITY,
+            Color::from_rgb8(200, 60, 40),
+        );
+
+        let pixmap = rasterize(
+            &list,
+            DeviceRegion {
+                x: 0,
+                y: 0,
+                width: 32,
+                height: 32,
+            },
+        );
+        let data = pixmap.data_as_u8_slice();
+        let index = (16 * 32 + 16) * 4;
+        assert_eq!(
+            [
+                data[index],
+                data[index + 1],
+                data[index + 2],
+                data[index + 3]
+            ],
+            [200, 60, 40, 255],
+            "the fill after a scene is painted non-zero, as every dew fill is"
         );
     }
 }
