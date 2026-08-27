@@ -412,9 +412,9 @@ pub struct GpuFrame<'a> {
     pub view: wgpu::TextureView,
     /// The texture format of the surface.
     pub format: wgpu::TextureFormat,
-    /// Current width in pixels (from layout system).
+    /// Current width in physical device pixels (from layout system).
     pub width: u32,
-    /// Current height in pixels (from layout system).
+    /// Current height in physical device pixels (from layout system).
     pub height: u32,
     /// Pointer/cursor state for this frame.
     ///
@@ -427,6 +427,8 @@ pub struct GpuFrame<'a> {
     /// Use this to implement zoom/pan interactions. `GpuSurface` automatically
     /// forwards gestures routed through it as a per-frame snapshot.
     pub gesture: GestureState,
+    /// Device pixels per logical unit, read through [`GpuFrame::scale`].
+    scale: f64,
     /// Elapsed animation time since the surface started rendering.
     elapsed: Duration,
     /// Time advanced since the previous frame.
@@ -441,6 +443,7 @@ impl fmt::Debug for GpuFrame<'_> {
             .field("format", &self.format)
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("scale", &self.scale)
             .field("pointer", &self.pointer)
             .field("gesture", &self.gesture)
             .finish_non_exhaustive()
@@ -449,6 +452,13 @@ impl fmt::Debug for GpuFrame<'_> {
 
 impl<'a> GpuFrame<'a> {
     /// Creates a frame payload for a single render pass.
+    ///
+    /// `width` and `height` are physical device pixels and `scale` is how many
+    /// of them one logical unit spans, so the caller always knows both spaces.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `scale` is not a positive, finite number.
     #[must_use]
     #[expect(
         clippy::too_many_arguments,
@@ -462,11 +472,16 @@ impl<'a> GpuFrame<'a> {
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
+        scale: f64,
         pointer: PointerState,
         gesture: GestureState,
         elapsed: Duration,
         delta: Duration,
     ) -> Self {
+        assert!(
+            scale.is_finite() && scale > 0.0,
+            "GpuFrame scale must be a positive, finite device-pixel ratio"
+        );
         Self {
             device,
             queue,
@@ -475,6 +490,7 @@ impl<'a> GpuFrame<'a> {
             format,
             width,
             height,
+            scale,
             pointer,
             gesture,
             elapsed,
@@ -490,6 +506,29 @@ impl<'a> GpuFrame<'a> {
             self.format,
             wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
         )
+    }
+
+    /// Returns how many physical device pixels one logical unit spans.
+    ///
+    /// `2.0` on a Retina display, `1.0` on a conventional one. Renderers that
+    /// draw in logical units — text sizes, stroke widths, browser page layout —
+    /// multiply by this to reach the pixel grid [`Self::width`] and
+    /// [`Self::height`] are measured on.
+    #[must_use]
+    pub const fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    /// Returns the frame width in logical units.
+    #[must_use]
+    pub fn logical_width(&self) -> f64 {
+        f64::from(self.width) / self.scale
+    }
+
+    /// Returns the frame height in logical units.
+    #[must_use]
+    pub fn logical_height(&self) -> f64 {
+        f64::from(self.height) / self.scale
     }
 
     /// Returns the normalized pointer position (0.0 to 1.0).
@@ -691,6 +730,13 @@ pub struct OffscreenRenderConfig {
     /// For `render_offscreen`, this supports `Rgba8Unorm` and `Rgba8UnormSrgb`.
     /// For `render_offscreen_hdr`, this supports `Rgba16Float`.
     pub format: wgpu::TextureFormat,
+    /// Device pixels per logical unit reported to the renderer.
+    ///
+    /// Offscreen rendering addresses the pixel grid directly, so `size` is both
+    /// the pixel and the logical size at the default `1.0`. Raise it to render
+    /// the same logical content at a higher density, exactly as a Retina
+    /// display would.
+    pub scale: f64,
     /// Optional explicit MSAA sample count. `None` means auto-select.
     pub msaa_samples: Option<NonZeroU32>,
     /// Pointer state snapshot used for hover/pressed shader behavior.
@@ -712,6 +758,7 @@ impl Default for OffscreenRenderConfig {
             size: OffscreenSize::try_from_pixels(1024, 768)
                 .expect("static offscreen defaults must be non-zero"),
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            scale: 1.0,
             msaa_samples: None,
             pointer: PointerState::default(),
             gesture: GestureState::new(),
@@ -734,6 +781,16 @@ impl OffscreenRenderConfig {
     #[must_use]
     pub const fn format(mut self, format: wgpu::TextureFormat) -> Self {
         self.format = format;
+        self
+    }
+
+    /// Sets the device-pixel ratio the renderer sees for this render.
+    ///
+    /// `size` stays the pixel size of the output texture; this only tells the
+    /// renderer how many of those pixels one logical unit covers.
+    #[must_use]
+    pub const fn scale(mut self, scale: f64) -> Self {
+        self.scale = scale;
         self
     }
 
@@ -1429,6 +1486,11 @@ fn render_offscreen_frames_to_texture(
     let width = config.size.width();
     let height = config.size.height();
     let frame_delta = Duration::from_secs_f32(1.0 / 60.0);
+    assert!(
+        config.scale.is_finite() && config.scale > 0.0,
+        "offscreen render scale must be a positive, finite device-pixel ratio, got {}",
+        config.scale
+    );
     let mut frame = GpuFrame {
         device,
         queue,
@@ -1437,6 +1499,7 @@ fn render_offscreen_frames_to_texture(
         format: config.format,
         width,
         height,
+        scale: config.scale,
         pointer: config.pointer,
         gesture: config.gesture,
         elapsed: frame_delta,
