@@ -32,11 +32,39 @@ pub enum KeyState {
 }
 
 /// Platform-agnostic key identifier.
+///
+/// This is the vocabulary `WaterUI`'s own widgets and the embedded browser
+/// bridges match on. New code should read [`InputEvent::Key`]'s `logical_key`
+/// and `physical_code` instead — the W3C UI Events pair, which is what GPU
+/// surfaces receive and what the browser engines will move to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyCode {
     Character(String),
     Named(String),
     Unidentified,
+}
+
+impl KeyCode {
+    /// The W3C UI Events logical key this identifier denotes.
+    ///
+    /// A producer holding the platform's own key event maps that directly into
+    /// [`InputEvent::Key`]'s `logical_key`, which is strictly better. This is
+    /// for the synthetic keystrokes a test driver injects, where the
+    /// identifier is the only thing there is.
+    #[must_use]
+    pub fn to_w3c_key(&self) -> keyboard_types::Key {
+        let unidentified = keyboard_types::Key::Named(keyboard_types::NamedKey::Unidentified);
+        match self {
+            Self::Character(value) => keyboard_types::Key::Character(value.clone()),
+            // The W3C vocabulary has no named "Space": it is the character the
+            // key types.
+            Self::Named(value) if value == "Space" => {
+                keyboard_types::Key::Character(" ".to_owned())
+            }
+            Self::Named(value) => value.parse().unwrap_or(unidentified),
+            Self::Unidentified => unidentified,
+        }
+    }
 }
 
 /// Platform-native key metadata retained for embedded browser engines.
@@ -55,6 +83,17 @@ pub struct Modifiers {
     pub control: bool,
     pub alt: bool,
     pub super_key: bool,
+}
+
+impl From<Modifiers> for keyboard_types::Modifiers {
+    fn from(modifiers: Modifiers) -> Self {
+        let mut result = Self::empty();
+        result.set(Self::SHIFT, modifiers.shift);
+        result.set(Self::CONTROL, modifiers.control);
+        result.set(Self::ALT, modifiers.alt);
+        result.set(Self::META, modifiers.super_key);
+        result
+    }
 }
 
 /// IME purpose for the focused text input target.
@@ -139,12 +178,24 @@ pub enum InputEvent {
     Key {
         key: KeyCode,
         native: Option<NativeKey>,
+        /// The logical key in the W3C UI Events vocabulary — what the layout
+        /// and modifiers produce. Unlike `key`, this is never suppressed when
+        /// the same keystroke also produces text: an embedded engine needs the
+        /// real `keydown` alongside the insertion, exactly as the web does.
+        logical_key: keyboard_types::Key,
+        /// The physical key in the W3C UI Events vocabulary — where it sits on
+        /// the keyboard, independent of layout.
+        physical_code: keyboard_types::Code,
+        /// Whether the platform generated this press by auto-repeat.
+        repeat: bool,
         state: KeyState,
         modifiers: Modifiers,
     },
     ModifiersChanged(Modifiers),
     ImePreedit {
         text: String,
+        /// Caret offset within `text`, in bytes, when the platform reports one.
+        caret: Option<usize>,
     },
     ImeCommit {
         text: String,
@@ -2028,6 +2079,13 @@ mod winit_impl {
                     self.pending_events.push(InputEvent::Key {
                         key: map_key_event(event, self.modifiers),
                         native: native_key_event(event),
+                        logical_key: ui_events_winit::keyboard::from_winit_key(
+                            event.logical_key.clone(),
+                        ),
+                        physical_code: ui_events_winit::keyboard::from_winit_code(
+                            event.physical_key,
+                        ),
+                        repeat: event.repeat,
                         state: match event.state {
                             ElementState::Pressed => KeyState::Pressed,
                             ElementState::Released => KeyState::Released,
@@ -2036,15 +2094,19 @@ mod winit_impl {
                     });
                 }
                 WindowEvent::Ime(ime) => match ime {
-                    Ime::Preedit(text, _) => {
+                    Ime::Preedit(text, caret) => {
                         tracing::trace!(
                             target: "waterui::hydrolysis::input_raw",
                             event = "ime_preedit",
                             text = text.as_str(),
                             "winit raw input event"
                         );
-                        self.pending_events
-                            .push(InputEvent::ImePreedit { text: text.clone() });
+                        self.pending_events.push(InputEvent::ImePreedit {
+                            text: text.clone(),
+                            // winit reports the pre-edit selection as a byte
+                            // range; the caret sits at its start.
+                            caret: caret.map(|(start, _)| start),
+                        });
                     }
                     Ime::Commit(text) => {
                         tracing::trace!(

@@ -624,6 +624,18 @@ impl GpuSurfaceNode {
             ctx.bounds,
             hit_rect,
         );
+        // A view that handles its own input receives the pointer, keyboard,
+        // IME and scroll events landing on this layer directly, and owns the
+        // gesture: it gets raw scroll deltas instead of the pan state
+        // `GpuFrame` exposes, so the two never both interpret one gesture.
+        if self.runtime.borrow().wants_input_events() {
+            renderer.register_gpu_surface_input_target(
+                ctx.bounds,
+                ctx.hit_transform,
+                Rc::clone(&self.runtime),
+            );
+            return;
+        }
         let runtime = Rc::clone(&self.runtime);
         renderer.register_trackpad_pan_target(hit_rect, move |dx, dy, phase| {
             runtime.borrow_mut().handle_trackpad_pan(dx, dy, phase)

@@ -1174,7 +1174,7 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::TextInput { text } => {
-                let changed = runtime.renderer.handle_browser_text_input(text.as_str())
+                let changed = runtime.renderer.handle_embedded_text_input(text.as_str())
                     || runtime.renderer.handle_text_input(text.as_str());
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
@@ -1188,17 +1188,25 @@ where
             InputEvent::Key {
                 key,
                 native,
+                logical_key,
+                physical_code,
+                repeat,
                 state: KeyState::Pressed,
                 modifiers,
             } => {
-                let changed = runtime
-                    .renderer
-                    .handle_browser_key(true, &key, native, modifiers)
-                    || runtime.renderer.handle_key_with_env(
-                        &key,
-                        modifiers,
-                        &input_env(runtime, env),
-                    );
+                let changed = runtime.renderer.handle_embedded_key(&KeyDelivery {
+                    pressed: true,
+                    key: &key,
+                    native,
+                    logical: &logical_key,
+                    code: physical_code,
+                    repeat,
+                    modifiers,
+                }) || runtime.renderer.handle_key_with_env(
+                    &key,
+                    modifiers,
+                    &input_env(runtime, env),
+                );
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "key_pressed",
@@ -1209,8 +1217,10 @@ where
                 );
                 schedule_redraw_or_refresh(runtime, changed);
             }
-            InputEvent::ImePreedit { text } => {
-                let changed = runtime.renderer.browser_has_focus()
+            InputEvent::ImePreedit { text, caret } => {
+                let changed = runtime
+                    .renderer
+                    .handle_embedded_ime_preedit(text.as_str(), caret)
                     || runtime.renderer.handle_ime_preedit(text.as_str());
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
@@ -1222,7 +1232,7 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImeCommit { text } => {
-                let changed = runtime.renderer.handle_browser_commit_text(text.as_str())
+                let changed = runtime.renderer.handle_embedded_ime_commit(text.as_str())
                     || runtime.renderer.handle_ime_commit(text.as_str());
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
@@ -1234,7 +1244,8 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImeDisabled => {
-                let changed = runtime.renderer.handle_ime_disabled();
+                let changed = runtime.renderer.handle_embedded_ime_disabled()
+                    || runtime.renderer.handle_ime_disabled();
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_disabled",
@@ -1246,19 +1257,27 @@ where
             InputEvent::Key {
                 key,
                 native,
+                logical_key,
+                physical_code,
+                repeat,
                 state: KeyState::Released,
                 modifiers,
             } => {
-                let changed = runtime
+                let changed = runtime.renderer.handle_embedded_key(&KeyDelivery {
+                    pressed: false,
+                    key: &key,
+                    native,
+                    logical: &logical_key,
+                    code: physical_code,
+                    repeat,
+                    modifiers,
+                }) || runtime
                     .renderer
-                    .handle_browser_key(false, &key, native, modifiers)
-                    || runtime
-                        .renderer
-                        .handle_key_release_with_env(&key, &input_env(runtime, env));
+                    .handle_key_release_with_env(&key, &input_env(runtime, env));
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ModifiersChanged(modifiers) => {
-                runtime.renderer.update_browser_modifiers(modifiers);
+                runtime.renderer.update_embedded_modifiers(modifiers);
             }
         }
     }
