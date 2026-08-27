@@ -29,6 +29,7 @@ pub mod divider;
 pub mod navigation;
 #[cfg(feature = "progress")]
 pub mod progress;
+pub mod scene;
 pub mod scroll;
 pub mod shape;
 pub mod slider;

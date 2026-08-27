@@ -93,6 +93,15 @@ esp-idf-svc = { version = "0.52", optional = true }
 
 [dev-dependencies]
 waterui-testing = { path = "../../testing" }
+# Scene content, for the tests that prove `Scene2D` drawings render on dew's
+# CPU rasterizer unchanged. Test-only on purpose: dew draws a scene through
+# the engine-neutral contract and never needs to know which component produced
+# it, so the library gains no component dependency. These crates currently ask
+# `waterui-graphics` for its `gpu` feature (`CanvasImage` decodes through it),
+# which is why they are confined to dev-dependencies — the firmware graph,
+# built from the library alone, stays GPU-free.
+waterui-canvas.workspace = true
+waterui-svg.workspace = true
 fearless_simd = { version = "0.4", features = ["force_support_fallback"] }
 executor-core.workspace = true
 native-executor.workspace = true
