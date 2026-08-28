@@ -265,8 +265,9 @@ impl<V: GpuView> GpuView for CefInputGpuView<V> {
     }
 
     fn ime_caret(&self) -> Option<kurbo::Rect> {
-        // Chromium places its own candidate window relative to the composition
-        // it is rendering, so the host has no caret to report on its behalf.
+        // Wrapping a presenter must not take its caret away, even though no CEF
+        // presenter reports one today: Chromium knows where the composition is
+        // and the host would have to be told.
         self.view.ime_caret()
     }
 
