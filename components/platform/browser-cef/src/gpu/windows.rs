@@ -1,23 +1,14 @@
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::ptr::NonNull;
 use std::rc::Rc;
 
 use cef::{AcceleratedPaintInfo, ColorType, PaintElementType, Rect};
 use num_traits::ToPrimitive as _;
 use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
-use windows::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE};
-use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
-use windows::Win32::System::Threading::GetCurrentProcess;
+use wgpu_external_frame::shared_handle::SharedHandleFrame;
 
 use super::presenter::{OwnedFrameMailbox, TexturePresenter, copy_source_texture};
 use super::{CefViewport, request_browser_frame};
 use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
-
-struct SharedD3dFrame {
-    handle: OwnedHandle,
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-}
 
 struct WindowsFrameSink {
     device: wgpu::Device,
@@ -32,24 +23,11 @@ impl AcceleratedFrameSink for WindowsFrameSink {
         _dirty_rects: &[Rect],
         frame: &AcceleratedPaintInfo,
     ) {
-        assert!(
-            !frame.shared_texture_handle.is_null(),
-            "CEF accelerated paint returned a null D3D shared handle"
-        );
-        let mut duplicate = HANDLE::default();
-        unsafe {
-            DuplicateHandle(
-                GetCurrentProcess(),
-                HANDLE(frame.shared_texture_handle),
-                GetCurrentProcess(),
-                &raw mut duplicate,
-                0,
-                false,
-                DUPLICATE_SAME_ACCESS,
-            )
-            .expect("failed to duplicate CEF D3D shared texture handle");
-        }
+        let handle = NonNull::new(frame.shared_texture_handle)
+            .expect("CEF accelerated paint returned a null D3D shared handle");
         let size = &frame.extra.coded_size;
+        let width = u32::try_from(size.width).expect("CEF D3D texture width must be positive");
+        let height = u32::try_from(size.height).expect("CEF D3D texture height must be positive");
         let format = if frame.format == ColorType::BGRA_8888 {
             wgpu::TextureFormat::Bgra8Unorm
         } else if frame.format == ColorType::RGBA_8888 {
@@ -57,19 +35,12 @@ impl AcceleratedFrameSink for WindowsFrameSink {
         } else {
             panic!("CEF returned unsupported Windows accelerated color format")
         };
-        let shared = SharedD3dFrame {
-            handle: unsafe { OwnedHandle::from_raw_handle(duplicate.0) },
-            width: u32::try_from(size.width).expect("CEF D3D texture width must be positive"),
-            height: u32::try_from(size.height).expect("CEF D3D texture height must be positive"),
-            format,
-        };
-        let source = import_d3d_texture(
-            &self.device,
-            shared.handle.as_raw_handle(),
-            shared.width,
-            shared.height,
-            shared.format,
-        );
+        // SAFETY: `import` is the accelerated paint callback, so the handle CEF
+        // put in the paint info is valid in this process for exactly this call,
+        // which is when it is duplicated. The extent and format come out of the
+        // same paint info and describe the resource behind it.
+        let shared = unsafe { SharedHandleFrame::duplicate(handle, width, height, format) };
+        let source = shared.import(&self.device);
         // Only the visible region: `coded_size` may carry alignment padding, and
         // presenting the padded texture edge to edge stretches the page and
         // draws the gutter.
@@ -79,15 +50,11 @@ impl AcceleratedFrameSink for WindowsFrameSink {
             &self.queue,
             &source,
             wgpu::Extent3d {
-                width: u32::try_from(visible.width)
-                    .unwrap_or(shared.width)
-                    .min(shared.width),
-                height: u32::try_from(visible.height)
-                    .unwrap_or(shared.height)
-                    .min(shared.height),
+                width: u32::try_from(visible.width).unwrap_or(width).min(width),
+                height: u32::try_from(visible.height).unwrap_or(height).min(height),
                 depth_or_array_layers: 1,
             },
-            shared.format,
+            format,
         );
         self.mailbox.publish(element, owned);
     }
@@ -165,51 +132,4 @@ impl GpuView for CefGpuView {
         presenter.set_popup_rect(self.mailbox.popup_rect());
         presenter.render(frame, scale);
     }
-}
-
-fn import_d3d_texture(
-    device: &wgpu::Device,
-    handle: std::os::windows::io::RawHandle,
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-) -> wgpu::Texture {
-    let descriptor = wgpu::TextureDescriptor {
-        label: Some("waterui_cef_d3d_shared_texture"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    };
-    let hal_device = unsafe {
-        device
-            .as_hal::<wgpu::hal::api::Dx12>()
-            .expect("CEF shared D3D texture requires a Direct3D 12 device")
-    };
-    let mut resource = None;
-    unsafe {
-        hal_device
-            .raw_device()
-            .OpenSharedHandle::<ID3D12Resource>(HANDLE(handle), &raw mut resource)
-            .expect("Direct3D 12 failed to open CEF shared texture handle");
-    }
-    let resource = resource.expect("CEF shared handle did not contain a D3D12 texture");
-    let hal_texture = unsafe {
-        <wgpu::hal::api::Dx12 as wgpu::hal::Api>::Device::texture_from_raw(
-            resource,
-            format,
-            wgpu::TextureDimension::D2,
-            descriptor.size,
-            1,
-            1,
-        )
-    };
-    unsafe { device.create_texture_from_hal::<wgpu::hal::api::Dx12>(hal_texture, &descriptor) }
 }
