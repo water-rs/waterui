@@ -97,6 +97,9 @@ unsafe extern "C" {
 #[cfg(target_os = "windows")]
 impl PlatformSandbox {
     fn initialize(_paths: &CefRuntimePaths, _args: &cef::MainArgs) -> Self {
+        // SAFETY: the shim allocates a `CefScopedSandboxInfo` with no
+        // preconditions; the returned pointer is owned by this value and
+        // checked for null right below.
         let sandbox = unsafe { waterui_cef_windows_sandbox_create() };
         Self(
             std::ptr::NonNull::new(sandbox)
@@ -105,6 +108,8 @@ impl PlatformSandbox {
     }
 
     fn info(&self) -> *mut u8 {
+        // SAFETY: `self.0` came from `waterui_cef_windows_sandbox_create` and
+        // is destroyed only in `Drop`, so it is live for the whole borrow.
         unsafe { waterui_cef_windows_sandbox_info(self.0.as_ptr()) }.cast()
     }
 }
@@ -112,6 +117,8 @@ impl PlatformSandbox {
 #[cfg(target_os = "windows")]
 impl Drop for PlatformSandbox {
     fn drop(&mut self) {
+        // SAFETY: `self.0` came from `waterui_cef_windows_sandbox_create`;
+        // `Drop` runs at most once, and nothing uses the pointer afterwards.
         unsafe { waterui_cef_windows_sandbox_destroy(self.0.as_ptr()) };
     }
 }
