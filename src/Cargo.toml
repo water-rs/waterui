@@ -1,0 +1,200 @@
+[package]
+name = "waterui-internal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Internal implementation crate for WaterUI"
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+nami.workspace = true
+waterui-core.workspace = true
+waterui-str.workspace = true
+waterui-url.workspace = true
+waterui-layout.workspace = true
+waterui-text.workspace = true
+waterui-media = { workspace = true, optional = true }
+waterui-video = { workspace = true, optional = true }
+native-executor.workspace = true
+waterui-navigation.workspace = true
+waterui-form.workspace = true
+waterui-controls.workspace = true
+waterui-webview = { workspace = true, optional = true }
+# `number` is not optional here: `text!` interpolates every numeric argument
+# through `waterui_locale::LocalizedArgument`, so a WaterUI application that
+# formats a number into a string already depends on it.
+waterui-locale = { workspace = true, features = ["number"] }
+waterkit-screen = { workspace = true, optional = true }
+executor-core.workspace = true
+futures.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
+async-channel.workspace = true
+minstant.workspace = true
+pulldown-cmark = { version = "0.13", optional = true }
+waterui-macros.workspace = true
+waterui-graphics = { workspace = true, default-features = false }
+waterui-icon.workspace = true
+waterui-shape = { workspace = true, default-features = false }
+waterui-svg = { workspace = true, optional = true }
+waterui-assets = { workspace = true, optional = true }
+waterui-assets-macros = { workspace = true, optional = true }
+waterui-inspector-protocol = { workspace = true, optional = true }
+waterkit-haptic = { workspace = true, optional = true }
+# The self-drawn video realization. Selected by `video-gpu` rather than by
+# `video`, because whether it is the realization is a property of the platform's
+# own frameworks, not of the semantic component.
+waterui-video-gpu = { workspace = true, optional = true }
+
+pastey.workspace = true
+tree-sitter = { version = "0.26", optional = true }
+tree-sitter-md = { version = "0.5.3", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-swift = { version = "0.7", optional = true }
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-bash = { version = "0.25", optional = true }
+tree-sitter-sequel = { version = "0.3.11", optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_clipboard = "0.1.0"
+
+# The system clipboard (arboard, via X11 on Linux) does not exist on bare
+# embedded; espidf uses a no-op clipboard in widget/code.rs.
+#
+# `widget/code.rs` only ever puts *text* on the pasteboard, so arboard's
+# default `image-data` feature — an image codec plus CoreGraphics on Apple and
+# `Win32_Graphics_Gdi` on Windows — is not built.
+[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32"), not(target_os = "espidf")))'.dependencies]
+arboard = { version = "3.6.1", default-features = false }
+
+# Opening a URL in a system handler (robius-open) has no meaning on bare
+# embedded; espidf uses a no-op in component/link.rs.
+[target.'cfg(not(target_os = "espidf"))'.dependencies]
+robius-open.workspace = true
+
+# CPU-time profiling (cpu-time) needs CLOCK_*_CPUTIME_ID, absent in ESP-IDF
+# newlib; the runtime guard uses a zero-cost fallback there.
+[target.'cfg(all(any(unix, windows), not(target_os = "espidf")))'.dependencies]
+cpu-time.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
+
+[features]
+default = [
+    "gpu",
+    "assets",
+    "media",
+    "inspector",
+    "snackbar",
+    "highlight",
+    "locale-datetime",
+    "locale-list",
+]
+# `waterui::locale` is this crate's re-export of `waterui-locale`, so the
+# formatters an application can reach through it are selected here. Both are
+# default-on to keep that surface whole; a lean build already starts from
+# `default-features = false` and names what it wants.
+locale-datetime = ["waterui-locale/datetime"]
+locale-list = ["waterui-locale/list"]
+# The `Code` widget and the bundled syntect highlighter behind it. Default-on,
+# because `code(…)` is a plain authoring API; an application that shows no code
+# drops syntect, two-face, and their syntax and theme tables by opting out.
+highlight = ["waterui-text/highlight"]
+# The devtools Inspector hub and its wire protocol. Default-on for
+# development hosts; embedded firmware disables it — the hub is desktop
+# tooling, and its 64-bit sequence counters do not even exist on RV32
+# targets.
+inspector = ["dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
+# Reactive-graph tracing for the Inspector's `signals` channel. Development
+# only: it attributes every state-owning signal node and reports every
+# notification. Off by default so release builds pay nothing — see
+# `nami_core::observe`.
+inspector-signals = ["inspector", "nami/observability"]
+# Window-owned transient notifications. Embedded apps that do not select this
+# feature omit the manager, overlay, timers, and code-widget feedback path.
+snackbar = []
+# GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
+# so every existing consumer is unaffected. Disabling it lets a WaterUI app
+# cross-compile lean for embedded targets without the GPU stack.
+gpu = [
+    "waterui-graphics/gpu",
+    "waterui-shape/gpu",
+    "dep:waterui-svg",
+    "dep:waterkit-screen",
+]
+# `asset!` expands media-kind assets into `waterui::media::Photo` /
+# `waterui::video::video`, so the assets feature must carry the media stack.
+assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "media"]
+media = ["dep:waterui-media", "video"]
+video = ["dep:waterui-video"]
+# `WaterUI`'s own GPU video player, installed as the video realization. Not
+# implied by `video`: Apple bridges AVPlayer, so an Apple application would
+# otherwise link and pay for a player it never runs. The backend that has no
+# native player to bridge selects this.
+video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
+webview = ["dep:waterui-webview"]
+navigation-restoration = ["waterui-navigation/serde"]
+# Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
+# with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which
+# re-highlights fenced code with tree-sitter grammars. Off by default — a
+# CommonMark parser and a dozen grammars are a lot of binary for an application
+# that shows no Markdown.
+flow-markdown = [
+    "dep:pulldown-cmark",
+    "waterui-text/markdown",
+    # A fenced code block in a `RichText` renders through the `Code` widget.
+    "highlight",
+    "dep:tree-sitter",
+    "dep:tree-sitter-md",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-typescript",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-java",
+    "dep:tree-sitter-swift",
+    "dep:tree-sitter-json",
+    "dep:tree-sitter-bash",
+    "dep:tree-sitter-sequel",
+]
+std = ["dep:waterkit-haptic"]
+all = [
+    "std",
+    "gpu",
+    "highlight",
+    "locale-datetime",
+    "locale-list",
+    "assets",
+    "media",
+    "webview",
+    "flow-markdown",
+    "video-gpu",
+    "navigation-restoration",
+    "snackbar",
+]
+
+[dev-dependencies]
+# Every doc example in this crate is written the way an application writes it —
+# `use waterui::…` — because these docs are re-exported through that facade and
+# are read there. A doctest compiles as a crate of its own, so it needs the
+# facade linked or none of the examples resolve, which is what left them
+# uncompiled. A dev-dependency is allowed to point back at a crate that depends
+# on this one; only a cycle among normal dependencies is refused.
+waterui = { path = "..", features = ["all"] }
+
+[lints]
+workspace = true

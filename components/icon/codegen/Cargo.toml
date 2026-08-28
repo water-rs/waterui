@@ -1,0 +1,20 @@
+[package]
+name = "waterui-icons-codegen"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Build-script code generation for WaterUI icon set crates"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+askama = "0.16"
+heck = "0.5"
+ureq = "3.3"
+tracing.workspace = true
+
+[lints]
+workspace = true

@@ -1,5 +1,6 @@
-use waterui::prelude::*;
 use waterui::app::App;
+use waterui::prelude::*;
+use waterui::preview;
 
 // Demo form data structure
 #[form]
@@ -11,6 +12,7 @@ struct UserProfile {
     theme_brightness: f64,
 }
 
+#[preview]
 fn main() -> impl View {
     // Reactive state
     let profile = UserProfile::binding();
@@ -33,7 +35,7 @@ fn main() -> impl View {
                     "Count: ",
                     text!("{counter}"),
                     spacer(),
-                    stepper(&counter),
+                    stepper("Count", &counter),
                 )),
                 progress(counter.map(|count| count as f64 / 10.0)),
             )),
@@ -52,7 +54,7 @@ fn main() -> impl View {
             // Interactive controls
             vstack((
                 text("Controls").size(18.0f32),
-                Slider::new(0.0..=1.0, &progress_value),
+                Slider::new("Progress".into_label(), &progress_value),
                 progress(progress_value),
                 loading(),
             )),

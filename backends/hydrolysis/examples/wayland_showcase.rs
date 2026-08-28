@@ -14,6 +14,7 @@ use waterui::id::SelfId;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::window::Window;
+use waterui_controls::{slider::slider, stepper::stepper};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 enum RenderMode {
@@ -56,18 +57,14 @@ fn main_view() -> impl View {
         vstack((
             text("Hydrolysis Wayland Showcase").size(34.0),
             text("Control matrix on pure-Rust backend").size(16.0),
-            TextField::new(&username)
-                .label("Username")
-                .prompt("Type your name"),
+            TextField::new("Username", &username).prompt("Type your name"),
             SecureField::new("Password", &password),
-            Toggle::new(&toggle_value).label("Realtime rebuild"),
-            Slider::new(0.0..=1.0, &slider_value).label("Animation blend"),
-            Stepper::new(&stepper_value)
-                .label("Detail level")
-                .range(1..=12),
+            Toggle::new("Realtime rebuild", &toggle_value),
+            slider("Animation blend", &slider_value),
+            stepper("Detail level", &stepper_value).range(1..=12),
             hstack((loading(), text("Background task running").size(14.0))).spacing(12.0),
-            Picker::new(picker_items, &render_mode).style(PickerStyle::Menu),
-            Toggle::new(&list_editing).label("List editing"),
+            Picker::new("Render mode", picker_items, &render_mode).style(PickerStyle::Menu),
+            Toggle::new("List editing", &list_editing),
             List::for_each(diagnostics_rows, |row| {
                 let (name, value, color) = row.into_inner();
                 ListItem::new(hstack((
@@ -110,10 +107,18 @@ fn main_view() -> impl View {
 }
 
 fn app() -> App {
-    let env = Environment::new();
-    let window = Window::new("Hydrolysis Wayland Showcase", main_view)
-        .resizable(true)
-        .background(Color::srgb_hex("#EEF2FF"));
+    // Widgets read their fonts and colors out of the environment, and a bare
+    // `Environment` has neither, so every text view panics on the first frame.
+    // The generated projects install this too.
+    let mut env = Environment::new();
+    hydrolysis_m3::install_defaults(&mut env);
+    let window = Window::new(
+        "Hydrolysis Wayland Showcase",
+        binding(waterui::window::WindowState::Normal),
+        main_view,
+    )
+    .resizable(true)
+    .background(Color::srgb_hex("#EEF2FF"));
     window
         .frame
         .set(Rect::new(Point::zero(), Size::new(1366.0, 900.0)));

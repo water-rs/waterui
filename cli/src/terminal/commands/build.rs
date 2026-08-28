@@ -8,7 +8,7 @@ use target_lexicon::{
     Aarch64Architecture, Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor,
 };
 
-use crate::shell::{self, display_output};
+use crate::shell::Shell;
 use crate::toolchain_checks;
 use crate::{error, header, success};
 use waterui_cli::{
@@ -17,6 +17,7 @@ use waterui_cli::{
     apple::toolchain::AppleSdk,
     backend::reinit_backend,
     build::BuildOptions,
+    esp32::{backend::Esp32Backend, platform::build_esp32},
     gtk4::{backend::Gtk4Backend, platform::build_gtk4},
     hydrolysis::{backend::HydrolysisBackend, platform::build_hydrolysis},
     platform::TargetPlatform as LibTargetPlatform,
@@ -38,6 +39,25 @@ pub enum TargetPlatform {
     Linux,
     /// Windows.
     Windows,
+    /// ESP32-S3 (Xtensa firmware).
+    Esp32s3,
+    /// ESP32-C3 (RISC-V firmware).
+    Esp32c3,
+    /// ESP32-P4 (RISC-V firmware, hardware FPU).
+    Esp32p4,
+}
+
+impl TargetPlatform {
+    /// The ESP32 chip a platform selects, if it is an ESP32 platform.
+    const fn esp32_chip(self) -> Option<waterui_cli::esp32::chip::Esp32Chip> {
+        use waterui_cli::esp32::chip::Esp32Chip;
+        match self {
+            Self::Esp32s3 => Some(Esp32Chip::Esp32S3),
+            Self::Esp32c3 => Some(Esp32Chip::Esp32C3),
+            Self::Esp32p4 => Some(Esp32Chip::Esp32P4),
+            _ => None,
+        }
+    }
 }
 
 /// Target backend for building.
@@ -51,6 +71,8 @@ pub enum TargetBackend {
     Gtk4,
     /// Hydrolysis backend.
     Hydrolysis,
+    /// Dew backend (ESP32 firmware).
+    Dew,
 }
 
 /// Target architecture for building.
@@ -102,29 +124,37 @@ struct BuildContext {
 }
 
 /// Run the build command.
-pub async fn run(args: Args) -> Result<()> {
-    let context = prepare_build_context(&args).await?;
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    let context = prepare_build_context(shell, &args).await?;
     print_build_header(
+        shell,
         &context.project,
         args.platform,
         context.backend,
         args.release,
     );
-    check_build_toolchain(args.platform, context.backend, args.arch).await?;
-    let result = execute_build(&args, &context).await;
+    check_build_toolchain(shell, args.platform, context.backend, args.arch).await?;
+    let result = execute_build(shell, &args, &context).await;
 
-    handle_build_result(result, args.output_dir)
+    handle_build_result(shell, result, args.output_dir)
 }
 
-async fn prepare_build_context(args: &Args) -> Result<BuildContext> {
+async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<BuildContext> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Project::open(&project_path).await?;
+    let mut project = Project::open(&project_path).await?;
     ensure_app_project(&project)?;
 
     let backend = resolve_and_validate_backend(args)?;
     ensure_backend_configured(&project, backend)?;
-    let project = ensure_generated_backend_ready(&project_path, project, backend).await?;
-    let build_options = build_options(args, backend);
+
+    // Selecting an ESP32 platform pins the chip so the generated harness and
+    // build target follow the platform.
+    if let Some(chip) = args.platform.esp32_chip() {
+        project.set_esp32_chip(chip).await?;
+    }
+
+    let project = ensure_generated_backend_ready(shell, &project_path, project, backend).await?;
+    let build_options = build_options(shell, args, backend).await;
 
     Ok(BuildContext {
         project,
@@ -154,34 +184,34 @@ fn resolve_and_validate_backend(args: &Args) -> Result<TargetBackend> {
 fn ensure_backend_configured(project: &Project, backend: TargetBackend) -> Result<()> {
     match backend {
         TargetBackend::Apple if project.apple_backend().is_none() => {
-            bail!("Apple backend is not configured. Run `water backend add apple`.")
+            bail!("Apple backend is not configured. Run `water backend add apple`.");
         }
         TargetBackend::Android if project.android_backend().is_none() => {
-            bail!("Android backend is not configured. Run `water backend add android`.")
+            bail!("Android backend is not configured. Run `water backend add android`.");
         }
         TargetBackend::Gtk4 if project.gtk4_backend().is_none() => {
-            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.")
+            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.");
         }
         TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
-            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
+            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.");
+        }
+        TargetBackend::Dew if project.esp32_backend().is_none() => {
+            bail!("ESP32 backend is not configured. Run `water backend add esp32`.");
         }
         _ => Ok(()),
     }
 }
 
 async fn ensure_generated_backend_ready(
+    shell: &Shell,
     project_path: &PathBuf,
     project: Project,
     backend: TargetBackend,
 ) -> Result<Project> {
     match backend {
-        TargetBackend::Gtk4
-            if !project
-                .backend_path::<Gtk4Backend>()
-                .join("Cargo.toml")
-                .exists() =>
-        {
+        TargetBackend::Gtk4 if Gtk4Backend::requires_regeneration(&project).await? => {
             reinitialize_generated_backend::<Gtk4Backend>(
+                shell,
                 project_path,
                 &project,
                 "Re-initializing GTK4 backend...",
@@ -189,17 +219,23 @@ async fn ensure_generated_backend_ready(
             )
             .await
         }
-        TargetBackend::Hydrolysis
-            if !project
-                .backend_path::<HydrolysisBackend>()
-                .join("Cargo.toml")
-                .exists() =>
-        {
+        TargetBackend::Hydrolysis if HydrolysisBackend::requires_regeneration(&project).await? => {
             reinitialize_generated_backend::<HydrolysisBackend>(
+                shell,
                 project_path,
                 &project,
                 "Re-initializing hydrolysis backend...",
                 "Hydrolysis backend re-initialized",
+            )
+            .await
+        }
+        TargetBackend::Dew if Esp32Backend::requires_regeneration(&project)? => {
+            reinitialize_generated_backend::<Esp32Backend>(
+                shell,
+                project_path,
+                &project,
+                "Re-initializing ESP32 backend...",
+                "ESP32 backend re-initialized",
             )
             .await
         }
@@ -208,6 +244,7 @@ async fn ensure_generated_backend_ready(
 }
 
 async fn reinitialize_generated_backend<T>(
+    shell: &Shell,
     project_path: &PathBuf,
     project: &Project,
     spinner_message: &str,
@@ -216,21 +253,25 @@ async fn reinitialize_generated_backend<T>(
 where
     T: waterui_cli::backend::Backend,
 {
-    let spinner = shell::spinner(spinner_message);
+    let spinner = shell.spinner(spinner_message);
     reinit_backend::<T>(project).await?;
     let project = Project::open(project_path).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("{success_message}");
+    success!(shell, "{success_message}");
     Ok(project)
 }
 
-fn build_options(args: &Args, backend: TargetBackend) -> BuildOptions {
+async fn build_options(shell: &Shell, args: &Args, backend: TargetBackend) -> BuildOptions {
     let mut build_options = args.output_dir.as_ref().map_or_else(
-        || BuildOptions::new(args.release),
-        |output_dir| BuildOptions::new(args.release).with_output_dir(output_dir),
+        || BuildOptions::development(args.release),
+        |output_dir| BuildOptions::development(args.release).with_output_dir(output_dir),
     );
+
+    if let Some(sccache_path) = super::detect_sccache_path(shell).await {
+        build_options = build_options.with_sccache(sccache_path);
+    }
 
     if backend == TargetBackend::Apple
         && let Some(triple) = apple_target_triple_override(args.platform, args.arch)
@@ -242,6 +283,7 @@ fn build_options(args: &Args, backend: TargetBackend) -> BuildOptions {
 }
 
 fn print_build_header(
+    shell: &Shell,
     project: &Project,
     platform: TargetPlatform,
     backend: TargetBackend,
@@ -249,6 +291,7 @@ fn print_build_header(
 ) {
     let mode = if release { "release" } else { "debug" };
     header!(
+        shell,
         "Building {} for {} via {} ({})",
         project.crate_name(),
         platform_name(platform),
@@ -258,49 +301,55 @@ fn print_build_header(
 }
 
 async fn check_build_toolchain(
+    shell: &Shell,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: Option<TargetArch>,
 ) -> Result<()> {
-    let spinner = shell::spinner("Checking toolchain...");
+    let spinner = shell.spinner("Checking toolchain...");
     check_toolchain_for_backend(platform, backend, arch).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Toolchain ready");
+    success!(shell, "Toolchain ready");
     Ok(())
 }
 
-async fn execute_build(args: &Args, context: &BuildContext) -> Result<PathBuf> {
-    let spinner = shell::spinner("Compiling...");
-    let result = display_output(async {
-        match context.backend {
-            TargetBackend::Apple => {
-                build_for_apple(
-                    &context.project,
-                    args.platform,
-                    args.arch,
-                    context.build_options.clone(),
-                )
-                .await
+async fn execute_build(shell: &Shell, args: &Args, context: &BuildContext) -> Result<PathBuf> {
+    let spinner = shell.spinner("Compiling...");
+    let result = shell
+        .display_output(async {
+            match context.backend {
+                TargetBackend::Apple => {
+                    build_for_apple(
+                        &context.project,
+                        args.platform,
+                        args.arch,
+                        context.build_options.clone(),
+                    )
+                    .await
+                }
+                TargetBackend::Android => {
+                    build_for_android(&context.project, args.arch, context.build_options.clone())
+                        .await
+                }
+                TargetBackend::Gtk4 => {
+                    build_gtk4(&context.project, context.build_options.clone()).await
+                }
+                TargetBackend::Hydrolysis => {
+                    build_hydrolysis(
+                        &context.project,
+                        lib_platform(args.platform),
+                        context.build_options.clone(),
+                    )
+                    .await
+                }
+                TargetBackend::Dew => {
+                    build_esp32(&context.project, context.build_options.clone()).await
+                }
             }
-            TargetBackend::Android => {
-                build_for_android(&context.project, args.arch, context.build_options.clone()).await
-            }
-            TargetBackend::Gtk4 => {
-                build_gtk4(&context.project, context.build_options.clone()).await
-            }
-            TargetBackend::Hydrolysis => {
-                build_hydrolysis(
-                    &context.project,
-                    lib_platform(args.platform),
-                    context.build_options.clone(),
-                )
-                .await
-            }
-        }
-    })
-    .await;
+        })
+        .await;
 
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -309,17 +358,21 @@ async fn execute_build(args: &Args, context: &BuildContext) -> Result<PathBuf> {
     result
 }
 
-fn handle_build_result(result: Result<PathBuf>, output_dir: Option<PathBuf>) -> Result<()> {
+fn handle_build_result(
+    shell: &Shell,
+    result: Result<PathBuf>,
+    output_dir: Option<PathBuf>,
+) -> Result<()> {
     match result {
         Ok(output_path) => {
-            success!("Build output at {}", output_path.display());
+            success!(shell, "Build output at {}", output_path.display());
             if let Some(output_dir) = output_dir {
-                success!("Copied library to {}", output_dir.display());
+                success!(shell, "Copied library to {}", output_dir.display());
             }
             Ok(())
         }
         Err(err) => {
-            error!("Build failed: {err}");
+            error!(shell, "Build failed: {err}");
             Err(err)
         }
     }
@@ -336,6 +389,9 @@ fn resolve_backend(
         TargetPlatform::Android => TargetBackend::Android,
         TargetPlatform::Linux => TargetBackend::Gtk4,
         TargetPlatform::Windows => TargetBackend::Hydrolysis,
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
+            TargetBackend::Dew
+        }
     };
     let backend = backend_override.unwrap_or(default_backend);
 
@@ -353,6 +409,10 @@ fn resolve_backend(
                 TargetBackend::Gtk4 | TargetBackend::Hydrolysis
             )
             | (TargetPlatform::Windows, TargetBackend::Hydrolysis)
+            | (
+                TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4,
+                TargetBackend::Dew
+            )
     );
     if !supported {
         bail!(
@@ -362,7 +422,10 @@ fn resolve_backend(
              - Android: android\n  \
              - macOS: apple, hydrolysis\n  \
              - Linux: gtk4, hydrolysis\n  \
-             - Windows: hydrolysis",
+             - Windows: hydrolysis\n  \
+             - ESP32-S3: dew\n  \
+             - ESP32-C3: dew\n  \
+             - ESP32-P4: dew",
             backend,
             platform
         );
@@ -371,14 +434,23 @@ fn resolve_backend(
 }
 
 fn validate_arch_args(backend: TargetBackend, arch: Option<TargetArch>) -> Result<()> {
-    if matches!(backend, TargetBackend::Gtk4 | TargetBackend::Hydrolysis) && arch.is_some() {
-        bail!("--arch is not supported for gtk4/hydrolysis backends");
+    if matches!(
+        backend,
+        TargetBackend::Gtk4 | TargetBackend::Hydrolysis | TargetBackend::Dew
+    ) && arch.is_some()
+    {
+        bail!("--arch is not supported for gtk4/hydrolysis/dew backends");
     }
     Ok(())
 }
 
 fn validate_output_dir_args(backend: TargetBackend, output_dir: Option<&PathBuf>) -> Result<()> {
-    if output_dir.is_some() && matches!(backend, TargetBackend::Gtk4 | TargetBackend::Hydrolysis) {
+    if output_dir.is_some()
+        && matches!(
+            backend,
+            TargetBackend::Gtk4 | TargetBackend::Hydrolysis | TargetBackend::Dew
+        )
+    {
         bail!("--output-dir is only supported for Apple/Android backends");
     }
     Ok(())
@@ -395,8 +467,13 @@ async fn check_toolchain_for_backend(
                 TargetPlatform::Ios => AppleSdk::Ios,
                 TargetPlatform::IosSimulator => AppleSdk::IosSimulator,
                 TargetPlatform::Macos => AppleSdk::Macos,
-                TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows => {
-                    bail!("Internal error: Apple backend is not supported on {platform:?}")
+                TargetPlatform::Android
+                | TargetPlatform::Linux
+                | TargetPlatform::Windows
+                | TargetPlatform::Esp32s3
+                | TargetPlatform::Esp32c3
+                | TargetPlatform::Esp32p4 => {
+                    bail!("Internal error: Apple backend is not supported on {platform:?}");
                 }
             };
             toolchain_checks::check_apple(sdk).await?;
@@ -422,6 +499,11 @@ async fn check_toolchain_for_backend(
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
         }
+        TargetBackend::Dew => {
+            if platform.esp32_chip().is_none() {
+                bail!("Internal error: dew backend is not supported on {platform:?}");
+            }
+        }
     }
     Ok(())
 }
@@ -440,7 +522,7 @@ async fn build_for_apple(
             bail!(
                 "iOS physical devices only support arm64, not {:?}",
                 target_arch
-            )
+            );
         }
         (TargetPlatform::IosSimulator, None | Some(TargetArch::Arm64 | TargetArch::X86_64)) => {
             build_rust_lib(project, LibTargetPlatform::IOSSimulator, options).await
@@ -449,19 +531,27 @@ async fn build_for_apple(
             bail!(
                 "iOS Simulator only supports arm64 or x86_64, not {:?}",
                 target_arch
-            )
+            );
         }
         (TargetPlatform::Macos, None | Some(TargetArch::Arm64 | TargetArch::X86_64)) => {
             build_rust_lib(project, LibTargetPlatform::MacOS, options).await
         }
         (TargetPlatform::Macos, Some(target_arch)) => {
-            bail!("macOS only supports arm64 or x86_64, not {:?}", target_arch)
+            bail!("macOS only supports arm64 or x86_64, not {:?}", target_arch);
         }
-        (TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows, _) => {
+        (
+            TargetPlatform::Android
+            | TargetPlatform::Linux
+            | TargetPlatform::Windows
+            | TargetPlatform::Esp32s3
+            | TargetPlatform::Esp32c3
+            | TargetPlatform::Esp32p4,
+            _,
+        ) => {
             bail!(
                 "Internal error: invalid Apple backend platform {:?}",
                 platform
-            )
+            );
         }
     }
 }
@@ -516,7 +606,8 @@ fn validate_desktop_backend_platform_on_host(
             #[cfg(not(target_os = "macos"))]
             bail!("Apple backend requires a macOS host");
         }
-        TargetBackend::Android => {}
+        // The Dew/ESP32 firmware cross-compiles from any host with espup installed.
+        TargetBackend::Android | TargetBackend::Dew => {}
     }
 
     Ok(())
@@ -530,6 +621,9 @@ const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
         TargetPlatform::Macos => LibTargetPlatform::MacOS,
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
+        TargetPlatform::Esp32s3 => LibTargetPlatform::Esp32S3,
+        TargetPlatform::Esp32c3 => LibTargetPlatform::Esp32C3,
+        TargetPlatform::Esp32p4 => LibTargetPlatform::Esp32P4,
     }
 }
 
@@ -550,6 +644,9 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Macos => "macOS",
         TargetPlatform::Linux => "Linux",
         TargetPlatform::Windows => "Windows",
+        TargetPlatform::Esp32s3 => "ESP32-S3",
+        TargetPlatform::Esp32c3 => "ESP32-C3",
+        TargetPlatform::Esp32p4 => "ESP32-P4",
     }
 }
 
@@ -559,6 +656,7 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
         TargetBackend::Android => "Android",
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
+        TargetBackend::Dew => "Dew",
     }
 }
 

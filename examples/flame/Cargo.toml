@@ -6,7 +6,6 @@ authors = ["Lexo Liu"]
 description = "Flame example for WaterUI framework"
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
 keywords = ["ui", "framework", "example", "flame"]
 categories = ["gui"]
 publish = false
@@ -16,3 +15,12 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
+shaderloom.workspace = true
+wgpu.workspace = true
+
+[build-dependencies]
+shaderloom = { workspace = true, features = ["build"] }
+
+# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+[package.metadata.cargo-machete]
+ignored = ["shaderloom"]

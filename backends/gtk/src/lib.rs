@@ -1,7 +1,7 @@
-//! GTK4 backend for WaterUI.
+//! GTK4 backend for `WaterUI`.
 //!
-//! This crate provides a GTK4-based rendering backend for WaterUI, mapping
-//! WaterUI views to native GTK4 widgets.
+//! This crate provides a GTK4-based rendering backend for `WaterUI`, mapping
+//! `WaterUI` views to native GTK4 widgets.
 //!
 //! # Architecture
 //!
@@ -24,7 +24,7 @@
 #[cfg(target_os = "linux")]
 pub mod app;
 #[cfg(target_os = "linux")]
-mod applied_filter;
+mod browser_input;
 #[cfg(target_os = "linux")]
 pub mod component;
 #[cfg(target_os = "linux")]
@@ -34,8 +34,15 @@ pub mod layout;
 #[cfg(target_os = "linux")]
 pub mod renderer;
 #[cfg(target_os = "linux")]
-pub mod util;
+mod theme;
 #[cfg(target_os = "linux")]
+pub mod util;
+// The only web engine this backend bridges is the platform's own, `WebKitGTK`.
+// Every other engine is a crate the application links and installs, and it
+// reaches the screen as an ordinary `GpuSurface` this backend draws like any
+// other — see `components::graphics::gpu_surface`.
+#[cfg(all(target_os = "linux", feature = "webview-system"))]
+#[path = "webview_system.rs"]
 pub mod webview;
 #[cfg(target_os = "linux")]
 pub mod window;

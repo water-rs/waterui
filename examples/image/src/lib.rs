@@ -10,7 +10,9 @@
 use waterui::app::App;
 use waterui::media::photo::Event as PhotoEvent;
 use waterui::media::{Image, Photo};
+use waterui::prelude::slider::slider;
 use waterui::prelude::*;
+use waterui::preview;
 
 // Note: filtrate is re-exported through waterui::media as Filter
 
@@ -70,7 +72,9 @@ fn photo_section() -> impl View {
         photo,
         hstack((
             text("Blur:"),
-            Slider::new(0.0..=10.0, &blur_value),
+            slider("Blur radius", &blur_value)
+                .range(0.0..=10.0)
+                .hide_label(),
             text!("{blur_value:.1}"),
         )),
     ))
@@ -92,7 +96,9 @@ fn custom_url_section() -> impl View {
         text("Custom URL Loader").headline(),
         "Load any image from the web (blur updates in real-time)",
         hstack((
-            TextField::new(&url_input).prompt("Enter image URL"),
+            TextField::new("Image URL", &url_input)
+                .hide_label()
+                .prompt("Enter image URL"),
             button("Load")
                 .bordered_prominent()
                 .action(
@@ -105,9 +111,19 @@ fn custom_url_section() -> impl View {
                             status.set(String::from("Please enter a URL"));
                             return;
                         }
+                        // User input must parse explicitly: a malformed
+                        // address is reported here instead of silently
+                        // reaching the image loader as a local path.
+                        let parsed: Url = match url_str.as_str().parse() {
+                            Ok(parsed) => parsed,
+                            Err(error) => {
+                                status.set(format!("Invalid URL: {error}"));
+                                return;
+                            }
+                        };
                         status.set(String::from("Loading..."));
                         // Pass blur binding for reactive updates
-                        let photo = Photo::new(url_str)
+                        let photo = Photo::new(parsed)
                             .on_event({
                                 let status = status.clone();
                                 move |event| match event {
@@ -130,14 +146,47 @@ fn custom_url_section() -> impl View {
         photo_view,
         hstack((
             text("Blur:"),
-            Slider::new(0.0..=20.0, &blur_value),
+            slider("Blur radius", &blur_value)
+                .range(0.0..=20.0)
+                .hide_label(),
             text!("{blur_value:.1}"),
         )),
     ))
     .padding()
 }
 
-fn main() -> impl View {
+#[preview]
+fn image_preview() -> impl View {
+    let blur_value = Binding::f64(2.0);
+
+    scroll(
+        vstack((
+            text("GPU Image Processing").title(),
+            "Static image preview for Hydrolysis perf",
+            Divider,
+            text("Image Test").headline(),
+            original_image_section(),
+            Divider,
+            text("Static Photo Filter Preview").headline(),
+            vstack((
+                text("Generated image data; no network Photo load in preview").sub_headline(),
+                Image::new(generate_test_pattern(200, 150), 200, 150),
+                hstack((
+                    text("Blur:"),
+                    slider("Blur radius", &blur_value)
+                        .range(0.0..=10.0)
+                        .hide_label(),
+                    text!("{blur_value:.1}"),
+                )),
+            ))
+            .padding(),
+        ))
+        .padding(),
+    )
+}
+
+/// Root view: GPU image-processing showcase.
+pub fn demo() -> impl View {
     scroll(
         vstack((
             // Header
@@ -160,5 +209,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

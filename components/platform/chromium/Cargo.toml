@@ -1,0 +1,26 @@
+[package]
+name = "waterui-chromium"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Embedded Chromium, headless pages, and Chrome DevTools Protocol for WaterUI"
+keywords = ["chromium", "cdp", "headless", "browser", "waterui"]
+categories = ["gui", "web-programming"]
+
+[dependencies]
+async-channel = "2.5"
+chromiumoxide_cdp = "0.9.1"
+chromiumoxide_types = "0.9.1"
+futures.workspace = true
+serde.workspace = true
+serde_json = "1.0"
+thiserror.workspace = true
+waterui-core.workspace = true
+waterui-layout.workspace = true
+waterui-url.workspace = true
+
+[lints]
+workspace = true

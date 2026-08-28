@@ -1,9 +1,11 @@
 //! Accordion component with a header and expandable content.
 
-use crate::{ViewExt, component::Dynamic};
+use crate::ViewExt;
 use nami::Binding;
 use waterui_core::{View, handler::ViewBuilder};
 use waterui_layout::stack::vstack;
+
+use super::condition::when;
 
 /// An accordion component with a header and expandable content.
 /// Content will be rendered lazily when the accordion is expanded. Its state may not be preserved when collapsed.
@@ -69,18 +71,13 @@ where
     V: ViewBuilder,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        let (handler, dynamic) = Dynamic::new();
         let toggle = self.toggle;
+        let expanded = toggle.clone();
         vstack((
             self.header.on_tap(move || {
                 toggle.toggle();
-                if toggle.get() {
-                    handler.set(self.content.build());
-                } else {
-                    handler.set(());
-                }
             }),
-            dynamic,
+            when(expanded, move || self.content.build()),
         ))
     }
 }

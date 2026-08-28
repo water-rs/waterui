@@ -1,0 +1,30 @@
+[package]
+name = "waterui-inspector-app"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../../../README.md"
+repository.workspace = true
+description = "The WaterUI Inspector, written in WaterUI"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+waterui.workspace = true
+waterui-chart.workspace = true
+waterui-inspector-protocol.workspace = true
+waterui-icons-lucide.workspace = true
+waterui-controls.workspace = true
+smol = "2.0.2"
+futures-lite = "2.6"
+async-channel.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+waterui-testing = { path = "../../../../testing" }
+hydrolysis-m3 = { path = "../../../../backends/hydrolysis_m3" }
+
+[lints]
+workspace = true

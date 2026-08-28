@@ -1,0 +1,426 @@
+//! GPU-animated mesh gradient with configurable parameters.
+
+extern crate alloc;
+
+use alloc::vec::Vec;
+use core::fmt;
+use num_traits::ToPrimitive;
+use std::time::Instant;
+
+use encase::{ShaderSize, UniformBuffer};
+
+use crate::color::ResolvedColor;
+use crate::gpu::pipeline::single_bind_group_render_stages;
+use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
+use crate::shaders::ANIMATED_MESH_GRADIENT;
+use waterui_core::View;
+
+/// Number of colors in the mesh palette (4x4 grid).
+pub const ANIMATED_MESH_PALETTE_LEN: usize = 16;
+
+/// Configuration for the animated mesh gradient.
+#[derive(Debug, Clone)]
+pub struct AnimatedMeshGradientConfig {
+    /// Animation speed multiplier.
+    pub speed: f32,
+    /// UV warp strength (controls flow intensity).
+    pub warp: f32,
+    /// Mesh palette (4x4 grid, row-major).
+    pub palette: [ResolvedColor; ANIMATED_MESH_PALETTE_LEN],
+}
+
+impl AnimatedMeshGradientConfig {
+    /// Sets the animation speed (must be >= 0.0).
+    ///
+    /// # Panics
+    ///
+    /// Panics when `speed` is negative.
+    #[must_use]
+    pub fn speed(mut self, speed: f32) -> Self {
+        assert!(speed >= 0.0, "AnimatedMeshGradient speed must be >= 0.0");
+        self.speed = speed;
+        self
+    }
+
+    /// Sets the warp strength (recommended 0.0..0.5).
+    ///
+    /// # Panics
+    ///
+    /// Panics when `warp` is negative.
+    #[must_use]
+    pub fn warp(mut self, warp: f32) -> Self {
+        assert!(warp >= 0.0, "AnimatedMeshGradient warp must be >= 0.0");
+        self.warp = warp;
+        self
+    }
+
+    /// Sets the 4x4 palette (row-major).
+    #[must_use]
+    pub const fn palette(mut self, palette: [ResolvedColor; ANIMATED_MESH_PALETTE_LEN]) -> Self {
+        self.palette = palette;
+        self
+    }
+
+    /// Aqua + lavender pastel palette with soft contrast.
+    #[must_use]
+    pub const fn aqua_bloom() -> Self {
+        Self {
+            speed: 0.6,
+            warp: 0.24,
+            palette: [
+                palette_color(0.60, 0.92, 0.98),
+                palette_color(0.70, 0.90, 0.98),
+                palette_color(0.78, 0.84, 0.96),
+                palette_color(0.84, 0.92, 0.98),
+                palette_color(0.38, 0.72, 0.92),
+                palette_color(0.46, 0.64, 0.90),
+                palette_color(0.82, 0.64, 0.92),
+                palette_color(0.90, 0.74, 0.92),
+                palette_color(0.30, 0.56, 0.86),
+                palette_color(0.42, 0.52, 0.86),
+                palette_color(0.78, 0.56, 0.86),
+                palette_color(0.94, 0.70, 0.88),
+                palette_color(0.22, 0.44, 0.78),
+                palette_color(0.36, 0.46, 0.80),
+                palette_color(0.62, 0.54, 0.80),
+                palette_color(0.86, 0.66, 0.84),
+            ],
+        }
+    }
+
+    /// Soft pastel palette with gentle cyan/pink transitions.
+    #[must_use]
+    pub const fn pastel_lagoon() -> Self {
+        Self {
+            speed: 0.55,
+            warp: 0.16,
+            palette: [
+                palette_color(0.72, 0.94, 0.98),
+                palette_color(0.62, 0.90, 0.98),
+                palette_color(0.72, 0.82, 0.96),
+                palette_color(0.88, 0.80, 0.96),
+                palette_color(0.56, 0.86, 0.97),
+                palette_color(0.64, 0.80, 0.96),
+                palette_color(0.80, 0.74, 0.94),
+                palette_color(0.96, 0.82, 0.92),
+                palette_color(0.48, 0.80, 0.95),
+                palette_color(0.60, 0.72, 0.94),
+                palette_color(0.82, 0.70, 0.92),
+                palette_color(0.96, 0.78, 0.90),
+                palette_color(0.42, 0.72, 0.92),
+                palette_color(0.54, 0.66, 0.92),
+                palette_color(0.76, 0.64, 0.88),
+                palette_color(0.92, 0.74, 0.86),
+            ],
+        }
+    }
+
+    /// Bright white base with blush lavender accents.
+    #[must_use]
+    pub const fn soft_blush() -> Self {
+        Self {
+            speed: 0.45,
+            warp: 0.12,
+            palette: [
+                palette_color(0.98, 0.98, 1.00),
+                palette_color(0.96, 0.96, 0.99),
+                palette_color(0.96, 0.94, 0.99),
+                palette_color(0.98, 0.96, 0.98),
+                palette_color(0.94, 0.92, 0.98),
+                palette_color(0.92, 0.90, 0.97),
+                palette_color(0.90, 0.88, 0.96),
+                palette_color(0.94, 0.90, 0.96),
+                palette_color(0.90, 0.86, 0.95),
+                palette_color(0.88, 0.84, 0.94),
+                palette_color(0.86, 0.82, 0.94),
+                palette_color(0.90, 0.84, 0.94),
+                palette_color(0.88, 0.80, 0.92),
+                palette_color(0.86, 0.78, 0.92),
+                palette_color(0.84, 0.76, 0.90),
+                palette_color(0.88, 0.78, 0.90),
+            ],
+        }
+    }
+
+    /// Deep blue palette with soft cyan transitions.
+    #[must_use]
+    pub const fn deep_blue() -> Self {
+        Self {
+            speed: 0.6,
+            warp: 0.2,
+            palette: [
+                palette_color(0.02, 0.06, 0.18),
+                palette_color(0.04, 0.12, 0.28),
+                palette_color(0.06, 0.18, 0.36),
+                palette_color(0.08, 0.24, 0.42),
+                palette_color(0.06, 0.20, 0.38),
+                palette_color(0.10, 0.28, 0.48),
+                palette_color(0.12, 0.36, 0.56),
+                palette_color(0.14, 0.42, 0.62),
+                palette_color(0.08, 0.26, 0.44),
+                palette_color(0.12, 0.34, 0.54),
+                palette_color(0.16, 0.44, 0.66),
+                palette_color(0.18, 0.52, 0.74),
+                palette_color(0.06, 0.22, 0.40),
+                palette_color(0.10, 0.30, 0.50),
+                palette_color(0.14, 0.40, 0.64),
+                palette_color(0.18, 0.50, 0.78),
+            ],
+        }
+    }
+}
+
+const fn palette_color(r: f32, g: f32, b: f32) -> ResolvedColor {
+    ResolvedColor {
+        red: r,
+        green: g,
+        blue: b,
+        opacity: 1.0,
+        headroom: 0.0,
+    }
+}
+
+impl Default for AnimatedMeshGradientConfig {
+    fn default() -> Self {
+        Self::aqua_bloom()
+    }
+}
+
+mod shader_types {
+    use super::ANIMATED_MESH_PALETTE_LEN;
+    use encase::ShaderType;
+
+    #[derive(Debug, Clone, Copy, ShaderType)]
+    pub(super) struct AnimatedMeshUniforms {
+        pub(super) time: f32,
+        pub(super) speed: f32,
+        pub(super) warp: f32,
+        pub(super) _pad0: f32,
+        pub(super) resolution: [f32; 2],
+        pub(super) _pad1: [f32; 2],
+        pub(super) palette: [[f32; 4]; ANIMATED_MESH_PALETTE_LEN],
+    }
+}
+
+use shader_types::AnimatedMeshUniforms;
+
+struct AnimatedMeshRenderer {
+    config: AnimatedMeshGradientConfig,
+    palette_gpu: [[f32; 4]; ANIMATED_MESH_PALETTE_LEN],
+    pipeline: Option<wgpu::RenderPipeline>,
+    uniform_buffer: Option<wgpu::Buffer>,
+    bind_group: Option<wgpu::BindGroup>,
+    pipeline_format: Option<wgpu::TextureFormat>,
+    start_time: Instant,
+}
+
+impl AnimatedMeshRenderer {
+    fn new(config: AnimatedMeshGradientConfig) -> Self {
+        let mut palette_gpu = [[0.0; 4]; ANIMATED_MESH_PALETTE_LEN];
+        for (dst, src) in palette_gpu.iter_mut().zip(config.palette.iter()) {
+            *dst = [src.red, src.green, src.blue, src.opacity];
+        }
+
+        Self {
+            config,
+            palette_gpu,
+            pipeline: None,
+            uniform_buffer: None,
+            bind_group: None,
+            pipeline_format: None,
+            start_time: Instant::now(),
+        }
+    }
+}
+
+impl GpuView for AnimatedMeshRenderer {
+    fn setup(
+        &mut self,
+        ctx: &GpuContext<'_>,
+        _env: &mut waterui_core::Environment,
+    ) -> impl core::future::Future<Output = ()> {
+        let (vertex_shader, fragment_shader, bind_group_layout) = single_bind_group_render_stages(
+            &ANIMATED_MESH_GRADIENT,
+            ctx.device,
+            "the animated mesh gradient shader",
+            "vs_main",
+            "fs_main",
+        );
+
+        let uniform_size = <AnimatedMeshUniforms as ShaderSize>::SHADER_SIZE.get();
+        let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Animated Mesh Gradient Uniforms"),
+            size: uniform_size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Animated Mesh Gradient Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Animated Mesh Gradient Pipeline Layout"),
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
+            });
+
+        let blend = ctx.replace_blend_state();
+
+        let pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Animated Mesh Gradient Pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: fragment_shader.module(),
+                    entry_point: Some(fragment_shader.entry_point()),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
+        self.pipeline = Some(pipeline);
+        self.uniform_buffer = Some(uniform_buffer);
+        self.bind_group = Some(bind_group);
+        self.pipeline_format = Some(ctx.surface_format);
+        self.start_time = Instant::now();
+        core::future::ready(())
+    }
+
+    fn render(&mut self, frame: &mut GpuFrame) {
+        if let Some(pipeline_fmt) = self.pipeline_format
+            && pipeline_fmt != frame.format
+        {
+            self.pipeline = None;
+            self.pipeline_format = None;
+        }
+
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+        let Some(uniform_buffer) = &self.uniform_buffer else {
+            return;
+        };
+        let Some(bind_group) = &self.bind_group else {
+            return;
+        };
+
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+        let uniforms = AnimatedMeshUniforms {
+            time: elapsed,
+            speed: self.config.speed,
+            warp: self.config.warp,
+            _pad0: 0.0,
+            resolution: [u32_to_f32(frame.width), u32_to_f32(frame.height)],
+            _pad1: [0.0; 2],
+            palette: self.palette_gpu,
+        };
+
+        let mut uniform_data = UniformBuffer::new(Vec::new());
+        uniform_data
+            .write(&uniforms)
+            .expect("Failed to write uniform buffer");
+        frame
+            .queue
+            .write_buffer(uniform_buffer, 0, uniform_data.as_ref());
+
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Animated Mesh Gradient Encoder"),
+            });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Animated Mesh Gradient Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            render_pass.set_pipeline(pipeline);
+            render_pass.set_bind_group(0, bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
+        }
+
+        frame.queue.submit(core::iter::once(encoder.finish()));
+        if self.config.speed > 0.0 {
+            frame.request_redraw();
+        }
+    }
+}
+/// GPU-animated mesh gradient view.
+pub struct AnimatedMeshGradient {
+    inner: GpuSurface,
+}
+
+impl fmt::Debug for AnimatedMeshGradient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AnimatedMeshGradient")
+            .finish_non_exhaustive()
+    }
+}
+
+impl AnimatedMeshGradient {
+    /// Creates a new animated mesh gradient with the given configuration.
+    #[must_use]
+    pub fn new(config: AnimatedMeshGradientConfig) -> Self {
+        Self {
+            inner: GpuSurface::new(AnimatedMeshRenderer::new(config)),
+        }
+    }
+}
+
+impl Default for AnimatedMeshGradient {
+    fn default() -> Self {
+        Self::new(AnimatedMeshGradientConfig::default())
+    }
+}
+
+impl View for AnimatedMeshGradient {
+    fn body(self, _env: &waterui_core::Environment) -> impl View {
+        self.inner
+    }
+}
+
+fn u32_to_f32(value: u32) -> f32 {
+    value
+        .to_f32()
+        .expect("animated_mesh_gradient: dimension must be representable as f32")
+}

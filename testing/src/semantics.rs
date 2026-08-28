@@ -30,6 +30,8 @@ impl Role {
     pub const SLIDER: Self = Self(AccessibilityRole::Slider);
     /// Image role.
     pub const IMAGE: Self = Self(AccessibilityRole::Image);
+    /// Scroll view role.
+    pub const SCROLL_VIEW: Self = Self(AccessibilityRole::ScrollView);
     /// List role.
     pub const LIST: Self = Self(AccessibilityRole::List);
     /// List item role.
@@ -42,9 +44,80 @@ impl Role {
     pub const COMBOBOX: Self = Self(AccessibilityRole::ComboBox);
     /// Selectable option role.
     pub const OPTION: Self = Self(AccessibilityRole::ListBoxOption);
+    /// Multiline text input role.
+    pub const MULTILINE_TEXT_INPUT: Self = Self(AccessibilityRole::MultilineTextInput);
+    /// Link role.
+    pub const LINK: Self = Self(AccessibilityRole::Link);
+    /// Section heading role.
+    pub const HEADER: Self = Self(AccessibilityRole::Header);
+    /// Section footer role.
+    pub const FOOTER: Self = Self(AccessibilityRole::Footer);
+    /// Progress indicator role.
+    pub const PROGRESS_INDICATOR: Self = Self(AccessibilityRole::ProgressIndicator);
+    /// Stepper / spin button role.
+    pub const SPIN_BUTTON: Self = Self(AccessibilityRole::SpinButton);
+    /// Radio button role.
+    pub const RADIO_BUTTON: Self = Self(AccessibilityRole::RadioButton);
+    /// Menu role.
+    pub const MENU: Self = Self(AccessibilityRole::Menu);
+    /// Menu bar role.
+    pub const MENU_BAR: Self = Self(AccessibilityRole::MenuBar);
+    /// Menu item role.
+    pub const MENU_ITEM: Self = Self(AccessibilityRole::MenuItem);
+    /// Checkbox-style menu item role.
+    pub const MENU_ITEM_CHECKBOX: Self = Self(AccessibilityRole::MenuItemCheckBox);
+    /// Radio-style menu item role.
+    pub const MENU_ITEM_RADIO: Self = Self(AccessibilityRole::MenuItemRadio);
+    /// Tab panel role.
+    pub const TAB_PANEL: Self = Self(AccessibilityRole::TabPanel);
+    /// Table role.
+    pub const TABLE: Self = Self(AccessibilityRole::Table);
+    /// Table cell role.
+    pub const CELL: Self = Self(AccessibilityRole::Cell);
+    /// Column header role.
+    pub const COLUMN_HEADER: Self = Self(AccessibilityRole::ColumnHeader);
+    /// Logical grouping role.
+    pub const GROUP: Self = Self(AccessibilityRole::Group);
+    /// Window root role.
+    pub const WINDOW: Self = Self(AccessibilityRole::Window);
+    /// Main landmark role.
+    pub const MAIN: Self = Self(AccessibilityRole::Main);
+    /// Navigation landmark role.
+    pub const NAVIGATION: Self = Self(AccessibilityRole::Navigation);
+    /// Search landmark role.
+    pub const SEARCH: Self = Self(AccessibilityRole::Search);
+    /// Article role.
+    pub const ARTICLE: Self = Self(AccessibilityRole::Article);
+    /// Section role.
+    pub const SECTION: Self = Self(AccessibilityRole::Section);
 
-    pub(crate) const fn as_accesskit(self) -> AccessibilityRole {
+    /// Wraps any AccessKit role, covering roles without a named constant.
+    #[must_use]
+    pub const fn new(role: AccessibilityRole) -> Self {
+        Self(role)
+    }
+
+    /// The underlying AccessKit role.
+    #[must_use]
+    pub const fn as_accesskit(self) -> AccessibilityRole {
         self.0
+    }
+}
+
+/// Semantic checked state exposed by a checkable accessibility node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CheckedState {
+    /// The node is not checked.
+    False,
+    /// The node is checked.
+    True,
+    /// The node is indeterminate or represents a mixed selection.
+    Mixed,
+}
+
+impl From<AccessibilityRole> for Role {
+    fn from(role: AccessibilityRole) -> Self {
+        Self(role)
     }
 }
 
@@ -117,7 +190,7 @@ impl NodeBounds {
 
     /// Returns the center point.
     #[must_use]
-    pub fn center(self) -> (f32, f32) {
+    pub const fn center(self) -> (f32, f32) {
         (
             self.width.mul_add(0.5, self.x),
             self.height.mul_add(0.5, self.y),
@@ -140,16 +213,22 @@ fn accesskit_rect_to_node_bounds(rect: AccessibilityRect) -> NodeBounds {
 
 /// Immutable accessibility node snapshot used by assertions and queries.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors independent accessibility attributes reported by the platform tree"
+)]
 pub struct NodeSnapshot {
     pub(crate) id: NodeId,
     pub(crate) role: Role,
     pub(crate) label: Option<String>,
+    pub(crate) identifier: Option<String>,
     pub(crate) value: Option<String>,
     pub(crate) bounds: Option<NodeBounds>,
     pub(crate) enabled: bool,
     pub(crate) selected: bool,
-    pub(crate) checked: Option<bool>,
+    pub(crate) checked: Option<CheckedState>,
     pub(crate) expanded: Option<bool>,
+    pub(crate) busy: bool,
     pub(crate) hidden: bool,
     pub(crate) children: Vec<NodeId>,
 }
@@ -173,6 +252,12 @@ impl NodeSnapshot {
         self.label.as_deref()
     }
 
+    /// Returns the stable automation identifier (`a11y_id`), if any.
+    #[must_use]
+    pub fn identifier(&self) -> Option<&str> {
+        self.identifier.as_deref()
+    }
+
     /// Returns the accessibility value, if any.
     #[must_use]
     pub fn value(&self) -> Option<&str> {
@@ -194,6 +279,16 @@ impl NodeSnapshot {
     /// Returns the checked state, if applicable.
     #[must_use]
     pub const fn checked(&self) -> Option<bool> {
+        match self.checked_state() {
+            Some(CheckedState::False) => Some(false),
+            Some(CheckedState::True) => Some(true),
+            Some(CheckedState::Mixed) | None => None,
+        }
+    }
+
+    /// Returns the complete checked state, preserving an indeterminate value.
+    #[must_use]
+    pub const fn checked_state(&self) -> Option<CheckedState> {
         self.checked
     }
 
@@ -201,6 +296,12 @@ impl NodeSnapshot {
     #[must_use]
     pub const fn expanded(&self) -> Option<bool> {
         self.expanded
+    }
+
+    /// Returns whether the node reports that it is busy.
+    #[must_use]
+    pub const fn busy(&self) -> bool {
+        self.busy
     }
 
     /// Returns node bounds, if present.
@@ -223,9 +324,10 @@ impl NodeSnapshot {
 
     fn from_accesskit(id: AccessibilityNodeId, node: &AccessibilityNode) -> Self {
         let checked = match node.toggled() {
-            Some(AccessibilityToggled::True) => Some(true),
-            Some(AccessibilityToggled::False) => Some(false),
-            Some(AccessibilityToggled::Mixed) | None => None,
+            Some(AccessibilityToggled::True) => Some(CheckedState::True),
+            Some(AccessibilityToggled::False) => Some(CheckedState::False),
+            Some(AccessibilityToggled::Mixed) => Some(CheckedState::Mixed),
+            None => None,
         };
         let expanded = node.is_expanded();
 
@@ -238,12 +340,14 @@ impl NodeSnapshot {
             id: NodeId::from(id),
             role: Role(node.role()),
             label: node.label().map(ToOwned::to_owned),
+            identifier: node.author_id().map(ToOwned::to_owned),
             value,
             bounds: node.bounds().map(accesskit_rect_to_node_bounds),
             enabled: !node.is_disabled(),
             selected: node.is_selected().unwrap_or(false),
             checked,
             expanded,
+            busy: node.is_busy(),
             hidden: node.is_hidden(),
             children: node.children().iter().copied().map(NodeId::from).collect(),
         }

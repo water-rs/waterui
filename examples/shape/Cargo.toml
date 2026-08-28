@@ -6,7 +6,6 @@ authors = ["Lexo Liu"]
 description = "Shape and clipping example for WaterUI framework"
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
 keywords = ["ui", "framework", "example", "shape"]
 categories = ["gui"]
 publish = false

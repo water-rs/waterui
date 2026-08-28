@@ -1,0 +1,7 @@
+error: `offscreen` only applies when the macro mounts a view function; the manual-mount form calls `mount_offscreen` itself
+ --> tests/ui/waterui_test/fail_offscreen_without_view.rs:1:1
+  |
+1 | #[waterui::test(offscreen)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `waterui::test` (in Nightly builds, run with -Z macro-backtrace for more info)

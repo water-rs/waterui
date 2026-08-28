@@ -1,0 +1,47 @@
+[package]
+name = "waterui-shape"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Shape primitives and filled shapes for WaterUI using Lyon tessellation"
+keywords = ["shape", "graphics", "waterui", "lyon", "hdr"]
+categories = ["gui"]
+
+[features]
+default = ["gpu"]
+# GPU-backed morphing-shape renderer (wgpu). When disabled, morph shapes still
+# emit their `ResolvedMorphShape` native semantic object for backends to render,
+# but no in-crate GPU fallback is compiled, so wgpu/vello are not pulled in.
+gpu = [
+    "waterui-graphics/gpu",
+    "dep:wgpu",
+    "dep:bytemuck",
+    "dep:num-traits",
+    "dep:shaderloom",
+    "dep:shaderloom",
+]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-graphics = { workspace = true, default-features = false }
+wgpu = { workspace = true, optional = true }
+nami.workspace = true
+bytemuck = { version = "1.25", features = ["derive"], optional = true }
+num-traits = { version = "0.2", default-features = false, optional = true }
+shaderloom = { workspace = true, optional = true }
+
+[build-dependencies]
+shaderloom = { workspace = true, features = ["build"], optional = true }
+
+[dev-dependencies]
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+
+[lints]
+workspace = true
+# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+[package.metadata.cargo-machete]
+ignored = ["shaderloom"]

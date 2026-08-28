@@ -34,6 +34,10 @@ fn resolve_size_request(widget: &Widget, axis: StretchAxis, req_w: i32, req_h: i
 /// # Panics
 ///
 /// Panics if `rects` and `children` have different lengths.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+)]
 pub fn place_children(container: &Fixed, rects: &[Rect], children: &[(Widget, StretchAxis)]) {
     assert_eq!(
         rects.len(),
@@ -48,25 +52,31 @@ pub fn place_children(container: &Fixed, rects: &[Rect], children: &[(Widget, St
         let req_h = (rect.height().round() as i32 - margin_v).max(0);
         let (width_request, height_request) = resolve_size_request(widget, *axis, req_w, req_h);
         if layout_debug_enabled() {
-            eprintln!(
-                "[gtk-layout] placer.place type={} axis={axis:?} req=({req_w},{req_h}) applied=({width_request},{height_request}) rect=({}, {}, {}, {})",
-                widget.type_().name(),
-                rect.x(),
-                rect.y(),
-                rect.width(),
-                rect.height()
+            tracing::debug!(
+                target: "waterui::gtk::layout",
+                widget_type = %widget.type_().name(),
+                axis = ?axis,
+                requested_width = req_w,
+                requested_height = req_h,
+                applied_width = width_request,
+                applied_height = height_request,
+                x = rect.x(),
+                y = rect.y(),
+                width = rect.width(),
+                height = rect.height(),
+                "Placed GTK layout child"
             );
         }
         let mut already_in_container = false;
 
         // Remove from current parent if necessary
-        if let Some(parent) = widget.parent() {
-            if let Some(fixed) = parent.downcast_ref::<Fixed>() {
-                if fixed.as_ptr() != container.as_ptr() {
-                    fixed.remove(widget);
-                } else {
-                    already_in_container = true;
-                }
+        if let Some(parent) = widget.parent()
+            && let Some(fixed) = parent.downcast_ref::<Fixed>()
+        {
+            if fixed.as_ptr() == container.as_ptr() {
+                already_in_container = true;
+            } else {
+                fixed.remove(widget);
             }
         }
 
@@ -74,9 +84,9 @@ pub fn place_children(container: &Fixed, rects: &[Rect], children: &[(Widget, St
         widget.set_size_request(width_request, height_request);
 
         if already_in_container {
-            container.move_(widget, rect.x() as f64, rect.y() as f64);
+            container.move_(widget, f64::from(rect.x()), f64::from(rect.y()));
         } else {
-            container.put(widget, rect.x() as f64, rect.y() as f64);
+            container.put(widget, f64::from(rect.x()), f64::from(rect.y()));
         }
     }
 }
@@ -85,6 +95,14 @@ pub fn place_children(container: &Fixed, rects: &[Rect], children: &[(Widget, St
 ///
 /// This is more efficient than `place_children` when children are already
 /// in the container and only positions have changed.
+///
+/// # Panics
+///
+/// Panics if `rects` and `children` have different lengths.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
+)]
 pub fn update_positions(container: &Fixed, rects: &[Rect], children: &[(Widget, StretchAxis)]) {
     assert_eq!(
         rects.len(),
@@ -99,13 +117,19 @@ pub fn update_positions(container: &Fixed, rects: &[Rect], children: &[(Widget, 
         let req_h = (rect.height().round() as i32 - margin_v).max(0);
         let (width_request, height_request) = resolve_size_request(widget, *axis, req_w, req_h);
         if layout_debug_enabled() {
-            eprintln!(
-                "[gtk-layout] placer.update type={} axis={axis:?} req=({req_w},{req_h}) applied=({width_request},{height_request}) rect=({}, {}, {}, {})",
-                widget.type_().name(),
-                rect.x(),
-                rect.y(),
-                rect.width(),
-                rect.height()
+            tracing::debug!(
+                target: "waterui::gtk::layout",
+                widget_type = %widget.type_().name(),
+                axis = ?axis,
+                requested_width = req_w,
+                requested_height = req_h,
+                applied_width = width_request,
+                applied_height = height_request,
+                x = rect.x(),
+                y = rect.y(),
+                width = rect.width(),
+                height = rect.height(),
+                "Updated GTK layout child position"
             );
         }
 
@@ -113,7 +137,7 @@ pub fn update_positions(container: &Fixed, rects: &[Rect], children: &[(Widget, 
         widget.set_size_request(width_request, height_request);
 
         // Move to new position
-        container.move_(widget, rect.x() as f64, rect.y() as f64);
+        container.move_(widget, f64::from(rect.x()), f64::from(rect.y()));
     }
 }
 

@@ -13,7 +13,7 @@
 //! ### Declarative View System
 //!
 //! The [`View`] trait forms the foundation of the UI component model:
-//! ```rust,ignore
+//! ```text
 //! pub trait View: 'static {
 //!     fn body(self, env: &Environment) -> impl View;
 //! }
@@ -56,19 +56,19 @@
 //! State management integrates seamlessly with the view system:
 //!
 //! ```rust
-//! use waterui_core::{Dynamic, binding, Binding};
+//! use waterui_core::{Binding, Signal, SignalExt};
 //!
 //! // Create a reactive state container
-//! let counter: Binding<i32> = binding(0);
+//! let counter = Binding::container(0);
 //!
-//! // Create a view that responds to state changes using Dynamic
-//! let view = Dynamic::watch(counter, |count: i32| {
-//!      format!("Current value: {}", count)
-//! });
+//! // Derive the exact value consumed by a signal-aware component.
+//! let label = counter.map(|count| format!("Current value: {count}"));
+//! assert_eq!(label.get(), "Current value: 0");
 //! ```
 //!
-//! The UI automatically updates when state changes, with efficient rendering that only
-//! updates affected components.
+//! Signal-aware component inputs subscribe to derived values and update only the
+//! affected native property. Structural subtree replacement is reserved for cases
+//! where the view identity itself changes.
 //!
 //! ## Extensibility
 //!
@@ -91,40 +91,28 @@ extern crate alloc;
 
 #[macro_use]
 mod macros;
+mod animation_system;
 mod components;
+mod foundation;
+mod state;
+mod ui;
+
+pub use animation::{Animatable, AnimationExt, AnimationTrack};
+pub use animation_system::{animation, easing, vector_arithmetic};
+pub use anyhow::Error;
 pub use anyview::AnyView;
 pub use components::*;
-pub mod env;
-pub mod event;
-pub mod gesture;
-pub mod view;
-pub mod views;
-pub use env::Environment;
-pub use view::View;
-pub mod extract;
-pub mod handler;
-pub mod plugin;
-pub use anyhow::Error;
-pub use extract::State;
-pub mod accessibility;
-pub mod animation;
-pub use animation::{Animatable, AnimationExt, AnimationTrack};
-/// Unified easing system for animations.
-pub mod easing;
 pub use easing::{EasingCurve, Interpolatable};
-pub use local_state::{LocalStateScope, LocalStateStore};
+pub use env::Environment;
+pub use extract::State;
+pub use foundation::main_thread::MainThreadBound;
+pub use foundation::signal::flatten_signal;
+pub use foundation::{env, extract, handler, id, main_thread, plugin, resolve};
 pub use nami as reactive;
-pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant};
-mod computed_f32;
-pub use computed_f32::IntoSignalF32;
-pub use waterui_str::Str;
-pub mod id;
-pub mod layout;
-pub mod local_state;
-/// Module for resolving reactive values in different environments.
-pub mod resolve;
-/// VectorArithmetic trait for types that can be linearly interpolated (animation).
-pub mod vector_arithmetic;
-/// View renderer for capturing views to pixel data.
-pub mod view_renderer;
+pub use nami::signal::IntoSignal;
+pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant, impl_constant};
+pub use state::IntoSignalF32;
+pub use ui::{accessibility, event, gesture, interaction, layout, view, view_renderer, views};
+pub use view::View;
 pub use view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
+pub use waterui_str::Str;

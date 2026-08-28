@@ -1,11 +1,13 @@
 //! Markdown example for WaterUI.
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::preview;
 
-fn main() -> impl View {
+#[preview]
+pub fn demo() -> impl View {
     scroll(include_markdown!("example.md").padding())
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

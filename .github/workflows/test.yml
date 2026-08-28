@@ -5,28 +5,142 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # rust-cache is the only cache layer (see the note in ci.yml).
+  CARGO_INCREMENTAL: 0
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
 
 jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     strategy:
-      fail-fast: true
+      # Report every platform in one run. Cancelling the other hides its
+      # results, so a cross-platform break costs one round trip per platform.
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Windows is kept in its own gating workflow because it needs platform-
+        # specific exclusions and compile-only CEF coverage. Both workflows run
+        # for the same integration-branch pushes and pull requests.
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@nightly
-      - name: Install nasm
+      # rustfmt and clippy run in the Linux leg below; clippy is additionally
+      # needed by the macOS-only CEF real-engine target at the end of this job,
+      # which cannot be linted on Linux the way its WPE sibling is, because CEF
+      # requires a macOS application bundle and the target refuses to compile
+      # anywhere else.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      # GPU snapshot tests run in this job, so this leg needs the Vulkan ICD
+      # loader (mesa-vulkan-drivers/libvulkan1) on top of the base package
+      # list — that's what lets llvmpipe/lavapipe stand in for a real GPU on
+      # a headless Linux runner.
+      - name: Install native dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
+        uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
-      - run: cargo test --verbose --all-features
+          # Only the integration branches write cache generations. A pull
+          # request reads them and saves nothing: every distinct fingerprint
+          # would otherwise mint a generation that is never reclaimed, and the
+          # stale ones evict the Test tarballs that decide whether a leg is
+          # warm (16 min) or cold (66 min).
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      # Lint before testing: it is the cheapest failure to produce, and the one
+      # a contributor is most likely to hit, so it should not wait behind the
+      # whole test run. Linux only — the macOS leg has its own CEF lint below.
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+      # Two passes, split for the same structural reason as the two test
+      # passes below: workspace-wide under default features, then the root
+      # crate alone with every feature on.
+      - name: Clippy (workspace)
+        if: runner.os == 'Linux'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (all features)
+        if: runner.os == 'Linux'
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      # The WPE real-engine tests sit behind a feature, because running them
+      # needs a staged WPE WebKit runtime that only `browser-wpe.yml` provisions
+      # — and that workflow only fires on the paths those tests cover. Neither
+      # pass above compiles them, so lint them here: compiling them costs
+      # nothing extra and keeps them from rotting between real-engine runs.
+      - name: Clippy (WPE real engine)
+        if: runner.os == 'Linux'
+        run: cargo clippy -p waterui-browser-wpe --features real-engine --all-targets -- -D warnings
+      # The waterui skill's snippet compile gate: every rust fence in
+      # .claude/skills/waterui is transcribed into .claude/skills/waterui/skill_snippets
+      # and must keep compiling. The non-default feature exposes the test/bench
+      # transcriptions to the compiler without registering runnable tests —
+      # they address elements that do not exist by design and must never run.
+      - name: Skill snippet compile gate
+        if: runner.os == 'Linux'
+        run: cargo check -p skill_snippets --all-targets --features compile-gate-tests
+      - uses: taiki-e/install-action@nextest
+      # One full-workspace pass under default features. A workspace-wide
+      # `--all-features` pass is structurally impossible here — `waterui-ffi`
+      # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
+      # enabling `c-api` and `android-jni` together can never build. The old
+      # second pass that *looked* workspace-wide (`cargo nextest run
+      # --all-features`) never was:
+      # the root manifest has both `[workspace]` and `[package]`, so without
+      # `--workspace` cargo narrowed it to the root `waterui` crate — the only
+      # crate whose features are all mutually compatible.
+      - run: cargo nextest run --workspace --profile ci
+      # The root crate's feature-gated re-export surface, with every feature
+      # on. Root-crate-only scope is intentional (see above); most of the
+      # build is shared with the workspace pass, so this increment is cheap.
+      - run: cargo nextest run --all-features --profile ci
+      # The macOS real-engine suite drives a genuine WKWebView through the
+      # shared bridge contract — the macOS sibling of the WPE real-engine
+      # workflow. It is `harness = false` (WKWebView is MainThreadOnly, and
+      # libtest runs tests on worker threads), so nextest cannot list it;
+      # `cargo test` runs the binary on the real process main thread.
+      - if: runner.os == 'macOS'
+        run: cargo test -p hydrolysis --features webview-system,winit --test real_engine_macos
+      # nextest cannot run doctests, and this workspace has plenty of them.
+      - run: cargo test --doc --workspace
+      # The web view bridge has broken three times in ways no Rust-side test
+      # could see, so these drive a real Chromium. Unlike the WPE sibling in
+      # `browser-wpe.yml`, which compiles an engine from source for hours, CEF
+      # is a prebuilt distribution `cef-dll-sys` downloads while building the
+      # crate: the whole leg is a couple of minutes on top of a workspace this
+      # job has already compiled, which is why it lives here instead of in a
+      # workflow of its own that would pay for a second macOS runner and a
+      # second build of the same graph.
+      #
+      # macOS only, because CEF requires its browser process to live in an
+      # application bundle; the test stages one and the target does not compile
+      # on the other platforms.
+      #
+      # The same step lints the FFI crate's CEF C ABI, which nothing else
+      # compiles: the workspace pass runs default features and that module is
+      # gated behind `cef-runtime`/`cef-header`, while a workspace-wide
+      # `--all-features` pass is structurally impossible for `waterui-ffi` (see
+      # the ABI `compile_error!` note above). macOS is also the only leg that
+      # sees its `#[cfg(target_os = "macos")]` entry points at all. `cef-header`
+      # is the compile-only feature set, so this buys the lint without a CEF
+      # runtime download, on a workspace this job has already built.
+      - name: Lint the CEF targets
+        if: runner.os == 'macOS'
+        run: |
+          cargo clippy -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
+          cargo clippy -p waterui-ffi --features cef-header --all-targets -- -D warnings
+      # `cargo test` rather than nextest: CEF's browser process has to own the
+      # main thread, libtest runs test bodies on spawned ones, so the target is
+      # `harness = false` and nextest cannot enumerate it.
+      - name: Run the CEF real-engine tests
+        if: runner.os == 'macOS'
+        run: cargo test -p waterui-browser-cef --features real-engine --test real_engine
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4

@@ -6,8 +6,10 @@ permissions:
   id-token: write
 
 on:
+  # Integration branches only: a branch that also has a PR would otherwise run
+  # the whole matrix twice for one commit.
   push:
-    branches: ["**"]
+    branches: [main, dev]
   pull_request:
     branches: ["**"]
 
@@ -17,45 +19,70 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # rust-cache is the only cache layer here. GHA-backed sccache used to sit in
+  # front of it and measured a 2-8% hit rate while holding 38% of the
+  # repository's 10GB Actions cache quota, so its main effect was evicting the
+  # rust-cache tarballs that do work and putting every job back on a cold
+  # build. Local development still uses sccache; this is CI-only.
+  # Incremental artifacts are per-machine rebuild state, useless to a fresh
+  # runner, and they bloat the cache that is restored.
+  CARGO_INCREMENTAL: 0
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: clippy, rustfmt
-      - run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-ubuntu
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-
+  # The developer's iteration signal is the first three steps of
+  # `Test / ubuntu-latest` — format, workspace clippy, workspace tests, in that
+  # order, cheapest failure first. A separate "Quick" job used to run exactly
+  # those three on a second runner off the same cache key; it reached them no
+  # sooner, because it had to compile the same graph to get there, so all it
+  # bought was a duplicate build on every push.
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # A full instrumented rebuild shares nothing with the ordinary builds, so it
+    # runs on the integration branches rather than on every pull request.
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
-      - run: sudo apt-get update && sudo apt-get install -y nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
+      - uses: ./.github/actions/setup-linux-deps
+      # Its own key: an instrumented build shares no artifacts with the
+      # ordinary ones, so storing it under the shared key would just overwrite
+      # a useful tarball with one nothing else can restore. The target dir is
+      # deliberately NOT cached: the instrumented tarball measures 3-5GB, and
+      # together with the two Test tarballs that oversubscribes the 10GB cache
+      # quota — every run would then evict one of the three and put a Test leg
+      # back on a 60-minute cold build. Coverage recompiles each run (~42min,
+      # which it already did when it was being evicted 4 runs out of 4) but
+      # only stores the ~0.2GB dependency caches, so the Test legs stay warm.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-ubuntu
+          shared-key: ci-coverage
+          # Only the integration branches write cache generations. A pull
+          # request reads them and saves nothing: every distinct fingerprint
+          # would otherwise mint a generation that is never reclaimed, and the
+          # stale ones evict the Test tarballs that decide whether a leg is
+          # warm (16 min) or cold (66 min).
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          cache-targets: false
+          cache-on-failure: true
       - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
       - name: Prepare coverage target dir
         run: |
           mkdir -p target/llvm-cov-target
           printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > target/llvm-cov-target/CACHEDIR.TAG
-      - run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      # NEXTEST_PROFILE rather than --profile: cargo-llvm-cov reads that flag as
+      # cargo's build profile. The ci profile matters here because it disables
+      # fail-fast — without it a single failing test ends the run and hides the
+      # state of every test after it (see #153, where one failure masked 632).
+      - run: cargo llvm-cov nextest --workspace --features waterui/all --lcov --output-path lcov.info
+        env:
+          NEXTEST_PROFILE: ci
       - uses: codecov/codecov-action@v4
         with:
           use_oidc: true
@@ -63,58 +90,64 @@ jobs:
   typos:
     name: Typos
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: crate-ci/typos@master
+      # Pinned: on `@master` the tool upgrades itself, and a new dictionary
+      # turns a green job red with no change to the repository.
+      - uses: crate-ci/typos@v1.49.0
 
-  audit:
-    name: Security Audit
+  # Security audit, license check and unused-dependency check are each a cheap
+  # metadata pass over the dependency graph, but were previously three separate
+  # jobs that each paid full runner startup, checkout and cache-restore cost.
+  # They share nothing that isolates them from each other, so one job running
+  # them sequentially pays that fixed cost once instead of three times.
+  hygiene:
+    name: Hygiene
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Generate Cargo.lock
-        run: cargo generate-lockfile
+      - uses: dtolnay/rust-toolchain@stable
+      # Only the license check below needs a native dependency (nasm, for a
+      # build script) and it never runs a GUI/audio/video stack, so this job
+      # does not need the full setup-linux-deps package list.
+      - run: sudo apt-get update && sudo apt-get install -y nasm
+      # Restore-only: this job and Features share `ci-ubuntu`, and two jobs
+      # saving the same key race for the reservation, so one of them always
+      # loses and uploads nothing. Features owns the write because it builds
+      # the larger graph.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
-      - uses: rustsec/audit-check@v2
+          cache-on-failure: true
+          save-if: false
+      # The audit and deny checks run against the COMMITTED Cargo.lock — the
+      # dependency set the workspace actually builds. A `cargo generate-lockfile`
+      # step used to precede them; it silently re-resolved everything to the
+      # newest compatible versions first, so the checks audited a hypothetical
+      # future resolution instead of the real one. That is exactly backwards
+      # for supply-chain checks: the August 2026 `arrayref 0.3.10` compromise
+      # (see the [bans] section in deny.toml) would have been *pulled in* by
+      # that step while the committed lock stayed clean.
+      - name: Security audit
+        uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-
-  license-check:
-    name: License Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@nightly
-      - run: sudo apt-get update && sudo apt-get install -y nasm
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-ubuntu
       - uses: taiki-e/install-action@cargo-deny
-      - run: cargo deny check licenses
-      - name: Check kit licenses
+      - name: License and ban check
+        run: cargo deny check licenses bans
+      # `--config` goes before the subcommand: the cargo-deny that
+      # install-action provides takes it as a global option, and rejects the
+      # `check --config` spelling that newer builds accept.
+      - name: License and ban check (kit)
         if: ${{ hashFiles('kit/Cargo.toml') != '' }}
         working-directory: kit
-        run: cargo deny check licenses -c ../deny.toml
-
-  unused-deps:
-    name: Unused Dependencies
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-ubuntu
+        run: cargo deny --config ../deny.toml check licenses bans
       - uses: taiki-e/install-action@cargo-machete
-      - name: Run cargo machete on the root workspace
+      - name: Unused dependencies
         run: |
           printf 'kit\nutils/nami\n' > .ignore
           cargo machete --with-metadata
@@ -122,18 +155,74 @@ jobs:
   feature-checks:
     name: Features
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@nightly
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-linux-deps
+      # The single writer of `ci-ubuntu` (see Hygiene above).
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
+          # Only the integration branches write cache generations. A pull
+          # request reads them and saves nothing: every distinct fingerprint
+          # would otherwise mint a generation that is never reclaimed, and the
+          # stale ones evict the Test tarballs that decide whether a leg is
+          # warm (16 min) or cold (66 min).
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - uses: taiki-e/install-action@cargo-hack
+      # `--feature-powerset` is deliberately absent. The workspace has ~33_800
+      # feature combinations (waterui alone has 14 features = 16_384), so the
+      # sweep either ran for 105 minutes or was cancelled at ~27 minutes having
+      # proved nothing — it produced no signal in any recent run. `--each-feature`
+      # is linear and catches the failure that actually happens: a feature that
+      # does not build on its own.
       - run: cargo hack check --each-feature --no-dev-deps
-      - run: cargo hack check --feature-powerset --no-dev-deps
+
+  ffi-header:
+    name: FFI Header
+    # The header is platform-dependent: the Apple exports (Metal, CEF) only
+    # appear when cbindgen expands on an Apple target, and the committed header
+    # contains them. Regenerating anywhere else would delete them and break the
+    # Apple backend, so macOS is the canonical generation host.
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # The only job that needs nightly: cbindgen expands the FFI macros through
+      # `cargo rustc -- -Zunpretty=expanded`, and the exported functions are
+      # macro-generated, so the expansion cannot be skipped.
+      - uses: dtolnay/rust-toolchain@nightly
+      # Dependency caches only: the full target tarball measured 0.8GB and, in
+      # a quota squeezed by the two Test tarballs, was evicted before every
+      # single restore — this job has never once hit it. Storing just the
+      # dependency caches keeps the quota pressure off the caches that do hit.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ffi-header-macos
+          cache-targets: false
+          cache-on-failure: true
+      - name: Regenerate the header
+        run: cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
+      - name: Verify the committed header matches
+        run: |
+          set -euo pipefail
+          status=0
+          check() {
+            if ! git -C "$1" diff --exit-code -- "$2"; then
+              echo "::error file=$2::$2 is stale; on macOS run 'cargo +nightly run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml' and commit the result"
+              status=1
+            fi
+          }
+          check . ffi/waterui.h
+          check backends/apple Sources/CWaterUI/include/waterui.h
+          check backends/android runtime/src/main/cpp/waterui.h
+          exit "$status"
 
   test:
     name: Test
@@ -144,6 +233,7 @@ jobs:
     needs: test
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p artifacts

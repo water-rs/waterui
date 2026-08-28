@@ -1,21 +1,45 @@
 [default.extend-words]
+Alle = "Alle"
 COSE = "COSE"
+CLL = "CLL"
 Dezember = "Dezember"
+Fo = "Fo"
+Favorit = "Favorit"
+Sie = "Sie"
+Spanisch = "Spanisch"
+configuracion = "configuracion"
 cose = "cose"
 cros = "cros"
+habe = "habe"
 hel = "hel"
+raison = "raison"
 seeked = "seeked"
 thr = "thr"
 trak = "trak"
 udid = "udid"
 
+# Deliberate: the doc example is about catching a misspelled call.
+gret = "gret"
+# TrueType table names, alongside `glyf`.
+loca = "loca"
+# `mis-scaled`, a normal prefix.
+mis = "mis"
+# Split out of `PNGs`.
+PN = "PN"
+# A standard variant in technical prose.
+unparseable = "unparseable"
+
 [default.extend-identifiers]
 NdefFormatable = "NdefFormatable"
 formatable = "formatable"
 thw = "thw"
+trun = "trun"
 
 [files]
 extend-exclude = [
     "examples/locale/README.md",
-    "examples/locale/i18n/*.toml",
+    # Translation catalogues, wherever they live. Their values are other
+    # languages, so English spelling rules do not apply: French "Seconde" is
+    # correct and "correcting" it would break the translation.
+    "**/i18n/*.toml",
 ]

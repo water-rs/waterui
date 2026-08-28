@@ -5,8 +5,10 @@
 
 // URLs longer than 65535 bytes are not supported to keep Span compact (uses u16).
 // This is intentional and a reasonable limit for most use cases.
+use crate::error::ParseErrorKind;
 use crate::{
-    BlobComponents, DataComponents, LocalComponents, ParsedComponents, Span, WebComponents,
+    BlobComponents, DataComponents, LocalComponents, OpaqueComponents, ParsedComponents, Span,
+    WebComponents,
 };
 
 const fn span_index(index: usize) -> u16 {
@@ -36,65 +38,119 @@ const fn span(start: usize, end: usize) -> Span {
 ///
 /// # Panics
 ///
-/// Panics if the URL is malformed. This enables compile-time syntax checking
-/// when used in const contexts.
+/// Panics if the URL is malformed. That is what gives [`Url::new`](crate::Url::new)
+/// compile-time syntax checking for literals. Runtime parsing must go through
+/// [`try_parse_url`] instead, which reports the same failures as a value.
 pub const fn parse_url(bytes: &[u8]) -> ParsedComponents {
+    match try_parse_url(bytes) {
+        Ok(components) => components,
+        // `panic!` in a `const fn` cannot format, so each variant repeats its own
+        // literal. `ParseErrorKind::message` keeps the runtime wording in sync.
+        Err(ParseErrorKind::Empty) => panic!("URL string is empty"),
+        Err(ParseErrorKind::TooLong) => {
+            panic!("URL strings longer than 65535 bytes are not supported")
+        }
+        Err(ParseErrorKind::MissingScheme) => panic!("web URL must have a scheme"),
+        Err(ParseErrorKind::MissingHost) => panic!("web URL must have a host"),
+        Err(ParseErrorKind::InvalidPort) => panic!("web URL has an invalid port"),
+    }
+}
+
+/// Parses a URL, reporting malformed input instead of panicking.
+///
+/// This is the entry point every runtime parse uses. It never panics, so a URL
+/// arriving from a web engine — `about:blank`, `file:///tmp/page.html`, a
+/// `data:` document — cannot abort the process.
+pub const fn try_parse_url(bytes: &[u8]) -> Result<ParsedComponents, ParseErrorKind> {
     let len = bytes.len();
 
-    // Check for empty URL
-    assert!(len != 0, "URL string is empty");
+    if len == 0 {
+        return Err(ParseErrorKind::Empty);
+    }
+    // Checked once here so the `Span` construction below cannot overflow `u16`.
+    if len > u16::MAX as usize {
+        return Err(ParseErrorKind::TooLong);
+    }
 
     // Check for data: URLs
     if len >= 5 && starts_with(bytes, b"data:") {
-        return ParsedComponents::Data(parse_data_url(bytes));
+        return Ok(ParsedComponents::Data(parse_data_url(bytes)));
     }
 
     // Check for blob: URLs
     if len >= 5 && starts_with(bytes, b"blob:") {
-        return ParsedComponents::Blob(parse_blob_url(bytes));
+        return Ok(ParsedComponents::Blob(parse_blob_url(bytes)));
     }
 
-    // Check for web URLs (http://, https://, etc.)
-    if let Some(scheme_end) = find_scheme_end(bytes)
-        && is_web_scheme(bytes, scheme_end)
-    {
-        let web = parse_web_url(bytes, scheme_end);
-        validate_web_url(&web, bytes);
-        return ParsedComponents::Web(web);
+    if let Some(scheme_end) = find_scheme_end(bytes) {
+        // Check for web URLs (http://, https://, etc.)
+        if is_hierarchical_scheme(bytes, scheme_end) {
+            // `file://` is hierarchical but names a filesystem path and has no
+            // authority requirement, so it is a local URL rather than a web one.
+            if is_file_scheme(bytes, scheme_end) {
+                return Ok(ParsedComponents::Local(parse_file_url(bytes, scheme_end)));
+            }
+            let web = parse_web_url(bytes, scheme_end);
+            match validate_web_url(&web, bytes) {
+                Ok(()) => return Ok(ParsedComponents::Web(web)),
+                Err(kind) => return Err(kind),
+            }
+        }
+
+        // `scheme:body` with no `//`: about:blank, mailto:, tel:, javascript: …
+        if is_opaque_scheme(bytes, scheme_end) {
+            return Ok(ParsedComponents::Opaque(OpaqueComponents {
+                scheme: span(0, scheme_end),
+                body: if scheme_end + 1 < len {
+                    span(scheme_end + 1, len)
+                } else {
+                    Span::NONE
+                },
+            }));
+        }
     }
 
     // Default to local file path
-    ParsedComponents::Local(parse_local_path(bytes))
+    Ok(ParsedComponents::Local(parse_local_path(bytes)))
 }
 
-/// Validates a parsed web URL and panics if malformed.
-const fn validate_web_url(web: &WebComponents, bytes: &[u8]) {
+/// Validates a parsed web URL.
+const fn validate_web_url(web: &WebComponents, bytes: &[u8]) -> Result<(), ParseErrorKind> {
     // Scheme must be present
-    assert!(web.scheme.is_present(), "Web URL must have a scheme");
+    if !web.scheme.is_present() {
+        return Err(ParseErrorKind::MissingScheme);
+    }
 
     // Host must be present for web URLs
-    assert!(web.host.is_present(), "Web URL must have a host");
+    if !web.host.is_present() {
+        return Err(ParseErrorKind::MissingHost);
+    }
 
     // Validate port if present (must be valid digits)
     if web.port.is_present() {
         let port_start = web.port.start as usize;
         let port_end = web.port.end as usize;
 
-        assert!(port_start < port_end, "Invalid port: empty");
+        if port_start >= port_end {
+            return Err(ParseErrorKind::InvalidPort);
+        }
 
         // Check all characters are digits
         let mut i = port_start;
         while i < port_end {
-            assert!(
-                is_digit(bytes[i]),
-                "Invalid port: contains non-digit characters"
-            );
+            if !is_digit(bytes[i]) {
+                return Err(ParseErrorKind::InvalidPort);
+            }
             i += 1;
         }
 
         // Port number should be reasonable (1-65535)
-        assert!(port_end - port_start <= 5, "Invalid port: too many digits");
+        if port_end - port_start > 5 {
+            return Err(ParseErrorKind::InvalidPort);
+        }
     }
+
+    Ok(())
 }
 
 /// Check if a byte is an ASCII digit
@@ -352,51 +408,80 @@ const fn find_scheme_end(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-/// Check if scheme is a web scheme (requires "://")
-const fn is_web_scheme(bytes: &[u8], scheme_end: usize) -> bool {
+/// Checks whether the scheme is `file`, ignoring ASCII case.
+const fn is_file_scheme(bytes: &[u8], scheme_end: usize) -> bool {
+    if scheme_end != 4 {
+        return false;
+    }
+    let expected = b"file";
+    let mut i = 0;
+    while i < 4 {
+        if !bytes[i].eq_ignore_ascii_case(&expected[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Parses `file://[host]/path` into the local path it names.
+///
+/// The authority is accepted but discarded: `file://localhost/tmp/a` and
+/// `file:///tmp/a` name the same file.
+const fn parse_file_url(bytes: &[u8], scheme_end: usize) -> LocalComponents {
+    let web = parse_web_url(bytes, scheme_end);
+    LocalComponents {
+        path: web.path,
+        is_absolute: true,
+        is_windows: false,
+    }
+}
+
+/// Checks for an RFC 3986 scheme not followed by `//`, as in `about:blank`.
+///
+/// A single-character scheme is rejected so a Windows path such as `C:\dir`
+/// stays a local path instead of becoming a `C:` URL.
+const fn is_opaque_scheme(bytes: &[u8], scheme_end: usize) -> bool {
+    if scheme_end < 2 {
+        return false;
+    }
+    if !bytes[0].is_ascii_alphabetic() {
+        return false;
+    }
+    let mut i = 1;
+    while i < scheme_end {
+        let byte = bytes[i];
+        if !(byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'-' || byte == b'.') {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Checks for an RFC 3986 hierarchical scheme followed by `://`.
+const fn is_hierarchical_scheme(bytes: &[u8], scheme_end: usize) -> bool {
     let len = bytes.len();
 
-    // Must have "://" after scheme
-    if len < scheme_end + 3 {
+    if scheme_end == 0 || len < scheme_end + 3 {
         return false;
     }
     if bytes[scheme_end] != b':' || bytes[scheme_end + 1] != b'/' || bytes[scheme_end + 2] != b'/' {
         return false;
     }
 
-    // Check for known web schemes case-insensitively without allocating.
-    scheme_equals_ignore_ascii_case(bytes, scheme_end, b"http")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"https")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"ftp")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"ftps")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"ws")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"wss")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"rtsp")
-        || scheme_equals_ignore_ascii_case(bytes, scheme_end, b"rtmp")
-}
-
-const fn scheme_equals_ignore_ascii_case(bytes: &[u8], scheme_end: usize, expected: &[u8]) -> bool {
-    if scheme_end != expected.len() {
+    if !bytes[0].is_ascii_alphabetic() {
         return false;
     }
-
-    let mut i = 0;
+    let mut i = 1;
     while i < scheme_end {
-        if ascii_lower(bytes[i]) != expected[i] {
+        let byte = bytes[i];
+        if !(byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'-' || byte == b'.') {
             return false;
         }
         i += 1;
     }
-
     true
-}
-
-const fn ascii_lower(byte: u8) -> u8 {
-    if byte >= b'A' && byte <= b'Z' {
-        byte + (b'a' - b'A')
-    } else {
-        byte
-    }
 }
 
 /// Find first occurrence of any character in set, or end of string
@@ -529,26 +614,26 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Web URL must have a host")]
+    #[should_panic(expected = "web URL must have a host")]
     fn test_missing_host_panics() {
         parse_url(b"https://");
     }
 
     #[test]
-    #[should_panic(expected = "Web URL must have a host")]
+    #[should_panic(expected = "web URL must have a host")]
     fn test_empty_host_panics() {
         // URLs like "https:///path" have no authority section, so no host
         parse_url(b"https:///path");
     }
 
     #[test]
-    #[should_panic(expected = "Invalid port: contains non-digit characters")]
+    #[should_panic(expected = "web URL has an invalid port")]
     fn test_invalid_port_characters_panics() {
         parse_url(b"https://example.com:abc/path");
     }
 
     #[test]
-    #[should_panic(expected = "Invalid port: too many digits")]
+    #[should_panic(expected = "web URL has an invalid port")]
     fn test_port_too_long_panics() {
         parse_url(b"https://example.com:123456/path");
     }

@@ -1,19 +1,19 @@
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("README.md")]
 extern crate alloc;
 extern crate self as waterui;
 #[macro_use]
 mod macros;
-pub mod background;
-pub mod border;
+mod appearance;
+pub use appearance::{background, border, filter, floating, gradient, shape, style};
 pub mod component;
-pub mod cursor;
-pub mod drag_drop;
-/// Error handling utilities for converting standard errors into renderable views.
-pub mod error;
-pub mod filter;
-pub mod gesture;
-pub mod gradient;
-pub mod interaction;
+mod interaction_support;
+pub use interaction_support::{cursor, drag_drop, gesture, interaction};
+mod runtime;
+#[cfg(feature = "inspector")]
+pub use runtime::inspector;
+#[cfg(feature = "snackbar")]
+pub use runtime::snackbar;
+pub use runtime::{app, entry, error, fullscreen, metadata, realization, task, window};
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.
@@ -40,33 +40,29 @@ pub mod prelude {
     //! }
     //! ```
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
-    #[cfg(feature = "barcode")]
-    pub use super::barcode;
-    #[cfg(feature = "chart")]
-    pub use super::chart;
+    #[cfg(feature = "gpu")]
+    pub use super::FilterViewExt;
     pub use super::env::Environment;
-    #[cfg(feature = "map")]
-    pub use super::map;
     #[cfg(feature = "media")]
     pub use super::media;
-    #[cfg(feature = "particle")]
-    pub use super::particle;
     #[cfg(feature = "video")]
     pub use super::video;
     #[cfg(feature = "webview")]
     pub use super::webview;
     pub use super::{
         AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, View,
-        ViewExt, accessibility, animation, app, color, component, cursor, drag_drop, entry, env,
-        error, filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata,
-        navigation, reactive, regional, shape, signal, style, task, text, widget, window,
+        ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop,
+        entry, env, error, filter, form, fullscreen, gesture, gradient, id, layout, locale,
+        metadata, navigation, reactive, regional, shape, signal, style, task, text, widget, window,
     };
 
+    #[cfg(feature = "flow-markdown")]
     pub use crate::include_markdown;
 
     pub use super::color::*;
     pub use super::fullscreen::*;
-    pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
+    #[cfg(feature = "snackbar")]
+    pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition, SnackbarTheme};
 
     pub use super::gesture::GestureObserver;
 
@@ -86,6 +82,9 @@ pub mod prelude {
     pub use super::text::{TextConfig, font, highlight, styled};
 
     pub use super::component::link::{Link, link};
+    pub use super::component::list::{
+        List, ListContent, ListItem, ListSection, Row, Section, detail_row, row,
+    };
     pub use super::component::menu::{
         Command, CommandExt, Menu, MenuItem, Shortcut, ShortcutModifiers,
     };
@@ -93,7 +92,7 @@ pub mod prelude {
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
 
-    pub use super::widget::{Card, Divider, card, suspense};
+    pub use super::widget::{Card, CardStyle, CardStyleTokens, CardTheme, Divider, card, suspense};
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
@@ -107,7 +106,7 @@ pub mod prelude {
     };
 
     // Background types (explicit to avoid module name conflict with layout::background)
-    pub use super::background::{Background, Material, Shader};
+    pub use super::background::{Background, Material};
 
     // Asset types
     #[cfg(feature = "assets")]
@@ -116,41 +115,50 @@ pub mod prelude {
         LargeFile, LargeFileAsset, VideoAsset, asset, assets, include_bundle,
     };
 
-    // Re-export macros
+    // Re-export macros. The UI-test attribute is `ui_test` here rather than
+    // `test`: glob-importing a macro named `test` shadows the built-in `#[test]`
+    // in every file that writes `use waterui::prelude::*`, and the resulting
+    // error names neither the prelude nor the collision.
     pub use waterui_macros::*;
 }
 pub use color::Color;
 pub use form::FormBuilder;
+#[cfg(feature = "gpu")]
+#[doc(inline)]
+pub use view::FilterViewExt;
 #[doc(inline)]
 pub use view::ViewExt;
-#[cfg(feature = "barcode")]
-pub use waterui_barcode as barcode;
-#[cfg(feature = "chart")]
-pub use waterui_chart as chart;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
+#[cfg(feature = "gpu")]
 pub use waterui_graphics::image_analysis;
+#[cfg(feature = "gpu")]
 pub use waterui_graphics::image_generator;
+#[cfg(feature = "gpu")]
 pub use waterui_graphics::{
     CheckerboardGenerator, DominantColor, DotGridGenerator, GeneratedImage, Histogram,
     ImageAnalysis, ImageGenerator, LinearGradientGenerator, MinMaxLuma, NoiseGenerator,
     RadialGradientGenerator, StripeGenerator,
 };
+pub use waterui_icon as icon;
 
 #[cfg(feature = "assets")]
 pub use waterui_assets as assets;
 pub use waterui_layout as layout;
 pub use waterui_locale as locale;
 pub use waterui_locale::regional;
+/// The UI-test attribute, written qualified as `#[waterui::test(...)]`.
+///
+/// It is `ui_test` inside [`prelude`] so that a glob import of the prelude does
+/// not shadow the built-in `#[test]`; this alias keeps the short spelling at the
+/// path where it is actually written.
+pub use waterui_macros::ui_test as test;
 #[doc(inline)]
 pub use waterui_macros::*;
-#[cfg(feature = "map")]
-pub use waterui_map as map;
 #[cfg(feature = "media")]
 pub use waterui_media as media;
 pub use waterui_navigation as navigation;
-#[cfg(feature = "particle")]
-pub use waterui_particle as particle;
+#[cfg(feature = "gpu")]
 pub use waterui_svg as svg;
 pub use waterui_text as text;
 #[cfg(feature = "video")]
@@ -169,44 +177,37 @@ pub use waterui_assets::{
 #[cfg(feature = "assets")]
 pub use waterui_assets_macros::{asset, assets, include_bundle};
 pub use waterui_url::Url;
-pub mod metadata;
-pub mod shape;
-pub mod style;
 
 #[doc(inline)]
 pub use waterui_core::{
     AnyView, Str, animation,
+    easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
-    extract::State,
+    event,
+    extract::{self, Extractor, State, Use},
+    handler::{self, Handler, HandlerOnce},
     id::{self, Identifiable},
-    impl_extractor, raw_view, views,
+    impl_extractor, raw_view,
+    resolve::{self, AnyResolvable, Resolvable},
+    views,
 };
 
-mod reactive_ext;
+/// Haptic feedback intensity for the `on_*_haptic` modifiers.
+#[cfg(feature = "std")]
+#[doc(inline)]
+pub use waterkit_haptic::Intensity;
+
 pub(crate) mod view_ext;
 pub use nami as reactive;
 pub use nami::SignalExt;
 #[doc(inline)]
-pub use reactive::{Binding, Computed, Signal, signal};
-pub use reactive_ext::AnimationExt;
-
-/// Task management utilities and async support.
-pub mod task;
-
-/// Inspector runtime endpoint and diagnostics streaming.
-pub mod inspector;
+pub use reactive::{Binding, Computed, Signal, binding, signal};
+#[doc(inline)]
+pub use waterui_core::AnimationExt;
 
 pub use waterui_core::plugin::Plugin;
 /// Graphics primitives including GPU rendering surface.
 pub use waterui_graphics as graphics;
-
-mod entry;
-pub use entry::entry;
-
-pub mod app;
-pub mod fullscreen;
-pub mod snackbar;
-pub mod window;
 
 pub use tracing as log;
 

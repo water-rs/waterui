@@ -8,16 +8,21 @@ use nami::Signal;
 use nami::signal::IntoComputed;
 use waterui_controls::{
     IntoLabel,
-    button::{Button, ButtonStyle},
+    button::{ButtonStyle, button},
 };
 use waterui_core::{Environment, Str, View};
 
 /// Opens a URL in the system's default browser/handler.
+#[cfg(not(target_os = "espidf"))]
 fn open_url(url: &str) {
     if let Err(e) = robius_open::Uri::new(url).open() {
         tracing::error!("Failed to open URL '{}': {:?}", url, e);
     }
 }
+
+/// Embedded targets have no default URL handler; opening is a no-op.
+#[cfg(target_os = "espidf")]
+fn open_url(_url: &str) {}
 
 /// A tappable text link that opens a URL.
 ///
@@ -35,7 +40,7 @@ fn open_url(url: &str) {
 /// use waterui::prelude::*;
 ///
 /// // Create a simple link
-/// let my_link = link("Visit website", "https://example.com");
+/// let my_link = link("Visit website", "https://waterui.dev");
 /// ```
 #[derive(Debug)]
 pub struct Link<Label> {
@@ -63,12 +68,10 @@ where
     fn body(self, _env: &Environment) -> impl View {
         let url = self.url;
 
-        Button::new(self.label)
-            .style(ButtonStyle::Link)
-            .action(move || {
-                let url_str = url.get();
-                open_url(&url_str);
-            })
+        button(self.label).style(ButtonStyle::Link).action(move || {
+            let url_str = url.get();
+            open_url(&url_str);
+        })
     }
 }
 

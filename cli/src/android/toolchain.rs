@@ -262,8 +262,8 @@ async fn latest_cmdline_tools_archive_url() -> eyre::Result<String> {
     const REPOSITORY_URL: &str = "https://dl.google.com/android/repository/repository2-3.xml";
     const REPOSITORY_PREFIX: &str = "https://dl.google.com/android/repository/";
 
-    let mut client = FollowRedirect::new(zenwave::client());
-    let response = client.method(Method::GET, REPOSITORY_URL).await?;
+    let mut client = FollowRedirect::new(zenwave::raw_client());
+    let response = client.method(Method::GET, REPOSITORY_URL)?.await?;
     if !response.status().is_success() {
         return Err(eyre::eyre!(
             "Failed to query Android SDK repository metadata: HTTP {}",
@@ -852,24 +852,6 @@ fn parse_android_ndk_version_from_runtime_build_gradle(contents: &str) -> Option
         let remainder = line.strip_prefix("ndkVersion")?;
         let (_, value) = remainder.split_once('=')?;
         let version = value.trim().trim_matches('"');
-        if version.is_empty() {
-            None
-        } else {
-            Some(version.to_string())
-        }
-    })
-}
-
-#[cfg(test)]
-fn parse_android_kotlin_version_from_settings_gradle(contents: &str) -> Option<String> {
-    contents.lines().find_map(|line| {
-        let line = line.split("//").next()?.trim();
-        if !line.contains("id(\"org.jetbrains.kotlin.android\")") {
-            return None;
-        }
-        let version_marker = "version \"";
-        let version_start = line.find(version_marker)? + version_marker.len();
-        let version = line[version_start..].split('"').next()?.trim();
         if version.is_empty() {
             None
         } else {
@@ -1828,28 +1810,13 @@ mod tests {
     fn parse_android_ndk_version_from_runtime_build_gradle_extracts_declared_version() {
         let contents = r#"
 android {
-    compileSdk = 36
+    compileSdk = 37
     ndkVersion = "29.0.14206865"
 }
 "#;
         assert_eq!(
             parse_android_ndk_version_from_runtime_build_gradle(contents),
             Some("29.0.14206865".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_android_kotlin_version_from_settings_gradle_extracts_declared_version() {
-        let contents = r#"
-pluginManagement {
-    plugins {
-        id("org.jetbrains.kotlin.android") version "2.0.21"
-    }
-}
-"#;
-        assert_eq!(
-            parse_android_kotlin_version_from_settings_gradle(contents),
-            Some("2.0.21".to_string())
         );
     }
 
@@ -2022,6 +1989,8 @@ async fn verify_android_platform_tools_executable(
 }
 
 fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
+    use super::ANDROID_MIN_API_LEVEL;
+
     let prebuilt_dir = ndk_path.join("toolchains/llvm/prebuilt");
     let entries = std::fs::read_dir(&prebuilt_dir).ok()?;
     let mut candidates = entries
@@ -2032,11 +2001,15 @@ fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
     candidates.sort();
 
     for candidate in candidates {
-        let clang = candidate.join("bin").join(if cfg!(target_os = "windows") {
-            "aarch64-linux-android24-clang.cmd"
-        } else {
-            "aarch64-linux-android24-clang"
-        });
+        let executable = format!(
+            "aarch64-linux-android{ANDROID_MIN_API_LEVEL}-clang{}",
+            if cfg!(target_os = "windows") {
+                ".cmd"
+            } else {
+                ""
+            }
+        );
+        let clang = candidate.join("bin").join(executable);
         if clang.exists() {
             return Some(clang);
         }
@@ -2431,30 +2404,53 @@ impl Toolchain for Kotlin {
         let kotlinc_path = Self::detect_path()
             .await
             .ok_or_else(|| ToolchainError::fixable(KotlinInstallation))?;
-
+        // Only unix carries an execute bit, so elsewhere finding the file is
+        // the whole check. Both arms are tail expressions rather than an early
+        // `return` under one `cfg`, which would leave the other arm as dead
+        // code on the platform that does compile it.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = smol::unblock({
-                let kotlinc_path = kotlinc_path.clone();
-                move || std::fs::metadata(&kotlinc_path)
-            })
-            .await
-            {
-                let permissions = metadata.permissions();
-                if permissions.mode() & 0o111 == 0 {
-                    return Err(ToolchainError::unfixable(
-                        "Kotlin compiler (kotlinc) is not executable",
-                        format!(
-                            "The kotlinc script at '{}' does not have execute permission. Fix it with: sudo chmod +x '{}'",
-                            kotlinc_path.display(),
-                            kotlinc_path.display()
-                        ),
-                    ));
-                }
-            }
+            Self::reject_non_executable(kotlinc_path).await
         }
+        #[cfg(not(unix))]
+        {
+            drop(kotlinc_path);
+            Ok(())
+        }
+    }
+}
 
+impl Kotlin {
+    /// Rejects a `kotlinc` the current user cannot run.
+    ///
+    /// Only unix carries an execute bit, so elsewhere finding the file is the
+    /// whole check — hence the two bodies rather than one with the permission
+    /// half wrapped in `cfg`, which left the path unread on every other
+    /// platform and tripped an unused-variable lint nobody was running.
+    #[cfg(unix)]
+    async fn reject_non_executable(
+        kotlinc_path: PathBuf,
+    ) -> Result<(), ToolchainError<KotlinInstallation>> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let Ok(metadata) = smol::unblock({
+            let kotlinc_path = kotlinc_path.clone();
+            move || std::fs::metadata(&kotlinc_path)
+        })
+        .await
+        else {
+            return Ok(());
+        };
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(ToolchainError::unfixable(
+                "Kotlin compiler (kotlinc) is not executable",
+                format!(
+                    "The kotlinc script at '{}' does not have execute permission. Fix it with: sudo chmod +x '{}'",
+                    kotlinc_path.display(),
+                    kotlinc_path.display()
+                ),
+            ));
+        }
         Ok(())
     }
 }

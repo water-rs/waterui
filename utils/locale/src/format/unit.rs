@@ -93,18 +93,20 @@ impl LengthUnit for Mile {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use waterui_locale::{Length, Meter, Kilometer, Feet};
+/// ```rust
+/// use waterui_locale::{Kilometer, Length, Meter, Mile};
 ///
 /// // Create lengths
 /// let distance = Length::<Kilometer>::new(5.0);
 /// let extra = Length::<Meter>::new(500.0);
 ///
 /// // Add different units seamlessly (result in left-hand unit)
-/// let total = distance + extra;  // 5.5 km
+/// let total = distance + extra; // 5.5 km
+/// assert_eq!(total.value(), 5.5);
 ///
 /// // Convert between units
-/// let in_miles = distance.to::<Mile>();  // ~3.1 miles
+/// let in_miles = distance.to::<Mile>(); // ~3.1 miles
+/// assert!((in_miles.value() - 3.107).abs() < 0.001);
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Length<U: LengthUnit> {

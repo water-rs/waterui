@@ -11,6 +11,7 @@ use waterui::app::App;
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::Binding;
 
 const TAP_COLOR: Srgb = Srgb::from_hex("#2196F3");
@@ -131,7 +132,8 @@ fn on_tap_section(tap_count: &Binding<i32>) -> impl View {
     .padding()
 }
 
-fn main() -> impl View {
+#[preview]
+pub fn demo() -> impl View {
     let tap_count = Binding::i32(0);
     let double_tap_count = Binding::i32(0);
     let long_press_count = Binding::i32(0);
@@ -163,5 +165,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

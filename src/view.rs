@@ -9,8 +9,6 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
-#[cfg(feature = "std")]
-use executor_core::spawn;
 use executor_core::spawn_local;
 use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
@@ -25,30 +23,17 @@ use waterui_core::{
     plugin::Plugin,
 };
 use waterui_graphics::color::Color;
-use waterui_graphics::filter_view::{
-    Bloom as GraphicsBloom, Blur as GraphicsBlur, Brightness as GraphicsBrightness,
-    BumpDistortion as GraphicsBumpDistortion, ColorMatrix as GraphicsColorMatrix,
-    Contrast as GraphicsContrast, Crystallize as GraphicsCrystallize,
-    DotHalftone as GraphicsDotHalftone, EdgeWork as GraphicsEdgeWork, Exposure as GraphicsExposure,
-    FilterViewExt as GraphicsFilterViewExt, Filtered as GraphicsFiltered, Gamma as GraphicsGamma,
-    GaussianBlur as GraphicsGaussianBlur, Gloom as GraphicsGloom, GpuFilter,
-    Grayscale as GraphicsGrayscale, HighlightsShadows as GraphicsHighlightsShadows,
-    HueRotation as GraphicsHueRotation, Invert as GraphicsInvert,
-    Kaleidoscope as GraphicsKaleidoscope, LineHalftone as GraphicsLineHalftone,
-    MirrorTile as GraphicsMirrorTile, MotionBlur as GraphicsMotionBlur,
-    PerspectiveCorrection as GraphicsPerspectiveCorrection,
-    PerspectiveTransform as GraphicsPerspectiveTransform,
-    PinchDistortion as GraphicsPinchDistortion, Pixellate as GraphicsPixellate,
-    Saturation as GraphicsSaturation, Sepia as GraphicsSepia, Sharpen as GraphicsSharpen,
-    TemperatureTint as GraphicsTemperatureTint, TwirlDistortion as GraphicsTwirlDistortion,
-    UnsharpMask as GraphicsUnsharpMask, Vibrance as GraphicsVibrance, Vignette as GraphicsVignette,
-    VortexDistortion as GraphicsVortexDistortion, WhitePoint as GraphicsWhitePoint,
-    ZoomBlur as GraphicsZoomBlur,
-};
-use waterui_graphics::multi_input_filter::TransitionDirection;
+
+/// All view-level GPU filter modifiers (`.blur()`, `.brightness()`, ...) come
+/// from [`waterui_graphics::filter_view::FilterViewExt`]. This re-export
+/// makes them part of the `WaterUI` prelude alongside [`ViewExt`], so a single
+/// `use waterui::prelude::*;` is enough.
+#[cfg(feature = "gpu")]
+pub use waterui_graphics::filter_view::FilterViewExt;
 
 use waterui_layout::{
-    EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, Overlay, VerticalAlignmentGuide,
+    AspectRatio, ContentMode, EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority,
+    Overlay, VerticalAlignmentGuide,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
@@ -58,8 +43,8 @@ use waterui_str::Str;
 
 use crate::{
     accessibility::{
-        self, AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole,
-        AccessibilityState,
+        self, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
+        AccessibilityLabel, AccessibilityRole, AccessibilityState,
     },
     background::IntoBackground,
     border::Border,
@@ -73,9 +58,10 @@ use crate::{
 };
 use crate::{
     component::{badge::Badge, focus::Focused},
+    floating::Floating,
     prelude::Shadow,
     shape::{ClipShape, Shape},
-    style::{Anchor, Offset, Rotation, Scale},
+    style::{Anchor, FloatingStyle, Offset, Rotation, Scale},
 };
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
@@ -85,10 +71,9 @@ use waterui_core::id::TaggedView;
 
 #[cfg(feature = "std")]
 fn trigger_impact_haptic(intensity: Intensity) {
-    spawn(async move {
-        let _ = Haptic::impact(intensity).await;
-    })
-    .detach();
+    if let Err(error) = Haptic::impact(intensity) {
+        tracing::debug!(%error, "failed to trigger impact haptic");
+    }
 }
 
 /// Extension trait for views, adding common styling and configuration methods.
@@ -99,6 +84,29 @@ pub trait ViewExt: View + Sized {
     /// * `metadata` - The metadata to attach
     fn metadata<T: MetadataKey>(self, metadata: T) -> Metadata<T> {
         Metadata::new(self, metadata)
+    }
+
+    /// Selects the [`ColorSpace`](crate::metadata::secure::ColorSpace) for this subtree.
+    ///
+    /// Friendly wrapper over the underlying [`StandardDynamicRange`](crate::metadata::secure::StandardDynamicRange) /
+    /// [`HighDynamicRange`](crate::metadata::secure::HighDynamicRange) metadata. Prefer this over
+    /// `metadata(HighDynamicRange::new())` for new code.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::metadata::secure::ColorSpace;
+    ///
+    /// let wide_gamut = text!("Sunset").color_space(ColorSpace::Hdr);
+    /// let thumbnail = text!("Avatar").color_space(ColorSpace::Sdr);
+    /// ```
+    fn color_space(self, space: crate::metadata::secure::ColorSpace) -> AnyView {
+        use crate::metadata::secure::{ColorSpace, HighDynamicRange, StandardDynamicRange};
+        match space {
+            ColorSpace::Sdr => AnyView::new(self.metadata(StandardDynamicRange::new())),
+            ColorSpace::Hdr => AnyView::new(self.metadata(HighDynamicRange::new())),
+        }
     }
 
     /// Adjusts the opacity (transparency) of this view.
@@ -114,355 +122,28 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, Opacity::new(amount))
     }
 
-    /// Applies a GPU filter to this view.
+    /// Constrains this view to a width-to-height ratio.
     ///
-    /// This is the low-level entry for custom filters. Prefer convenience methods
-    /// like `.blur()` when possible.
-    fn filter<F: GpuFilter>(self, filter: F) -> GraphicsFiltered<Self, F> {
-        GraphicsFilterViewExt::filter(self, filter)
+    /// The view shrinks to fit inside whatever it is offered, leaving slack on
+    /// the longer axis — `SwiftUI`'s `.aspectRatio(_, contentMode: .fit)`. Use
+    /// [`AspectRatio::new`] for the filling mode.
+    ///
+    /// # Arguments
+    /// * `ratio` - Width divided by height. Must be positive and finite.
+    fn aspect_ratio(self, ratio: impl IntoSignalF32 + 'static) -> impl View {
+        AspectRatio::new(self, ratio, ContentMode::Fit)
     }
 
-    /// Applies a blur filter.
-    fn blur<T: IntoSignalF32>(self, radius: T) -> GraphicsFiltered<Self, GraphicsBlur> {
-        GraphicsFilterViewExt::blur(self, radius)
-    }
-
-    /// Applies a brightness filter.
-    fn brightness<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsBrightness> {
-        GraphicsFilterViewExt::brightness(self, amount)
-    }
-
-    /// Applies an exposure filter in photographic stops.
-    fn exposure<T: IntoSignalF32>(self, ev: T) -> GraphicsFiltered<Self, GraphicsExposure> {
-        GraphicsFilterViewExt::exposure(self, ev)
-    }
-
-    /// Applies a gamma adjustment filter.
-    fn gamma<T: IntoSignalF32>(self, gamma: T) -> GraphicsFiltered<Self, GraphicsGamma> {
-        GraphicsFilterViewExt::gamma(self, gamma)
-    }
-
-    /// Applies a contrast filter.
-    fn contrast<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsContrast> {
-        GraphicsFilterViewExt::contrast(self, amount)
-    }
-
-    /// Applies a saturation filter.
-    fn saturation<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsSaturation> {
-        GraphicsFilterViewExt::saturation(self, amount)
-    }
-
-    /// Applies a vibrance filter.
-    fn vibrance<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsVibrance> {
-        GraphicsFilterViewExt::vibrance(self, amount)
-    }
-
-    /// Applies a grayscale filter.
-    fn grayscale<T: IntoSignalF32>(
-        self,
-        intensity: T,
-    ) -> GraphicsFiltered<Self, GraphicsGrayscale> {
-        GraphicsFilterViewExt::grayscale(self, intensity)
-    }
-
-    /// Applies a hue-rotation filter.
-    fn hue_rotation<T: IntoSignalF32>(
-        self,
-        angle: T,
-    ) -> GraphicsFiltered<Self, GraphicsHueRotation> {
-        GraphicsFilterViewExt::hue_rotation(self, angle)
-    }
-
-    /// Applies an invert filter.
-    fn invert(self) -> GraphicsFiltered<Self, GraphicsInvert> {
-        GraphicsFilterViewExt::invert(self)
-    }
-
-    /// Applies a sepia filter.
-    fn sepia<T: IntoSignalF32>(self, intensity: T) -> GraphicsFiltered<Self, GraphicsSepia> {
-        GraphicsFilterViewExt::sepia(self, intensity)
-    }
-
-    /// Applies a sharpen filter.
-    fn sharpen<T: IntoSignalF32>(self, amount: T) -> GraphicsFiltered<Self, GraphicsSharpen> {
-        GraphicsFilterViewExt::sharpen(self, amount)
-    }
-
-    /// Applies a temperature/tint white-balance adjustment.
-    fn temperature_tint<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
-        temperature: T,
-        tint: U,
-    ) -> GraphicsFiltered<Self, GraphicsTemperatureTint> {
-        GraphicsFilterViewExt::temperature_tint(self, temperature, tint)
-    }
-
-    /// Recovers highlights while lifting shadows.
-    fn highlights_shadows<H: IntoSignalF32, S: IntoSignalF32>(
-        self,
-        highlights: H,
-        shadows: S,
-    ) -> GraphicsFiltered<Self, GraphicsHighlightsShadows> {
-        GraphicsFilterViewExt::highlights_shadows(self, highlights, shadows)
-    }
-
-    /// Applies directional motion blur.
-    fn motion_blur<R: IntoSignalF32, A: IntoSignalF32>(
-        self,
-        radius: R,
-        angle: A,
-    ) -> GraphicsFiltered<Self, GraphicsMotionBlur> {
-        GraphicsFilterViewExt::motion_blur(self, radius, angle)
-    }
-
-    /// Applies a vignette filter.
-    fn vignette<R: IntoSignalF32, S: IntoSignalF32>(
-        self,
-        radius: R,
-        softness: S,
-    ) -> GraphicsFiltered<Self, GraphicsVignette> {
-        GraphicsFilterViewExt::vignette(self, radius, softness)
-    }
-
-    /// Adjusts color balance using an explicit white point triplet.
-    fn white_point<R: IntoSignalF32, G: IntoSignalF32, B: IntoSignalF32>(
-        self,
-        red: R,
-        green: G,
-        blue: B,
-    ) -> GraphicsFiltered<Self, GraphicsWhitePoint> {
-        GraphicsFilterViewExt::white_point(self, red, green, blue)
-    }
-
-    /// Applies radial zoom blur around a focal point.
-    fn zoom_blur<A: IntoSignalF32, X: IntoSignalF32, Y: IntoSignalF32>(
-        self,
-        amount: A,
-        center_x: X,
-        center_y: Y,
-    ) -> GraphicsFiltered<Self, GraphicsZoomBlur> {
-        GraphicsFilterViewExt::zoom_blur(self, amount, center_x, center_y)
-    }
-
-    /// Transitions to another image with a directional swipe.
-    fn swipe_transition_to_image(
-        self,
-        target: waterui_graphics::multi_input_filter::FilterImage,
-        progress: f32,
-        softness: f32,
-        direction: TransitionDirection,
-    ) -> GraphicsFiltered<Self, waterui_graphics::multi_input_filter::SwipeTransitionToImageFilter>
-    {
-        GraphicsFilterViewExt::swipe_transition_to_image(
-            self, target, progress, softness, direction,
-        )
-    }
-
-    /// Transitions to another image from a radial reveal center.
-    fn radial_transition_to_image(
-        self,
-        target: waterui_graphics::multi_input_filter::FilterImage,
-        progress: f32,
-        softness: f32,
-        center_x: f32,
-        center_y: f32,
-    ) -> GraphicsFiltered<Self, waterui_graphics::multi_input_filter::RadialTransitionToImageFilter>
-    {
-        GraphicsFilterViewExt::radial_transition_to_image(
-            self, target, progress, softness, center_x, center_y,
-        )
-    }
-
-    /// Transitions to another image with a zooming blend.
-    fn zoom_transition_to_image(
-        self,
-        target: waterui_graphics::multi_input_filter::FilterImage,
-        progress: f32,
-        amount: f32,
-        center_x: f32,
-        center_y: f32,
-    ) -> GraphicsFiltered<Self, waterui_graphics::multi_input_filter::ZoomTransitionToImageFilter>
-    {
-        GraphicsFilterViewExt::zoom_transition_to_image(
-            self, target, progress, amount, center_x, center_y,
-        )
-    }
-
-    /// Transitions to another image using a displacement map.
-    fn displacement_transition_to_image(
-        self,
-        target: waterui_graphics::multi_input_filter::FilterImage,
-        map: waterui_graphics::multi_input_filter::FilterImage,
-        progress: f32,
-        scale: f32,
-    ) -> GraphicsFiltered<
-        Self,
-        waterui_graphics::multi_input_filter::DisplacementTransitionToImageFilter,
-    > {
-        GraphicsFilterViewExt::displacement_transition_to_image(self, target, map, progress, scale)
-    }
-
-    /// Applies a gaussian blur filter.
-    fn gaussian_blur<T: IntoSignalF32>(
-        self,
-        sigma: T,
-    ) -> GraphicsFiltered<Self, GraphicsGaussianBlur> {
-        GraphicsFilterViewExt::gaussian_blur(self, sigma)
-    }
-
-    /// Applies a 3x4 color matrix transform.
-    fn color_matrix(self, matrix: [[f32; 4]; 3]) -> GraphicsFiltered<Self, GraphicsColorMatrix> {
-        GraphicsFilterViewExt::color_matrix(self, matrix)
-    }
-
-    /// Applies bloom around bright regions.
-    fn bloom<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32>(
-        self,
-        radius: T,
-        intensity: U,
-        threshold: V,
-    ) -> GraphicsFiltered<Self, GraphicsBloom> {
-        GraphicsFilterViewExt::bloom(self, radius, intensity, threshold)
-    }
-
-    /// Applies gloom around bright regions.
-    fn gloom<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32>(
-        self,
-        radius: T,
-        intensity: U,
-        threshold: V,
-    ) -> GraphicsFiltered<Self, GraphicsGloom> {
-        GraphicsFilterViewExt::gloom(self, radius, intensity, threshold)
-    }
-
-    /// Applies an unsharp mask.
-    fn unsharp_mask<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
-        radius: T,
-        amount: U,
-    ) -> GraphicsFiltered<Self, GraphicsUnsharpMask> {
-        GraphicsFilterViewExt::unsharp_mask(self, radius, amount)
-    }
-
-    /// Applies bump distortion.
-    fn bump_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
-        self,
-        center_x: T,
-        center_y: U,
-        radius: V,
-        scale: W,
-    ) -> GraphicsFiltered<Self, GraphicsBumpDistortion> {
-        GraphicsFilterViewExt::bump_distortion(self, center_x, center_y, radius, scale)
-    }
-
-    /// Applies pinch distortion.
-    fn pinch_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
-        self,
-        center_x: T,
-        center_y: U,
-        radius: V,
-        scale: W,
-    ) -> GraphicsFiltered<Self, GraphicsPinchDistortion> {
-        GraphicsFilterViewExt::pinch_distortion(self, center_x, center_y, radius, scale)
-    }
-
-    /// Applies twirl distortion.
-    fn twirl_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
-        self,
-        center_x: T,
-        center_y: U,
-        radius: V,
-        angle: W,
-    ) -> GraphicsFiltered<Self, GraphicsTwirlDistortion> {
-        GraphicsFilterViewExt::twirl_distortion(self, center_x, center_y, radius, angle)
-    }
-
-    /// Applies vortex distortion.
-    fn vortex_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
-        self,
-        center_x: T,
-        center_y: U,
-        radius: V,
-        angle: W,
-    ) -> GraphicsFiltered<Self, GraphicsVortexDistortion> {
-        GraphicsFilterViewExt::vortex_distortion(self, center_x, center_y, radius, angle)
-    }
-
-    /// Applies perspective transform.
-    fn perspective_transform(
-        self,
-        quad: [[f32; 2]; 4],
-    ) -> GraphicsFiltered<Self, GraphicsPerspectiveTransform> {
-        GraphicsFilterViewExt::perspective_transform(self, quad)
-    }
-
-    /// Applies perspective correction.
-    fn perspective_correction(
-        self,
-        quad: [[f32; 2]; 4],
-    ) -> GraphicsFiltered<Self, GraphicsPerspectiveCorrection> {
-        GraphicsFilterViewExt::perspective_correction(self, quad)
-    }
-
-    /// Applies pixellate.
-    fn pixellate<T: IntoSignalF32>(self, size: T) -> GraphicsFiltered<Self, GraphicsPixellate> {
-        GraphicsFilterViewExt::pixellate(self, size)
-    }
-
-    /// Applies crystallize.
-    fn crystallize<T: IntoSignalF32>(self, size: T) -> GraphicsFiltered<Self, GraphicsCrystallize> {
-        GraphicsFilterViewExt::crystallize(self, size)
-    }
-
-    /// Applies edge work.
-    fn edge_work<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
-        radius: T,
-        amount: U,
-    ) -> GraphicsFiltered<Self, GraphicsEdgeWork> {
-        GraphicsFilterViewExt::edge_work(self, radius, amount)
-    }
-
-    /// Applies dot halftone.
-    fn dot_halftone<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
-        self,
-        scale: T,
-        angle: U,
-        center_x: V,
-        center_y: W,
-    ) -> GraphicsFiltered<Self, GraphicsDotHalftone> {
-        GraphicsFilterViewExt::dot_halftone(self, scale, angle, center_x, center_y)
-    }
-
-    /// Applies line halftone.
-    fn line_halftone<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
-        self,
-        scale: T,
-        angle: U,
-        center_x: V,
-        center_y: W,
-    ) -> GraphicsFiltered<Self, GraphicsLineHalftone> {
-        GraphicsFilterViewExt::line_halftone(self, scale, angle, center_x, center_y)
-    }
-
-    /// Applies kaleidoscope.
-    fn kaleidoscope<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
-        self,
-        segments: T,
-        angle: U,
-        center_x: V,
-        center_y: W,
-    ) -> GraphicsFiltered<Self, GraphicsKaleidoscope> {
-        GraphicsFilterViewExt::kaleidoscope(self, segments, angle, center_x, center_y)
-    }
-
-    /// Applies mirror tiling.
-    fn mirror_tile<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
-        repeat_x: T,
-        repeat_y: U,
-    ) -> GraphicsFiltered<Self, GraphicsMirrorTile> {
-        GraphicsFilterViewExt::mirror_tile(self, repeat_x, repeat_y)
+    /// Sets how strongly this view holds on to space when its stack runs short.
+    ///
+    /// A stack compresses its lowest-priority children first, so raising one
+    /// child above its siblings keeps it at its ideal size while they give way.
+    /// The default is `0`.
+    ///
+    /// # Arguments
+    /// * `priority` - Higher keeps more space; ties share the shortfall.
+    fn layout_priority(self, priority: i32) -> Metadata<LayoutPriority> {
+        Metadata::new(self, LayoutPriority::new(priority))
     }
 
     /// Sets the visibility of this view.
@@ -575,7 +256,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // All text in this VStack will be red
@@ -653,7 +334,7 @@ pub trait ViewExt: View + Sized {
     /// use waterui::reactive::binding;
     ///
     /// let count:Binding<i32> = binding(0);
-    /// text("Hello").on_appear(|| println!("Hello, World!"));
+    /// text("Hello").on_appear(|| {});
     /// ```
     ///
     /// # Arguments
@@ -717,11 +398,11 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::cursor::CursorStyle;
     ///
-    /// text!("Click me").cursor(CursorStyle::PointingHand)
+    /// let clickable = text!("Click me").cursor(CursorStyle::PointingHand);
     /// ```
     ///
     /// # Arguments
@@ -737,7 +418,10 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `value` - The numeric value to display in the badge
-    fn badge(self, value: impl IntoComputed<i32>) -> Badge {
+    fn badge(self, value: impl IntoComputed<i32>) -> Badge
+    where
+        Self: Clone,
+    {
         Badge::new(value, self)
     }
 
@@ -819,8 +503,8 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `edge` - The edge insets to apply as padding
-    fn padding_with(self, edge: impl Into<EdgeInsets>) -> Padding {
-        Padding::new(edge.into(), self)
+    fn padding_with(self, edge: impl IntoComputed<EdgeInsets>) -> Padding {
+        Padding::new(edge, self)
     }
 
     /// Adds default padding to this view.
@@ -858,9 +542,12 @@ pub trait ViewExt: View + Sized {
 
     /// Sets the accessibility label for this view.
     ///
+    /// The label is reactive: pass a signal and a label derived from app state
+    /// (`"3 unread messages"`) stays current without rebuilding the subtree.
+    ///
     /// # Arguments
-    /// * `label` - The accessibility label to apply
-    fn a11y_label(self, label: impl Into<Str>) -> IgnorableMetadata<AccessibilityLabel> {
+    /// * `label` - The accessibility label to apply, constant or reactive
+    fn a11y_label(self, label: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityLabel> {
         IgnorableMetadata::new(self, accessibility::AccessibilityLabel::new(label))
     }
 
@@ -873,6 +560,18 @@ pub trait ViewExt: View + Sized {
         role: accessibility::AccessibilityRole,
     ) -> IgnorableMetadata<AccessibilityRole> {
         IgnorableMetadata::new(self, role)
+    }
+
+    /// Sets a stable automation identifier for locating this view in UI tests.
+    ///
+    /// Identifiers are invisible to end users and assistive technologies; they
+    /// exist for `waterui-testing` selectors and native automation frameworks
+    /// (`XCUITest` `accessibilityIdentifier`, Android `UiAutomator`).
+    fn a11y_id(self, identifier: impl Into<Str>) -> IgnorableMetadata<AccessibilityIdentifier> {
+        IgnorableMetadata::new(
+            self,
+            accessibility::AccessibilityIdentifier::new(identifier),
+        )
     }
 
     /// Overrides whether this view is hidden from assistive technologies.
@@ -922,15 +621,16 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// use waterui::prelude::*;
     /// use waterui::gesture::{GestureObserver, TapGesture};
     ///
-    /// view.gesture_observer(
+    /// let counted = text!("Tap twice").gesture_observer(
     ///     GestureObserver::new(
     ///         TapGesture::repeat(2),
-    ///         |State(counter): State<Binding<i32>>| counter.set(counter.get() + 1),
+    ///         |State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
     ///     )
-    /// )
+    /// );
     /// ```
     fn gesture_observer(self, observer: GestureObserver) -> Metadata<GestureObserver> {
         Metadata::new(self, observer)
@@ -946,7 +646,7 @@ pub trait ViewExt: View + Sized {
     /// ```rust
     /// use waterui::prelude::*;
     ///
-    /// text!("Click me").on_tap(|| println!("Clicked!"));
+    /// text!("Click me").on_tap(|| {});
     /// ```
     fn on_tap<H, Args>(self, action: H) -> Metadata<GestureObserver>
     where
@@ -985,34 +685,6 @@ pub trait ViewExt: View + Sized {
         H: Handler<Args, ()>,
     {
         self.gesture(LongPressGesture::new(minimum_duration_ms), action)
-    }
-
-    /// Adds a gesture intended to recognize alongside existing gestures.
-    ///
-    /// This follows `SwiftUI` naming and currently maps to `gesture(...)`.
-    fn simultaneous_gesture<H, Args>(
-        self,
-        gesture: impl Into<Gesture>,
-        action: H,
-    ) -> Metadata<GestureObserver>
-    where
-        H: Handler<Args, ()>,
-    {
-        self.gesture(gesture, action)
-    }
-
-    /// Adds a gesture intended to have higher recognition precedence.
-    ///
-    /// This follows `SwiftUI` naming and currently maps to `gesture(...)`.
-    fn high_priority_gesture<H, Args>(
-        self,
-        gesture: impl Into<Gesture>,
-        action: H,
-    ) -> Metadata<GestureObserver>
-    where
-        H: Handler<Args, ()>,
-    {
-        self.gesture(gesture, action)
     }
 
     /// Adds a tap gesture recognizer and triggers haptic impact feedback.
@@ -1076,6 +748,20 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, shadow.into())
     }
 
+    /// Promotes this view to a themed floating surface with elevation.
+    ///
+    /// Floating presentation is an attribute: applying it to a semantic button
+    /// preserves the button's identity while changing its container, state-layer
+    /// geometry, and elevation.
+    fn floating(self) -> Floating<Self> {
+        Floating::new(self)
+    }
+
+    /// Promotes this view with explicit floating-surface theme tokens.
+    fn floating_with(self, style: FloatingStyle) -> Floating<Self> {
+        Floating::with_style(self, style)
+    }
+
     /// Applies a border around this view.
     ///
     /// Creates a border with the specified color and width on all edges
@@ -1090,7 +776,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Simple border on all edges
@@ -1109,7 +795,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::border::Border;
     ///
@@ -1132,19 +818,19 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Scale uniformly to 150%
-    /// view.scale(1.5, 1.5);
+    /// let bigger = text!("Hello").scale(1.5, 1.5);
     ///
     /// // Scale X only (stretch horizontally)
-    /// view.scale(2.0, 1.0);
+    /// let wider = text!("Hello").scale(2.0, 1.0);
     ///
     /// // Animate scale
-    /// let x = binding(1.0).animated();
-    /// let y = binding(1.0).animated();
-    /// view.scale(x, y);
+    /// let x = binding::<f32>(1.0_f32).animated();
+    /// let y = binding::<f32>(1.0_f32).animated();
+    /// let animated = text!("Hello").scale(x, y);
     /// ```
     fn scale(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale> {
         Metadata::new(self, Scale::xy(x, y))
@@ -1159,12 +845,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::style::Anchor;
     ///
     /// // Scale from top-left corner
-    /// view.scale_from(0.5, 0.5, Anchor::TOP_LEFT);
+    /// let shrunk = text!("Hello").scale_from(0.5, 0.5, Anchor::TOP_LEFT);
     /// ```
     fn scale_from(
         self,
@@ -1184,15 +870,15 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Rotate 45 degrees
-    /// view.rotation(45.0);
+    /// let tilted = text!("Hello").rotation(45.0);
     ///
     /// // Animate rotation
-    /// let angle = binding(0.0).animated();
-    /// view.rotation(angle);
+    /// let angle = binding::<f32>(0.0_f32).animated();
+    /// let spinning = text!("Hello").rotation(angle);
     /// ```
     fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation> {
         Metadata::new(self, Rotation::degrees(degrees))
@@ -1206,12 +892,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::style::Anchor;
     ///
     /// // Rotate around top-left corner
-    /// view.rotation_from(45.0, Anchor::TOP_LEFT);
+    /// let tilted = text!("Hello").rotation_from(45.0, Anchor::TOP_LEFT);
     /// ```
     fn rotation_from(self, degrees: impl IntoSignalF32, anchor: Anchor) -> Metadata<Rotation> {
         Metadata::new(self, Rotation::degrees_from(degrees, anchor))
@@ -1227,15 +913,15 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Move view by (10, 20) points
-    /// view.offset(10.0, 20.0);
+    /// let nudged = text!("Hello").offset(10.0, 20.0);
     ///
     /// // Animate offset
-    /// let x = binding(0.0).animated();
-    /// view.offset(x, 0.0);
+    /// let x = binding::<f32>(0.0_f32).animated();
+    /// let sliding = text!("Hello").offset(x, 0.0);
     /// ```
     fn offset(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Offset> {
         Metadata::new(self, Offset::new(x, y))
@@ -1252,15 +938,15 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::shape::*;
     ///
-    /// // Clip image to a circle
-    /// image("avatar.jpg").clip(Circle);
+    /// // Clip a view to a circle
+    /// let avatar = Color::red().clip(Circle);
     ///
     /// // Clip to rounded rectangle
-    /// card.clip(RoundedRectangle::new(0.1));
+    /// let card = text!("Card").clip(RoundedRectangle::new(0.1));
     ///
     /// // Custom triangle shape
     /// let triangle = Path::new()
@@ -1285,7 +971,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// text!("Right-click me")
@@ -1315,15 +1001,15 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Extend background to fill entire screen
-    /// Color::red()
+    /// let backdrop = Color::red()
     ///     .ignore_safe_area(EdgeSet::ALL);
     ///
     /// // Only extend to top (under status bar)
-    /// header_view
+    /// let header = text!("Title")
     ///     .ignore_safe_area(EdgeSet::TOP);
     /// ```
     fn ignore_safe_area(self, edges: EdgeSet) -> Metadata<IgnoreSafeArea> {
@@ -1355,7 +1041,9 @@ pub trait ViewExt: View + Sized {
     ///
     /// fn view() -> impl View{
     ///     let count:Binding<i32> = binding(0);
-    ///     let guard = count.clone().watch(|v| println!("Count: {}", v.into_value()));
+    ///     let guard = count.clone().watch(|v| {
+    ///         let _ = v.into_value();
+    ///     });
     ///     text("Hello").retain(guard)
     /// }
     /// ```
@@ -1373,7 +1061,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::drag_drop::DragData;
     ///
@@ -1391,17 +1079,19 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     /// use waterui::drag_drop::DragData;
     ///
     /// // Simple usage without state
     /// text!("Drop here")
     ///     .drop_destination(|data: DragData| {
-    ///         println!("Received: {:?}", data);
+    ///         let _ = data;
     ///     });
     ///
     /// // With injected state
+    /// let items = binding::<Vec<String>>(Vec::new());
+    /// let count = binding::<i32>(0);
     /// text!("Drop here")
     ///     .state(&items)
     ///     .state(&count)
@@ -1409,8 +1099,8 @@ pub trait ViewExt: View + Sized {
     ///         |State(items): State<Binding<Vec<String>>>,
     ///          State(count): State<Binding<i32>>,
     ///          data: DragData| {
-    ///             items.update(|v| v.push(data.as_str().to_string()));
-    ///             count.set(count.get() + 1);
+    ///             items.get_mut().push(data.as_str().to_string());
+    ///             *count.get_mut() += 1;
     ///         },
     ///     );
     /// ```
@@ -1431,60 +1121,68 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Make a view transparent to touch events
-    /// text("Click through me")
+    /// let passthrough = text!("Click through me")
     ///     .hittable(false);
     ///
     /// // Reactive hit testing control
-    /// let can_interact = binding(true);
-    /// Button::new("Click me", || {})
+    /// let can_interact = binding::<bool>(true);
+    /// button("Click me").action(|| {})
     ///     .hittable(can_interact);
     /// ```
     fn hittable(self, enabled: impl IntoComputed<bool>) -> Metadata<Hittable> {
         Metadata::new(self, Hittable::new(enabled))
     }
 
-    /// Disables this view - grays it out and blocks all interactions.
+    /// Disables every interactive control in this view subtree.
     ///
-    /// This is a convenience modifier that composes `opacity(0.5)` + `hittable(false)`.
-    /// When disabled, the view becomes semi-transparent and ignores all touch events.
+    /// Installs a [`waterui_core::interaction::Disabled`] scope into the
+    /// subtree's environment, so controls (toggles, buttons, sliders, …)
+    /// render their platform-correct disabled appearance and stop responding
+    /// to input. Nested `.disabled(...)` scopes OR-combine: a control stays
+    /// disabled while any enclosing scope is disabled. The subtree also stops
+    /// hit-testing entirely and its accessibility nodes report the disabled
+    /// state to assistive technologies.
     ///
     /// # Arguments
-    /// * `is_disabled` - Whether the view is disabled (can be reactive)
+    /// * `is_disabled` - Whether the subtree is disabled (can be reactive)
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use waterui::prelude::*;
     ///
     /// // Disable a button
-    /// Button::new("Submit", || {})
+    /// button("Submit").action(|| {})
     ///     .disabled(true);
     ///
     /// // Reactive disable based on form validity
-    /// let is_submitting = binding(false);
+    /// let is_submitting = binding::<bool>(false);
+    /// let name = binding::<Str>(Str::default());
     /// vstack((
-    ///     TextField::new("Name", name),
-    ///     Button::new("Submit", || {}),
+    ///     TextField::new("Name", &name),
+    ///     button("Submit").action(|| {}),
     /// )).disabled(is_submitting);
     /// ```
     fn disabled(self, is_disabled: impl IntoComputed<bool>) -> impl View {
         let is_disabled = is_disabled.into_computed();
 
-        // Compose: opacity + hit testing
-        // opacity: 0.5 when disabled, 1.0 when enabled
-        // hittable: false when disabled, true when enabled
         let accessibility_state =
             is_disabled.map(|disabled| AccessibilityState::new().disabled(disabled));
-        let opacity_value = is_disabled.map(|d| if d { 0.5 } else { 1.0 });
         let hittable_value = is_disabled.map(|d| !d);
+        let scope = is_disabled;
 
-        self.a11y_state_signal(accessibility_state)
-            .opacity(opacity_value)
-            .hittable(hittable_value)
+        use_env(move |mut env: Environment| {
+            waterui_core::interaction::Disabled::install(&mut env, scope);
+            Metadata::new(
+                self.a11y_state_signal(accessibility_state)
+                    .hittable(hittable_value),
+                env,
+            )
+        })
     }
 
     /// Injects cloneable state into this view subtree's environment.
@@ -1494,8 +1192,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// text("Hover Me!")
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// let hover_count = binding::<i32>(0);
+    /// let is_hovered = binding::<bool>(false);
+    /// let hoverable = text!("Hover Me!")
     ///     .state(&hover_count)
     ///     .state(&is_hovered)
     ///     .on_hover_enter(
@@ -1504,9 +1206,9 @@ pub trait ViewExt: View + Sized {
     ///             hovered.set(true);
     ///         },
     ///     )
-    ///     .on_hover_exit(|_, State(hovered): State<Binding<bool>>| {
+    ///     .on_hover_exit(|State(hovered): State<Binding<bool>>| {
     ///         hovered.set(false);
-    ///     })
+    ///     });
     /// ```
     fn state<T: Clone + 'static>(self, state: &T) -> With<Self, State<T>> {
         With::new(self, State(state.clone()))

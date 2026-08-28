@@ -6,7 +6,6 @@ authors = ["Lexo Liu"]
 description = "Navigation example for WaterUI framework"
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
 keywords = ["ui", "framework", "example", "navigation"]
 categories = ["gui"]
 publish = false
@@ -16,3 +15,4 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
+waterui-icons-material-icon.workspace = true

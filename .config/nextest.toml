@@ -1,0 +1,92 @@
+# Local runs keep nextest's defaults.
+[profile.default]
+# Surface anything pathologically slow rather than letting CI hang on it.
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+# `#[waterui::bench]` tests are long by design in full-measurement mode:
+# `water bench` drives hundreds of frames per repetition, and on a software
+# rasterizer (llvmpipe on CI's Linux runners) a heavy scene runs at seconds
+# per frame — the stress bench hit the default 600s terminate ceiling there.
+# Mark them slow later and give them a far higher terminate ceiling instead
+# of letting the general-test watchdog kill a legitimate measurement run.
+[[profile.default.overrides]]
+filter = "test(waterui_bench_)"
+slow-timeout = { period = "300s", terminate-after = 8 }
+
+[profile.ci]
+# Report every failure in one run: stopping at the first turns a multi-failure
+# break into one CI round trip per failure.
+fail-fast = false
+failure-output = "immediate-final"
+status-level = "retry"
+# GPU and emulator-backed tests are occasionally flaky on shared runners; a
+# retry keeps that from failing the branch, and the retry is reported.
+retries = { backoff = "fixed", count = 2, delay = "1s" }
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+# Same bench exemption as the default profile: smoke-mode benches are cheap,
+# but a heavy scene's first GPU mount on a software rasterizer can still be
+# slow, and a measurement run must never be killed by the general watchdog.
+[[profile.ci.overrides]]
+filter = "test(waterui_bench_)"
+slow-timeout = { period = "300s", terminate-after = 8 }
+
+# `trybuild` contract tests, which are compilers rather than tests.
+#
+# Each `cases.pass(...)` / `cases.compile_fail(...)` shells out to a full
+# `cargo build` of a fixture crate that depends on `waterui`, into trybuild's
+# own target directory — so a cold run builds the framework from scratch and
+# blows straight through the general 600s ceiling. Observed on a CI ubuntu run:
+# both contract tests hit `TMT [600.011s]`, were killed, and then passed on the
+# retry in 107s and 184s, because the attempt that was killed is what warmed
+# the cache. The retry made this green while costing 600s of wall clock twice
+# per run.
+#
+# The ceiling is raised rather than the tests changed: they are legitimately
+# slow the first time and fast afterwards, which is exactly what a raised
+# ceiling is for and exactly what a watchdog should not kill.
+[[profile.ci.overrides]]
+filter = 'package(waterui-macros)'
+slow-timeout = { period = "120s", terminate-after = 15 }
+
+# GPU-backed tests on a machine with no GPU.
+#
+# The same reasoning as the bench override above, for the same reason: a heavy
+# scene on a software rasterizer runs at seconds per frame, and these tests draw
+# a great many. Once the teardown panic was fixed (`drain_device_before_teardown`)
+# they stopped failing fast and started genuinely waiting for the rasterizer, so
+# on a slow runner they crossed the 600s ceiling and the watchdog killed a run
+# that was working.
+#
+# A raised ceiling is safe to apply broadly, unlike a concurrency cap: it only
+# ever affects a test that would otherwise be terminated, and costs nothing for
+# the ones that finish in milliseconds.
+[[profile.ci.overrides]]
+filter = 'package(hydrolysis) or package(hydrolysis-m3)'
+slow-timeout = { period = "120s", terminate-after = 15 }
+
+# How many wgpu devices may exist at once on the Windows runner.
+#
+# Nearly every test package here mounts a `waterui-testing` host, and each host
+# requests its own `wgpu::Device`. On a runner with a real GPU that is cheap; on
+# `windows-latest` there is no GPU at all, so every device is a WARP device
+# living in the machine's 16 GB alongside three others on its four cores. The
+# suite ran out: `selected_tooltip_exposes_accessibility_labels` and its
+# neighbours failed in `request_device` with `Core(Device(OutOfMemory))`,
+# exhausted their retries, and the same tests passed on retry in earlier runs —
+# the signature of sitting exactly at a memory limit rather than of a defect.
+#
+# A cap, not a skip: every test still runs, two at a time instead of four, so
+# the peak number of live WARP devices halves. This lengthens the Windows job,
+# which is the cost of the runner having no GPU.
+#
+# Scoped to Windows because it is the only platform without one — the Linux
+# runners rasterize on llvmpipe, which is far cheaper per device, and macOS has
+# Metal.
+[test-groups.gpu-device]
+max-threads = 2
+
+[[profile.ci.overrides]]
+platform = 'cfg(target_os = "windows")'
+filter = 'all()'
+test-group = 'gpu-device'

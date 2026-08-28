@@ -7,6 +7,7 @@
 //! - Manual form control composition
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::prelude::{slider::slider, stepper::stepper};
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::text::font::FontWeight;
@@ -43,7 +44,7 @@ struct AppSettings {
     notifications_enabled: bool,
 }
 
-fn main(
+fn scene(
     settings: Binding<AppSettings>,
     registration: Binding<RegistrationForm>,
     custom_name: Binding<Str>,
@@ -104,18 +105,13 @@ fn main(
                 text("Manual Form Controls").sub_headline(),
                 "Building forms manually with individual controls",
                 // TextField with label and placeholder
-                TextField::new(&custom_name)
-                    .label("Username")
-                    .prompt("Enter your username"),
+                TextField::new("Username", &custom_name).prompt("Enter your username"),
                 // Toggle with label
-                Toggle::new(&custom_enabled).label("Enable Feature"),
+                Toggle::new("Enable Feature", &custom_enabled),
                 // Stepper with custom range
-                Stepper::new(&custom_count)
-                    .label("Item Count")
-                    .range(0..=100)
-                    .step(5),
+                stepper("Item Count", &custom_count).range(0..=100).step(5),
                 // Slider with label
-                Slider::new(0.0..=1.0, &custom_slider).label("Progress"),
+                slider("Progress", &custom_slider),
                 // Progress bar showing slider value
                 progress(custom_slider.clone()),
                 Divider,
@@ -160,7 +156,7 @@ pub fn app(mut env: Environment) -> App {
 
     App::new(
         move || {
-            main(
+            scene(
                 settings.clone(),
                 registration.clone(),
                 custom_name.clone(),
@@ -183,4 +179,18 @@ fn sample_card() -> impl View {
         hstack((text("Status:").bold(), text("Active"))),
     ))
     .padding_with(EdgeInsets::all(16.0))
+}
+
+/// Self-contained entry: owns its own form bindings so it embeds anywhere
+/// (gallery) and previews without app-level theme installation.
+#[preview]
+pub fn demo() -> impl View {
+    scene(
+        AppSettings::binding(),
+        RegistrationForm::binding(),
+        binding(""),
+        binding(false),
+        binding(5),
+        binding(0.5),
+    )
 }

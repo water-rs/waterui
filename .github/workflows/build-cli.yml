@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "Tag to build (e.g., cli-v0.1.0)"
+        description: "Tag to build (e.g., waterui-cli-v0.1.0)"
         required: true
         type: string
     secrets:
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build (e.g., cli-v0.1.0)"
+        description: "Tag to build (e.g., waterui-cli-v0.1.0)"
         required: true
         type: string
 
@@ -33,20 +33,18 @@ jobs:
       should_build: ${{ steps.check.outputs.should_build }}
       version: ${{ steps.check.outputs.version }}
       tag: ${{ steps.check.outputs.tag }}
-      dist_tag: ${{ steps.check.outputs.dist_tag }}
     steps:
       - name: Check release tag
         id: check
         run: |
           TAG="${{ inputs.tag }}"
-          if [[ "$TAG" == cli-v* ]]; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            VERSION="${TAG#cli-v}"
-            echo "version=${VERSION}" >> $GITHUB_OUTPUT
-            echo "tag=$TAG" >> $GITHUB_OUTPUT
-            echo "dist_tag=waterui-cli-v${VERSION}" >> $GITHUB_OUTPUT
+          if [[ "$TAG" == waterui-cli-v* ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            VERSION="${TAG#waterui-cli-v}"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           else
-            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -78,7 +76,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install zig (for linux aarch64)
         if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
@@ -94,26 +92,16 @@ jobs:
         with:
           shared-key: dist-${{ matrix.target }}
 
-      - name: Install cargo-dist (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf "https://github.com/axodotdev/cargo-dist/releases/download/v${{ env.DIST_VERSION }}/cargo-dist-installer.sh" | sh
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          dist --version
-
-      - name: Install cargo-dist (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          irm "https://github.com/axodotdev/cargo-dist/releases/download/v${{ env.DIST_VERSION }}/cargo-dist-installer.ps1" | iex
-          "$env:USERPROFILE\\.cargo\\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          dist --version
+      - name: Install cargo-dist
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-dist@${{ env.DIST_VERSION }}
 
       - name: Build artifacts
         shell: bash
         run: |
           dist build \
-            --tag "${{ needs.check.outputs.dist_tag }}" \
+            --tag "${{ needs.check.outputs.tag }}" \
             --artifacts=local \
             --target "${{ matrix.target }}"
 
@@ -125,32 +113,121 @@ jobs:
           path: |
             target/distrib/*${{ matrix.target }}*.tar.*
             target/distrib/*${{ matrix.target }}*.zip*
+            target/distrib/*${{ matrix.target }}*-dist-manifest.json
+
+  browser-runtime-wpe:
+    name: Build WPE runtime ${{ matrix.architecture }}
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    env:
+      CC: gcc-12
+      CXX: g++-12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            runner: ubuntu-22.04
+          - architecture: aarch64
+            runner: ubuntu-22.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+          gcc-version: "12"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: browser-runtime-${{ matrix.architecture }}
+          cache-on-failure: true
+
+      - name: Build self-contained WPE runtime
+        run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts
+
+      - name: Upload WPE runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-runtime-wpe-${{ matrix.architecture }}
+          if-no-files-found: error
+          path: |
+            runtime-artifacts/*.zip
+            runtime-artifacts/*.artifact.json
+
+      - name: Upload WPE validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-validation-wpe-${{ matrix.architecture }}
+          if-no-files-found: error
+          path: |
+            runtime-artifacts/wpe-smoke-*.json
+            runtime-artifacts/wpe-smoke-*.png
 
   release:
     name: Upload Release Assets
-    needs: [check, build]
+    needs: [check, build, browser-runtime-wpe]
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+          submodules: recursive
+
+      - name: Install cargo-dist
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-dist@${{ env.DIST_VERSION }}
+
+      - name: Download CLI artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          pattern: artifacts-*
+          path: target/distrib
           merge-multiple: true
 
-      - name: Generate checksums
+      - name: Download browser runtime artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: browser-runtime-wpe-*
+          path: target/distrib
+          merge-multiple: true
+
+      - name: Generate browser runtime manifest
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.check.outputs.tag }}
         run: |
-          cd artifacts
-          find . -maxdepth 1 -type f \( -name '*.tar.xz' -o -name '*.zip' \) -print0 \
-            | sort -z \
-            | xargs -0 sha256sum > checksums-sha256.txt
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          python3 components/platform/browser-wpe/runtime/generate-manifest.py \
+            --base-url "$BASE_URL" \
+            --output target/distrib/browser-runtime-manifest.json \
+            target/distrib/*.artifact.json
+          find target/distrib -maxdepth 1 -name '*.artifact.json' -delete
+
+      - name: Build global release artifacts
+        run: dist build --tag "${{ needs.check.outputs.tag }}" --artifacts=global
 
       - name: Upload assets to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.check.outputs.tag }}
-          files: artifacts/*
+          files: |
+            target/distrib/*.tar.*
+            target/distrib/*.zip
+            target/distrib/*.sha256
+            target/distrib/sha256.sum
+            target/distrib/browser-runtime-manifest.json
 
       - name: Checkout Homebrew tap
         uses: actions/checkout@v4
@@ -159,69 +236,8 @@ jobs:
           token: ${{ secrets.HOMEBREW_PAT }}
           path: homebrew-water
 
-      - name: Update Homebrew formula
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.check.outputs.tag }}
-          VERSION: ${{ needs.check.outputs.version }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-
-          BASE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
-
-          MAC_ARM="waterui-cli-aarch64-apple-darwin.tar.xz"
-          MAC_X86="waterui-cli-x86_64-apple-darwin.tar.xz"
-          LINUX_ARM="waterui-cli-aarch64-unknown-linux-gnu.tar.xz"
-          LINUX_X86="waterui-cli-x86_64-unknown-linux-gnu.tar.xz"
-
-          for f in "$MAC_ARM" "$MAC_X86" "$LINUX_ARM" "$LINUX_X86"; do
-            test -f "artifacts/$f" || { echo "missing artifacts/$f"; exit 1; }
-            test -f "artifacts/$f.sha256" || { echo "missing artifacts/$f.sha256"; exit 1; }
-          done
-
-          MAC_ARM_SHA="$(cut -d' ' -f1 < "artifacts/$MAC_ARM.sha256")"
-          MAC_X86_SHA="$(cut -d' ' -f1 < "artifacts/$MAC_X86.sha256")"
-          LINUX_ARM_SHA="$(cut -d' ' -f1 < "artifacts/$LINUX_ARM.sha256")"
-          LINUX_X86_SHA="$(cut -d' ' -f1 < "artifacts/$LINUX_X86.sha256")"
-
-          mkdir -p homebrew-water/Formula
-          cat > homebrew-water/Formula/water.rb <<EOF
-          class Water < Formula
-            desc "Cross-platform tooling for WaterUI apps"
-            homepage "https://github.com/${REPO}"
-            version "${VERSION}"
-            license any_of: ["Apache-2.0", "MIT"]
-
-            on_macos do
-              if Hardware::CPU.arm?
-                url "${BASE_URL}/${MAC_ARM}"
-                sha256 "${MAC_ARM_SHA}"
-              else
-                url "${BASE_URL}/${MAC_X86}"
-                sha256 "${MAC_X86_SHA}"
-              end
-            end
-
-            on_linux do
-              if Hardware::CPU.arm?
-                url "${BASE_URL}/${LINUX_ARM}"
-                sha256 "${LINUX_ARM_SHA}"
-              else
-                url "${BASE_URL}/${LINUX_X86}"
-                sha256 "${LINUX_X86_SHA}"
-              end
-            end
-
-            def install
-              if File.exist?("water")
-                bin.install "water"
-              else
-                bin.install Dir["*/water"]
-              end
-            end
-          end
-          EOF
+      - name: Stage dist-generated Homebrew formula
+        run: cp target/distrib/water.rb homebrew-water/Formula/water.rb
 
       - name: Push Homebrew formula update
         shell: bash

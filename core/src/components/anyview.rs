@@ -112,6 +112,9 @@ impl AnyView {
     /// Calling this method with the incorrect type is undefined behavior.
     #[must_use]
     pub unsafe fn downcast_unchecked<T: 'static>(self) -> Box<T> {
+        // SAFETY: the caller contract requires the erased value to be a `T`, so the
+        // box being re-typed has the layout it is cast to; ownership moves across
+        // unchanged.
         unsafe { Box::from_raw(Box::into_raw(self.0).cast::<T>()) }
     }
 
@@ -121,6 +124,8 @@ impl AnyView {
     /// Calling this method with the incorrect type is undefined behavior.
     #[must_use]
     pub const unsafe fn downcast_ref_unchecked<T: 'static>(&self) -> &T {
+        // SAFETY: the caller contract requires the erased value to be a `T`; the
+        // borrow is tied to `&self`.
         unsafe { &*(&raw const *self.0).cast::<T>() }
     }
 
@@ -129,6 +134,8 @@ impl AnyView {
     /// # Safety
     /// Calling this method with the incorrect type is undefined behavior.
     pub const unsafe fn downcast_mut_unchecked<T: 'static>(&mut self) -> &mut T {
+        // SAFETY: the caller contract requires the erased value to be a `T`; the
+        // borrow is tied to `&mut self`, so it is exclusive.
         unsafe { &mut *(&raw mut *self.0).cast::<T>() }
     }
 
@@ -142,6 +149,7 @@ impl AnyView {
     /// Returns `Err(Self)` if the contained type does not match `T`.
     pub fn downcast<T: 'static>(self) -> Result<Box<T>, Self> {
         if self.is::<T>() {
+            // SAFETY: the `is::<T>()` check above proves the erased value is a `T`.
             unsafe { Ok(self.downcast_unchecked()) }
         } else {
             Err(self)
@@ -153,6 +161,8 @@ impl AnyView {
     /// Returns `Some` if the types match, or `None` if they don't.
     #[must_use]
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: the closure only runs when `is::<T>()` holds, which is exactly the
+        // unchecked accessor's requirement.
         unsafe { self.is::<T>().then(|| self.downcast_ref_unchecked()) }
     }
 
@@ -160,6 +170,7 @@ impl AnyView {
     ///
     /// Returns `Some` if the types match, or `None` if they don't.
     pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        // SAFETY: as above — the closure only runs when the type matches.
         unsafe { self.is::<T>().then(move || self.downcast_mut_unchecked()) }
     }
 }
@@ -167,6 +178,17 @@ impl AnyView {
 impl View for AnyView {
     fn body(self, env: &Environment) -> impl View {
         self.0.body(env.clone())
+    }
+
+    /// Forwards the erased view's own answer.
+    ///
+    /// Without this, erasing a view silently reset its stretch axis to the
+    /// default: the inherent [`AnyView::stretch_axis`] reported the real value
+    /// while the trait method — the one generic code calls — reported `None`.
+    /// Every container that wanted its content's axis therefore had to copy it
+    /// before erasing, and that copy is what went stale.
+    fn stretch_axis(&self) -> StretchAxis {
+        AnyViewImpl::stretch_axis(&*self.0)
     }
 }
 

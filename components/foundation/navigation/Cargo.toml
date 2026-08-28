@@ -1,0 +1,39 @@
+[package]
+name = "waterui-navigation"
+version = "0.3.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Navigation components for WaterUI"
+keywords = ["navigation", "ui", "components", "menu"]
+categories = ["gui"]
+
+[features]
+default = []
+serde = ["dep:erased-serde", "dep:serde"]
+
+
+[dependencies]
+waterui-core.workspace = true
+waterui-text.workspace = true
+waterui-graphics = { workspace = true, default-features = false }
+waterui-controls.workspace = true
+waterui-icon.workspace = true
+waterui-url.workspace = true
+
+nami.workspace = true
+serde = { workspace = true, optional = true }
+erased-serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+waterui-icons-lucide = { path = "../../icon/lucide" }
+serde_json = "1.0"
+
+
+[lints]
+workspace = true

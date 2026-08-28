@@ -7,6 +7,7 @@ use waterui::app::App;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::shape::{RoundedRectangle, ShapeExt};
+use waterui_controls::{slider::slider, stepper::stepper};
 
 fn main_view() -> impl View {
     let toggle_value = binding(true);
@@ -21,9 +22,9 @@ fn main_view() -> impl View {
                 .fill(Color::srgb_hex("#2563EB"))
                 .size(560.0, 180.0),
             hstack((
-                Toggle::new(&toggle_value).label("Toggle"),
-                Slider::new(0.0..=1.0, &slider_value).label("Slider"),
-                Stepper::new(&stepper_value).range(0..=10).label("Stepper"),
+                Toggle::new("Toggle", &toggle_value),
+                slider("Slider", &slider_value),
+                stepper("Stepper", &stepper_value).range(0..=10),
             ))
             .spacing(16.0),
             text("Scroll to verify wheel routing").size(14.0),
@@ -37,7 +38,11 @@ fn main_view() -> impl View {
 }
 
 fn app() -> App {
-    let env = Environment::new();
+    // Widgets read their fonts and colors out of the environment, and a bare
+    // `Environment` has neither, so every text view panics on the first frame.
+    // The generated projects install this too.
+    let mut env = Environment::new();
+    hydrolysis_m3::install_defaults(&mut env);
     App::new(main_view, env).title("Hydrolysis Wayland Smoke")
 }
 

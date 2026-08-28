@@ -1,10 +1,10 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use particle_example::{explosion_system, flame_system, rain_system};
 use waterui::prelude::Environment;
-use waterui_graphics::{OffscreenRenderConfig, OffscreenRenderOutput, OffscreenSize};
+use waterui_graphics::{GpuRuntime, OffscreenRenderConfig, OffscreenRenderOutput, OffscreenSize};
 use waterui_particle::ParticleSystem;
 
 struct SnapshotSpec {
@@ -17,7 +17,9 @@ struct SnapshotSpec {
 
 fn composite_over_opaque_background(pixels: &[u8], background: [u8; 3]) -> Vec<u8> {
     pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|pixel| {
             let alpha = u16::from(pixel[3]);
             let inv_alpha = 255_u16 - alpha;
@@ -34,13 +36,14 @@ fn composite_over_opaque_background(pixels: &[u8], background: [u8; 3]) -> Vec<u
         .collect()
 }
 
-fn write_snapshot(output_dir: &PathBuf, spec: SnapshotSpec) {
+async fn write_snapshot(runtime: &GpuRuntime, output_dir: &Path, spec: SnapshotSpec) {
     let size = OffscreenSize::try_from_pixels(spec.width, spec.height)
         .expect("snapshot frame size must be valid");
     let render_config = OffscreenRenderConfig::new(size);
     let mut env = Environment::new();
     let output = (spec.system)()
-        .render_offscreen(render_config, &mut env)
+        .render_offscreen(runtime, render_config, &mut env)
+        .await
         .expect("particle snapshot render should succeed");
 
     let raw_png = output
@@ -64,12 +67,15 @@ fn write_snapshot(output_dir: &PathBuf, spec: SnapshotSpec) {
     .expect("composited particle png write should succeed");
 }
 
-fn main() {
+async fn run() {
     let output_dir = env::args_os()
         .nth(1)
         .map(PathBuf::from)
         .expect("usage: cargo run -p particle-example --bin gpu_surface_snapshots -- <output-dir>");
     fs::create_dir_all(&output_dir).expect("snapshot output directory must be creatable");
+    let runtime = GpuRuntime::new()
+        .await
+        .expect("particle snapshot export requires a working GPU runtime");
 
     let snapshots = [
         SnapshotSpec {
@@ -96,6 +102,10 @@ fn main() {
     ];
 
     for spec in snapshots {
-        write_snapshot(&output_dir, spec);
+        write_snapshot(&runtime, &output_dir, spec).await;
     }
+}
+
+fn main() {
+    pollster::block_on(run());
 }

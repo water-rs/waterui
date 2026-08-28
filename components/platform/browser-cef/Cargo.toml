@@ -1,0 +1,87 @@
+[package]
+name = "waterui-browser-cef"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+build = "build.rs"
+readme = "../../../README.md"
+repository.workspace = true
+description = "Shared CEF runtime for WaterUI WebView and Chromium components"
+keywords = ["cef", "chromium", "webview", "browser", "waterui"]
+categories = ["gui", "web-programming"]
+
+[features]
+default = ["cef-runtime"]
+cef-runtime = ["cef/sandbox", "cef-dll-sys/sandbox"]
+compile-only = ["cef/dox", "cef-dll-sys/dox"]
+# `waterui-webview` supplies the removable watcher registry the shared CDP
+# session uses; both browser-facing features need it.
+chromium = [
+    "dep:async-channel",
+    "dep:base64",
+    "dep:keycode",
+    "dep:waterui-chromium",
+    "dep:waterui-webview",
+]
+real-engine = ["cef-runtime", "webview"]
+webview = ["dep:cookie", "dep:keycode", "dep:waterui-str", "dep:waterui-webview"]
+
+[dependencies]
+async-channel = { version = "2.5", optional = true }
+base64 = { version = "0.22", optional = true }
+cef = { version = "=150.2.1", default-features = false }
+cef-dll-sys = { version = "=150.2.1", default-features = false }
+cookie = { version = "0.18.1", optional = true }
+dirs.workspace = true
+futures.workspace = true
+futures-timer.workspace = true
+executor-core.workspace = true
+keycode = { version = "1.0", optional = true }
+kurbo.workspace = true
+num-traits = { version = "0.2", default-features = false }
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0"
+thiserror.workspace = true
+tracing.workspace = true
+waterui-chromium = { workspace = true, optional = true }
+waterui-core.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui-str = { workspace = true, optional = true }
+waterui-url.workspace = true
+waterui-webview = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libloading = "0.9"
+objc2 = "0.6"
+wgpu.workspace = true
+wgpu-external-frame.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu.workspace = true
+wgpu-external-frame.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu.workspace = true
+wgpu-external-frame.workspace = true
+
+[dev-dependencies]
+askama = "0.16"
+base64 = "0.22"
+executor-core = { workspace = true, features = ["async-executor"] }
+tiny_http = "0.12"
+tracing-subscriber.workspace = true
+
+[[test]]
+name = "real_engine"
+harness = false
+required-features = ["real-engine"]
+
+[build-dependencies]
+cc = "1.2"
+
+[package.metadata.cargo-machete]
+ignored = ["cc", "cef-dll-sys"]
+
+[lints]
+workspace = true

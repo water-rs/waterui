@@ -448,7 +448,8 @@ fn hdr_gradient_section() -> impl View {
     .padding()
 }
 
-fn main() -> impl View {
+/// Root view: full gradient showcase.
+pub fn demo() -> impl View {
     scroll(
         vstack((
             // Header
@@ -483,5 +484,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

@@ -19,6 +19,7 @@
 use waterui::app::App;
 use waterui::form::picker::{Picker, PickerItem};
 use waterui::prelude::*;
+use waterui::preview;
 use waterui_locale::format::date::{
     DateStyle, SimpleDate, SimpleTime, TimeStyle, format_date,
     format_datetime_with_regional_context,
@@ -27,8 +28,8 @@ use waterui_locale::format::unit::{Kilometer, Length, Meter};
 use waterui_locale::{Locale, LocalizedDisplay, locales};
 
 /// Available locales for the picker
-fn available_locales() -> Vec<PickerItem<&'static str>> {
-    vec![
+fn available_locales() -> [PickerItem<&'static str>; 11] {
+    [
         text("English (US)").tag("en-US"),
         text("English (UK)").tag("en-GB"),
         text("中文 (简体)").tag("zh"),
@@ -74,7 +75,7 @@ fn locale_picker_section(selection: &Binding<&'static str>, system_locale: &Loca
         hstack((
             text!("Chosen Language:"),
             spacer(),
-            Picker::new(available_locales(), selection),
+            Picker::new(text!("Chosen Language:"), available_locales(), selection).hide_label(),
         )),
     ))
 }
@@ -105,27 +106,42 @@ fn paragraph_section() -> impl View {
 }
 
 /// Date formatting section
-fn date_section(locale: Locale) -> impl View {
-    let date = SimpleDate::new(2006, 3, 20);
-    let time = SimpleTime::new(9, 30, 0);
-    let date_short = format_date(&locale, &date, DateStyle::Short);
-    let date_long = format_date(&locale, &date, DateStyle::Long);
-    let regional = waterui::regional::current_settings();
-    let timezone = regional.timezone().to_string();
-    let datetime_with_zone = format_datetime_with_regional_context(
-        &regional,
-        &date,
-        &time,
-        DateStyle::Long,
-        TimeStyle::Long,
-    );
+fn date_section(locale: Computed<Locale>) -> impl View {
+    let date_short = locale
+        .clone()
+        .map(|locale| format_date(&locale, &SimpleDate::new(2006, 3, 20), DateStyle::Short))
+        .computed();
+    let date_long = locale
+        .clone()
+        .map(|locale| format_date(&locale, &SimpleDate::new(2006, 3, 20), DateStyle::Long))
+        .computed();
+    let timezone = locale
+        .clone()
+        .map(|_| waterui::regional::current_settings().timezone().to_string())
+        .computed();
+    let datetime_with_zone = locale
+        .clone()
+        .map(|_| {
+            format_datetime_with_regional_context(
+                &waterui::regional::current_settings(),
+                &SimpleDate::new(2006, 3, 20),
+                &SimpleTime::new(9, 30, 0),
+                DateStyle::Long,
+                TimeStyle::Long,
+            )
+        })
+        .computed();
 
     vstack((
         text!("Festival Date (2006-03-20)").size(16.0).bold(),
-        hstack((text!("Short:"), spacer(), text(date_short))),
-        hstack((text!("Long:"), spacer(), text(date_long))),
-        hstack((text!("Timezone:"), spacer(), text(timezone))),
-        hstack((text!("Kickoff (TZ):"), spacer(), text(datetime_with_zone))),
+        hstack((text!("Short:"), spacer(), text!("{date_short}"))),
+        hstack((text!("Long:"), spacer(), text!("{date_long}"))),
+        hstack((text!("Timezone:"), spacer(), text!("{timezone}"))),
+        hstack((
+            text!("Kickoff (TZ):"),
+            spacer(),
+            text!("{datetime_with_zone}"),
+        )),
     ))
 }
 
@@ -141,22 +157,20 @@ fn plural_section() -> impl View {
 }
 
 /// Unit formatting section
-fn unit_section(locale: Locale) -> impl View {
-    let distance = Length::<Meter>::new(1500.0);
-    let marathon = Length::<Kilometer>::new(42.195);
+fn unit_section(locale: Computed<Locale>) -> impl View {
+    let distance = locale
+        .clone()
+        .map(|locale| Length::<Meter>::new(1500.0).to_localized_string(&locale))
+        .computed();
+    let marathon = locale
+        .clone()
+        .map(|locale| Length::<Kilometer>::new(42.195).to_localized_string(&locale))
+        .computed();
 
     vstack((
         text!("Distance Guide").size(16.0).bold(),
-        hstack((
-            text!("City Walk:"),
-            spacer(),
-            text(distance.to_localized_string(&locale)),
-        )),
-        hstack((
-            text!("Marathon Route:"),
-            spacer(),
-            text(marathon.to_localized_string(&locale)),
-        )),
+        hstack((text!("City Walk:"), spacer(), text!("{distance}"))),
+        hstack((text!("Marathon Route:"), spacer(), text!("{marathon}"))),
     ))
 }
 
@@ -175,12 +189,12 @@ fn localized_content() -> impl View {
 }
 
 /// Date/unit sections need the locale value for formatting APIs
-fn formatted_content(locale: Locale) -> impl View {
-    let locale_for_unit = locale.clone();
-    vstack((date_section(locale), Divider, unit_section(locale_for_unit)))
+fn formatted_content(locale: Computed<Locale>) -> impl View {
+    let unit_locale = locale.clone();
+    vstack((date_section(locale), Divider, unit_section(unit_locale)))
 }
 
-fn main(system_locale: Locale) -> impl View {
+fn scene(system_locale: Locale) -> impl View {
     // Determine initial locale code from system locale
     let initial_code: &'static str = match system_locale.language.as_str() {
         "en" => match system_locale.region.as_ref().map(|r| r.as_str()) {
@@ -203,7 +217,6 @@ fn main(system_locale: Locale) -> impl View {
 
     // Create binding for selected locale code
     let selection = Binding::container(initial_code);
-    let sel_watch = selection.clone();
     // Initialize shared runtime locale from the picker's initial value.
     waterui::regional::set_locale_tag(initial_code).expect("picker locale tag must be valid");
 
@@ -220,11 +233,9 @@ fn main(system_locale: Locale) -> impl View {
             // No watch() needed for these!
             localized_content(),
             Divider,
-            // Date/unit formatting requires the locale value (not just text!)
-            // So we still need watch() for these
-            watch(sel_watch, move |code| {
-                formatted_content(locale_from_code(code))
-            }),
+            // Formatting APIs receive a computed locale, so only their text
+            // leaves update when the selection changes.
+            formatted_content(selection.clone().map(locale_from_code).computed()),
         ))
         .padding_with(EdgeInsets::all(16.0)),
     )
@@ -233,11 +244,18 @@ fn main(system_locale: Locale) -> impl View {
     })
 }
 
+/// Self-contained entry: starts from US English and lets the picker drive the
+/// runtime locale. Used for embedding (gallery) and `water preview`.
+#[preview]
+pub fn demo() -> impl View {
+    scene(locales::EN_US.clone())
+}
+
 pub fn app(env: Environment) -> App {
     let system_locale = env
         .get::<Locale>()
         .cloned()
         .unwrap_or_else(|| locales::EN.clone());
 
-    App::new(move || main(system_locale.clone()), env)
+    App::new(move || scene(system_locale.clone()), env)
 }

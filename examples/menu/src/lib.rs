@@ -9,7 +9,8 @@ use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
-use waterui::reactive::Binding;
+use waterui::preview;
+use waterui::reactive::{Binding, binding};
 use waterui::window::Window;
 
 const BLUE: Srgb = Srgb::from_hex("#2196F3");
@@ -257,7 +258,7 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
     .padding()
 }
 
-fn main(toolbar_status: Binding<String>) -> impl View {
+fn scene(toolbar_status: Binding<String>) -> impl View {
     let menu_selected = Binding::container(String::from("None"));
     let styled_action = Binding::container(String::from("No action yet"));
     let context_action = Binding::container(String::from("No action yet"));
@@ -286,14 +287,23 @@ fn main(toolbar_status: Binding<String>) -> impl View {
     )
 }
 
+/// Self-contained entry: owns its own toolbar-status binding so it embeds
+/// anywhere (gallery) and previews without an App-level window toolbar.
+#[preview]
+pub fn demo() -> impl View {
+    scene(Binding::container(String::from("No toolbar action yet")))
+}
+
 pub fn app(env: Environment) -> App {
     let toolbar_status = Binding::container(String::from("No toolbar action yet"));
     let content_toolbar_status = toolbar_status.clone();
 
     App::new_with_windows(
-        [Window::new("WaterUI Menu Examples", move || {
-            main(content_toolbar_status.clone())
-        })
+        [Window::new(
+            "WaterUI Menu Examples",
+            binding(waterui::window::WindowState::Normal),
+            move || scene(content_toolbar_status.clone()),
+        )
         .toolbar(window_toolbar(&toolbar_status))],
         env,
     )

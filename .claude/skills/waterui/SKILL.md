@@ -1,515 +1,471 @@
 ---
 name: waterui
-description: Build cross-platform apps with WaterUI. Use when writing views, handling state, styling UI, or debugging WaterUI Rust code. Covers reactive bindings, layout, components, and the water CLI.
+description: Build cross-platform native apps with the WaterUI Rust framework. Use this skill whenever writing, reviewing, or debugging WaterUI code — views, reactive state (Binding/Computed/signals), layout, styling, navigation, lists, forms, gestures, drag and drop, menus, windows, media, charts, maps, localization/i18n/RTL, animation, accessibility, tests — or when running the `water` CLI (`water create`, `water run`, `water preview`, `water build`, `water bench`). Trigger on any Rust file that imports `waterui`, any project containing a `Water.toml`, and any mention of WaterUI, `text!`, `vstack`/`hstack`, `Binding<T>`, `impl View`, or a `water` command, even when the framework is not named explicitly.
 ---
 
-# WaterUI App Development
+# Building apps with WaterUI
 
-Build views with reactive state. When unsure, use Explore agent to search `examples/*/src/lib.rs`.
+WaterUI is a Rust UI framework that renders to real native widgets (UIKit/AppKit,
+Android View, GTK4) or to its own GPU renderer, from one view tree. It is
+**fine-grained reactive**: a value change updates exactly the widget that reads it,
+without rebuilding the surrounding tree.
 
-## CRITICAL: Runtime And Testing Semantics
+Almost every mistake in WaterUI code comes from writing it as if it were React or
+SwiftUI. The five rules below are what actually differ. Read them before writing code.
 
-- WaterUI is fine-grained reactive with reconstruction semantics. If parent-driven control flow rebuilds a component instance, that instance's local state resetting is expected and correct.
-- Do not "fix" rebuild-driven resets by caching hidden state across rebuilds. If state must survive, lift it into explicit reactive ownership at the right level.
-- GitHub Actions workflows should stay minimal and declarative. Prefer maintained community actions and purpose-built tools over custom shell/Python scripts; release publishing belongs to `release-plz`, with only the CLI binary prebuild/release-asset handoff needing extra workflow glue.
-- Do not add workflow preflight scripts or CI workarounds to hide repository-state problems. Fix the source tree, manifests, submodules, or release configuration at the real source of truth.
-- Lints are quality feedback, not obstacles. Do not add crate-level, file-level, or module-level `allow` attributes during cleanup; fix the code, docs, API shape, or type invariant instead. When a lint is a genuine false positive or conflicts with intended architecture/readability, use the narrowest item-level `allow`/`expect` with a concrete reason instead of distorting the code; WaterUI's main-thread `spawn_local` UI futures may intentionally capture non-`Send` view state.
-- `waterui-testing` uses the Hydrolysis accessibility tree, not native platform accessibility. Use it to validate both interaction logic and accessibility correctness.
-- Every UI component is expected to expose a meaningful accessibility tree. If Hydrolysis coverage is missing, fix the component or renderer rather than falling back to weak tests.
-- "Visual test" means the agent reads the generated image directly with its own vision capability. Heuristic image checks are forbidden: no pixel counters, threshold diffs, non-uniform checks, dominant-color checks, bbox approximations, or similar proxy code.
-- `GpuSurface::new(renderer)` owns a single `GpuView` instance for that surface lifetime. `GpuView::setup()` is the place for persistent GPU resources tied to that renderer instance. Do not move renderer state into shared caches to survive teardown or parent rebuild.
-- Hydrolysis production surfaces must continue to reject software/noop adapters unless explicitly forced for diagnostics. Renderer unit tests that need a real `wgpu::Device` but run in CI may use the `#[cfg(test)]` offscreen test constructor; keep that permission test-only and continue requesting Vello-compatible default wgpu limits for compute-capable adapters.
-- `waterui-testing` is a first-class Hydrolysis test host. It may enable Hydrolysis's `testing` feature and use `new_for_tests` constructors so CI accessibility/coverage tests can run on compute-capable llvmpipe, but production constructors such as `OffscreenWindow::new` and `HeadlessRuntime::new` must keep rejecting software/noop adapters by default.
-- `waterui_graphics` shared GPU context is also a Hydrolysis rendering entry when views use `.hydrolysis().render_offscreen(...)`. Keep its device-limit selection aligned with Hydrolysis offscreen surfaces: compute-capable downlevel adapters such as CI llvmpipe still need `wgpu::Limits::default()` rather than `downlevel_defaults()` for Vello-backed rendering.
-- Shared-context offscreen rendering must hold the shared offscreen-operation lock through renderer setup, rendering, readback, and explicit renderer/texture teardown. Linux CI llvmpipe uses the GLES backend, whose adapter context can panic if parallel tests create or destroy Vello compute pipelines on the shared device with overlapping lifetimes.
-- Managed playground build-cache GC is an out-of-band maintenance path exposed as `water gc build-cache`. `water preview` and `water run` may trigger that command in a detached subprocess, but they must never scan `~/.water/build_cache` on the hot path.
-- Preview/inspector dev mode is only valid against a clean local `waterui_path` git worktree. Dirty WaterUI worktrees must fail fast; release mode should resolve WaterUI from registry metadata instead of forcing a local path checkout.
-- Preview requires the root crate to expose `[features] dev = ["waterui/dynamic_linking"]`. The generated preview wrapper (`managed_backends/preview_ffi`) must always depend on the app crate with `features = ["dev"]`, and it should emit only a single preview artifact (`dylib`) rather than extra Rust-library outputs. macOS, iOS Simulator, physical iOS, and Android preview builds all use this dylib path; do not special-case iOS or Android back to a static `cdylib` preview build.
-- Preview TCP handshake must validate the support app runtime platform as well as the WaterUI runtime fingerprint. iOS/Android preview sessions must not reuse a macOS support app just because the runtime fingerprint matches; that causes incompatible-platform `dlopen` failures for dylib preview payloads.
-- Preview capture must not race normal display renders for the same GPU surface. When switching a surface into external rendering or waiting for first-paint readiness, drain any already in-flight render through the shared render queue barrier before acquiring the surface again; do not use sleeps or static preview fallbacks.
-- Apple `ios-simulator` packaging must pass `ONLY_ACTIVE_ARCH=YES` through `xcodebuild` build settings. `ONLY_ACTIVE_ARCHITECTURE=YES` is ignored by Xcode, which silently falls back to building/linking multiple simulator architectures and can break helper static-library linkage when WaterUI only produced the active-arch artifact.
-- Prefer `#[waterui::test(view_fn)]` when a test only needs the default `UiTest::new().mount(view_fn)` setup. Keep explicit `UiTest` construction only when the test genuinely requires a custom viewport or environment.
-- When testing layout containers with `waterui-testing`, prefer inherently semantic child views such as `text()`, buttons, or other labeled controls, then assert bounds relationships from the Hydrolysis tree. Do not pad test counts with decorative color blocks plus synthetic metadata if a semantic child expresses the behavior more directly.
-- Chart semantic readout fixtures should preserve the chart surface geometry used by hit-test helpers. If long focused/selected readouts need more vertical budget in a fixed viewport, tune the shell chrome such as inter-item spacing rather than shrinking the chart and invalidating normalized interaction coordinates.
-- For static components with simple conditional branches, avoid wrapping the whole body in `#[view_builder]` if that would introduce an unnecessary `Dynamic`. `waterui_chart::Tooltip` is a concrete example: explicit `AnyView` branching avoids a Hydrolysis mount-time recursion path that appeared with the generated dynamic wrapper.
-- Playground root crates are plain Rust `lib` crates. Do not make playground examples choose final artifact types such as `staticlib`, `cdylib`, or preview dylib output themselves. App FFI artifacts and preview dylibs must be produced by generated wrapper crates such as `managed_backends/ffi`, with the playground root crate only supplying normal Rust APIs like `app(...)` and `#[preview]` exports.
-- `Project::open(OpenMode::Full)` must initialize the managed Android backend for playground projects before scaffolding the FFI companion. If Android packaging reports a missing backend on an already-open playground, treat that as a CLI bug.
-- Android build/package preflight must validate only the Rust targets required by the requested Android ABIs. Requiring every Android target when the command asked for a single ABI is incorrect.
-- Android Gradle `package` and `clean` invocations must export detected `ANDROID_HOME` and `ANDROID_SDK_ROOT`. Included builds and composite local backends do not reliably rediscover the SDK on their own.
-- Android `doctor --fix` must derive the NDK package version from `backends/android/runtime/build.gradle.kts` `ndkVersion`, not by guessing the newest installed or newest published NDK.
-- Android `doctor --fix` on Linux, including native ARM Linux containers, must bootstrap Android SDK command-line tools into the configured/default SDK root itself. Do not require manual SDK/NDK downloads or pre-block ARM Linux before `sdkmanager` has actually been tried.
-- Android NDK resolution should prefer the runtime-declared `ndkVersion` directory under `ANDROID_SDK_ROOT/ndk` over any lexicographically newer leftover installation. A newer stale directory must not override the runtime source of truth.
-- When `doctor --fix` targets an Android NDK version and that directory exists but is incomplete (for example missing `toolchains/llvm/prebuilt`), the CLI must delete that damaged directory first and then re-run `sdkmanager --install` for the declared version. Retrying install on top of a broken directory is not sufficient.
-- Android Kotlin compiler compatibility must come from `backends/android/settings.gradle.kts` `org.jetbrains.kotlin.android` version, but the CLI must embed that version at build time so managed-build-cache packaging does not depend on the current working directory. `Kotlin::detect_path()` and `doctor --fix` must both use that embedded version source.
-- `kotlinc -version` parsing must ignore unrelated JVM warning lines and only extract the version token from the `kotlinc...` output line. Parsing the first numeric token in the combined stdout/stderr stream is incorrect and can falsely accept an old compiler because of warnings like `JDK 13`.
-- Android managed-backend templates are embedded at CLI compile time. After changing files under `cli/src/templates/android`, rebuild the CLI before validating generated playground backends; otherwise the generated Gradle files can still reflect stale template contents.
-- Keep the Android template/backend version matrix aligned with the runtime dependency graph. The current matrix requires `compileSdk = 36`, `targetSdk = 36`, and AGP `8.9.1`; drifting below that breaks fresh playground packaging.
-- Android app templates must enable core library desugaring whenever the runtime backend exposes a desugaring requirement. Keep the app template's `coreLibraryDesugaring` dependency aligned with `backends/android/runtime/build.gradle.kts`.
-- Android asset staging must preserve a valid default launcher foreground resource when the project has no custom app icon asset. Replacing `ic_launcher_foreground.xml` with generated raster resources is only correct when a custom icon is actually staged; otherwise the staging step must restore the default vector resource and remove stale rasterized launcher artifacts.
-- GitHub Actions jobs that run Cargo against the superproject must check out submodules recursively. Missing `vendor/nami` or backend submodules in CI is a workflow bug, not a Rust dependency bug.
-- Linux GitHub Actions jobs that compile the workspace with all features should not depend on `nasm` for WaterKit AV1 fallback. Keep `rav1e` default features disabled and enable only the required Rust-side features such as `threading`.
-- Linux Wayland-facing dependencies must not require compile-time `wayland-client.pc` unless the workflow explicitly installs Wayland development packages. Prefer portal/dlopen-backed dependency features so CI and downstream consumers can compile without native development headers while preserving runtime Wayland support.
-- Linux GitHub Actions jobs that compile real audio/video/font/graphics backends must install native development packages for the enabled backends, including `libasound2-dev` for ALSA audio, `libva-dev` for VA-API codecs, `libfontconfig1-dev` for Fontconfig text/font discovery, `libgbm-dev` for GBM GPU surface linking, `libpango1.0-dev` for Pango text layout pkg-config discovery, `libgdk-pixbuf-2.0-dev` for GDK Pixbuf image loading, and `libgtk-4-dev` for the GTK backend. This includes `cargo hack --each-feature`, because single-feature checks can still enable those backend crates. Do not remove backend capabilities just to avoid the packages.
-- On newer Cargo, `cargo llvm-cov` with the default `target/llvm-cov-target` scratch directory must start from a directory that contains a valid `CACHEDIR.TAG`, otherwise Cargo aborts the clean step before coverage begins.
-- Docker Linux containers do not automatically inherit the host macOS `sing-box` TUN path. For Android verification inside Docker/OrbStack, treat `host.docker.internal` proxy ports as the explicit network path instead of assuming container traffic is transparently tunneled.
-- When Android tooling runs under standard proxy environment variables such as `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY`, the CLI must translate those values into `sdkmanager` native flags (`--proxy`, `--proxy_host`, `--proxy_port`) before launching Java, because `sdkmanager` cannot parse schemes like `socks5h://` from the raw environment.
-- Android Gradle invocations must also translate proxy environment into Java/Gradle system properties. Passing only raw proxy env or only `GRADLE_OPTS` is not reliable enough for Gradle daemon dependency resolution.
-- Native ARM Linux containers still consume Google's Linux `platform-tools` and NDK host binaries, which are `x86_64`. `water doctor --fix` must install the required `x86_64` userspace compatibility libraries on apt-based ARM Linux instead of telling the user to switch to an amd64 container.
+## Reference map
 
-## CRITICAL: Reactive-First Pattern
+Read the file that matches the task. Each is self-contained; none reference each other
+beyond pointers.
 
-**WaterUI is a reactive framework. ALWAYS pass Bindings directly to APIs instead of using `.get()` or `watch`.**
+| Topic | File |
+|---|---|
+| Signals, `Binding`, `Computed`, collections, async tasks, animation, conditionals | [references/reactivity.md](references/reactivity.md) |
+| Component catalog with real signatures: layout, controls, menus, text, lists, forms, overlays | [references/components.md](references/components.md) |
+| Photos, video, media picking, web views + JS bridge, shaders, particles, charts, maps | [references/media.md](references/media.md) |
+| Gestures, taps, hover, cursor, drag & drop | [references/interaction.md](references/interaction.md) |
+| Tabs, navigation stacks, toolbars, transitions, split views, windows | [references/navigation.md](references/navigation.md) |
+| Colors, theme tokens, dark mode, icons, shapes, gradients, Material 3 | [references/styling.md](references/styling.md) |
+| Translations, plurals, locale switching, formatting, RTL | [references/i18n.md](references/i18n.md) |
+| `#[waterui::test]`, `#[waterui::bench]`, `#[preview]`, snapshots | [references/testing.md](references/testing.md) |
+| `water` CLI, `Water.toml`, Cargo features, assets, permissions, platforms, embedded | [references/project.md](references/project.md) |
+| Compile errors, silent bugs, and their fixes | [references/troubleshooting.md](references/troubleshooting.md) |
 
-Most WaterUI APIs accept `impl Signal` or `impl IntoSignalF32` - pass bindings directly for automatic reactivity:
+When an API is still unclear, the compiled examples in `examples/*/src/lib.rs` of the
+WaterUI repository are ground truth — they are built in CI, so they are never stale.
+The prose companion to this skill is the book at <https://book.waterui.dev>, which goes
+deeper on the topics here and covers ones this skill does not (plugins, resolvers and
+hooks, shaders, error handling, library authoring). Each book release is pinned to an
+exact WaterUI commit, shown in the book itself — check that pin against the version you
+depend on before copying from it.
+
+## The five rules
+
+### 1. Pass the signal, never a snapshot of it
+
+Reactive APIs take `impl IntoComputed<T>`, `impl IntoSignalF32`, or `&Binding<T>`.
+Handing them `.get()` reads the value once and freezes it — the UI then never updates,
+and nothing fails at compile time, so this bug is silent.
 
 ```rust
-// ✅ CORRECT - Pass binding directly, updates automatically
-Photo::new(url).blur(blur_value.clone())       // blur updates as slider moves
-view.visible(is_visible.clone())               // visibility reacts to state
-view.opacity(opacity_value.clone())            // opacity animates reactively
-view.disabled(is_loading.clone())              // disabled state follows loading
-text!("Count: {count}")                        // text updates automatically
-
-// ❌ WRONG - Static value, requires manual refresh
-Photo::new(url).blur(blur_value.get())         // blur frozen at initial value
-view.visible(is_visible.get())                 // visibility never changes
-watch(count.clone(), |c| text(format!("{c}"))) // unnecessary indirection
+view.opacity(fade.clone())              // reacts
+view.opacity(fade.get())                // frozen forever — a plain f32
+Photo::new(url).blur(blur.clone())      // reacts
+text!("Count: {count}")                 // reacts
 ```
 
-**Rule: If an API accepts a value that might change, check if it accepts `impl Signal` and pass the binding.**
+`.get()` belongs inside event handlers and `.map()` closures, where you genuinely want
+the value at that instant. It does not belong in a view body.
 
-## Quick Start
+### 2. `watch` is not the reactive primitive — it is the escape hatch
+
+`watch(signal, |v| ...)` tears down and rebuilds its entire subtree on every change, so
+any state living inside that subtree is destroyed. Three things replace nearly every use:
 
 ```rust
+text!("{status}")                               // reactive text — not watch + format!
+Photo::new(url).blur(blur.clone())              // reactive value — pass the signal
+Lazy::for_each(rows.clone(), row_view)          // dynamic set of views — a collection
+```
+
+Reach for `watch` only for a genuinely one-off structural swap where no signal-aware API
+and no collection applies. Check those three first, every time.
+
+### 3. Inject handler state with `.state()`, do not capture clones
+
+`.action()` takes a *handler*: a function whose parameters are extractors resolved from
+the environment. `.state(&value)` puts a value in that environment; `State<T>` pulls it
+out. This keeps handlers as plain named functions instead of a thicket of `move` closures.
+The same machinery drives every callback in the framework — `.on_tap`, gestures, drops,
+menu commands, list edits — not just buttons.
+
+```rust
+button("Increment")
+    .action(|State(count): State<Binding<i32>>| *count.get_mut() += 1)
+    .state(&count)
+```
+
+Repeated `State<T>` of the **same type** bind positionally: the first `.state()` call
+feeds the first `State<T>` parameter.
+
+```rust
+button("Search")
+    .action(|State(q): State<Binding<Str>>, State(hist): State<Binding<Vec<Str>>>| {
+        hist.get_mut().push(q.get());
+    })
+    .state(&query)      // -> first parameter
+    .state(&history)    // -> second parameter
+```
+
+**Beyond two or three pieces of state, stop threading them individually.** Put them in
+one `Clone` struct, inject it once on a container, and write handlers as free functions.
+This is the idiomatic shape for a real screen:
+
+```rust
+#[derive(Clone)]
+struct Editor {
+    rows: ReactiveList<Row>,
+    editing: Binding<bool>,
+}
+
+fn toggle_editing(State(state): State<Editor>) {
+    state.editing.set(!state.editing.get());
+}
+
+fn content(state: Editor) -> impl View {
+    vstack((
+        button("Edit").action(toggle_editing),
+        List::for_each(state.rows.clone(), row_view),
+    ))
+    .state(&state)          // injected once, visible to every handler below
+}
+```
+
+Async is the same shape: `.action_async(|State(x): State<Binding<Str>>| async move { … })`.
+
+### 4. A changing set of views is a collection, not a `watch`
+
+`ForEach`/`List` diff by `Identifiable` id, so inserting one row touches one row.
+`watch` over a `Vec` rebuilds everything and can escalate to a full-window rebuild.
+
+```rust
+use waterui::Identifiable;                             // the derive is NOT in the prelude
+use waterui::component::lazy::Lazy;
+use waterui::reactive::collection::List as ReactiveList;
+
+#[derive(Clone, Identifiable)]
+struct Row { #[id] id: u64, title: Str }
+
+let rows = ReactiveList::from(seed_rows);              // bulk-seed; .push/.insert/.remove diff by id
+
+Lazy::for_each(rows.clone(), |row| text(row.title))        // reactive sequence in a stack
+List::for_each(rows.clone(), |row| ListItem::new(...))     // platform list: lazy, editable
+```
+
+Note the shape: **`ForEach` is a *collection of views*, not a view.** A container consumes
+it — `Lazy::for_each(data, f)` is the shorthand for `Lazy::vstack(ForEach::new(data, f))`,
+and `List::for_each` is the list-control equivalent. Writing `ForEach::new(..)` where a
+view is expected is a trait-bound error, not a runtime surprise.
+
+`List` realizes only the visible window — it handles 100,000 rows, including after a
+programmatic jump. Use it whenever the data is a list of rows; use the `Lazy` stacks when
+you just need a reactive sequence inside your own layout. A **derived** row set (filtered
+or sorted from other state) is still a collection: wrap the derived signal in
+`SignalCollection` rather than watching a `Vec`.
+
+### 5. Rebuild-driven state loss is correct behavior, not a bug to patch
+
+A component's `body` may be expensive and may do one-time setup. When a parent's control
+flow (`when`, `watch`, a route change) reconstructs a component, that instance is *gone*
+and a new one initializes — losing its internal state is the intended semantics.
+
+If some state must survive, that state was owned at the wrong level: lift it into a
+`Binding` held by the parent and pass it down. Never try to preserve it with hidden
+caches, hook-like slots, or position-keyed storage. Those do not exist in WaterUI and
+adding them is an architectural error.
+
+## Quick start
+
+```rust
+use waterui::app::App;
 use waterui::prelude::*;
 
-fn main() -> impl View {
+fn counter() -> impl View {
     let count = Binding::i32(0);
 
     vstack((
         text!("Count: {count}").headline(),
         button("+1")
-            .with_state(&count)
-            .action(|c| c.set(c.get() + 1)),
+            .action(|State(count): State<Binding<i32>>| *count.get_mut() += 1)
+            .state(&count),
     ))
+    .spacing(8.0)
+    .padding()
+}
+
+pub fn app(env: Environment) -> App {
+    App::new(counter, env)
 }
 ```
 
-## Views
+`use waterui::prelude::*;` brings in views, layout, colors, text, controls, navigation,
+menus, `State`, `Str`, `AnyView`, `SignalExt`, and `AnimationExt`. Several everyday names
+live outside it:
 
-Functions and closures are views:
 ```rust
-fn card(title: &str) -> impl View {
+use waterui::Identifiable;                             // the derive macro
+use waterui::reactive::binding;                        // the general Binding constructor
+use waterui::reactive::collection::List as ReactiveList;
+use waterui::widget::condition::when;                  // conditionals
+use waterui::animation::Animation;                     // animation curves
+use waterui::component::lazy::Lazy;                    // reactive stacks over a collection
+use waterui::views::ForEach;                           // the collection itself
+use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
+use waterui::cursor::CursorStyle;
+use waterui::drag_drop::DragData;
+use waterui::env::with;                                // scope a value to a subtree
+use waterui::task::{sleep, spawn_local};               // async utilities
+```
+
+Components behind cargo features are also absent until you enable them. `waterui`'s
+defaults are `gpu`, `assets`, `media`, `inspector`, `snackbar`; `webview` and
+`flow-markdown` are opt-in in `Cargo.toml`. Charts, maps, barcodes and particles are not
+features but crates of their own — `waterui-chart`, `waterui-map`, `waterui-barcode`,
+`waterui-particle` — added as direct dependencies and imported as `waterui_chart::…`. Keep
+the generated `dev = ["waterui/dynamic_linking"]` feature — it is what makes `water preview`
+and the fast dev loop link dynamically ([references/project.md](references/project.md)).
+
+## Core building blocks
+
+### Views
+
+Any function returning `impl View` is a view — no wrapper type, no trait to implement.
+`&'static str`, `String`, and `Str` are views too, so a bare literal is valid content.
+
+```rust
+fn card(title: &'static str) -> impl View {
     vstack((text(title).title(), Divider))
 }
 
-// Use directly - no wrapper needed
-vstack((card("Hello"), card("World")))
+vstack((card("Hello"), card("World"), "a bare literal is a view"))
 ```
 
-Conditional rendering:
-```rust
-// Show or hide (Option<impl View> is a View)
-is_new.map(|b| b.then(|| badge("New")))
+`Str` is WaterUI's string type: cheap to clone (a static reference or a ref-counted
+buffer), derefs to `str`, and converts from both directions — `Str::from_static("lit")`
+for literals, `format!(..).into()` for runtime text. It is in the prelude and is what
+`Binding<Str>` text fields hold.
 
-// Binary choice (if-else)
-when(is_logged_in, || dashboard()).otherwise(|| login_form())
+Views are `'static`, so a borrowed `&str` parameter will not compile. Take `&'static str`,
+`Str`, or `impl IntoText` instead — the last is the friendliest and is what the built-in
+constructors accept. (A helper that only *reads* a `&T` while building may keep the
+reference parameter and return `impl View + use<>`.)
 
-// Multi-branch (if-elif-else)
-when(state.equal_to(0), || "Loading")
-    .or(state.equal_to(1), || "Ready")
-    .otherwise(|| "Error")
-```
-
-## State
+When a component needs to read the environment or be stored as a value, implement the
+trait directly — `body` takes `self` by value:
 
 ```rust
-// Use type-specific constructors (Binding::new does NOT exist)
-let toggle = Binding::bool(false);
-let count = Binding::i32(0);
-let value = Binding::f64(1.5);
-let name = Binding::container(String::new());  // heap types (String, Vec, etc.)
-let text = Binding::container(Str::from("hello")); // Str type
+struct ColorSwatch { color: Binding<Color> }
 
-// Pass by reference to child views
-fn section(count: &Binding<i32>) -> impl View { ... }
+impl View for ColorSwatch {
+    fn body(self, _env: &Environment) -> impl View {
+        signal_color(self.color).size(64.0, 32.0)   // a Color is itself a view
+    }
+}
 ```
 
-## Reactive Transforms
+`AnyView` is the erased view type — `.anyview()` or `AnyView::new(v)` — for match arms,
+struct fields, and heterogeneous `collect()`s.
 
-Methods on signals (no `.clone()` needed for transforms):
-```rust
-count.not()                    // bool negation
-count.select(a, b)             // if-else
-count.equal_to(5)              // equality check
-count.gt(0)                    // comparisons: lt, le, ge
-count.is_empty()               // for strings/collections
-count.map(|v| v * 2)           // custom transform
-count.zip(&other).map(|(a,b)| a + b)  // combine signals
-```
-
-Convert to Computed: `signal.computed()`
-
-## Reactive Modifiers
-
-**Pass bindings directly to modifiers for real-time updates:**
+### State
 
 ```rust
-let opacity = Binding::f64(1.0);
-let blur = Binding::f64(0.0);
-let is_visible = Binding::bool(true);
-let is_disabled = Binding::bool(false);
-let scale_factor = Binding::f64(1.0);
+let count = Binding::i32(0);                    // bool f32 f64 i32 i64 isize u32 u64 usize
+let flag  = Binding::bool(false);
+let name  = Binding::container(String::new());  // any Clone type
+let sel: Binding<Option<Selected>> = Binding::default();   // empty optional
 
-view
-    .opacity(opacity.clone())           // reactive opacity
-    .visible(is_visible.clone())        // reactive visibility
-    .disabled(is_disabled.clone())      // reactive disabled state
-    .scale(scale_factor.clone(), scale_factor.clone())  // reactive scale
-
-// Filters also accept reactive values
-Photo::new(url)
-    .blur(blur.clone())                 // blur updates in real-time
-    .saturation(saturation.clone())     // saturation updates in real-time
-    .brightness(brightness.clone())     // brightness updates in real-time
+let pane: Binding<Pane> = binding(Pane::Inbox); // general form, needs an inferable type
+let settings = Settings::binding();             // #[form] types: inference-free
 ```
 
-## Event Handlers
+There is no `Binding::new`. Prefer the typed constructors: `binding(v)` takes
+`impl Into<T>`, so `T` is frequently ambiguous and you get "type annotations needed"
+unless something downstream pins it (an annotation, a turbofish, a struct field, or a
+control like `toggle`/`slider` that takes `&Binding<bool>` / `&Binding<f64>`).
 
-**IMPORTANT: Always use `.with_state()` - never clone bindings manually!**
+Pass bindings to child views by reference (`&Binding<T>`); clone only when a value must be
+owned by a closure or a modifier.
+
+### Text
+
+`text()` for static strings, `text!` for anything reactive, interpolated, or localized.
+`text!` is the i18n pipeline: the whole literal is a translation-catalog key, and its
+placeholder names are slot keys — bare identifiers, aliased with `name = expr` when the
+local has a different name ([references/i18n.md](references/i18n.md)).
 
 ```rust
-// Single state - receives Binding directly
-button("Click")
-    .with_state(&count)
-    .action(|c| c.set(c.get() + 1))
-
-// Multiple states → nested tuple (((a, b), c), d)
-button("Reset")
-    .with_state(&x)
-    .with_state(&y)
-    .action(|(x, y)| { x.set(0); y.set(0); })
-
-// Four states example
-button("Submit")
-    .with_state(&url)
-    .with_state(&blur)
-    .with_state(&status)
-    .with_state(&handler)
-    .action(|(((url, blur), status), handler)| {
-        // Use all four bindings
-    })
-
-// Async
-button("Load").action_async(|_| async { fetch().await })
-
-// Lifecycle
-view.on_appear(|| setup())
-view.on_change(&signal, |new_val| handle(new_val))
+text("Settings").title()                        // title/headline/sub_headline/body/caption/footnote
+text!("Count: {count}")                         // updates automatically
+text!("{unread} unread", unread = mail.count()) // aliasing an expression into a slot
+text!("Blur: {blur:.1}")                        // format specs work
 ```
 
-## Text
+Import the macro and write bare `text!` — never `waterui::text!`. On a `Text`, `.size(..)`
+is the *font* size (and shadows the two-argument frame `.size(w, h)`).
 
-**IMPORTANT: Use `text()` for static text and `text!` for reactive text. Never use `watch()` just to build text. Also never write `waterui::text!`; import the macro and use `text!` directly.**
-
-```rust
-// Static text - use text() function
-text("Hello").title()       // semantic sizes: title, headline, body, caption, footnote, sub_headline
-
-// Reactive text - use text! macro (auto-updates when bindings change)
-text!("Count: {count}")              // single binding
-text!("{a} + {b} = {sum}")           // multiple bindings
-text!("Value: {value:.2}")           // with formatting
-text!("{FOCUSED_READOUT}")           // const &str capture is fine if text! behavior is desired
-
-// text! returns LocalizedText with font methods
-text!("Status: {status}").sub_headline()
-text!("Small: {value}").caption()
-```
-
-## Layout
+### Layout
 
 ```rust
 hstack((a, b, c)).spacing(8.0)
-vstack((a, b)).padding()
+vstack((a, b)).alignment(HorizontalAlignment::Leading).padding()
 zstack((background, content))
 scroll(content)
-spacer()                    // flexible space
-spacer().height(16.0)       // fixed space
+spacer()                    // flexible gap
+spacer().height(16.0)       // fixed gap
 
-// From iterator - use .collect() for dynamic layouts
 let buttons: HStack<_> = items.iter().map(|i| button(i.label)).collect();
 ```
 
-## Colors
+A fixed, known set of children is a tuple — `vstack((a, b, c))`. Reach for `vec!` only
+when the length is genuinely runtime-dependent, and for a *changing* set use rule 4.
+A layer that must fill the window (overlays, HUDs) uses `absolute((..))`, not a
+content-sized `zstack` ([references/components.md](references/components.md)).
+
+### Conditionals
 
 ```rust
-// Built-in (zero-sized, efficient)
-Blue, Green, Red, Orange, Purple, Cyan, Yellow, Pink, Grey
+use waterui::widget::condition::when;   // not in the prelude
 
-// Custom
-const BRAND: Srgb = Srgb::from_hex("#3B82F6");
+// A plain bool: Option<impl View> is itself a View.
+row.flagged.then(|| flag_icon())
 
-// Usage - colors are Views
-view.background(Blue)
-view.foreground(BRAND)
-Blue.size(80.0, 80.0)       // colored rectangle
-BRAND.with_opacity(0.5)
+// A reactive bool: use when(...), or keep the view and drive .visible(..).
+when(logged_in.clone(), || dashboard()).otherwise(|| login())
+when(state.equal_to(0), || loading())
+    .or(state.equal_to(1), || ready())
+    .otherwise(|| error())
+
+new_marker().visible(is_new.clone())        // keep the view, drive its visibility
 ```
 
-Theme colors: `Foreground`, `MutedForeground`, `Accent`, `Background`, `Surface`, `Border`
+The distinction matters: `Option<impl View>` is a view, but a *signal* of
+`Option<impl View>` is not, so `flag.map(|b| b.then(|| view))` on a `Binding` does not
+compile. Reach for `when` or `.visible` there.
 
-## Modifiers
+For many branches over a plain (non-reactive) value, a `match` returning `.anyview()` is
+clearer than a long `when` chain.
+
+### Modifiers
 
 ```rust
-.padding() / .padding_with(EdgeInsets::all(16.0))
-.background(color) / .foreground(color)
-.size(w, h) / .width(w) / .height(h)
-.scale(x, y) / .rotation(degrees) / .offset(x, y)
-.border(color, width) / .shadow() / .clip(shape)
-.disabled(bool_signal) / .visible(bool_signal)  // accept signals!
-.opacity(f64_signal)                             // accepts signal!
+.padding() / .padding_with(16.0) / .padding_with(EdgeInsets::all(16.0))
+.background(color) / .foreground(color) / .overlay(view)
+.size(w, h) / .width(w) / .height(h) / .min_width(w) / .max_width(w) / .min_size(..) / .max_size(..)
+.scale(x, y) / .rotation(degrees) / .offset(x, y)     // two arguments, not one
+.border(color, width) / .shadow(shadow) / .clip(shape)
+.opacity(signal) / .visible(signal) / .disabled(signal)
+.blur(signal) / .brightness(..) / .contrast(..) / .saturation(..) / .grayscale(..) / .hue_rotation(..)
+.a11y_label(..) / .a11y_id("settings.wifi") / .a11y_role(..)
+.on_appear(..) / .on_change(&signal, ..) / .on_tap(..) / .gesture(g, handler) / .context_menu(items)
+.cursor(style) / .ignore_safe_area(EdgeSet::ALL) / .floating()
 ```
 
-## Components
+Visual modifiers take signals — pass bindings straight in; the filter row works on *any*
+view, not just images. Plain-size frame modifiers (`.size`, `.width`, `.min_width`) take
+`f32`; the `max_*` pair also accepts signals.
+
+### The Environment
+
+`Environment` is a type-indexed container that flows down the view tree: the type *is* the
+key, so there is no registration step and no string names. It carries the theme, the
+locale, and any service your app installs, which is how a deeply nested button reaches
+shared configuration without every intermediate function taking it as a parameter.
+
+```rust
+use waterui::env::{use_env, with};
+
+#[derive(Clone)]
+struct ApiClient { base_url: Str }
+waterui::impl_extractor!(ApiClient);          // makes it a handler/`use_env` parameter
+
+// Seeding, usually in `app(env)`:
+env.insert(client);                            // in place
+env.with(client);                              // in place, chains
+let scoped = env.extending(client);            // non-mutating overlay
+with(subtree_view, LayoutDirection::RightToLeft)   // free fn: scope a value to one subtree
+
+// Reading, from a view:
+use_env(|client: ApiClient| text!("API: {url}", url = Binding::container(client.base_url)))
+
+// Reading, from a handler — same extractors, no ceremony:
+button("Send").action(|client: ApiClient| send(&client))
+
+// Reading, where absence is legitimate — the non-panicking form:
+let locale = env.get::<Locale>().cloned().unwrap_or_else(|| locales::EN.clone());
+```
+
+Inserting the same type twice replaces the earlier value; `Store<K, V>` pairs a value with
+a marker type when one type genuinely needs several roles. `.install(plugin)` scopes a
+value to a subtree rather than the whole app.
+
+Extraction is fast-fail: a missing type panics with a message naming it. That is
+deliberate — wrap the parameter in `Option<T>` (or use `env.get`) where absence is
+legitimate. It is also why a hand-built `Environment::new()` needs a theme installed
+before it can render themed views; theme tokens panic rather than falling back to a
+guessed color.
+
+`.state(&value)` from rule 3 is the same machinery with a narrower scope: it installs into
+the environment of one view, and `State<T>` reads it back.
+
+### Accessibility is part of construction
+
+Every control takes a mandatory label: `button("Save")`, `toggle("Wi-Fi", &on)`,
+`slider("Volume", &level)`, `Picker::new("Sort", items, &choice)`. (The one exception:
+`progress(value).label("Downloading")` takes its label as a modifier.) This is not
+optional decoration — it drives screen readers *and* it is what `waterui-testing`
+queries. To hide a label visually while keeping it in the tree, use the display-mode API,
+never drop the label: `.hide_label()` on any labeled control, `.label_style(
+LabelDisplayMode::IconOnly)` for icon buttons, `.install(LabelDisplayMode::IconOnly)` for
+a whole toolbar.
+
+## Component index
+
+Look up exact signatures in [references/components.md](references/components.md); media,
+web, graphics, and data rows live in [references/media.md](references/media.md).
 
 | Category | Components |
-|----------|------------|
-| Layout | `hstack`, `vstack`, `zstack`, `scroll`, `spacer`, `grid` |
-| Controls | `button`, `toggle`, `Slider`, `Stepper`, `TextField`, `Menu` |
-| Navigation | `NavigationStack`, `NavigationLink`, `TabView` |
-| Media | `Photo`, `VideoPlayer`, `MediaPicker` |
-| Graphics | `Canvas`, `Chart`, `Map`, `Barcode::qr()` |
+|---|---|
+| Layout | `hstack` `vstack` `zstack` `scroll` `spacer` `grid` `absolute` `overlay` `Divider` |
+| Controls | `button` `toggle` `slider` `stepper` `field`/`TextField` `progress` `Picker` |
+| Menus | `Menu` `Command` `.context_menu` `Shortcut` |
+| Interaction | `.on_tap` `.gesture` `TapGesture` `LongPressGesture` `DragGesture` `.draggable` `.drop_destination` `.on_hover_enter` `.cursor` |
+| Text | `text` `text!` `styled` `Code` `RichText` `include_markdown!` `FlowMarkdown` |
+| Collections | `List` `ListItem` `ForEach` `SignalCollection` `ScrollController` |
+| Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
+| Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
+| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` |
+| Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
+| Data | `Chart` (12 kinds) `Map` |
+| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuSurface` icon sets |
+| Platform | `WebView` `#[js_api]` `waterui-chromium` |
 
-## CLI Commands
+## Verify before declaring done
+
+WaterUI has a fast headless feedback loop; use it instead of reasoning about whether a
+view renders. Neither of these needs a device.
 
 ```bash
-water create my-app              # new project
-water run --platform ios         # run on simulator
-water run --platform android
-water run --platform macos
-water preview my_view            # preview #[preview] function
-water run --logs debug           # with debug output
+water preview my_view --backend hydrolysis --theme material3 --output preview.png
+cargo nextest run -p my-app
 ```
 
-## Preview System
+`#[preview] fn my_view() -> impl View` renders a view to PNG. `#[waterui::test]` drives
+the real accessibility tree with taps and assertions — it is simultaneously an
+interaction test and an accessibility check, which is why a component that cannot be
+tested this way is a bug rather than a gap. Details in
+[references/testing.md](references/testing.md).
 
-Use the `#[preview]` macro to enable instant view previews:
+## Gotchas worth memorizing
 
-- For playground projects, preview dylibs are built from the managed `ffi` wrapper crate, not from the user example crate directly. Keep playground example crates as plain Rust `lib` crates; do not add `crate-type` just for preview or native packaging.
+| Symptom | Cause | Fix |
+|---|---|---|
+| UI never updates | `.get()` in a view body | pass the binding |
+| State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `Lazy::for_each` |
+| `no function or associated item named 'new'` on `Binding` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::container(v)` / `Binding::default()` |
+| `cannot find function 'when'` / derive `Identifiable` | not in the prelude | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |
+| Rounded corners come out fully round | `RoundedRectangle::new(r)` takes a *fraction* of the shorter side, not points | `new(0.1)`-scale values, or `Capsule` |
+| A background task dies instantly | the `spawn_local` handle cancels on drop | `.detach()` it |
+| `LongPressGesture::new(Duration…)` rejected | duration is a `u32` in backend time units | `LongPressGesture::new(500)` |
+| `.is_empty()` missing on a string signal | different name | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
+| Wrong binding arrives in a handler | positional `State<T>` | first `.state()` → first parameter |
+| Scrolling or list updates are janky | `watch` over a `Vec` | `List::for_each` / `Lazy::for_each` / `SignalCollection` |
+| `ForEach<..>: View is not satisfied` | `ForEach` is a collection, not a view | `Lazy::for_each(..)`, or hand it to a container |
+| `.title("Inbox")` rejects its argument | `Text::title()` (font size) shadows the navigation title | title the container, or `NavigationView::new(title, content)` |
+| A test's wait can never fail | query `.wait_for_existence(..)` returns `bool` | wrap it in `assert!` |
+| `use of undeclared crate 'tracing'` | logging is re-exported | `waterui::log::debug!(..)` |
+| `borrowed data escapes outside of function` | views are `'static` | `&'static str` / `Str` / `impl IntoText`, or `impl View + use<>` |
+| type annotations needed after `binding(v)` | `binding` takes `impl Into<T>` | `Binding::i32(0)` etc., turbofish, or annotate |
 
-```rust
-#[preview]
-fn my_card() -> impl View {
-    text!("Hello Preview!")
-}
-```
-
-**For visual verification, use the `waterui-preview` subagent** via the Task tool:
-
-```
-Task(subagent_type="waterui-preview", prompt="<function_name> --platform macos --path <crate_path>\nExpect: <visual description>")
-```
-
-## Common Patterns
-
-```rust
-// Reactive blur with slider (real-time updates)
-let blur = Binding::f64(0.0);
-vstack((
-    Photo::new(url).blur(blur.clone()),  // blur reacts to slider
-    Slider::new(0.0..=10.0, &blur),
-    text!("Blur: {blur:.1}"),
-))
-
-// Animated toggle
-let scale = active.select(1.2 as f32, 1.0).with(Animation::spring(300.0, 15.0));
-
-// Conditional visibility (reactive)
-.visible(items.map(|i| !i.is_empty()).computed())
-
-// List rendering
-List::for_each(&items, |item| item_view(item))
-
-// Static layout from slice/array via FromIterator
-fn tab_buttons(tabs: &[Tab], selected: &Binding<Tab>) -> HStack<(Vec<AnyView>,)> {
-    tabs.iter()
-        .map(|&tab| button(tab.label()).with_state(selected).action(move |s| s.set(tab)))
-        .collect()
-}
-
-// Conditional views - prefer when().otherwise() over match
-when(is_dark, || dark_theme()).otherwise(|| light_theme())
-when(!is_loading, || content()).otherwise(|| spinner())
-
-// Multi-branch conditionals
-when(state.equal_to(0), || loading_view())
-    .or(state.equal_to(1), || ready_view())
-    .or(state.equal_to(2), || error_view())
-    .otherwise(|| unknown_view())
-
-// For many branches or complex matching, use match + .anyview()
-fn render(mode: Mode) -> AnyView {
-    match mode {
-        Mode::A => view_a().anyview(),
-        Mode::B => view_b().anyview(),
-        Mode::C => view_c().anyview(),
-    }
-}
-
-// Form from struct
-#[derive(FormBuilder)]
-struct Settings { name: String, volume: f64 }
-form(&settings_binding)
-
-// Dynamic view for URL changes (Photo with reactive blur)
-let url_input = Binding::container(Str::from("https://example.com/image.jpg"));
-let blur = Binding::f64(0.0);
-let status = Binding::container(String::from("Loading..."));
-let (handler, photo_view) = Dynamic::new();
-
-// Load button - only Dynamic for URL change, blur is reactive
-button("Load")
-    .with_state(&url_input)
-    .with_state(&blur)
-    .with_state(&status)
-    .with_state(&handler)
-    .action(|(((url, blur), status), handler)| {
-        let photo = Photo::new(url.get())
-            .on_event({
-                let status = status.clone();
-                move |event| match event {
-                    PhotoEvent::Loaded => status.set(String::from("Loaded")),
-                    PhotoEvent::Error(msg) => status.set(format!("Error: {msg}")),
-                }
-            })
-            .blur(blur.clone());  // Pass binding for reactive blur!
-        handler.set(photo);
-    });
-
-vstack((
-    text!("{status}"),
-    photo_view,
-    Slider::new(0.0..=10.0, &blur),  // Slider controls blur in real-time
-))
-```
-
-## Extension Traits
-
-WaterUI uses `*Ext` traits. When unsure, search `trait.*Ext` in codebase.
-
-**SignalExt** (from nami, works on `Binding`/`Computed`):
-```rust
-// Core
-.map(|v| ...), .zip(&other), .computed(), .cached(), .distinct(), .with(metadata)
-
-// Bool → Signal<bool>
-.not(), .select(if_true, if_false), .then_some(value)
-
-// Comparison → Signal<bool>
-.equal_to(v), .gt(v), .lt(v), .ge(v), .le(v), .condition(|v| ...)
-
-// Option<T>
-.is_some(), .is_none(), .unwrap_or(default), .map_some(|v| ...)
-
-// String
-.is_empty(), .contains("pattern")
-```
-
-**ViewExt**: `.anyview()`, `.visible()`, `.padding()`, `.background()`, etc.
-
-**AnimationExt**: `.animated()`, `.with(Animation::spring(...))`
-
-## Gotchas
-
-**No `Binding::new()`** - use type-specific constructors:
-```rust
-// WRONG
-let count = Binding::new(0);
-
-// CORRECT
-let count = Binding::i32(0);
-let value = Binding::f64(1.5);
-let flag = Binding::bool(false);
-let name = Binding::container(String::new());
-```
-
-**No `_f32` suffix** - use `as f32` cast:
-```rust
-// WRONG
-.select(1.0_f32, 0.3)
-
-// CORRECT
-.select(1.0 as f32, 0.3)
-```
-
-**No `.get()` for reactive values** - pass binding directly:
-```rust
-// WRONG - static, won't update
-Photo::new(url).blur(blur.get())
-view.opacity(opacity.get())
-
-// CORRECT - reactive, updates automatically
-Photo::new(url).blur(blur.clone())
-view.opacity(opacity.clone())
-```
-
-**No `watch()` for text**:
-```rust
-// WRONG
-watch(status.clone(), |msg| text(msg))
-
-// CORRECT: reactive
-text!("{status}")
-
-// CORRECT: static
-text("Ready")
-```
-
-**No `watch()` when reactive API exists** - pass binding directly:
-IMPORTANT: `watch` would rebuild the entire subtree on every change and lost internal state, only a few scenarios require `watch`, always check if the API accepts `impl Signal` first
-```rust
-// WRONG - unnecessary watch
-watch(blur.clone(), |b| Photo::new(url).blur(b))
-
-// CORRECT - pass binding directly
-Photo::new(url).blur(blur.clone())
-```
-
-**No manual `.clone()` for button states** - use `.with_state()`:
-```rust
-// WRONG
-let count_clone = count.clone();
-button("Click").action(move || count_clone.set(...))
-
-// CORRECT
-button("Click").with_state(&count).action(|c| c.set(...))
-```
-
-**Two-param transforms:**
-```rust
-.scale(x, y)    // not .scale(uniform)
-.offset(x, y)
-.size(w, h)
-```
-
-**`text!` returns `LocalizedText`** - supports all font methods:
-```rust
-// LocalizedText has: .title(), .headline(), .sub_headline(), .body(), .caption(), .footnote()
-// Plus: .size(), .bold(), .italic(), .font()
-text!("{status}").sub_headline()
-text!("{value}").caption()
-text!("{note}").footnote()
-```
-
-**Linux all-features CI native dependencies** - backend-enabled jobs need the native link headers for every compiled backend:
-```text
-libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev
-```
-Keep these packages installed in Linux lint, coverage, feature-check, and test jobs instead of disabling backend features to make CI pass.
-
-**Windows all-features dylib linking** - `waterui/dynamic_linking` is a real preview path and must remain available for Apple and Android preview builds. Do not make `waterui-dylib` Apple-only or remove the dylib crate from supported preview platforms. Windows is not a WaterUI preview target today, and PE/COFF cannot represent the full Rust `dylib` export set for the all-features anchor crate; keep the optional `waterui-dylib` dependency target-gated away from Windows while preserving `dynamic_linking` for macOS, iOS, and Android. Windows debug all-features builds should still use the Rust toolchain's LLD PE/COFF linker (`rust-lld` with `lld-link` flavor) so other large debug links avoid MSVC `link.exe` object-count limits.
-
-**Release scaffold backend refs** - when a backend submodule pointer changes, update the matching `cli/Cargo.toml` `package.metadata.waterui-scaffold.*-backend-commit` entry in the same superproject commit. The CLI build script derives backend refs from live submodules for dev builds, but release/package fallback metadata must stay pinned to the exact submodule commits so clean package verification and coverage agree with the source tree.
-
-**Release package dependency graph** - every normal dependency of a release-plz-managed package must either already exist on crates.io or be listed as its own release package before dependents that need it. Local-only test harness crates such as `waterui-testing` must stay path-only when used as dev-dependencies so Cargo strips them from packaged manifests instead of treating them as registry dependencies.
+Rust rules still apply on top of these: no `println!` (use `waterui::log::debug!`,
+surfaced by `water run --logs debug`), and nothing blocking on the UI thread — use
+`.action_async`, `.task(..)`, or `waterui::task::{spawn_local, sleep}` with `.detach()`.

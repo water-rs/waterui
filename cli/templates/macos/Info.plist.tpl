@@ -18,6 +18,18 @@
     <string>1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
+{% for usage in usage_descriptions %}
+    <key>{{ usage.plist_key }}</key>
+    <string>{{ usage.description }}</string>
+{% endfor %}
+    <key>NSQuitAlwaysKeepsWindows</key>
+    <false/>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
 </dict>

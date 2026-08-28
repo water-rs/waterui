@@ -14,8 +14,9 @@
 
 use crate::ViewExt;
 use nami::{Computed, Signal, signal::IntoComputed};
+use waterui_core::View;
 use waterui_core::configurable;
-use waterui_core::{AnyView, View};
+use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::color::Color;
 
 /// Configuration for the Badge component
@@ -24,7 +25,7 @@ pub struct BadgeConfig {
     /// The numeric value to display on the badge
     pub value: Computed<i32>,
     /// The content that the badge will be attached to
-    pub content: AnyView,
+    pub content: AnyViewBuilder,
     /// The color of the badge
     pub color: Computed<Color>,
 }
@@ -59,10 +60,10 @@ impl Badge {
     /// # Arguments
     /// * `value` - The numeric value to display on the badge
     /// * `content` - The content that the badge will be attached to
-    pub fn new(value: impl IntoComputed<i32>, content: impl View) -> Self {
+    pub fn new(value: impl IntoComputed<i32>, content: impl View + Clone) -> Self {
         Self(BadgeConfig {
             value: value.into_computed(),
-            content: content.anyview(),
+            content: AnyViewBuilder::new(move || content.clone().anyview()),
             color: Color::default().into_computed(),
         })
     }

@@ -1,3 +1,6 @@
 pub mod vello_backend;
 
-pub use hydrolysis_m3::{Brush, DrawContext, MaterialTheme, WidgetTheme};
+pub use waterui_backend_core::widget::{
+    Brush, DrawContext, RadioIndicatorState, RadioSelectionMotion, TextCaretMotion,
+    TextContextMenuMetrics, WidgetTheme,
+};

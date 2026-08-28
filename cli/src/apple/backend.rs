@@ -8,7 +8,7 @@ use crate::{
     backend::Backend,
     build::BuildOptions,
     device::Artifact,
-    platform::{PackageOptions, TargetPlatform},
+    platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::Project,
     project_types::CrateName,
     templates::{self, TemplateContext},
@@ -42,6 +42,35 @@ pub struct AppleBackend {
     /// Local path to the Apple backend for local dev.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_path: Option<String>,
+}
+
+/// What this project's built application bundle is called.
+///
+/// Deliberately not the scheme. The scheme is a fixed handle the CLI drives the
+/// Xcode project with — every playground shares one, which is what lets one set
+/// of commands build any of them — while the product name is the one a person
+/// reads. macOS takes `CFBundleName`, and with it the menu bar, the Dock and
+/// Force Quit, from `PRODUCT_NAME`, so a project that leaves the two equal
+/// announces itself as the scaffold's target rather than as itself.
+///
+/// The scaffold writes this same name into `PRODUCT_NAME`, so this is also
+/// where the built bundle is found afterwards; the two must agree.
+///
+/// # Errors
+///
+/// Returns an error when the name cannot be a bundle's: empty, or containing a
+/// path separator that would place the bundle somewhere else entirely.
+pub fn apple_product_name(project: &Project) -> Result<&str, eyre::Report> {
+    let name = project.manifest().package.name.as_str();
+    if name.is_empty() {
+        eyre::bail!("This project has no name; `package.name` in Water.toml names the application");
+    }
+    if name.contains(std::path::MAIN_SEPARATOR) || name.contains('/') {
+        eyre::bail!(
+            "The project name {name:?} contains a path separator, so it cannot name an application bundle"
+        );
+    }
+    Ok(name)
 }
 
 impl AppleBackend {
@@ -144,11 +173,26 @@ impl Backend for AppleBackend {
                     })
             })
             .collect();
+        let webview_enabled = project
+            .links_runtime_package("waterui-webview")
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        let chromium_enabled = project
+            .links_runtime_package("waterui-chromium")
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        let browser_engine = project
+            .linked_browser_engine()
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
         let ctx =
             TemplateContext::for_project_manifest(manifest, crate_name_for_template, app_name)
                 .with_backend_project_path(project.backend_path::<Self>())
                 .with_project_root_path(project.root().to_path_buf())
-                .with_ios_permissions(ios_permissions);
+                .with_ios_permissions(ios_permissions)
+                .with_webview_enabled(webview_enabled)
+                .with_chromium_enabled(chromium_enabled)
+                .with_browser_engine(browser_engine);
 
         templates::apple::scaffold(&project.backend_path::<Self>(), &ctx)
             .await
@@ -173,6 +217,9 @@ impl Backend for AppleBackend {
         platform: TargetPlatform,
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
+        project
+            .browser_runtime_plan(platform, TargetBackend::Apple)
+            .await?;
         build_rust_lib(project, platform, options).await
     }
 

@@ -28,7 +28,7 @@ use std::rc::Rc;
 
 use crate::ViewExt;
 use nami::{Computed, SignalExt, signal::IntoComputed};
-use waterui_core::{AnyView, Environment, View, handler::ViewBuilder};
+use waterui_core::{AnyView, Dynamic, Environment, View, handler::ViewBuilder};
 
 /// A component that conditionally renders a view based on a reactive boolean condition.
 ///
@@ -437,12 +437,9 @@ where
         let chain = Rc::new(chain);
         let otherwise = Rc::new(otherwise);
 
-        chain
-            .make_combined()
-            .map(move |index| {
-                index.map_or_else(|| otherwise.build().anyview(), |i| chain.build_branch(i))
-            })
-            .computed()
-            .anyview()
+        Dynamic::watch(chain.make_combined(), move |index| {
+            index.map_or_else(|| otherwise.build().anyview(), |i| chain.build_branch(i))
+        })
+        .anyview()
     }
 }

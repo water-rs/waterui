@@ -53,7 +53,7 @@ Image::new(pixels, width, height)
 
 ```rust
 // Async load from URL with filters
-Photo::new("https://example.com/image.jpg")
+Photo::new("https://www.rust-lang.org/logos/rust-logo-512x512.png")
     .blur(2.0)
     .sepia(0.7)
     .vignette(0.5, 0.5)

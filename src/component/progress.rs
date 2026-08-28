@@ -31,6 +31,19 @@ use waterui_core::View;
 use waterui_core::configurable;
 use waterui_core::layout::StretchAxis;
 use waterui_macros::text;
+
+fn progress_value_label(value: &Computed<f64>) -> Computed<String> {
+    value
+        .clone()
+        .map(|value| {
+            if value.is_finite() {
+                format!("{:.0}%", value.clamp(0.0, 1.0) * 100.0)
+            } else {
+                String::new()
+            }
+        })
+        .computed()
+}
 /// Configuration for progress indicators.
 ///
 /// Contains the visual and behavioral properties of a progress indicator.
@@ -45,6 +58,8 @@ pub struct ProgressConfig {
     pub value: Computed<f64>,
     /// The visual style of the progress indicator (linear or circular).
     pub style: ProgressStyle,
+    /// Whether indeterminate progress uses the Material four-color cycle.
+    pub four_color: bool,
 }
 
 /// Visual style options for progress indicators.
@@ -55,6 +70,15 @@ pub enum ProgressStyle {
     Circular,
     /// A linear bar-style progress indicator.
     Linear,
+    /// Material's loading indicator: a shape that morphs and rotates while work
+    /// is in flight.
+    ///
+    /// This is a style rather than its own component because it is the same
+    /// semantic thing as any other indeterminate indicator — work is happening,
+    /// and how long it will take is unknown. It carries no determinate reading:
+    /// a value set on a loading-style progress is used for accessibility but is
+    /// not drawn, because the indicator has no track to fill.
+    Loading,
 }
 
 configurable!(
@@ -69,18 +93,21 @@ configurable!(
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::component::progress::{loading, progress};
+    ///
     /// // Determinate progress (75% complete)
-    /// progress(0.75)
+    /// let bar = progress(0.75);
     ///
     /// // Circular spinner
-    /// progress(0.5).circular()
+    /// let ring = progress(0.5).circular();
     ///
     /// // Indeterminate loading spinner
-    /// loading()
+    /// let spinner = loading();
     ///
     /// // With custom label
-    /// progress(0.3).label("Downloading...")
+    /// let labelled = progress(0.3).label("Downloading...");
     /// ```
     //
     // ═══════════════════════════════════════════════════════════════════════════
@@ -91,7 +118,7 @@ configurable!(
     //   Stretch Axis: `Horizontal` - Expands to fill available width.
     //   Height: Fixed intrinsic (platform-determined track height)
     //
-    // Circular style:
+    // Circular and Loading styles:
     //   Stretch Axis: `None` - Content-sized, does not expand.
     //
     // ═══════════════════════════════════════════════════════════════════════════
@@ -100,7 +127,7 @@ configurable!(
     ProgressConfig,
     |config| match config.style {
         ProgressStyle::Linear => StretchAxis::Horizontal,
-        ProgressStyle::Circular => StretchAxis::None,
+        ProgressStyle::Circular | ProgressStyle::Loading => StretchAxis::None,
     }
 );
 
@@ -148,12 +175,13 @@ impl Progress {
     /// * `value` - The progress value between 0.0 and 1.0.
     pub fn new(value: impl IntoComputed<f64>) -> Self {
         let value = value.into_signal().computed();
-        let value_for_label = value.clone();
+        let value_label = progress_value_label(&value);
         Self(ProgressConfig {
             label: text!("Please wait...").anyview(),
-            value_label: text!("{value_for_label:.2} %").anyview(),
+            value_label: text!("{value_label}").anyview(),
             value,
             style: ProgressStyle::Linear,
+            four_color: false,
         })
     }
 
@@ -166,6 +194,8 @@ impl Progress {
         let total = total.into_signal();
         let value = self.0.value;
         self.0.value = total.zip(&value).map(|(t, v)| v / t).computed();
+        let value_label = progress_value_label(&self.0.value);
+        self.0.value_label = text!("{value_label}").anyview();
 
         ProgressWithTotal(self)
     }
@@ -209,6 +239,24 @@ impl Progress {
     pub const fn linear(self) -> Self {
         self.style(ProgressStyle::Linear)
     }
+
+    /// Changes the progress indicator to the platform's loading indicator.
+    ///
+    /// This says "content is on its way", where the circular and linear styles
+    /// report how far along an operation is. Each backend draws its own: the
+    /// Material theme morphs a shape while it turns, and platforms whose
+    /// loading indicator is a spinner draw that.
+    #[must_use]
+    pub const fn loading(self) -> Self {
+        self.style(ProgressStyle::Loading)
+    }
+
+    /// Render indeterminate progress with the Material four-color cycle.
+    #[must_use]
+    pub const fn four_color(mut self) -> Self {
+        self.0.four_color = true;
+        self
+    }
 }
 
 /// Creates a new progress indicator with the specified value.
@@ -220,8 +268,33 @@ pub fn progress(value: impl IntoComputed<f64>) -> Progress {
     Progress::new(value)
 }
 
-/// Creates an indeterminate loading indicator displayed as a circular spinner.
+/// Creates the platform's indeterminate loading indicator.
 #[must_use]
 pub fn loading() -> Progress {
-    Progress::infinity().circular()
+    Progress::infinity().loading()
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::{Computed, Signal as _};
+
+    use super::progress_value_label;
+
+    #[test]
+    fn progress_value_label_formats_fraction_as_percent() {
+        assert_eq!(progress_value_label(&Computed::constant(0.42)).get(), "42%");
+        assert_eq!(
+            progress_value_label(&Computed::constant(0.755)).get(),
+            "76%"
+        );
+    }
+
+    #[test]
+    fn progress_value_label_clamps_to_valid_progress_range() {
+        assert_eq!(progress_value_label(&Computed::constant(-0.25)).get(), "0%");
+        assert_eq!(
+            progress_value_label(&Computed::constant(1.25)).get(),
+            "100%"
+        );
+    }
 }

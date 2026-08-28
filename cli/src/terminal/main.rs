@@ -16,7 +16,8 @@ use futures::future::{self, Either};
 use tracing_subscriber::EnvFilter;
 
 use commands::{
-    backend, build, clean, create, device, devices, doctor, gc, inspector, package, preview, run,
+    backend, bench, build, clean, create, device, devices, doctor, gc, inspector, package, preview,
+    run,
 };
 
 /// `WaterUI` command line interface.
@@ -32,6 +33,10 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "clap subcommand enum constructed once per CLI invocation; variant size is immaterial"
+)]
 enum Commands {
     /// Create a new `WaterUI` project.
     Create(create::Args),
@@ -41,6 +46,9 @@ enum Commands {
 
     /// Build and run on device/simulator.
     Run(run::Args),
+
+    /// Run `#[waterui::bench]` GPU frame benchmarks and collect reports.
+    Bench(bench::Args),
 
     /// Build the project for a platform.
     Build(build::Args),
@@ -80,8 +88,7 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Initialize global shell
-    shell::init(cli.json);
+    let shell = shell::Shell::new(cli.json);
 
     // Set up Ctrl+C handler
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -110,19 +117,20 @@ fn main() -> Result<()> {
 
             let command = async {
                 match cli.command {
-                    Commands::Create(args) => create::run(args).await,
-                    Commands::Backend(args) => backend::run(args).await,
-                    Commands::Run(args) => run::run(args).await,
-                    Commands::Build(args) => build::run(args).await,
+                    Commands::Create(args) => create::run(&shell, args).await,
+                    Commands::Backend(args) => backend::run(&shell, args).await,
+                    Commands::Run(args) => run::run(&shell, args).await,
+                    Commands::Bench(args) => bench::run(&shell, args).await,
+                    Commands::Build(args) => build::run(&shell, args).await,
 
-                    Commands::Package(args) => package::run(args).await,
-                    Commands::Clean(args) => clean::run(args).await,
-                    Commands::Doctor(args) => doctor::run(args).await,
-                    Commands::Device(args) => device::run(args).await,
-                    Commands::Devices(args) => devices::run(args).await,
-                    Commands::Gc(args) => gc::run(args).await,
-                    Commands::Preview(args) => preview::run(args).await,
-                    Commands::Inspector(args) => inspector::run(args).await,
+                    Commands::Package(args) => package::run(&shell, args).await,
+                    Commands::Clean(args) => clean::run(&shell, args).await,
+                    Commands::Doctor(args) => doctor::run(&shell, args).await,
+                    Commands::Device(args) => device::run(&shell, args).await,
+                    Commands::Devices(args) => devices::run(&shell, args).await,
+                    Commands::Gc(args) => gc::run(&shell, args).await,
+                    Commands::Preview(args) => preview::run(&shell, args).await,
+                    Commands::Inspector(args) => inspector::run(&shell, args).await,
                 }
             };
 
@@ -148,7 +156,7 @@ fn main() -> Result<()> {
             };
 
             // Clear progress bars to ensure clean exit
-            shell::clear();
+            shell.clear();
 
             result
         }

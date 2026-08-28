@@ -1,0 +1,1492 @@
+use super::*;
+
+#[cfg(feature = "accessibility")]
+use std::borrow::Cow;
+#[cfg(feature = "accessibility")]
+use std::collections::{BTreeSet, VecDeque};
+#[cfg(feature = "accessibility")]
+use std::ops::RangeInclusive;
+#[cfg(feature = "accessibility")]
+use waterui_form::picker::date::{DatePickerType, DateTime};
+
+#[cfg(feature = "accessibility")]
+#[derive(Clone)]
+pub(crate) struct ScopedAccessibilityIdentifier {
+    identifier: AccessibilityIdentifier,
+    identity: Rc<()>,
+}
+
+#[cfg(feature = "accessibility")]
+impl MetadataKey for ScopedAccessibilityIdentifier {}
+
+#[cfg(feature = "accessibility")]
+impl ScopedAccessibilityIdentifier {
+    pub(crate) fn new(identifier: AccessibilityIdentifier) -> Self {
+        Self {
+            identifier,
+            identity: Rc::new(()),
+        }
+    }
+
+    fn key(&self) -> usize {
+        Rc::as_ptr(&self.identity) as usize
+    }
+
+    fn value(&self) -> &AccessibilityIdentifier {
+        &self.identifier
+    }
+}
+
+/// The identity of one `.a11y_label()` / `.a11y_role()` scope.
+///
+/// Naming metadata is nearest-consumer: whichever node ends up *representing* the
+/// wrapped view owns its role and label, and nothing below may say the same thing
+/// again. A control registers its own node and so claims the scope; a composed
+/// container has no such node and synthesizes one instead (see
+/// [`HydrolysisRenderer::begin_accessibility_container`]). The claim is what tells
+/// those two apart — both see the identical environment, so the container can only
+/// know whether it is the view's representative by asking whether anything above it
+/// already was.
+#[cfg(feature = "accessibility")]
+#[derive(Clone)]
+pub(crate) struct ScopedAccessibilitySemantics {
+    identity: Rc<()>,
+}
+
+#[cfg(feature = "accessibility")]
+impl MetadataKey for ScopedAccessibilitySemantics {}
+
+#[cfg(feature = "accessibility")]
+impl ScopedAccessibilitySemantics {
+    pub(crate) fn new() -> Self {
+        Self {
+            identity: Rc::new(()),
+        }
+    }
+
+    fn key(&self) -> usize {
+        Rc::as_ptr(&self.identity) as usize
+    }
+}
+
+#[cfg(feature = "accessibility")]
+pub(crate) const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
+#[cfg(feature = "accessibility")]
+pub(crate) const ACCESSIBILITY_FIRST_NODE_ID: u64 = 1;
+
+#[cfg(feature = "accessibility")]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct AccessibilityNodeKey {
+    owner: RetainedIdentity,
+    local: AccessibilityLocalNodeKey,
+}
+
+#[cfg(feature = "accessibility")]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AccessibilityLocalNodeKey {
+    Ordinal(u64),
+    Semantic(i64),
+}
+
+#[cfg(feature = "accessibility")]
+#[derive(Clone)]
+pub(crate) enum AccessibilityActionTarget {
+    PointerPrimaryClick {
+        point: vello::kurbo::Point,
+    },
+    Toggle {
+        binding: nami::Binding<bool>,
+    },
+    Slider {
+        value: nami::Binding<f64>,
+        range: RangeInclusive<f64>,
+        step: f64,
+    },
+    Stepper {
+        value: nami::Binding<i32>,
+        step: nami::Computed<i32>,
+        range: RangeInclusive<i32>,
+    },
+    DatePicker {
+        value: nami::Binding<DateTime>,
+        range: RangeInclusive<DateTime>,
+        ty: DatePickerType,
+        origin: LayoutPoint,
+    },
+    TextField {
+        value: nami::Binding<StyledStr>,
+        line_limit: Option<usize>,
+    },
+    SecureField {
+        value: nami::Binding<FormSecure>,
+    },
+    PickerSelect {
+        selection: nami::Binding<waterui_core::id::Id>,
+        target: waterui_core::id::Id,
+    },
+    Scroll {
+        handle: ScrollHandle,
+        axis: ScrollAxis,
+    },
+}
+
+#[cfg(feature = "accessibility")]
+pub(crate) struct AccessibilityBuilder {
+    pub(crate) nodes: Vec<(AccessibilityNodeId, AccessibilityNode)>,
+    pub(crate) root_children: Vec<AccessibilityNodeId>,
+    pub(crate) actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget>,
+    pub(crate) next_node_id: u64,
+    node_ids: BTreeMap<AccessibilityNodeKey, AccessibilityNodeId>,
+    active_node_keys: BTreeSet<AccessibilityNodeKey>,
+    owner_ordinals: BTreeMap<RetainedIdentity, u64>,
+    owner_stack: Vec<RetainedIdentity>,
+    fallback_owner: Rc<()>,
+    pub(crate) root_bounds: vello::kurbo::Rect,
+    pub(crate) root_label: String,
+    pub(crate) focus: AccessibilityNodeId,
+    pub(crate) pending_text_input_nodes: VecDeque<AccessibilityNodeId>,
+    pub(crate) parent_stack: Vec<AccessibilityNodeId>,
+    pub(crate) suppression_depth: usize,
+    pub(crate) consumed_identifier_scopes: BTreeSet<usize>,
+    /// Naming scopes ([`ScopedAccessibilitySemantics`]) already claimed by a node
+    /// this flush, keyed by scope identity.
+    consumed_semantics_scopes: BTreeSet<usize>,
+    pub(crate) pending_tree_update: Option<AccessibilityTreeUpdate>,
+}
+
+#[cfg(feature = "accessibility")]
+impl Default for AccessibilityBuilder {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            root_children: Vec::new(),
+            actions: BTreeMap::new(),
+            next_node_id: ACCESSIBILITY_FIRST_NODE_ID,
+            node_ids: BTreeMap::new(),
+            active_node_keys: BTreeSet::new(),
+            owner_ordinals: BTreeMap::new(),
+            owner_stack: Vec::new(),
+            fallback_owner: Rc::new(()),
+            root_bounds: vello::kurbo::Rect::ZERO,
+            root_label: String::from("WaterUI Window"),
+            focus: ACCESSIBILITY_ROOT_NODE_ID,
+            pending_text_input_nodes: VecDeque::new(),
+            parent_stack: Vec::new(),
+            suppression_depth: 0,
+            consumed_identifier_scopes: BTreeSet::new(),
+            consumed_semantics_scopes: BTreeSet::new(),
+            pending_tree_update: None,
+        }
+    }
+}
+
+#[cfg(feature = "accessibility")]
+impl AccessibilityBuilder {
+    /// Reset the per-flush accessibility emission state. Called before EVERY flush
+    /// (rebuild and refresh both go through `HydrolysisRenderer::reset_scene`), so
+    /// the full a11y tree it re-emits starts clean — crucially resetting
+    /// `next_node_id` so a node keeps a stable id across frames (a `Cell`-stable id
+    /// is what `ui_focus`/`tree.focus()` compare against). Previously this only
+    /// cleared the pending update, so on a geometry-static refresh flush the node
+    /// list accumulated and ids drifted, desyncing UI focus.
+    pub(crate) fn reset_scene(&mut self) {
+        self.pending_tree_update = None;
+        self.nodes.clear();
+        self.root_children.clear();
+        self.actions.clear();
+        self.active_node_keys.clear();
+        self.owner_ordinals.clear();
+        self.owner_stack.clear();
+        self.pending_text_input_nodes.clear();
+        self.parent_stack.clear();
+        self.suppression_depth = 0;
+        self.consumed_identifier_scopes.clear();
+        self.consumed_semantics_scopes.clear();
+    }
+
+    pub(crate) fn begin_rebuild_frame(&mut self) {
+        self.reset_scene();
+    }
+
+    /// The most specific node covering `point`, in window coordinates.
+    ///
+    /// Nodes are registered as the tree is walked, so a child is always pushed
+    /// after the parent that contains it and the last match is the innermost
+    /// one — the element a user pointing at that spot means.
+    pub(crate) fn node_at_point(&self, point: vello::kurbo::Point) -> Option<AccessibilityNodeId> {
+        self.nodes
+            .iter()
+            .rev()
+            .find(|(_, node)| {
+                node.bounds().is_some_and(|bounds| {
+                    point.x >= bounds.x0
+                        && point.x < bounds.x1
+                        && point.y >= bounds.y0
+                        && point.y < bounds.y1
+                })
+            })
+            .map(|(id, _)| *id)
+    }
+
+    pub(crate) fn next_node_id(&mut self) -> AccessibilityNodeId {
+        let node_id = AccessibilityNodeId(self.next_node_id);
+        self.next_node_id = self
+            .next_node_id
+            .checked_add(1)
+            .expect("hydrolysis accessibility node ID overflow");
+        node_id
+    }
+
+    fn push_owner(&mut self, owner: &Rc<()>) {
+        self.owner_stack.push(RetainedIdentity::for_rc(owner));
+    }
+
+    fn pop_owner(&mut self) {
+        self.owner_stack
+            .pop()
+            .expect("hydrolysis accessibility owner stack underflow");
+    }
+
+    fn stable_node_id(&mut self, semantic_key: Option<i64>) -> AccessibilityNodeId {
+        let owner = self
+            .owner_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| RetainedIdentity::for_rc(&self.fallback_owner));
+        let local = semantic_key.map_or_else(
+            || {
+                let ordinal = self.owner_ordinals.entry(owner.clone()).or_default();
+                let current = *ordinal;
+                *ordinal = ordinal
+                    .checked_add(1)
+                    .expect("hydrolysis accessibility owner-local node index overflow");
+                AccessibilityLocalNodeKey::Ordinal(current)
+            },
+            AccessibilityLocalNodeKey::Semantic,
+        );
+        let key = AccessibilityNodeKey { owner, local };
+        self.active_node_keys.insert(key.clone());
+        if let Some(node_id) = self.node_ids.get(&key) {
+            *node_id
+        } else {
+            let node_id = self.next_node_id();
+            self.node_ids.insert(key, node_id);
+            node_id
+        }
+    }
+
+    pub(crate) fn push_pending_text_input_node(&mut self, node_id: AccessibilityNodeId) {
+        self.pending_text_input_nodes.push_back(node_id);
+    }
+
+    pub(crate) fn take_pending_text_input_node(&mut self) -> Option<AccessibilityNodeId> {
+        self.pending_text_input_nodes.pop_front()
+    }
+
+    pub(crate) fn push_suppression(&mut self) {
+        self.suppression_depth = self
+            .suppression_depth
+            .checked_add(1)
+            .expect("hydrolysis accessibility suppression depth overflow");
+    }
+
+    pub(crate) fn pop_suppression(&mut self) {
+        self.suppression_depth = self
+            .suppression_depth
+            .checked_sub(1)
+            .expect("hydrolysis accessibility suppression underflow");
+    }
+
+    pub(crate) fn apply_state(&self, env: &Environment, node: &mut AccessibilityNode) {
+        // The tree build stores accessibility state as a live signal (a static
+        // state is a constant signal), so a reactive state — e.g. a filter chip's
+        // selected binding — is resolved fresh on every emission.
+        let Some(state) = env
+            .get::<AccessibilityStateSignal>()
+            .map(|signal| signal.state().get())
+        else {
+            return;
+        };
+        if state.is_disabled() {
+            node.set_disabled();
+        }
+        if state.is_selected() {
+            node.set_selected(true);
+        }
+        if let Some(checked) = state.checked_state() {
+            node.set_toggled(match checked {
+                waterui::accessibility::AccessibilityChecked::False => AccessibilityToggled::False,
+                waterui::accessibility::AccessibilityChecked::True => AccessibilityToggled::True,
+                waterui::accessibility::AccessibilityChecked::Mixed => AccessibilityToggled::Mixed,
+            });
+        }
+        if let Some(expanded) = state.expanded_state() {
+            node.set_expanded(expanded);
+        }
+        if state.is_busy() {
+            node.set_busy();
+        }
+        if state.is_hidden() {
+            node.set_hidden();
+        }
+    }
+
+    pub(crate) fn register_node_internal(
+        &mut self,
+        mut node: AccessibilityNode,
+        bounds: vello::kurbo::Rect,
+        env: &Environment,
+        action_target: Option<AccessibilityActionTarget>,
+        attach_to_root: bool,
+        semantic_key: Option<i64>,
+    ) -> Option<AccessibilityNodeId> {
+        if self.suppression_depth > 0 {
+            return None;
+        }
+        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+            return None;
+        }
+        // This node represents the view the enclosing naming scope wraps, so it
+        // owns that role and label; a container below must not emit a second node
+        // repeating them.
+        if let Some(scope) = env.get::<ScopedAccessibilitySemantics>() {
+            self.consumed_semantics_scopes.insert(scope.key());
+        }
+        self.apply_state(env, &mut node);
+        node.set_text_direction(
+            if waterui_core::layout::layout_direction(env)
+                .get()
+                .is_right_to_left()
+            {
+                AccessibilityTextDirection::RightToLeft
+            } else {
+                AccessibilityTextDirection::LeftToRight
+            },
+        );
+        // Nearest-consumer automation identifier: a leaf that already carries
+        // an author id (an explicit backend decision) keeps it.
+        if node.author_id().is_none()
+            && let Some(scope) = env.get::<ScopedAccessibilityIdentifier>()
+            && self.consumed_identifier_scopes.insert(scope.key())
+        {
+            node.set_author_id(scope.value().as_str().to_string());
+        }
+        let node_id = self.stable_node_id(semantic_key);
+        node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
+        self.nodes.push((node_id, node));
+        if attach_to_root {
+            if let Some(parent_id) = self.parent_stack.last().copied() {
+                let parent = self
+                    .nodes
+                    .iter_mut()
+                    .find_map(|(id, node)| (*id == parent_id).then_some(node))
+                    .expect("hydrolysis accessibility parent stack contains an unknown node");
+                parent.push_child(node_id);
+            } else {
+                self.root_children.push(node_id);
+            }
+        }
+        if let Some(target) = action_target {
+            self.actions.insert(node_id, target);
+        }
+        Some(node_id)
+    }
+
+    /// Whether the naming scope `env` sits in was already claimed this flush by a
+    /// node representing the wrapped view.
+    fn semantics_scope_is_claimed(&self, env: &Environment) -> bool {
+        env.get::<ScopedAccessibilitySemantics>()
+            .is_some_and(|scope| self.consumed_semantics_scopes.contains(&scope.key()))
+    }
+
+    /// Collapses a synthesized naming container around exactly one semantic
+    /// node into that node.
+    ///
+    /// `.a11y_label(..)` on a view with a single accessibility element means
+    /// "this is that element's name" on every platform — SwiftUI's
+    /// `accessibilityLabel` overrides the element rather than wrapping it — so
+    /// a padding or frame between the metadata and a lone text must not turn
+    /// the override into a `Group("name")` around a `Label(content)`. The child
+    /// keeps its identity and actions; it takes the scope's label, the scope's
+    /// automation id, the scope's explicit role, and the container's outer
+    /// bounds. With zero or several
+    /// children the container stands: it is then the only node that can say
+    /// the parts belong together.
+    fn collapse_single_child_container(&mut self, container_id: AccessibilityNodeId) {
+        let container_index = self
+            .nodes
+            .iter()
+            .position(|(id, _)| *id == container_id)
+            .expect("hydrolysis accessibility container to collapse is not registered");
+        let container = &self.nodes[container_index].1;
+        let [child_id] = *container.children() else {
+            return;
+        };
+        let label = container.label().map(str::to_owned);
+        let author_id = container.author_id().map(str::to_owned);
+        let role = container.role();
+        let bounds = container.bounds();
+        let child = self
+            .nodes
+            .iter_mut()
+            .find_map(|(id, node)| (*id == child_id).then_some(node))
+            .expect("hydrolysis accessibility container child is not registered");
+        if let Some(label) = label {
+            child.set_label(label);
+        }
+        // The scope's automation id was claimed by the container, so it would
+        // vanish with it. A child that carries its own id keeps it, matching
+        // the nearest-consumer rule that let it claim one in the first place.
+        if let Some(author_id) = author_id
+            && child.author_id().is_none()
+        {
+            child.set_author_id(author_id);
+        }
+        if role != AccessibilityNodeRole::Group {
+            child.set_role(role);
+        }
+        if let Some(bounds) = bounds {
+            child.set_bounds(bounds);
+        }
+        // The child takes the container's place under its parent.
+        if let Some(slot) = self
+            .root_children
+            .iter_mut()
+            .find(|slot| **slot == container_id)
+        {
+            *slot = child_id;
+        } else {
+            let slot = self
+                .nodes
+                .iter_mut()
+                .filter(|(id, _)| *id != container_id)
+                .find_map(|(_, node)| {
+                    node.children()
+                        .iter()
+                        .position(|child| *child == container_id)
+                        .map(|position| (node, position))
+                });
+            let (parent, position) =
+                slot.expect("hydrolysis accessibility container to collapse has no parent");
+            let mut children = parent.children().to_vec();
+            children[position] = child_id;
+            parent.set_children(children);
+        }
+        self.nodes.remove(container_index);
+        if self.focus == container_id {
+            self.focus = child_id;
+        }
+    }
+
+    pub(crate) fn finalize_tree_update(&mut self) {
+        self.node_ids
+            .retain(|key, _| self.active_node_keys.contains(key));
+        let mut root = AccessibilityNode::new(AccessibilityNodeRole::Window);
+        root.set_label(self.root_label.clone());
+        root.set_bounds(kurbo_rect_to_accesskit_rect(self.root_bounds));
+        root.set_children(self.root_children.clone());
+        let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
+        nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
+        nodes.extend(self.nodes.iter().cloned());
+        if !self.nodes.iter().any(|(id, _)| *id == self.focus) {
+            self.focus = ACCESSIBILITY_ROOT_NODE_ID;
+        }
+        self.pending_tree_update = Some(AccessibilityTreeUpdate {
+            nodes,
+            tree: Some(AccessibilityTree::new(ACCESSIBILITY_ROOT_NODE_ID)),
+            tree_id: AccessibilityTreeId::ROOT,
+            focus: self.focus,
+        });
+    }
+}
+
+#[cfg(feature = "accessibility")]
+pub(crate) struct AccessibilityContainerScope {
+    parent_pushed: bool,
+    suppression_pushed: bool,
+    /// The node this scope synthesized for the container, when it did.
+    container_node: Option<AccessibilityNodeId>,
+}
+
+#[cfg(feature = "accessibility")]
+impl AccessibilityContainerScope {
+    /// A scope that emitted no node and suppressed nothing: the container is not
+    /// this view's representative, so it only shields its children.
+    const INERT: Self = Self {
+        parent_pushed: false,
+        suppression_pushed: false,
+        container_node: None,
+    };
+}
+
+/// The environment a container hands its children when the container itself
+/// carries accessibility naming metadata.
+///
+/// `Some` means the container is a candidate for its own node: the semantics name
+/// the container, not each leaf inside it, so they are stripped from the child
+/// environment. Without that strip a `.a11y_label("Navigation")` on a bar reached
+/// every tab under it and the tree announced "Navigation" once per tab instead of
+/// once for the bar.
+#[cfg(feature = "accessibility")]
+pub(crate) fn accessibility_container_child_environment(env: &Environment) -> Option<Environment> {
+    // A role or a label names the container. Identifier/hidden/state metadata are
+    // subtree-scoped and name nothing on their own, so they never make a bare
+    // container into a semantic node.
+    if env.get::<AccessibilityRole>().is_none() && env.get::<AccessibilityLabel>().is_none() {
+        return None;
+    }
+
+    let mut child_env = env.clone();
+    child_env.remove::<ScopedAccessibilitySemantics>();
+    child_env.remove::<ScopedAccessibilityIdentifier>();
+    child_env.remove::<AccessibilityLabel>();
+    child_env.remove::<AccessibilityRole>();
+    child_env.remove::<AccessibilityHidden>();
+    child_env.remove::<AccessibilityChildren>();
+    child_env.remove::<AccessibilityState>();
+    child_env.remove::<AccessibilityStateSignal>();
+    Some(child_env)
+}
+
+impl HydrolysisRenderer {
+    #[cfg(feature = "accessibility")]
+    pub fn set_accessibility_root_label(&mut self, label: &str) {
+        self.accessibility.root_label.clear();
+        self.accessibility.root_label.push_str(label);
+    }
+
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn take_accessibility_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
+        self.accessibility.pending_tree_update.take()
+    }
+
+    /// Borrows the pending tree update without consuming it.
+    ///
+    /// The platform accessibility bridge is the update's real consumer; an
+    /// observer such as the inspector must not take it out from under them.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn peek_accessibility_tree_update(&self) -> Option<&AccessibilityTreeUpdate> {
+        self.accessibility.pending_tree_update.as_ref()
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub fn handle_accessibility_action(
+        &mut self,
+        request: AccessibilityActionRequest,
+        env: &Environment,
+    ) -> bool {
+        let action = request.action;
+        let action_data = request.data;
+        let target_node = request.target_node;
+        let focus_action = matches!(
+            action,
+            AccessibilityAction::Focus | AccessibilityAction::Click
+        );
+        if target_node == ACCESSIBILITY_ROOT_NODE_ID {
+            return match action {
+                AccessibilityAction::Focus => {
+                    let changed = self.accessibility.focus != ACCESSIBILITY_ROOT_NODE_ID;
+                    self.accessibility.focus = ACCESSIBILITY_ROOT_NODE_ID;
+                    changed
+                }
+                AccessibilityAction::Click => false,
+                _ => panic!(
+                    "hydrolysis accessibility root does not support action {:?}",
+                    action
+                ),
+            };
+        }
+        let Some(target) = self.accessibility.actions.get(&target_node).cloned() else {
+            // A node may legitimately register no action target: a disabled
+            // control stays in the tree (focusable, announced as disabled)
+            // but exposes no activate/value actions, and static content never
+            // had any. Focus still lands when advertised; any action the node
+            // does not advertise is rejected as unhandled. An *advertised*
+            // action without a registered target is a widget bug.
+            let node = self
+                .accessibility
+                .nodes
+                .iter()
+                .find_map(|(id, node)| (*id == target_node).then_some(node))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "hydrolysis accessibility action {:?} targets unknown node {:?}",
+                        action, target_node
+                    )
+                });
+            if action == AccessibilityAction::Focus
+                && node.supports_action(AccessibilityAction::Focus)
+            {
+                let changed = self.accessibility.focus != target_node;
+                self.accessibility.focus = target_node;
+                return changed;
+            }
+            assert!(
+                !node.supports_action(action),
+                "hydrolysis accessibility node {target_node:?} advertises action {action:?} but registered no action target"
+            );
+            return false;
+        };
+        let changed = match target {
+            AccessibilityActionTarget::PointerPrimaryClick { point } => {
+                handle_accessibility_pointer_action(self, action, point, env)
+            }
+            AccessibilityActionTarget::Toggle { binding } => match action {
+                AccessibilityAction::Click => {
+                    let next = !binding.get();
+                    binding.set(next);
+                    true
+                }
+                AccessibilityAction::Focus => true,
+                _ => panic!(
+                    "hydrolysis accessibility toggle does not support action {:?}",
+                    action
+                ),
+            },
+            AccessibilityActionTarget::Slider { value, range, step } => {
+                handle_accessibility_slider_action(
+                    &value,
+                    *range.start(),
+                    *range.end(),
+                    step,
+                    action,
+                    action_data,
+                )
+            }
+            AccessibilityActionTarget::Stepper { value, step, range } => {
+                handle_accessibility_stepper_action(
+                    &value,
+                    &step,
+                    *range.start(),
+                    *range.end(),
+                    action,
+                    action_data,
+                )
+            }
+            AccessibilityActionTarget::DatePicker {
+                value,
+                range,
+                ty,
+                origin,
+            } => handle_accessibility_date_picker_action(
+                self,
+                &value,
+                &range,
+                ty,
+                origin,
+                action,
+                action_data,
+                env,
+            ),
+            AccessibilityActionTarget::TextField { value, line_limit } => {
+                handle_accessibility_text_field_action(
+                    self,
+                    target_node,
+                    &value,
+                    line_limit,
+                    action,
+                    action_data,
+                )
+            }
+            AccessibilityActionTarget::SecureField { value } => {
+                handle_accessibility_secure_field_action(
+                    self,
+                    target_node,
+                    &value,
+                    action,
+                    action_data,
+                )
+            }
+            AccessibilityActionTarget::PickerSelect { selection, target } => {
+                handle_accessibility_picker_select_action(&selection, target, action)
+            }
+            AccessibilityActionTarget::Scroll { handle, axis } => {
+                handle_accessibility_scroll_action(&handle, axis, action)
+            }
+        };
+        if changed && focus_action {
+            self.accessibility.focus = target_node;
+        }
+        changed
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn push_pending_text_input_accessibility_node(
+        &mut self,
+        node_id: AccessibilityNodeId,
+    ) {
+        self.accessibility.push_pending_text_input_node(node_id);
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn take_pending_text_input_accessibility_node(
+        &mut self,
+    ) -> Option<AccessibilityNodeId> {
+        self.accessibility.take_pending_text_input_node()
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn push_accessibility_suppression(&mut self) {
+        self.accessibility.push_suppression();
+    }
+
+    /// Parents the nodes registered until the matching pop to `node_id`.
+    ///
+    /// A scroll region's content are its descendants on every platform, so a
+    /// widget that already registered its own node uses this to gather what it
+    /// contains, rather than letting that content land beside it.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn push_accessibility_parent(&mut self, node_id: AccessibilityNodeId) {
+        self.accessibility.parent_stack.push(node_id);
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn pop_accessibility_parent(&mut self) {
+        self.accessibility
+            .parent_stack
+            .pop()
+            .expect("hydrolysis accessibility parent stack underflow");
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn push_accessibility_owner(&mut self, owner: &Rc<()>) {
+        self.accessibility.push_owner(owner);
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn pop_accessibility_owner(&mut self) {
+        self.accessibility.pop_owner();
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn pop_accessibility_suppression(&mut self) {
+        self.accessibility.pop_suppression();
+    }
+
+    /// Open the accessibility scope of a container view that carries naming
+    /// metadata, emitting the node that represents the container itself.
+    ///
+    /// A composed container — a navigation bar's stack, a card, a toolbar — has no
+    /// leaf standing for the whole, so `.a11y_role(TabList)` / `.a11y_label(..)` on
+    /// it would otherwise reach only the leaves inside and the container would
+    /// announce nothing. Assistive technology then cannot tell that the tabs belong
+    /// together, which is exactly what a tab list exists to say.
+    ///
+    /// The caller must have determined the container carries those semantics
+    /// ([`accessibility_container_child_environment`] returned `Some`), and must
+    /// flush its children under that returned environment.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn begin_accessibility_container(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        env: &Environment,
+    ) -> AccessibilityContainerScope {
+        debug_assert!(
+            accessibility_container_child_environment(env).is_some(),
+            "hydrolysis accessibility container scope requires a role or a label"
+        );
+
+        if env
+            .get::<AccessibilityHidden>()
+            .is_some_and(AccessibilityHidden::is_hidden)
+        {
+            self.push_accessibility_suppression();
+            return AccessibilityContainerScope {
+                parent_pushed: false,
+                suppression_pushed: true,
+                container_node: None,
+            };
+        }
+
+        // A control that already registered its own node under this scope is the
+        // view's representative and owns the role and label. The containers
+        // composing its chrome sit below and must stay silent, or every button
+        // would answer to its own name twice.
+        if self.accessibility.semantics_scope_is_claimed(env) {
+            return AccessibilityContainerScope::INERT;
+        }
+
+        let mut node = AccessibilityNode::new(
+            self.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
+        );
+        if let Some(label) = self.resolve_accessibility_label(env, None) {
+            node.set_label(label);
+        }
+        let state_hidden = env
+            .get::<AccessibilityStateSignal>()
+            .is_some_and(|signal| signal.state().get().is_hidden());
+        let excludes_descendants = env
+            .get::<AccessibilityChildren>()
+            .is_some_and(AccessibilityChildren::excludes_descendants);
+        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+            self.push_accessibility_suppression();
+            return AccessibilityContainerScope {
+                parent_pushed: false,
+                suppression_pushed: true,
+                container_node: None,
+            };
+        }
+        let Some(node_id) = self.register_accessibility_node(node, bounds, env, None) else {
+            // Bounds are positive and the scope is unclaimed, so registration can
+            // only have declined because the whole subtree is suppressed — where
+            // the children emit nothing either, leaving no node to parent them to.
+            assert!(
+                self.accessibility.suppression_depth > 0,
+                "hydrolysis accessibility container at positive bounds must register a node"
+            );
+            return AccessibilityContainerScope::INERT;
+        };
+        self.accessibility.parent_stack.push(node_id);
+        let suppression_pushed = state_hidden || excludes_descendants;
+        if suppression_pushed {
+            self.push_accessibility_suppression();
+        }
+        AccessibilityContainerScope {
+            parent_pushed: true,
+            suppression_pushed,
+            container_node: Some(node_id),
+        }
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn end_accessibility_container(&mut self, scope: AccessibilityContainerScope) {
+        if scope.suppression_pushed {
+            self.pop_accessibility_suppression();
+        }
+        if scope.parent_pushed {
+            self.accessibility
+                .parent_stack
+                .pop()
+                .expect("hydrolysis accessibility container parent stack underflow");
+        }
+        if let Some(container_id) = scope.container_node {
+            self.accessibility
+                .collapse_single_child_container(container_id);
+        }
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn register_accessibility_node(
+        &mut self,
+        node: AccessibilityNode,
+        bounds: vello::kurbo::Rect,
+        env: &Environment,
+        action_target: Option<AccessibilityActionTarget>,
+    ) -> Option<AccessibilityNodeId> {
+        self.watch_accessibility_state(env);
+        self.accessibility
+            .register_node_internal(node, bounds, env, action_target, true, None)
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn register_accessibility_child_node(
+        &mut self,
+        node: AccessibilityNode,
+        bounds: vello::kurbo::Rect,
+        env: &Environment,
+        action_target: Option<AccessibilityActionTarget>,
+    ) -> Option<AccessibilityNodeId> {
+        self.watch_accessibility_state(env);
+        self.accessibility
+            .register_node_internal(node, bounds, env, action_target, false, None)
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn register_accessibility_child_node_with_key(
+        &mut self,
+        semantic_key: i64,
+        node: AccessibilityNode,
+        bounds: vello::kurbo::Rect,
+        env: &Environment,
+        action_target: Option<AccessibilityActionTarget>,
+    ) -> Option<AccessibilityNodeId> {
+        self.watch_accessibility_state(env);
+        self.accessibility.register_node_internal(
+            node,
+            bounds,
+            env,
+            action_target,
+            false,
+            Some(semantic_key),
+        )
+    }
+
+    /// Subscribes the scoped accessibility-state signal (if any) to the refresh
+    /// pump, so a state change — a chip toggling selected, a row expanding —
+    /// re-flushes the tree and re-emits the node with the current state.
+    #[cfg(feature = "accessibility")]
+    fn watch_accessibility_state(&mut self, env: &Environment) {
+        if let Some(signal) = env.get::<AccessibilityStateSignal>() {
+            self.watch_signal(signal.state());
+        }
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn accessibility_label_from_view(
+        &mut self,
+        view: &AnyView,
+        env: &Environment,
+    ) -> Option<String> {
+        self.accessibility_label_from_view_with_budget(view, env, 32)
+    }
+
+    /// Resolves the spoken accessibility text directly from a typed
+    /// [`Label`](waterui_controls::label::Label) without any view-tree
+    /// traversal. Backends should prefer this over `accessibility_label_from_view`
+    /// when the source is already a known label, so that `LabelDisplayMode::Hidden`
+    /// labels still surface their semantic text in the accessibility tree.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn accessibility_label_from_label(
+        &self,
+        label: &waterui_controls::label::Label,
+        env: &Environment,
+    ) -> Option<String> {
+        use waterui_core::Signal;
+        let plain = label
+            .clone()
+            .resolve(env)
+            .accessibility_label()
+            .get()
+            .to_semantic();
+        let trimmed = plain.as_str().trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(String::from(trimmed))
+        }
+    }
+
+    #[cfg(feature = "accessibility")]
+    fn accessibility_label_from_view_with_budget(
+        &mut self,
+        view: &AnyView,
+        env: &Environment,
+        remaining: usize,
+    ) -> Option<String> {
+        assert!(
+            (remaining != 0),
+            "hydrolysis accessibility label extraction exceeded recursion budget for {}",
+            view.name()
+        );
+        let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
+        if let Some(content) = passthrough_content(view) {
+            return self.accessibility_label_from_view_with_budget(
+                content,
+                &scoped_env,
+                remaining - 1,
+            );
+        }
+        if let Some(label) = view.downcast_ref::<SemanticLabel>() {
+            let styled = self.read_signal(&label.semantic_text().resolve(&scoped_env).content);
+            return Some(styled.to_semantic().to_string());
+        }
+        if let Some(label) = view.downcast_ref::<Str>() {
+            return Some(label.as_str().to_owned());
+        }
+        if let Some(label) = view.downcast_ref::<&'static str>() {
+            let body = AnyView::new((*label).body(&scoped_env));
+            return self.accessibility_label_from_view_with_budget(
+                &body,
+                &scoped_env,
+                remaining - 1,
+            );
+        }
+        if let Some(label) = view.downcast_ref::<String>() {
+            let body = AnyView::new(label.clone().body(&scoped_env));
+            return self.accessibility_label_from_view_with_budget(
+                &body,
+                &scoped_env,
+                remaining - 1,
+            );
+        }
+        if let Some(label) = view.downcast_ref::<Cow<'static, str>>() {
+            let body = AnyView::new(label.clone().body(&scoped_env));
+            return self.accessibility_label_from_view_with_budget(
+                &body,
+                &scoped_env,
+                remaining - 1,
+            );
+        }
+        if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
+            let styled = self.read_signal(&text.as_inner().content);
+            return Some(styled.to_semantic().to_string());
+        }
+        if let Some(icon) = view.downcast_ref::<Native<SystemIcon>>() {
+            return Some(icon.as_inner().name.as_str().to_owned());
+        }
+        if let Some(container) = view.downcast_ref::<Native<FixedContainer>>() {
+            let (_, children) = container.as_inner().as_parts();
+            let labels = children
+                .iter()
+                .filter_map(|child| {
+                    self.accessibility_label_from_view_with_budget(
+                        child,
+                        &scoped_env,
+                        remaining - 1,
+                    )
+                    .map(|label| label.trim().to_owned())
+                    .filter(|label| !label.is_empty())
+                })
+                .collect::<Vec<_>>();
+            if !labels.is_empty() {
+                return Some(labels.join(" "));
+            }
+        }
+        None
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn resolve_accessibility_label(
+        &mut self,
+        env: &Environment,
+        default_label: Option<String>,
+    ) -> Option<String> {
+        // Reading the label through `read_signal` subscribes it, so a reactive
+        // label ("3 unread messages") republishes without a subtree rebuild.
+        let signal = env
+            .get::<AccessibilityLabel>()
+            .map(|label| label.signal().clone());
+        signal
+            .map(|signal| self.read_signal(&signal).as_str().to_owned())
+            .or(default_label)
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn resolve_accessibility_role(
+        &self,
+        env: &Environment,
+        default_role: AccessibilityNodeRole,
+    ) -> AccessibilityNodeRole {
+        env.get::<AccessibilityRole>()
+            .map(|role| accessibility_role_to_accesskit_role(role.clone()))
+            .unwrap_or(default_role)
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn finalize_accessibility_tree_update(&mut self) {
+        self.accessibility.finalize_tree_update();
+    }
+}
+
+#[cfg(feature = "accessibility")]
+pub(crate) fn accessibility_activation_point(bounds: vello::kurbo::Rect) -> vello::kurbo::Point {
+    vello::kurbo::Point::new((bounds.x0 + bounds.x1) * 0.5, (bounds.y0 + bounds.y1) * 0.5)
+}
+
+#[cfg(feature = "accessibility")]
+fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> AccessibilityNodeRole {
+    match role {
+        AccessibilityRole::Button => AccessibilityNodeRole::Button,
+        AccessibilityRole::Link => AccessibilityNodeRole::Link,
+        AccessibilityRole::Image => AccessibilityNodeRole::Image,
+        AccessibilityRole::Text => AccessibilityNodeRole::Label,
+        AccessibilityRole::Header => AccessibilityNodeRole::Header,
+        AccessibilityRole::Footer => AccessibilityNodeRole::Footer,
+        AccessibilityRole::Navigation => AccessibilityNodeRole::Navigation,
+        AccessibilityRole::Main => AccessibilityNodeRole::Main,
+        AccessibilityRole::Search => AccessibilityNodeRole::Search,
+        AccessibilityRole::Article => AccessibilityNodeRole::Article,
+        AccessibilityRole::Section => AccessibilityNodeRole::Section,
+        AccessibilityRole::List => AccessibilityNodeRole::List,
+        AccessibilityRole::ListItem => AccessibilityNodeRole::ListItem,
+        AccessibilityRole::Checkbox => AccessibilityNodeRole::CheckBox,
+        AccessibilityRole::RadioButton => AccessibilityNodeRole::RadioButton,
+        AccessibilityRole::Switch => AccessibilityNodeRole::Switch,
+        AccessibilityRole::Slider => AccessibilityNodeRole::Slider,
+        AccessibilityRole::ProgressBar => AccessibilityNodeRole::ProgressIndicator,
+        AccessibilityRole::Tab => AccessibilityNodeRole::Tab,
+        AccessibilityRole::TabList => AccessibilityNodeRole::TabList,
+        AccessibilityRole::TabPanel => AccessibilityNodeRole::TabPanel,
+        AccessibilityRole::Menu => AccessibilityNodeRole::Menu,
+        AccessibilityRole::MenuItem => AccessibilityNodeRole::MenuItem,
+        AccessibilityRole::MenuBar => AccessibilityNodeRole::MenuBar,
+        AccessibilityRole::MenuItemCheckbox => AccessibilityNodeRole::MenuItemCheckBox,
+        AccessibilityRole::MenuItemRadio => AccessibilityNodeRole::MenuItemRadio,
+        AccessibilityRole::Combobox => AccessibilityNodeRole::ComboBox,
+        AccessibilityRole::Option => AccessibilityNodeRole::ListBoxOption,
+        AccessibilityRole::Group => AccessibilityNodeRole::Group,
+        _ => panic!("hydrolysis accessibility role variant is not implemented"),
+    }
+}
+
+#[cfg(feature = "accessibility")]
+fn handle_accessibility_pointer_action(
+    renderer: &mut HydrolysisRenderer,
+    action: AccessibilityAction,
+    point: vello::kurbo::Point,
+    env: &Environment,
+) -> bool {
+    let x = point.x as f32;
+    let y = point.y as f32;
+    match action {
+        AccessibilityAction::Click => {
+            let mut changed = renderer.handle_pointer_down(x, y, PointerButton::Primary, env);
+            changed |= renderer.handle_pointer_up(x, y, PointerButton::Primary, env);
+            changed
+        }
+        // Accessibility focus moves only the accessibility focus ring; it must
+        // not synthesize a pointer press, which would steal the text-input UI
+        // focus (UI focus and accessibility focus are independent).
+        AccessibilityAction::Focus => true,
+        _ => panic!(
+            "hydrolysis accessibility pointer target does not support action {:?}",
+            action
+        ),
+    }
+}
+
+/// One accessibility scroll step in logical pixels. Assistive-tech scroll
+/// actions are programmatic: they move the offset immediately (the pixel
+/// path) instead of gliding through the smoothed-wheel animation, so the
+/// result is deterministic for the caller.
+#[cfg(feature = "accessibility")]
+const ACCESSIBILITY_SCROLL_STEP: f32 = crate::scroll::SCROLL_LINE_STEP as f32;
+
+#[cfg(feature = "accessibility")]
+fn handle_accessibility_scroll_action(
+    handle: &ScrollHandle,
+    axis: ScrollAxis,
+    action: AccessibilityAction,
+) -> bool {
+    let step = ACCESSIBILITY_SCROLL_STEP;
+    match action {
+        AccessibilityAction::ScrollLeft => match axis {
+            ScrollAxis::Horizontal | ScrollAxis::All => handle.apply_scroll_delta(step, 0.0, false),
+            ScrollAxis::Vertical => false,
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        },
+        AccessibilityAction::ScrollRight => match axis {
+            ScrollAxis::Horizontal | ScrollAxis::All => {
+                handle.apply_scroll_delta(-step, 0.0, false)
+            }
+            ScrollAxis::Vertical => false,
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        },
+        AccessibilityAction::ScrollUp => match axis {
+            ScrollAxis::Vertical | ScrollAxis::All => handle.apply_scroll_delta(0.0, step, false),
+            ScrollAxis::Horizontal => false,
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        },
+        AccessibilityAction::ScrollDown => match axis {
+            ScrollAxis::Vertical | ScrollAxis::All => handle.apply_scroll_delta(0.0, -step, false),
+            ScrollAxis::Horizontal => false,
+            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        },
+        _ => false,
+    }
+}
+
+#[cfg(feature = "accessibility")]
+pub(crate) fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
+    let start = *range.start();
+    let end = *range.end();
+    let span = end - start;
+    assert!(
+        span > 0.0,
+        "hydrolysis accessibility slider requires range start < end"
+    );
+    span / 100.0
+}
+
+#[cfg(feature = "accessibility")]
+fn handle_accessibility_slider_action(
+    value: &nami::Binding<f64>,
+    start: f64,
+    end: f64,
+    step: f64,
+    action: AccessibilityAction,
+    data: Option<AccessibilityActionData>,
+) -> bool {
+    if matches!(action, AccessibilityAction::Focus) {
+        return true;
+    }
+    assert!(
+        step > 0.0,
+        "hydrolysis accessibility slider requires positive step"
+    );
+    let previous = value.get().clamp(start, end);
+    let next = match action {
+        AccessibilityAction::Increment => (previous + step).min(end),
+        AccessibilityAction::Decrement => (previous - step).max(start),
+        AccessibilityAction::SetValue => match data {
+            Some(AccessibilityActionData::NumericValue(target)) => target.clamp(start, end),
+            _ => {
+                panic!("hydrolysis accessibility slider SetValue requires NumericValue data")
+            }
+        },
+        _ => panic!(
+            "hydrolysis accessibility slider does not support action {:?}",
+            action
+        ),
+    };
+    if (next - previous).abs() <= f64::EPSILON {
+        return false;
+    }
+    value.set(next);
+    true
+}
+
+#[cfg(feature = "accessibility")]
+fn handle_accessibility_stepper_action(
+    value: &nami::Binding<i32>,
+    step: &nami::Computed<i32>,
+    start: i32,
+    end: i32,
+    action: AccessibilityAction,
+    data: Option<AccessibilityActionData>,
+) -> bool {
+    if matches!(action, AccessibilityAction::Focus) {
+        return true;
+    }
+    let step_value = step.get();
+    assert!(
+        (step_value > 0),
+        "hydrolysis accessibility stepper requires positive step"
+    );
+    let previous = value.get().clamp(start, end);
+    let next = match action {
+        AccessibilityAction::Increment => previous.saturating_add(step_value).min(end),
+        AccessibilityAction::Decrement => previous.saturating_sub(step_value).max(start),
+        AccessibilityAction::SetValue => match data {
+            Some(AccessibilityActionData::NumericValue(target)) => {
+                let rounded = target.round() as i32;
+                rounded.clamp(start, end)
+            }
+            Some(AccessibilityActionData::Value(ref text)) => {
+                let parsed = text
+                    .parse::<i32>()
+                    .expect("hydrolysis accessibility stepper SetValue text must parse as i32");
+                parsed.clamp(start, end)
+            }
+            _ => panic!("hydrolysis accessibility stepper SetValue requires numeric data"),
+        },
+        _ => panic!(
+            "hydrolysis accessibility stepper does not support action {:?}",
+            action
+        ),
+    };
+    if next == previous {
+        return false;
+    }
+    value.set(next);
+    true
+}
+
+#[cfg(feature = "accessibility")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the full accessibility-action context; grouping into a struct would not improve clarity"
+)]
+fn handle_accessibility_date_picker_action(
+    renderer: &mut HydrolysisRenderer,
+    value: &nami::Binding<DateTime>,
+    range: &RangeInclusive<DateTime>,
+    ty: DatePickerType,
+    origin: LayoutPoint,
+    action: AccessibilityAction,
+    data: Option<AccessibilityActionData>,
+    env: &Environment,
+) -> bool {
+    match action {
+        AccessibilityAction::Click => {
+            renderer.show_date_picker(value.clone(), range.clone(), ty, origin, env)
+        }
+        AccessibilityAction::Focus => true,
+        AccessibilityAction::SetValue => {
+            let Some(AccessibilityActionData::Value(text)) = data else {
+                panic!("hydrolysis accessibility date picker SetValue requires Value data");
+            };
+            let parsed = ty.parse_value(text.as_ref()).unwrap_or_else(|error| {
+                panic!(
+                    "hydrolysis accessibility date picker could not parse value {:?} with format {}: {error}",
+                    text,
+                    ty.format_string(),
+                )
+            });
+            let previous = value.get().clamp(*range.start(), *range.end());
+            let next = parsed.clamp(*range.start(), *range.end());
+            if next == previous {
+                return false;
+            }
+            value.set(next);
+            true
+        }
+        _ => panic!(
+            "hydrolysis accessibility date picker does not support action {:?}",
+            action
+        ),
+    }
+}
+
+#[cfg(feature = "accessibility")]
+fn handle_accessibility_text_field_action(
+    renderer: &mut HydrolysisRenderer,
+    node_id: AccessibilityNodeId,
+    value: &nami::Binding<StyledStr>,
+    line_limit: Option<usize>,
+    action: AccessibilityAction,
+    data: Option<AccessibilityActionData>,
+) -> bool {
+    match action {
+        AccessibilityAction::Click | AccessibilityAction::Focus => {
+            renderer.focus_text_input_for_accessibility_node(node_id)
+        }
+        AccessibilityAction::SetValue => {
+            let Some(AccessibilityActionData::Value(text)) = data else {
+                panic!("hydrolysis accessibility text field SetValue requires Value data");
+            };
+            let normalized = normalized_insert_text(text.as_ref(), line_limit);
+            assert!(
+                !(exceeds_line_limit(normalized.as_str(), line_limit)),
+                "hydrolysis accessibility text field SetValue exceeds line_limit {:?}",
+                line_limit
+            );
+            value.set(StyledStr::plain(normalized));
+            true
+        }
+        AccessibilityAction::ReplaceSelectedText => {
+            let Some(AccessibilityActionData::Value(text)) = data else {
+                panic!(
+                    "hydrolysis accessibility text field ReplaceSelectedText requires Value data"
+                );
+            };
+            let normalized = normalized_insert_text(text.as_ref(), line_limit);
+            let mut plain = value.get().to_plain().to_string();
+            assert!(
+                apply_text_insert(&mut plain, normalized.as_str(), line_limit),
+                "hydrolysis accessibility text field ReplaceSelectedText exceeds line_limit {:?}",
+                line_limit
+            );
+            value.set(StyledStr::plain(plain));
+            true
+        }
+        _ => panic!(
+            "hydrolysis accessibility text field does not support action {:?}",
+            action
+        ),
+    }
+}
+
+#[cfg(feature = "accessibility")]
+fn handle_accessibility_secure_field_action(
+    renderer: &mut HydrolysisRenderer,
+    node_id: AccessibilityNodeId,
+    value: &nami::Binding<FormSecure>,
+    action: AccessibilityAction,
+    data: Option<AccessibilityActionData>,
+) -> bool {
+    match action {
+        AccessibilityAction::Click | AccessibilityAction::Focus => {
+            renderer.focus_text_input_for_accessibility_node(node_id)
+        }
+        AccessibilityAction::SetValue => {
+            let Some(AccessibilityActionData::Value(text)) = data else {
+                panic!("hydrolysis accessibility secure field SetValue requires Value data");
+            };
+            let normalized = normalized_insert_text(text.as_ref(), Some(1));
+            let mut next = FormSecure::default();
+            next.set(normalized);
+            value.set(next);
+            true
+        }
+        AccessibilityAction::ReplaceSelectedText => {
+            let Some(AccessibilityActionData::Value(text)) = data else {
+                panic!(
+                    "hydrolysis accessibility secure field ReplaceSelectedText requires Value data"
+                );
+            };
+            let mut plain = value.get().expose().to_owned();
+            assert!(
+                apply_text_insert(&mut plain, text.as_ref(), Some(1)),
+                "hydrolysis accessibility secure field ReplaceSelectedText exceeds line_limit 1"
+            );
+            let mut next = FormSecure::default();
+            next.set(plain);
+            value.set(next);
+            true
+        }
+        _ => panic!(
+            "hydrolysis accessibility secure field does not support action {:?}",
+            action
+        ),
+    }
+}
+
+#[cfg(feature = "accessibility")]
+fn handle_accessibility_picker_select_action(
+    selection: &nami::Binding<waterui_core::id::Id>,
+    target: waterui_core::id::Id,
+    action: AccessibilityAction,
+) -> bool {
+    match action {
+        AccessibilityAction::Click | AccessibilityAction::Focus => {
+            if selection.get() == target {
+                return false;
+            }
+            selection.set(target);
+            true
+        }
+        _ => panic!(
+            "hydrolysis accessibility picker select does not support action {:?}",
+            action
+        ),
+    }
+}
+
+#[cfg(all(test, feature = "accessibility"))]
+mod inspect_tests {
+    use super::*;
+    use vello::kurbo::{Point, Rect};
+
+    /// Registers a node covering `bounds` and returns its id.
+    fn push(builder: &mut AccessibilityBuilder, bounds: Rect) -> AccessibilityNodeId {
+        let id = builder.next_node_id();
+        let mut node = AccessibilityNode::new(accesskit::Role::Label);
+        node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
+        builder.nodes.push((id, node));
+        id
+    }
+
+    /// "Inspect element" has to mean the element under the pointer, which is the
+    /// innermost one, not the container that happens to contain it.
+    #[test]
+    fn the_innermost_node_covering_a_point_wins() {
+        let mut builder = AccessibilityBuilder::default();
+        // A container, then a child inside it: registration order is tree order.
+        let container = push(&mut builder, Rect::new(0.0, 0.0, 100.0, 100.0));
+        let child = push(&mut builder, Rect::new(10.0, 10.0, 40.0, 40.0));
+
+        assert_eq!(builder.node_at_point(Point::new(20.0, 20.0)), Some(child));
+        assert_eq!(
+            builder.node_at_point(Point::new(80.0, 80.0)),
+            Some(container),
+            "a point outside the child still belongs to the container"
+        );
+    }
+
+    /// A point on nothing names nothing, so no menu entry is offered there.
+    #[test]
+    fn a_point_outside_every_node_names_none() {
+        let mut builder = AccessibilityBuilder::default();
+        push(&mut builder, Rect::new(0.0, 0.0, 10.0, 10.0));
+
+        assert_eq!(builder.node_at_point(Point::new(50.0, 50.0)), None);
+    }
+
+    /// Bounds are half-open, so two nodes sharing an edge do not both claim it.
+    #[test]
+    fn an_edge_belongs_to_exactly_one_node() {
+        let mut builder = AccessibilityBuilder::default();
+        let left = push(&mut builder, Rect::new(0.0, 0.0, 50.0, 50.0));
+        let right = push(&mut builder, Rect::new(50.0, 0.0, 100.0, 50.0));
+
+        assert_eq!(builder.node_at_point(Point::new(49.9, 10.0)), Some(left));
+        assert_eq!(
+            builder.node_at_point(Point::new(50.0, 10.0)),
+            Some(right),
+            "the shared edge belongs to the node that starts there"
+        );
+    }
+}

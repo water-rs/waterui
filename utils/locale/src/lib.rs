@@ -2,23 +2,46 @@
 //!
 //! Internationalization (i18n) support for `WaterUI` applications.
 //!
-//! ## Features
+//! ## What it does
+//!
+//! Always available:
 //!
 //! - **Type-safe locales**: Using ICU4X for locale identifiers
 //! - **CLDR plural rules**: Proper pluralization for all languages
 //! - **Smart fallback**: zh-TW → zh-Hant → zh (not zh-Hans!)
-//! - **Unit wrappers**: `Length<Meter>`, `Temperature<Celsius>` with automatic conversion
 //! - **`LocalizedDisplay`**: Trait for locale-aware formatting
+//!
+//! Behind a cargo feature, because each carries its own slice of CLDR data:
+//!
+//! - `number`: `format_number`, `format_percent`, `format_currency`, the unit
+//!   wrappers (`Length<Meter>`, `Temperature<Celsius>`, …) that render through
+//!   them, and the numeric interpolation `text!` performs
+//! - `datetime`: `format::date`, the locale-aware date and time formatters
+//! - `list`: `LocalizedList`, locale-aware list conjunction
 //!
 //! ## Usage
 //!
-//! ```rust,ignore
-//! use waterui_locale::{text, locales};
+//! Application text goes through `waterui`'s `text!` macro, which resolves
+//! translations and CLDR plural categories against the effective locale:
 //!
-//! let count = 5;
-//! let greeting = text!("I have {#count} apple");
+//! ```rust
+//! use waterui::prelude::*;
+//!
+//! # fn apples(count: i32) -> impl View {
 //! // With en: "I have 5 apples"
 //! // With zh: "我有5个苹果"
+//! text!("I have {#count} apple")
+//! # }
+//! ```
+//!
+//! This crate is the runtime underneath it: locale identification and
+//! fallback, plural-category selection, and locale-aware formatting.
+//!
+//! ```rust
+//! use waterui_locale::{PluralCategory, locales, select_plural};
+//!
+//! assert_eq!(select_plural(&locales::EN, &1), PluralCategory::One);
+//! assert_eq!(select_plural(&locales::EN, &5), PluralCategory::Other);
 //! ```
 
 #![forbid(unsafe_code)]
@@ -33,14 +56,62 @@ mod system;
 
 // Re-exports
 pub use catalog::TranslationCatalog;
+#[cfg(feature = "number")]
+pub use format::LocalizedArgument;
+pub use format::LocalizedDisplay;
+#[cfg(feature = "list")]
+pub use format::LocalizedList;
+#[cfg(feature = "number")]
+pub use format::number::{Currency, format_currency, format_number, format_percent};
+#[cfg(feature = "number")]
 pub use format::unit::{Feet, Kilometer, Length, LengthUnit, Meter, Mile};
-pub use format::{LocalizedDisplay, LocalizedList};
 pub use locale::{Locale, locales};
-pub use plural::{PluralCategory, select_plural};
+pub use plural::{PluralCategory, select_plural, valid_categories};
+
+/// Returns the Unicode layout direction for a locale.
+#[must_use]
+pub fn layout_direction(locale: &Locale) -> waterui_core::layout::LayoutDirection {
+    if icu_locale::LocaleDirectionality::new_extended().is_right_to_left(locale.id()) {
+        waterui_core::layout::LayoutDirection::RightToLeft
+    } else {
+        waterui_core::layout::LayoutDirection::LeftToRight
+    }
+}
+
+/// Returns a reactive layout direction derived from the effective locale.
+#[must_use]
+pub fn layout_direction_computed(
+    env: &waterui_core::Environment,
+) -> nami::Computed<waterui_core::layout::LayoutDirection> {
+    use nami::SignalExt;
+
+    locale_binding(env)
+        .map(|locale| layout_direction(&locale))
+        .computed()
+}
+
+/// Starts delivering system locale changes to locale-aware views.
+///
+/// A backend calls this once, after installing the `LocalExecutor` of the loop
+/// it owns. Reading the locale works without it; only *changing* with the
+/// system needs a running loop to deliver the change.
+pub fn start_system_locale_listener() {
+    system::start_system_listener();
+}
+
+#[doc(hidden)]
+/// Clears the current thread's cached runtime locale binding before an executor shuts down.
+pub fn shutdown_current_thread_runtime_locale_state() {
+    system::shutdown_current_thread_runtime_locale_state();
+}
 
 /// Returns a reactive binding for the effective locale in the given environment.
 #[must_use]
 pub fn locale_binding(env: &waterui_core::Environment) -> nami::Binding<Locale> {
+    if let Some(locale) = env.get::<nami::Binding<Locale>>() {
+        return locale.clone();
+    }
+
     if let Some(context) = env.get::<regional::RegionalContext>().cloned() {
         return nami::Binding::custom(nami::Container::new(context.locale().clone()));
     }
@@ -57,6 +128,59 @@ mod tests {
     use super::*;
     use format::date::{DateStyle, SimpleDate, format_date};
     use format::unit::{Gram, Kilogram, Mass};
+    use waterui_core::Environment;
+
+    // =========================================================
+    // Locale Binding Tests
+    // =========================================================
+
+    #[test]
+    fn locale_binding_uses_static_locale_from_environment() {
+        let mut env = Environment::new();
+        env.insert(locales::EN_GB);
+
+        let locale = locale_binding(&env).get();
+        assert_eq!(locale.language.as_str(), "en");
+        assert_eq!(
+            locale
+                .region
+                .as_ref()
+                .map(icu_locale::subtags::Region::as_str),
+            Some("GB")
+        );
+    }
+
+    #[test]
+    fn locale_binding_prefers_an_explicit_binding_over_a_static_locale() {
+        let binding = nami::Binding::container(locales::ZH_CN);
+        let mut env = Environment::new();
+        env.insert(locales::EN_GB);
+        env.insert(binding.clone());
+
+        let resolved = locale_binding(&env);
+        assert_eq!(resolved.get().language.as_str(), "zh");
+
+        // The returned binding is the very same one, so later writes are visible.
+        binding.set(locales::EN_US);
+        assert_eq!(resolved.get().language.as_str(), "en");
+    }
+
+    #[test]
+    fn locale_direction_uses_unicode_script_data() {
+        assert_eq!(
+            layout_direction(&locales::EN),
+            waterui_core::layout::LayoutDirection::LeftToRight
+        );
+        assert_eq!(
+            layout_direction(&locales::AR),
+            waterui_core::layout::LayoutDirection::RightToLeft
+        );
+        let hebrew = "he".parse().expect("Hebrew locale must parse");
+        assert_eq!(
+            layout_direction(&hebrew),
+            waterui_core::layout::LayoutDirection::RightToLeft
+        );
+    }
 
     // =========================================================
     // Plural Rules Tests

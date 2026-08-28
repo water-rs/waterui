@@ -1,0 +1,40 @@
+[package]
+name = "waterui-visualizer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Real-time audio visualization components for WaterUI"
+keywords = ["audio", "visualizer", "waveform", "wgpu"]
+categories = ["multimedia", "gui", "visualization"]
+
+[lints]
+workspace = true
+
+[dependencies]
+waterui-core.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+shaderloom.workspace = true
+waterkit-audio = { workspace = true, features = ["recording"] }
+wgpu.workspace = true
+bytemuck = { version = "1.25", features = ["derive"] }
+async-channel.workspace = true
+blocking.workspace = true
+encase.workspace = true
+executor-core.workspace = true
+num-traits = { version = "0.2", default-features = false }
+futures.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+shaderloom = { workspace = true, features = ["build"] }
+
+[dev-dependencies]
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+
+# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+[package.metadata.cargo-machete]
+ignored = ["shaderloom"]

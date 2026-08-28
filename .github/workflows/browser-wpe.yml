@@ -1,0 +1,104 @@
+name: WPE Real Engine
+
+# The web view bridge has failed three times in ways no Rust-side test could
+# see — replies crossing as base64, a frozen `waterui` object, integers past
+# 2^53 losing their low bits — so this workflow runs the browser-wpe tests
+# against a genuine WPE WebKit engine.
+#
+# It is deliberately its own workflow rather than a leg of `test.yml`. There is
+# no prebuilt WPE WebKit for Linux: the engine is compiled from the pinned
+# source tarball, which is a multi-hour job on a hosted runner, so it cannot run
+# on every push. Instead the packaged artifact is cached and rebuilt only when
+# the pinned version or the bridge changes, and the paths below are the ones
+# whose changes those tests actually guard. The schedule exists to keep the
+# cache from being evicted for inactivity, which would put the next run back on
+# the multi-hour path.
+
+permissions:
+  contents: read
+
+# `ubuntu-22.04` keeps the runtime at its declared glibc 2.35 floor. The job
+# installs and explicitly selects GCC 12 because WebKit 2.52.5 requires 12.2;
+# using the runner's default GCC 11 would fail before configuration completes.
+#
+# Until the repaired build is proven, dispatch is the only trigger. The `push` and
+# `pull_request` filters would paint a red X on every change to the webview
+# paths — guaranteed, explained elsewhere, and quickly learned-to-ignore — and
+# the weekly schedule existed to keep the runtime cache from being evicted,
+# which is pointless while no build ever populates it. Restore both in the same
+# change that makes the build succeed.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: browser-wpe-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # rust-cache is the only cache layer (see the note in ci.yml).
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  real-engine:
+    name: Real engine tests
+    # 22.04 is what the release artifact is built on: `build-runtime.sh`
+    # refuses to package against a glibc newer than the floor in `source.toml`,
+    # so this is the same provisioning the shipped runtime gets.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      CC: gcc-12
+      CXX: g++-12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      # The smoke run at the end of `build-runtime.sh` renders the staged
+      # runtime through wgpu, so this leg needs the software Vulkan stack too.
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+          gcc-version: "12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: browser-wpe
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+
+      # The runtime is bundled but not self-contained: it launches its web
+      # processes through the host's bubblewrap sandbox, which is why
+      # `WpeRuntimePaths::validate` insists on both tools. `build-runtime.sh`
+      # installs them itself, so this step is what a cache hit needs.
+      - name: Install the runtime's host requirements
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap unzip xdg-dbus-proxy
+
+      # Keyed on everything that decides what the artifact contains: the pinned
+      # WPE version and packaging in `runtime/`, and the bridge in `native/`.
+      - name: Restore the packaged WPE runtime
+        id: runtime
+        uses: actions/cache@v4
+        with:
+          path: runtime-artifacts
+          key: wpe-runtime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('components/platform/browser-wpe/runtime/**', 'components/platform/browser-wpe/native/**') }}
+
+      - name: Build the WPE runtime from source
+        if: steps.runtime.outputs.cache-hit != 'true'
+        run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts
+
+      # Unpacking the artifact rather than reaching into the build tree is the
+      # point: this is the same archive `water package` downloads and stages, so
+      # the tests run against what an application would actually ship with.
+      - name: Stage the packaged runtime
+        shell: bash
+        run: |
+          archive="$(echo runtime-artifacts/waterui-wpe-*.zip)"
+          test -f "$archive"
+          unzip -q "$archive" -d wpe-runtime
+          echo "WATERUI_WPE_RUNTIME=$GITHUB_WORKSPACE/wpe-runtime" >> "$GITHUB_ENV"
+
+      - name: Run the real-engine tests
+        run: cargo nextest run -p waterui-browser-wpe --features real-engine

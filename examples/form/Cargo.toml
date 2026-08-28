@@ -6,7 +6,6 @@ authors = ["Lexo Liu"]
 description = "Form example for WaterUI framework"
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
 keywords = ["ui", "framework", "example", "form"]
 categories = ["gui"]
 publish = false

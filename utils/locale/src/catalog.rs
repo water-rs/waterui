@@ -1,18 +1,19 @@
 //! Runtime translation catalog loaded from app-provided i18n tables.
 
-use std::collections::BTreeMap;
-use std::string::{String, ToString};
+use std::collections::HashMap;
+use std::string::String;
 
+use icu_locale::LanguageIdentifier;
 use waterui_core::plugin::Plugin;
 use waterui_str::Str;
 
-use crate::locale::{Locale, get_fallback_chain};
+use crate::locale::{Locale, find_in_fallback_chain, locales};
 use crate::parser::{TranslationFile, TranslationValue};
 
 /// Runtime translation catalog installed into the environment.
 #[derive(Debug, Clone, Default)]
 pub struct TranslationCatalog {
-    locales: BTreeMap<String, TranslationFile>,
+    locales: HashMap<LanguageIdentifier, TranslationFile>,
 }
 
 impl TranslationCatalog {
@@ -33,30 +34,34 @@ impl TranslationCatalog {
         content: &str,
     ) -> Result<Self, toml::de::Error> {
         let file = TranslationFile::parse(content)?;
-        self.locales.insert(locale.into(), file);
+        let locale = locale.into();
+        self.insert_locale(&locale, file);
         Ok(self)
     }
 
     /// Inserts a parsed translation file for a locale.
     #[must_use]
     pub fn insert_file(mut self, locale: impl Into<String>, file: TranslationFile) -> Self {
-        self.locales.insert(locale.into(), file);
+        let locale = locale.into();
+        self.insert_locale(&locale, file);
         self
     }
 
     /// Resolves a simple translation key for a locale.
     #[must_use]
     pub fn lookup_text(&self, locale: &Locale, key: &str) -> Option<Str> {
-        for fallback in get_fallback_chain(locale) {
-            if let Some(text) = self.lookup_exact(fallback.id().to_string().as_str(), key) {
-                return Some(text);
-            }
-        }
-
-        self.lookup_exact("en", key)
+        find_in_fallback_chain(locale, |fallback| self.lookup_exact(fallback.id(), key))
+            .or_else(|| self.lookup_exact(locales::EN.id(), key))
     }
 
-    fn lookup_exact(&self, locale_key: &str, key: &str) -> Option<Str> {
+    fn insert_locale(&mut self, locale: &str, file: TranslationFile) {
+        let locale = locale.parse::<Locale>().unwrap_or_else(|error| {
+            panic!("TranslationCatalog locale '{locale}' is invalid: {error}")
+        });
+        self.locales.insert(locale.id().clone(), file);
+    }
+
+    fn lookup_exact(&self, locale_key: &LanguageIdentifier, key: &str) -> Option<Str> {
         let file = self.locales.get(locale_key)?;
         let value = file.get(key)?;
         match value {

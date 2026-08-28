@@ -23,14 +23,13 @@ For most applications, use the main `waterui` crate which re-exports all core fu
 
 ## Quick Start
 
-```rust
-use waterui_core::{View, Environment, binding, Binding};
+```rust,ignore
+use waterui::prelude::*;
 
 // Define a custom view
-fn counter(count: Binding<i32>) -> impl View {
-    Dynamic::watch(count, |value| {
-        format!("Count: {}", value)
-    })
+fn counter(count: &Binding<i32>) -> impl View {
+    let count = count.clone();
+    text!("Count: {count}")
 }
 
 // Create an application environment
@@ -41,7 +40,7 @@ fn init() -> Environment {
 // Define the root view
 fn main() -> impl View {
     let count = binding(0);
-    counter(count)
+    counter(&count)
 }
 ```
 
@@ -96,7 +95,7 @@ struct AppConfig {
 
 let env = Environment::new()
     .with(AppConfig {
-        api_url: "https://api.example.com".to_string(),
+        api_url: "https://waterui.dev".to_string(),
     });
 
 // Later, in a view:
@@ -121,7 +120,7 @@ The environment supports:
 ```rust
 use waterui_core::AnyView;
 
-let views: Vec<AnyView> = vec![
+let views = [
     AnyView::new("Hello"),
     AnyView::new(42.to_string()),
     AnyView::new(()),
@@ -134,16 +133,14 @@ Type erasure is essential for dynamic UIs where the concrete view type isn't kno
 
 WaterUI integrates the `nami` reactive system for fine-grained updates:
 
-```rust
-use waterui_core::{binding, Binding, Dynamic};
+```rust,ignore
+use waterui::prelude::*;
 
 // Create reactive state
 let count: Binding<i32> = binding(0);
 
-// Create a view that watches the state
-let counter_view = Dynamic::watch(count.clone(), |value| {
-    format!("Count: {}", value)
-});
+// Signal-aware inputs update the exact text leaf.
+let counter_view = text!("Count: {count}");
 
 // Updating the binding automatically updates the view
 count.set(5);
@@ -155,7 +152,7 @@ Key reactive types (re-exported from `nami`):
 - `Signal<T>` - Read-only reactive values
 - `SignalExt` - Extension methods for all reactive types
 
-The `Dynamic` component bridges reactive state to the view system. When a watched value changes, the view automatically re-renders with the new data.
+Signal-aware component inputs bridge reactive state to the view system without rebuilding view structure. `Dynamic::watch` is reserved for genuine semantic structure changes: it replaces the watched subtree and therefore discards state owned inside that subtree.
 
 ### Native Views
 
@@ -177,15 +174,15 @@ The `raw_view!` macro simplifies creating native views:
 
 ```rust
 raw_view!(Spacer, StretchAxis::MainAxis);
-raw_view!(Divider, StretchAxis::CrossAxis);
+raw_view!(Color, StretchAxis::Both);
 ```
 
 ## Examples
 
 ### Custom Component with State
 
-```rust
-use waterui_core::{View, Environment, binding, Binding, Dynamic};
+```rust,ignore
+use waterui::prelude::*;
 
 struct Toggle {
     label: String,
@@ -204,9 +201,11 @@ impl Toggle {
 
 impl View for Toggle {
     fn body(self, _env: &Environment) -> impl View {
-        Dynamic::watch(self.is_on, move |value| {
-            format!("{}: {}", self.label, if value { "ON" } else { "OFF" })
-        })
+        let status = self
+            .is_on
+            .map(|value| if value { "ON" } else { "OFF" })
+            .computed();
+        hstack((text(self.label), text!(": {status}")))
     }
 }
 ```
@@ -236,14 +235,30 @@ fn init() -> Environment {
 
 ### Reactive Computed Values
 
-```rust
-use waterui_core::{binding, Binding, Computed, Dynamic, SignalExt};
+```rust,ignore
+use waterui::prelude::*;
 
 let count = binding(0);
 let doubled: Computed<i32> = count.map(|n| n * 2);
 
-let view = Dynamic::watch(doubled, |value| {
-    format!("Doubled: {}", value)
+let view = text!("Doubled: {doubled}");
+```
+
+### Explicit Structural Replacement
+
+Use `Dynamic::watch` only when a signal selects a different semantic subtree,
+not for changing text, color, size, enabled state, or collection membership:
+
+```rust,ignore
+use waterui::prelude::*;
+
+let details_visible = binding(false);
+let details = Dynamic::watch(details_visible, |visible| {
+    if visible {
+        AnyView::new(details_panel())
+    } else {
+        AnyView::new(summary_panel())
+    }
 });
 ```
 
@@ -321,8 +336,8 @@ AnalyticsPlugin {
 ### Animation
 - `Animation` - Declarative animation specifications
 - `AnimationExt` - Extension trait for reactive values
-- `.animated()` - Apply default animation
-- `.with_animation()` - Apply specific animation
+- `.animated()` - Apply the system-default animation
+- `.with(animation)` - Apply a specific animation (from `SignalExt`)
 
 ## Features
 

@@ -2,27 +2,60 @@
 
 use core::str::FromStr;
 use std::cell::RefCell;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::mem::ManuallyDrop;
 
 use nami::{Binding, Container};
 
-use crate::locale::{Locale, locales};
+use crate::locale::Locale;
 use crate::regional::{self, ListenerHandle};
 
 thread_local! {
+    // The initializer is already a `const` block. Clippy agrees everywhere but
+    // the Android targets, where it reports it as one that "can be made const";
+    // the attribute rides on the generated static because the lint is emitted
+    // from inside the macro's expansion and an attribute on the invocation
+    // never reaches it.
+    #[cfg_attr(
+        target_os = "android",
+        allow(
+            clippy::missing_const_for_thread_local,
+            reason = "false positive on this target; the initializer is already const"
+        )
+    )]
     static RUNTIME_LOCALE_STATE: RefCell<Option<RuntimeLocaleState>> = const { RefCell::new(None) };
 }
 
 struct RuntimeLocaleState {
     binding: Binding<Locale>,
-    listener: Option<ListenerHandle>,
+    listener: Option<ManuallyDrop<ListenerHandle>>,
 }
 
+impl RuntimeLocaleState {
+    const fn has_listener(&self) -> bool {
+        self.listener.is_some()
+    }
+
+    const fn set_listener(&mut self, listener: ListenerHandle) {
+        self.listener = Some(ManuallyDrop::new(listener));
+    }
+
+    fn unregister_listener(&mut self) {
+        if let Some(listener) = self.listener.take() {
+            ManuallyDrop::into_inner(listener).unregister();
+        }
+    }
+}
+
+/// The binding every locale-aware view reads.
+///
+/// Reading the system locale is not the same as subscribing to changes in it:
+/// this hands back the current value and needs nothing but the calling thread,
+/// so it is safe before an event loop exists. Delivering later changes does
+/// need one, and is started separately by [`start_system_listener`].
 pub fn runtime_locale_binding() -> Binding<Locale> {
     RUNTIME_LOCALE_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
         if let Some(existing) = slot.as_mut() {
-            ensure_listener_registered(existing);
             return existing.binding.clone();
         }
 
@@ -32,11 +65,10 @@ pub fn runtime_locale_binding() -> Binding<Locale> {
         regional::start_auto_refresh_default();
 
         let initial = locale_from_tag(regional::current_settings().locale_tag());
-        let mut state = RuntimeLocaleState {
+        let state = RuntimeLocaleState {
             binding: Binding::custom(Container::new(initial)),
             listener: None,
         };
-        ensure_listener_registered(&mut state);
 
         let binding = state.binding.clone();
         *slot = Some(state);
@@ -45,34 +77,66 @@ pub fn runtime_locale_binding() -> Binding<Locale> {
     })
 }
 
+/// Starts delivering system locale changes into the locale binding.
+///
+/// Called by whoever owns the main loop, once it has installed that loop's
+/// `LocalExecutor` — the listener hands changes to the binding through a
+/// mailbox, and a mailbox needs somewhere to run its pump. Calling it before an
+/// executor exists panics with "Local executor not set"; calling it twice does
+/// nothing the second time.
+pub fn start_system_listener() {
+    RUNTIME_LOCALE_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let state = slot.get_or_insert_with(|| {
+            #[cfg(not(target_os = "macos"))]
+            regional::start_auto_refresh_default();
+
+            let initial = locale_from_tag(regional::current_settings().locale_tag());
+            RuntimeLocaleState {
+                binding: Binding::custom(Container::new(initial)),
+                listener: None,
+            }
+        });
+        ensure_listener_registered(state);
+    });
+}
+
 fn locale_from_tag(tag: &str) -> Locale {
-    Locale::from_str(tag).unwrap_or(locales::EN_US)
+    Locale::from_str(tag)
+        .unwrap_or_else(|error| panic!("runtime locale tag '{tag}' is invalid: {error}"))
 }
 
 fn ensure_listener_registered(state: &mut RuntimeLocaleState) {
-    if state.listener.is_some() {
+    if state.has_listener() {
         return;
     }
 
     let binding = state.binding.clone();
-    let listener = catch_unwind(AssertUnwindSafe(move || {
-        let mailbox = binding.mailbox();
-        regional::register_listener(move |context| {
-            let locale = locale_from_tag(context.locale_tag());
-            mailbox.handle(move |binding| {
-                binding.set(locale);
-            });
-        })
-    }))
-    .ok();
+    let mailbox = binding.mailbox();
+    let listener = regional::register_listener(move |context| {
+        let locale = locale_from_tag(context.locale_tag());
+        mailbox.handle(move |binding| {
+            binding.set(locale);
+        });
+    });
+    state.set_listener(listener);
+}
 
-    state.listener = listener;
+fn reset_runtime_locale_state() {
+    RUNTIME_LOCALE_STATE.with(|slot| {
+        if let Some(mut state) = slot.borrow_mut().take() {
+            state.unregister_listener();
+        }
+    });
 }
 
 #[cfg(test)]
 /// Resets the per-thread runtime locale cache so tests can start from a clean state.
 pub fn reset_runtime_locale_state_for_tests() {
-    RUNTIME_LOCALE_STATE.with(|slot| {
-        let _ = slot.borrow_mut().take();
-    });
+    reset_runtime_locale_state();
+}
+
+/// Clears the current thread's runtime locale cache during controlled executor shutdown.
+pub fn shutdown_current_thread_runtime_locale_state() {
+    reset_runtime_locale_state();
 }

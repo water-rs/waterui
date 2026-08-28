@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 
-use crate::shell::{self, display_output};
+use crate::shell::Shell;
 use crate::toolchain_checks;
 use crate::{header, success};
 use waterui_cli::{
@@ -109,7 +109,7 @@ pub struct Args {
     path: PathBuf,
 
     /// Target architectures for Android (comma-separated).
-    /// Examples: --arch arm64, --arch `arm64,x86_64`
+    /// Examples: --arch arm64, --arch `arm64,x86-64`
     /// Required when packaging Android backend.
     #[arg(long, value_enum, value_delimiter = ',')]
     arch: Vec<AndroidArch>,
@@ -122,21 +122,22 @@ struct PackagingContext {
 }
 
 /// Run the package command.
-pub async fn run(args: Args) -> Result<()> {
-    let context = prepare_packaging_context(&args).await?;
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    let context = prepare_packaging_context(shell, &args).await?;
     print_packaging_header(
+        shell,
         &context.project,
         args.platform,
         context.backend,
         args.release,
         args.distribution,
     );
-    check_packaging_toolchain(args.platform, context.backend, &args.arch).await?;
-    build_packaging_artifacts(&args, &context).await?;
-    package_artifact(&args, &context).await
+    check_packaging_toolchain(shell, args.platform, context.backend, &args.arch).await?;
+    build_packaging_artifacts(shell, &args, &context).await?;
+    package_artifact(shell, &args, &context).await
 }
 
-async fn prepare_packaging_context(args: &Args) -> Result<PackagingContext> {
+async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<PackagingContext> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let project = Project::open(&project_path).await?;
     let backend = resolve_backend(args.platform, args.backend)?;
@@ -144,12 +145,18 @@ async fn prepare_packaging_context(args: &Args) -> Result<PackagingContext> {
     validate_arch_args(backend, &args.arch)?;
     validate_desktop_backend_platform_on_host(args.platform, backend)?;
     ensure_packaging_backend_ready(&project, backend)?;
-    let project = ensure_packaging_backend_generated(&project_path, project, backend).await?;
+    let project =
+        ensure_packaging_backend_generated(shell, &project_path, project, backend).await?;
+
+    let mut build_options = BuildOptions::packaging(args.release);
+    if let Some(sccache_path) = super::detect_sccache_path(shell).await {
+        build_options = build_options.with_sccache(sccache_path);
+    }
 
     Ok(PackagingContext {
         project,
         backend,
-        build_options: BuildOptions::new(args.release),
+        build_options,
     })
 }
 
@@ -160,34 +167,32 @@ fn ensure_packaging_backend_ready(project: &Project, backend: TargetBackend) -> 
 
     match backend {
         TargetBackend::Apple if project.apple_backend().is_none() => {
-            bail!("Apple backend is not configured. Run `water backend add apple`.")
+            bail!("Apple backend is not configured. Run `water backend add apple`.");
         }
         TargetBackend::Android if project.android_backend().is_none() => {
-            bail!("Android backend is not configured. Run `water backend add android`.")
+            bail!("Android backend is not configured. Run `water backend add android`.");
         }
         TargetBackend::Gtk4 if project.gtk4_backend().is_none() => {
-            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.")
+            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.");
         }
         TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
-            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
+            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.");
         }
         _ => Ok(()),
     }
 }
 
 async fn ensure_packaging_backend_generated(
+    shell: &Shell,
     project_path: &PathBuf,
     project: Project,
     backend: TargetBackend,
 ) -> Result<Project> {
     match backend {
         TargetBackend::Gtk4 if project.is_playground() => {
-            let needs_reinit = project.gtk4_backend().is_none()
-                || !project
-                    .backend_path::<Gtk4Backend>()
-                    .join("Cargo.toml")
-                    .exists();
+            let needs_reinit = Gtk4Backend::requires_regeneration(&project).await?;
             ensure_packaging_generated_backend::<Gtk4Backend>(
+                shell,
                 project_path,
                 project,
                 needs_reinit,
@@ -197,9 +202,9 @@ async fn ensure_packaging_backend_generated(
             .await
         }
         TargetBackend::Hydrolysis if project.is_playground() => {
-            let needs_reinit = project.hydrolysis_backend().is_none()
-                || HydrolysisBackend::requires_regeneration(&project)?;
+            let needs_reinit = HydrolysisBackend::requires_regeneration(&project).await?;
             ensure_packaging_generated_backend::<HydrolysisBackend>(
+                shell,
                 project_path,
                 project,
                 needs_reinit,
@@ -213,6 +218,7 @@ async fn ensure_packaging_backend_generated(
 }
 
 async fn ensure_packaging_generated_backend<T>(
+    shell: &Shell,
     project_path: &PathBuf,
     project: Project,
     needs_reinit: bool,
@@ -226,17 +232,18 @@ where
         return Ok(project);
     }
 
-    let spinner = shell::spinner(spinner_message);
+    let spinner = shell.spinner(spinner_message);
     reinit_backend::<T>(&project).await?;
     let project = Project::open(project_path).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("{success_message}");
+    success!(shell, "{success_message}");
     Ok(project)
 }
 
 fn print_packaging_header(
+    shell: &Shell,
     project: &Project,
     platform: TargetPlatform,
     backend: TargetBackend,
@@ -246,6 +253,7 @@ fn print_packaging_header(
     let mode = if release { "release" } else { "debug" };
     let dist = if distribution { " (distribution)" } else { "" };
     header!(
+        shell,
         "Packaging {} for {} via {} ({}){}",
         project.crate_name(),
         platform_name(platform),
@@ -256,23 +264,29 @@ fn print_packaging_header(
 }
 
 async fn check_packaging_toolchain(
+    shell: &Shell,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
 ) -> Result<()> {
-    let spinner = shell::spinner("Checking toolchain...");
+    let spinner = shell.spinner("Checking toolchain...");
     check_toolchain_for_backend(platform, backend, arch).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Toolchain ready");
+    success!(shell, "Toolchain ready");
     Ok(())
 }
 
-async fn build_packaging_artifacts(args: &Args, context: &PackagingContext) -> Result<()> {
+async fn build_packaging_artifacts(
+    shell: &Shell,
+    args: &Args,
+    context: &PackagingContext,
+) -> Result<()> {
     match context.backend {
         TargetBackend::Android => {
             build_android_packaging_artifacts(
+                shell,
                 &context.project,
                 &args.arch,
                 context.build_options.clone(),
@@ -281,6 +295,7 @@ async fn build_packaging_artifacts(args: &Args, context: &PackagingContext) -> R
         }
         TargetBackend::Apple => {
             build_apple_packaging_artifacts(
+                shell,
                 &context.project,
                 args.platform,
                 context.build_options.clone(),
@@ -288,10 +303,12 @@ async fn build_packaging_artifacts(args: &Args, context: &PackagingContext) -> R
             .await
         }
         TargetBackend::Gtk4 => {
-            build_gtk4_packaging_artifacts(&context.project, context.build_options.clone()).await
+            build_gtk4_packaging_artifacts(shell, &context.project, context.build_options.clone())
+                .await
         }
         TargetBackend::Hydrolysis => {
             build_hydrolysis_packaging_artifacts(
+                shell,
                 &context.project,
                 args.platform,
                 context.build_options.clone(),
@@ -302,6 +319,7 @@ async fn build_packaging_artifacts(args: &Args, context: &PackagingContext) -> R
 }
 
 async fn build_android_packaging_artifacts(
+    shell: &Shell,
     project: &Project,
     arch: &[AndroidArch],
     build_options: BuildOptions,
@@ -309,49 +327,57 @@ async fn build_android_packaging_artifacts(
     AndroidPlatform::clean_jni_libs(project).await?;
     for arch in arch {
         let abi = arch.to_abi();
-        let spinner = shell::spinner(format!("Building Rust library ({})...", abi.as_str()));
-        display_output(AndroidPlatform::new(abi).build(project, build_options.clone())).await?;
+        let spinner = shell.spinner(format!("Building Rust library ({})...", abi.as_str()));
+        shell
+            .display_output(AndroidPlatform::new(abi).build(project, build_options.clone()))
+            .await?;
         if let Some(pb) = spinner {
             pb.finish_and_clear();
         }
-        success!("Built for {}", abi.as_str());
+        success!(shell, "Built for {}", abi.as_str());
     }
     Ok(())
 }
 
 async fn build_apple_packaging_artifacts(
+    shell: &Shell,
     project: &Project,
     platform: TargetPlatform,
     build_options: BuildOptions,
 ) -> Result<()> {
-    let spinner = shell::spinner("Building Rust library...");
-    display_output(build_rust_lib(
-        project,
-        lib_platform(platform),
-        build_options,
-    ))
-    .await?;
+    let spinner = shell.spinner("Building Rust library...");
+    shell
+        .display_output(build_rust_lib(
+            project,
+            lib_platform(platform),
+            build_options,
+        ))
+        .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Built Rust library");
+    success!(shell, "Built Rust library");
     Ok(())
 }
 
 async fn build_gtk4_packaging_artifacts(
+    shell: &Shell,
     project: &Project,
     build_options: BuildOptions,
 ) -> Result<()> {
-    let spinner = shell::spinner("Building GTK4 app...");
-    display_output(build_gtk4(project, build_options)).await?;
+    let spinner = shell.spinner("Building GTK4 app...");
+    shell
+        .display_output(build_gtk4(project, build_options))
+        .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Built GTK4 app");
+    success!(shell, "Built GTK4 app");
     Ok(())
 }
 
 async fn build_hydrolysis_packaging_artifacts(
+    shell: &Shell,
     project: &Project,
     platform: TargetPlatform,
     build_options: BuildOptions,
@@ -360,32 +386,35 @@ async fn build_hydrolysis_packaging_artifacts(
         return Ok(());
     }
 
-    let spinner = shell::spinner("Building hydrolysis app...");
-    display_output(build_hydrolysis(
-        project,
-        hydrolysis_platform(platform),
-        build_options,
-    ))
-    .await?;
+    let spinner = shell.spinner("Building hydrolysis app...");
+    shell
+        .display_output(build_hydrolysis(
+            project,
+            hydrolysis_platform(platform),
+            build_options,
+        ))
+        .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Built hydrolysis app");
+    success!(shell, "Built hydrolysis app");
     Ok(())
 }
 
-async fn package_artifact(args: &Args, context: &PackagingContext) -> Result<()> {
-    let spinner = shell::spinner("Packaging application...");
-    let artifact = display_output(package_artifact_inner(args, context)).await?;
+async fn package_artifact(shell: &Shell, args: &Args, context: &PackagingContext) -> Result<()> {
+    let spinner = shell.spinner("Packaging application...");
+    let artifact = shell
+        .display_output(package_artifact_inner(args, context))
+        .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Packaged at {}", artifact.path().display());
+    success!(shell, "Packaged at {}", artifact.path().display());
     Ok(())
 }
 
 async fn package_artifact_inner(args: &Args, context: &PackagingContext) -> Result<Artifact> {
-    let package_options = PackageOptions::new(args.distribution, !args.release);
+    let package_options = PackageOptions::packaging(args.distribution, !args.release);
     match context.backend {
         TargetBackend::Android => {
             let abis: Vec<AndroidAbi> = args.arch.iter().map(|arch| arch.to_abi()).collect();
@@ -455,7 +484,7 @@ fn validate_arch_args(backend: TargetBackend, arch: &[AndroidArch]) -> Result<()
             "Android backend requires --arch.\n\
              Examples:\n  \
              water package --platform android --backend android --arch arm64\n  \
-             water package --platform android --backend android --arch arm64,x86_64"
+             water package --platform android --backend android --arch arm64,x86-64"
         );
     }
 
@@ -481,7 +510,7 @@ async fn check_toolchain_for_backend(
                 | TargetPlatform::Linux
                 | TargetPlatform::Windows
                 | TargetPlatform::Web => {
-                    bail!("Internal error: Apple backend is not supported on {platform:?}")
+                    bail!("Internal error: Apple backend is not supported on {platform:?}");
                 }
             };
             toolchain_checks::check_apple(sdk).await?;

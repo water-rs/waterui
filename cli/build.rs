@@ -12,14 +12,18 @@ use toml::Value;
 
 const DEV_BRANCH_BUILD_KIND: &str = "dev-branch";
 const RELEASE_BUILD_KIND: &str = "release";
-const ANDROID_SETTINGS_GRADLE_RELATIVE_PATH: &str = "backends/android/settings.gradle.kts";
 
 struct ScaffoldVersions {
     waterui: String,
+    waterui_core: String,
     waterui_ffi: String,
     hydrolysis: String,
+    hydrolysis_m3: String,
+    waterui_dew: String,
     waterui_gtk: String,
+    waterui_browser_cef: String,
     waterui_preview: String,
+    waterui_preview_protocol: String,
     android_kotlin: String,
 }
 
@@ -49,6 +53,11 @@ fn main() {
         RELEASE_BUILD_KIND
     };
     let scaffold_metadata = resolve_scaffold_metadata(&cli_manifest_dir, workspace_root.as_deref());
+    warn_on_stale_backend_pins(
+        &cli_manifest_dir,
+        workspace_root.as_deref(),
+        &scaffold_metadata,
+    );
 
     emit_scaffold_metadata(&cli_commit, build_kind, &scaffold_metadata);
     register_rerun_inputs(workspace_root.as_deref());
@@ -66,6 +75,10 @@ fn emit_scaffold_metadata(
         scaffold_metadata.versions.waterui
     );
     println!(
+        "cargo:rustc-env=WATERUI_CLI_WATERUI_CORE_VERSION={}",
+        scaffold_metadata.versions.waterui_core
+    );
+    println!(
         "cargo:rustc-env=WATERUI_CLI_WATERUI_FFI_VERSION={}",
         scaffold_metadata.versions.waterui_ffi
     );
@@ -74,12 +87,28 @@ fn emit_scaffold_metadata(
         scaffold_metadata.versions.hydrolysis
     );
     println!(
+        "cargo:rustc-env=WATERUI_CLI_HYDROLYSIS_M3_VERSION={}",
+        scaffold_metadata.versions.hydrolysis_m3
+    );
+    println!(
+        "cargo:rustc-env=WATERUI_CLI_WATERUI_DEW_VERSION={}",
+        scaffold_metadata.versions.waterui_dew
+    );
+    println!(
         "cargo:rustc-env=WATERUI_CLI_WATERUI_GTK_VERSION={}",
         scaffold_metadata.versions.waterui_gtk
     );
     println!(
+        "cargo:rustc-env=WATERUI_CLI_WATERUI_BROWSER_CEF_VERSION={}",
+        scaffold_metadata.versions.waterui_browser_cef
+    );
+    println!(
         "cargo:rustc-env=WATERUI_CLI_WATERUI_PREVIEW_VERSION={}",
         scaffold_metadata.versions.waterui_preview
+    );
+    println!(
+        "cargo:rustc-env=WATERUI_CLI_WATERUI_PREVIEW_PROTOCOL_VERSION={}",
+        scaffold_metadata.versions.waterui_preview_protocol
     );
     println!(
         "cargo:rustc-env=WATERUI_CLI_ANDROID_KOTLIN_VERSION={}",
@@ -103,12 +132,57 @@ fn emit_scaffold_metadata(
     );
 }
 
+/// Warn when a backend pin in `cli/Cargo.toml` has drifted from its submodule.
+///
+/// A workspace build reads the real submodule commit, so the literals in the manifest
+/// only ever reach a *published* CLI — which has no submodule to read and therefore has
+/// to carry the value. They cannot be derived away, only kept honest, and when they go
+/// stale a released CLI scaffolds projects against a backend several commits behind the
+/// one this repository builds and tests against.
+///
+/// A test asserts the pins match, but that only fires when someone runs the CLI's tests.
+/// Surfacing it as a build warning puts it in front of whoever bumped the submodule, in
+/// the same command they were already running.
+fn warn_on_stale_backend_pins(
+    cli_manifest_dir: &Path,
+    workspace_root: Option<&Path>,
+    resolved: &ScaffoldMetadata,
+) {
+    let Some(_) = workspace_root else {
+        return;
+    };
+    let cli_manifest = manifest_value(&cli_manifest_dir.join("Cargo.toml"));
+    let scaffold_metadata = &cli_manifest["package"]["metadata"]["waterui-scaffold"];
+
+    for (field, resolved_commit) in [
+        (
+            "apple-backend-commit",
+            resolved.apple_backend.commit.as_str(),
+        ),
+        (
+            "android-backend-commit",
+            resolved.android_backend.commit.as_str(),
+        ),
+    ] {
+        let pinned = manifest_scaffold_string(scaffold_metadata, field);
+        if pinned != resolved_commit {
+            println!(
+                "cargo::warning=cli/Cargo.toml `{field}` is stale: pinned {pinned}, submodule is at {resolved_commit}. A released CLI would scaffold against the pinned commit. Set `{field} = \"{resolved_commit}\"`."
+            );
+        }
+    }
+}
+
 fn register_rerun_inputs(workspace_root: Option<&Path>) {
     println!("cargo:rerun-if-changed=Cargo.toml");
     if let Some(workspace_root) = workspace_root {
         println!(
             "cargo:rerun-if-changed={}",
             workspace_root.join("Cargo.toml").display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace_root.join("core").join("Cargo.toml").display()
         );
         println!(
             "cargo:rerun-if-changed={}",
@@ -126,7 +200,28 @@ fn register_rerun_inputs(workspace_root: Option<&Path>) {
             "cargo:rerun-if-changed={}",
             workspace_root
                 .join("components")
+                .join("platform")
+                .join("browser-cef")
+                .join("Cargo.toml")
+                .display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace_root
+                .join("components")
+                .join("devtools")
                 .join("preview")
+                .join("protocol")
+                .join("Cargo.toml")
+                .display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace_root
+                .join("components")
+                .join("devtools")
+                .join("preview")
+                .join("runtime")
                 .join("Cargo.toml")
                 .display()
         );
@@ -142,8 +237,16 @@ fn register_rerun_inputs(workspace_root: Option<&Path>) {
             "cargo:rerun-if-changed={}",
             workspace_root
                 .join("backends")
-                .join("android")
-                .join("settings.gradle.kts")
+                .join("hydrolysis_m3")
+                .join("Cargo.toml")
+                .display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace_root
+                .join("backends")
+                .join("dew")
+                .join("Cargo.toml")
                 .display()
         );
         println!(
@@ -188,10 +291,15 @@ fn resolve_scaffold_metadata(
     cli_manifest_dir: &Path,
     workspace_root: Option<&Path>,
 ) -> ScaffoldMetadata {
+    let cli_manifest = manifest_value(&cli_manifest_dir.join("Cargo.toml"));
+    let scaffold_metadata = &cli_manifest["package"]["metadata"]["waterui-scaffold"];
     if let Some(workspace_root) = workspace_root {
         return ScaffoldMetadata {
             versions: ScaffoldVersions {
                 waterui: manifest_package_version(&workspace_root.join("Cargo.toml")),
+                waterui_core: manifest_package_version(
+                    &workspace_root.join("core").join("Cargo.toml"),
+                ),
                 waterui_ffi: manifest_package_version(
                     &workspace_root.join("ffi").join("Cargo.toml"),
                 ),
@@ -201,17 +309,49 @@ fn resolve_scaffold_metadata(
                         .join("gtk")
                         .join("Cargo.toml"),
                 ),
+                waterui_browser_cef: manifest_package_version(
+                    &workspace_root
+                        .join("components")
+                        .join("platform")
+                        .join("browser-cef")
+                        .join("Cargo.toml"),
+                ),
                 waterui_preview: manifest_package_version(
                     &workspace_root
                         .join("components")
+                        .join("devtools")
                         .join("preview")
+                        .join("runtime")
                         .join("Cargo.toml"),
                 ),
-                android_kotlin: workspace_android_kotlin_version(workspace_root),
+                waterui_preview_protocol: manifest_package_version(
+                    &workspace_root
+                        .join("components")
+                        .join("devtools")
+                        .join("preview")
+                        .join("protocol")
+                        .join("Cargo.toml"),
+                ),
+                android_kotlin: manifest_scaffold_string(
+                    scaffold_metadata,
+                    "android-kotlin-version",
+                ),
                 hydrolysis: manifest_package_version(
                     &workspace_root
                         .join("backends")
                         .join("hydrolysis")
+                        .join("Cargo.toml"),
+                ),
+                hydrolysis_m3: manifest_package_version(
+                    &workspace_root
+                        .join("backends")
+                        .join("hydrolysis_m3")
+                        .join("Cargo.toml"),
+                ),
+                waterui_dew: manifest_package_version(
+                    &workspace_root
+                        .join("backends")
+                        .join("dew")
                         .join("Cargo.toml"),
                 ),
             },
@@ -220,16 +360,25 @@ fn resolve_scaffold_metadata(
         };
     }
 
-    let cli_manifest = manifest_value(&cli_manifest_dir.join("Cargo.toml"));
-    let scaffold_metadata = &cli_manifest["package"]["metadata"]["waterui-scaffold"];
     ScaffoldMetadata {
         versions: ScaffoldVersions {
             waterui: manifest_scaffold_string(scaffold_metadata, "waterui-version"),
+            waterui_core: manifest_scaffold_string(scaffold_metadata, "waterui-core-version"),
             waterui_ffi: manifest_scaffold_string(scaffold_metadata, "waterui-ffi-version"),
             waterui_gtk: manifest_scaffold_string(scaffold_metadata, "waterui-gtk-version"),
+            waterui_browser_cef: manifest_scaffold_string(
+                scaffold_metadata,
+                "waterui-browser-cef-version",
+            ),
             waterui_preview: manifest_scaffold_string(scaffold_metadata, "waterui-preview-version"),
+            waterui_preview_protocol: manifest_scaffold_string(
+                scaffold_metadata,
+                "waterui-preview-protocol-version",
+            ),
             android_kotlin: manifest_scaffold_string(scaffold_metadata, "android-kotlin-version"),
             hydrolysis: manifest_scaffold_string(scaffold_metadata, "hydrolysis-version"),
+            hydrolysis_m3: manifest_scaffold_string(scaffold_metadata, "hydrolysis-m3-version"),
+            waterui_dew: manifest_scaffold_string(scaffold_metadata, "waterui-dew-version"),
         },
         apple_backend: manifest_backend_reference(scaffold_metadata, "apple-backend"),
         android_backend: manifest_backend_reference(scaffold_metadata, "android-backend"),
@@ -241,35 +390,6 @@ fn manifest_scaffold_string(scaffold_metadata: &Value, key: &str) -> String {
         .as_str()
         .unwrap_or_else(|| panic!("missing package.metadata.waterui-scaffold.{key}"))
         .to_string()
-}
-
-fn parse_android_kotlin_version_from_settings_gradle(contents: &str) -> Option<String> {
-    contents.lines().find_map(|line| {
-        let line = line.split("//").next()?.trim();
-        if !line.contains("id(\"org.jetbrains.kotlin.android\")") {
-            return None;
-        }
-        let version_marker = "version \"";
-        let version_start = line.find(version_marker)? + version_marker.len();
-        let version = line[version_start..].split('"').next()?.trim();
-        if version.is_empty() {
-            None
-        } else {
-            Some(version.to_string())
-        }
-    })
-}
-
-fn workspace_android_kotlin_version(workspace_root: &Path) -> String {
-    let settings_gradle = workspace_root.join(ANDROID_SETTINGS_GRADLE_RELATIVE_PATH);
-    let contents = fs::read_to_string(&settings_gradle)
-        .unwrap_or_else(|error| panic!("failed to read {}: {error}", settings_gradle.display()));
-    parse_android_kotlin_version_from_settings_gradle(&contents).unwrap_or_else(|| {
-        panic!(
-            "failed to parse Kotlin plugin version from {}",
-            settings_gradle.display()
-        )
-    })
 }
 
 fn workspace_backend_reference(workspace_root: &Path, submodule_path: &str) -> BackendReference {

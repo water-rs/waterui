@@ -13,7 +13,7 @@ use futures::{StreamExt, stream};
 use ignore::{DirEntry, WalkBuilder};
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::shell;
+use crate::shell::Shell;
 use crate::{header, note, success, warn};
 use waterui_cli::{
     android::platform::clean_android,
@@ -65,24 +65,25 @@ pub struct Args {
 }
 
 /// Run the clean command.
-pub async fn run(args: Args) -> Result<()> {
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     if args.global_cache {
         if args.recursive {
             bail!("`water clean --global-cache` cannot be combined with --recursive");
         }
         if args.backend != TargetBackend::All {
             warn!(
-                "Ignoring `--backend {:?}` when cleaning the global build cache",
-                args.backend
+                shell,
+                "Ignoring `--backend {:?}` when cleaning the global build cache", args.backend
             );
         }
         if args.path != Path::new(".") {
             warn!(
+                shell,
                 "Ignoring `--path {}` when cleaning the global build cache",
                 args.path.display()
             );
         }
-        return clean_global_build_cache(args.yes).await;
+        return clean_global_build_cache(shell, args.yes).await;
     }
 
     let root_path = crate::project_path::canonicalize(&args.path)?;
@@ -91,77 +92,86 @@ pub async fn run(args: Args) -> Result<()> {
         ensure_recursive_root_is_directory(&root_path)?;
         if args.backend != TargetBackend::All {
             warn!(
+                shell,
                 "Ignoring `--backend {:?}` in recursive mode; cleaning discovered cache directories only",
                 args.backend
             );
         }
-        return clean_recursive(&root_path, args.yes).await;
+        return clean_recursive(shell, &root_path, args.yes).await;
     }
 
     let project = Project::open(&root_path).await?;
 
-    header!("Cleaning build artifacts...");
+    header!(shell, "Cleaning build artifacts...");
 
     match args.backend {
         TargetBackend::All => {
-            let spinner = shell::spinner("Cleaning all build artifacts...");
+            let spinner = shell.spinner("Cleaning all build artifacts...");
             project.clean_all().await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Cleaned all build artifacts");
+            success!(shell, "Cleaned all build artifacts");
         }
         TargetBackend::Apple => {
-            let spinner = shell::spinner("Cleaning Apple build artifacts...");
+            let spinner = shell.spinner("Cleaning Apple build artifacts...");
             clean_apple(&project).await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Cleaned Apple build artifacts");
+            success!(shell, "Cleaned Apple build artifacts");
         }
         TargetBackend::Android => {
-            let spinner = shell::spinner("Cleaning Android build artifacts...");
+            let spinner = shell.spinner("Cleaning Android build artifacts...");
             clean_android(&project).await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Cleaned Android build artifacts");
+            success!(shell, "Cleaned Android build artifacts");
         }
         TargetBackend::Gtk4 => {
-            let spinner = shell::spinner("Cleaning GTK4 build artifacts...");
+            let spinner = shell.spinner("Cleaning GTK4 build artifacts...");
             clean_gtk4(&project).await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Cleaned GTK4 build artifacts");
+            success!(shell, "Cleaned GTK4 build artifacts");
         }
         TargetBackend::Hydrolysis => {
-            let spinner = shell::spinner("Cleaning hydrolysis build artifacts...");
+            let spinner = shell.spinner("Cleaning hydrolysis build artifacts...");
             clean_hydrolysis(&project).await?;
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
             }
-            success!("Cleaned hydrolysis build artifacts");
+            success!(shell, "Cleaned hydrolysis build artifacts");
         }
     }
 
     Ok(())
 }
 
-async fn clean_global_build_cache(yes: bool) -> Result<()> {
+async fn clean_global_build_cache(shell: &Shell, yes: bool) -> Result<()> {
     let cache_root = water_dir::build_cache_root().await?;
-    clean_global_build_cache_root(cache_root, yes).await
+    clean_global_build_cache_root(shell, cache_root, yes).await
 }
 
-async fn clean_global_build_cache_root(cache_root: PathBuf, yes: bool) -> Result<()> {
-    header!("Cleaning global build cache...");
+async fn clean_global_build_cache_root(
+    shell: &Shell,
+    cache_root: PathBuf,
+    yes: bool,
+) -> Result<()> {
+    header!(shell, "Cleaning global build cache...");
 
     if !path_exists(&cache_root).await {
-        note!("No global build cache found at {}", cache_root.display());
+        note!(
+            shell,
+            "No global build cache found at {}",
+            cache_root.display()
+        );
         return Ok(());
     }
 
-    ensure_recursive_confirmation_mode(yes, shell::is_interactive())?;
+    ensure_recursive_confirmation_mode(yes, shell.is_interactive())?;
     if !yes {
         let confirmed = Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt(format!(
@@ -171,13 +181,17 @@ async fn clean_global_build_cache_root(cache_root: PathBuf, yes: bool) -> Result
             .default(false)
             .interact()?;
         if !confirmed {
-            warn!("Cancelled global build cache clean");
+            warn!(shell, "Cancelled global build cache clean");
             return Ok(());
         }
     }
 
     remove_global_build_cache_root(cache_root.clone()).await?;
-    success!("Removed global build cache at {}", cache_root.display());
+    success!(
+        shell,
+        "Removed global build cache at {}",
+        cache_root.display()
+    );
     Ok(())
 }
 
@@ -189,28 +203,38 @@ async fn remove_global_build_cache_root(cache_root: PathBuf) -> Result<bool> {
     Ok(true)
 }
 
-async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
-    header!("Recursively cleaning managed build caches and target directories...");
+async fn clean_recursive(shell: &Shell, root: &Path, yes: bool) -> Result<()> {
+    header!(
+        shell,
+        "Recursively cleaning managed build caches and target directories..."
+    );
 
-    let spinner = shell::spinner("Scanning for WaterUI projects...");
-    let cache_plan = CachePlan::discover(root).await?;
+    let spinner = shell.spinner("Scanning for WaterUI projects...");
+    let cache_plan = CachePlan::discover(shell, root).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
 
     if cache_plan.project_count == 0 {
-        warn!("No valid WaterUI projects found under {}", root.display());
+        warn!(
+            shell,
+            "No valid WaterUI projects found under {}",
+            root.display()
+        );
         return Ok(());
     }
 
     if cache_plan.cache_dirs.is_empty() {
-        note!("Found projects, but no cache directories needed cleaning");
+        note!(
+            shell,
+            "Found projects, but no cache directories needed cleaning"
+        );
         return Ok(());
     }
 
     let total_dirs_to_remove = cache_plan.cache_dirs.len();
 
-    ensure_recursive_confirmation_mode(yes, shell::is_interactive())?;
+    ensure_recursive_confirmation_mode(yes, shell.is_interactive())?;
 
     if !yes {
         let confirmed = Confirm::with_theme(&ColorfulTheme::default())
@@ -222,12 +246,12 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
             .default(false)
             .interact()?;
         if !confirmed {
-            warn!("Cancelled recursive clean");
+            warn!(shell, "Cancelled recursive clean");
             return Ok(());
         }
     }
 
-    let progress = make_progress_bar(total_dirs_to_remove as u64);
+    let progress = make_progress_bar(shell, total_dirs_to_remove as u64);
 
     let mut removed_dirs = 0usize;
 
@@ -240,7 +264,7 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
     while let Some(result) = clean_results.next().await {
         if let Some(cache_dir) = result? {
             removed_dirs += 1;
-            success!("Removed {}", cache_dir.display());
+            success!(shell, "Removed {}", cache_dir.display());
         }
     }
     drop(clean_results);
@@ -250,6 +274,7 @@ async fn clean_recursive(root: &Path, yes: bool) -> Result<()> {
     }
 
     success!(
+        shell,
         "Recursive clean complete: scanned {} project(s), removed {} directory(s)",
         cache_plan.project_count,
         removed_dirs
@@ -287,10 +312,10 @@ struct CachePlan {
 }
 
 impl CachePlan {
-    async fn discover(root: &Path) -> Result<Self> {
+    async fn discover(shell: &Shell, root: &Path) -> Result<Self> {
         let project_roots = discover_projects(root).await?;
         let project_count = project_roots.len();
-        let cache_dirs = collect_existing_cache_dirs(project_roots).await?;
+        let cache_dirs = collect_existing_cache_dirs(shell, project_roots).await?;
         Ok(Self {
             project_count,
             cache_dirs,
@@ -298,14 +323,16 @@ impl CachePlan {
     }
 }
 
-async fn collect_existing_cache_dirs(project_roots: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+async fn collect_existing_cache_dirs(
+    shell: &Shell,
+    project_roots: Vec<PathBuf>,
+) -> Result<Vec<PathBuf>> {
     let mut cache_dirs = BTreeSet::new();
-    let mut discovered = stream::iter(
-        project_roots
-            .into_iter()
-            .map(|project_root| async move { discover_project_cache_dirs(project_root).await }),
-    )
-    .buffer_unordered(discovery_parallelism());
+    let mut discovered =
+        stream::iter(project_roots.into_iter().map(|project_root| async move {
+            discover_project_cache_dirs(shell, project_root).await
+        }))
+        .buffer_unordered(discovery_parallelism());
     while let Some(project_cache_dirs) = discovered.next().await.transpose()? {
         cache_dirs.extend(project_cache_dirs);
     }
@@ -320,7 +347,10 @@ async fn collect_existing_cache_dirs(project_roots: Vec<PathBuf>) -> Result<Vec<
     Ok(collapse_nested_cache_dirs(existing_cache_dirs))
 }
 
-async fn discover_project_cache_dirs(project_root: PathBuf) -> Result<BTreeSet<PathBuf>> {
+async fn discover_project_cache_dirs(
+    shell: &Shell,
+    project_root: PathBuf,
+) -> Result<BTreeSet<PathBuf>> {
     let manifest = Manifest::open(project_root.join("Water.toml"))
         .await
         .map_err(eyre::Report::from)?;
@@ -335,6 +365,7 @@ async fn discover_project_cache_dirs(project_root: PathBuf) -> Result<BTreeSet<P
                 cache_dirs.insert(target_dir);
             }
             Err(error) => warn!(
+                shell,
                 "Skipping target cache discovery for {}: {}",
                 project_root.display(),
                 error
@@ -448,8 +479,8 @@ async fn clean_cache_dir(
     Ok(Some(cache_dir))
 }
 
-fn make_progress_bar(total: u64) -> Option<ProgressBar> {
-    if !shell::is_interactive() {
+fn make_progress_bar(shell: &Shell, total: u64) -> Option<ProgressBar> {
+    if !shell.is_interactive() {
         return None;
     }
 
@@ -464,8 +495,7 @@ fn make_progress_bar(total: u64) -> Option<ProgressBar> {
 
 fn clean_parallelism() -> usize {
     std::thread::available_parallelism()
-        .map(std::num::NonZero::get)
-        .unwrap_or(4)
+        .map_or(4, std::num::NonZero::get)
         .clamp(2, 16)
 }
 

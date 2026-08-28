@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/water-rs/waterui/compare/url-v0.2.1...url-v0.3.0) - 2026-08-25
+
+### Changed
+
+- Replaced implicit URL construction with explicit fallible parsing and propagated parse errors through callers.
+
 ## [0.2.1](https://github.com/water-rs/waterui/compare/url-v0.2.0...url-v0.2.1) - 2025-12-14
 
 ### Fixed

@@ -5,15 +5,14 @@ edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
-readme.workspace = true
+readme = "README.md"
 repository.workspace = true
 description = "Headless testing helpers for WaterUI"
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-hydrolysis = { path = "../backends/hydrolysis", features = ["accessibility", "testing"] }
-waterui-canvas.workspace = true
+hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 waterui-core.workspace = true
 waterui.workspace = true
 wgpu.workspace = true
@@ -22,8 +21,16 @@ accesskit = "0.24"
 pollster.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 executor-core.workspace = true
+sysinfo.workspace = true
+waterui-preview-protocol.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+bitflags.workspace = true
+hydrolysis-m3 = { path = "../backends/hydrolysis_m3" }
+waterui-canvas.workspace = true
 
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
-ignored = ["executor-core"]
+ignored = ["bitflags", "executor-core"]

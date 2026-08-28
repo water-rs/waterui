@@ -1,0 +1,85 @@
+[package]
+name = "waterui-graphics"
+version = "0.3.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Graphic components for WaterUI"
+keywords = ["graphics", "2d", "ui", "waterui"]
+categories = ["gui"]
+
+[features]
+default = ["gpu"]
+# The `Scene2D` contract needs no rendering engine, so the two engine-backed
+# implementations of it are their own feature: a crate that only draws through
+# the contract, and lets a backend supply the scene, does not pull Vello.
+vello-scene = ["dep:vello", "dep:vello_hybrid", "dep:glifo"]
+gpu = [
+    "vello-scene",
+    "dep:keyboard-types",
+    "dep:filtrate",
+    "dep:filtrate-core",
+    "dep:futures",
+    "dep:wgpu",
+    "dep:bytemuck",
+    "dep:encase",
+    "dep:tracing",
+    "dep:image",
+    "dep:png",
+    "dep:parking_lot",
+    "dep:rayon",
+    "dep:mp4parse",
+    "dep:shaderloom",
+    "dep:naga",
+]
+
+[dependencies]
+waterui-core.workspace = true
+nami.workspace = true
+filtrate = { workspace = true, optional = true }
+filtrate-core = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+pastey.workspace = true
+wgpu = { workspace = true, optional = true }
+vello = { workspace = true, optional = true }
+vello_hybrid = { workspace = true, optional = true }
+glifo = { workspace = true, optional = true }
+kurbo.workspace = true
+keyboard-types = { workspace = true, optional = true }
+peniko.workspace = true
+bytemuck = { version = "1.25", optional = true }
+encase = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+# `avif` is `image`'s AVIF *encoder* (ravif -> rav1e), not its decoder
+# (`avif-native`). `image_decode` only decodes, and its HEIF retry hands the
+# patched container to the platform decoder, so the encoder was pure weight.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"], optional = true }
+png = { version = "0.18", optional = true }
+parking_lot = { version = "0.12", optional = true }
+rayon = { version = "1.12", optional = true }
+mp4parse = { version = "0.17", optional = true }
+shaderloom = { workspace = true, optional = true }
+num-traits = { version = "0.2", default-features = false }
+
+[build-dependencies]
+naga = { version = "30.0.0", features = ["wgsl-in"], optional = true }
+shaderloom = { workspace = true, features = ["build"], optional = true }
+
+[dev-dependencies]
+pollster.workspace = true
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+divan = "0.1"
+
+[[bench]]
+name = "filter_runtime"
+harness = false
+
+[lints]
+workspace = true
+
+# `shaderloom` and `naga` are used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+[package.metadata.cargo-machete]
+ignored = ["naga", "shaderloom"]

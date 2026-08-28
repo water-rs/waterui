@@ -1,100 +1,133 @@
 [package]
 name = "waterui-cli"
-version = "0.1.2"
+version = "0.1.4"
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-description.workspace = true
+homepage = "https://waterui.dev"
+description = "Cross-platform tooling for WaterUI applications"
 keywords.workspace = true
 categories.workspace = true
 
 [package.metadata.waterui-scaffold]
-waterui-version = "0.2.1"
-waterui-ffi-version = "0.2.1"
+waterui-version = "0.3.0"
+waterui-core-version = "0.3.0"
+waterui-ffi-version = "0.3.0"
 hydrolysis-version = "0.1.0"
+hydrolysis-m3-version = "0.1.0"
+waterui-dew-version = "0.1.0"
 waterui-gtk-version = "0.1.0"
+waterui-browser-cef-version = "0.1.0"
 waterui-preview-version = "0.1.0"
-android-kotlin-version = "2.0.21"
+waterui-preview-protocol-version = "0.1.0"
+android-kotlin-version = "2.3.21"
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
-apple-backend-commit = "f4f1b2ef6622a10bfb6575ed723dfc2489f609dd"
+apple-backend-commit = "450fee1de3154eef34f419b50ba61b6121f20189"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-commit = "d9a3eebfc693e835cee90e5500793b732eaa7850"
+android-backend-commit = "a7e9635026c56815c664c395033a5bbbb872f035"
 
 [[bin]]
 name = "water"
 path = "src/terminal/main.rs"
 
 [dependencies]
+# Windows `canonicalize` returns extended-length paths that no other tool
+# reports; `dunce` gives the plain one and is `canonicalize` elsewhere.
+dunce = "1.0"
 cargo_metadata = "0.23.1"
-image = "0.25"  # For PNG reading/writing and pixel manipulation (diff feature)
-cargo_toml = "0.22.3"
+# Icon and asset pipeline: reads a project's source icon (PNG/JPEG/WebP) and
+# writes PNG plus the Windows ICO container. `default-formats` additionally
+# pulls `image`'s AVIF *encoder* (ravif -> rav1e), which nothing here calls.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "ico"] }
+cargo_toml = "1.0.0"
 color-eyre = { version = "0.6.5", features = ["issue-url"]}
 include_dir = "0.7.4"
-skyzen = { workspace = true, default-features = false, features = ["json", "ws", "hyper"] }
 futures.workspace = true
 futures-lite = "2.6"
 async-channel.workspace = true
+async-lock = "3.4"
 reflink = "0.1.3"
 serde.workspace = true
 serde_json = "1.0"
 smol = "2.0.2"
+syn = { version = "3", features = ["full"] }
 target-lexicon = "0.13.5"
-thiserror = "2.0.18"
+thiserror = "2.0.19"
 jiff.workspace = true
-toml = "0.9.12"
-plist = "1.8"
+toml = "1.1.3"
+plist = "1.10"
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 semver = "1.0"
-which = "8.0.0"
+serialport = "4"
+which = "8.0.5"
 notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
 
 # Terminal UI dependencies
 clap = { version = "4", features = ["derive"] }
-dialoguer = "0.12"
+# Only `Confirm`, `Input` and `MultiSelect` are used; the default `editor`
+# (tempfile) and `password` (zeroize) prompts are not.
+dialoguer = { version = "0.12", default-features = false }
 indicatif = "0.18"
-anstream = "0.6"              # Auto-detected ANSI output stream
+anstream = "1.0"              # Auto-detected ANSI output stream
 anstyle = "1"                 # ANSI styling without manual escape codes
 ctrlc = "3.5"
-whoami = "1.6"
+whoami = "2.1"
 heck = "0.5"                  # Case conversion (kebab-case, snake_case, etc.)
 
 # Asset/font downloading dependencies
 dirs = "6"                    # Platform-specific directories (cache, config, etc.)
 hex = "0.4"                   # Hex encoding for hashes
-sha2 = "0.10"                 # SHA256 hashing
-zip = "7.2"                   # ZIP archive extraction
-roxmltree = "0.20"            # Android SDK repository XML parsing
+sha2 = "0.11"                 # SHA256 hashing
+sysinfo.workspace = true      # Preview support-process discovery
+# ZIP archive extraction. Every archive the CLI reads or writes — Android SDK
+# packages, browser runtimes, asset catalogs — is stored or deflated, so the
+# bzip2/lzma/zstd/xz/ppmd/AES codecs `default` also pulls are never reached.
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
+roxmltree = "0.21"            # Android SDK repository XML parsing
 fs_extra = "1.3"
-askama = "0.14"
-resvg = "0.45.1"
+askama = "0.16"
+resvg = "0.47.0"
 ttf-parser = "0.25"
 ignore = "0.4"
 remove_dir_all = "1.0"
 waterui-assets.workspace = true
 waterui-assets-planner.workspace = true
-waterui-preview-protocol = { path = "../components/preview-protocol" }
-waterui-inspector-protocol = { path = "../components/inspector-protocol" }
-tempfile = "3.26"
+waterui-preview-protocol.workspace = true
+waterui-inspector-protocol.workspace = true
+tempfile = "3.27"
 walkdir = "2.5"
 pathdiff = "0.2"
 url = "2.5"
+fs4 = "1.1.0"
+fontcull-klippa = "0.1.2"
+fontcull-write-fonts = "0.44.3"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }
-core-graphics = "0.24"
+core-graphics = "0.25"
 core-foundation = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nix = { version = "0.31", features = ["signal"] }
+# `.icns` encoding for hand-assembled app bundles. Only the macOS packaging path
+# builds one, and that path is itself `#[cfg(target_os = "macos")]`, so the
+# dependency does not belong in a Linux or Windows build of the CLI.
+icns = "0.3"
 
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
 zenwave = { workspace = true, features = ["rustls"] }
 
 [build-dependencies]
-toml = "0.9.12"
+toml = "1.1.3"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+fontcull-skrifa = "0.39.2"
 [package.metadata.cargo-machete]
-ignored = ["roxmltree", "skyzen", "waterui-inspector-protocol"]
+ignored = ["roxmltree", "waterui-inspector-protocol"]

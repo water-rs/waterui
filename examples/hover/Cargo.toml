@@ -6,7 +6,6 @@ authors = ["Lexo Liu"]
 description = "Hover and cursor example for WaterUI framework"
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
 keywords = ["ui", "framework", "example", "hover", "cursor"]
 categories = ["gui"]
 publish = false

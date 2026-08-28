@@ -10,7 +10,7 @@
 	path = kit
 	url = https://github.com/water-rs/waterkit.git
 	branch = dev
-[submodule "vendor/nami"]
-	path = vendor/nami
+[submodule "utils/nami"]
+	path = utils/nami
 	url = https://github.com/water-rs/nami.git
 	branch = dev

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/water-rs/waterui/compare/str-v0.2.1...str-v0.3.0) - 2026-08-25
+
+### Changed
+
+- Updated reactive string integration to Nami 0.11 and the WaterUI 0.3 signal contracts.
+
 ## [0.2.1](https://github.com/water-rs/waterui/compare/str-v0.2.0...str-v0.2.1) - 2025-12-13
 
 ### Added

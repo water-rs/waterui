@@ -1,8 +1,6 @@
 use core::error::Error;
-use executor_core::spawn_local;
-use nami::Binding;
-use native_executor::sleep;
-use std::time::Duration;
+#[cfg(feature = "snackbar")]
+use waterui_core::State;
 use waterui_core::View;
 use waterui_graphics::color::Color;
 use waterui_layout::{
@@ -11,17 +9,25 @@ use waterui_layout::{
 };
 use waterui_str::Str;
 use waterui_text::{
-    Text,
     font::{Body, Font},
     highlight::{DefaultHighlighter, Highlighter, Language},
     styled::{Style, StyledStr},
     text,
 };
 
-use crate::{AnimationExt, SignalExt, ViewExt};
+#[cfg(target_arch = "wasm32")]
+use executor_core::spawn_local;
+
+use crate::ViewExt;
+#[cfg(feature = "snackbar")]
+use crate::snackbar::{Snackbar, SnackbarManager};
 
 /// Copies text to the system clipboard.
-#[cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))]
+#[cfg(all(
+    not(target_os = "android"),
+    not(target_arch = "wasm32"),
+    not(target_os = "espidf")
+))]
 fn copy_to_clipboard(text: &str) {
     match arboard::Clipboard::new() {
         Ok(mut clipboard) => {
@@ -34,6 +40,10 @@ fn copy_to_clipboard(text: &str) {
         }
     }
 }
+
+/// Embedded targets have no system clipboard; copy is a no-op.
+#[cfg(target_os = "espidf")]
+fn copy_to_clipboard(_text: &str) {}
 
 /// Copies text to the Android clipboard.
 #[cfg(target_os = "android")]
@@ -100,9 +110,9 @@ impl View for Code {
             s
         });
 
-        let copied = Binding::container(false);
-
-        // Code block with dark background, left-aligned content
+        // Code block with dark background, left-aligned content. Copy
+        // feedback is presented through the window's SnackbarManager (a
+        // semantic object owned by the runtime) instead of view-local state.
         VStack::new(
             HorizontalAlignment::Leading,
             8.0,
@@ -112,23 +122,7 @@ impl View for Code {
                         .bold()
                         .foreground(Color::srgb_f32(0.85, 0.86, 0.9)),
                     spacer(),
-                    Text::computed(
-                        copied
-                            .select("Copied", "Copy")
-                            .animated()
-                            .map(StyledStr::plain),
-                    )
-                    .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
-                    .on_tap(move || {
-                        copy_to_clipboard(&content_for_copy);
-                        let copied = copied.clone();
-                        spawn_local(async move {
-                            copied.set(true);
-                            sleep(Duration::from_secs(1)).await;
-                            copied.set(false);
-                        })
-                        .detach();
-                    }),
+                    copy_button(content_for_copy),
                 )),
                 text(styled),
             ),
@@ -136,6 +130,23 @@ impl View for Code {
         .padding()
         .background(Color::srgb_f32(0.15, 0.15, 0.18))
     }
+}
+
+#[cfg(feature = "snackbar")]
+fn copy_button(content: String) -> impl View {
+    text("Copy")
+        .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
+        .on_tap(move |State(snackbar): State<SnackbarManager>| {
+            copy_to_clipboard(&content);
+            snackbar.show(Snackbar::new("Copied to clipboard"));
+        })
+}
+
+#[cfg(not(feature = "snackbar"))]
+fn copy_button(content: String) -> impl View {
+    text("Copy")
+        .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
+        .on_tap(move || copy_to_clipboard(&content))
 }
 
 /// Convenience constructor for creating a [`Code`] view inline.
