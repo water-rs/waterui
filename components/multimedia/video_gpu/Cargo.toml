@@ -48,7 +48,7 @@ uuid = { workspace = true, features = ["js"] }
 [dev-dependencies]
 hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
 pollster.workspace = true
-waterui = { path = "../../.." }
+waterui = { path = "../../..", features = ["video-gpu"] }
 waterui-testing = { path = "../../../testing" }
 
 [lints]
