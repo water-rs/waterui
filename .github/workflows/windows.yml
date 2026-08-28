@@ -54,7 +54,7 @@ jobs:
           shared-key: test-windows-latest
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
-      # Two crates cannot build here, for reasons that are not bugs:
+      # Four crates cannot be tested here, for reasons that are not bugs:
       #
       # waterui-dylib is the dynamic-link anchor — a Rust `dylib` on purpose, so
       # the preview system can share one copy of the framework across
@@ -68,11 +68,21 @@ jobs:
       # `cef-runtime` for exactly this case — so Windows keeps compile coverage
       # of the backend without provisioning the SDK.
       #
+      # The two CEF example crates inherit that problem one level down. They
+      # select `waterui-browser-cef` with `webview`/`chromium` but not
+      # `cef-runtime`, so its build script skips `native/windows_sandbox.cc`
+      # while `runtime.rs` still declares the `waterui_cef_windows_sandbox_*`
+      # externs under `cfg(windows)` — the crate compiles and then fails to
+      # link. Every pass that links a test binary therefore excludes them, the
+      # same way it excludes the backend itself; the clippy pass below keeps
+      # them, because it checks without linking and the compile coverage is
+      # worth having.
+      #
       # One full-workspace pass under default features. A workspace-wide
       # `--all-features` pass is structurally impossible — `waterui-ffi`
       # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
       # enabling `c-api` and `android-jni` together can never build.
-      - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --profile ci
+      - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude cef_webview_example --exclude chromium-example --profile ci
       # The root crate's feature-gated re-export surface. `--features all` rather
       # than `--all-features`: the latter turns on `dynamic_linking`, which pulls
       # in `waterui-dylib`, and that crate exports 77k symbols against a PE
@@ -86,7 +96,7 @@ jobs:
       # Compile the CEF backend without its binary distribution.
       - run: cargo check -p waterui-browser-cef --features compile-only
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef
+      - run: cargo test --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude cef_webview_example --exclude chromium-example
       # Windows-only code is invisible to every other leg: a `cfg(windows)` body
       # is compiled nowhere else, so a lint that fires only there reaches
       # nobody.
