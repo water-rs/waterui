@@ -100,7 +100,8 @@ Use `app.pump_for(duration)`.
 | `no method named 'map'` on a signal (outside the prelude) | `SignalExt` not in scope | `use waterui::reactive::SignalExt;` |
 | `use of undeclared crate 'tracing'` | logging goes through the re-export | `waterui::log::debug!(..)` — no extra dependency |
 | clippy `future_not_send` on an async helper | UI futures legitimately hold non-`Send` state | item-level `#[expect(clippy::future_not_send, reason = "…")]` |
-| `could not find 'chart' / 'map' / 'barcode' / 'webview' in 'waterui'` | behind a cargo feature | enable it (`features = ["map"]`) or depend on the standalone crate (`waterui-map`) |
+| `could not find 'webview' in 'waterui'` | behind a cargo feature | enable it (`features = ["webview"]`) |
+| `could not find 'chart' / 'map' / 'barcode' / 'particle' in 'waterui'` | these are crates, not modules — there is no such feature | add `waterui-chart` (etc.) to `Cargo.toml` and import `waterui_chart::…` |
 | `the trait bound 'Url: From<Str>' is not satisfied` | `Url` converts from `&'static str` only | `Url::parse(s)` (returns `Option`) — or `Url::parse_user_input(s)` for human-typed addresses |
 | `Computed<Option<View>>` rejected where a view is expected | a *signal* of `Option<View>` is not a view | `when(..)`, or keep the view and use `.visible(signal)` |
 | `text!` rejects an expression in a placeholder | placeholders are i18n slot keys | alias it: `text!("{slot}", slot = expr)` |
@@ -152,8 +153,9 @@ and place children with `PositionExt` / `.pin(..)`.
 not from unit-space path commands, which scale with the aspect ratio. Test shape code
 against a deliberately non-square rectangle.
 
-**A GPU map renders nothing.** On GPU/self-drawn backends the map needs a tile source:
-install `MapGpuOptions` into the environment in `app(env)`.
+**A map renders nothing on a self-drawn backend.** Nothing installs a map realization for
+you off Apple: `app(env)` must both call `waterui_map_gpu::install(&mut env)` and put a
+`MapGpuOptions` tile source into the environment. See [media.md](media.md).
 
 ## Build and run problems
 

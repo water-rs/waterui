@@ -211,9 +211,9 @@ struct FontMetadata {
 /// The manifest whose dependency graph is this app's true closure.
 ///
 /// Resolving `cargo metadata` on the project root unions features across every
-/// member of the surrounding workspace, so one example enabling `waterui/map`
-/// would drag the map stack (and its fonts and permissions) into every other
-/// app in the repository. The generated FFI companion depends on exactly this
+/// member of the surrounding workspace, so one example enabling
+/// `waterui-graphics/gpu` would drag the GPU stack (and its fonts and
+/// permissions) into every other app in the repository. The generated FFI companion depends on exactly this
 /// app plus the waterui crates with no default features, so its graph answers
 /// "what does *this* app enable" precisely.
 fn app_closure_manifest(project: &Project) -> std::path::PathBuf {
@@ -975,11 +975,27 @@ pub async fn package_feature_enabled(
     Ok(enabled)
 }
 
-/// Optional `WaterUI` capabilities: each is a cargo feature on the crate that
-/// actually provides the capability, paired with the same-named feature on the
-/// FFI crate so a build can forward the graph's reality to the C surface.
+/// An optional `WaterUI` capability, and what in the app's resolved graph says
+/// the app has it.
 ///
-/// The source of truth is the *providing* crate, not the facade toggle. An app
+/// The name is also the feature the FFI crate exports the capability's C
+/// surface under, so one entry drives both the FFI build and the native
+/// backend's conditional compilation.
+struct Capability {
+    /// The capability's name, shared with `waterui-ffi`'s feature of the same
+    /// name.
+    name: &'static str,
+    /// The crate that actually provides the capability.
+    package: &'static str,
+    /// The feature on that crate that carries it, or `None` when depending on
+    /// the crate at all is the opt-in.
+    feature: Option<&'static str>,
+}
+
+/// Optional `WaterUI` capabilities, each keyed on the crate that actually
+/// provides it.
+///
+/// The source of truth is the *providing* crate, never a facade toggle. An app
 /// that sets `waterui = { default-features = false }` can still pull the GPU
 /// stack in through a side door — every SVG icon pack renders through
 /// `waterui-svg`, which enables `waterui-graphics/gpu` on its own — and such an
@@ -993,9 +1009,21 @@ pub async fn package_feature_enabled(
 /// `default-features = false` (the `c-api` and `android-jni` ABIs are mutually
 /// exclusive), which drops it. Forwarding it here is what keeps the GPU C
 /// surface present for apps whose graphs carry the GPU stack.
-const OPTIONAL_CAPABILITIES: &[(&str, &str, &str)] = &[
-    ("gpu", "waterui-graphics", "gpu"),
-    ("map", "waterui", "map"),
+///
+/// `map` has no feature at all: `waterui-map` is a component crate an app
+/// depends on directly, exactly like an icon pack or a browser engine, so
+/// linking it *is* the opt-in.
+const OPTIONAL_CAPABILITIES: &[Capability] = &[
+    Capability {
+        name: "gpu",
+        package: "waterui-graphics",
+        feature: Some("gpu"),
+    },
+    Capability {
+        name: "map",
+        package: "waterui-map",
+        feature: None,
+    },
 ];
 
 /// Returns whether this app's resolved graph carries the named capability.
@@ -1012,45 +1040,53 @@ const OPTIONAL_CAPABILITIES: &[(&str, &str, &str)] = &[
 ///
 /// Returns an error when `cargo metadata` cannot be read.
 pub async fn capability_enabled(project: &Project, capability: &str) -> eyre::Result<bool> {
-    let (_, source_package, source_feature) = OPTIONAL_CAPABILITIES
+    let capability = OPTIONAL_CAPABILITIES
         .iter()
-        .find(|(name, _, _)| *name == capability)
+        .find(|candidate| candidate.name == capability)
         .unwrap_or_else(|| panic!("unknown WaterUI capability: {capability}"));
-    package_feature_enabled(project, source_package, source_feature).await
+    match capability.feature {
+        Some(feature) => package_feature_enabled(project, capability.package, feature).await,
+        None => project.links_runtime_package(capability.package).await,
+    }
 }
 
 /// Returns the `waterui-ffi` features to enable for this app's capabilities.
 ///
-/// An app opts into a capability through its dependency graph — a facade
-/// feature (`waterui = { features = ["map"] }`) or a crate that carries the
-/// capability with it (an SVG icon pack carries `waterui-graphics/gpu`). The
-/// generated FFI crate is what exports that capability's C surface, so the
-/// resolved graph's choice has to reach its build; reading it back out keeps
-/// one declaration in the app's manifest.
+/// An app opts into a capability through its dependency graph — a component
+/// crate it depends on (`waterui-map`), or a crate that carries the capability
+/// with it (an SVG icon pack carries `waterui-graphics/gpu`). The generated FFI
+/// crate is what exports that capability's C surface, so the resolved graph's
+/// choice has to reach its build; reading it back out keeps one declaration in
+/// the app's manifest.
 ///
 /// # Errors
 ///
 /// Returns an error when `cargo metadata` cannot be read.
 pub async fn capability_ffi_features(project: &Project) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
-    for (capability, _, _) in OPTIONAL_CAPABILITIES {
-        if capability_enabled(project, capability).await? {
-            features.push(format!("waterui-ffi/{capability}"));
+    for capability in OPTIONAL_CAPABILITIES {
+        if capability_enabled(project, capability.name).await? {
+            features.push(format!("waterui-ffi/{}", capability.name));
         }
     }
     Ok(features)
 }
 
 /// Returns the `waterui` features that select `WaterUI`'s own realizations of
-/// semantic components for a platform with no native primitive to bridge.
+/// the semantic components the facade carries, for a platform with no native
+/// primitive to bridge.
 ///
-/// Apple bridges `AVPlayer` and `MapKit`, so an Apple build asks for none of these
-/// and links neither realization. Every other platform draws the component
-/// itself, and the application's composition root — `waterui::app::App` — is
-/// what installs it, so the choice travels as a facade feature rather than as a
-/// backend dependency. Each realization follows the capability the app already
-/// opted into: an app with no GPU stack gets no GPU player, and an app that
-/// never shows a map does not pay for the vector-tile stack.
+/// Apple bridges `AVPlayer`, so an Apple build asks for none of these and links
+/// no player. Every other platform draws the video itself, and the
+/// application's composition root — `waterui::app::App` — is what installs it,
+/// so the choice travels as a facade feature rather than as a backend
+/// dependency. The realization follows the capability the app already opted
+/// into: an app with no GPU stack gets no GPU player.
+///
+/// Realizations that live in their own crates — `waterui-map-gpu` — are not
+/// here. The application depends on such a crate directly and installs it from
+/// its own `app(env)`, the way it installs a browser engine, so no build flag
+/// selects it.
 ///
 /// # Errors
 ///
@@ -1059,9 +1095,6 @@ pub async fn self_drawn_realization_features(project: &Project) -> eyre::Result<
     let mut features = Vec::new();
     if capability_enabled(project, "gpu").await? {
         features.push("waterui/video-gpu".to_string());
-    }
-    if capability_enabled(project, "map").await? {
-        features.push("waterui/map-gpu".to_string());
     }
     Ok(features)
 }
