@@ -25,10 +25,7 @@ filtrate-core.workspace = true
 executor-core.workspace = true
 tracing.workspace = true
 futures.workspace = true
-mime = "0.3.17"
 blocking = "1.6.2"
-base64 = "0.22.1"
-async-oneshot = "0.5"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }
@@ -57,4 +54,4 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
-ignored = ["async-oneshot", "base64", "mime", "waterui-macros"]
+ignored = ["waterui-macros"]

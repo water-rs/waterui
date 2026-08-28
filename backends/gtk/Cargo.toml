@@ -26,7 +26,6 @@ waterui-controls.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-shape.workspace = true
 waterui-form.workspace = true
-waterui-media.workspace = true
 waterui-webview = { workspace = true, optional = true }
 nami.workspace = true
 # Insertion order is the eviction order for the split destination cache.
@@ -41,8 +40,6 @@ gtk4 = { workspace = true, features = ["v4_12"] }
 waterui-assets.workspace = true
 gdk4 = { workspace = true, features = ["v4_12"] }
 glib.workspace = true
-cairo-rs.workspace = true
-gdk-pixbuf = "0.22"
 kurbo.workspace = true
 # Chromium's own physical-key table, used to name a GDK hardware keycode in the
 # W3C vocabulary the surface input events carry.
@@ -66,4 +63,4 @@ webkitgtk = []
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
-ignored = ["cairo-rs", "gdk-pixbuf", "pkg-config", "waterui-media"]
+ignored = ["pkg-config"]
