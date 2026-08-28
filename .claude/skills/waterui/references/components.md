@@ -4,24 +4,31 @@ Signatures verified against the WaterUI source and compiled. Everything here is 
 from `use waterui::prelude::*;` unless an explicit import is shown.
 
 **Feature gates.** `waterui`'s default features are `gpu`, `assets`, `media`, `inspector`,
-and `snackbar`. `webview`, `chart`, `barcode`, `map`, `particle`, `flow-markdown`, and
-`navigation-restoration` are opt-in — a missing module here is usually a missing feature in
-`Cargo.toml`, not a wrong path:
+and `snackbar`. `webview`, `flow-markdown`, and `navigation-restoration` are opt-in — a
+missing module here is usually a missing feature in `Cargo.toml`, not a wrong path:
 
 ```toml
-waterui = { version = "…", features = ["chart", "map", "barcode"] }
+waterui = { version = "…", features = ["webview"] }
 ```
 
-Two more manifest facts worth knowing:
+**Component crates.** Charts, maps, barcodes and particles are not `waterui` features at
+all: each is a crate of its own, added to `Cargo.toml` directly and imported under its own
+name — `waterui_chart::LineChart`, `waterui_map::Map`, `waterui_barcode::Barcode`,
+`waterui_particle::ParticleSystem` — exactly like the icon packs. There is no
+`waterui::chart` module, so "could not find `chart` in `waterui`" means a missing
+dependency, never a missing feature:
 
-- Feature-gated modules are re-exports of standalone crates, and depending on the crate
-  directly (`waterui-chart`, `waterui-map`, `waterui-barcode`) instead of enabling the
-  feature is equally valid — the compiled examples do exactly that. So "could not find
-  `chart` in `waterui`" has two fixes, not one.
-- `default-features = false` is a real pattern for lean builds, but then *every* needed
-  feature must be listed explicitly. Inside a Cargo workspace, feature unification from
-  sibling crates can make an under-declared manifest compile anyway — a green build there
-  is not evidence the manifest is right.
+```toml
+waterui-chart = "0.1"
+waterui-map = "0.1"
+waterui-barcode = "0.1"
+waterui-particle = "0.1"
+```
+
+One more manifest fact worth knowing: `default-features = false` is a real pattern for
+lean builds, but then *every* needed feature must be listed explicitly. Inside a Cargo
+workspace, feature unification from sibling crates can make an under-declared manifest
+compile anyway — a green build there is not evidence the manifest is right.
 
 ## Contents
 

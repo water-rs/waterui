@@ -48,15 +48,10 @@ waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
 waterui-inspector-protocol = { workspace = true, optional = true }
 waterkit-haptic = { workspace = true, optional = true }
-waterui-chart = { workspace = true, optional = true }
-waterui-barcode = { workspace = true, optional = true }
-waterui-map = { workspace = true, optional = true }
-waterui-particle = { workspace = true, optional = true }
-# The self-drawn realizations. Selected by `video-gpu` / `map-gpu` rather than
-# by `video` / `map`, because whether they are the realization is a property of
-# the platform's own frameworks, not of the semantic component.
+# The self-drawn video realization. Selected by `video-gpu` rather than by
+# `video`, because whether it is the realization is a property of the platform's
+# own frameworks, not of the semantic component.
 waterui-video-gpu = { workspace = true, optional = true }
-waterui-map-gpu = { workspace = true, optional = true }
 
 pastey.workspace = true
 tree-sitter = { version = "0.26", optional = true }
@@ -151,15 +146,7 @@ video = ["dep:waterui-video"]
 # otherwise link and pay for a player it never runs. The backend that has no
 # native player to bridge selects this.
 video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
-# `WaterUI`'s own vector map, installed as the map realization unless a backend
-# already registered a native one. Not implied by `map`, for the same reason
-# `video-gpu` is not implied by `video`: Apple bridges MapKit.
-map-gpu = ["map", "gpu", "dep:waterui-map-gpu"]
 webview = ["dep:waterui-webview"]
-chart = ["dep:waterui-chart"]
-barcode = ["dep:waterui-barcode"]
-map = ["dep:waterui-map"]
-particle = ["dep:waterui-particle"]
 navigation-restoration = ["waterui-navigation/serde"]
 # Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
 # with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which
@@ -195,12 +182,7 @@ all = [
     "media",
     "webview",
     "flow-markdown",
-    "chart",
-    "barcode",
-    "map",
-    "map-gpu",
     "video-gpu",
-    "particle",
     "navigation-restoration",
     "snackbar",
 ]

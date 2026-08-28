@@ -2761,10 +2761,13 @@ pub mod hydrolysis {
                             "waterui",
                             WATERUI_VERSION,
                             // Hydrolysis draws every pixel itself, so it has no
-                            // native player or map to bridge. Selecting the
-                            // self-drawn realizations is the application's call,
-                            // and its composition root installs them.
-                            &["video-gpu", "map-gpu"],
+                            // native player to bridge. Selecting the self-drawn
+                            // realization is the application's call, and its
+                            // composition root installs it. A realization in a
+                            // crate of its own — `waterui-map-gpu` — is a
+                            // direct dependency of the application, which
+                            // installs it in its own `app(env)`.
+                            &["video-gpu"],
                             Some(NativeBackendDependencyPathKind::WateruiRoot),
                         ),
                     )
