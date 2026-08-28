@@ -8,13 +8,13 @@ mod linux {
 
     use base64::Engine as _;
     use waterui_browser_wpe::{
-        DmaBufFrame, DmaBufFrameSource, DmaBufGpuView, WPE_WEBKIT_VERSION, WpePage, WpeRuntime,
-        WpeRuntimePaths,
+        DmaBufFrameSource, DmaBufGpuView, WPE_WEBKIT_VERSION, WpePage, WpeRuntime, WpeRuntimePaths,
     };
     use waterui_core::Environment;
     use waterui_graphics::gpu_surface::{GpuSurface, OffscreenRenderConfig, OffscreenSize};
     use waterui_graphics::shared_context::GpuRuntime;
     use waterui_webview::{BackendEvent, WebViewEvent};
+    use wgpu_external_frame::dma_buf::DmaBufFrame;
 
     const WIDTH: u32 = 640;
     const HEIGHT: u32 = 360;

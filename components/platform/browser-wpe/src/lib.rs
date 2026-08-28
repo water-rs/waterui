@@ -8,6 +8,12 @@
 //! and passes dma-buf file descriptors — so this crate is empty elsewhere,
 //! the same way `waterui-gtk` is.
 //!
+//! The frames themselves are [`wgpu_external_frame::dma_buf::DmaBufFrame`]s:
+//! importing a dma-buf into a `wgpu` texture is a general problem, so it lives
+//! in a crate that knows nothing about WPE or `WaterUI`. What is WPE's is the
+//! buffer lease ([`WpeFrameLease`]) and the compositing view built on top
+//! ([`DmaBufGpuView`]).
+//!
 //! # Testing against the real engine
 //!
 //! `tests/real_engine.rs` drives an actual WPE `WebKit` runtime — navigation,
@@ -18,7 +24,7 @@
 
 #[cfg(all(feature = "webview", target_os = "linux"))]
 mod abi;
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "webview", target_os = "linux"))]
 mod frame;
 #[cfg(target_os = "linux")]
 mod gpu;
@@ -31,12 +37,10 @@ mod webview;
 
 #[cfg(all(feature = "webview", target_os = "linux"))]
 pub use frame::WpeFrameLease;
-#[cfg(target_os = "linux")]
-pub use frame::{DmaBufFormat, DmaBufFrame, DmaBufPlane};
 #[cfg(all(target_os = "linux", feature = "webview"))]
 pub use gpu::WpeGpuView;
 #[cfg(target_os = "linux")]
-pub use gpu::{DmaBufFrameCopier, DmaBufFrameSource, DmaBufGpuView, WpeViewport};
+pub use gpu::{DmaBufFrameSource, DmaBufGpuView, WpeViewport};
 #[cfg(all(feature = "webview", target_os = "linux"))]
 pub use page::{PointerButton, WpePage};
 #[cfg(all(feature = "webview", target_os = "linux"))]
