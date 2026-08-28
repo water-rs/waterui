@@ -1,14 +1,13 @@
 //! `GtkGLArea` input, translated into the backend-neutral surface vocabulary.
 //!
-//! An embedded browser page is a `GpuSurface` that draws its own interactive
-//! content, and every engine crate now owns its own input ABI behind
-//! [`SurfaceInputEvent`]. GTK's whole job is therefore to say what happened in
-//! that vocabulary: nothing here knows what a Chromium wheel notch is worth or
-//! how `WPEPlatform` packs a modifier word, and adding a third engine adds no
-//! translation code at all.
+//! A GPU view that draws its own interactive content — an embedded browser
+//! page, a terminal, an editor — reports
+//! [`wants_input_events`](waterui_graphics::gpu_surface::GpuView::wants_input_events),
+//! and GTK's whole job is then to say what happened in that vocabulary: nothing
+//! here knows what a Chromium wheel notch is worth or how `WPEPlatform` packs a
+//! modifier word, and adding another such view adds no translation code at all.
 //!
-//! GTK reaches the engines this way rather than through
-//! [`GpuView::input`](waterui_graphics::gpu_surface::GpuView::input) because
+//! GTK reaches those views this way rather than through the renderer because
 //! its input arrives at the `GtkGLArea`'s own event controllers, not through a
 //! renderer that hit-tests surface layers.
 
@@ -24,11 +23,8 @@ use waterui_graphics::input::{
     Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
 
-/// One embedded engine's input adapter, as the widget layer sees it.
-///
-/// The implementors are thin: each wraps its engine crate's own surface-input
-/// adapter, which is where the engine semantics live.
-pub trait SurfaceInputSink: 'static {
+/// One input-taking surface, as the widget layer sees it.
+pub(crate) trait SurfaceInputSink: 'static {
     /// Applies one translated event to the engine.
     fn handle(&self, event: &SurfaceInputEvent);
 }
@@ -40,7 +36,7 @@ pub trait SurfaceInputSink: 'static {
 type PointerPosition = Rc<Cell<Point>>;
 
 /// Forwards every GTK input event on `area` into `input`.
-pub fn install(area: &gtk4::GLArea, input: Rc<dyn SurfaceInputSink>) {
+pub(crate) fn install(area: &gtk4::GLArea, input: Rc<dyn SurfaceInputSink>) {
     let position: PointerPosition = Rc::new(Cell::new(Point::ZERO));
 
     install_motion(area, &input, &position);

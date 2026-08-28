@@ -28,9 +28,6 @@ waterui-shape.workspace = true
 waterui-form.workspace = true
 waterui-media.workspace = true
 waterui-webview = { workspace = true, optional = true }
-waterui-chromium = { workspace = true, optional = true }
-waterui-browser-cef = { workspace = true, optional = true }
-waterui-browser-wpe = { workspace = true, optional = true }
 nami.workspace = true
 # Insertion order is the eviction order for the split destination cache.
 indexmap = "2"
@@ -49,7 +46,7 @@ gdk-pixbuf = "0.22"
 kurbo.workspace = true
 # Chromium's own physical-key table, used to name a GDK hardware keycode in the
 # W3C vocabulary the surface input events carry.
-keycode = { version = "1.0", optional = true }
+keycode = "1.0"
 
 # GPU surface dependencies (wgpu is required for graphics views & filters).
 wgpu.workspace = true
@@ -61,28 +58,9 @@ pkg-config = "0.3"
 
 [features]
 default = []
-webview-default = ["webview-wpe"]
+# The platform's own web engine, bridged as a native widget. Every other engine
+# is a crate the application links and installs; this backend never names one.
 webview-system = ["dep:waterui-webview", "webkitgtk"]
-webview-wpe = [
-    "dep:keycode",
-    "dep:waterui-webview",
-    "dep:waterui-browser-wpe",
-    "waterui-browser-wpe/webview",
-]
-webview-cef = [
-    "dep:keycode",
-    "dep:waterui-webview",
-    "dep:waterui-browser-cef",
-    "waterui-browser-cef/cef-runtime",
-    "waterui-browser-cef/webview",
-]
-chromium = [
-    "dep:keycode",
-    "dep:waterui-chromium",
-    "dep:waterui-browser-cef",
-    "waterui-browser-cef/cef-runtime",
-    "waterui-browser-cef/chromium",
-]
 webkitgtk = []
 
 [lints]

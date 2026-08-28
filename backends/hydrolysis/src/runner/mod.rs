@@ -123,17 +123,10 @@ fn offscreen_scale_factor() -> f64 {
 /// crate.
 fn install_native_component_hooks(env: &mut Environment) {
     crate::localization::install(env);
-    // Gated on the engines that actually define `install_controller`, not on
-    // `hydrolysis_webview`: that cfg is true for any webview feature, including
-    // combinations with no engine — macOS without `winit`, for one — and then
-    // this called a function that was never compiled.
-    #[cfg(all(
-        any(hydrolysis_macos_system_webview, hydrolysis_linux_wpe_webview),
-        not(hydrolysis_cef_webview)
-    ))]
+    // The only web engine this backend knows about is the platform's own: a
+    // browser engine an application links installs its realization itself.
+    #[cfg(hydrolysis_macos_system_webview)]
     crate::widgets::platform::webview::install_controller(env);
-    #[cfg(all(any(hydrolysis_cef_webview, feature = "chromium"), not(test)))]
-    crate::widgets::platform::browser_cef::install_runtime(env);
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));
@@ -212,8 +205,6 @@ pub fn run(app: App) {
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]
 pub fn run(app: App) {
-    #[cfg(all(target_os = "macos", any(hydrolysis_cef_webview, feature = "chromium")))]
-    waterui_browser_cef::initialize_macos_application();
     initialize_tracing_from_env();
     winit_runner::run(app, init_main_thread_executors());
 }

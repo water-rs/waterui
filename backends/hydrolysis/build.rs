@@ -15,64 +15,14 @@ fn main() {
         android_platform: { target_os = "android" },
         free_unix: { all(unix, not(apple), not(android_platform), not(target_os = "emscripten")) },
         hydrolysis_wayland_platform: { all(feature = "winit", free_unix, not(target_os = "redox")) },
-        // One rule for every engine: a windowed host, the target the engine runs
-        // on, and a feature selecting it.
-        //
-        // The host requirement is `winit` for all three because every engine
-        // needs somewhere real to put its pixels — the macOS engine embeds a
-        // `WKWebView` as a native subview of the window, and the WPE and CEF
-        // engines render into a `GpuSurface` registered on the window's node and
-        // take pointer and keyboard input from it. A build with no window (the
-        // headless renderer that `waterui-testing` drives, a `web` build) has
-        // none of that, so an engine there would be code that cannot run.
-        //
-        // The rule used to differ per engine, and the difference was invisible
-        // until it bit: the Linux WPE alias asked for no host at all, so a
-        // headless build compiled the WPE engine, downcast whatever handle it
-        // was given to `WpeWebViewHandle`, and panicked — on Linux only, while
-        // macOS passed, purely because the macOS alias did require `winit`.
-        // Keep these three in the same shape.
-        hydrolysis_macos_system_webview: {
-            all(
-                feature = "winit",
-                target_os = "macos",
-                any(feature = "webview-default", feature = "webview-system")
-            )
-        },
-        hydrolysis_linux_wpe_webview: {
-            all(
-                feature = "winit",
-                target_os = "linux",
-                any(feature = "webview-default", feature = "webview-wpe")
-            )
-        },
-        hydrolysis_cef_webview: {
-            all(
-                feature = "winit",
-                any(target_os = "macos", target_os = "linux", target_os = "windows"),
-                feature = "webview-cef"
-            )
-        },
-        // "A web engine resolved", not "a webview feature was asked for": the
-        // features name bridges that only exist on some targets, so
-        // `webview-system` off macOS or `webview-default` on Windows selects
-        // nothing at all. Conflating the two gated the controller call on a
-        // condition broader than the controller's own definition, and
-        // `--features webview-system` failed to build with a missing
-        // `install_controller`. `widgets/platform/webview.rs` turns each
+        // The macOS `WKWebView` bridge needs a real window: it is composed into
+        // the winit window's AppKit view as a native subview, so a headless
+        // build (the renderer `waterui-testing` drives, a `web` build) has
+        // nowhere to put it and compiles none of it. The feature alone is not
+        // enough, which is why this alias exists and the module turns an
         // unsatisfiable request into a `compile_error!` that says what to enable.
-        hydrolysis_webview: {
-            any(
-                hydrolysis_macos_system_webview,
-                hydrolysis_linux_wpe_webview,
-                hydrolysis_cef_webview
-            )
+        hydrolysis_macos_system_webview: {
+            all(feature = "winit", target_os = "macos", feature = "webview-system")
         },
-        // No alias for "engines the renderer itself feeds input to": there are
-        // none left. CEF and WPE both take their input as `SurfaceInputEvent`
-        // through GPU views that report `wants_input_events`, with the engine
-        // semantics owned by `waterui-browser-cef` and `waterui-browser-wpe`;
-        // the macOS system webview is a native subview and receives input from
-        // AppKit itself.
     }
 }

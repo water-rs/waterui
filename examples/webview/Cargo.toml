@@ -11,8 +11,17 @@ categories = ["gui"]
 publish = false
 
 [features]
+default = ["wpe"]
 dev = ["waterui/dynamic_linking"]
+# The bundled WPE WebKit engine, for a Linux build with no system engine to
+# bridge. The CEF variant of this example turns it off and installs CEF instead,
+# so its package stages one browser runtime rather than two.
+wpe = ["dep:waterui-browser-wpe"]
 
 [dependencies]
 waterui = { workspace = true, features = ["webview"] }
 serde = { workspace = true, features = ["derive"] }
+
+# Linux has no system web engine to bridge outside GTK, so the app brings one.
+[target.'cfg(target_os = "linux")'.dependencies]
+waterui-browser-wpe = { workspace = true, optional = true }

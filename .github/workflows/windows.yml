@@ -69,10 +69,9 @@ jobs:
       # of the backend without provisioning the SDK.
       #
       # One full-workspace pass under default features. A workspace-wide
-      # `--all-features` pass is structurally impossible — hydrolysis enforces
-      # "exactly one WebView engine" with a `compile_error!`
-      # (backends/hydrolysis/src/lib.rs), so enabling `webview-system` and
-      # `webview-cef` together can never build.
+      # `--all-features` pass is structurally impossible — `waterui-ffi`
+      # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
+      # enabling `c-api` and `android-jni` together can never build.
       - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --profile ci
       # The root crate's feature-gated re-export surface. `--features all` rather
       # than `--all-features`: the latter turns on `dynamic_linking`, which pulls

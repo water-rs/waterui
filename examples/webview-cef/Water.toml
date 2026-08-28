@@ -1,5 +1,4 @@
 waterui_path = "../.."
-webview_backend = "cef"
 
 [package]
 type = "playground"

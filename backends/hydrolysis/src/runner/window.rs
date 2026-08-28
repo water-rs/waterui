@@ -1335,15 +1335,6 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         runtime.request_refresh();
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
-    #[cfg(any(hydrolysis_cef_webview, feature = "chromium"))]
-    let next_deadline = env
-        .get::<waterui_browser_cef::CefRuntime>()
-        .map_or(next_deadline, |cef| {
-            let cef_deadline = cef.pump().instant();
-            Some(next_deadline.map_or(cef_deadline, |gesture_deadline| {
-                gesture_deadline.min(cef_deadline)
-            }))
-        });
     if runtime.mode.is_pending() {
         runtime.platform.request_redraw();
     }

@@ -172,8 +172,10 @@ mod state;
 pub use state::{FieldEntry, JsField, StateWriteError};
 
 use waterui_core::{
-    Binding, Computed, Environment, Native, Signal, View, binding, layout::StretchAxis,
+    AnyView, Binding, Computed, Environment, Native, Signal, View, binding,
+    layout::StretchAxis,
     reactive::signal::IntoComputed,
+    view::{Hook, ViewConfiguration},
 };
 use waterui_layout::spacer;
 use waterui_layout::stack::vstack;
@@ -900,22 +902,66 @@ impl View for WebViewOpen {
     }
 }
 
-// `WebView` is a raw view: a backend with a web engine intercepts it before
-// `View::body` ever runs. `raw_view!` is not used because reaching `body` must not
-// abort — see the fallback below.
+/// Wraps a realization of web page content in the accessibility node it owes
+/// the tree.
+///
+/// The page is opaque to the host accessibility tree — an engine draws it into
+/// a texture or a subview nothing can see into — so the surface itself has to
+/// appear or the whole region is missing from a screen reader. Every engine
+/// realization publishes the same node, and whatever the application already
+/// said with `.a11y_role(...)` wins over this default.
+///
+/// The label is deliberately not defaulted: only the application knows what the
+/// page is, and a made-up one reads worse than none.
+pub fn web_surface_semantics(env: &Environment, view: impl View) -> AnyView {
+    use waterui_core::IgnorableMetadata;
+    use waterui_core::accessibility::AccessibilityRole;
+
+    if env.get::<AccessibilityRole>().is_some() {
+        AnyView::new(view)
+    } else {
+        AnyView::new(IgnorableMetadata::new(view, AccessibilityRole::Group))
+    }
+}
+
+// `WebView` is a raw view for a backend that bridges a platform web engine: it
+// intercepts the component by type before `View::body` ever runs. `raw_view!` is
+// not used because reaching `body` must not abort — see [`WebView::render`].
 impl waterui_core::NativeView for WebView {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
     }
 }
 
-impl View for WebView {
-    fn body(self, _env: &Environment) -> impl View {
-        // Reaching `body` means the running backend has no web engine compiled in.
-        // Render an empty, still-accessible leaf rather than panicking: every
-        // component owes the accessibility tree a node, and a backend without an
-        // engine is a missing feature, not a crash.
+/// The web view a backend with no bridged engine draws.
+///
+/// It is what `View::body` produces when the environment carries no
+/// [`Hook<WebView>`], and — because [`Hook`] strips its own type from the
+/// environment before calling the closure — it is also the recursion floor
+/// under one.
+impl ViewConfiguration for WebView {
+    type View = Native<Self>;
+
+    fn render(self) -> Self::View {
+        // Reaching this means neither a native bridge nor an engine realization
+        // is present. Render an empty, still-accessible leaf rather than
+        // panicking: every component owes the accessibility tree a node, and a
+        // build without an engine is a missing feature, not a crash.
         Native::new(self).with_fallback(spacer())
+    }
+}
+
+impl View for WebView {
+    fn body(self, env: &Environment) -> impl View {
+        // A browser engine linked by the application installs a `Hook<WebView>`
+        // that draws the page — the same seam `video` and `map` use for their
+        // self-drawn realizations. A backend that bridges a platform engine
+        // never gets here: it takes the component by type first.
+        if let Some(hook) = env.get::<Hook<Self>>() {
+            AnyView::new(hook.apply(env, self))
+        } else {
+            AnyView::new(self.render())
+        }
     }
 
     fn stretch_axis(&self) -> StretchAxis {
