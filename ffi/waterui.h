@@ -1559,6 +1559,13 @@ typedef struct WuiAnyViews WuiAnyViews;
  */
 typedef struct WuiAppliedFilterState WuiAppliedFilterState;
 
+/**
+ * Opaque CEF state the native backend owns for the surface's lifetime.
+ *
+ * Keeps the page handle every input and navigation entry point addresses, plus
+ * the semantic view the page was created from, alive until
+ * [`waterui_cef_surface_drop`].
+ */
 typedef struct WuiCefSurfaceState WuiCefSurfaceState;
 
 /**
@@ -6244,7 +6251,7 @@ typedef struct WuiGpuSurface {
  */
 typedef struct WuiCefSurface {
   /**
-   * GPU presenter consumed by WaterUI's native GPU surface host.
+   * GPU presenter consumed by `WaterUI`'s native GPU surface host.
    */
   struct WuiGpuSurface gpu_surface;
   /**
@@ -10195,11 +10202,16 @@ struct WuiCefSurface waterui_force_as_chromium(struct WuiAnyView *view);
 struct WuiTypeId waterui_chromium_id(void);
 
 /**
- * Consumes a standard WebView whose selected engine is CEF.
+ * Consumes a standard `WebView` whose selected engine is CEF.
  *
  * # Safety
  *
  * `view` must be a valid owning `WuiAnyView` containing `Native<WebView>`.
+ *
+ * # Panics
+ *
+ * Panics when the web view's engine handle was not produced by the CEF runtime
+ * this build selected.
  */
 struct WuiCefSurface waterui_force_as_cef_webview(struct WuiAnyView *view);
 
@@ -10227,6 +10239,11 @@ void waterui_cef_surface_request_frame(const struct WuiCefSurfaceState *state);
  * # Safety
  *
  * `state` must be a live state returned by a CEF force-as function.
+ *
+ * # Panics
+ *
+ * Panics when `scale` is not a positive, finite device-pixel ratio that `f32`
+ * can represent, and when `width` or `height` is zero.
  */
 void waterui_cef_surface_set_viewport(const struct WuiCefSurfaceState *state,
                                       uint32_t width,
@@ -10299,6 +10316,10 @@ void waterui_cef_surface_scroll(const struct WuiCefSurfaceState *state,
  * # Safety
  *
  * `state` must be a live state returned by a CEF force-as function.
+ *
+ * # Panics
+ *
+ * Panics when `character` is non-zero but not a Unicode scalar value.
  */
 void waterui_cef_surface_key(const struct WuiCefSurfaceState *state,
                              bool pressed,
@@ -10372,7 +10393,7 @@ void waterui_cef_surface_edit(const struct WuiCefSurfaceState *state,
 void waterui_cef_surface_drop(struct WuiCefSurfaceState *state);
 
 /**
- * Installs the CEF-compatible `NSApplication` subclass before AppKit starts.
+ * Installs the CEF-compatible `NSApplication` subclass before `AppKit` starts.
  */
 void waterui_cef_prepare_macos_application(void);
 
