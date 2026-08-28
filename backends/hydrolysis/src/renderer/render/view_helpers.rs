@@ -122,7 +122,7 @@ pub(crate) fn restore_a11y_naming_scope(
 
 /// Without an accessibility tree there is no naming scope to carry.
 #[cfg(not(feature = "accessibility"))]
-pub(crate) fn restore_a11y_naming_scope(
+pub(crate) const fn restore_a11y_naming_scope(
     _outer: &Environment,
     snapshot: Environment,
 ) -> Environment {
