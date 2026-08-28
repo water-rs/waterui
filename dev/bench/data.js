@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787943105753,
+  "lastUpdate": 1787943108552,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -1167,6 +1167,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 20731,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "id": "57535ef91f8aa0d740ea67420e967c3f0566b3f4",
+          "message": "fix(browser-cef): document the Windows sandbox unsafe blocks\n\nThe Windows-only cfg block was never compiled by the macOS lint passes,\nso these three calls escaped the CEF C-ABI safety-comment cleanup; the\nWindows workspace clippy leg now compiles browser-cef through the C1\nexample dependencies and rejects them.\n\nClaude-Session: https://claude.ai/code/session_01XwLTWGKnqhKDu4ym3qEobm",
+          "timestamp": "2026-08-28T12:03:47Z",
+          "url": "https://github.com/water-rs/waterui/commit/57535ef91f8aa0d740ea67420e967c3f0566b3f4"
+        },
+        "date": 1787943107704,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 928130,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 629865,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 21256,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 16078,
             "unit": "us"
           }
         ]
