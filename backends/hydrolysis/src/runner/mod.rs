@@ -45,7 +45,6 @@ use waterui_core::Native;
 #[cfg(not(target_arch = "wasm32"))]
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::view::Hook;
-use waterui_map::MapConfig;
 
 mod diagnostics;
 mod fonts;
@@ -115,16 +114,15 @@ fn offscreen_scale_factor() -> f64 {
     parsed
 }
 
+/// Hooks for the platform services this renderer itself provides.
+///
+/// The self-drawn realizations of semantic components — the GPU video player,
+/// the vector map — are not among them: which realization draws a component is
+/// the application's choice, installed by `waterui::app::App` from the
+/// `video-gpu` / `map-gpu` features, so this renderer never names a component
+/// crate.
 fn install_native_component_hooks(env: &mut Environment) {
     crate::localization::install(env);
-    waterui_video_gpu::install(env);
-    #[cfg(any(test, feature = "testing"))]
-    let semantic_native_map = env.get::<crate::testing::SemanticNativeMap>().is_some();
-    #[cfg(not(any(test, feature = "testing")))]
-    let semantic_native_map = false;
-    if env.get::<Hook<MapConfig>>().is_none() && !semantic_native_map {
-        waterui_map_gpu::install(env);
-    }
     // Gated on the engines that actually define `install_controller`, not on
     // `hydrolysis_webview`: that cfg is true for any webview feature, including
     // combinations with no engine — macOS without `winit`, for one — and then

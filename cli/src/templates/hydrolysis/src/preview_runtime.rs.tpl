@@ -54,6 +54,9 @@ fn load_run_config() -> PreviewRunConfig {
 fn new_runtime(width: f32, height: f32) -> HeadlessRuntime {
     let mut env = waterui::env::Environment::new();
     preview_symbol::install_preview_theme(&mut env);
+    // This environment never passes through `App::new`, which is what
+    // installs the self-drawn realizations for a normal run.
+    waterui::realization::install(&mut env);
     let content = AnyViewBuilder::new(preview_symbol::load_preview_view);
     // Previews are read on HiDPI displays, so render at 2x: the layout stays in
     // logical units and only the captured image gets sharper.

@@ -170,7 +170,7 @@ fn measure_view_dimensions_with_proposal_with_budget(
         );
     }
 
-    if view.downcast_ref::<()>().is_some() || view.downcast_ref::<Canvas>().is_some() {
+    if view.downcast_ref::<()>().is_some() {
         return ViewDimensions::new(LayoutSize::zero());
     }
 

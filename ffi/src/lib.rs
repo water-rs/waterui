@@ -50,31 +50,7 @@ use executor_core::{init_global_executor, init_local_executor};
 use waterkit_audio as _;
 use waterui::{AnyView, Str, View};
 use waterui_core::{Metadata, Native};
-#[cfg(all(not(target_vendor = "apple"), feature = "map"))]
-pub use waterui_map_gpu;
 pub use waterui_video;
-#[cfg(all(not(target_vendor = "apple"), feature = "gpu"))]
-pub use waterui_video_gpu;
-
-/// Installs the GPU video pipeline where it is the platform's video backend.
-///
-/// Called from the `export!`-generated `waterui_init`. This lives in a
-/// function (not in the macro body) so the `gpu` feature is resolved against
-/// this crate's features rather than the app crate's.
-#[doc(hidden)]
-#[cfg_attr(
-    any(target_vendor = "apple", not(feature = "gpu")),
-    expect(
-        clippy::missing_const_for_fn,
-        reason = "the body is platform/feature-dependent; the non-Apple GPU arm installs at runtime"
-    )
-)]
-pub fn __install_gpu_video(env: &mut waterui::Environment) {
-    #[cfg(all(not(target_vendor = "apple"), feature = "gpu"))]
-    waterui_video_gpu::install(env);
-    #[cfg(any(target_vendor = "apple", not(feature = "gpu")))]
-    let _ = env;
-}
 
 use waterui_core::metadata::MetadataKey;
 
@@ -126,8 +102,6 @@ macro_rules! export {
                 let inspector = unsafe { $crate::__init() };
                 let mut env = waterui::configure_environment!(waterui::Environment::new());
                 waterui::inspector::install(&mut env, inspector);
-                $crate::__install_gpu_video(&mut env);
-                $crate::__install_optional_components(&mut env);
                 $crate::__configure_browser_environment(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
@@ -184,25 +158,6 @@ macro_rules! export {
             }
         };
     };
-}
-
-/// Installs the realizations for optional capabilities this crate was built with.
-///
-/// The feature test has to live here rather than in `export!`: a `cfg` inside a
-/// `macro_rules!` body is evaluated against the crate that *expands* it, which
-/// is the generated FFI crate, and that crate has no such features. Testing it
-/// at the expansion site silently compiled the hook out on every platform.
-#[allow(
-    clippy::missing_const_for_fn,
-    reason = "the body is empty only in the feature configuration being linted; enabling the capability makes it install a realization"
-)]
-#[doc(hidden)]
-#[inline]
-pub fn __install_optional_components(env: &mut waterui::Environment) {
-    // Apple bridges MapKit; every other platform draws the map itself.
-    #[cfg(all(not(target_vendor = "apple"), feature = "map"))]
-    waterui_map_gpu::install(env);
-    let _ = env;
 }
 
 /// Installs optional packaged browser runtimes selected by the generated FFI crate.

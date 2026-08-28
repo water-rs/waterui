@@ -1041,6 +1041,31 @@ pub async fn capability_ffi_features(project: &Project) -> eyre::Result<Vec<Stri
     Ok(features)
 }
 
+/// Returns the `waterui` features that select `WaterUI`'s own realizations of
+/// semantic components for a platform with no native primitive to bridge.
+///
+/// Apple bridges `AVPlayer` and `MapKit`, so an Apple build asks for none of these
+/// and links neither realization. Every other platform draws the component
+/// itself, and the application's composition root — `waterui::app::App` — is
+/// what installs it, so the choice travels as a facade feature rather than as a
+/// backend dependency. Each realization follows the capability the app already
+/// opted into: an app with no GPU stack gets no GPU player, and an app that
+/// never shows a map does not pay for the vector-tile stack.
+///
+/// # Errors
+///
+/// Returns an error when `cargo metadata` cannot be read.
+pub async fn self_drawn_realization_features(project: &Project) -> eyre::Result<Vec<String>> {
+    let mut features = Vec::new();
+    if capability_enabled(project, "gpu").await? {
+        features.push("waterui/video-gpu".to_string());
+    }
+    if capability_enabled(project, "map").await? {
+        features.push("waterui/map-gpu".to_string());
+    }
+    Ok(features)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
