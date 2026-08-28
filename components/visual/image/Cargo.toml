@@ -19,7 +19,10 @@ waterkit-codec = { workspace = true, features = ["software-fallback"] }
 tracing.workspace = true
 wgpu.workspace = true
 num-traits = { version = "0.2", default-features = false }
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "avif", "tiff"] }
+# `image`'s `avif` feature is an AVIF *encoder* (ravif -> rav1e); the decoder is
+# `avif-native`. Nothing here encodes AVIF, and AVIF/HEIF inputs are routed to
+# the platform decoder by `codec.rs`, so the encoder was pure weight.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 mp4-atom = "0.14.0"
 
 [build-dependencies]

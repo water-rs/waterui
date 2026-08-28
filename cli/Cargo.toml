@@ -38,7 +38,10 @@ path = "src/terminal/main.rs"
 # reports; `dunce` gives the plain one and is `canonicalize` elsewhere.
 dunce = "1.0"
 cargo_metadata = "0.23.1"
-image = "0.25"  # For PNG reading/writing and pixel manipulation (diff feature)
+# Icon and asset pipeline: reads a project's source icon (PNG/JPEG/WebP) and
+# writes PNG plus the Windows ICO container. `default-formats` additionally
+# pulls `image`'s AVIF *encoder* (ravif -> rav1e), which nothing here calls.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "ico"] }
 cargo_toml = "1.0.0"
 color-eyre = { version = "0.6.5", features = ["issue-url"]}
 include_dir = "0.7.4"
