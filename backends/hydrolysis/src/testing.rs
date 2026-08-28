@@ -1,4 +1,4 @@
-//! Deterministic theme installation for Hydrolysis-backed tests.
+//! Deterministic environment setup for Hydrolysis-backed tests.
 
 use waterui::{
     Environment, Plugin,
@@ -6,13 +6,34 @@ use waterui::{
     text::font::{FontWeight, ResolvedFont},
     theme::{ColorScheme, ColorSettings, FontSettings, Theme},
 };
+use waterui_core::{AnyView, Native};
+use waterui_map::MapConfig;
 
 fn color(rgb: u32) -> ResolvedColor {
     ResolvedColor::from_srgb(Srgb::from_u32(rgb))
 }
 
-/// Installs every theme token required by Hydrolysis rendering.
+/// Declares Hydrolysis's own semantic map as the test platform's map bridge.
+///
+/// `waterui::realization::install` gives way to a backend that already
+/// registered a map bridge, and Hydrolysis is such a backend: it renders
+/// `Native<MapConfig>` itself, with the accessibility surface the semantic
+/// tests assert on. Registering that bridge here says so through the public
+/// mechanism — before the harness runs `realization::install` — where a marker
+/// type on the config used to say it.
+///
+/// Without this, a test binary whose feature unification pulls in
+/// `waterui/map-gpu` gets the GPU realization installed over Hydrolysis's, and
+/// every map test then dies on the `MapGpuOptions` an application, not a
+/// harness, is supposed to supply.
+fn install_map_bridge(env: &mut Environment) {
+    env.insert_hook::<MapConfig, AnyView>(|_env, config| AnyView::new(Native::new(config)));
+}
+
+/// Installs every theme token required by Hydrolysis rendering, and the
+/// component bridges the backend realizes natively.
 pub fn install_theme(env: &mut Environment) {
+    install_map_bridge(env);
     Theme::new()
         .color_scheme(ColorScheme::Light)
         .colors(
