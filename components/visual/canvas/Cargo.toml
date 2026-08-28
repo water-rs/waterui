@@ -17,7 +17,10 @@ nami.workspace = true
 kurbo.workspace = true
 peniko.workspace = true
 parley = { workspace = true, features = ["system"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "avif", "tiff"] }
+# Only `image::ImageError` is named here — decoding itself is delegated to
+# `waterui-graphics`. The codec list mirrors that crate's; `avif` is an encoder
+# nothing in the workspace calls.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
 
 [dev-dependencies]
 waterui = { path = "../../.." }
