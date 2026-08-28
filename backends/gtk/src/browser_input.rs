@@ -24,7 +24,7 @@ use waterui_graphics::input::{
 };
 
 /// One input-taking surface, as the widget layer sees it.
-pub(crate) trait SurfaceInputSink: 'static {
+pub trait SurfaceInputSink: 'static {
     /// Applies one translated event to the engine.
     fn handle(&self, event: &SurfaceInputEvent);
 }
@@ -36,7 +36,7 @@ pub(crate) trait SurfaceInputSink: 'static {
 type PointerPosition = Rc<Cell<Point>>;
 
 /// Forwards every GTK input event on `area` into `input`.
-pub(crate) fn install(area: &gtk4::GLArea, input: Rc<dyn SurfaceInputSink>) {
+pub fn install(area: &gtk4::GLArea, input: Rc<dyn SurfaceInputSink>) {
     let position: PointerPosition = Rc::new(Cell::new(Point::ZERO));
 
     install_motion(area, &input, &position);
