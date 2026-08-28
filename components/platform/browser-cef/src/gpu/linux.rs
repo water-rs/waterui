@@ -2,12 +2,11 @@ use std::os::fd::{BorrowedFd, OwnedFd};
 use std::rc::Rc;
 
 use cef::{AcceleratedPaintInfo, ColorType, PaintElementType, Rect};
-use num_traits::ToPrimitive as _;
 use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
 use wgpu_external_frame::dma_buf::{DmaBufFormat, DmaBufFrame, DmaBufImporter, DmaBufPlane};
 
 use super::presenter::{OwnedFrameMailbox, TexturePresenter};
-use super::{CefViewport, request_browser_frame};
+use super::{request_browser_frame, sync_browser_viewport};
 use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
 
 struct LinuxFrameSink {
@@ -84,16 +83,14 @@ impl AcceleratedFrameSink for LinuxFrameSink {
 
 pub(super) struct CefGpuView {
     page: CefPageHandle,
-    viewport: CefViewport,
     mailbox: Rc<OwnedFrameMailbox>,
     presenter: Option<TexturePresenter>,
 }
 
 impl CefGpuView {
-    pub(super) fn new(page: CefPageHandle, viewport: CefViewport) -> Self {
+    pub(super) fn new(page: CefPageHandle) -> Self {
         Self {
             page,
-            viewport,
             mailbox: Rc::new(OwnedFrameMailbox::new()),
             presenter: None,
         }
@@ -130,18 +127,7 @@ impl GpuView for CefGpuView {
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
         self.page.pump();
         request_browser_frame(&self.page, frame);
-        let scale = self.viewport.scale();
-        let logical_width = (f64::from(frame.width) / scale).round().max(1.0);
-        let logical_height = (f64::from(frame.height) / scale).round().max(1.0);
-        self.page.set_viewport(
-            logical_width
-                .to_u32()
-                .expect("CEF logical width exceeds u32"),
-            logical_height
-                .to_u32()
-                .expect("CEF logical height exceeds u32"),
-            scale.to_f32().expect("CEF scale exceeds f32"),
-        );
+        let scale = sync_browser_viewport(&self.page, frame);
         let presenter = self
             .presenter
             .as_mut()
@@ -157,6 +143,6 @@ impl GpuView for CefGpuView {
     }
 }
 
-pub(super) fn gpu_view(page: CefPageHandle, viewport: CefViewport) -> CefGpuView {
-    CefGpuView::new(page, viewport)
+pub(super) fn gpu_view(page: CefPageHandle) -> CefGpuView {
+    CefGpuView::new(page)
 }

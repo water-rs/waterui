@@ -71,9 +71,10 @@ use executor_core::async_executor::AsyncLocalExecutor;
 use serde_json::Value;
 use tiny_http::{Header, Response, Server};
 use waterui_browser_cef::{
-    CefRuntime, CefRuntimeConfiguration, CefRuntimePaths, initialize_macos_application,
+    CefRuntime, CefRuntimeConfiguration, CefRuntimePaths, initialize_macos_application, install,
     run_packaged_subprocess,
 };
+use waterui_core::{Environment, View as _, view::Hook};
 use waterui_url::Url;
 use waterui_webview::{
     BackendEvent, BridgeOrigins, IntoJsReply, JsReply, Json, OriginPolicy, ScriptInjectionTime,
@@ -550,10 +551,67 @@ fn integers_beyond_two_to_the_fifty_third_cross_intact_both_ways(engine: &Engine
     );
 }
 
+/// The realization an application installs draws the pages this suite loads.
+///
+/// `waterui_browser_cef::install` is the whole engine selection: it registers
+/// the `Hook<WebView>` that turns the semantic component into a GPU surface over
+/// a live Chromium page. The hook's one fragile joint is the documented
+/// downcast — it takes the handle the environment's `WebViewController` produced
+/// and asserts it is CEF's — and nothing but a real runtime proves that handle
+/// is the type the realization expects. `body` is evaluated here exactly as a
+/// renderer evaluates it, so a hook that failed to install, or installed against
+/// a handle it cannot read, fails here rather than at the first frame.
+fn the_installed_realization_draws_a_live_page(engine: &Engine) {
+    let mut env = Environment::new();
+    // The runtime this process already initialized: CEF initializes once per
+    // process, so `install` must reuse the one in the environment.
+    env.insert(engine.runtime.clone());
+    install(&mut env);
+
+    assert!(
+        env.get::<Hook<WebView>>().is_some(),
+        "install must register the WebView realization"
+    );
+    assert!(
+        env.get::<WebViewController>().is_some(),
+        "install must supply the controller that opens CEF pages"
+    );
+
+    // A page from the environment's own controller, driven far enough to be a
+    // real browser rather than a handle that has not started.
+    let page = engine.page();
+    page.open_page("/first");
+
+    let controller = env
+        .get::<WebViewController>()
+        .cloned()
+        .expect("the installed controller");
+    let webview = controller.open();
+    webview.handle().go_to(&engine.url("/first"));
+    // What a renderer does with the component: evaluate its body under the
+    // application environment and get the realization back.
+    let _realization = webview.body(&env);
+
+    // Two engines cannot both draw one component, and a second explicit install
+    // is a configuration error rather than a silent winner. The expected panic
+    // is caught here, so its report would only look like a failure in the log.
+    let reporter = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let second = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut env = env.clone();
+        install(&mut env);
+    }));
+    std::panic::set_hook(reporter);
+    assert!(
+        second.is_err(),
+        "installing a second WebView realization must fail loudly"
+    );
+}
+
 /// Every check, in the order they run.
 type Check = (&'static str, fn(&Engine));
 
-const CHECKS: [Check; 4] = [
+const CHECKS: [Check; 5] = [
     (
         "navigation_reaches_each_url_and_history_moves_both_ways",
         navigation_reaches_each_url_and_history_moves_both_ways,
@@ -569,6 +627,10 @@ const CHECKS: [Check; 4] = [
     (
         "integers_beyond_two_to_the_fifty_third_cross_intact_both_ways",
         integers_beyond_two_to_the_fifty_third_cross_intact_both_ways,
+    ),
+    (
+        "the_installed_realization_draws_a_live_page",
+        the_installed_realization_draws_a_live_page,
     ),
 ];
 

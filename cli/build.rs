@@ -21,6 +21,7 @@ struct ScaffoldVersions {
     hydrolysis_m3: String,
     waterui_dew: String,
     waterui_gtk: String,
+    waterui_browser_cef: String,
     waterui_preview: String,
     waterui_preview_protocol: String,
     android_kotlin: String,
@@ -96,6 +97,10 @@ fn emit_scaffold_metadata(
     println!(
         "cargo:rustc-env=WATERUI_CLI_WATERUI_GTK_VERSION={}",
         scaffold_metadata.versions.waterui_gtk
+    );
+    println!(
+        "cargo:rustc-env=WATERUI_CLI_WATERUI_BROWSER_CEF_VERSION={}",
+        scaffold_metadata.versions.waterui_browser_cef
     );
     println!(
         "cargo:rustc-env=WATERUI_CLI_WATERUI_PREVIEW_VERSION={}",
@@ -188,6 +193,15 @@ fn register_rerun_inputs(workspace_root: Option<&Path>) {
             workspace_root
                 .join("backends")
                 .join("gtk")
+                .join("Cargo.toml")
+                .display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace_root
+                .join("components")
+                .join("platform")
+                .join("browser-cef")
                 .join("Cargo.toml")
                 .display()
         );
@@ -295,6 +309,13 @@ fn resolve_scaffold_metadata(
                         .join("gtk")
                         .join("Cargo.toml"),
                 ),
+                waterui_browser_cef: manifest_package_version(
+                    &workspace_root
+                        .join("components")
+                        .join("platform")
+                        .join("browser-cef")
+                        .join("Cargo.toml"),
+                ),
                 waterui_preview: manifest_package_version(
                     &workspace_root
                         .join("components")
@@ -345,6 +366,10 @@ fn resolve_scaffold_metadata(
             waterui_core: manifest_scaffold_string(scaffold_metadata, "waterui-core-version"),
             waterui_ffi: manifest_scaffold_string(scaffold_metadata, "waterui-ffi-version"),
             waterui_gtk: manifest_scaffold_string(scaffold_metadata, "waterui-gtk-version"),
+            waterui_browser_cef: manifest_scaffold_string(
+                scaffold_metadata,
+                "waterui-browser-cef-version",
+            ),
             waterui_preview: manifest_scaffold_string(scaffold_metadata, "waterui-preview-version"),
             waterui_preview_protocol: manifest_scaffold_string(
                 scaffold_metadata,

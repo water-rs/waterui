@@ -1,22 +1,12 @@
 //! C ABI for the optional CEF runtime used by native renderers.
 
 use std::any::Any;
-#[cfg(not(target_os = "macos"))]
-use std::cell::Cell;
-#[cfg(not(target_os = "macos"))]
-use std::rc::Rc;
-#[cfg(not(target_os = "macos"))]
-use std::time::Instant;
 
-#[cfg(not(target_os = "macos"))]
-use executor_core::spawn_local;
-#[cfg(target_os = "macos")]
-use waterui_browser_cef::CefMacOsMessagePump;
 #[cfg(any(feature = "webview-cef", feature = "cef-header"))]
 use waterui_browser_cef::CefWebViewHandle;
 use waterui_browser_cef::{
     CefInputModifiers, CefKeyInput, CefPageHandle, CefPointerButton, CefRuntime,
-    CefRuntimeConfiguration, CefTextRange, CefViewport, gpu_view,
+    CefRuntimeConfiguration, CefTextRange, gpu_view,
 };
 #[cfg(any(feature = "chromium", feature = "cef-header"))]
 use waterui_chromium::{ChromiumView, PageMode};
@@ -30,16 +20,6 @@ use crate::WuiAnyView;
 use crate::components::visual::gpu_surface::WuiGpuSurface;
 use crate::{IntoFFI, IntoRust, WuiStr};
 
-#[cfg(not(target_os = "macos"))]
-struct CefPumpLifetime(Rc<Cell<bool>>);
-
-#[cfg(not(target_os = "macos"))]
-impl Drop for CefPumpLifetime {
-    fn drop(&mut self) {
-        self.0.set(false);
-    }
-}
-
 /// Installs one process-owned CEF runtime and the selected public controllers.
 pub(crate) fn configure_environment(env: &mut Environment) {
     let runtime = CefRuntime::initialize(CefRuntimeConfiguration::packaged());
@@ -48,21 +28,10 @@ pub(crate) fn configure_environment(env: &mut Environment) {
     #[cfg(any(feature = "chromium", feature = "cef-header"))]
     env.insert(runtime.chromium_controller());
     env.insert(runtime.clone());
-
-    #[cfg(target_os = "macos")]
-    env.insert(CefMacOsMessagePump::install(runtime));
-    #[cfg(not(target_os = "macos"))]
-    {
-        let active = Rc::new(Cell::new(true));
-        env.insert(CefPumpLifetime(Rc::clone(&active)));
-        spawn_local(async move {
-            while active.get() {
-                let deadline = runtime.pump().instant();
-                async_io::Timer::at(deadline.max(Instant::now())).await;
-            }
-        })
-        .detach();
-    }
+    // Chromium's browser-process loop is the engine crate's to drive: it has to
+    // run whether or not a surface is being drawn, and it is paced by the
+    // deadline CEF itself asks for.
+    runtime.start_message_pump();
 }
 
 /// GPU surface plus retained CEF input and semantic state.
@@ -150,18 +119,15 @@ pub enum WuiCefEditCommand {
 
 pub struct WuiCefSurfaceState {
     page: CefPageHandle,
-    viewport: CefViewport,
     _source: Box<dyn Any>,
 }
 
 fn surface(page: CefPageHandle, source: impl Any) -> WuiCefSurface {
-    let viewport = CefViewport::new();
-    let gpu_surface = GpuSurface::new(gpu_view(page.clone(), viewport.clone())).into_ffi();
+    let gpu_surface = GpuSurface::new(gpu_view(page.clone())).into_ffi();
     WuiCefSurface {
         gpu_surface,
         state: Box::into_raw(Box::new(WuiCefSurfaceState {
             page,
-            viewport,
             _source: Box::new(source),
         })),
     }
@@ -251,7 +217,6 @@ pub unsafe extern "C" fn waterui_cef_surface_set_viewport(
     scale: f64,
 ) {
     let state = borrow_state(state);
-    state.viewport.set_scale(scale);
     assert!(
         scale <= f64::from(f32::MAX),
         "CEF viewport scale exceeds f32"

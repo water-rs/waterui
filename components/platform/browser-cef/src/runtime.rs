@@ -486,6 +486,10 @@ struct RuntimeInner {
     _library: LoadedCefLibrary,
     pump_requests: Receiver<PumpDeadline>,
     next_pump: Cell<Instant>,
+    /// Whether [`CefRuntime::start_message_pump`] already spawned this runtime's
+    /// pump task. The `WebView` and Chromium installs share one runtime and both
+    /// need it running, so the second call must not start a second loop.
+    pump_running: Cell<bool>,
     #[cfg(any(feature = "chromium", feature = "webview"))]
     cache_root: PathBuf,
     _sandbox: PlatformSandbox,
@@ -604,6 +608,7 @@ impl CefRuntime {
                 _library: library,
                 pump_requests,
                 next_pump: Cell::new(Instant::now()),
+                pump_running: Cell::new(false),
                 #[cfg(any(feature = "chromium", feature = "webview"))]
                 cache_root,
                 _sandbox: sandbox,
@@ -638,6 +643,43 @@ impl CefRuntime {
             self.inner.next_pump.set(now + MAXIMUM_PUMP_INTERVAL);
         }
         PumpDeadline(self.inner.next_pump.get())
+    }
+
+    /// Drives this runtime's external message pump from `WaterUI`'s UI executor.
+    ///
+    /// CEF's browser-process loop runs on the thread that initialized it — the
+    /// UI thread — and it has to keep running whether or not anything is being
+    /// drawn. A page only produces frames while Chromium is pumped, and a
+    /// renderer that skips idle frames stops drawing exactly when a page has
+    /// nothing new to show, so a pump that lives inside rendering deadlocks the
+    /// two against each other: no frame, no pump, no frame. This task is
+    /// therefore independent of every surface, and a page that wakes up asks
+    /// for a redraw through the frame sink's waker.
+    ///
+    /// The loop is paced by CEF itself: [`Self::pump`] returns the instant
+    /// Chromium asked to be called back at, and the task sleeps exactly that
+    /// long. Calling this more than once for one runtime is a no-op — the
+    /// `WebView` and Chromium installs share a runtime and both ask for it.
+    ///
+    /// The task holds no strong reference to the runtime and ends when the last
+    /// one is dropped.
+    pub fn start_message_pump(&self) {
+        if self.inner.pump_running.replace(true) {
+            return;
+        }
+        let runtime = Rc::downgrade(&self.inner);
+        executor_core::spawn_local(async move {
+            loop {
+                let Some(inner) = runtime.upgrade() else {
+                    return;
+                };
+                // The strong reference must not be held across the await, or
+                // this task would keep CEF alive for the life of the process.
+                let deadline = Self { inner }.pump().instant();
+                futures_timer::Delay::new(deadline.saturating_duration_since(Instant::now())).await;
+            }
+        })
+        .detach();
     }
 
     /// Creates the standard `WebView` controller backed by this runtime.

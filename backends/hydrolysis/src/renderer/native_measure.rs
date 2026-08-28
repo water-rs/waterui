@@ -81,8 +81,6 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<ResolvedMorphShape>);
         $macro!(Native<MapConfig>);
         $macro!(WebView);
-        #[cfg(feature = "chromium")]
-        $macro!(ChromiumView);
     };
 }
 

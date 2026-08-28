@@ -7,7 +7,8 @@ use std::rc::Rc;
 use waterui_core::env::use_env;
 use waterui_core::extract::{ExtractionState, Extractor};
 use waterui_core::layout::StretchAxis;
-use waterui_core::{Environment, Error, View, impl_debug, raw_view};
+use waterui_core::view::{Hook, ViewConfiguration};
+use waterui_core::{AnyView, Environment, Error, Native, NativeView, View, impl_debug};
 use waterui_url::Url;
 
 use crate::{CdpError, CdpSession, ChromiumController, CustomCdpSession};
@@ -387,7 +388,42 @@ impl ChromiumView {
     }
 }
 
-raw_view!(ChromiumView, StretchAxis::Both);
+// A backend that hosts Chromium natively takes `ChromiumView` by type before
+// `View::body` runs; the CEF runtime an application links installs a
+// `Hook<ChromiumView>` that draws the page into a GPU surface. `raw_view!` would
+// hard-code the second half away.
+impl NativeView for ChromiumView {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
+/// What a build with neither a native host nor a linked Chromium runtime draws.
+///
+/// A visible Chromium page cannot be approximated, so this is the panicking
+/// `Native` leaf `raw_view!` produced: asking for Chromium without a runtime is
+/// a configuration error, not a missing pixel.
+impl ViewConfiguration for ChromiumView {
+    type View = Native<Self>;
+
+    fn render(self) -> Self::View {
+        Native::new(self)
+    }
+}
+
+impl View for ChromiumView {
+    fn body(self, env: &Environment) -> impl View {
+        if let Some(hook) = env.get::<Hook<Self>>() {
+            AnyView::new(hook.apply(env, self))
+        } else {
+            AnyView::new(self.render())
+        }
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
 
 /// Deferred visible Chromium component.
 #[derive(Debug, Clone)]

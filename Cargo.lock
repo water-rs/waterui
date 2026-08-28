@@ -1595,6 +1595,7 @@ name = "cef_webview_example"
 version = "0.1.0"
 dependencies = [
  "waterui",
+ "waterui-browser-cef",
  "webview-example",
 ]
 
@@ -1674,6 +1675,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "waterui",
+ "waterui-browser-cef",
  "waterui-chromium",
 ]
 
@@ -4950,10 +4952,7 @@ dependencies = [
  "waterui",
  "waterui-assets",
  "waterui-backend-core",
- "waterui-browser-cef",
- "waterui-browser-wpe",
  "waterui-canvas",
- "waterui-chromium",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
@@ -12446,6 +12445,7 @@ dependencies = [
  "dirs",
  "executor-core",
  "futures",
+ "futures-timer",
  "keycode",
  "kurbo 0.13.1",
  "libloading 0.9.0",
@@ -12692,7 +12692,6 @@ name = "waterui-ffi"
 version = "0.3.0"
 dependencies = [
  "async-channel",
- "async-io",
  "base64 0.22.1",
  "bytemuck",
  "cbindgen",
@@ -12822,9 +12821,6 @@ dependencies = [
  "waterui",
  "waterui-assets",
  "waterui-backend-core",
- "waterui-browser-cef",
- "waterui-browser-wpe",
- "waterui-chromium",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
@@ -13608,6 +13604,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "waterui",
+ "waterui-browser-wpe",
 ]
 
 [[package]]

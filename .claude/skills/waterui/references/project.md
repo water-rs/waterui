@@ -96,8 +96,6 @@ bundle_identifier = "dev.example.myapp"
 # assets_path = "assets"                  # default
 # accessory = false                       # macOS: build as a headless accessory app
 
-webview_backend = "default"               # default | system | wpe | cef
-
 [theme]
 background = "#0B0B0F"
 surface = "#15151C"

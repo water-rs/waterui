@@ -42,33 +42,3 @@ pub use runner::{
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;
-
-// Cargo features are additive, so two crates in one build can each select a different
-// WebView engine and silently produce a configuration that defines the engine-specific
-// items twice. Fail with an explanation instead of a duplicate-definition error. The
-// checks are written against the build-script aliases so they cannot drift from the
-// conditions the engine code itself uses.
-#[cfg(all(hydrolysis_macos_system_webview, hydrolysis_cef_webview))]
-compile_error!(
-    "Hydrolysis selects exactly one WebView engine: `webview-system` (or `webview-default`) and `webview-cef` are both enabled on macOS"
-);
-#[cfg(all(hydrolysis_linux_wpe_webview, hydrolysis_cef_webview))]
-compile_error!(
-    "Hydrolysis selects exactly one WebView engine: `webview-wpe` (or `webview-default`) and `webview-cef` are both enabled on Linux"
-);
-
-/// Executes the process as a packaged CEF subprocess helper.
-///
-/// # Panics
-///
-/// Panics when this backend was built without a CEF-backed browser component,
-/// or when the process was not launched with a Chromium subprocess type.
-#[must_use]
-pub fn run_browser_subprocess() -> i32 {
-    #[cfg(any(hydrolysis_cef_webview, feature = "chromium"))]
-    {
-        waterui_browser_cef::run_packaged_subprocess()
-    }
-    #[cfg(not(any(hydrolysis_cef_webview, feature = "chromium")))]
-    panic!("this Hydrolysis backend was built without a CEF browser component")
-}
