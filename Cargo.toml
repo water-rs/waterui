@@ -88,7 +88,10 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 bitflags = "2.13.1"
 blocking = "1.6.2"
 executor-core = { version = "0.7.1", features = ["std"]}
-futures = "0.3"
+# No crate in this workspace runs a future on `futures`' own executor — every
+# host installs its own `LocalExecutor` — so the default `executor` feature is
+# off. (waterkit keeps it: its streaming code does `block_on`.)
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 futures-lite = "2.6"
 geo = { version = "0.32", default-features = false }
 getrandom = "0.2"
@@ -112,7 +115,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0.19"
 url = "2.5"
-uuid = { version = "1.24.0", features = ["v4"] }
+uuid = { version = "1.24.0", default-features = false, features = ["v4", "std"] }
 waterui-core = { version = "0.3.0", path = "core" }
 waterui-str = { version = "0.3.0", path = "utils/str" }
 waterui-url = { version = "0.3.0", path = "utils/url" }
@@ -234,7 +237,9 @@ windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation"] }
 zbus = "5"
 minstant = "0.1"
 cpu-time = "1.0"
-sysinfo = "0.39"
+# Only the process table is read (`ProcessesToUpdate`, `Pid`), so the disk,
+# network, component-temperature and user backends are not built.
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 sys-locale = "0.3"
 iana-time-zone = "0.1"
 dirs = "6"
