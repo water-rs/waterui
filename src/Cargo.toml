@@ -51,6 +51,11 @@ waterui-chart = { workspace = true, optional = true }
 waterui-barcode = { workspace = true, optional = true }
 waterui-map = { workspace = true, optional = true }
 waterui-particle = { workspace = true, optional = true }
+# The self-drawn realizations. Selected by `video-gpu` / `map-gpu` rather than
+# by `video` / `map`, because whether they are the realization is a property of
+# the platform's own frameworks, not of the semantic component.
+waterui-video-gpu = { workspace = true, optional = true }
+waterui-map-gpu = { workspace = true, optional = true }
 
 async-fs = "2.2.0"
 pastey.workspace = true
@@ -128,6 +133,15 @@ gpu = [
 assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "media"]
 media = ["dep:waterui-media", "video"]
 video = ["dep:waterui-video"]
+# `WaterUI`'s own GPU video player, installed as the video realization. Not
+# implied by `video`: Apple bridges AVPlayer, so an Apple application would
+# otherwise link and pay for a player it never runs. The backend that has no
+# native player to bridge selects this.
+video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
+# `WaterUI`'s own vector map, installed as the map realization unless a backend
+# already registered a native one. Not implied by `map`, for the same reason
+# `video-gpu` is not implied by `video`: Apple bridges MapKit.
+map-gpu = ["map", "gpu", "dep:waterui-map-gpu"]
 webview = ["dep:waterui-webview"]
 chart = ["dep:waterui-chart"]
 barcode = ["dep:waterui-barcode"]
@@ -159,6 +173,8 @@ all = [
     "chart",
     "barcode",
     "map",
+    "map-gpu",
+    "video-gpu",
     "particle",
     "navigation-restoration",
     "snackbar",
