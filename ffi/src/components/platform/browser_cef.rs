@@ -1,6 +1,6 @@
 //! C ABI for the optional CEF runtime used by native renderers.
 
-use std::any::Any;
+use std::{any::Any, fmt};
 
 #[cfg(any(feature = "webview-cef", feature = "cef-header"))]
 use waterui_browser_cef::CefWebViewHandle;
@@ -36,8 +36,9 @@ pub(crate) fn configure_environment(env: &mut Environment) {
 
 /// GPU surface plus retained CEF input and semantic state.
 #[repr(C)]
+#[derive(Debug)]
 pub struct WuiCefSurface {
-    /// GPU presenter consumed by WaterUI's native GPU surface host.
+    /// GPU presenter consumed by `WaterUI`'s native GPU surface host.
     pub gpu_surface: WuiGpuSurface,
     /// Opaque input state retained until [`waterui_cef_surface_drop`].
     pub state: *mut WuiCefSurfaceState,
@@ -45,7 +46,7 @@ pub struct WuiCefSurface {
 
 /// Modifier snapshot for CEF pointer and keyboard input.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct WuiCefInputModifiers {
     /// Shift key.
     pub shift: bool,
@@ -79,7 +80,7 @@ impl From<WuiCefInputModifiers> for CefInputModifiers {
 
 /// Pointer buttons supported by CEF windowless rendering.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum WuiCefPointerButton {
     /// Primary pointer button.
     Primary,
@@ -101,7 +102,7 @@ impl From<WuiCefPointerButton> for CefPointerButton {
 
 /// Editing operations forwarded to Chromium's focused frame.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum WuiCefEditCommand {
     /// Undo.
     Undo,
@@ -117,9 +118,22 @@ pub enum WuiCefEditCommand {
     SelectAll,
 }
 
+/// Opaque CEF state the native backend owns for the surface's lifetime.
+///
+/// Keeps the page handle every input and navigation entry point addresses, plus
+/// the semantic view the page was created from, alive until
+/// [`waterui_cef_surface_drop`].
 pub struct WuiCefSurfaceState {
     page: CefPageHandle,
     _source: Box<dyn Any>,
+}
+
+impl fmt::Debug for WuiCefSurfaceState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Neither the CEF page handle nor the type-erased source view has a
+        // Debug representation, so only the state's identity is reported.
+        f.debug_struct("WuiCefSurfaceState").finish_non_exhaustive()
+    }
 }
 
 fn surface(page: CefPageHandle, source: impl Any) -> WuiCefSurface {
@@ -158,15 +172,24 @@ impl IntoFFI for ChromiumView {
 #[cfg(any(feature = "chromium", feature = "cef-header"))]
 ffi_view!(ChromiumView, WuiCefSurface, chromium, any());
 
-/// Consumes a standard WebView whose selected engine is CEF.
+/// Consumes a standard `WebView` whose selected engine is CEF.
 ///
 /// # Safety
 ///
 /// `view` must be a valid owning `WuiAnyView` containing `Native<WebView>`.
+///
+/// # Panics
+///
+/// Panics when the web view's engine handle was not produced by the CEF runtime
+/// this build selected.
 #[cfg(any(feature = "webview-cef", feature = "cef-header"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_force_as_cef_webview(view: *mut WuiAnyView) -> WuiCefSurface {
+    // SAFETY: the caller contract makes `view` an owning `WuiAnyView` handle,
+    // which is exactly what `IntoRust` reclaims here; it is consumed once.
     let any: waterui::AnyView = unsafe { IntoRust::into_rust(view) };
+    // SAFETY: the caller contract states the handle holds `Native<WebView>`, so
+    // that is the concrete type the erased view was built from.
     let view = unsafe { *any.downcast_unchecked::<waterui_core::Native<WebView>>() }.into_inner();
     let page = view
         .handle()
@@ -177,7 +200,15 @@ pub unsafe extern "C" fn waterui_force_as_cef_webview(view: *mut WuiAnyView) -> 
     surface(page, view)
 }
 
-fn borrow_state<'a>(state: *const WuiCefSurfaceState) -> &'a WuiCefSurfaceState {
+/// Reborrows the state handle every CEF surface entry point receives.
+///
+/// # Safety
+///
+/// `state` must be a live state returned by a CEF force-as function that stays
+/// alive and unaliased for the duration of the returned `'a` borrow.
+const unsafe fn borrow_state<'a>(state: *const WuiCefSurfaceState) -> &'a WuiCefSurfaceState {
+    // SAFETY: this function's own contract is exactly `borrow_ffi`'s: a live,
+    // initialized state that outlives the borrow it hands back.
     unsafe { crate::borrow_ffi(state) }
 }
 
@@ -191,7 +222,9 @@ pub unsafe extern "C" fn waterui_cef_surface_set_focus(
     state: *const WuiCefSurfaceState,
     focused: bool,
 ) {
-    borrow_state(state).page.set_focus(focused);
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }.page.set_focus(focused);
 }
 
 /// Requests one compositor frame for a visible CEF surface.
@@ -201,7 +234,9 @@ pub unsafe extern "C" fn waterui_cef_surface_set_focus(
 /// `state` must be a live state returned by a CEF force-as function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_cef_surface_request_frame(state: *const WuiCefSurfaceState) {
-    borrow_state(state).page.request_frame();
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }.page.request_frame();
 }
 
 /// Updates the logical browser viewport and device scale.
@@ -209,6 +244,11 @@ pub unsafe extern "C" fn waterui_cef_surface_request_frame(state: *const WuiCefS
 /// # Safety
 ///
 /// `state` must be a live state returned by a CEF force-as function.
+///
+/// # Panics
+///
+/// Panics when `scale` is not a positive, finite device-pixel ratio that `f32`
+/// can represent, and when `width` or `height` is zero.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_cef_surface_set_viewport(
     state: *const WuiCefSurfaceState,
@@ -216,12 +256,23 @@ pub unsafe extern "C" fn waterui_cef_surface_set_viewport(
     height: u32,
     scale: f64,
 ) {
-    let state = borrow_state(state);
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    let state = unsafe { borrow_state(state) };
     assert!(
-        scale <= f64::from(f32::MAX),
-        "CEF viewport scale exceeds f32"
+        scale.is_finite() && scale > 0.0 && scale <= f64::from(f32::MAX),
+        "CEF viewport scale must be a positive, finite device-pixel ratio representable as f32, got {scale}"
     );
-    state.page.set_viewport(width, height, scale as f32);
+    // Chromium's device scale factor is natively `f32`; the C ABI carries it as
+    // `double` because that is what the platform callers already hold. The
+    // assertion above rules out the truncation that matters — an out-of-range
+    // magnitude — leaving only the precision a scale factor never needs.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "narrowing to CEF's own f32 device scale factor, range-checked directly above"
+    )]
+    let scale = scale as f32;
+    state.page.set_viewport(width, height, scale);
 }
 
 /// Navigates the CEF surface backward.
@@ -231,7 +282,9 @@ pub unsafe extern "C" fn waterui_cef_surface_set_viewport(
 /// `state` must be a live state returned by a CEF force-as function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_cef_surface_go_back(state: *const WuiCefSurfaceState) {
-    borrow_state(state).page.go_back();
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }.page.go_back();
 }
 
 /// Navigates the CEF surface forward.
@@ -241,7 +294,9 @@ pub unsafe extern "C" fn waterui_cef_surface_go_back(state: *const WuiCefSurface
 /// `state` must be a live state returned by a CEF force-as function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_cef_surface_go_forward(state: *const WuiCefSurfaceState) {
-    borrow_state(state).page.go_forward();
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }.page.go_forward();
 }
 
 /// Sends pointer movement in surface-local logical coordinates.
@@ -256,7 +311,9 @@ pub unsafe extern "C" fn waterui_cef_surface_pointer_move(
     y: f64,
     modifiers: WuiCefInputModifiers,
 ) {
-    borrow_state(state)
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }
         .page
         .pointer_move(x, y, modifiers.into());
 }
@@ -275,9 +332,15 @@ pub unsafe extern "C" fn waterui_cef_surface_pointer_button(
     y: f64,
     modifiers: WuiCefInputModifiers,
 ) {
-    borrow_state(state)
-        .page
-        .pointer_button(pressed, button.into(), x, y, modifiers.into());
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }.page.pointer_button(
+        pressed,
+        button.into(),
+        x,
+        y,
+        modifiers.into(),
+    );
 }
 
 /// Sends a CEF wheel event.
@@ -294,7 +357,9 @@ pub unsafe extern "C" fn waterui_cef_surface_scroll(
     delta_y: f64,
     modifiers: WuiCefInputModifiers,
 ) {
-    borrow_state(state)
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }
         .page
         .scroll(x, y, delta_x, delta_y, modifiers.into());
 }
@@ -306,6 +371,10 @@ pub unsafe extern "C" fn waterui_cef_surface_scroll(
 /// # Safety
 ///
 /// `state` must be a live state returned by a CEF force-as function.
+///
+/// # Panics
+///
+/// Panics when `character` is non-zero but not a Unicode scalar value.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_cef_surface_key(
     state: *const WuiCefSurfaceState,
@@ -319,7 +388,9 @@ pub unsafe extern "C" fn waterui_cef_surface_key(
         char::from_u32(character)
             .unwrap_or_else(|| panic!("CEF key character is not a Unicode scalar: {character}"))
     });
-    borrow_state(state).page.key(
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }.page.key(
         pressed,
         CefKeyInput {
             native_keycode,
@@ -342,8 +413,12 @@ pub unsafe extern "C" fn waterui_cef_surface_commit_text(
     replacement_start: u32,
     replacement_end: u32,
 ) {
+    // SAFETY: the caller contract makes `text` an owning `WuiStr`, which is
+    // exactly what `into_rust` reclaims; it is consumed once.
     let text: waterui::Str = unsafe { text.into_rust() };
-    borrow_state(state).page.commit_text(
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }.page.commit_text(
         text.as_str(),
         optional_cef_range(replacement_start, replacement_end),
     );
@@ -363,8 +438,12 @@ pub unsafe extern "C" fn waterui_cef_surface_set_composition(
     replacement_start: u32,
     replacement_end: u32,
 ) {
+    // SAFETY: the caller contract makes `text` an owning `WuiStr`, which is
+    // exactly what `into_rust` reclaims; it is consumed once.
     let text: waterui::Str = unsafe { text.into_rust() };
-    borrow_state(state).page.set_composition(
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }.page.set_composition(
         text.as_str(),
         selection_start,
         selection_end,
@@ -394,7 +473,11 @@ pub unsafe extern "C" fn waterui_cef_surface_finish_composition(
     state: *const WuiCefSurfaceState,
     keep_selection: bool,
 ) {
-    borrow_state(state).page.finish_composition(keep_selection);
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }
+        .page
+        .finish_composition(keep_selection);
 }
 
 /// Cancels active IME composition.
@@ -404,7 +487,9 @@ pub unsafe extern "C" fn waterui_cef_surface_finish_composition(
 /// `state` must be a live state returned by a CEF force-as function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_cef_surface_cancel_composition(state: *const WuiCefSurfaceState) {
-    borrow_state(state).page.cancel_composition();
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    unsafe { borrow_state(state) }.page.cancel_composition();
 }
 
 /// Executes an editing command in Chromium's focused frame.
@@ -417,7 +502,9 @@ pub unsafe extern "C" fn waterui_cef_surface_edit(
     state: *const WuiCefSurfaceState,
     command: WuiCefEditCommand,
 ) {
-    let page = &borrow_state(state).page;
+    // SAFETY: the caller contract stated above is `borrow_state`'s: a live CEF
+    // surface state, borrowed only for this call.
+    let page = &unsafe { borrow_state(state) }.page;
     match command {
         WuiCefEditCommand::Undo => page.undo(),
         WuiCefEditCommand::Redo => page.redo(),
@@ -435,10 +522,12 @@ pub unsafe extern "C" fn waterui_cef_surface_edit(
 /// `state` must be returned by a CEF force-as function and consumed once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_cef_surface_drop(state: *mut WuiCefSurfaceState) {
+    // SAFETY: the caller contract makes `state` the pointer a force-as function
+    // handed out from `Box::into_raw`, consumed exactly once here.
     drop(unsafe { Box::from_raw(state) });
 }
 
-/// Installs the CEF-compatible `NSApplication` subclass before AppKit starts.
+/// Installs the CEF-compatible `NSApplication` subclass before `AppKit` starts.
 #[cfg(target_os = "macos")]
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_cef_prepare_macos_application() {
