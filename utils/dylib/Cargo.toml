@@ -21,8 +21,21 @@ crate-type = ["dylib", "rlib"]
 waterui-internal.workspace = true
 
 [features]
-default = ["gpu", "assets", "media", "webview", "inspector", "snackbar"]
+default = [
+    "gpu",
+    "assets",
+    "media",
+    "webview",
+    "inspector",
+    "snackbar",
+    "highlight",
+    "locale-datetime",
+    "locale-list",
+]
 gpu = ["waterui-internal/gpu"]
+highlight = ["waterui-internal/highlight"]
+locale-datetime = ["waterui-internal/locale-datetime"]
+locale-list = ["waterui-internal/locale-list"]
 inspector = ["waterui-internal/inspector"]
 assets = ["waterui-internal/assets"]
 media = ["waterui-internal/media", "video"]
@@ -38,7 +51,13 @@ navigation-restoration = ["waterui-internal/navigation-restoration"]
 snackbar = ["waterui-internal/snackbar"]
 flow-markdown = ["waterui-internal/flow-markdown"]
 std = ["waterui-internal/std"]
-all = ["waterui-internal/all", "navigation-restoration"]
+all = [
+    "waterui-internal/all",
+    "navigation-restoration",
+    "highlight",
+    "locale-datetime",
+    "locale-list",
+]
 
 [lints]
 workspace = true

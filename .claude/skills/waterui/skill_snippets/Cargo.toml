@@ -35,7 +35,8 @@ waterui-icons-lucide.workspace = true
 # Direct-crate dependencies the skill's own snippets name.
 waterui-canvas.workspace = true                              # media.md, Canvas
 waterui-graphics = { workspace = true, features = ["gpu"] }  # styling.md, GPU gradients
-waterui-locale.workspace = true                              # i18n.md, formatting
+# i18n.md, formatting: dates, numbers and currency.
+waterui-locale = { workspace = true, features = ["datetime", "number"] }
 waterui-map-gpu.workspace = true                             # media.md, tile source
 waterui-url.workspace = true                                 # media.md, MapGpuOptions
 waterkit-permission.workspace = true                         # project.md, runtime permissions

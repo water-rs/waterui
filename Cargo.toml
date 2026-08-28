@@ -250,11 +250,29 @@ waterui-testing = { path = "testing" }
 hydrolysis-m3 = { path = "backends/hydrolysis_m3" }
 
 [features]
-default = ["gpu", "assets", "media", "inspector", "snackbar"]
+default = [
+    "gpu",
+    "assets",
+    "media",
+    "inspector",
+    "snackbar",
+    "highlight",
+    "locale-datetime",
+    "locale-list",
+]
+# The locale formatters reachable through `waterui::locale`. Default-on so the
+# module keeps its full surface; a lean build starts from
+# `default-features = false` and names what it needs.
+locale-datetime = ["waterui-internal/locale-datetime", "waterui-dylib?/locale-datetime"]
+locale-list = ["waterui-internal/locale-list", "waterui-dylib?/locale-list"]
 # GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
 # so every existing consumer is unaffected. Disable it to cross-compile a lean
 # WaterUI app for embedded targets without the GPU stack.
 gpu = ["waterui-internal/gpu", "waterui-dylib?/gpu"]
+# The `Code` widget and the bundled syntect highlighter behind it. Default-on
+# because `code(…)` is a plain authoring API; opting out drops syntect, two-face
+# and the syntax and theme tables they carry.
+highlight = ["waterui-internal/highlight", "waterui-dylib?/highlight"]
 inspector = ["waterui-internal/inspector", "waterui-dylib?/inspector"]
 inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
 snackbar = ["waterui-internal/snackbar", "waterui-dylib?/snackbar"]
@@ -289,6 +307,9 @@ dynamic_linking = ["dep:waterui-dylib"]
 all = [
     "std",
     "gpu",
+    "highlight",
+    "locale-datetime",
+    "locale-list",
     "inspector",
     "inspector-signals",
     "assets",

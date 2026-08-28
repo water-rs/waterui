@@ -64,6 +64,7 @@ pub mod prelude {
         metadata, navigation, reactive, regional, shape, signal, style, task, text, widget, window,
     };
 
+    #[cfg(feature = "flow-markdown")]
     pub use crate::include_markdown;
 
     pub use super::color::*;

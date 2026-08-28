@@ -1,7 +1,7 @@
 //! CLDR plural rules using ICU4X.
 
 use icu_plurals::PluralRules;
-use num::ToPrimitive;
+use num_traits::ToPrimitive;
 
 use crate::locale::Locale;
 

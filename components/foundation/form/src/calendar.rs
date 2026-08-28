@@ -7,8 +7,11 @@ use alloc::{
 };
 use core::{num::NonZeroUsize, ops::RangeInclusive};
 
+// `Timestamp::now` reads the system clock, which only exists with `std`.
+#[cfg(feature = "std")]
+use jiff::Timestamp;
 use jiff::{
-    Timestamp, ToSpan,
+    ToSpan,
     civil::{Date, Weekday},
 };
 use nami::{Binding, Computed, SignalExt, collection::SignalCollection, signal::IntoComputed};

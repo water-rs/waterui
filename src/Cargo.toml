@@ -27,7 +27,10 @@ waterui-navigation.workspace = true
 waterui-form.workspace = true
 waterui-controls.workspace = true
 waterui-webview = { workspace = true, optional = true }
-waterui-locale.workspace = true
+# `number` is not optional here: `text!` interpolates every numeric argument
+# through `waterui_locale::LocalizedArgument`, so a WaterUI application that
+# formats a number into a string already depends on it.
+waterui-locale = { workspace = true, features = ["number"] }
 waterkit-screen = { workspace = true, optional = true }
 executor-core.workspace = true
 futures.workspace = true
@@ -35,7 +38,7 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
 async-channel.workspace = true
 minstant.workspace = true
-pulldown-cmark = "0.13"
+pulldown-cmark = { version = "0.13", optional = true }
 waterui-macros.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
 waterui-icon.workspace = true
@@ -96,7 +99,26 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
 
 [features]
-default = ["gpu", "assets", "media", "inspector", "snackbar"]
+default = [
+    "gpu",
+    "assets",
+    "media",
+    "inspector",
+    "snackbar",
+    "highlight",
+    "locale-datetime",
+    "locale-list",
+]
+# `waterui::locale` is this crate's re-export of `waterui-locale`, so the
+# formatters an application can reach through it are selected here. Both are
+# default-on to keep that surface whole; a lean build already starts from
+# `default-features = false` and names what it wants.
+locale-datetime = ["waterui-locale/datetime"]
+locale-list = ["waterui-locale/list"]
+# The `Code` widget and the bundled syntect highlighter behind it. Default-on,
+# because `code(…)` is a plain authoring API; an application that shows no code
+# drops syntect, two-face, and their syntax and theme tables by opting out.
+highlight = ["waterui-text/highlight"]
 # The devtools Inspector hub and its wire protocol. Default-on for
 # development hosts; embedded firmware disables it — the hub is desktop
 # tooling, and its 64-bit sequence counters do not even exist on RV32
@@ -139,7 +161,16 @@ barcode = ["dep:waterui-barcode"]
 map = ["dep:waterui-map"]
 particle = ["dep:waterui-particle"]
 navigation-restoration = ["waterui-navigation/serde"]
+# Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
+# with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which
+# re-highlights fenced code with tree-sitter grammars. Off by default — a
+# CommonMark parser and a dozen grammars are a lot of binary for an application
+# that shows no Markdown.
 flow-markdown = [
+    "dep:pulldown-cmark",
+    "waterui-text/markdown",
+    # A fenced code block in a `RichText` renders through the `Code` widget.
+    "highlight",
     "dep:tree-sitter",
     "dep:tree-sitter-md",
     "dep:tree-sitter-rust",
@@ -157,6 +188,9 @@ std = ["dep:waterkit-haptic"]
 all = [
     "std",
     "gpu",
+    "highlight",
+    "locale-datetime",
+    "locale-list",
     "assets",
     "media",
     "webview",
