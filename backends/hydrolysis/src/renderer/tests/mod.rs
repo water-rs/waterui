@@ -962,6 +962,47 @@ fn container_label_without_role_names_the_container_only() {
     assert_eq!(container.children().len(), 2);
 }
 
+/// A view hook wraps whatever it returns in a snapshot of the environment it was
+/// called with, and layout normalization resolves that body before the naming
+/// scope exists — so the snapshot carries no label, and flattening it replaces
+/// the scoped environment the build installed. Every `Map` in a `map-gpu` build
+/// and every `Video` in a `video-gpu` one sits under such a hook, and
+/// `.a11y_label()` on them named nothing at all: the engine, finding no ambient
+/// label, announced its own generated description instead.
+#[cfg(feature = "accessibility")]
+#[test]
+fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
+    use waterui_core::{AnyView, Native};
+    use waterui_map::{Coordinate, Map, MapConfig, Region};
+
+    let mut env = test_environment();
+    env.insert_hook::<MapConfig, AnyView>(|_env, config| AnyView::new(Native::new(config)));
+    let mut renderer = test_renderer();
+    // The frame matters: a layout container normalizes its children, and it is
+    // normalization that resolves the hooked body — one level above the naming
+    // scope the build installs.
+    let view = Map::new(Region::new(Coordinate::default(), 1.0, 1.0))
+        .a11y_label("City map")
+        .size(120.0, 120.0);
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("a hooked map render must publish an accessibility tree");
+    let labelled = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.label() == Some("City map"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labelled.len(),
+        1,
+        "the hooked map must carry the caller's name, exactly once"
+    );
+    assert_eq!(labelled[0].1.role(), AccessibilityNodeRole::Image);
+}
+
 /// A reactive collection is a container too. Rows are how a tab bar, a menu, or a
 /// sidebar is actually written, so a container node that only appeared for fixed
 /// tuple children would still leave every dynamic list unannounced.
