@@ -121,9 +121,20 @@ jobs:
       # macOS only, because CEF requires its browser process to live in an
       # application bundle; the test stages one and the target does not compile
       # on the other platforms.
-      - name: Lint the CEF real-engine tests
+      #
+      # The same step lints the FFI crate's CEF C ABI, which nothing else
+      # compiles: the workspace pass runs default features and that module is
+      # gated behind `cef-runtime`/`cef-header`, while a workspace-wide
+      # `--all-features` pass is structurally impossible for `waterui-ffi` (see
+      # the ABI `compile_error!` note above). macOS is also the only leg that
+      # sees its `#[cfg(target_os = "macos")]` entry points at all. `cef-header`
+      # is the compile-only feature set, so this buys the lint without a CEF
+      # runtime download, on a workspace this job has already built.
+      - name: Lint the CEF targets
         if: runner.os == 'macOS'
-        run: cargo clippy -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
+        run: |
+          cargo clippy -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
+          cargo clippy -p waterui-ffi --features cef-header --all-targets -- -D warnings
       # `cargo test` rather than nextest: CEF's browser process has to own the
       # main thread, libtest runs test bodies on spawned ones, so the target is
       # `harness = false` and nextest cannot enumerate it.
