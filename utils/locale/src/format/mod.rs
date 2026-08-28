@@ -1,7 +1,10 @@
 //! Locale-aware formatting utilities.
 
+#[cfg(feature = "datetime")]
 pub mod date;
+#[cfg(feature = "number")]
 pub mod number;
+#[cfg(feature = "number")]
 pub mod unit;
 
 use core::fmt::{self, Display};
@@ -77,6 +80,7 @@ impl<T: Display> LocalizedDisplay for T {
 
 /// A directionally isolated, locale-aware interpolation argument used by
 /// WaterUI's `text!` macro.
+#[cfg(feature = "number")]
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct LocalizedArgument<'a, T> {
@@ -84,6 +88,7 @@ pub struct LocalizedArgument<'a, T> {
     locale: &'a Locale,
 }
 
+#[cfg(feature = "number")]
 impl<'a, T> LocalizedArgument<'a, T> {
     /// Creates an interpolation adapter.
     #[must_use]
@@ -92,14 +97,17 @@ impl<'a, T> LocalizedArgument<'a, T> {
     }
 }
 
+#[cfg(feature = "number")]
 struct RawArgument<'a, T: LocalizedDisplay + ?Sized>(&'a T, &'a Locale);
 
+#[cfg(feature = "number")]
 impl<T: LocalizedDisplay + ?Sized> Display for RawArgument<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(self.1, f)
     }
 }
 
+#[cfg(feature = "number")]
 fn numeric_argument<T: LocalizedDisplay + ?Sized>(
     value: &T,
     locale: &Locale,
@@ -125,6 +133,7 @@ fn numeric_argument<T: LocalizedDisplay + ?Sized>(
     numeric.then(|| precision.map_or_else(|| argument.to_string(), |p| format!("{argument:.p$}")))
 }
 
+#[cfg(feature = "number")]
 impl<T: LocalizedDisplay> Display for LocalizedArgument<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("\u{2068}")?;
@@ -154,9 +163,11 @@ impl<T: LocalizedDisplay> Display for LocalizedArgument<'_, T> {
 /// assert_eq!(items.to_localized_string(&locales::EN), "Apple, Banana, and Orange");
 /// assert_eq!(items.to_localized_string(&locales::ZH_CN), "Apple、Banana和Orange");
 /// ```
+#[cfg(feature = "list")]
 #[derive(Debug)]
 pub struct LocalizedList<'a>(pub &'a [&'a str]);
 
+#[cfg(feature = "list")]
 impl LocalizedDisplay for LocalizedList<'_> {
     fn fmt(&self, locale: &Locale, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use icu_list::{
@@ -176,7 +187,7 @@ impl LocalizedDisplay for LocalizedList<'_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "number"))]
 mod tests {
     use super::*;
     use crate::locale::locales;

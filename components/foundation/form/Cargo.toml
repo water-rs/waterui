@@ -13,7 +13,8 @@ categories = ["gui"]
 
 [dependencies]
 jiff.workspace = true
-waterui-locale.workspace = true
+# `calendar.rs` renders month, year and weekday names through `format::date`.
+waterui-locale = { workspace = true, features = ["datetime"] }
 waterui-core.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
@@ -25,25 +26,42 @@ waterui-shape.workspace = true
 waterui-macros.workspace = true
 tracing.workspace = true
 zeroize = { version = "1.9.0", default-features = false }
-bcrypt = "0.19.2"
-regex = "1.13.1"
+bcrypt = { version = "0.19.2", optional = true }
+# `Regex` is only ever matched against form text, so the Unicode tables beyond
+# the perl classes (`\w`, `\d`, `\s`) that character classes need are dead
+# weight, as is the whole `unicode-case`/`unicode-script` set.
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
 
 # The native file dialog exists on desktop/mobile but not on bare embedded
-# (espidf) or wasm; the file-picker form field is target-gated accordingly.
+# (espidf) or wasm; the file-picker form field is target-gated accordingly. It
+# also hands back `std::path::PathBuf`, so it is `std`-gated as well — without
+# that, `--no-default-features` named `std` from a `no_std` crate and did not
+# compile at all.
 [target.'cfg(not(any(target_os = "espidf", target_arch = "wasm32")))'.dependencies]
-waterkit-dialog.workspace = true
+waterkit-dialog = { workspace = true, optional = true }
 
 [features]
 default = ["std"]
-std = []
+std = ["dep:waterkit-dialog"]
+# `SecureString::hash`, which derives a bcrypt hash from the field's contents.
+# Off by default: a form that only collects a password and hands it to a server
+# never hashes it locally, and bcrypt is a cost nobody should pay by accident.
+password-hash = ["dep:bcrypt"]
+# The `Regex` validators. Off by default so a form validated by `Required`,
+# ranges, or its own closures does not link a regex engine.
+regex-validation = ["dep:regex"]
 
 [dev-dependencies]
 hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
+# Both gated surfaces have tests, and neither feature is in `default`. A
+# dev-dependency on itself turns them on for this crate's own test targets
+# without turning them on for anything that depends on the crate.
+waterui-form = { path = ".", features = ["password-hash", "regex-validation"] }
 
 
 [lints]

@@ -9,6 +9,7 @@ use core::{
 
 use alloc::string::{String, ToString};
 use nami::{Binding, SignalExt};
+#[cfg(feature = "regex-validation")]
 use regex::Regex;
 use waterui_controls::text_field::TextField;
 use waterui_core::{Str, View};
@@ -165,6 +166,7 @@ impl_error!(NotMatch, "Value does not match the required pattern.");
 /// A styled string carries its characters in styled runs, so it cannot lend a
 /// `&str` and is matched through its plain text instead; every other string
 /// type goes through the blanket implementation below.
+#[cfg(feature = "regex-validation")]
 impl Validator<StyledStr> for Regex {
     type Err = NotMatch;
 
@@ -181,6 +183,7 @@ impl Validator<StyledStr> for Regex {
 /// `StyledStr` — the value a text field holds — stores its characters in styled
 /// runs and cannot lend a `&str`, so it needs the implementation above and a
 /// blanket one would collide with it.
+#[cfg(feature = "regex-validation")]
 impl Validator<Str> for Regex {
     type Err = NotMatch;
 
@@ -193,6 +196,7 @@ impl Validator<Str> for Regex {
     }
 }
 
+#[cfg(feature = "regex-validation")]
 impl Validator<&'static str> for Regex {
     type Err = NotMatch;
 
@@ -205,6 +209,7 @@ impl Validator<&'static str> for Regex {
     }
 }
 
+#[cfg(feature = "regex-validation")]
 impl Validator<String> for Regex {
     type Err = NotMatch;
     fn validate(&self, value: String) -> Result<(), Self::Err> {
@@ -389,6 +394,7 @@ mod tests {
     use super::{Required, Validator};
     use alloc::string::ToString;
     use nami::Binding;
+    #[cfg(feature = "regex-validation")]
     use regex::Regex;
     use waterui_core::Str;
 
@@ -446,6 +452,7 @@ mod tests {
         assert_view(&view);
     }
 
+    #[cfg(feature = "regex-validation")]
     #[test]
     fn required_and_regex_rejects_blank_input() {
         let validator = Validator::<&str>::and(Required, Regex::new("^[a-z]+$").unwrap());

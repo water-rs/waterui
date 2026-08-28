@@ -17,14 +17,30 @@ waterui-graphics.workspace = true
 waterui-str.workspace = true
 waterui-locale.workspace = true
 nami.workspace = true
-syntect = { version = "5", default-features = false, features = ["default-themes", "regex-fancy"] }
-two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
-pulldown-cmark = "0.13"
+syntect = { version = "5", default-features = false, features = ["default-themes", "regex-fancy"], optional = true }
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"], optional = true }
+pulldown-cmark = { version = "0.13", optional = true }
 smallvec.workspace = true
+
+[features]
+default = ["highlight"]
+# `DefaultHighlighter`, the bundled syntect/two-face syntax highlighter, and
+# with it the syntax and theme definitions those two crates carry. `Language`,
+# the `Highlighter` trait and `HighlightChunk` stay unconditional, so an
+# application that installs its own highlighter — or renders code plain — can
+# drop the bundled one without losing the vocabulary the rest of the API speaks.
+highlight = ["dep:syntect", "dep:two-face"]
+# Markdown parsing: `StyledStr::from_markdown` and the `pulldown-cmark` types
+# its inline builder is driven by.
+markdown = ["dep:pulldown-cmark"]
 
 [dev-dependencies]
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
+# This crate's own tests cover the Markdown parser, which is not in `default`.
+# A dev-dependency on itself turns the feature on for this crate's test targets
+# without turning it on for anything that depends on the crate.
+waterui-text = { path = ".", features = ["markdown"] }
 
 [lints]
 workspace = true

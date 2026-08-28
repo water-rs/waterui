@@ -12614,6 +12614,7 @@ dependencies = [
  "waterui",
  "waterui-controls",
  "waterui-core",
+ "waterui-form",
  "waterui-graphics",
  "waterui-layout",
  "waterui-locale",
@@ -12917,13 +12918,14 @@ dependencies = [
  "icu_time",
  "jiff",
  "nami",
- "num",
+ "num-traits",
  "serde",
  "sys-locale",
  "toml 1.1.4+spec-1.1.0",
  "tracing",
  "waterui",
  "waterui-core",
+ "waterui-locale",
  "waterui-str",
 ]
 
@@ -13173,6 +13175,7 @@ dependencies = [
  "waterui-macros",
  "waterui-str",
  "waterui-testing",
+ "waterui-text",
 ]
 
 [[package]]
