@@ -56,8 +56,11 @@ waterui-browser-cef = { workspace = true, optional = true }
 waterui-chromium = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
+# Android's video surface bridge is marshalled through this crate, so the
+# player is a real dependency here. Which realization *renders* video is not
+# this crate's decision any more: the composition root installs it, selected by
+# the application's `waterui/video-gpu` feature.
 waterui-video-gpu = { workspace = true, optional = true }
-waterui-map-gpu = { workspace = true, optional = true }
 tracing-android = "0.2"
 ndk-context = "0.1.1"
 jni = "0.22.4"
@@ -70,10 +73,6 @@ objc2 = "0.6"
 objc2-metal = { version = "0.3", features = ["MTLDevice", "MTLPixelFormat", "MTLTexture"], optional = true }
 wgpu-hal = { workspace = true, features = ["metal"], optional = true }
 waterkit-audio = { workspace = true, default-features = false, features = ["apple-artwork"] }
-
-[target.'cfg(all(not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
-waterui-video-gpu = { workspace = true, optional = true }
-waterui-map-gpu = { workspace = true, optional = true }
 
 
 [[bin]]
@@ -111,7 +110,7 @@ android-jni = ["dep:jni", "dep:bytemuck", "std"]
 # Map support is off by default: the portable realization pulls in the vector
 # tile, styling, and image-decoding stack, which no app that never shows a map
 # should pay for. Apple bridges MapKit instead and only needs the marshalling.
-map = ["dep:waterui-map", "dep:waterui-map-gpu"]
+map = ["dep:waterui-map"]
 # The checked-in `waterui.h` is a superset of every optional surface, so header
 # generation turns them all on. Native backends compile the matching component
 # only when the app enabled that feature.

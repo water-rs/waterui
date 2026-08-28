@@ -13,7 +13,7 @@ mod runtime;
 pub use runtime::inspector;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
-pub use runtime::{app, entry, error, fullscreen, metadata, task, window};
+pub use runtime::{app, entry, error, fullscreen, metadata, realization, task, window};
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.
