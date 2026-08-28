@@ -69,6 +69,66 @@ pub(crate) fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static>(
     scoped
 }
 
+/// Carries the accessibility naming scope across a `Metadata<Environment>`
+/// override.
+///
+/// Naming metadata is *nearest-consumer*: layout normalization deliberately
+/// leaves `.a11y_label()` / `.a11y_role()` / `.a11y_id()` out of the
+/// environments composite bodies snapshot, because a group label baked into one
+/// would relabel every descendant leaf. The build-time `Env` node above is what
+/// the emitting leaf reads instead — which works right up until the body
+/// *itself* produces a snapshot, because flattening one replaces the
+/// environment wholesale and takes that `Env` scope with it.
+///
+/// A view hook does exactly that. [`Hook`](waterui_core::view::Hook) wraps
+/// whatever it returns in a snapshot of the environment it was called with, and
+/// hooks are how the self-drawn realizations install themselves, so with
+/// `map-gpu` or `video-gpu` selected every `Map` and `Video` sits under one.
+/// Without this, `.a11y_label("City map")` on such a map reached neither the
+/// engine — `waterui-map-gpu` only generates its own description when it finds
+/// no ambient label — nor the node hydrolysis emitted, and the caller's name was
+/// silently replaced by a generated one.
+///
+/// Only what the snapshot does not already carry is restored, so a snapshot
+/// taken *below* a naming scope still speaks for itself.
+#[cfg(feature = "accessibility")]
+pub(crate) fn restore_a11y_naming_scope(
+    outer: &Environment,
+    mut snapshot: Environment,
+) -> Environment {
+    macro_rules! restore {
+        ($($ty:ty),+ $(,)?) => {
+            $(
+                if snapshot.get::<$ty>().is_none()
+                    && let Some(value) = outer.get::<$ty>().cloned()
+                {
+                    snapshot.insert(value);
+                }
+            )+
+        };
+    }
+    restore!(
+        AccessibilityLabel,
+        AccessibilityRole,
+        AccessibilityChildren,
+        ScopedAccessibilityIdentifier,
+        // The claim identity travels with the name: carrying the label without
+        // it would let the leaf render the name that a container above still
+        // believes nobody spoke for, and both would emit it.
+        ScopedAccessibilitySemantics,
+    );
+    snapshot
+}
+
+/// Without an accessibility tree there is no naming scope to carry.
+#[cfg(not(feature = "accessibility"))]
+pub(crate) fn restore_a11y_naming_scope(
+    _outer: &Environment,
+    snapshot: Environment,
+) -> Environment {
+    snapshot
+}
+
 /// The `Env` scoping for a static [`AccessibilityState`]: a hidden state
 /// suppresses the whole subtree's emission (a constant can never un-hide), and
 /// the state is stored as a constant [`AccessibilityStateSignal`] so emission
