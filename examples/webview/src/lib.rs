@@ -1,113 +1,90 @@
-//! WebView Example - Demonstrates WaterUI's WebView component
+//! WebView example.
 //!
-//! This example showcases:
-//! - Opening a WebView via the controller injected into the Environment
-//! - Navigation controls (back/forward/refresh/stop)
-//! - URL bar updates from WebView events
-//! - Loading progress and status
-//! - JavaScript injection and execution
-//! - Redirect toggle (opt-in)
+//! The whole web view is described before it exists: `WebView::open` returns a
+//! builder that records the URL it follows, its redirect policy, the user agent,
+//! injected scripts, handlers the page can call, and what to do with its events.
+//! Nothing here reaches into the environment for a controller, and no
+//! subscription guard has to be retained by hand.
+//!
+//! Controls drive the page through [`WebViewProxy`], extracted from the
+//! environment exactly the way `State<T>` is.
 
 use waterui::app::App;
+use waterui::js_api;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::binding;
-use waterui::task::spawn_local;
-use waterui::webview::{ScriptInjectionTime, WebView, WebViewController, WebViewEvent};
+use waterui::webview::{
+    Json, ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent, WebViewProxy,
+};
 
-fn normalize_address_input(input: &str) -> Option<Str> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if waterui::webview::Url::parse(trimmed).is_some() {
-        return Some(Str::from(trimmed.to_owned()));
-    }
-
-    if !trimmed.contains("://") {
-        let with_https = format!("https://{trimmed}");
-        if waterui::webview::Url::parse(&with_https).is_some() {
-            return Some(Str::from(with_https));
-        }
-    }
-
-    None
+/// What the `greet` handler answers with.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Greeting {
+    text: String,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::normalize_address_input;
+/// Everything the page is allowed to reach.
+///
+/// One object instead of a list of `.handler(...)` and `.expose(...)` calls,
+/// each repeating a name as a string that nothing checks. `#[js_api]` writes
+/// those calls from the method names.
+struct PageApi {
+    /// The same binding the toolbar's address field edits, so a write from
+    /// either side moves both.
+    address: Binding<Str>,
+    greetings: Binding<u32>,
+}
 
-    #[test]
-    fn accepts_absolute_url() {
-        let normalized = normalize_address_input("https://waterui.dev");
-        assert_eq!(
-            normalized.as_ref().map(|s| s.as_str()),
-            Some("https://waterui.dev")
-        );
+#[js_api]
+impl PageApi {
+    /// Mirrored state, writable: `waterui.state.address = "https://..."` in the
+    /// page moves the toolbar, because this is one binding with two views onto
+    /// it.
+    fn address(&self) -> Binding<Str> {
+        self.address.clone()
     }
 
-    #[test]
-    fn prefixes_https_for_host_only_input() {
-        let normalized = normalize_address_input("waterui.dev/docs");
-        assert_eq!(
-            normalized.as_ref().map(|s| s.as_str()),
-            Some("https://waterui.dev/docs")
-        );
+    /// Mirrored state, read-only: derived in Rust, so the page may read
+    /// `waterui.state.greetings` and subscribe with `waterui.watch`, while
+    /// assigning to it throws.
+    fn greetings(&self) -> Computed<u32> {
+        self.greetings.clone().computed()
     }
 
-    #[test]
-    fn rejects_empty_or_whitespace() {
-        assert!(normalize_address_input("").is_none());
-        assert!(normalize_address_input("   ").is_none());
+    /// A handler: `await waterui.invoke("greet", { name: "Lexo" })` resolves to
+    /// `{ text: "Hi Lexo" }` — the object, not a string of it.
+    ///
+    /// `async` is how `#[js_api]` tells a handler from mirrored state.
+    async fn greet(&self, name: String) -> Json<Greeting> {
+        self.greetings.set(self.greetings.get() + 1);
+        Json(Greeting {
+            text: format!("Hi {name}"),
+        })
     }
 }
 
-/// Handles WebView events and updates UI state accordingly.
+/// Applies one web view event to the UI state.
 fn handle_webview_event(
     event: WebViewEvent,
-    webview: &WebView,
     status: &Binding<Str>,
     progress_value: &Binding<f64>,
     address: &Binding<Str>,
     allow_redirects: &Binding<bool>,
-    system_user_agent: &Binding<Str>,
 ) {
     match event {
-        WebViewEvent::None => {
-            status.set(Str::from_static("Idle"));
-            progress_value.set(0.0);
-        }
         WebViewEvent::WillNavigate { url } => {
             address.set(Str::from(url.to_string()));
             status.set(Str::from(format!("Navigating to {url}")));
             progress_value.set(0.0);
         }
         WebViewEvent::Loading { progress } => {
-            progress_value.set(progress as f64);
+            progress_value.set(f64::from(progress));
             status.set(Str::from(format!("Loading {:.0}%", progress * 100.0)));
         }
         WebViewEvent::Loaded => {
             status.set(Str::from_static("Loaded"));
             progress_value.set(1.0);
-            let webview = webview.clone();
-            let system_user_agent = system_user_agent.clone();
-            let address = address.clone();
-            spawn_local(async move {
-                if let Ok(url) = webview.run_javascript("location.href").await {
-                    if !url.as_str().is_empty() && url.as_str() != "null" {
-                        address.set(url);
-                    }
-                }
-                if system_user_agent.get().as_str().is_empty() {
-                    if let Ok(ua) = webview.run_javascript("navigator.userAgent").await {
-                        if !ua.as_str().is_empty() && ua.as_str() != "null" {
-                            system_user_agent.set(ua);
-                        }
-                    }
-                }
-            })
-            .detach();
         }
         WebViewEvent::Redirect { from, to } => {
             if allow_redirects.get() {
@@ -121,141 +98,66 @@ fn handle_webview_event(
         WebViewEvent::Error(err) => {
             status.set(Str::from(format!("Error: {err}")));
         }
-        WebViewEvent::StateChanged { .. } => {}
     }
 }
 
-fn main(webview: WebView) -> impl View {
-    let address: Binding<Str> = binding("https://waterui.dev");
-    let status: Binding<Str> = binding("Idle");
-    let progress_value = Binding::f64(0.0);
-    let js_result: Binding<Str> = binding("");
-    let allow_redirects = Binding::bool(false);
-    let system_user_agent: Binding<Str> = binding("");
-    let custom_user_agent: Binding<Str> = binding("");
-
-    // Configure webview with reactive redirect setting
-    let webview = webview.redirects_enabled(allow_redirects.clone());
-
-    let can_go_back = webview.can_go_back();
-    let can_go_forward = webview.can_go_forward();
-
-    if let Some(normalized) = normalize_address_input(address.get().as_str()) {
-        address.set(normalized.clone());
-        webview.go_to(normalized.as_str());
-    } else {
-        status.set(Str::from_static("Invalid URL"));
-    }
-
-    let toolbar = vstack((
+/// The controls beside the page. Every action takes a [`WebViewProxy`], which the
+/// surrounding `with_proxy` scope supplies.
+fn toolbar(
+    status: Binding<Str>,
+    progress_value: Binding<f64>,
+    address: Binding<Str>,
+    allow_redirects: Binding<bool>,
+    js_result: Binding<Str>,
+) -> impl View {
+    vstack((
         text("WebView Playground")
             .title()
             .foreground(theme_color::Foreground),
         hstack((
-            TextField::new(&address),
+            TextField::new("Address", &address).hide_label(),
             button("Go")
                 .style(ButtonStyle::Bordered)
                 .action(
-                    |State(wv): State<WebView>,
+                    |proxy: WebViewProxy,
                      State(addr): State<Binding<Str>>,
                      State(status): State<Binding<Str>>| {
-                        if let Some(normalized) = normalize_address_input(addr.get().as_str()) {
-                            addr.set(normalized.clone());
-                            wv.go_to(normalized.as_str());
+                        if let Some(url) = Url::parse_user_input(addr.get().as_str()) {
+                            addr.set(Str::from(url.as_str().to_owned()));
+                            proxy.go_to(url);
                         } else {
                             status.set(Str::from_static("Invalid URL"));
                         }
                     },
                 )
-                .state(&webview)
                 .state(&address)
                 .state(&status),
         ))
         .spacing(8.0),
         hstack((
-            button("Back")
-                .action(|State(wv): State<WebView>| wv.go_back())
-                .state(&webview)
-                .disabled(can_go_back.clone().map(|b| !b)),
-            button("Forward")
-                .action(|State(wv): State<WebView>| wv.go_forward())
-                .state(&webview)
-                .disabled(can_go_forward.clone().map(|b| !b)),
-        )),
-        hstack((
-            button("Reload")
-                .action(|State(wv): State<WebView>| wv.refresh())
-                .state(&webview),
-            button("Stop")
-                .action(|State(wv): State<WebView>| wv.stop())
-                .state(&webview),
-        )),
-        Toggle::new(&allow_redirects).label(text("Allow redirects")),
-        text!("System User Agent: {system_user_agent}")
-            .font(font::Caption)
-            .foreground(theme_color::MutedForeground),
-        vstack((
-            TextField::new(&custom_user_agent).prompt("Custom user agent (optional)"),
-            button("Apply Custom UA")
-                .style(ButtonStyle::Bordered)
-                .action(
-                    |State(wv): State<WebView>, State(ua): State<Binding<Str>>| {
-                        let user_agent = ua.get();
-                        if user_agent.as_str().trim().is_empty() {
-                            wv.set_user_agent("");
-                        } else {
-                            wv.set_user_agent(user_agent.as_str());
-                        }
-                    },
-                )
-                .state(&webview)
-                .state(&custom_user_agent),
-            button("Reset UA")
-                .style(ButtonStyle::Bordered)
-                .action(|State(wv): State<WebView>| wv.set_user_agent(""))
-                .state(&webview),
+            button("Back").action(|proxy: WebViewProxy| proxy.go_back()),
+            button("Forward").action(|proxy: WebViewProxy| proxy.go_forward()),
+            button("Reload").action(|proxy: WebViewProxy| proxy.refresh()),
+            button("Stop").action(|proxy: WebViewProxy| proxy.stop()),
         ))
         .spacing(8.0),
-        vstack((
-            button("Inject JS")
-                .action(|State(wv): State<WebView>| {
-                    wv.inject_script(
-                        r#"document.documentElement.style.outline = "3px solid #22c55e";"#,
-                        ScriptInjectionTime::DocumentEnd,
-                    );
-                })
-                .state(&webview),
-            button("Get Title (JS)")
-                .style(ButtonStyle::Bordered)
-                .action_async(
-                    |State(wv): State<WebView>, State(result): State<Binding<Str>>| async move {
-                        match wv.run_javascript("document.title").await {
-                            Ok(title) => result.set(title),
-                            Err(err) => result.set(Str::from(format!("JS error: {err}"))),
-                        }
-                    },
-                )
-                .state(&webview)
-                .state(&js_result),
-        )),
+        Toggle::new(text("Allow redirects"), &allow_redirects),
+        button("Get Title (JS)")
+            .style(ButtonStyle::Bordered)
+            .action_async(
+                |proxy: WebViewProxy, State(result): State<Binding<Str>>| async move {
+                    match proxy.run_javascript("document.title").await {
+                        Ok(title) => result.set(title),
+                        Err(err) => result.set(Str::from(format!("JS error: {err}"))),
+                    }
+                },
+            )
+            .state(&js_result),
         vstack((
             text("Status:")
                 .caption()
                 .foreground(theme_color::MutedForeground),
             text!("{status}").body().foreground(theme_color::Foreground),
-            spacer(),
-            text("Back:")
-                .caption()
-                .foreground(theme_color::MutedForeground),
-            text!("{can_go_back}")
-                .body()
-                .foreground(theme_color::Foreground),
-            text("Forward:")
-                .caption()
-                .foreground(theme_color::MutedForeground),
-            text!("{can_go_forward}")
-                .body()
-                .foreground(theme_color::Foreground),
         ))
         .spacing(8.0),
         progress(progress_value.clone()).label(text("Load progress").caption()),
@@ -270,25 +172,7 @@ fn main(webview: WebView) -> impl View {
         .spacing(8.0),
     ))
     .spacing(5.0)
-    .width(250.0);
-
-    let event_signal = WebView::event(&webview);
-    let event_guard = {
-        let webview = webview.clone();
-        event_signal.watch(move |ctx| {
-            handle_webview_event(
-                ctx.into_value(),
-                &webview,
-                &status,
-                &progress_value,
-                &address,
-                &allow_redirects,
-                &system_user_agent,
-            );
-        })
-    };
-
-    hstack((webview, toolbar)).retain(event_guard)
+    .max_width(420.0)
 }
 
 fn missing_controller_view() -> impl View {
@@ -301,11 +185,82 @@ fn missing_controller_view() -> impl View {
     .padding()
 }
 
-pub fn app(env: Environment) -> App {
-    let Some(controller) = env.get::<WebViewController>().cloned() else {
-        return App::new(missing_controller_view, env);
-    };
-    let webview = controller.open();
+#[derive(Debug)]
+struct WebViewDemo;
 
-    App::new(move || main(webview.clone()), env)
+impl View for WebViewDemo {
+    fn body(self, env: &Environment) -> impl View {
+        if env.get::<WebViewController>().is_none() {
+            return AnyView::new(missing_controller_view());
+        }
+
+        let status: Binding<Str> = binding("Idle");
+        let progress_value = Binding::f64(0.0);
+        let address: Binding<Str> = binding("https://waterui.dev");
+        let allow_redirects = Binding::bool(false);
+        let js_result: Binding<Str> = binding("");
+        let greetings: Binding<u32> = binding(0_u32);
+
+        let open = WebView::open("https://waterui.dev")
+            .redirects_enabled(allow_redirects.clone())
+            // Runs on every page load; the page can call back with
+            // `waterui.invoke("logTitle", document.title)`.
+            .inject(
+                "ready-marker",
+                "document.documentElement.dataset.waterui = 'ready';",
+                ScriptInjectionTime::DocumentEnd,
+            )
+            // Hands the page the whole surface at once: `greet` as a handler,
+            // `address` and `greetings` as mirrored state. `.handler(...)` and
+            // `.expose(...)` still exist for one-off cases — this is what they
+            // look like collected onto a type.
+            .serve(PageApi {
+                address: address.clone(),
+                greetings: greetings.clone(),
+            })
+            .on_event({
+                let status = status.clone();
+                let progress_value = progress_value.clone();
+                let address = address.clone();
+                let allow_redirects = allow_redirects.clone();
+                move |event| {
+                    handle_webview_event(
+                        event,
+                        &status,
+                        &progress_value,
+                        &address,
+                        &allow_redirects,
+                    )
+                }
+            });
+
+        AnyView::new(open.with_proxy(move || {
+            toolbar(status, progress_value, address, allow_redirects, js_result)
+        }))
+    }
+}
+
+#[preview]
+pub fn demo() -> impl View {
+    WebViewDemo
+}
+
+/// Builds the example with whichever engine this platform's `WebView` needs.
+///
+/// Selecting the browser engine is the application's job, not the renderer's.
+/// Apple platforms, Android and GTK all bridge a system web engine, so nothing
+/// has to be linked there. Linux without `WebKitGTK` has none to bridge, so the
+/// app links `WaterUI`'s bundled WPE `WebKit` and installs it here — the same
+/// `WebView` code above then draws through it, unchanged.
+#[cfg_attr(
+    not(all(target_os = "linux", feature = "wpe")),
+    expect(
+        unused_mut,
+        reason = "only the platforms with no bridged web engine install one"
+    )
+)]
+pub fn app(mut env: Environment) -> App {
+    #[cfg(all(target_os = "linux", feature = "wpe"))]
+    waterui_browser_wpe::install(&mut env);
+    App::new(demo, env)
 }

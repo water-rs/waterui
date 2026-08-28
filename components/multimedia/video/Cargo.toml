@@ -1,0 +1,27 @@
+[package]
+name = "waterui-video"
+version = "0.3.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Video views and player components for WaterUI"
+keywords = ["video", "player", "ui", "components"]
+categories = ["gui", "multimedia::video"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-url.workspace = true
+nami.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
+
+[features]
+default = []
+
+[lints]
+workspace = true

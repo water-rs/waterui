@@ -21,8 +21,9 @@ use waterui::form::picker::multi_date::MultiDatePicker;
 use waterui::form::picker::{Picker, PickerStyle};
 use waterui::media::Url;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::binding;
-use waterui::shape::RoundedRectangle;
+use waterui::shape::{Rectangle, RoundedRectangle, ShapeExt};
 
 const PICKER_BLUE: Srgb = Srgb::from_hex("#3380CC");
 const PICKER_PINK: Srgb = Srgb::from_hex("#FF4D80");
@@ -39,8 +40,8 @@ enum Fruit {
 }
 
 impl Fruit {
-    fn all() -> Vec<(Self, &'static str)> {
-        vec![
+    const fn all() -> [(Self, &'static str); 5] {
+        [
             (Self::Apple, "Apple"),
             (Self::Banana, "Banana"),
             (Self::Cherry, "Cherry"),
@@ -74,16 +75,19 @@ fn decorated_dates() -> BTreeSet<Date> {
     .collect()
 }
 
-fn main() -> impl View {
+#[preview]
+pub fn demo() -> impl View {
     let automatic_selection = binding(Fruit::Apple);
     let menu_selection = binding(Fruit::Banana);
     let radio_selection = binding(Fruit::Cherry);
 
-    let date = binding(fixed_date(2025, 1, 1));
-    let time_only = binding(fixed_time(14, 30, 0));
-    let datetime = binding(fixed_date_time(2025, 6, 15, 9, 45, 30));
-    let calendar_date = binding(fixed_date(2025, 6, 15));
+    let date: Binding<Date> = binding(fixed_date(2025, 1, 1));
+    let time_only: Binding<Time> = binding(fixed_time(14, 30, 0));
+    let datetime: Binding<DateTime> = binding(fixed_date_time(2025, 6, 15, 9, 45, 30));
+    let calendar_date: Binding<Date> = binding(fixed_date(2025, 6, 15));
+    let calendar_visible_month: Binding<Date> = binding(fixed_date(2025, 6, 1));
     let available_dates = binding(BTreeSet::<Date>::new());
+    let available_visible_month: Binding<Date> = binding(fixed_date(2025, 1, 1));
     let available_date_count = available_dates
         .map(|dates: BTreeSet<Date>| dates.len())
         .computed();
@@ -112,15 +116,21 @@ fn main() -> impl View {
                 text("Choose from different picker presentation styles").body(),
                 spacer(),
                 text("Automatic (default)").bold(),
-                Picker::new(picker_items.clone(), &automatic_selection),
+                Picker::new(
+                    "Automatic (default)",
+                    picker_items.clone(),
+                    &automatic_selection,
+                ),
                 picker_selection_text(&automatic_selection),
                 spacer(),
                 text("Menu Style").bold(),
-                Picker::new(picker_items.clone(), &menu_selection).style(PickerStyle::Menu),
+                Picker::new("Menu Style", picker_items.clone(), &menu_selection)
+                    .style(PickerStyle::Menu),
                 picker_selection_text(&menu_selection),
                 spacer(),
                 text("Radio Style").bold(),
-                Picker::new(picker_items.clone(), &radio_selection).style(PickerStyle::Radio),
+                Picker::new("Radio Style", picker_items.clone(), &radio_selection)
+                    .style(PickerStyle::Radio),
                 picker_selection_text(&radio_selection),
             ))
             .padding_with(EdgeInsets::all(12.0)),
@@ -129,18 +139,14 @@ fn main() -> impl View {
                 text("DatePicker").headline(),
                 text("Select dates and times with platform-native pickers").body(),
                 spacer(),
-                DatePicker::new(&date)
-                    .label("Date Only")
+                DatePicker::new("Date Only", &date)
                     .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31)),
                 text!("Selected date: {date}"),
                 spacer(),
-                DatePicker::time(&time_only)
-                    .label("Time Only")
-                    .ty(DatePickerType::HourMinuteAndSecond),
+                DatePicker::new("Time Only", &time_only).ty(DatePickerType::HourMinuteAndSecond),
                 text!("Selected time: {time_only}"),
                 spacer(),
-                DatePicker::datetime(&datetime)
-                    .label("Date & Time")
+                DatePicker::new("Date & Time", &datetime)
                     .ty(DatePickerType::DateHourMinuteAndSecond),
                 text!("Selected datetime: {datetime}"),
             ))
@@ -151,8 +157,7 @@ fn main() -> impl View {
                 text("Month-grid calendar with single-date selection and passive decorations")
                     .body(),
                 spacer(),
-                Calendar::new(&calendar_date)
-                    .label("Trip Date")
+                Calendar::new("Trip Date", &calendar_date, &calendar_visible_month)
                     .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
                     .decorated(decorated_dates.clone()),
                 text!("Selected calendar date: {calendar_date}"),
@@ -163,10 +168,13 @@ fn main() -> impl View {
                 text("Multi-Date Picker").headline(),
                 text("Month-grid calendar for selecting multiple dates").body(),
                 spacer(),
-                MultiDatePicker::new(&available_dates)
-                    .label("Available Dates")
-                    .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
-                    .decorated(decorated_dates),
+                MultiDatePicker::new(
+                    "Available Dates",
+                    &available_dates,
+                    &available_visible_month,
+                )
+                .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
+                .decorated(decorated_dates),
                 text!("Selected dates: {available_date_count}"),
             ))
             .padding_with(EdgeInsets::all(12.0)),
@@ -175,17 +183,13 @@ fn main() -> impl View {
                 text("ColorPicker").headline(),
                 text("Select colors with optional alpha and HDR support").body(),
                 spacer(),
-                ColorPicker::new(&basic_color).label("Basic Color"),
+                ColorPicker::new("Basic Color", &basic_color),
                 color_preview(&basic_color, "Basic"),
                 spacer(),
-                ColorPicker::new(&alpha_color)
-                    .label("With Alpha")
-                    .support_alpha(true),
+                ColorPicker::new("With Alpha", &alpha_color).with_alpha(),
                 color_preview(&alpha_color, "Alpha"),
                 spacer(),
-                ColorPicker::new(&hdr_color)
-                    .label("HDR Color")
-                    .support_hdr(true),
+                ColorPicker::new("HDR Color", &hdr_color).with_hdr(),
                 color_preview(&hdr_color, "HDR"),
             ))
             .padding_with(EdgeInsets::all(12.0)),
@@ -194,7 +198,7 @@ fn main() -> impl View {
                 text("FilePicker").headline(),
                 text("Select files from the device").body(),
                 spacer(),
-                FilePicker::open(&selected_files).num(5),
+                FilePicker::open("Select Files", &selected_files).max_count(5),
                 spacer(),
                 text("Selected files:").bold(),
                 file_list(&selected_files),
@@ -215,20 +219,28 @@ fn picker_selection_text(selection: &Binding<Fruit>) -> impl View {
 }
 
 fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View {
-    use waterui::shape::{Rectangle, ShapeExt};
-    hstack((
-        text(label).bold(),
-        text(": "),
-        color
-            .clone()
-            .map(|c| {
-                Rectangle
-                    .fill(c)
-                    .size(64.0, 32.0)
-                    .clip(RoundedRectangle::new(0.1))
-            })
-            .computed(),
-    ))
+    hstack((text(label).bold(), text(": "), ColorSwatch::new(color)))
+}
+
+struct ColorSwatch {
+    color: Binding<Color>,
+}
+
+impl ColorSwatch {
+    fn new(color: &Binding<Color>) -> Self {
+        Self {
+            color: color.clone(),
+        }
+    }
+}
+
+impl View for ColorSwatch {
+    fn body(self, _env: &Environment) -> impl View {
+        Rectangle
+            .fill(signal_color(self.color))
+            .size(64.0, 32.0)
+            .clip(RoundedRectangle::new(0.1))
+    }
 }
 
 fn file_list(files: &Binding<Vec<Url>>) -> impl View {
@@ -246,5 +258,5 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

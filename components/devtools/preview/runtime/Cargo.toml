@@ -1,0 +1,39 @@
+[package]
+name = "waterui-preview"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../../../README.md"
+repository.workspace = true
+description = "Preview view component for WaterUI"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+waterui-core.workspace = true
+waterui-layout.workspace = true
+waterui-preview-protocol.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+async-channel = "2.5"
+indexmap = "2"
+blocking = "1.6"
+async-fs = "2.2.0"
+async-process = "2.5.0"
+serde_json = "1.0"
+
+# Async runtime
+async-io = "2.6"
+executor-core.workspace = true
+futures-lite = "2.6"
+
+# Dynamic library loading
+libloading = "0.9"
+
+# PNG encoding
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

@@ -1,10 +1,13 @@
-use std::{mem, str::FromStr};
+use std::{mem, num::NonZeroUsize, str::FromStr};
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
 use waterui_core::{AnyView, Environment, View};
 use waterui_graphics::color::Blue;
-use waterui_layout::spacer::spacer;
-use waterui_layout::stack::{HStack, HorizontalAlignment, VStack, hstack};
+use waterui_layout::{
+    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions,
+    container::FixedContainer,
+    stack::{HStack, HorizontalAlignment, VStack, hstack},
+};
 #[cfg(feature = "media")]
 use waterui_media::{Url, photo::photo as media_photo};
 use waterui_str::Str;
@@ -235,68 +238,228 @@ fn render_table(
     if col_count == 0 {
         return AnyView::new(());
     }
-    let header_row: Vec<AnyView> = (0..col_count)
-        .map(|col_idx| {
-            let header = headers
+
+    let mut cells = Vec::with_capacity(col_count * (rows.len() + 1) + 1);
+    cells.extend((0..col_count).map(|col_idx| {
+        AnyView::new(
+            headers
                 .get(col_idx)
                 .map_or_else(|| Text::from(""), element_to_text)
-                .bold();
-            AnyView::new(table_cell(
-                header,
-                alignments
-                    .get(col_idx)
-                    .copied()
-                    .unwrap_or(MarkdownTableAlignment::None),
-            ))
-        })
-        .collect();
-
-    let mut row_views = Vec::with_capacity(rows.len() + 2);
-    row_views.push(AnyView::new(
-        HStack::from_iter(header_row)
-            .spacing(12.0)
-            .alignment(waterui_layout::stack::VerticalAlignment::Top),
-    ));
-    row_views.push(AnyView::new(Divider));
+                .bold(),
+        )
+    }));
+    cells.push(AnyView::new(Divider));
 
     for row in rows {
-        let cells: Vec<AnyView> = (0..col_count)
-            .map(|col_idx| {
-                let cell = row
-                    .get(col_idx)
-                    .map_or_else(|| Text::from(""), element_to_text);
-                AnyView::new(table_cell(
-                    cell,
-                    alignments
-                        .get(col_idx)
-                        .copied()
-                        .unwrap_or(MarkdownTableAlignment::None),
-                ))
-            })
-            .collect();
-        row_views.push(AnyView::new(
-            HStack::from_iter(cells)
-                .spacing(12.0)
-                .alignment(waterui_layout::stack::VerticalAlignment::Top),
-        ));
+        cells.extend((0..col_count).map(|col_idx| {
+            AnyView::new(
+                row.get(col_idx)
+                    .map_or_else(|| Text::from(""), element_to_text),
+            )
+        }));
     }
 
-    AnyView::new(
-        VStack::from_iter(row_views)
-            .spacing(6.0)
-            .alignment(HorizontalAlignment::Leading),
-    )
+    let resolved_alignments = (0..col_count)
+        .map(|col_idx| {
+            alignments
+                .get(col_idx)
+                .copied()
+                .unwrap_or(MarkdownTableAlignment::None)
+        })
+        .collect();
+    let layout = MarkdownTableLayout::new(
+        NonZeroUsize::new(col_count).expect("Markdown table must have at least one column"),
+        resolved_alignments,
+    );
+    AnyView::new(FixedContainer::new(layout, cells))
 }
 
-fn table_cell(content: Text, alignment: MarkdownTableAlignment) -> impl View {
-    let leading_spacer = matches!(
-        alignment,
-        MarkdownTableAlignment::Center | MarkdownTableAlignment::Right
-    )
-    .then(spacer);
-    let trailing_spacer = matches!(alignment, MarkdownTableAlignment::Center).then(spacer);
+const MARKDOWN_TABLE_COLUMN_SPACING: f32 = 12.0;
+const MARKDOWN_TABLE_ROW_SPACING: f32 = 6.0;
 
-    hstack((leading_spacer, content, trailing_spacer)).max_width(f32::MAX)
+#[derive(Debug)]
+struct MarkdownTableLayout {
+    columns: NonZeroUsize,
+    alignments: Vec<MarkdownTableAlignment>,
+}
+
+struct MarkdownTableMeasurement {
+    column_widths: Vec<f32>,
+    cell_dimensions: Vec<ViewDimensions>,
+    row_heights: Vec<f32>,
+    separator_height: f32,
+    size: Size,
+}
+
+impl MarkdownTableLayout {
+    fn new(columns: NonZeroUsize, alignments: Vec<MarkdownTableAlignment>) -> Self {
+        assert_eq!(
+            alignments.len(),
+            columns.get(),
+            "Markdown table must provide one alignment for every column"
+        );
+        Self {
+            columns,
+            alignments,
+        }
+    }
+
+    const fn separator_index(&self) -> usize {
+        self.columns.get()
+    }
+
+    fn validate_children(&self, children: &[&dyn SubView]) {
+        let columns = self.columns.get();
+        assert!(
+            children.len() > columns,
+            "Markdown table layout requires a header row and separator"
+        );
+        assert_eq!(
+            (children.len() - 1) % columns,
+            0,
+            "Markdown table layout requires complete rows"
+        );
+    }
+
+    const fn child_index(&self, cell_index: usize) -> usize {
+        if cell_index < self.separator_index() {
+            cell_index
+        } else {
+            cell_index + 1
+        }
+    }
+
+    fn measure(
+        &self,
+        proposed_width: Option<f32>,
+        children: &[&dyn SubView],
+    ) -> MarkdownTableMeasurement {
+        self.validate_children(children);
+
+        let columns = self.columns.get();
+        let cell_count = children.len() - 1;
+        let row_count = cell_count / columns;
+        let mut column_widths = vec![0.0_f32; columns];
+
+        for cell_index in 0..cell_count {
+            let dimensions =
+                children[self.child_index(cell_index)].measure(ProposalSize::UNSPECIFIED);
+            let width = dimensions.size.width;
+            assert!(
+                width.is_finite(),
+                "Markdown table cells must have finite intrinsic widths"
+            );
+            let column = cell_index % columns;
+            column_widths[column] = column_widths[column].max(width.max(0.0));
+        }
+
+        let column_spacing = repeated_spacing(MARKDOWN_TABLE_COLUMN_SPACING, columns - 1);
+        let intrinsic_content_width = column_widths.iter().sum::<f32>();
+        let intrinsic_width = intrinsic_content_width + column_spacing;
+        let width = proposed_width
+            .filter(|width| width.is_finite())
+            .map_or(intrinsic_width, |width| width.max(0.0));
+        let available_content_width = (width - column_spacing).max(0.0);
+
+        if intrinsic_content_width > available_content_width && intrinsic_content_width > 0.0 {
+            let scale = available_content_width / intrinsic_content_width;
+            for column_width in &mut column_widths {
+                *column_width *= scale;
+            }
+        }
+
+        let mut cell_dimensions = Vec::with_capacity(cell_count);
+        let mut row_heights = vec![0.0_f32; row_count];
+        for cell_index in 0..cell_count {
+            let column = cell_index % columns;
+            let dimensions = children[self.child_index(cell_index)]
+                .measure(ProposalSize::new(Some(column_widths[column]), None));
+            assert!(
+                dimensions.size.width.is_finite() && dimensions.size.height.is_finite(),
+                "Markdown table cells must have finite measured sizes"
+            );
+            let row = cell_index / columns;
+            row_heights[row] = row_heights[row].max(dimensions.size.height.max(0.0));
+            cell_dimensions.push(dimensions);
+        }
+
+        let separator_dimensions =
+            children[self.separator_index()].measure(ProposalSize::new(Some(width), None));
+        assert!(
+            separator_dimensions.size.height.is_finite(),
+            "Markdown table separator must have a finite height"
+        );
+        let separator_height = separator_dimensions.size.height.max(0.0);
+        let height = row_heights.iter().sum::<f32>()
+            + separator_height
+            + repeated_spacing(MARKDOWN_TABLE_ROW_SPACING, row_count);
+
+        MarkdownTableMeasurement {
+            column_widths,
+            cell_dimensions,
+            row_heights,
+            separator_height,
+            size: Size::new(width, height),
+        }
+    }
+}
+
+impl Layout for MarkdownTableLayout {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
+        self.measure(proposal.width, children).size
+    }
+
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+        let measurement = self.measure(Some(bounds.width()), children);
+        let columns = self.columns.get();
+        let row_count = measurement.row_heights.len();
+        let mut placements = vec![Rect::from_size(Size::zero()); children.len()];
+        let mut row_y = bounds.y();
+
+        for row in 0..row_count {
+            let mut column_x = bounds.x();
+            for column in 0..columns {
+                let cell_index = row * columns + column;
+                let dimensions = &measurement.cell_dimensions[cell_index];
+                let column_width = measurement.column_widths[column];
+                let child_width = dimensions.size.width.clamp(0.0, column_width);
+                let alignment = self.alignments[column];
+                let alignment_offset = match alignment {
+                    MarkdownTableAlignment::None | MarkdownTableAlignment::Left => 0.0,
+                    MarkdownTableAlignment::Center => (column_width - child_width) * 0.5,
+                    MarkdownTableAlignment::Right => column_width - child_width,
+                };
+                placements[self.child_index(cell_index)] = Rect::new(
+                    Point::new(column_x + alignment_offset, row_y),
+                    Size::new(child_width, dimensions.size.height.max(0.0)),
+                );
+                column_x += column_width + MARKDOWN_TABLE_COLUMN_SPACING;
+            }
+
+            row_y += measurement.row_heights[row];
+            if row == 0 {
+                row_y += MARKDOWN_TABLE_ROW_SPACING;
+                placements[self.separator_index()] = Rect::new(
+                    Point::new(bounds.x(), row_y),
+                    Size::new(bounds.width(), measurement.separator_height),
+                );
+                row_y += measurement.separator_height;
+            }
+            if row + 1 < row_count {
+                row_y += MARKDOWN_TABLE_ROW_SPACING;
+            }
+        }
+
+        placements
+    }
+
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
+        StretchAxis::Horizontal
+    }
+}
+
+fn repeated_spacing(spacing: f32, count: usize) -> f32 {
+    (0..count).map(|_| spacing).sum()
 }
 
 /// Converts a `RichTextElement` to plain `Text` for table cells.
@@ -961,6 +1124,34 @@ impl Default for InlineGroup {
 mod tests {
     use super::*;
 
+    struct MockTableCell {
+        size: Size,
+    }
+
+    impl SubView for MockTableCell {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            let width = proposal
+                .width
+                .map_or(self.size.width, |width| self.size.width.min(width));
+            ViewDimensions::new(Size::new(width, self.size.height))
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
+        }
+
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < f32::EPSILON,
+            "Expected {expected}, got {actual}"
+        );
+    }
+
     #[test]
     fn parses_markdown_into_rich_text() {
         let markdown = "# Heading\n\nA paragraph with **bold** and [link](https://example.com).\n\n- Item 1\n- Item 2\n\n| Col A | Col B |\n| ----- | ----- |\n| 1 | 2 |\n";
@@ -1034,6 +1225,123 @@ fn main() {
     }
 
     #[test]
+    fn parses_markdown_table_column_alignments() {
+        let rich = RichText::from_markdown(
+            "| Left | Center | Right |\n| :--- | :----: | ----: |\n| A | B | C |\n",
+        );
+        let alignments = rich
+            .elements()
+            .iter()
+            .find_map(|element| match element {
+                RichTextElement::Table { alignments, .. } => Some(alignments),
+                _ => None,
+            })
+            .expect("Expected a parsed table");
+
+        assert_eq!(
+            alignments,
+            &[
+                MarkdownTableAlignment::Left,
+                MarkdownTableAlignment::Center,
+                MarkdownTableAlignment::Right,
+            ]
+        );
+    }
+
+    #[test]
+    fn markdown_table_layout_shares_column_origins_across_rows() {
+        let layout = MarkdownTableLayout::new(
+            NonZeroUsize::new(3).unwrap(),
+            vec![
+                MarkdownTableAlignment::None,
+                MarkdownTableAlignment::None,
+                MarkdownTableAlignment::None,
+            ],
+        );
+        let cells = [
+            MockTableCell {
+                size: Size::new(80.0, 20.0),
+            },
+            MockTableCell {
+                size: Size::new(60.0, 20.0),
+            },
+            MockTableCell {
+                size: Size::new(40.0, 20.0),
+            },
+            MockTableCell {
+                size: Size::new(0.0, 1.0),
+            },
+            MockTableCell {
+                size: Size::new(30.0, 20.0),
+            },
+            MockTableCell {
+                size: Size::new(20.0, 20.0),
+            },
+            MockTableCell {
+                size: Size::new(10.0, 20.0),
+            },
+        ];
+        let children = cells
+            .iter()
+            .map(|cell| cell as &dyn SubView)
+            .collect::<Vec<_>>();
+
+        let size = layout.size_that_fits(ProposalSize::new(Some(300.0), None), children.as_slice());
+        let placements = layout.place(Rect::from_size(size), children.as_slice());
+
+        assert_eq!(size, Size::new(300.0, 53.0));
+        assert_close(placements[0].x(), placements[4].x());
+        assert_close(placements[1].x(), placements[5].x());
+        assert_close(placements[2].x(), placements[6].x());
+        assert_close(placements[3].width(), 300.0);
+    }
+
+    #[test]
+    fn markdown_table_layout_honors_column_alignments() {
+        let layout = MarkdownTableLayout::new(
+            NonZeroUsize::new(3).unwrap(),
+            vec![
+                MarkdownTableAlignment::Left,
+                MarkdownTableAlignment::Center,
+                MarkdownTableAlignment::Right,
+            ],
+        );
+        let cells = [
+            MockTableCell {
+                size: Size::new(80.0, 20.0),
+            },
+            MockTableCell {
+                size: Size::new(80.0, 20.0),
+            },
+            MockTableCell {
+                size: Size::new(80.0, 20.0),
+            },
+            MockTableCell {
+                size: Size::new(0.0, 1.0),
+            },
+            MockTableCell {
+                size: Size::new(20.0, 20.0),
+            },
+            MockTableCell {
+                size: Size::new(20.0, 20.0),
+            },
+            MockTableCell {
+                size: Size::new(20.0, 20.0),
+            },
+        ];
+        let children = cells
+            .iter()
+            .map(|cell| cell as &dyn SubView)
+            .collect::<Vec<_>>();
+        let size = layout.size_that_fits(ProposalSize::new(Some(300.0), None), children.as_slice());
+        let placements = layout.place(Rect::from_size(size), children.as_slice());
+
+        assert_close(placements[4].x(), 0.0);
+        assert_close(placements[5].x(), 122.0);
+        assert_close(placements[6].x(), 244.0);
+    }
+
+    #[test]
     fn ordered_list_respects_start_index() {
         let markdown = "5. five\n6. six";
         let rich = RichText::from_markdown(markdown);
@@ -1055,6 +1363,10 @@ fn main() {
     }
 
     #[test]
+    #[allow(
+        clippy::items_after_statements,
+        reason = "test-local helper fn defined next to its single use"
+    )]
     fn inline_code_has_code_style() {
         let markdown = "Use `cargo run`";
         let rich = RichText::from_markdown(markdown);

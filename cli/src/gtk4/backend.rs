@@ -10,7 +10,7 @@ use crate::{
     build::BuildOptions,
     device::Artifact,
     gtk4::platform::{build_gtk4, clean_gtk4, is_gtk4_platform, package_gtk4},
-    platform::{PackageOptions, TargetPlatform},
+    platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::Project,
     templates::{self, TemplateContext},
 };
@@ -48,6 +48,44 @@ impl Gtk4Backend {
     pub const fn project_path(&self) -> &PathBuf {
         &self.project_path
     }
+
+    /// Check whether managed GTK backend files differ from the current templates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the application dependency graph or templates
+    /// cannot be resolved.
+    pub async fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
+        let backend_dir = project.backend_path::<Self>();
+        let ctx = Self::template_context(project).await?;
+        for (relative, expected) in
+            templates::gtk4::rendered_outputs(&ctx, &project.gtk_backend_crate_name())?
+        {
+            match std::fs::read(backend_dir.join(relative)) {
+                Ok(existing) if existing == expected => {}
+                Ok(_) | Err(_) => return Ok(true),
+            }
+        }
+        Ok(false)
+    }
+
+    async fn template_context(project: &Project) -> eyre::Result<TemplateContext> {
+        let manifest = project.manifest();
+        let app_name = manifest
+            .package
+            .name
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>();
+        Ok(
+            TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
+                .with_backend_project_path(project.backend_path::<Self>())
+                .with_project_root_path(project.root().to_path_buf())
+                .with_webview_enabled(project.links_runtime_package("waterui-webview").await?)
+                .with_chromium_enabled(project.links_runtime_package("waterui-chromium").await?)
+                .with_browser_engine(project.linked_browser_engine().await?),
+        )
+    }
 }
 
 impl Default for Gtk4Backend {
@@ -69,20 +107,10 @@ impl Backend for Gtk4Backend {
     }
 
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
-        let manifest = project.manifest();
-
         let project_path = default_gtk4_project_path();
-
-        let app_name = manifest
-            .package
-            .name
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .collect::<String>();
-        let ctx =
-            TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
-                .with_backend_project_path(project.backend_path::<Self>())
-                .with_project_root_path(project.root().to_path_buf());
+        let ctx = Self::template_context(project)
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
 
         templates::gtk4::scaffold(
             &project.backend_path::<Self>(),
@@ -105,6 +133,9 @@ impl Backend for Gtk4Backend {
         _platform: TargetPlatform,
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
+        project
+            .browser_runtime_plan(TargetPlatform::Linux, TargetBackend::Gtk4)
+            .await?;
         build_gtk4(project, options).await
     }
 

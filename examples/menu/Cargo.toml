@@ -6,7 +6,6 @@ authors = ["Lexo Liu"]
 description = "Menu and Context Menu example for WaterUI framework"
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
 keywords = ["ui", "framework", "example", "menu"]
 categories = ["gui"]
 publish = false

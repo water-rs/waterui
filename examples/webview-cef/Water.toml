@@ -1,0 +1,10 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "CEF WebView Example"
+bundle_identifier = "dev.waterui.examples.webviewcef"
+
+[permissions.internet]
+enable = true
+description = "Required to access web content from the internet"

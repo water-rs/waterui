@@ -1,0 +1,832 @@
+//! Metadata view handlers: styling, transforms, interaction, lifecycle
+//! and accessibility metadata wrappers around content views.
+
+use super::*;
+
+impl HydrolysisRenderer {
+    /// Apply a clip-shape layer around the given content render. Shared by the
+    /// dispatch handler and the retained `Wrapper` node so the clip effect lives
+    /// in exactly one place.
+    pub(super) fn apply_clip_shape(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        value: &ClipShape,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        // Resolve from the structured kind, exactly as a fill of the same shape
+        // does, and fall back to the unit-space commands only for a custom path.
+        // The commands are normalized per axis, so resolving them against a
+        // non-square rect makes every circular corner elliptical.
+        let clip_path = shape_kind_path(value.kind(), ctx.bounds)
+            .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds));
+        if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds)
+            .or_else(|| regular_clip_shape(value.commands(), ctx.bounds))
+        {
+            match regular_clip {
+                RegularClipShape::Rect(rect) => {
+                    renderer.push_layer_rect(1.0, ctx.transform, rect);
+                }
+                RegularClipShape::RoundedRect {
+                    rect,
+                    corner_width,
+                    corner_height,
+                } => renderer.push_layer_rounded_rect(
+                    1.0,
+                    ctx.transform,
+                    clip_path,
+                    rect,
+                    corner_width,
+                    corner_height,
+                ),
+            }
+        } else {
+            renderer.push_layer_path(1.0, ctx.transform, clip_path);
+        }
+        render_content(renderer);
+        renderer.pop_layer();
+    }
+
+    /// Render the given content then stroke the border over it, mirroring the
+    /// historical order (content first, border on top). Shared by the dispatch
+    /// handler and the retained `Wrapper` node. The border color resolves against
+    /// `env`, so it is threaded through.
+    pub(super) fn apply_border(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+        border: &Border,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        render_content(renderer);
+
+        if border.width <= 0.0 {
+            return;
+        }
+
+        let brush = resolved_color_to_peniko(border.color.resolve(env).get());
+        let width = f64::from(border.width);
+
+        if border.edges.all() && border.corner_radius > 0.0 {
+            let rounded =
+                vello::kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
+            let stroke = vello::kurbo::Stroke::new(width);
+            renderer
+                .scene
+                .stroke(&stroke, ctx.transform, brush, None, &rounded);
+            return;
+        }
+
+        if border.edges.top {
+            let top = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x1,
+                ctx.bounds.y0 + width,
+            );
+            renderer.scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                brush,
+                None,
+                &top,
+            );
+        }
+        if border.edges.bottom {
+            let bottom = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y1 - width,
+                ctx.bounds.x1,
+                ctx.bounds.y1,
+            );
+            renderer.scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                brush,
+                None,
+                &bottom,
+            );
+        }
+        if border.edges.leading {
+            let leading = vello::kurbo::Rect::new(
+                ctx.bounds.x0,
+                ctx.bounds.y0,
+                ctx.bounds.x0 + width,
+                ctx.bounds.y1,
+            );
+            renderer.scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                brush,
+                None,
+                &leading,
+            );
+        }
+        if border.edges.trailing {
+            let trailing = vello::kurbo::Rect::new(
+                ctx.bounds.x1 - width,
+                ctx.bounds.y0,
+                ctx.bounds.x1,
+                ctx.bounds.y1,
+            );
+            renderer.scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                brush,
+                None,
+                &trailing,
+            );
+        }
+    }
+
+    /// Draw the shadow first, then render the given content over it (matching the
+    /// historical order). Shared by the dispatch handler and the retained
+    /// `Wrapper` node. The shadow color resolves against `env`.
+    pub(super) fn apply_shadow(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+        shadow: &Shadow,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        let blur = f64::from(shadow.radius.max(0.0));
+        let offset_x = f64::from(shadow.offset.x);
+        let offset_y = f64::from(shadow.offset.y);
+        let shadow_rect = vello::kurbo::Rect::new(
+            ctx.bounds.x0 + offset_x,
+            ctx.bounds.y0 + offset_y,
+            ctx.bounds.x1 + offset_x,
+            ctx.bounds.y1 + offset_y,
+        );
+        let shadow_color = resolved_color_to_peniko(shadow.color.resolve(env).get());
+
+        renderer.scene.draw_blurred_rounded_rect(
+            ctx.transform,
+            shadow_rect,
+            shadow_color,
+            blur,
+            blur,
+        );
+        render_content(renderer);
+    }
+
+    /// Render the wrapped content, then bind the single text input it registered to
+    /// the `.focused(binding)` binding and reconcile focus state. Shared by the
+    /// dispatch handler and the retained `Wrapper` node ([`WrapperEffect::Focused`]):
+    /// the binding is read through `read_signal` so a change schedules a frame, and
+    /// the target bookkeeping counts inputs registered during the content render, so
+    /// it works identically whether the content is dispatched or node-flushed.
+    pub(super) fn apply_focused(
+        renderer: &mut HydrolysisRenderer,
+        value: &Focused,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        let should_focus = renderer.read_signal(&value.0);
+        let start = renderer.text_editing.text_input_targets.len();
+        render_content(renderer);
+        let end = renderer.text_editing.text_input_targets.len();
+        let focus_target_count = end - start;
+        assert!(
+            focus_target_count == 1,
+            "hydrolysis .focused() requires exactly one TextField or SecureField in the wrapped subtree, found {focus_target_count}"
+        );
+        let target = renderer
+            .text_editing
+            .text_input_targets
+            .get_mut(start)
+            .expect("hydrolysis focused metadata missing registered text input target");
+        assert!(
+            target.focus_binding.is_none(),
+            "hydrolysis does not allow multiple .focused() modifiers to target the same control"
+        );
+        target.focus_binding = Some(value.0.clone());
+        let target_key = target.interaction_key.clone();
+
+        if should_focus {
+            renderer.set_focused_text_input_key(Some(target_key));
+        } else if renderer.text_editing.is_focused(&target_key) {
+            renderer.set_focused_text_input_key(None);
+        }
+    }
+
+    /// Render the given content and, when hit-testing is disabled, truncate every
+    /// interaction-target vector back to its pre-render length (and clear focus if
+    /// the focused text input fell inside the wrapped range). Shared by the dispatch
+    /// handler and the retained `Wrapper` node. The bookkeeping counts targets
+    /// registered during the content render, so it works identically whether the
+    /// content is dispatched or node-flushed.
+    pub(super) fn apply_hittable(
+        renderer: &mut HydrolysisRenderer,
+        value: &Hittable,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        let enabled = renderer.read_signal(&value.enabled);
+        let pointer_start = renderer.hit_test.pointer_targets.len();
+        let gesture_start = renderer.gesture_engine.target_count();
+        let cursor_start = renderer.hit_test.cursor_targets.len();
+        let hover_start = renderer.hit_test.hover_targets.len();
+        let scroll_start = renderer.hit_test.scroll_targets.len();
+        let text_start = renderer.text_editing.text_input_targets.len();
+
+        render_content(renderer);
+
+        if enabled {
+            return;
+        }
+
+        renderer.hit_test.pointer_targets.truncate(pointer_start);
+        renderer.ensure_active_pointer_drag_target_is_live();
+        renderer.gesture_engine.truncate_targets(gesture_start);
+        renderer.hit_test.cursor_targets.truncate(cursor_start);
+        let removed_hover: Vec<_> = renderer.hit_test.hover_targets[hover_start..]
+            .iter()
+            .map(|target| (target.slot.clone(), target.handles.clone()))
+            .collect();
+        let now = renderer.frame_instant();
+        for (slot, handles) in removed_hover {
+            renderer.hit_test.interaction.set_hovering(&slot, false);
+            if let Some(handles) = handles {
+                handles.set_hovering(false, now);
+            }
+        }
+        renderer.hit_test.hover_targets.truncate(hover_start);
+        renderer.hit_test.scroll_targets.truncate(scroll_start);
+        // The focused field may be registered later in this frame, so "not
+        // currently emitted" is not yet meaningful here — ask instead whether the
+        // focused identity is among the targets this modifier is dropping.
+        let focus_was_dropped = renderer.text_editing.text_input_targets[text_start..]
+            .iter()
+            .any(|target| renderer.text_editing.is_focused(&target.interaction_key));
+        renderer
+            .text_editing
+            .text_input_targets
+            .truncate(text_start);
+        if focus_was_dropped {
+            renderer.set_focused_text_input_key(None);
+        }
+    }
+
+    /// Register the cursor hit-target, then render the given content. Shared by
+    /// the dispatch handler and the retained `Wrapper` node.
+    pub(super) fn apply_cursor(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        value: &Cursor,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        let style = renderer.read_signal(&value.style);
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        renderer.register_cursor_target(bounds, style);
+        render_content(renderer);
+    }
+
+    /// Register the gesture target (and, for a tappable view with a role, its
+    /// accessibility node), then render the given content under accessibility
+    /// suppression when the role excludes descendants. Shared by the dispatch
+    /// handler and the retained `Wrapper` node.
+    ///
+    /// The build-resolved state lives in [`GestureObserverEffect`] (the two pieces
+    /// derived from `content` — the default a11y label and the gesture group
+    /// identity — are resolved at build time, since a node has no `content` at
+    /// flush). Everything else is re-resolved against `env` each call (role/label
+    /// overrides, suppression), matching the dispatch path. The action is shared
+    /// so the node can re-register the same action every flush.
+    pub(super) fn apply_gesture_observer(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+        effect: &GestureObserverEffect,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let disabled = env
+            .get::<waterui_core::interaction::Disabled>()
+            .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
+        #[cfg(feature = "accessibility")]
+        if matches!(effect.gesture, Gesture::Tap(_)) && env.get::<AccessibilityRole>().is_some() {
+            let mut node = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
+            );
+            if let Some(label) =
+                renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
+            {
+                node.set_label(label);
+            }
+            node.add_action(AccessibilityAction::Focus);
+            let action_target = if disabled {
+                node.set_disabled();
+                None
+            } else {
+                node.add_action(AccessibilityAction::Click);
+                let activation_point = accessibility_activation_point(bounds);
+                Some(AccessibilityActionTarget::PointerPrimaryClick {
+                    point: activation_point,
+                })
+            };
+            let _ = renderer.register_accessibility_node(node, bounds, env, action_target);
+        }
+        let group_id = renderer.gesture_group_id_for_identity(effect.gesture_group_identity);
+        let captured_env = env.clone();
+        let action = Rc::clone(&effect.action);
+        let mut layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
+            let action_env = captured_env.layered_on(runtime_env);
+            action.borrow_mut()(&action_env);
+        });
+
+        if matches!(effect.gesture, Gesture::Tap(_))
+            && let Some(style) = env
+                .get::<waterui_backend_core::widget::InteractionStyle>()
+                .cloned()
+        {
+            let interaction_key = InteractionKey::for_rc(&effect.action, 0);
+            let (interaction, press_slot, _) =
+                renderer.bind_control_interaction_target(interaction_key, bounds, env, disabled);
+            Self::render_gesture_content(renderer, env, render_content);
+
+            let color_signal = style.state_layer_color.resolve(env);
+            let color = resolved_color_to_peniko(renderer.read_signal(&color_signal));
+            let interaction = local_interaction_state(interaction, ctx.hit_transform);
+            let theme = crate::widgets::util::widget_theme(env);
+            let mut draw = renderer.draw_context(ctx);
+            theme.draw_interaction_state_layer(
+                &mut draw,
+                style.state_layer_bounds(ctx.bounds),
+                style.state_layer_radii,
+                color,
+                interaction,
+            );
+
+            if !disabled {
+                renderer.register_interactive_pointer_target_with_keyboard(
+                    bounds,
+                    press_slot,
+                    style.keyboard_focusable,
+                    move |_renderer, _point, runtime_env| {
+                        layered_action(runtime_env);
+                        false
+                    },
+                );
+            }
+            return;
+        }
+
+        renderer.register_gesture_target(bounds, group_id, effect.gesture.clone(), layered_action);
+        Self::render_gesture_content(renderer, env, render_content);
+    }
+
+    fn render_gesture_content(
+        renderer: &mut HydrolysisRenderer,
+        env: &Environment,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        #[cfg(not(feature = "accessibility"))]
+        let _ = env;
+        #[cfg(feature = "accessibility")]
+        if env
+            .get::<AccessibilityChildren>()
+            .is_some_and(AccessibilityChildren::excludes_descendants)
+        {
+            renderer.push_accessibility_suppression();
+            render_content(renderer);
+            renderer.pop_accessibility_suppression();
+            return;
+        }
+        render_content(renderer);
+    }
+
+    /// Register the hover-enter/move/exit target for `handler`, then render the
+    /// given content. Shared by the dispatch handler and the retained `Wrapper`
+    /// node. The handler is shared (`Rc<RefCell<OnEvent>>`) so the node can
+    /// re-register the same handler every flush; the dispatch handler wraps its
+    /// owned value once. The registered closure resolves the action environment
+    /// against `env` exactly as before.
+    pub(super) fn apply_on_event(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+        handler: Rc<RefCell<OnEvent>>,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        let event = handler.borrow().event();
+        let interaction_key = InteractionKey::for_rc(&handler, 0);
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        match event {
+            Event::HoverEnter => {
+                let captured_env = env.clone();
+                renderer.register_hover_enter_target(interaction_key, bounds, move |env| {
+                    let action_env = captured_env.layered_on(env);
+                    handler.borrow_mut().handle(&action_env);
+                    true
+                });
+            }
+            Event::HoverMove => {
+                let captured_env = env.clone();
+                renderer.register_hover_move_target(interaction_key, bounds, move |point, env| {
+                    let hover_event = HoverEvent::new(waterui_core::layout::Point::new(
+                        point.x as f32 - bounds.x0 as f32,
+                        point.y as f32 - bounds.y0 as f32,
+                    ));
+                    let hover_env = captured_env.layered_on(&env.extending(hover_event));
+                    handler.borrow_mut().handle(&hover_env);
+                    true
+                });
+            }
+            Event::HoverExit => {
+                let captured_env = env.clone();
+                renderer.register_hover_exit_target(interaction_key, bounds, move |env| {
+                    let action_env = captured_env.layered_on(env);
+                    handler.borrow_mut().handle(&action_env);
+                    true
+                });
+            }
+            _ => panic!("hydrolysis event variant is not supported"),
+        }
+        render_content(renderer);
+    }
+
+    /// Register the context-menu hit-target, then render the given content. Shared
+    /// by the dispatch handler and the retained `Wrapper` node. The node owns the
+    /// [`ResolvedContextMenu`] by reference, so the menu items are cloned for
+    /// registration.
+    pub(super) fn apply_context_menu(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        value: &ResolvedContextMenu,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        renderer.register_context_menu_target(bounds, value.items.clone());
+        render_content(renderer);
+    }
+
+    /// Register the draggable hit-target, then render the given content. Shared by
+    /// the dispatch handler and the retained `Wrapper` node. The node owns the
+    /// [`Draggable`] by reference, so the data provider is cloned for registration.
+    pub(super) fn apply_draggable(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        value: &Draggable,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        renderer.register_draggable_target(bounds, value.data.clone());
+        render_content(renderer);
+    }
+
+    /// Register the drop-destination hit-target from pre-wrapped handler handles,
+    /// then render the given content. Shared by the dispatch handler and the
+    /// retained `Wrapper` node (which holds the handles by value and re-registers
+    /// the same `Rc`s every flush).
+    pub(super) fn apply_drop_destination(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+        handles: &DropDestinationHandles,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        renderer.register_drop_destination_handles(bounds, handles, env);
+        render_content(renderer);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RegularClipShape {
+    Rect(vello::kurbo::Rect),
+    RoundedRect {
+        rect: vello::kurbo::Rect,
+        corner_width: f64,
+        corner_height: f64,
+    },
+}
+
+/// The fast rounded-rect/rect clip for a structured shape kind.
+///
+/// A normalized radius resolves against the shorter side, so corners stay
+/// circular and a fully-rounded shape is a stadium rather than an ellipse.
+fn kind_clip_shape(kind: ShapeKind, bounds: vello::kurbo::Rect) -> Option<RegularClipShape> {
+    let min_side = bounds.width().min(bounds.height()).max(0.0);
+    let uniform = |radius: f32| {
+        let corner = f64::from(radius.clamp(0.0, 0.5)) * min_side;
+        Some(RegularClipShape::RoundedRect {
+            rect: bounds,
+            corner_width: corner,
+            corner_height: corner,
+        })
+    };
+    match kind {
+        ShapeKind::Rect => Some(RegularClipShape::Rect(bounds)),
+        ShapeKind::RoundedRect { corner_radius } => uniform(corner_radius),
+        ShapeKind::Capsule => uniform(0.5),
+        // A circle is *inscribed* in the bounds, so only a square one is a
+        // rounded rect: elsewhere `uniform(0.5)` describes a stadium filling
+        // the bounds, which is what a capsule is and what a circle is not. The
+        // fill path builds a real `kurbo::Circle`, and a clip that disagreed
+        // with its own fill is the bug this guard closes.
+        ShapeKind::Circle if bounds.width() == bounds.height() => uniform(0.5),
+        // An ellipse is not a rounded rect, a non-square circle is not either,
+        // and uneven corners need the path mask; all stay on the general route.
+        ShapeKind::Circle
+        | ShapeKind::Ellipse
+        | ShapeKind::UnevenRoundedRect { .. }
+        | ShapeKind::CustomPath => None,
+    }
+}
+
+#[cfg(test)]
+mod clip_shape_tests {
+    use super::{RegularClipShape, ShapeKind, kind_clip_shape};
+    use vello::kurbo::Rect;
+
+    /// A square circle is exactly a rounded rect whose corner is half the
+    /// side, so the fast clip is allowed to take it.
+    #[test]
+    fn a_square_circle_takes_the_rounded_rect_fast_path() {
+        let bounds = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let clip = kind_clip_shape(ShapeKind::Circle, bounds);
+        assert!(
+            matches!(
+                clip,
+                Some(RegularClipShape::RoundedRect {
+                    corner_width,
+                    corner_height,
+                    ..
+                }) if (corner_width - 50.0).abs() < f64::EPSILON
+                    && (corner_height - 50.0).abs() < f64::EPSILON
+            ),
+            "a square circle should clip as a rounded rect with a half-side corner, got {clip:?}"
+        );
+    }
+
+    /// On a wider-than-tall rect the same shortcut would describe a stadium,
+    /// which is a capsule and not the inscribed circle the fill draws.
+    #[test]
+    fn a_non_square_circle_does_not_take_the_fast_path() {
+        let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+        assert!(
+            kind_clip_shape(ShapeKind::Circle, bounds).is_none(),
+            "a non-square circle must fall through to the path mask so the clip \
+             matches the inscribed circle the fill builds"
+        );
+    }
+
+    /// A capsule *is* the stadium, on any aspect ratio.
+    #[test]
+    fn a_capsule_takes_the_fast_path_at_any_aspect_ratio() {
+        let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+        assert!(matches!(
+            kind_clip_shape(ShapeKind::Capsule, bounds),
+            Some(RegularClipShape::RoundedRect { .. })
+        ));
+    }
+}
+
+fn regular_clip_shape(
+    commands: &[PathCommand],
+    bounds: vello::kurbo::Rect,
+) -> Option<RegularClipShape> {
+    regular_rect(commands, bounds).or_else(|| regular_rounded_rect(commands, bounds))
+}
+
+fn regular_rect(commands: &[PathCommand], bounds: vello::kurbo::Rect) -> Option<RegularClipShape> {
+    let [
+        PathCommand::MoveTo { x: x0, y: y0 },
+        PathCommand::LineTo { x: x1, y: top_y },
+        PathCommand::LineTo { x: right_x, y: y1 },
+        PathCommand::LineTo {
+            x: left_x,
+            y: bottom_y,
+        },
+        PathCommand::Close,
+    ] = commands
+    else {
+        return None;
+    };
+    if !approx_eq(*y0, *top_y)
+        || !approx_eq(*x1, *right_x)
+        || !approx_eq(*y1, *bottom_y)
+        || !approx_eq(*x0, *left_x)
+        || !valid_rect(*x0, *y0, *x1, *y1)
+    {
+        return None;
+    }
+    Some(RegularClipShape::Rect(resolve_normalized_rect(
+        *x0, *y0, *x1, *y1, bounds,
+    )))
+}
+
+#[allow(clippy::too_many_lines)]
+fn regular_rounded_rect(
+    commands: &[PathCommand],
+    bounds: vello::kurbo::Rect,
+) -> Option<RegularClipShape> {
+    let [
+        PathCommand::MoveTo { x: start_x, y: y0 },
+        PathCommand::LineTo {
+            x: top_end_x,
+            y: top_y,
+        },
+        PathCommand::Arc {
+            cx: top_right_cx,
+            cy: top_right_cy,
+            rx,
+            ry,
+            start: top_right_start,
+            sweep: top_right_sweep,
+        },
+        PathCommand::LineTo {
+            x: x1,
+            y: right_end_y,
+        },
+        PathCommand::Arc {
+            cx: bottom_right_cx,
+            cy: bottom_right_cy,
+            rx: bottom_right_rx,
+            ry: bottom_right_ry,
+            start: bottom_right_start,
+            sweep: bottom_right_sweep,
+        },
+        PathCommand::LineTo {
+            x: bottom_end_x,
+            y: y1,
+        },
+        PathCommand::Arc {
+            cx: bottom_left_cx,
+            cy: bottom_left_cy,
+            rx: bottom_left_rx,
+            ry: bottom_left_ry,
+            start: bottom_left_start,
+            sweep: bottom_left_sweep,
+        },
+        PathCommand::LineTo {
+            x: x0,
+            y: left_end_y,
+        },
+        PathCommand::Arc {
+            cx: top_left_cx,
+            cy: top_left_cy,
+            rx: top_left_rx,
+            ry: top_left_ry,
+            start: top_left_start,
+            sweep: top_left_sweep,
+        },
+        PathCommand::Close,
+    ] = commands
+    else {
+        return None;
+    };
+
+    let quarter_turn = core::f32::consts::FRAC_PI_2;
+    let uniform_radii = [*bottom_right_rx, *bottom_left_rx, *top_left_rx]
+        .into_iter()
+        .all(|radius| approx_eq(radius, *rx))
+        && [*bottom_right_ry, *bottom_left_ry, *top_left_ry]
+            .into_iter()
+            .all(|radius| approx_eq(radius, *ry));
+    let geometry_matches = approx_eq(*top_y, *y0)
+        && approx_eq(*start_x, *x0 + *rx)
+        && approx_eq(*top_end_x, *x1 - *rx)
+        && approx_eq(*top_right_cx, *x1 - *rx)
+        && approx_eq(*top_right_cy, *y0 + *ry)
+        && approx_eq(*right_end_y, *y1 - *ry)
+        && approx_eq(*bottom_right_cx, *x1 - *rx)
+        && approx_eq(*bottom_right_cy, *y1 - *ry)
+        && approx_eq(*bottom_end_x, *x0 + *rx)
+        && approx_eq(*bottom_left_cx, *x0 + *rx)
+        && approx_eq(*bottom_left_cy, *y1 - *ry)
+        && approx_eq(*left_end_y, *y0 + *ry)
+        && approx_eq(*top_left_cx, *x0 + *rx)
+        && approx_eq(*top_left_cy, *y0 + *ry);
+    let angles_match = approx_eq(*top_right_start, -quarter_turn)
+        && approx_eq(*top_right_sweep, quarter_turn)
+        && approx_eq(*bottom_right_start, 0.0)
+        && approx_eq(*bottom_right_sweep, quarter_turn)
+        && approx_eq(*bottom_left_start, quarter_turn)
+        && approx_eq(*bottom_left_sweep, quarter_turn)
+        && approx_eq(*top_left_start, core::f32::consts::PI)
+        && approx_eq(*top_left_sweep, quarter_turn);
+    if !uniform_radii
+        || !geometry_matches
+        || !angles_match
+        || !valid_rect(*x0, *y0, *x1, *y1)
+        || !rx.is_finite()
+        || !ry.is_finite()
+        || *rx < 0.0
+        || *ry < 0.0
+    {
+        return None;
+    }
+
+    // A normalized corner radius resolves against the shorter side, so the corner
+    // stays circular on a non-square rect. Scaling each axis by its own extent
+    // instead turns every rounded-rect *clip* into an ellipse while the identical
+    // shape *fills* as a rounded rect, because the fill route (`rounded_rect_path`)
+    // already resolves against `min_side`. The two must agree.
+    let min_side = bounds.width().min(bounds.height()).max(0.0);
+    Some(RegularClipShape::RoundedRect {
+        rect: resolve_normalized_rect(*x0, *y0, *x1, *y1, bounds),
+        corner_width: f64::from(*rx) * min_side,
+        corner_height: f64::from(*ry) * min_side,
+    })
+}
+
+fn resolve_normalized_rect(
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    bounds: vello::kurbo::Rect,
+) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::new(
+        f64::from(x0) * bounds.width(),
+        f64::from(y0) * bounds.height(),
+        f64::from(x1) * bounds.width(),
+        f64::from(y1) * bounds.height(),
+    )
+}
+
+fn valid_rect(x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
+    [x0, y0, x1, y1].into_iter().all(f32::is_finite) && x0 <= x1 && y0 <= y1
+}
+
+fn approx_eq(left: f32, right: f32) -> bool {
+    (left - right).abs() <= f32::EPSILON * 64.0
+}
+
+#[cfg(test)]
+mod regular_clip_tests {
+    use waterui_shape::{Path, Rectangle, RoundedRectangle, Shape as _, UnevenRoundedRectangle};
+
+    use super::*;
+
+    const BOUNDS: vello::kurbo::Rect = vello::kurbo::Rect::new(0.0, 0.0, 200.0, 100.0);
+
+    #[test]
+    fn recognizes_axis_aligned_rectangle() {
+        assert_eq!(
+            regular_clip_shape(&Rectangle.path(), BOUNDS),
+            Some(RegularClipShape::Rect(BOUNDS))
+        );
+    }
+
+    /// A normalized corner radius resolves against the shorter side, so the
+    /// corners stay circular on a non-square rect and a clip matches the fill of
+    /// the same shape. Resolving each axis against its own extent produced
+    /// elliptical corners — a fully-rounded clip came out as an ellipse instead
+    /// of a pill.
+    #[test]
+    fn uniform_rounded_rectangle_clip_keeps_circular_corners() {
+        let Some(RegularClipShape::RoundedRect {
+            rect,
+            corner_width,
+            corner_height,
+        }) = regular_clip_shape(&RoundedRectangle::new(0.1).path(), BOUNDS)
+        else {
+            panic!("uniform rounded rectangle must use the regular clip route");
+        };
+        let min_side = BOUNDS.width().min(BOUNDS.height());
+        assert_eq!(rect, BOUNDS);
+        assert!((corner_width - 0.1 * min_side).abs() < 1.0e-5);
+        assert!(
+            (corner_width - corner_height).abs() < 1.0e-5,
+            "a uniform rounded rectangle must clip with circular corners, got \
+             {corner_width}x{corner_height} on a {}x{} rect",
+            BOUNDS.width(),
+            BOUNDS.height()
+        );
+    }
+
+    /// The fully-rounded case: a clip at the maximum normalized radius is a
+    /// stadium whose caps are half the shorter side, not an ellipse.
+    #[test]
+    fn fully_rounded_clip_is_a_stadium_not_an_ellipse() {
+        let Some(RegularClipShape::RoundedRect {
+            corner_width,
+            corner_height,
+            ..
+        }) = regular_clip_shape(&RoundedRectangle::new(0.5).path(), BOUNDS)
+        else {
+            panic!("a fully-rounded rectangle must use the regular clip route");
+        };
+        let cap = BOUNDS.width().min(BOUNDS.height()) / 2.0;
+        assert!((corner_width - cap).abs() < 1.0e-5);
+        assert!((corner_height - cap).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn leaves_uneven_and_custom_paths_on_the_path_mask_route() {
+        assert_eq!(
+            regular_clip_shape(
+                &UnevenRoundedRectangle::new(0.1, 0.2, 0.3, 0.4).path(),
+                BOUNDS,
+            ),
+            None
+        );
+        let triangle = Path::new()
+            .move_to(0.5, 0.0)
+            .line_to(1.0, 1.0)
+            .line_to(0.0, 1.0)
+            .close();
+        let triangle_commands: Vec<_> = triangle.path().collect();
+        assert_eq!(regular_clip_shape(&triangle_commands, BOUNDS), None);
+    }
+}

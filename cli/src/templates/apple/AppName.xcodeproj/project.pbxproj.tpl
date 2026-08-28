@@ -7,13 +7,20 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D01867772E6C81BF00802E96 /* libwaterui_app.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D01867752E6C818300802E96 /* libwaterui_app.a */; };
 		D018677A2E6C82CA00802E96 /* WaterUI in Frameworks */ = {isa = PBXBuildFile; productRef = D01867792E6C82CA00802E96 /* WaterUI */; settings = {ATTRIBUTES = (Required, ); }; };
+{% if ctx.cef_runtime_enabled() %}
+		D018677B2E6C82CA00802E96 /* WaterUICEF in Frameworks */ = {isa = PBXBuildFile; productRef = D018677E2E6C82CA00802E96 /* WaterUICEF */; settings = {ATTRIBUTES = (Required, ); }; };
+{% endif %}
+{% if ctx.chromium_enabled() %}
+		D018677C2E6C82CA00802E96 /* WaterUIChromium in Frameworks */ = {isa = PBXBuildFile; productRef = D018677F2E6C82CA00802E96 /* WaterUIChromium */; settings = {ATTRIBUTES = (Required, ); }; };
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+		D018677D2E6C82CA00802E96 /* WaterUICefWebView in Frameworks */ = {isa = PBXBuildFile; productRef = D01867802E6C82CA00802E96 /* WaterUICefWebView */; settings = {ATTRIBUTES = (Required, ); }; };
+{% endif %}
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		D018675E2E6C7BBB00802E96 /* {{ ctx.app_name }}.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = {{ ctx.app_name }}.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		D01867752E6C818300802E96 /* libwaterui_app.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libwaterui_app.a; path = "$(BUILT_PRODUCTS_DIR)/libwaterui_app.a"; sourceTree = "<group>"; };
+		D018675E2E6C7BBB00802E96 /* {{ ctx.app_display_name }}.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "{{ ctx.app_display_name }}.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -30,7 +37,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				D018677A2E6C82CA00802E96 /* WaterUI in Frameworks */,
-				D01867772E6C81BF00802E96 /* libwaterui_app.a in Frameworks */,
+{% if ctx.cef_runtime_enabled() %}
+				D018677B2E6C82CA00802E96 /* WaterUICEF in Frameworks */,
+{% endif %}
+{% if ctx.chromium_enabled() %}
+				D018677C2E6C82CA00802E96 /* WaterUIChromium in Frameworks */,
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+				D018677D2E6C82CA00802E96 /* WaterUICefWebView in Frameworks */,
+{% endif %}
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -49,7 +64,7 @@
 		D018675F2E6C7BBB00802E96 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				D018675E2E6C7BBB00802E96 /* {{ ctx.app_name }}.app */,
+				D018675E2E6C7BBB00802E96 /* {{ ctx.app_display_name }}.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -57,7 +72,6 @@
 		D01867742E6C818200802E96 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				D01867752E6C818300802E96 /* libwaterui_app.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -84,9 +98,18 @@
             name = "{{ ctx.crate_name }}";
             packageProductDependencies = (
                 D01867792E6C82CA00802E96 /* WaterUI */,
+{% if ctx.cef_runtime_enabled() %}
+                D018677E2E6C82CA00802E96 /* WaterUICEF */,
+{% endif %}
+{% if ctx.chromium_enabled() %}
+                D018677F2E6C82CA00802E96 /* WaterUIChromium */,
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+                D01867802E6C82CA00802E96 /* WaterUICefWebView */,
+{% endif %}
             );
-            productName = "{{ ctx.app_name }}";
-            productReference = D018675E2E6C7BBB00802E96 /* {{ ctx.app_name }}.app */;
+            productName = "{{ ctx.app_display_name }}";
+            productReference = D018675E2E6C7BBB00802E96 /* {{ ctx.app_display_name }}.app */;
             productType = "com.apple.product-type.application";
         };
 /* End PBXNativeTarget section */
@@ -154,7 +177,6 @@
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(BUILT_PRODUCTS_DIR)/libwaterui_app.a",
 				"$(PROJECT_DIR)/rust_build_info.xcconfig",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -307,6 +329,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "{{ ctx.app_display_name }}";
 				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = {{ ctx.macos_lsuielement() }};
 				"INFOPLIST_KEY_NSPrincipalClass[sdk=macosx*]" = NSApplication;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -327,7 +350,7 @@
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = "-lc++ -framework VideoToolbox";
 				PRODUCT_BUNDLE_IDENTIFIER = {{ ctx.bundle_identifier }};
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "{{ ctx.app_display_name }}";
 				REGISTER_APP_GROUPS = YES;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
 				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
@@ -368,6 +391,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "{{ ctx.app_display_name }}";
 				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = {{ ctx.macos_lsuielement() }};
 				"INFOPLIST_KEY_NSPrincipalClass[sdk=macosx*]" = NSApplication;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -388,7 +412,7 @@
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = "-lc++ -framework VideoToolbox";
 				PRODUCT_BUNDLE_IDENTIFIER = {{ ctx.bundle_identifier }};
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "{{ ctx.app_display_name }}";
 				REGISTER_APP_GROUPS = YES;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
 				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
@@ -439,6 +463,24 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = WaterUI;
 		};
+{% if ctx.cef_runtime_enabled() %}
+		D018677E2E6C82CA00802E96 /* WaterUICEF */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WaterUICEF;
+		};
+{% endif %}
+{% if ctx.chromium_enabled() %}
+		D018677F2E6C82CA00802E96 /* WaterUIChromium */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WaterUIChromium;
+		};
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+		D01867802E6C82CA00802E96 /* WaterUICefWebView */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WaterUICefWebView;
+		};
+{% endif %}
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = D01867562E6C7BBB00802E96 /* Project object */;

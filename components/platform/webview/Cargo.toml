@@ -1,0 +1,38 @@
+[package]
+name = "waterui-webview"
+version = "0.3.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository = "https://github.com/water-rs/waterui"
+description = "WebView component for WaterUI"
+keywords = ["webview", "browser", "ui", "waterui", "gui"]
+categories = ["gui"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-layout.workspace = true
+waterui-url.workspace = true
+waterui-str = { workspace = true, features = ["serde"] }
+thiserror.workspace = true
+tracing.workspace = true
+executor-core.workspace = true
+cookie = "0.18.1"
+base64 = "0.22"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { version = "1.0", features = ["raw_value"] }
+
+[dev-dependencies]
+hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+# `#[js_api]` expands to `::waterui::webview::…` paths, so testing it means
+# reaching this crate back through the facade the way an application does.
+waterui = { path = "../../..", features = ["webview"] }
+waterui-testing = { path = "../../../testing" }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "bridge"
+harness = false

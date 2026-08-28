@@ -35,11 +35,7 @@ water run --platform android
 Native backends can inject the system locale using FFI:
 
 ```c
-// Using the predefined enum
-waterui_env_install_locale(env, WuiLocale_ZhCn);
-
-// Or using a BCP 47 string
-waterui_env_install_locale_string(env, "zh-Hans-CN");
+waterui_env_install_locale_tag(env, "zh-Hans-CN");
 ```
 
 ## Example Output

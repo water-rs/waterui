@@ -1,19 +1,14 @@
 //! Shell output abstraction for the CLI.
 //!
-//! This module provides a global `Shell` for CLI output,
-//! handling terminal detection, colors, verbosity, and JSON output mode.
-
-use std::fmt::Display;
-use std::io::{self, IsTerminal, Write};
-use std::sync::OnceLock;
+//! This module provides the `Shell` passed through CLI commands for output,
+//! terminal detection, colors, verbosity, and JSON output mode.
 
 use anstyle::{AnsiColor, Style};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::Serialize;
+use std::fmt::Display;
+use std::io::{self, IsTerminal, Write};
 use waterui_cli::utils::set_std_output;
-
-/// Global shell instance.
-static SHELL: OnceLock<Shell> = OnceLock::new();
 
 /// ANSI styles for output.
 mod styles {
@@ -37,25 +32,6 @@ mod styles {
     pub const TAG: Style = Style::new().bold();
 }
 
-/// Initialize the global shell.
-///
-/// Must be called once at program start.
-pub fn init(json: bool) {
-    let shell = if json { Shell::json() } else { Shell::new() };
-    let _ = SHELL.set(shell);
-}
-
-/// Get a reference to the global shell.
-///
-/// # Panics
-///
-/// Panics if `init()` was not called.
-pub fn get() -> &'static Shell {
-    SHELL
-        .get()
-        .expect("shell not initialized, call shell::init() first")
-}
-
 /// Shell output abstraction.
 pub struct Shell {
     output: ShellOut,
@@ -68,16 +44,15 @@ enum ShellOut {
 }
 
 impl Shell {
-    fn new() -> Self {
+    /// Creates the output context for one CLI invocation.
+    #[must_use]
+    pub fn new(json: bool) -> Self {
         Self {
-            output: ShellOut::Human,
-            multi_progress: MultiProgress::new(),
-        }
-    }
-
-    fn json() -> Self {
-        Self {
-            output: ShellOut::Json,
+            output: if json {
+                ShellOut::Json
+            } else {
+                ShellOut::Human
+            },
             multi_progress: MultiProgress::new(),
         }
     }
@@ -230,7 +205,7 @@ impl Shell {
 
     /// Print a device log with level-appropriate styling.
     ///
-    /// The message should be in format "[TAG] message" for best display.
+    /// The message should be in format `"[TAG] message"` for best display.
     /// Platform is used as a prefix (e.g., "Android", "Apple").
     pub fn device_log(
         &self,
@@ -261,7 +236,7 @@ impl Shell {
                         tag_style = styles::TAG,
                     )?;
                 } else {
-                    writeln!(stderr, "{level_style}{platform}/{level_char}{reset} {msg}",)?;
+                    writeln!(stderr, "{level_style}{platform}/{level_char}{reset} {msg}")?;
                 }
                 stderr.flush()
             }
@@ -329,9 +304,38 @@ impl Shell {
         pb.enable_steady_tick(std::time::Duration::from_millis(80));
         Some(pb)
     }
+
+    /// Display a panic report from a platform crash message.
+    pub fn panic_message(&self, crash_msg: &str) {
+        let report = PanicReport::parse(crash_msg);
+        let _ = self.panic_report(&report);
+    }
+
+    /// Temporarily forwards child output while running an interactive command.
+    pub async fn display_output<Fut: Future>(&self, fut: Fut) -> Fut::Output {
+        if self.is_interactive() {
+            set_std_output(true);
+            let result = fut.await;
+            set_std_output(false);
+            result
+        } else {
+            fut.await
+        }
+    }
+
+    /// Clears all progress bars before the command exits.
+    pub fn clear(&self) {
+        self.multi_progress.clear().ok();
+    }
+
+    /// Returns whether prompts and progress output may be shown.
+    #[must_use]
+    pub fn is_interactive(&self) -> bool {
+        self.is_terminal() && !self.is_json()
+    }
 }
 
-/// Parse a log message to extract [TAG] prefix.
+/// Parse a log message to extract the `[TAG]` prefix.
 /// Returns (tag, `rest_of_message`) if found.
 fn parse_log_tag(msg: &str) -> Option<(&str, &str)> {
     let msg = msg.trim();
@@ -616,88 +620,6 @@ impl Shell {
     }
 }
 
-// Convenience functions that use the global shell
-
-/// Print a status message.
-pub fn status(status: impl Display, message: impl Display) {
-    let _ = get().status(status, message);
-}
-
-/// Print a device log with level-appropriate styling.
-pub fn device_log(platform: &str, level: tracing::Level, message: impl Display) {
-    let _ = get().device_log(platform, level, message);
-}
-
-/// Print an error message (use `error!` macro instead).
-#[doc(hidden)]
-pub fn error_fn(message: impl Display) {
-    let _ = get().error(message);
-}
-
-/// Display a panic report with colored output and code context.
-pub fn panic_report(crash_msg: &str) {
-    let report = PanicReport::parse(crash_msg);
-    let _ = get().panic_report(&report);
-}
-
-/// Print a warning message (use `warn!` macro instead).
-#[doc(hidden)]
-pub fn warn_fn(message: impl Display) {
-    let _ = get().warn(message);
-}
-
-/// Print a note message (use `note!` macro instead).
-#[doc(hidden)]
-pub fn note_fn(message: impl Display) {
-    let _ = get().note(message);
-}
-
-/// Print a plain line (use `line!` macro instead).
-#[doc(hidden)]
-pub fn println(message: impl Display) {
-    let _ = get().println(message);
-}
-
-/// Print a raw JSON line to stdout (JSON mode only).
-#[doc(hidden)]
-pub fn json_raw(json: &str) {
-    let _ = get().json_raw(json);
-}
-
-/// Print a header (use `header!` macro instead).
-#[doc(hidden)]
-pub fn header_fn(message: impl Display) {
-    let _ = get().header(message);
-}
-
-pub async fn display_output<Fut: Future>(fut: Fut) -> Fut::Output {
-    if is_interactive() {
-        set_std_output(true);
-        let result = fut.await;
-        set_std_output(false);
-        result
-    } else {
-        fut.await
-    }
-}
-
-/// Create a spinner.
-pub fn spinner(message: impl Into<String>) -> Option<ProgressBar> {
-    get().spinner(message)
-}
-
-/// Clear all progress bars and release resources.
-///
-/// Call this before exiting to ensure progress bars don't block exit.
-pub fn clear() {
-    get().multi_progress.clear().ok();
-}
-
-/// Check if running in an interactive terminal.
-pub fn is_interactive() -> bool {
-    get().is_terminal() && !get().is_json()
-}
-
 // ============================================================================
 // Convenience macros
 // ============================================================================
@@ -711,9 +633,9 @@ pub fn is_interactive() -> bool {
 /// ```
 #[macro_export]
 macro_rules! success {
-    ($($arg:tt)*) => {
-        $crate::shell::status("✓", format!($($arg)*))
-    };
+    ($shell:expr, $($arg:tt)*) => {{
+        let _ = $shell.status("✓", format!($($arg)*));
+    }};
 }
 
 /// Print a plain line (like println but through shell).
@@ -726,12 +648,12 @@ macro_rules! success {
 /// ```
 #[macro_export]
 macro_rules! line {
-    () => {
-        $crate::shell::println("")
-    };
-    ($($arg:tt)*) => {
-        $crate::shell::println(format!($($arg)*))
-    };
+    ($shell:expr) => {{
+        let _ = $shell.println("");
+    }};
+    ($shell:expr, $($arg:tt)*) => {{
+        let _ = $shell.println(format!($($arg)*));
+    }};
 }
 
 /// Print a warning message.
@@ -743,9 +665,9 @@ macro_rules! line {
 /// ```
 #[macro_export]
 macro_rules! warn {
-    ($($arg:tt)*) => {
-        $crate::shell::warn_fn(format!($($arg)*))
-    };
+    ($shell:expr, $($arg:tt)*) => {{
+        let _ = $shell.warn(format!($($arg)*));
+    }};
 }
 
 /// Print an error message.
@@ -757,9 +679,9 @@ macro_rules! warn {
 /// ```
 #[macro_export]
 macro_rules! error {
-    ($($arg:tt)*) => {
-        $crate::shell::error_fn(format!($($arg)*))
-    };
+    ($shell:expr, $($arg:tt)*) => {{
+        let _ = $shell.error(format!($($arg)*));
+    }};
 }
 
 /// Print a note/info message.
@@ -771,9 +693,9 @@ macro_rules! error {
 /// ```
 #[macro_export]
 macro_rules! note {
-    ($($arg:tt)*) => {
-        $crate::shell::note_fn(format!($($arg)*))
-    };
+    ($shell:expr, $($arg:tt)*) => {{
+        let _ = $shell.note(format!($($arg)*));
+    }};
 }
 
 /// Print a header/title.
@@ -785,7 +707,7 @@ macro_rules! note {
 /// ```
 #[macro_export]
 macro_rules! header {
-    ($($arg:tt)*) => {
-        $crate::shell::header_fn(format!($($arg)*))
-    };
+    ($shell:expr, $($arg:tt)*) => {{
+        let _ = $shell.header(format!($($arg)*));
+    }};
 }

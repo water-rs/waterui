@@ -1,6 +1,6 @@
 [package]
 name = "waterui-core"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -32,7 +32,7 @@ features = ["derive"]
 
 
 [features]
-default = []
+default = ["std"]
 std = []
 nightly = []
 serde = ["dep:serde", "waterui-str/serde"]

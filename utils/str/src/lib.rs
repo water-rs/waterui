@@ -26,7 +26,6 @@ nami_core::impl_constant!(Str);
 /// `Str` combines the benefits of both `&'static str` and `String` with efficient
 /// cloning and passing, automatically using the most appropriate representation
 /// based on the source.
-#[derive(Debug)]
 pub struct Str {
     /// Pointer to the string data.
     ptr: NonNull<()>,
@@ -44,6 +43,9 @@ impl Drop for Str {
     /// For static strings, this is a no-op.
     fn drop(&mut self) {
         if let Ok(shared) = self.as_shared() {
+            // SAFETY: `as_shared` returning `Ok` proves `len < 0`, so `ptr` is the
+            // leaked `Shared` box this `Str` holds a count on. `Drop` runs once, so the
+            // count is released once and the box is reclaimed only by the last owner.
             unsafe {
                 if shared.is_unique() {
                     let ptr = self.ptr.cast::<Shared>().as_ptr();
@@ -63,6 +65,8 @@ impl Clone for Str {
     /// For owned strings, this increments the reference count.
     fn clone(&self) -> Self {
         if let Ok(shared) = self.as_shared() {
+            // SAFETY: `as_shared` returning `Ok` proves this is a shared string, so
+            // there is a live `Shared` to count; the clone below takes that new count.
             unsafe {
                 shared.increment_count();
             }
@@ -192,6 +196,8 @@ impl Str {
     /// ```
     #[must_use]
     pub const fn from_static(s: &'static str) -> Self {
+        // SAFETY: a `&'static str` never has a null data pointer, and its non-negative
+        // length is what marks this `Str` as the static representation.
         unsafe {
             Self {
                 ptr: NonNull::new_unchecked(s.as_ptr().cast_mut().cast::<()>()),
@@ -207,12 +213,9 @@ impl Str {
             return Self::new();
         }
 
-        unsafe {
-            Self {
-                ptr: NonNull::new_unchecked(Box::into_raw(Box::new(Shared::new(string))))
-                    .cast::<()>(),
-                len: -len.cast_signed(),
-            }
+        Self {
+            ptr: NonNull::from(Box::leak(Box::new(Shared::new(string)))).cast::<()>(),
+            len: -len.cast_signed(),
         }
     }
 
@@ -222,6 +225,8 @@ impl Str {
 
     const fn as_shared(&self) -> Result<&Shared, &'static str> {
         if !self.is_shared() {
+            // SAFETY: `len >= 0` is the static representation, so `ptr`/`len` describe
+            // the original `&'static str` — live for the program, and UTF-8 already.
             return Err(unsafe {
                 core::str::from_utf8_unchecked(slice::from_raw_parts(
                     self.ptr.as_ptr().cast(),
@@ -230,6 +235,8 @@ impl Str {
             });
         }
 
+        // SAFETY: `len < 0` is the shared representation, so `ptr` is the leaked
+        // `Shared` this `Str` holds a count on; the borrow is tied to `&self`.
         unsafe { Ok(self.ptr.cast::<Shared>().as_ref()) }
     }
 
@@ -251,6 +258,8 @@ impl Str {
     #[must_use]
     pub const fn as_str(&self) -> &str {
         match self.as_shared() {
+            // SAFETY: the `Shared` outlives this borrow because `self` holds a count
+            // on it.
             Ok(shared) => unsafe { shared.as_str() },
             Err(str) => str,
         }
@@ -311,6 +320,9 @@ impl Str {
     pub fn into_string(self) -> String {
         let this = ManuallyDrop::new(self);
         match this.as_shared() {
+            // SAFETY: `self` is wrapped in `ManuallyDrop`, so its count is not released
+            // twice. When unique, this is the last owner and may reclaim the box;
+            // otherwise it drops its own count and copies the contents.
             Ok(shared) => unsafe {
                 if shared.is_unique() {
                     let shared = Box::from_raw(this.ptr.cast::<Shared>().as_ptr());
@@ -391,6 +403,7 @@ impl Str {
     /// ```
     #[must_use]
     pub unsafe fn from_utf8_unchecked(bytes: Vec<u8>) -> Self {
+        // SAFETY: this function's own contract requires `bytes` to be valid UTF-8.
         unsafe { Self::from(String::from_utf8_unchecked(bytes)) }
     }
 
@@ -522,7 +535,7 @@ mod tests {
     fn test_multiple_clones() {
         let s1 = Str::from(String::from("test"));
         let s2 = s1.clone();
-        let s3 = s1.clone();
+        let s3 = s1;
         let s4 = s2.clone();
 
         // no reference count exposed
@@ -540,7 +553,7 @@ mod tests {
         let s1 = Str::from(String::from("hello"));
 
         {
-            let s2 = s1;
+            let _s2 = s1;
         } // s2 is dropped here
 
         // no reference count exposed
@@ -558,7 +571,7 @@ mod tests {
     #[test]
     fn test_into_string_shared() {
         let s1 = Str::from(String::from("hello"));
-        let s2 = s1.clone();
+        let _s2 = s1.clone();
 
         let string = s1.into_string();
         assert_eq!(string, "hello");
@@ -588,6 +601,8 @@ mod tests {
     #[test]
     fn test_from_utf8_unchecked() {
         let bytes = vec![104, 101, 108, 108, 111]; // "hello"
+        // SAFETY: `bytes` is the ASCII literal spelled out just above, so it is
+        // valid UTF-8.
         let s = unsafe { Str::from_utf8_unchecked(bytes) };
         assert_eq!(s.as_str(), "hello");
         // no reference count exposed
@@ -697,8 +712,8 @@ mod tests {
     #[test]
     fn test_memory_safety_into_string_with_clones() {
         let s1 = Str::from(String::from("unique test"));
-        let s2 = s1.clone();
-        let s3 = s1.clone();
+        let _s2 = s1.clone();
+        let _s3 = s1.clone();
 
         // no reference count exposed
 
@@ -757,7 +772,7 @@ mod tests {
         // no reference count exposed
 
         // Clone the owned string
-        let s2 = s.clone();
+        let _s2 = s.clone();
         // no reference count exposed
 
         // Convert back to string

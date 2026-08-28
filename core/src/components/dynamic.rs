@@ -4,28 +4,30 @@
 //! based on reactive state or explicit updates.
 //!
 //! - `Dynamic` - A view that can be updated through a `DynamicHandler`
-//! - `watch` - Helper function to create views that respond to reactive state changes
+//! - `watch` - Helper for the exceptional case where reactive state changes view structure
 //!
 //! # Examples
 //!
 //! ```rust
-//! use waterui_core::{dynamic::{Dynamic,watch},Binding};
+//! use waterui_core::{dynamic::{Dynamic, watch}, Binding};
 //!
 //! // Create a dynamic view with a handler
 //! let (handler, view) = Dynamic::new();
 //! handler.set("Initial content");
 //!
-//! // Create a view that watches a reactive value
-//! let count = Binding::container(0);
-//! let counter_view = watch(count, |value| format!("Count: {}", value));
+//! // Replace a subtree only when the semantic view type genuinely changes.
+//! let show_details = Binding::container(false);
+//! let content = watch(show_details, |show| {
+//!     if show { "Details" } else { "Summary" }
+//! });
 use crate::components::metadata::Retain;
-use crate::{AnyView, Environment, LocalStateScope, LocalStateStore, Metadata, View};
+use crate::{AnyView, Environment, Metadata, View};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::RefCell;
 use core::marker::PhantomData;
 use nami::watcher::Context;
-use nami::{Computed, Signal, watcher::Metadata as WatcherMetadata};
+use nami::{Signal, watcher::Metadata as WatcherMetadata};
 
 /// A dynamic view that can be updated.
 ///
@@ -55,6 +57,10 @@ enum DynamicHandlerState {
 }
 
 type Receiver = Box<dyn Fn(Context<AnyView>)>;
+
+/// Metadata marker for the body-time snapshot installed by [`Dynamic::watch`].
+#[derive(Clone, Copy, Debug)]
+pub struct DynamicInitialContent;
 
 impl_debug!(Dynamic);
 impl_debug!(DynamicHandler);
@@ -106,10 +112,14 @@ impl Dynamic {
         (handler.clone(), Self(handler))
     }
 
-    /// Creates a Dynamic view that watches a reactive value.
+    /// Creates a Dynamic view that watches structural reactive state.
     ///
     /// The provided function is used to convert the value to a view.
-    /// Whenever the watched value changes, the view will update automatically.
+    /// Whenever the watched value changes, the entire child subtree is replaced.
+    /// State owned by the replaced subtree is discarded. Prefer signal-aware
+    /// component inputs, modifiers, metadata, and reactive collections for scalar
+    /// values or collection membership. Use this only when the semantic view
+    /// structure itself must change.
     ///
     /// # Arguments
     ///
@@ -254,19 +264,6 @@ impl Dynamic {
     }
 }
 
-fn local_scope(env: &Environment) -> LocalStateScope {
-    env.get::<LocalStateScope>()
-        .unwrap_or_else(|| panic!("Dynamic::watch requires renderer LocalStateScope support"))
-        .clone()
-}
-
-fn local_shared<T: 'static>(env: &Environment, init: impl FnOnce() -> T + 'static) -> Rc<T> {
-    let scope = local_scope(env);
-    env.get::<LocalStateStore>()
-        .unwrap_or_else(|| panic!("Dynamic::watch requires renderer LocalStateStore support"))
-        .get_or_init(&scope, init)
-}
-
 struct WatchedDynamic<T, S, F> {
     value: S,
     f: F,
@@ -280,13 +277,14 @@ where
     F: Fn(T) -> V + 'static,
     V: View + 'static,
 {
-    fn body(self, env: &Environment) -> impl View {
-        let runtime = local_shared(env, Dynamic::new);
-        let handle = runtime.0.clone();
-        let dynamic = runtime.1.clone();
+    fn body(self, _env: &Environment) -> impl View {
+        let (handle, dynamic) = Dynamic::new();
         let f = Rc::new(self.f);
 
-        handle.set(f(self.value.get()));
+        handle.set_with_metadata(
+            f(self.value.get()),
+            WatcherMetadata::new().with(DynamicInitialContent),
+        );
 
         let guard = self.value.watch({
             let f = Rc::clone(&f);
@@ -297,7 +295,7 @@ where
     }
 }
 
-/// Creates a view that watches a reactive value.
+/// Creates a view that watches structural reactive state.
 ///
 /// A convenience function that calls [`Dynamic::watch`].
 ///
@@ -308,19 +306,10 @@ where
 ///
 /// # Returns
 ///
-/// A view that updates when the value changes
+/// A view whose entire child subtree is replaced when the value changes
 pub fn watch<T: 'static, S, V: View>(value: S, f: impl Fn(T) -> V + 'static) -> impl View
 where
     S: Signal<Output = T> + 'static,
 {
     Dynamic::watch(value, f)
-}
-
-impl<V: View> View for Computed<V>
-where
-    Self: 'static,
-{
-    fn body(self, _env: &crate::Environment) -> impl View {
-        Dynamic::watch(self, |view| view)
-    }
 }

@@ -15,31 +15,69 @@ categories = ["internationalization", "localization"]
 waterui-core.workspace = true
 waterui-str.workspace = true
 nami.workspace = true
-anyhow = "1.0"
 
-# ICU4X for locale handling
-icu_locid = "1.5"
-icu_locid_transform = "1.5"
-icu_plurals = "1.5"
-icu_decimal = "1.5"
-icu_datetime = { version = "1.5", features = ["experimental"] }
-icu_timezone = "1.5"
-icu_calendar = "1.5"
-icu_list = "1.5"
-icu_provider = "1.5"
-fixed_decimal = "0.5"
-jiff.workspace = true
+# ICU4X for locale handling.
+#
+# `icu_locale`, `icu_provider`, `icu_plurals` and `fixed_decimal` are
+# unconditional: locale identity and the fallback chain are this crate's whole
+# purpose, and `PluralCategory` is the data model of a translation catalog —
+# `parser.rs` keys every pluralized entry by it — so the plural rules cannot be
+# separated from the catalogs that describe themselves in terms of them.
+icu_locale = "2.2"
+icu_plurals = "2.2"
+icu_provider = "2.2"
+fixed_decimal = "0.7"
+# Each formatter below carries its own slice of CLDR data, and an application
+# usually wants one of them rather than all three.
+icu_decimal = { version = "2.2", optional = true }
+icu_datetime = { version = "2.2", optional = true }
+icu_time = { version = "2.2", features = ["unstable_jiff_0_2"], optional = true }
+icu_calendar = { version = "2.2", optional = true }
+icu_list = { version = "2.2", optional = true }
+jiff = { workspace = true, optional = true }
 
 # Other dependencies
-num = "0.4"
+num-traits = { version = "0.2", default-features = false }
 serde = { workspace = true, features = ["derive"] }
-toml = "0.8"
+# Translation catalogs are parsed, never written.
+toml = { version = "1.1", default-features = false, features = ["std", "serde", "parse"] }
 tracing.workspace = true
 sys-locale.workspace = true
+
+[target.'cfg(not(target_os = "espidf"))'.dependencies]
 iana-time-zone.workspace = true
 
 [features]
 default = []
+# Locale-aware date and time formatting (`format::date`): ICU's datetime,
+# calendar and time data, driven by `jiff`'s civil types.
+datetime = ["dep:icu_datetime", "dep:icu_calendar", "dep:icu_time", "dep:jiff"]
+# Locale-aware number, percent and currency formatting (`format::number`), the
+# unit quantities that render through it (`format::unit`), and the numeric
+# interpolation `text!` performs through `LocalizedArgument`.
+number = ["dep:icu_decimal"]
+# Locale-aware list conjunction (`LocalizedList`).
+list = ["dep:icu_list"]
+
+[dev-dependencies]
+# `text!` expands against `::waterui`, so the crate-level example needs it.
+waterui = { path = "../.." }
+# Every formatter has tests and doc examples, and none of them is in `default`.
+# A dev-dependency on itself turns them on for this crate's own test targets
+# without turning them on for anything that depends on the crate.
+waterui-locale = { path = ".", features = ["datetime", "number", "list"] }
 
 [lints]
 workspace = true
+
+# `waterui` is reachable only from a doc example, and cargo-machete does not
+# analyze doctests, so it reads as unused.
+[package.metadata.cargo-machete]
+ignored = [
+    "waterui",
+    # The dev-dependency on itself, which turns the formatter features on for
+    # this crate's own test targets. cargo-machete looks for `use
+    # waterui_locale` in the sources and never finds one, because the crate is
+    # already `crate`.
+    "waterui-locale",
+]

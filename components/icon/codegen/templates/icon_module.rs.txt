@@ -1,0 +1,34 @@
+{% for line in banner -%}
+// {{ line }}
+{% endfor -%}
+{%- if let Some(ff) = font_family %}
+/// {{ ff.doc }}
+{% if ff.cfg_webfont -%}
+#[cfg(feature = "webfont")]
+{% endif -%}
+pub const FONT_FAMILY: &str = "{{ ff.name }}";
+{% endif -%}
+{%- if reexport_glyph %}
+#[cfg(feature = "webfont")]
+pub use waterui_icon::IconGlyph;
+{% endif -%}
+{%- for icon in icons %}
+{% if let Some(glyph) = icon.glyph -%}
+/// `{{ icon.source_name }}` icon as webfont glyph.
+#[cfg(feature = "webfont")]
+pub const {{ glyph.const_name }}: {{ glyph.type_path }} = {{ glyph.type_path }}::new('{{ glyph.escape }}', FONT_FAMILY);
+{% endif -%}
+{%- if let Some(svg) = icon.svg -%}
+/// SVG path for `{{ icon.source_name }}`.
+pub const {{ svg.path_const }}: &str = {{ svg.path_literal }};
+{% if let Some(vb) = svg.viewbox -%}
+pub const {{ vb.const_name }}: (f32, f32) = {{ vb.literal }};
+{% endif -%}
+#[cfg(feature = "svg")]
+/// `{{ icon.source_name }}` icon as Svg.
+#[inline]
+pub fn {{ svg.fn_name }}() -> crate::Svg {
+    {{ svg.ctor }}
+}
+{% endif -%}
+{% endfor %}

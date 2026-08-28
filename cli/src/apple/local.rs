@@ -50,6 +50,8 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
     use core_foundation::dictionary::CFDictionary;
 
     let window_list_ptr =
+    // SAFETY: a plain Core Graphics query taking two constants and returning an
+    // owned array (or null, checked below).
         unsafe { CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID) };
 
     if window_list_ptr.is_null() {
@@ -57,6 +59,8 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
     }
 
     let window_list: CFArray<CFDictionary<CFString, CFType>> =
+    // SAFETY: `CGWindowListCopyWindowInfo` follows the Core Foundation *create*
+    // rule, so this takes ownership of the +1 reference exactly once.
         unsafe { CFArray::wrap_under_create_rule(window_list_ptr) };
 
     let mut windows = Vec::new();
@@ -67,6 +71,9 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
         let Some(owner_pid_val) = window_dict.find(&owner_pid_key) else {
             continue;
         };
+        // SAFETY: the value came out of the window-info dictionary, which owns it
+        // for as long as the array is alive; the *get* rule borrows without
+        // taking a reference, matching that ownership.
         let owner_pid_num =
             unsafe { CFNumber::wrap_under_get_rule(owner_pid_val.as_CFTypeRef().cast()) };
         let Some(owner_pid) = owner_pid_num.to_i32() else {
@@ -83,6 +90,9 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
         let Some(window_id_val) = window_dict.find(&window_id_key) else {
             continue;
         };
+        // SAFETY: the value came out of the window-info dictionary, which owns it
+        // for as long as the array is alive; the *get* rule borrows without
+        // taking a reference, matching that ownership.
         let window_id_num =
             unsafe { CFNumber::wrap_under_get_rule(window_id_val.as_CFTypeRef().cast()) };
         let Some(window_id) = window_id_num.to_i32() else {
@@ -94,6 +104,9 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
         let name = window_dict
             .find(&name_key)
             .map(|v| {
+                // SAFETY: the value came out of the window-info dictionary, which owns it
+                // for as long as the array is alive; the *get* rule borrows without
+                // taking a reference, matching that ownership.
                 let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
                 cf_str.to_string()
             })
@@ -104,6 +117,9 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
         let owner_name = window_dict
             .find(&owner_name_key)
             .map(|v| {
+                // SAFETY: the value came out of the window-info dictionary, which owns it
+                // for as long as the array is alive; the *get* rule borrows without
+                // taking a reference, matching that ownership.
                 let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
                 cf_str.to_string()
             })
@@ -114,6 +130,9 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
         let layer = window_dict
             .find(&layer_key)
             .and_then(|v| {
+                // SAFETY: the value came out of the window-info dictionary, which owns it
+                // for as long as the array is alive; the *get* rule borrows without
+                // taking a reference, matching that ownership.
                 let num = unsafe { CFNumber::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
                 num.to_i32()
             })

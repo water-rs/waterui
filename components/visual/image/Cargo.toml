@@ -1,0 +1,40 @@
+[package]
+name = "waterui-image"
+version = "0.3.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Image primitives and decode pipeline for WaterUI"
+keywords = ["image", "media", "gpu", "waterui"]
+categories = ["gui", "multimedia"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+shaderloom.workspace = true
+waterui-layout.workspace = true
+waterkit-codec = { workspace = true, features = ["software-fallback"] }
+tracing.workspace = true
+wgpu.workspace = true
+num-traits = { version = "0.2", default-features = false }
+# `image`'s `avif` feature is an AVIF *encoder* (ravif -> rav1e); the decoder is
+# `avif-native`. Nothing here encodes AVIF, and AVIF/HEIF inputs are routed to
+# the platform decoder by `codec.rs`, so the encoder was pure weight.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
+mp4-atom = "0.14.0"
+
+[build-dependencies]
+shaderloom = { workspace = true, features = ["build"] }
+
+[dev-dependencies]
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+
+[lints]
+workspace = true
+
+# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+[package.metadata.cargo-machete]
+ignored = ["shaderloom"]

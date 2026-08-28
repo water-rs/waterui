@@ -1,11 +1,11 @@
-use crate::app::MountedApp;
+use crate::app::SemanticApp;
 use crate::selector::{ElementRef, ElementSet, Selector};
 use crate::semantics::Role;
 
 /// Chainable query builder bound to a mounted app session.
 #[derive(Debug)]
 pub struct Query<'a> {
-    pub(crate) app: &'a mut MountedApp,
+    pub(crate) app: &'a mut SemanticApp,
     pub(crate) selector: Selector,
 }
 
@@ -14,6 +14,13 @@ impl Query<'_> {
     #[must_use]
     pub fn role(mut self, role: Role) -> Self {
         self.selector = self.selector.role(role);
+        self
+    }
+
+    /// Restricts the query to nodes with the given automation identifier.
+    #[must_use]
+    pub fn identifier(mut self, identifier: impl Into<String>) -> Self {
+        self.selector = self.selector.identifier(identifier);
         self
     }
 
@@ -66,10 +73,24 @@ impl Query<'_> {
         self
     }
 
+    /// Restricts the query to nodes with an indeterminate checked state.
+    #[must_use]
+    pub fn mixed(mut self) -> Self {
+        self.selector = self.selector.mixed();
+        self
+    }
+
     /// Restricts the query to nodes with the requested expanded state.
     #[must_use]
     pub fn expanded(mut self, expanded: bool) -> Self {
         self.selector = self.selector.expanded(expanded);
+        self
+    }
+
+    /// Restricts the query to nodes with the requested busy state.
+    #[must_use]
+    pub fn busy(mut self, busy: bool) -> Self {
+        self.selector = self.selector.busy(busy);
         self
     }
 
@@ -130,7 +151,7 @@ impl Query<'_> {
     /// Returns whether at least one matching element exists.
     #[must_use]
     pub fn exists(self) -> bool {
-        self.optional().is_some()
+        !self.all().is_empty()
     }
 
     /// Asserts that at least one matching element exists.
@@ -167,86 +188,104 @@ impl Query<'_> {
     }
 
     /// Performs a tap on the matching element.
-    #[must_use]
-    pub fn tap(self) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the element does not handle the click action.
+    pub fn tap(self) {
         let element = self.app.resolve_single(&self.selector);
-        self.app.tap_node(element.id())
+        self.app.tap_node(element.id());
     }
 
     /// Requests accessibility focus on the matching element.
-    #[must_use]
-    pub fn focus(self) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the element does not handle the focus action.
+    pub fn focus(self) {
         let element = self.app.resolve_single(&self.selector);
-        self.app.focus_node(element.id())
+        self.app.focus_node(element.id());
     }
 
     /// Sets text on the matching editable element.
-    #[must_use]
-    pub fn set_text(self, value: impl Into<String>) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the element does not handle the set-value action.
+    pub fn set_text(self, value: impl Into<String>) {
         let element = self.app.resolve_single(&self.selector);
-        self.app.set_text_node(element.id(), value)
+        self.app.set_text_node(element.id(), value);
     }
 
     /// Performs an increment action on the matching element.
-    #[must_use]
-    pub fn increment(self) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the element does not handle the increment action.
+    pub fn increment(self) {
         let element = self.app.resolve_single(&self.selector);
-        self.app.increment_node(element.id())
+        self.app.increment_node(element.id());
     }
 
     /// Performs a decrement action on the matching element.
-    #[must_use]
-    pub fn decrement(self) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the element does not handle the decrement action.
+    pub fn decrement(self) {
         let element = self.app.resolve_single(&self.selector);
-        self.app.decrement_node(element.id())
+        self.app.decrement_node(element.id());
     }
 
     /// Performs a scroll-down action on the matching element.
-    #[must_use]
-    pub fn scroll_down(self) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the element does not handle the scroll-down action.
+    pub fn scroll_down(self) {
         let element = self.app.resolve_single(&self.selector);
-        self.app.scroll_down_node(element.id())
+        self.app.scroll_down_node(element.id());
     }
 
     /// Moves hover to the matching element center.
-    #[must_use]
-    pub fn hover(self) -> bool {
+    pub fn hover(self) {
         let element = self.app.resolve_single(&self.selector);
-        element.hover(self.app)
+        element.hover(self.app);
     }
 
     /// Moves hover to a normalized point inside the matching element.
-    #[must_use]
-    pub fn hover_at(self, normalized_x: f32, normalized_y: f32) -> bool {
+    pub fn hover_at(self, normalized_x: f32, normalized_y: f32) {
         let element = self.app.resolve_single(&self.selector);
-        element.hover_at(self.app, normalized_x, normalized_y)
+        element.hover_at(self.app, normalized_x, normalized_y);
     }
 
     /// Performs a tap at a normalized point inside the matching element.
-    #[must_use]
-    pub fn tap_at(self, normalized_x: f32, normalized_y: f32) -> bool {
+    pub fn tap_at(self, normalized_x: f32, normalized_y: f32) {
         let element = self.app.resolve_single(&self.selector);
-        element.tap_at(self.app, normalized_x, normalized_y)
+        element.tap_at(self.app, normalized_x, normalized_y);
     }
 
     /// Drags from the matching element center by a delta.
-    #[must_use]
-    pub fn drag_by(self, dx: f32, dy: f32) -> bool {
+    pub fn drag_by(self, dx: f32, dy: f32) {
         let element = self.app.resolve_single(&self.selector);
-        element.drag_by(self.app, dx, dy)
+        element.drag_by(self.app, dx, dy);
+    }
+
+    /// Drags from the matching element center by a delta with step/timing control.
+    pub fn drag_by_with(self, dx: f32, dy: f32, options: crate::app::DragOptions) {
+        let element = self.app.resolve_single(&self.selector);
+        element.drag_by_with(self.app, dx, dy, options);
     }
 
     /// Drags between normalized points inside the matching element.
-    #[must_use]
-    pub fn drag_between(self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) -> bool {
+    pub fn drag_between(self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) {
         let element = self.app.resolve_single(&self.selector);
-        element.drag_between(self.app, from_x, from_y, to_x, to_y)
+        element.drag_between(self.app, from_x, from_y, to_x, to_y);
     }
 
     /// Applies a magnification gesture to the matching element.
-    #[must_use]
-    pub fn magnify(self, factor: f32) -> bool {
+    pub fn magnify(self, factor: f32) {
         let element = self.app.resolve_single(&self.selector);
-        element.magnify(self.app, factor)
+        element.magnify(self.app, factor);
     }
 }

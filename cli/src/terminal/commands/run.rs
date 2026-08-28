@@ -9,7 +9,8 @@ use futures::StreamExt;
 #[cfg(target_os = "macos")]
 use jiff::Timestamp;
 
-use crate::shell::{self, display_output};
+use super::detect_sccache_path;
+use crate::shell::Shell;
 use crate::toolchain_checks;
 use crate::{error, header, line, note, success, warn};
 use waterui_cli::{
@@ -25,6 +26,7 @@ use waterui_cli::{
     backend::reinit_backend,
     build::BuildOptions,
     device::{Artifact, Device, DeviceEvent, Local, LogLevel, RunOptions, Running},
+    esp32::{backend::Esp32Backend, platform::run_esp32},
     gtk4::{
         backend::Gtk4Backend,
         platform::{build_gtk4, package_gtk4},
@@ -38,14 +40,10 @@ use waterui_cli::{
     },
     platform::{PackageOptions, TargetPlatform as LibTargetPlatform},
     project::Project,
-    toolchain::sccache::Sccache,
-    utils::sccache_install_hint,
 };
 
 #[cfg(target_os = "macos")]
 use waterui_cli::debug;
-#[cfg(target_os = "macos")]
-use waterui_cli::project::PackageType;
 
 #[cfg(target_os = "macos")]
 struct CrashReportContext {
@@ -66,25 +64,12 @@ impl CrashReportContext {
             return Ok(None);
         }
 
-        let device_identifier = whoami::fallible::hostname()
+        let device_identifier = whoami::hostname()
             .map_err(|e| color_eyre::eyre::eyre!("Failed to determine hostname: {e}"))?;
 
-        let process_name = match project.manifest().package.package_type {
-            PackageType::Playground => "WaterUIApp".to_string(),
-            PackageType::App => {
-                // Match Apple backend naming: convert crate name to UpperCamel for app name.
-                project
-                    .crate_name()
-                    .split('-')
-                    .map(|s| {
-                        let mut chars = s.chars();
-                        chars.next().map_or_else(String::new, |first| {
-                            first.to_uppercase().chain(chars).collect()
-                        })
-                    })
-                    .collect::<String>()
-            }
-        };
+        // A crash report is filed under the executable's name, which is the
+        // Xcode product name — the same one the bundle is built under.
+        let process_name = waterui_cli::apple::backend::apple_product_name(project)?.to_string();
 
         Ok(Some(Self {
             started_at: Timestamp::now(),
@@ -114,7 +99,7 @@ async fn find_latest_ips_report(ctx: &CrashReportContext) -> Option<debug::Crash
 
 #[derive(Debug, Clone, Copy)]
 struct BackendAvailability {
-    available: [bool; 4],
+    available: [bool; 5],
 }
 
 impl BackendAvailability {
@@ -124,6 +109,7 @@ impl BackendAvailability {
             TargetBackend::Android => 1,
             TargetBackend::Gtk4 => 2,
             TargetBackend::Hydrolysis => 3,
+            TargetBackend::Dew => 4,
         }]
     }
 }
@@ -159,6 +145,25 @@ pub enum TargetPlatform {
     Windows,
     /// Web (WASM + WebGPU in browser).
     Web,
+    /// ESP32-S3 board or QEMU (Dew firmware, Xtensa).
+    Esp32s3,
+    /// ESP32-C3 board or QEMU (Dew firmware, RISC-V).
+    Esp32c3,
+    /// ESP32-P4 board (Dew firmware, RISC-V with FPU).
+    Esp32p4,
+}
+
+impl TargetPlatform {
+    /// The ESP32 chip a platform selects, if it is an ESP32 platform.
+    const fn esp32_chip(self) -> Option<waterui_cli::esp32::chip::Esp32Chip> {
+        use waterui_cli::esp32::chip::Esp32Chip;
+        match self {
+            Self::Esp32s3 => Some(Esp32Chip::Esp32S3),
+            Self::Esp32c3 => Some(Esp32Chip::Esp32C3),
+            Self::Esp32p4 => Some(Esp32Chip::Esp32P4),
+            _ => None,
+        }
+    }
 }
 
 /// Target backend for running (how the app is built and rendered).
@@ -172,6 +177,8 @@ pub enum TargetBackend {
     Gtk4,
     /// Hydrolysis backend (self-drawn renderer).
     Hydrolysis,
+    /// Dew backend (ESP32 firmware).
+    Dew,
 }
 
 /// Arguments for the run command.
@@ -246,6 +253,9 @@ fn resolve_backend(
         TargetPlatform::Android => TargetBackend::Android,
         TargetPlatform::Linux => TargetBackend::Gtk4,
         TargetPlatform::Windows | TargetPlatform::Web => TargetBackend::Hydrolysis,
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
+            TargetBackend::Dew
+        }
     };
 
     let backend = backend_override.unwrap_or(default_backend);
@@ -267,6 +277,10 @@ fn resolve_backend(
                 TargetPlatform::Windows | TargetPlatform::Web,
                 TargetBackend::Hydrolysis
             )
+            | (
+                TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4,
+                TargetBackend::Dew
+            )
     );
 
     if !supported {
@@ -278,7 +292,10 @@ fn resolve_backend(
              - Android: android\n  \
              - Linux: gtk4, hydrolysis\n  \
              - Windows: hydrolysis\n  \
-             - Web: hydrolysis",
+             - Web: hydrolysis\n  \
+             - ESP32-S3: dew\n  \
+             - ESP32-C3: dew\n  \
+             - ESP32-P4: dew",
             backend,
             platform
         );
@@ -294,6 +311,9 @@ const fn default_backend_priority(platform: TargetPlatform) -> &'static [TargetB
         TargetPlatform::Macos => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
         TargetPlatform::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
         TargetPlatform::Windows | TargetPlatform::Web => &[TargetBackend::Hydrolysis],
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
+            &[TargetBackend::Dew]
+        }
     }
 }
 
@@ -342,78 +362,83 @@ const fn resolve_platform(platform_override: Option<TargetPlatform>) -> TargetPl
     }
 }
 
-fn sccache_allowed() -> bool {
-    if let Some(value) = std::env::var_os("WATERUI_DISABLE_SCCACHE") {
-        let value = value.to_string_lossy().trim().to_ascii_lowercase();
-        if matches!(value.as_str(), "1" | "true" | "yes" | "on") {
-            return false;
-        }
-    }
-    // Respect explicit wrapper from caller (e.g. passthrough wrapper in constrained envs).
-    if std::env::var_os("RUSTC_WRAPPER").is_some() {
-        return false;
-    }
-    true
-}
-
 /// Run the run command.
-pub async fn run(args: Args) -> Result<()> {
-    let context = prepare_run_context(&args).await?;
-    print_run_header(&context);
-    check_run_toolchain(context.platform, context.backend).await?;
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    let context = prepare_run_context(shell, &args).await?;
+    print_run_header(shell, &context);
+    check_run_toolchain(shell, context.platform, context.backend).await?;
 
     if context.platform == TargetPlatform::Web {
-        return run_web_app(&context.project).await;
+        return run_web_app(shell, &context.project).await;
     }
 
-    let selection =
-        select_run_device(context.platform, context.backend, args.device.as_deref()).await?;
-    let config = build_run_config(&args).await;
+    if context.platform.esp32_chip().is_some() {
+        return run_esp32_app(shell, &context.project, args.device.as_deref()).await;
+    }
+
+    let selection = select_run_device(
+        shell,
+        context.platform,
+        context.backend,
+        args.device.as_deref(),
+    )
+    .await?;
+    let config = build_run_config(shell, &args, &context.project).await;
 
     #[cfg(target_os = "macos")]
     let mut crash_ctx =
         match CrashReportContext::try_new(&context.project, context.platform, context.backend) {
             Ok(ctx) => ctx,
             Err(e) => {
-                warn!("Crash report augmentation disabled: {e}");
+                warn!(shell, "Crash report augmentation disabled: {e}");
                 None
             }
         };
 
-    let running = display_output(build_and_run(
-        &context.project,
-        context.platform,
-        context.backend,
-        selection.device,
-        selection.needs_launch,
-        config,
-    ))
-    .await?;
+    let running = shell
+        .display_output(build_and_run(
+            shell,
+            &context.project,
+            context.platform,
+            context.backend,
+            selection.device,
+            selection.needs_launch,
+            config,
+        ))
+        .await?;
 
-    line!();
-    note!("Press Ctrl+C to stop the application");
-    line!();
+    line!(shell);
+    note!(shell, "Press Ctrl+C to stop the application");
+    line!(shell);
 
     // Stream device events
     #[cfg(target_os = "macos")]
-    stream_running_events(running, context.backend, &mut crash_ctx).await;
+    stream_running_events(shell, running, context.backend, &mut crash_ctx).await?;
     #[cfg(not(target_os = "macos"))]
-    stream_running_events(running, context.backend).await;
+    stream_running_events(shell, running, context.backend).await?;
 
     Ok(())
 }
 
-async fn prepare_run_context(args: &Args) -> Result<RunContext> {
+async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<RunContext> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Project::open(&project_path).await?;
+    let mut project = Project::open(&project_path).await?;
     let platform = resolve_platform(args.platform);
     let backend = resolve_run_backend(&project, platform, args.backend)?;
 
     validate_desktop_backend_platform_on_host(platform, backend)?;
     validate_device_arg(platform, backend, args.device.as_deref())?;
-    validate_web_log_args(platform, args.logs, args.native_logs)?;
+    validate_log_pipeline_args(platform, args.logs, args.native_logs)?;
     ensure_run_backend_ready(&project, backend)?;
-    let project = ensure_generated_run_backend(&project_path, project, backend).await?;
+
+    // Selecting an ESP32 platform pins the chip so the generated harness and
+    // build target follow the platform (the chip drives the target triple,
+    // QEMU model, and firmware parameters).
+    if let Some(chip) = platform.esp32_chip() {
+        project.set_esp32_chip(chip).await?;
+    }
+
+    let project = ensure_generated_run_backend(shell, &project_path, project, backend).await?;
 
     Ok(RunContext {
         project,
@@ -446,6 +471,7 @@ const fn backend_availability(project: &Project) -> BackendAvailability {
             project.android_backend().is_some(),
             project.gtk4_backend().is_some(),
             project.hydrolysis_backend().is_some(),
+            project.esp32_backend().is_some(),
         ],
     }
 }
@@ -457,34 +483,35 @@ fn ensure_run_backend_ready(project: &Project, backend: TargetBackend) -> Result
 
     match backend {
         TargetBackend::Apple if project.apple_backend().is_none() => {
-            bail!("Apple backend is not configured. Run `water backend add apple`.")
+            bail!("Apple backend is not configured. Run `water backend add apple`.");
         }
         TargetBackend::Android if project.android_backend().is_none() => {
-            bail!("Android backend is not configured. Run `water backend add android`.")
+            bail!("Android backend is not configured. Run `water backend add android`.");
         }
         TargetBackend::Gtk4 if project.gtk4_backend().is_none() => {
-            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.")
+            bail!("GTK4 backend is not configured. Run `water backend add gtk4`.");
         }
         TargetBackend::Hydrolysis if project.hydrolysis_backend().is_none() => {
-            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.")
+            bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.");
+        }
+        TargetBackend::Dew if project.esp32_backend().is_none() => {
+            bail!("ESP32 backend is not configured. Run `water backend add esp32`.");
         }
         _ => Ok(()),
     }
 }
 
 async fn ensure_generated_run_backend(
+    shell: &Shell,
     project_path: &PathBuf,
     project: Project,
     backend: TargetBackend,
 ) -> Result<Project> {
     match backend {
         TargetBackend::Gtk4 if project.is_playground() => {
-            let needs_reinit = project.gtk4_backend().is_none()
-                || !project
-                    .backend_path::<Gtk4Backend>()
-                    .join("Cargo.toml")
-                    .exists();
+            let needs_reinit = Gtk4Backend::requires_regeneration(&project).await?;
             ensure_generated_run_backend_impl::<Gtk4Backend>(
+                shell,
                 project_path,
                 project,
                 needs_reinit,
@@ -494,9 +521,9 @@ async fn ensure_generated_run_backend(
             .await
         }
         TargetBackend::Hydrolysis if project.is_playground() => {
-            let needs_reinit = project.hydrolysis_backend().is_none()
-                || HydrolysisBackend::requires_regeneration(&project)?;
+            let needs_reinit = HydrolysisBackend::requires_regeneration(&project).await?;
             ensure_generated_run_backend_impl::<HydrolysisBackend>(
+                shell,
                 project_path,
                 project,
                 needs_reinit,
@@ -505,11 +532,25 @@ async fn ensure_generated_run_backend(
             )
             .await
         }
+        TargetBackend::Dew if project.is_playground() => {
+            let needs_reinit =
+                project.esp32_backend().is_none() || Esp32Backend::requires_regeneration(&project)?;
+            ensure_generated_run_backend_impl::<Esp32Backend>(
+                shell,
+                project_path,
+                project,
+                needs_reinit,
+                "Initializing ESP32 backend...",
+                "ESP32 backend initialized",
+            )
+            .await
+        }
         _ => Ok(project),
     }
 }
 
 async fn ensure_generated_run_backend_impl<T>(
+    shell: &Shell,
     project_path: &PathBuf,
     project: Project,
     needs_reinit: bool,
@@ -523,18 +564,19 @@ where
         return Ok(project);
     }
 
-    let spinner = shell::spinner(spinner_message);
+    let spinner = shell.spinner(spinner_message);
     reinit_backend::<T>(&project).await?;
     let project = Project::open(project_path).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("{success_message}");
+    success!(shell, "{success_message}");
     Ok(project)
 }
 
-fn print_run_header(context: &RunContext) {
+fn print_run_header(shell: &Shell, context: &RunContext) {
     header!(
+        shell,
         "Running {} on {} ({})",
         context.project.crate_name(),
         platform_name(context.platform),
@@ -542,39 +584,57 @@ fn print_run_header(context: &RunContext) {
     );
 }
 
-async fn check_run_toolchain(platform: TargetPlatform, backend: TargetBackend) -> Result<()> {
-    let spinner = shell::spinner("Checking toolchain...");
+async fn check_run_toolchain(
+    shell: &Shell,
+    platform: TargetPlatform,
+    backend: TargetBackend,
+) -> Result<()> {
+    let spinner = shell.spinner("Checking toolchain...");
     check_toolchain_for_backend(platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Toolchain ready");
+    success!(shell, "Toolchain ready");
     Ok(())
 }
 
-async fn run_web_app(project: &Project) -> Result<()> {
-    let spinner = shell::spinner("Building Hydrolysis web app...");
+async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
+    let spinner = shell.spinner("Building Hydrolysis web app...");
     let site_root = prepare_hydrolysis_web_dev_site(project).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Built Hydrolysis web app at {}", site_root.display());
+    success!(shell, "Built Hydrolysis web app at {}", site_root.display());
 
     let server = HydrolysisWebDevServer::start(site_root).await?;
-    line!();
-    note!("Serving at http://{}/", server.address());
-    note!("Press Ctrl+C to stop the web server");
+    line!(shell);
+    note!(shell, "Serving at http://{}/", server.address());
+    note!(shell, "Press Ctrl+C to stop the web server");
     let _server = server;
     futures::future::pending::<()>().await;
     unreachable!("web dev server future should be cancelled by Ctrl+C")
 }
 
+async fn run_esp32_app(shell: &Shell, project: &Project, device: Option<&str>) -> Result<()> {
+    let sccache_path = detect_sccache_path(shell).await;
+    let build_options = sccache_path.map_or_else(
+        || BuildOptions::development(false),
+        |sccache| BuildOptions::development(false).with_sccache(sccache),
+    );
+
+    let _ = shell.status(">", "Building ESP32 firmware...");
+    shell
+        .display_output(run_esp32(project, build_options, device))
+        .await
+}
+
 async fn select_run_device(
+    shell: &Shell,
     platform: TargetPlatform,
     backend: TargetBackend,
     device_id: Option<&str>,
 ) -> Result<DeviceSelection> {
-    let spinner = shell::spinner("Scanning for devices...");
+    let spinner = shell.spinner("Scanning for devices...");
     let device = find_device(platform, backend, device_id).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -582,9 +642,9 @@ async fn select_run_device(
 
     let needs_launch = device.needs_launch();
     if needs_launch {
-        note!("Will launch: {}", device_name(&device));
+        note!(shell, "Will launch: {}", device_name(&device));
     } else {
-        success!("Found device: {}", device_name(&device));
+        success!(shell, "Found device: {}", device_name(&device));
     }
 
     Ok(DeviceSelection {
@@ -593,13 +653,14 @@ async fn select_run_device(
     })
 }
 
-async fn build_run_config(args: &Args) -> BuildRunConfig {
-    let sccache_path = detect_sccache_path().await;
+async fn build_run_config(shell: &Shell, args: &Args, project: &Project) -> BuildRunConfig {
+    let sccache_path = detect_sccache_path(shell).await;
     let mut run_options = RunOptions::new();
     if let Some(level) = args.logs.map(LogLevel::from) {
         run_options.set_log_level(level);
     }
     run_options.set_native_logs(args.native_logs);
+    run_options.describe_project(project);
 
     BuildRunConfig {
         run_options,
@@ -607,31 +668,13 @@ async fn build_run_config(args: &Args) -> BuildRunConfig {
     }
 }
 
-async fn detect_sccache_path() -> Option<PathBuf> {
-    if !sccache_allowed() {
-        note!("Skipping sccache (explicit wrapper or WATERUI_DISABLE_SCCACHE is set)");
-        return None;
-    }
-
-    let sccache = Sccache;
-    sccache.path().await.map_or_else(
-        |_| {
-            warn!(
-                "sccache not found. Build efficiency may be reduced. Install with: {}",
-                sccache_install_hint()
-            );
-            None
-        },
-        Some,
-    )
-}
-
 #[cfg(target_os = "macos")]
 async fn stream_running_events(
+    shell: &Shell,
     running: Running,
     backend: TargetBackend,
     crash_ctx: &mut Option<CrashReportContext>,
-) {
+) -> Result<()> {
     let mut running = std::pin::pin!(running);
     let backend_log_name = backend_name(backend);
 
@@ -653,22 +696,28 @@ async fn stream_running_events(
             event = augment_event_with_crash_report(event, ctx).await;
         }
 
-        if handle_device_event(event, backend_log_name) {
+        if handle_device_event(shell, event, backend_log_name)? {
             break;
         }
     }
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn stream_running_events(running: Running, backend: TargetBackend) {
+async fn stream_running_events(
+    shell: &Shell,
+    running: Running,
+    backend: TargetBackend,
+) -> Result<()> {
     let mut running = std::pin::pin!(running);
     let backend_log_name = backend_name(backend);
 
     loop {
-        if handle_device_event(running.next().await, backend_log_name) {
+        if handle_device_event(shell, running.next().await, backend_log_name)? {
             break;
         }
     }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -679,11 +728,11 @@ async fn augment_event_with_crash_report(
     use std::fmt::Write as _;
 
     match event {
-        Some(DeviceEvent::Exited) => {
+        Some(DeviceEvent::Exited(exit)) => {
             if let Some(report) = find_latest_ips_report(ctx).await {
                 return Some(DeviceEvent::Crashed(report.to_string()));
             }
-            Some(DeviceEvent::Exited)
+            Some(DeviceEvent::Exited(exit))
         }
         Some(DeviceEvent::Crashed(mut msg)) => {
             if !msg.contains("Crash report:")
@@ -700,6 +749,7 @@ async fn augment_event_with_crash_report(
 
 /// Build, package, and run on device.
 async fn build_and_run(
+    shell: &Shell,
     project: &Project,
     cli_platform: TargetPlatform,
     backend: TargetBackend,
@@ -710,18 +760,18 @@ async fn build_and_run(
     let build_plan = resolve_build_plan(cli_platform, backend, &device)?;
     let launch_task = spawn_device_launch_task(device, needs_launch);
 
-    shell::status(">", "Building...");
+    let _ = shell.status(">", "Building...");
     build_for_backend(project, backend, &build_plan, build_options(&config)).await?;
 
-    shell::status(">", "Packaging...");
+    let _ = shell.status(">", "Packaging...");
     let artifact = package_for_backend(project, backend, &build_plan).await?;
 
     if needs_launch {
-        shell::status(">", "Waiting for device...");
+        let _ = shell.status(">", "Waiting for device...");
     }
     let device = launch_task.await?;
 
-    shell::status(">", "Running...");
+    let _ = shell.status(">", "Running...");
     let running = run_with_options(device, artifact, config.run_options).await?;
 
     Ok(running)
@@ -739,6 +789,9 @@ fn resolve_build_plan(
         TargetPlatform::Linux => LibTargetPlatform::Linux,
         TargetPlatform::Windows => LibTargetPlatform::Windows,
         TargetPlatform::Web => panic!("web run should not enter build_and_run"),
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
+            panic!("esp32 run should not enter build_and_run")
+        }
     };
     let android_abi = resolve_android_abi(backend, device)?;
 
@@ -758,7 +811,7 @@ fn resolve_android_abi(
             Ok(Some(emu.expected_abi()))
         }
         (TargetBackend::Android, _) => {
-            bail!("Internal error: Android backend requires an Android device")
+            bail!("Internal error: Android backend requires an Android device");
         }
         _ => Ok(None),
     }
@@ -783,8 +836,8 @@ fn spawn_device_launch_task(
 
 fn build_options(config: &BuildRunConfig) -> BuildOptions {
     config.sccache_path.as_ref().map_or_else(
-        || BuildOptions::new(false),
-        |sccache| BuildOptions::new(false).with_sccache(sccache.clone()),
+        || BuildOptions::development(false),
+        |sccache| BuildOptions::development(false).with_sccache(sccache.clone()),
     )
 }
 
@@ -813,6 +866,9 @@ async fn build_for_backend(
         TargetBackend::Hydrolysis => {
             build_hydrolysis(project, plan.lib_platform, build_options).await?;
         }
+        TargetBackend::Dew => {
+            panic!("esp32 run should not enter build_and_run")
+        }
     }
     Ok(())
 }
@@ -822,7 +878,7 @@ async fn package_for_backend(
     backend: TargetBackend,
     plan: &BuildPlan,
 ) -> Result<Artifact> {
-    let package_options = PackageOptions::new(false, true);
+    let package_options = PackageOptions::development();
     match backend {
         TargetBackend::Apple => package_apple(project, plan.lib_platform, package_options).await,
         TargetBackend::Android => {
@@ -835,6 +891,7 @@ async fn package_for_backend(
         TargetBackend::Hydrolysis => {
             package_hydrolysis(project, plan.lib_platform, package_options).await
         }
+        TargetBackend::Dew => panic!("esp32 run should not enter build_and_run"),
     }
 }
 
@@ -891,8 +948,11 @@ async fn check_toolchain_for_backend(
                 TargetPlatform::Android
                 | TargetPlatform::Linux
                 | TargetPlatform::Windows
-                | TargetPlatform::Web => {
-                    bail!("Internal error: Apple backend is not supported on {platform:?}")
+                | TargetPlatform::Web
+                | TargetPlatform::Esp32s3
+                | TargetPlatform::Esp32c3
+                | TargetPlatform::Esp32p4 => {
+                    bail!("Internal error: Apple backend is not supported on {platform:?}");
                 }
             };
             toolchain_checks::check_apple(sdk).await?;
@@ -921,6 +981,11 @@ async fn check_toolchain_for_backend(
                 toolchain_checks::check_web().await?;
             } else {
                 toolchain_checks::check_hydrolysis().await?;
+            }
+        }
+        TargetBackend::Dew => {
+            if platform.esp32_chip().is_none() {
+                bail!("Internal error: dew backend is not supported on {platform:?}");
             }
         }
     }
@@ -1009,7 +1074,10 @@ async fn find_device(
             Ok(SelectedDevice::Local(Local))
         }
         TargetPlatform::Web => {
-            bail!("web platform does not use the device pipeline")
+            bail!("web platform does not use the device pipeline");
+        }
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
+            bail!("esp32 platform does not use the device pipeline");
         }
     }
 }
@@ -1031,6 +1099,9 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
         TargetPlatform::Linux => "Linux",
         TargetPlatform::Windows => "Windows",
         TargetPlatform::Web => "Web",
+        TargetPlatform::Esp32s3 => "ESP32-S3",
+        TargetPlatform::Esp32c3 => "ESP32-C3",
+        TargetPlatform::Esp32p4 => "ESP32-P4",
     }
 }
 
@@ -1040,6 +1111,7 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
         TargetBackend::Android => "Android",
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
+        TargetBackend::Dew => "Dew",
     }
 }
 
@@ -1063,19 +1135,27 @@ fn validate_device_arg(
     Ok(())
 }
 
-fn validate_web_log_args(
+fn validate_log_pipeline_args(
     platform: TargetPlatform,
     logs: Option<CliLogLevel>,
     native_logs: bool,
 ) -> Result<()> {
-    if platform != TargetPlatform::Web {
+    let log_pipeline_unsupported = match platform {
+        TargetPlatform::Web => Some("web"),
+        // The serial monitor streams firmware logs directly.
+        TargetPlatform::Esp32s3 => Some("esp32s3"),
+        TargetPlatform::Esp32c3 => Some("esp32c3"),
+        TargetPlatform::Esp32p4 => Some("esp32p4"),
+        _ => None,
+    };
+    let Some(platform_label) = log_pipeline_unsupported else {
         return Ok(());
-    }
+    };
     if logs.is_some() {
-        bail!("--logs is not supported with the web platform");
+        bail!("--logs is not supported with the {platform_label} platform");
     }
     if native_logs {
-        bail!("--native-logs is not supported with the web platform");
+        bail!("--native-logs is not supported with the {platform_label} platform");
     }
     Ok(())
 }
@@ -1125,7 +1205,8 @@ fn validate_desktop_backend_platform_on_host(
             #[cfg(not(target_os = "macos"))]
             bail!("Apple backend requires a macOS host");
         }
-        TargetBackend::Android => {}
+        // The Dew/ESP32 firmware cross-compiles from any host with espup installed.
+        TargetBackend::Android | TargetBackend::Dew => {}
     }
 
     Ok(())
@@ -1134,52 +1215,57 @@ fn validate_desktop_backend_platform_on_host(
 /// Handle a device event.
 ///
 /// Returns `true` if the event loop should break.
-fn handle_device_event(event: Option<DeviceEvent>, platform_name: &str) -> bool {
+fn handle_device_event(
+    shell: &Shell,
+    event: Option<DeviceEvent>,
+    platform_name: &str,
+) -> Result<bool> {
     match event {
         Some(DeviceEvent::Started) => {
-            shell::status("*", "Application started");
-            false
+            let _ = shell.status("*", "Application started");
+            Ok(false)
         }
         Some(DeviceEvent::Stopped) => {
-            shell::status("o", "Application stopped");
-            true
+            let _ = shell.status("o", "Application stopped");
+            Ok(true)
         }
         Some(DeviceEvent::Stdout { message }) => {
-            line!("[stdout] {message}");
-            false
+            line!(shell, "[stdout] {message}");
+            Ok(false)
         }
         Some(DeviceEvent::Stderr { message }) => {
-            warn!("[stderr] {message}");
-            false
+            warn!(shell, "[stderr] {message}");
+            Ok(false)
         }
         Some(DeviceEvent::Log { level, message }) => {
-            shell::device_log(platform_name, level, message);
-            false
+            let _ = shell.device_log(platform_name, level, message);
+            Ok(false)
         }
-        Some(DeviceEvent::Exited) => {
-            note!("Application exited");
-            true
+        Some(DeviceEvent::Exited(exit)) => {
+            let _ = shell.status("o", exit.terminal_message());
+            Ok(true)
         }
         Some(DeviceEvent::Crashed(msg)) => {
             // Use panic_report for panic messages, regular error for others
             if msg.starts_with("Panic:") {
-                shell::panic_report(&msg);
+                shell.panic_message(&msg);
             } else {
-                error!("Application crashed: {msg}");
+                error!(shell, "Application crashed: {msg}");
             }
-            true
+            bail!("application crashed");
         }
-        None => true,
+        None => Ok(true),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendAvailability, TargetBackend, TargetPlatform, resolve_backend,
+        BackendAvailability, TargetBackend, TargetPlatform, handle_device_event, resolve_backend,
         resolve_default_backend_for_project, resolve_platform,
         validate_desktop_backend_platform_on_host, validate_device_arg,
     };
+    use waterui_cli::device::{ApplicationExit, DeviceEvent};
 
     #[test]
     fn rejects_device_with_desktop_backend() {
@@ -1200,6 +1286,18 @@ mod tests {
         assert!(
             validate_device_arg(TargetPlatform::Ios, TargetBackend::Apple, Some("sim-1")).is_ok()
         );
+    }
+
+    #[test]
+    fn clean_device_exit_stops_without_error() {
+        let shell = crate::shell::Shell::new(false);
+        let should_stop = handle_device_event(
+            &shell,
+            Some(DeviceEvent::Exited(ApplicationExit::completed())),
+            "test",
+        )
+        .expect("clean device exit should not fail water run");
+        assert!(should_stop);
     }
 
     #[test]
@@ -1237,7 +1335,7 @@ mod tests {
                 TargetPlatform::Linux,
                 false,
                 BackendAvailability {
-                    available: [false, false, false, true],
+                    available: [false, false, false, true, false],
                 }
             ),
             TargetBackend::Hydrolysis
@@ -1247,7 +1345,7 @@ mod tests {
                 TargetPlatform::Macos,
                 false,
                 BackendAvailability {
-                    available: [false, false, false, true],
+                    available: [false, false, false, true, false],
                 }
             ),
             TargetBackend::Hydrolysis
@@ -1257,7 +1355,7 @@ mod tests {
                 TargetPlatform::Linux,
                 false,
                 BackendAvailability {
-                    available: [false, false, false, false],
+                    available: [false, false, false, false, false],
                 }
             ),
             TargetBackend::Gtk4
@@ -1271,7 +1369,7 @@ mod tests {
                 TargetPlatform::Macos,
                 true,
                 BackendAvailability {
-                    available: [false, false, false, true],
+                    available: [false, false, false, true, false],
                 }
             ),
             TargetBackend::Apple
@@ -1281,7 +1379,7 @@ mod tests {
                 TargetPlatform::Linux,
                 true,
                 BackendAvailability {
-                    available: [false, false, false, true],
+                    available: [false, false, false, true, false],
                 }
             ),
             TargetBackend::Gtk4

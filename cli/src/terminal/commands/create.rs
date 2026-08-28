@@ -7,7 +7,7 @@ use color_eyre::eyre::{Result, bail, eyre};
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use heck::{ToKebabCase, ToSnakeCase};
 
-use crate::shell;
+use crate::shell::Shell;
 use crate::{header, line, success};
 use waterui_cli::build_info::{self, BuildKind};
 use waterui_cli::project::{CreateOptions, PackageType, Project};
@@ -19,11 +19,11 @@ pub struct Args {
     /// Project display name (e.g., "Water Example" creates folder "water-example").
     name: Option<String>,
 
-    /// Bundle identifier (defaults to com.example.<name>).
+    /// Bundle identifier (defaults to `dev.waterui.<name>`).
     #[arg(long)]
     bundle_id: Option<String>,
 
-    /// Backends to scaffold (apple, android, gtk4, hydrolysis).
+    /// Backends to scaffold (apple, android, gtk4, hydrolysis, esp32).
     #[arg(long, value_delimiter = ',')]
     backends: Option<Vec<String>>,
 
@@ -53,6 +53,7 @@ enum Backend {
     Android,
     Gtk4,
     Hydrolysis,
+    Esp32,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -72,7 +73,13 @@ impl ProjectMode {
 }
 
 impl Backend {
-    const ALL: [Self; 4] = [Self::Apple, Self::Android, Self::Gtk4, Self::Hydrolysis];
+    const ALL: [Self; 5] = [
+        Self::Apple,
+        Self::Android,
+        Self::Gtk4,
+        Self::Hydrolysis,
+        Self::Esp32,
+    ];
 
     const fn label(self) -> &'static str {
         match self {
@@ -80,6 +87,7 @@ impl Backend {
             Self::Android => "Android",
             Self::Gtk4 => "GTK4 (Linux)",
             Self::Hydrolysis => "Hydrolysis (Linux/macOS/Windows)",
+            Self::Esp32 => "ESP32 (Dew firmware)",
         }
     }
 
@@ -89,23 +97,24 @@ impl Backend {
             "android" => Some(Self::Android),
             "gtk" | "gtk4" | "linux" => Some(Self::Gtk4),
             "hydrolysis" => Some(Self::Hydrolysis),
+            "esp32" | "esp32s3" | "dew" => Some(Self::Esp32),
             _ => None,
         }
     }
 }
 
 /// Run the create command.
-pub async fn run(args: Args) -> Result<()> {
-    let plan = resolve_create_plan(&args)?;
-    header!("Creating WaterUI project: {}", plan.name);
-    let mut project = create_project(&plan).await?;
-    initialize_requested_backends(&mut project, &plan).await?;
-    print_create_summary(&plan);
+pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    let plan = resolve_create_plan(shell, &args)?;
+    header!(shell, "Creating WaterUI project: {}", plan.name);
+    let mut project = create_project(shell, &plan).await?;
+    initialize_requested_backends(shell, &mut project, &plan).await?;
+    print_create_summary(shell, &plan);
     Ok(())
 }
 
-fn resolve_create_plan(args: &Args) -> Result<CreatePlan> {
-    let interactive = shell::is_interactive();
+fn resolve_create_plan(shell: &Shell, args: &Args) -> Result<CreatePlan> {
+    let interactive = shell.is_interactive();
     let package_type = args.mode.package_type();
     let name = resolve_project_name(args, interactive)?;
     let folder_name = name.to_kebab_case();
@@ -218,14 +227,16 @@ fn resolve_backends(
     };
 
     if backends.is_empty() {
-        bail!("At least one backend is required. Choose from: apple, android, gtk4, hydrolysis.");
+        bail!(
+            "At least one backend is required. Choose from: apple, android, gtk4, hydrolysis, esp32."
+        );
     }
 
     Ok(backends)
 }
 
-async fn create_project(plan: &CreatePlan) -> Result<Project> {
-    let spinner = shell::spinner("Creating project files...");
+async fn create_project(shell: &Shell, plan: &CreatePlan) -> Result<Project> {
+    let spinner = shell.spinner("Creating project files...");
     let project = Project::create(
         &plan.project_path,
         CreateOptions {
@@ -234,29 +245,36 @@ async fn create_project(plan: &CreatePlan) -> Result<Project> {
                 .map_err(|error| eyre!(error))?,
             package_type: plan.package_type,
             waterui_path: plan.waterui_path.clone(),
-            author: whoami::username(),
+            author: whoami::username()
+                .map_err(|error| eyre!("Failed to determine project author: {error}"))?,
         },
     )
     .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("Created Cargo.toml and src/lib.rs");
+    success!(shell, "Created Cargo.toml and src/lib.rs");
     Ok(project)
 }
 
-async fn initialize_requested_backends(project: &mut Project, plan: &CreatePlan) -> Result<()> {
+async fn initialize_requested_backends(
+    shell: &Shell,
+    project: &mut Project,
+    plan: &CreatePlan,
+) -> Result<()> {
     if plan.package_type != PackageType::App {
         return Ok(());
     }
 
-    initialize_backend_if_requested(project, &plan.backends, Backend::Apple).await?;
-    initialize_backend_if_requested(project, &plan.backends, Backend::Android).await?;
-    initialize_backend_if_requested(project, &plan.backends, Backend::Gtk4).await?;
-    initialize_backend_if_requested(project, &plan.backends, Backend::Hydrolysis).await
+    initialize_backend_if_requested(shell, project, &plan.backends, Backend::Apple).await?;
+    initialize_backend_if_requested(shell, project, &plan.backends, Backend::Android).await?;
+    initialize_backend_if_requested(shell, project, &plan.backends, Backend::Gtk4).await?;
+    initialize_backend_if_requested(shell, project, &plan.backends, Backend::Hydrolysis).await?;
+    initialize_backend_if_requested(shell, project, &plan.backends, Backend::Esp32).await
 }
 
 async fn initialize_backend_if_requested(
+    shell: &Shell,
     project: &mut Project,
     backends: &[Backend],
     backend: Backend,
@@ -273,30 +291,32 @@ async fn initialize_backend_if_requested(
             "Scaffolding hydrolysis backend...",
             "Created hydrolysis backend",
         ),
+        Backend::Esp32 => ("Scaffolding ESP32 backend...", "Created ESP32 backend"),
     };
 
-    let spinner = shell::spinner(spinner_message);
+    let spinner = shell.spinner(spinner_message);
     match backend {
         Backend::Apple => project.init_apple_backend().await?,
         Backend::Android => project.init_android_backend().await?,
         Backend::Gtk4 => project.init_gtk4_backend().await?,
         Backend::Hydrolysis => project.init_hydrolysis_backend().await?,
+        Backend::Esp32 => project.init_esp32_backend().await?,
     }
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
-    success!("{success_message}");
+    success!(shell, "{success_message}");
     Ok(())
 }
 
-fn print_create_summary(plan: &CreatePlan) {
-    line!();
-    success!("Project created at {}", plan.project_path.display());
-    line!();
-    line!("Next steps:");
-    line!("  cd {}", plan.folder_name);
+fn print_create_summary(shell: &Shell, plan: &CreatePlan) {
+    line!(shell);
+    success!(shell, "Project created at {}", plan.project_path.display());
+    line!(shell);
+    line!(shell, "Next steps:");
+    line!(shell, "  cd {}", plan.folder_name);
     if let Some(command) = next_run_command(plan.package_type, &plan.backends) {
-        line!("  {command}");
+        line!(shell, "  {command}");
     }
 }
 
@@ -307,7 +327,7 @@ fn prompt_name() -> Result<String> {
 }
 
 fn default_bundle_id(app_name: &str) -> String {
-    format!("com.example.{}", app_name.to_snake_case())
+    format!("dev.waterui.{}", app_name.to_snake_case())
 }
 
 fn prompt_bundle_id(app_name: &str) -> Result<String> {
@@ -334,9 +354,9 @@ fn parse_backends(backends: &[String]) -> Result<Vec<Backend>> {
         Ok(parsed)
     } else {
         bail!(
-            "Unknown backend(s): {}. Valid values: apple, android, gtk4, hydrolysis",
+            "Unknown backend(s): {}. Valid values: apple, android, gtk4, hydrolysis, esp32",
             invalid.join(", ")
-        )
+        );
     }
 }
 
@@ -385,12 +405,16 @@ fn next_run_command(package_type: PackageType, backends: &[Backend]) -> Option<&
         return None;
     }
 
+    if backends.iter().any(|b| matches!(b, Backend::Esp32)) {
+        return Some("water run --platform esp32s3");
+    }
+
     None
 }
 
 fn prompt_backends() -> Result<Vec<Backend>> {
     let items: Vec<&str> = Backend::ALL.iter().map(|b| b.label()).collect();
-    let defaults = vec![true, true, false, false]; // Apple and Android selected by default
+    let defaults = vec![true, true, false, false, false]; // Apple and Android selected by default
 
     let selections = MultiSelect::with_theme(&ColorfulTheme::default())
         .with_prompt("Select backends")
@@ -431,8 +455,11 @@ mod tests {
 
     use super::{
         Backend, PackageType, find_waterui_repo_root, next_run_command, parse_backends,
-        resolve_default_waterui_path, validate_backends_on_host,
+        resolve_default_waterui_path,
     };
+    // Only the non-Linux host test exercises this.
+    #[cfg(not(target_os = "linux"))]
+    use super::validate_backends_on_host;
     use tempfile::tempdir;
     use waterui_cli::build_info::BuildKind;
 

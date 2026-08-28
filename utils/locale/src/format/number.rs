@@ -1,29 +1,20 @@
 //! Locale-aware number formatting.
 
-use core::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use fixed_decimal::FixedDecimal;
-use icu_decimal::{FixedDecimalFormatter, options::FixedDecimalFormatterOptions};
-use icu_provider::DataLocale;
+use fixed_decimal::Decimal;
+use icu_decimal::{DecimalFormatter, options::DecimalFormatterOptions};
 
 use crate::locale::{Locale, locales};
 
 static NUMBER_FORMATTER_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
 
-fn data_locale(locale: &Locale) -> DataLocale {
-    locale.0.clone().into()
-}
-
-fn decimal_formatter(locale: &Locale) -> Option<FixedDecimalFormatter> {
-    match FixedDecimalFormatter::try_new(
-        &data_locale(locale),
-        FixedDecimalFormatterOptions::default(),
-    ) {
+fn decimal_formatter(locale: &Locale) -> Option<DecimalFormatter> {
+    match DecimalFormatter::try_new(locale.0.clone().into(), DecimalFormatterOptions::default()) {
         Ok(formatter) => Some(formatter),
-        Err(primary_error) => match FixedDecimalFormatter::try_new(
-            &data_locale(&locales::EN),
-            FixedDecimalFormatterOptions::default(),
+        Err(primary_error) => match DecimalFormatter::try_new(
+            locales::EN.0.into(),
+            DecimalFormatterOptions::default(),
         ) {
             Ok(formatter) => Some(formatter),
             Err(fallback_error) => {
@@ -44,33 +35,41 @@ fn decimal_formatter(locale: &Locale) -> Option<FixedDecimalFormatter> {
     }
 }
 
-fn to_fixed_decimal(n: f64) -> FixedDecimal {
-    debug_assert!(n.is_finite(), "to_fixed_decimal expects a finite number");
+fn to_decimal(n: f64) -> Decimal {
+    debug_assert!(n.is_finite(), "to_decimal expects a finite number");
 
-    // Preserve up to 15 fractional digits while avoiding scientific notation.
-    let mut buf = format!("{n:.15}");
-    if buf.contains('.') {
-        while buf.ends_with('0') {
-            buf.pop();
-        }
-        if buf.ends_with('.') {
-            buf.pop();
-        }
-    }
+    // `Display` for floats prints the shortest decimal that round-trips to the
+    // same `f64`, and never in scientific notation. Asking for a fixed count of
+    // fractional digits instead surfaces the binary representation itself:
+    // `format!("{:.15}", 1234.56)` is `1234.559999999999945`, and trimming
+    // trailing zeros does not rescue it — which is precisely what a number
+    // formatter must never show a reader.
+    let buf = format!("{n}");
 
-    if let Ok(parsed) = FixedDecimal::from_str(&buf) {
+    if let Ok(parsed) = buf.parse() {
         return parsed;
     }
 
-    FixedDecimal::from_str(&format!("{n:.2}"))
+    format!("{n:.2}")
+        .parse()
         .expect("fixed decimal fallback formatting should always produce a parseable decimal")
+}
+
+pub(crate) fn format_number_text(locale: &Locale, value: &str) -> String {
+    let decimal = value.parse::<Decimal>().unwrap_or_else(|error| {
+        panic!("localized numeric argument `{value}` is not a valid decimal: {error}")
+    });
+    decimal_formatter(locale).map_or_else(
+        || value.to_owned(),
+        |formatter| formatter.format(&decimal).to_string(),
+    )
 }
 
 /// Format a number with locale-appropriate separators.
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui_locale::{format_number, locales};
 ///
 /// // English: 1,234.56
@@ -79,8 +78,8 @@ fn to_fixed_decimal(n: f64) -> FixedDecimal {
 /// // German: 1.234,56
 /// assert_eq!(format_number(&locales::DE, 1234.56), "1.234,56");
 ///
-/// // French: 1 234,56
-/// assert_eq!(format_number(&locales::FR, 1234.56), "1 234,56");
+/// // French: 1 234,56 — the group separator is a narrow no-break space
+/// assert_eq!(format_number(&locales::FR, 1234.56), "1\u{202f}234,56");
 /// ```
 #[must_use]
 pub fn format_number(locale: &Locale, n: f64) -> String {
@@ -95,7 +94,7 @@ pub fn format_number(locale: &Locale, n: f64) -> String {
         };
     }
 
-    let decimal = to_fixed_decimal(n);
+    let decimal = to_decimal(n);
     decimal_formatter(locale).map_or_else(
         || n.to_string(),
         |formatter| formatter.format(&decimal).to_string(),
@@ -106,7 +105,7 @@ pub fn format_number(locale: &Locale, n: f64) -> String {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// use waterui_locale::{format_percent, locales};
 ///
 /// // 0.75 → "75%"
@@ -125,19 +124,7 @@ pub fn format_percent(locale: &Locale, n: f64) -> String {
     }
 }
 
-/// Format a currency amount (display only, no conversion).
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use waterui_locale::{format_currency, Currency, locales};
-///
-/// // US locale: $1,234.56
-/// assert_eq!(format_currency(&locales::EN_US, 1234.56, Currency::USD), "$1,234.56");
-///
-/// // German locale: 1.234,56 €
-/// assert_eq!(format_currency(&locales::DE, 1234.56, Currency::EUR), "1.234,56 €");
-/// ```
+/// A currency [`format_currency`] knows how to render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Currency {
     /// US Dollar
@@ -181,6 +168,21 @@ impl Currency {
 ///
 /// Note: This handles symbol placement and locale number formatting;
 /// no exchange-rate conversion is performed.
+///
+/// # Examples
+///
+/// ```rust
+/// use waterui_locale::{Currency, format_currency, locales};
+///
+/// // US locale: $1,234.56
+/// assert_eq!(format_currency(&locales::EN_US, 1234.56, Currency::USD), "$1,234.56");
+///
+/// // German locale: 1.234,56 €
+/// assert_eq!(
+///     format_currency(&locales::DE, 1234.56, Currency::EUR),
+///     "1.234,56\u{a0}€"
+/// );
+/// ```
 #[must_use]
 pub fn format_currency(locale: &Locale, amount: f64, currency: Currency) -> String {
     let formatted_amount = format_number(locale, amount);

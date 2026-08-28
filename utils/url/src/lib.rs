@@ -30,15 +30,16 @@
 extern crate alloc;
 
 mod error;
+mod into_url;
 mod parser;
 
 use core::str::FromStr;
 pub use error::ParseError;
+pub use into_url::IntoUrl;
 
 #[cfg(feature = "std")]
 use core::error::Error;
 
-use alloc::borrow::Cow;
 use alloc::string::{String, ToString};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -100,6 +101,20 @@ enum ParsedComponents {
     Local(LocalComponents),
     Data(DataComponents),
     Blob(BlobComponents),
+    Opaque(OpaqueComponents),
+}
+
+/// Components for a scheme that is not followed by `//`, such as `about:blank`,
+/// `mailto:me@lexo.cool`, or `javascript:void(0)`.
+///
+/// Web engines navigate to these routinely, so they are represented rather than
+/// mistaken for relative filesystem paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct OpaqueComponents {
+    /// URL scheme without the trailing colon (e.g. "about").
+    scheme: Span,
+    /// Everything after the colon (e.g. "blank"), if any.
+    body: Span,
 }
 
 /// Components specific to web URLs (http://, https://, etc.).
@@ -251,6 +266,63 @@ impl Url {
         url.as_ref().parse::<Self>().ok().filter(Self::is_web)
     }
 
+    /// Parses text a person typed, the way an address bar would.
+    ///
+    /// Anything written with an authority (`https://…`, `file://…`) is taken as
+    /// written. A scheme with no authority (`about:blank`, `mailto:…`) is also
+    /// taken as written, except when it is really `host:port`. Everything else
+    /// gets an `https://` prefix before being parsed again.
+    ///
+    /// Returns `None` when the input is blank or still does not name a URL.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_url::Url;
+    ///
+    /// assert_eq!(
+    ///     Url::parse_user_input("waterui.dev/docs").unwrap().as_str(),
+    ///     "https://waterui.dev/docs"
+    /// );
+    /// assert_eq!(
+    ///     Url::parse_user_input("localhost:3000").unwrap().as_str(),
+    ///     "https://localhost:3000"
+    /// );
+    /// assert_eq!(
+    ///     Url::parse_user_input("about:blank").unwrap().as_str(),
+    ///     "about:blank"
+    /// );
+    /// assert!(Url::parse_user_input("   ").is_none());
+    /// ```
+    #[must_use]
+    pub fn parse_user_input(input: &str) -> Option<Self> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        // Written with an authority: take it exactly as typed, including `file://`.
+        if trimmed.contains("://") {
+            return trimmed.parse::<Self>().ok();
+        }
+
+        // A scheme with no authority is already complete, unless the "scheme" is
+        // really a host and the body its port, as in `localhost:3000`.
+        if let Ok(url) = trimmed.parse::<Self>()
+            && url.is_opaque()
+            && !url
+                .opaque_body()
+                .is_some_and(|body| !body.is_empty() && body.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return Some(url);
+        }
+
+        alloc::format!("https://{trimmed}")
+            .parse::<Self>()
+            .ok()
+            .filter(Self::is_web)
+    }
+
     /// Creates a URL from a file path.
     ///
     /// # Examples
@@ -341,13 +413,32 @@ impl Url {
         matches!(self.components, ParsedComponents::Blob(_))
     }
 
+    /// Returns true if this URL has a scheme that is not followed by `//`.
+    ///
+    /// `about:blank`, `mailto:me@lexo.cool` and `javascript:void(0)` are opaque.
+    /// These carry no host or path and cannot be resolved against a base URL.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_url::Url;
+    ///
+    /// assert!("about:blank".parse::<Url>().unwrap().is_opaque());
+    /// assert!(!"https://waterui.dev".parse::<Url>().unwrap().is_opaque());
+    /// ```
+    #[must_use]
+    pub const fn is_opaque(&self) -> bool {
+        matches!(self.components, ParsedComponents::Opaque(_))
+    }
+
     /// Returns true if this is an absolute path or URL.
     #[must_use]
     pub const fn is_absolute(&self) -> bool {
         match self.components {
-            ParsedComponents::Web(_) | ParsedComponents::Data(_) | ParsedComponents::Blob(_) => {
-                true
-            }
+            ParsedComponents::Web(_)
+            | ParsedComponents::Data(_)
+            | ParsedComponents::Blob(_)
+            | ParsedComponents::Opaque(_) => true,
             ParsedComponents::Local(local) => local.is_absolute,
         }
     }
@@ -374,7 +465,28 @@ impl Url {
             ParsedComponents::Data(_) => Some("data"),
             ParsedComponents::Blob(_) => Some("blob"),
             ParsedComponents::Local(_) => Some("file"),
+            ParsedComponents::Opaque(opaque) => Some(self.slice(opaque.scheme)),
             ParsedComponents::Web(_) => None,
+        }
+    }
+
+    /// Gets the body of an opaque URL — everything after the scheme's colon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_url::Url;
+    ///
+    /// let url: Url = "mailto:me@lexo.cool".parse().unwrap();
+    /// assert_eq!(url.opaque_body(), Some("me@lexo.cool"));
+    /// ```
+    #[must_use]
+    pub fn opaque_body(&self) -> Option<&str> {
+        match self.components {
+            ParsedComponents::Opaque(opaque) if opaque.body.is_present() => {
+                Some(self.slice(opaque.body))
+            }
+            _ => None,
         }
     }
 
@@ -398,7 +510,9 @@ impl Url {
             ParsedComponents::Web(web) if web.path.is_present() => self.slice(web.path),
             ParsedComponents::Web(_) => "/", // No path means root
             ParsedComponents::Local(local) => self.slice(local.path),
-            ParsedComponents::Data(_) | ParsedComponents::Blob(_) => "",
+            ParsedComponents::Data(_) | ParsedComponents::Blob(_) | ParsedComponents::Opaque(_) => {
+                ""
+            }
         }
     }
 
@@ -634,14 +748,16 @@ impl FromStr for Url {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
-            return Err(ParseError::empty());
+        // Runtime parsing must never panic: these strings come from web engines,
+        // which navigate to `about:blank`, `data:` documents and `file://` paths
+        // as a matter of course.
+        match parser::try_parse_url(s.as_bytes()) {
+            Ok(components) => Ok(Self {
+                inner: Str::from(s.to_string()),
+                components,
+            }),
+            Err(kind) => Err(ParseError::new(kind)),
         }
-
-        Ok(Self {
-            inner: Str::from(s.to_string()),
-            components: parser::parse_url(s.as_bytes()),
-        })
     }
 }
 
@@ -651,36 +767,11 @@ impl From<&'static str> for Url {
     }
 }
 
-impl From<String> for Url {
-    fn from(value: String) -> Self {
-        // Infallible: treat parse failures as local paths
-        value
-            .as_str()
-            .parse()
-            .unwrap_or_else(|_| Self::from_file_path_str(value))
-    }
-}
-
-impl From<Str> for Url {
-    fn from(value: Str) -> Self {
-        // Infallible: treat parse failures as local paths
-        value
-            .as_str()
-            .parse()
-            .unwrap_or_else(|_| Self::from_file_path_str(value))
-    }
-}
-
-impl<'a> From<Cow<'a, str>> for Url {
-    fn from(value: Cow<'a, str>) -> Self {
-        match value {
-            Cow::Borrowed(s) => s
-                .parse()
-                .unwrap_or_else(|_| Self::from_file_path_str(s.to_string())),
-            Cow::Owned(s) => s.parse().unwrap_or_else(|_| Self::from_file_path_str(s)),
-        }
-    }
-}
+// Deliberately no `From<String>` / `From<Str>` / `From<Cow<str>>`: a URL that
+// only exists at runtime can fail to parse, and quietly treating the failure
+// as a local path is how a malformed address reaches a native web view (see
+// `IntoUrl`). Runtime strings go through `str::parse` with explicit error
+// handling, or `Url::from_file_path_str` when a path is what is meant.
 
 impl From<Url> for Str {
     fn from(url: Url) -> Self {
@@ -879,9 +970,10 @@ pub async fn download_remote_bytes(url: &str) -> Result<Vec<u8>, RemoteDownloadE
 async fn download_remote_bytes_with_content_type(
     url: &str,
 ) -> Result<DownloadedRemoteBytes, RemoteDownloadError> {
-    let mut client = FollowRedirect::new(zenwave::client());
+    let mut client = FollowRedirect::new(zenwave::raw_client());
     let response = client
         .method(Method::GET, url)
+        .map_err(|error| RemoteDownloadError::Http(Box::new(error)))?
         .await
         .map_err(|error| RemoteDownloadError::Http(Box::new(error.into())))?;
 
@@ -1121,6 +1213,93 @@ mod tests {
         }
     }
 
+    /// Every one of these is a URL a web engine navigates to on its own, and each
+    /// used to abort the process: `file://` tripped the "web URL must have a host"
+    /// assertion inside the `const` parser, and the rest were reported as invalid
+    /// by `Url::parse`, whose caller then panicked.
+    #[test]
+    fn engine_supplied_urls_parse_instead_of_panicking() {
+        let cases = [
+            ("about:blank", "about"),
+            ("javascript:void(0)", "javascript"),
+            ("mailto:me@lexo.cool", "mailto"),
+            ("chrome-error://chromewebdata/", "chrome-error"),
+            ("file:///tmp/page.html", "file"),
+            ("file://localhost/tmp/page.html", "file"),
+            ("data:text/plain,hello", "data"),
+            ("blob:https://waterui.dev/1234", "blob"),
+        ];
+
+        for (raw, scheme) in cases {
+            let url: Url = raw
+                .parse()
+                .unwrap_or_else(|error| panic!("{raw} failed to parse: {error}"));
+            assert_eq!(url.scheme(), Some(scheme), "wrong scheme for {raw}");
+            assert_eq!(url.as_str(), raw);
+        }
+    }
+
+    #[test]
+    fn file_urls_are_local_paths() {
+        let url: Url = "file:///tmp/page.html".parse().unwrap();
+        assert!(url.is_local());
+        assert!(!url.is_web());
+        assert_eq!(url.path(), "/tmp/page.html");
+
+        // The authority is accepted and ignored: both spellings name one file.
+        let with_host: Url = "file://localhost/tmp/page.html".parse().unwrap();
+        assert_eq!(with_host.path(), "/tmp/page.html");
+    }
+
+    #[test]
+    fn opaque_urls_expose_their_scheme_and_body() {
+        let url: Url = "mailto:me@lexo.cool".parse().unwrap();
+        assert!(url.is_opaque());
+        assert!(url.is_absolute());
+        assert_eq!(url.scheme(), Some("mailto"));
+        assert_eq!(url.opaque_body(), Some("me@lexo.cool"));
+    }
+
+    /// A single-character "scheme" is a Windows drive letter, so `C:\dir` must not
+    /// be reclassified as an opaque `C:` URL.
+    #[test]
+    fn windows_drive_letters_are_not_opaque_schemes() {
+        let url: Url = "C:\\Windows\\file.txt".parse().unwrap();
+        assert!(url.is_local());
+        assert!(!url.is_opaque());
+    }
+
+    #[test]
+    fn oversized_and_empty_input_is_reported_not_panicked() {
+        assert!("".parse::<Url>().is_err());
+        let too_long = alloc::string::String::from_utf8(alloc::vec![b'a'; 70_000]).unwrap();
+        assert!(too_long.parse::<Url>().is_err());
+    }
+
+    #[test]
+    fn parse_user_input_matches_address_bar_expectations() {
+        let cases = [
+            ("https://waterui.dev", Some("https://waterui.dev")),
+            ("waterui.dev/docs", Some("https://waterui.dev/docs")),
+            ("  waterui.dev  ", Some("https://waterui.dev")),
+            ("localhost:3000", Some("https://localhost:3000")),
+            ("about:blank", Some("about:blank")),
+            ("file:///tmp/page.html", Some("file:///tmp/page.html")),
+            ("mailto:me@lexo.cool", Some("mailto:me@lexo.cool")),
+            ("", None),
+            ("   ", None),
+        ];
+
+        for (input, expected) in cases {
+            let parsed = Url::parse_user_input(input);
+            assert_eq!(
+                parsed.as_ref().map(Url::as_str),
+                expected,
+                "wrong result for {input:?}"
+            );
+        }
+    }
+
     #[test]
     fn test_fromstr_local_paths() {
         let paths = [
@@ -1329,8 +1508,10 @@ mod tests {
         let as_string = url.clone().into_string();
         assert_eq!(as_string, "https://example.com");
 
-        let from_string = Url::from("test".to_string());
-        assert_eq!(from_string.as_str(), "test");
+        assert!(
+            "".parse::<Url>().is_err(),
+            "runtime strings must surface parse failures instead of degrading"
+        );
     }
 
     #[test]
@@ -1351,6 +1532,9 @@ mod tests {
         assert_eq!(Url::new("http://example.com").scheme(), Some("http"));
         assert_eq!(Url::new("ftp://example.com").scheme(), Some("ftp"));
         assert_eq!(Url::new("ws://example.com").scheme(), Some("ws"));
+        assert_eq!(Url::new("waterui://app/settings").scheme(), Some("waterui"));
+        assert_eq!(Url::new("waterui://app/settings").host(), Some("app"));
+        assert_eq!(Url::new("waterui://app/settings").path(), "/settings");
         assert_eq!(Url::new("data:text/plain,hello").scheme(), Some("data"));
         assert_eq!(
             Url::new("blob:https://example.com/uuid").scheme(),
@@ -1406,7 +1590,9 @@ mod tests {
     #[test]
     fn fetch_cache_key_has_fixed_length() {
         let long_path = "a".repeat(512);
-        let url = Url::from(format!("https://example.com/{long_path}"));
+        let url = format!("https://example.com/{long_path}")
+            .parse::<Url>()
+            .expect("test URL must parse");
         let key = fetch_cache_key(url.as_str());
         assert_eq!(key.len(), 43);
     }
@@ -1500,7 +1686,9 @@ mod tests {
                 .expect("server should write response");
         });
 
-        let url = Url::from(format!("http://{address}/download"));
+        let url = format!("http://{address}/download")
+            .parse::<Url>()
+            .expect("test URL must parse");
         let fetched = futures::executor::block_on(fetch_remote_to_cache(
             url.as_str().to_owned(),
             url.extension().map(str::to_owned),
@@ -1556,7 +1744,9 @@ mod tests {
                 .expect("server should write response");
         });
 
-        let url = Url::from(format!("http://{address}/{long_path}"));
+        let url = format!("http://{address}/{long_path}")
+            .parse::<Url>()
+            .expect("test URL must parse");
         let fetched = futures::executor::block_on(fetch_remote_to_cache(
             url.as_str().to_owned(),
             url.extension().map(str::to_owned),

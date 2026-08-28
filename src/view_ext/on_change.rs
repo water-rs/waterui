@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 
 use nami::{Signal, watcher::WatcherGuard};
 use waterui_core::{Metadata, Retain, View};
@@ -19,31 +19,31 @@ impl<V, G> OnChange<V, G> {
     /// * `content` - The view to render
     /// * `source` - The computed value to watch for changes
     /// * `handler` - The callback to execute when the value changes
-    pub fn new<C, F>(content: V, source: &C, handler: F) -> OnChange<V, C::Guard>
+    pub fn new<C, F>(content: V, source: &C, handler: F) -> Self
     where
-        C: Signal,
+        C: Signal<Guard = G>,
         V: View,
         C::Output: PartialEq + Clone,
         F: Fn(C::Output) + 'static,
     {
-        let cache: RefCell<Option<C::Output>> = RefCell::new(Some(source.get()));
-        let guard = source.watch(move |context| {
-            let value = context.into_value();
-            let mut cache_ref = cache.borrow_mut();
-            match cache_ref.as_ref() {
-                Some(cached) if *cached != value => {
-                    handler(value.clone());
-                }
-                Some(_) => {
-                    // Value unchanged, do nothing
-                }
-                None => {
-                    handler(value.clone());
+        let cache = Rc::new(RefCell::new(None));
+        let guard = source.watch({
+            let cache = Rc::clone(&cache);
+            move |context| {
+                let value = context.into_value();
+                let changed = cache
+                    .borrow_mut()
+                    .replace(value.clone())
+                    .is_none_or(|cached| cached != value);
+                if changed {
+                    handler(value);
                 }
             }
-            *cache_ref = Some(value);
         });
-        OnChange { content, guard }
+        if cache.borrow().is_none() {
+            cache.borrow_mut().replace(source.get());
+        }
+        Self { content, guard }
     }
 }
 
@@ -58,8 +58,30 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use nami::binding;
-    use nami::watcher::BoxWatcherGuard;
+    use nami::{Binding, Signal, binding, watcher::BoxWatcherGuard};
+
+    #[derive(Clone)]
+    struct ChangesBeforeWatch {
+        source: Binding<i32>,
+        replacement: i32,
+    }
+
+    impl Signal for ChangesBeforeWatch {
+        type Output = i32;
+        type Guard = <Binding<i32> as Signal>::Guard;
+
+        fn get(&self) -> Self::Output {
+            self.source.get()
+        }
+
+        fn watch(
+            &self,
+            watcher: impl Fn(nami::watcher::Context<Self::Output>) + 'static,
+        ) -> Self::Guard {
+            self.source.set(self.replacement);
+            self.source.watch(watcher)
+        }
+    }
 
     use super::OnChange;
 
@@ -82,5 +104,25 @@ mod tests {
 
         source.set(2);
         assert_eq!(&*seen.borrow(), &[1, 2]);
+    }
+
+    #[test]
+    fn establishes_initial_cache_after_subscribing() {
+        let source = Binding::container(0);
+        let changes_before_watch = ChangesBeforeWatch {
+            source: source.clone(),
+            replacement: 1,
+        };
+        let seen = Rc::new(RefCell::new(Vec::new()));
+
+        let _view = OnChange::new((), &changes_before_watch, {
+            let seen = Rc::clone(&seen);
+            move |value| seen.borrow_mut().push(value)
+        });
+
+        source.set(1);
+        source.set(2);
+
+        assert_eq!(&*seen.borrow(), &[2]);
     }
 }

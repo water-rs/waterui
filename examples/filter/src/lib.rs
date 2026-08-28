@@ -15,6 +15,7 @@
 use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::App;
+use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Binding;
@@ -56,7 +57,9 @@ fn blur_section(blur_radius: &Binding<f64>) -> impl View {
         text("Blur").headline(),
         "Apply Gaussian blur to content",
         sample_content().blur(animated_blur).min_height(100.0),
-        Slider::new(0.0..=20.0, blur_radius),
+        slider("Blur radius", blur_radius)
+            .range(0.0..=20.0)
+            .hide_label(),
         hstack((
             set_f64_button("0", 0.0, blur_radius),
             set_f64_button("5", 5.0, blur_radius),
@@ -80,7 +83,9 @@ fn brightness_section(brightness: &Binding<f64>) -> impl View {
         sample_content()
             .brightness(animated_brightness)
             .min_height(100.0),
-        Slider::new(-1.0..=1.0, brightness),
+        slider("Brightness", brightness)
+            .range(-1.0..=1.0)
+            .hide_label(),
         hstack((
             set_f64_button("-1", -1.0, brightness),
             set_f64_button("0", 0.0, brightness),
@@ -104,7 +109,9 @@ fn saturation_section(saturation: &Binding<f64>) -> impl View {
         sample_content()
             .saturation(animated_saturation)
             .min_height(100.0),
-        Slider::new(0.0..=2.0, saturation),
+        slider("Saturation", saturation)
+            .range(0.0..=2.0)
+            .hide_label(),
         hstack((
             set_f64_button("0", 0.0, saturation),
             set_f64_button("1", 1.0, saturation),
@@ -128,7 +135,7 @@ fn contrast_section(contrast: &Binding<f64>) -> impl View {
         sample_content()
             .contrast(animated_contrast)
             .min_height(100.0),
-        Slider::new(0.0..=2.0, contrast),
+        slider("Contrast", contrast).range(0.0..=2.0).hide_label(),
         hstack((
             set_f64_button("0", 0.0, contrast),
             set_f64_button("1", 1.0, contrast),
@@ -152,7 +159,7 @@ fn hue_rotation_section(hue: &Binding<f64>) -> impl View {
         sample_content()
             .hue_rotation(animated_hue)
             .min_height(100.0),
-        Slider::new(0.0..=360.0, hue),
+        slider("Hue rotation", hue).range(0.0..=360.0).hide_label(),
         hstack((
             set_f64_button("0", 0.0, hue),
             set_f64_button("90", 90.0, hue),
@@ -176,7 +183,7 @@ fn grayscale_section(grayscale: &Binding<f64>) -> impl View {
         sample_content()
             .grayscale(animated_grayscale)
             .min_height(100.0),
-        Slider::new(0.0..=1.0, grayscale),
+        slider("Grayscale", grayscale).hide_label(),
         hstack((
             set_f64_button("0", 0.0, grayscale),
             set_f64_button("0.5", 0.5, grayscale),
@@ -197,7 +204,7 @@ fn opacity_section(opacity: &Binding<f64>) -> impl View {
         text("Opacity").headline(),
         "Adjust transparency (0 = invisible, 1 = opaque)",
         sample_content().opacity(animated_opacity).min_height(100.0),
-        Slider::new(0.0..=1.0, opacity),
+        slider("Opacity", opacity).hide_label(),
         hstack((
             set_f64_button("0", 0.0, opacity),
             set_f64_button("0.5", 0.5, opacity),
@@ -284,7 +291,8 @@ fn combined_section(
     .padding()
 }
 
-fn main() -> impl View {
+/// Root view: interactive showcase of every filter section.
+pub fn demo() -> impl View {
     // State for individual filter sections (using f64 for Slider compatibility)
     let blur_radius = Binding::f64(0.0);
     let brightness = Binding::f64(0.0);
@@ -346,5 +354,5 @@ fn filter_preview() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

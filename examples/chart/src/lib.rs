@@ -2,15 +2,16 @@
 
 use waterui::app::App;
 use waterui::color::Srgb;
+use waterui::layout::grid::{grid as layout_grid, row};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::{binding, impl_constant, Binding};
-use waterui::view_builder;
 use waterui_chart::{
-    AreaChart, AreaData, AreaSeries, AxisConfig, BarChart, BubbleChart, BubblePoint, Candle,
-    CandlestickChart, ChartExt, ContourChart, ContourData, DataBounds, DataPoint, DepthChart,
-    DepthData, DepthLevel, GaugeChart, GaugeData, GaugeRegion, HeatmapChart, HeatmapData,
-    LineChart, PieChart, RadarChart, RadarData, RadarSeries, ScatterChart,
+    ArcAngles, AreaChart, AreaData, AreaSeries, AxisConfig, BarChart, BubbleChart, BubblePoint,
+    Candle, CandlestickChart, ChartExt, ContourChart, ContourData, DataBounds, DataPoint,
+    DepthChart, DepthData, DepthLevel, GaugeChart, GaugeData, GaugeRadii, GaugeRegion,
+    HeatmapChart, HeatmapData, LineChart, PieChart, RadarChart, RadarData, RadarSeries,
+    ScatterChart,
 };
 
 /// Chart types available in this demo.
@@ -44,27 +45,6 @@ enum ChartMode {
 impl_constant!(ChartMode);
 
 impl ChartMode {
-    const BASIC: &[Self] = &[
-        Self::Bar,
-        Self::Line,
-        Self::Pie,
-        Self::Scatter,
-        Self::Candlestick,
-        Self::Depth,
-        Self::Heatmap,
-        Self::Contour,
-        Self::Radar,
-        Self::Bubble,
-        Self::Area,
-        Self::Gauge,
-    ];
-
-    const STRESS: &[Self] = &[
-        Self::StressScatter10K,
-        Self::StressLine1K,
-        Self::StressHeatmap10K,
-    ];
-
     const fn label(self) -> &'static str {
         match self {
             Self::Bar => "Bar",
@@ -85,52 +65,96 @@ impl ChartMode {
         }
     }
 
-    #[view_builder]
-    fn render(self) -> impl View {
+    const fn button_width(self) -> f32 {
         match self {
-            Self::Bar => bar_chart_preview(),
-            Self::Line => line_chart_preview(),
-            Self::Pie => pie_chart_preview(),
-            Self::Scatter => scatter_chart_preview(),
-            Self::Candlestick => candlestick_chart_preview(),
-            Self::Depth => depth_chart_preview(),
-            Self::Heatmap => heatmap_chart_preview(),
-            Self::Contour => contour_chart_preview(),
-            Self::Radar => radar_chart_preview(),
-            Self::Bubble => bubble_chart_preview(),
-            Self::Area => area_chart_preview(),
-            Self::Gauge => gauge_chart_preview(),
-            Self::StressScatter10K => scatter_stress_preview(),
-            Self::StressLine1K => line_stress_preview(),
-            Self::StressHeatmap10K => heatmap_stress_preview(),
+            Self::Bar | Self::Line | Self::Pie => 92.0,
+            Self::Scatter => 128.0,
+            Self::StressScatter10K | Self::StressHeatmap10K => 168.0,
+            Self::StressLine1K => 132.0,
+            _ => 128.0,
         }
     }
 }
 
-fn mode_buttons(modes: &[ChartMode], mode: &Binding<ChartMode>) -> HStack<(Vec<AnyView>,)> {
-    modes
-        .iter()
-        .map(|&target| {
-            button(target.label())
-                .action(move |State(m): State<Binding<ChartMode>>| m.set(target))
-                .state(mode)
-        })
-        .collect()
+fn mode_button(mode: &Binding<ChartMode>, target: ChartMode) -> impl View {
+    button(target.label())
+        .action(move |State(m): State<Binding<ChartMode>>| m.set(target))
+        .state(mode)
+        .width(target.button_width())
 }
 
-/// Main View - demonstrates different chart types
-fn main() -> impl View {
+fn mode_controls(mode: &Binding<ChartMode>) -> impl View {
+    layout_grid(
+        3,
+        [
+            row((
+                mode_button(mode, ChartMode::Bar),
+                mode_button(mode, ChartMode::Line),
+                mode_button(mode, ChartMode::Pie),
+            )),
+            row((
+                mode_button(mode, ChartMode::Scatter),
+                mode_button(mode, ChartMode::Candlestick),
+                mode_button(mode, ChartMode::Depth),
+            )),
+            row((
+                mode_button(mode, ChartMode::Heatmap),
+                mode_button(mode, ChartMode::Contour),
+                mode_button(mode, ChartMode::Radar),
+            )),
+            row((
+                mode_button(mode, ChartMode::Bubble),
+                mode_button(mode, ChartMode::Area),
+                mode_button(mode, ChartMode::Gauge),
+            )),
+            row((
+                mode_button(mode, ChartMode::StressScatter10K),
+                mode_button(mode, ChartMode::StressLine1K),
+                mode_button(mode, ChartMode::StressHeatmap10K),
+            )),
+        ],
+    )
+    .spacing(10.0)
+    .width(560.0)
+}
+
+/// Renders only the currently-selected chart. Switching mode re-dispatches the
+/// active chart (charts are distinct view types, so this is genuine control flow,
+/// not state-preserving membership). Rendering a single chart inline avoids
+/// stacking 15 GPU scene-views and the reactive-visibility wrapper that the
+/// retained renderer does not yet composite for scene-views.
+fn chart_layers(mode: &Binding<ChartMode>) -> impl View {
+    Dynamic::watch(mode.clone(), |mode| match mode {
+        ChartMode::Bar => AnyView::new(bar_chart_preview()),
+        ChartMode::Line => AnyView::new(line_chart_preview()),
+        ChartMode::Pie => AnyView::new(pie_chart_preview()),
+        ChartMode::Scatter => AnyView::new(scatter_chart_preview()),
+        ChartMode::Candlestick => AnyView::new(candlestick_chart_preview()),
+        ChartMode::Depth => AnyView::new(depth_chart_preview()),
+        ChartMode::Heatmap => AnyView::new(heatmap_chart_preview()),
+        ChartMode::Contour => AnyView::new(contour_chart_preview()),
+        ChartMode::Radar => AnyView::new(radar_chart_preview()),
+        ChartMode::Bubble => AnyView::new(bubble_chart_preview()),
+        ChartMode::Area => AnyView::new(area_chart_preview()),
+        ChartMode::Gauge => AnyView::new(gauge_chart_preview()),
+        ChartMode::StressScatter10K => AnyView::new(scatter_stress_preview()),
+        ChartMode::StressLine1K => AnyView::new(line_stress_preview()),
+        ChartMode::StressHeatmap10K => AnyView::new(heatmap_stress_preview()),
+    })
+}
+
+/// Demo view - demonstrates different chart types
+#[preview]
+pub fn demo() -> impl View {
     let mode = binding(ChartMode::default());
 
     zstack((
         Color::srgb_hex("#1a1a2e"),
         vstack((
             text("Charts Demo").title().bold().foreground(Srgb::WHITE),
-            mode_buttons(ChartMode::BASIC, &mode),
-            // GPU stress test buttons (data loads that choke Swift Charts)
-            mode_buttons(ChartMode::STRESS, &mode),
+            mode_controls(&mode),
             spacer(),
-            watch(mode.clone(), ChartMode::render),
+            chart_layers(&mode),
             spacer(),
         ))
         .padding_with(EdgeInsets::all(20.0)),
@@ -456,13 +480,76 @@ fn gauge_chart_preview() -> impl View {
         .show_needle(true);
     let gauge = binding(gauge_data);
     GaugeChart::new(gauge)
-        .arc_degrees(-135.0, 135.0)
-        .radii(0.3, 0.45)
+        .arc(ArcAngles::from_degrees(-135.0, 135.0))
+        .radii(GaugeRadii::new(0.3, 0.45))
         .background_color(Srgb::from_hex("#333333"))
         .needle_color(Srgb::from_hex("#FFFFFF"))
         .size(300.0, 300.0)
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::demo;
+    use core::time::Duration;
+    use hydrolysis_m3::install;
+
+    /// The chart demo renders through the Hydrolysis M3 GPU pipeline without
+    /// panicking (regression guard for the >64 rebuild-loop crash) and the active
+    /// chart's controls are present.
+    #[waterui::test(demo, theme = install, viewport = (440, 920), offscreen)]
+    fn chart_demo_renders_without_crashing(app: &mut waterui_testing::OffscreenApp) {
+        assert!(
+            app.query()
+                .label("Bar")
+                .wait_for_existence(Duration::from_secs(3)),
+            "chart demo mode controls should render"
+        );
+        let _ = app.snapshot();
+    }
+
+    /// Acceptance for the retained-tree refactor's two chart bugs:
+    /// - **Bug 1** (tapping a mode button did not switch the chart): tapping a
+    ///   different mode must change the rendered chart pixels. Each chart is a
+    ///   `Canvas`/`SceneView`; the old effect-slot-cursor patch path rendered the
+    ///   stale scene. The node-owned `SceneView` fixes it.
+    /// - **Bug 2** (layout flickered): switching to a different-size chart must
+    ///   reflow the surrounding spacers cleanly via incremental relayout, with no
+    ///   whole-window rebuild flash, and still render the new chart.
+    #[waterui::test(demo, theme = install, viewport = (440, 920), offscreen)]
+    fn chart_mode_buttons_switch_and_reflow(app: &mut waterui_testing::OffscreenApp) {
+        assert!(
+            app.query()
+                .label("Bar")
+                .wait_for_existence(Duration::from_secs(3)),
+            "chart demo mode controls should render"
+        );
+        let bar = app.snapshot();
+        bar.save_png("/tmp/waterui_chart_bar.png")
+            .expect("save bar snapshot");
+
+        app.query().label("Pie").tap();
+        let pie = app.snapshot();
+        pie.save_png("/tmp/waterui_chart_pie.png")
+            .expect("save pie snapshot");
+        assert!(
+            pie.rgba8 != bar.rgba8,
+            "Bug 1: tapping Pie must switch the rendered chart (a node-owned SceneView \
+             must render the new scene, not replay the stale Bar capture)"
+        );
+
+        // A different-size chart: the surrounding spacers must reflow without a flash.
+        app.query().label("Gauge").tap();
+        let gauge = app.snapshot();
+        gauge
+            .save_png("/tmp/waterui_chart_gauge.png")
+            .expect("save gauge snapshot");
+        assert!(
+            gauge.rgba8 != pie.rgba8,
+            "Bug 1/2: switching to Gauge must render the new chart and reflow the layout"
+        );
+    }
 }

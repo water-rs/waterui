@@ -1,0 +1,6 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Typography RTL"
+bundle_identifier = "dev.waterui.typography_rtl"

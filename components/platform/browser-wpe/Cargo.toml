@@ -1,0 +1,68 @@
+[package]
+name = "waterui-browser-wpe"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Bundled WPE WebKit runtime for WaterUI on Linux"
+keywords = ["wpe", "webkit", "webview", "browser", "waterui"]
+categories = ["gui", "web-programming"]
+
+[dependencies]
+tracing.workspace = true
+executor-core.workspace = true
+cookie = { version = "0.18.1", optional = true }
+futures = { workspace = true, optional = true }
+libloading = "0.9"
+nami = { workspace = true, optional = true }
+num-traits = { version = "0.2", default-features = false }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+waterui-core.workspace = true
+waterui-str = { workspace = true, optional = true }
+waterui-url = { workspace = true, optional = true }
+waterui-webview = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keycode = { version = "1.0", optional = true }
+kurbo.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+wgpu.workspace = true
+wgpu-external-frame.workspace = true
+xkeysym = { version = "0.2.1", optional = true }
+
+[dev-dependencies]
+base64 = "0.22"
+executor-core = { workspace = true, features = ["async-executor"] }
+pollster.workspace = true
+tiny_http = "0.12"
+
+[[example]]
+name = "runtime_smoke"
+required-features = ["runtime-smoke"]
+
+[[test]]
+name = "real_engine"
+required-features = ["real-engine"]
+
+[features]
+default = ["webview"]
+real-engine = ["webview"]
+runtime-smoke = ["webview"]
+webview = [
+    "dep:cookie",
+    "dep:futures",
+    "dep:keycode",
+    "dep:nami",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:waterui-str",
+    "dep:waterui-url",
+    "dep:waterui-webview",
+    "dep:xkeysym",
+]
+
+[lints]
+workspace = true

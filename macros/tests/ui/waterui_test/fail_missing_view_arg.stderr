@@ -1,7 +1,0 @@
-error: `#[waterui::test(...)]` requires exactly one argument: a no-arg view function path
- --> tests/ui/waterui_test/fail_missing_view_arg.rs:5:1
-  |
-5 | #[waterui::test]
-  | ^^^^^^^^^^^^^^^^
-  |
-  = note: this error originates in the attribute macro `waterui::test` (in Nightly builds, run with -Z macro-backtrace for more info)

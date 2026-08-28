@@ -3,16 +3,21 @@ use smol::channel::{Receiver, Sender};
 use smol::io::AsyncWriteExt;
 use smol::process::Command;
 use smol::spawn;
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tracing::{debug, error};
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Output, Stdio};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use crate::{
     android::platform::AndroidAbi,
     android::toolchain::AndroidSdk,
-    device::{Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running},
+    device::{
+        ApplicationExit, Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running,
+    },
     utils::{parse_whitespace_separated_u32s, run_command_os, run_command_output_os},
 };
 
@@ -21,6 +26,65 @@ use crate::{
 struct PanicInfo {
     payload: String,
     location: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum AndroidRuntimeEvent {
+    Panic(PanicInfo),
+    NativeCrash(String),
+    ActivityFinished,
+}
+
+const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const ANDROID_ACTIVITY_FINISHED_MARKER: &str = "WATERUI_ACTIVITY_FINISHED";
+
+async fn run_bounded_adb_output<A, S>(adb: &Path, args: A, operation: &str) -> eyre::Result<Output>
+where
+    A: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let args = args
+        .into_iter()
+        .map(|argument| argument.as_ref().to_os_string())
+        .collect::<Vec<_>>();
+    let command = Box::pin(run_command_output_os(adb, &args));
+    let timeout = Box::pin(async {
+        smol::Timer::after(ADB_DEVICE_COMMAND_TIMEOUT).await;
+        Err(eyre!(
+            "{operation} timed out after {} seconds",
+            ADB_DEVICE_COMMAND_TIMEOUT.as_secs()
+        ))
+    });
+
+    match futures::future::select(command, timeout).await {
+        futures::future::Either::Left((result, _))
+        | futures::future::Either::Right((result, _)) => result,
+    }
+}
+
+async fn run_bounded_adb_command<A, S>(adb: &Path, args: A, operation: &str) -> eyre::Result<String>
+where
+    A: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = run_bounded_adb_output(adb, args, operation).await?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let details = if !stderr.is_empty() {
+        format!("\nstderr:\n{stderr}")
+    } else if !stdout.is_empty() {
+        format!("\nstdout:\n{stdout}")
+    } else {
+        String::new()
+    };
+    Err(eyre!(
+        "{operation} failed with status {}{details}",
+        output.status
+    ))
 }
 
 /// Represents an Android device (physical or emulator).
@@ -76,7 +140,7 @@ impl Device for AndroidDevice {
 
 impl AndroidDevice {
     async fn scan_with_adb(adb: &Path) -> eyre::Result<Vec<Self>> {
-        let output = run_command_os(adb, ["devices", "-l"])
+        let output = run_bounded_adb_command(adb, ["devices", "-l"], "listing Android devices")
             .await
             .map_err(|e| eyre!("Failed to list devices: {e}"))?;
 
@@ -88,9 +152,10 @@ impl AndroidDevice {
                 let identifier = parts[0].to_string();
 
                 // Get device ABI
-                let abi = run_command_os(
+                let abi = run_bounded_adb_command(
                     adb,
                     ["-s", &identifier, "shell", "getprop", "ro.product.cpu.abi"],
+                    "querying Android device ABI",
                 )
                 .await
                 .map_err(|e| eyre!("Failed to get device ABI: {e}"))?;
@@ -141,7 +206,7 @@ async fn run_on_android(
 ) -> Result<Running, FailToRun> {
     let adb = AndroidSdk::adb_path()
         .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
-    let env_vars = collect_android_env_vars(&options);
+    let env_vars = collect_android_env_vars(device_id, &options);
 
     install_android_artifact(&adb, device_id, artifact.path()).await?;
     launch_android_app(
@@ -177,11 +242,28 @@ async fn run_on_android(
     Ok(running)
 }
 
-fn collect_android_env_vars(options: &RunOptions) -> Vec<(String, String)> {
-    options
+/// Collects the environment the app process starts with, delivered as
+/// `waterui.env.*` intent extras.
+///
+/// Emulators default to `WGPU_BACKEND=gl` because guest Vulkan in the Android
+/// emulator's gfxstream translation is unreliable (its swapchain presentation
+/// flips GPU surfaces vertically, and older images ship no guest Vulkan at
+/// all). The trade-off is real: wgpu's GLES backend has no compute shaders,
+/// so vello-backed components (icons, the GPU map) cannot render under this
+/// default — test those on a physical device. Force a backend for one launch
+/// with `adb shell am start ... --es waterui.env.WGPU_BACKEND vulkan`;
+/// anything already present in `options` wins over the default. Physical
+/// devices are never touched — they get whatever wgpu picks, normally Vulkan.
+fn collect_android_env_vars(device_id: &str, options: &RunOptions) -> Vec<(String, String)> {
+    let mut env_vars = options
         .env_vars()
         .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect()
+        .collect::<Vec<_>>();
+    if device_id.starts_with("emulator-") && !env_vars.iter().any(|(key, _)| key == "WGPU_BACKEND")
+    {
+        env_vars.push(("WGPU_BACKEND".to_string(), "gl".to_string()));
+    }
+    env_vars
 }
 
 async fn install_android_artifact(
@@ -292,7 +374,7 @@ fn spawn_android_runtime_tasks(
     sender: Sender<DeviceEvent>,
 ) {
     let sender_for_monitor = sender.clone();
-    let sender_for_panic = sender.clone();
+    let sender_for_runtime_event = sender.clone();
     let sender_for_logs = sender;
     let adb_for_monitor = adb.to_path_buf();
 
@@ -308,12 +390,29 @@ fn spawn_android_runtime_tasks(
     })
     .detach();
 
-    let panic_rx = start_android_log_stream(adb, device_id, pid, log_level, sender_for_logs);
+    let runtime_event_rx =
+        start_android_log_stream(adb, device_id, pid, log_level, sender_for_logs);
     spawn(async move {
-        if let Ok(info) = panic_rx.recv().await {
-            let _ = sender_for_panic
-                .send(DeviceEvent::Crashed(format_android_panic(&info)))
-                .await;
+        if let Ok(event) = runtime_event_rx.recv().await {
+            match event {
+                AndroidRuntimeEvent::Panic(info) => {
+                    let _ = sender_for_runtime_event
+                        .send(DeviceEvent::Crashed(format_android_panic(&info)))
+                        .await;
+                }
+                AndroidRuntimeEvent::NativeCrash(log) => {
+                    let _ = sender_for_runtime_event
+                        .send(DeviceEvent::Crashed(format!(
+                            "Android process crashed.\n\n=== Crash Log ===\n{log}"
+                        )))
+                        .await;
+                }
+                AndroidRuntimeEvent::ActivityFinished => {
+                    let _ = sender_for_runtime_event
+                        .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
+                        .await;
+                }
+            }
         }
     })
     .detach();
@@ -333,8 +432,12 @@ fn format_android_panic(info: &PanicInfo) -> String {
 async fn wait_for_app_pid(adb: &Path, device_id: &str, bundle_id: &str) -> Result<u32, FailToRun> {
     for _ in 0..10 {
         smol::Timer::after(std::time::Duration::from_millis(200)).await;
-        if let Ok(output) =
-            run_command_os(adb, ["-s", device_id, "shell", "pidof", bundle_id]).await
+        if let Ok(output) = run_bounded_adb_command(
+            adb,
+            ["-s", device_id, "shell", "pidof", bundle_id],
+            "querying the launched Android process",
+        )
+        .await
             && let Some(pid) = parse_whitespace_separated_u32s(&output).into_iter().next()
         {
             return Ok(pid);
@@ -342,7 +445,7 @@ async fn wait_for_app_pid(adb: &Path, device_id: &str, bundle_id: &str) -> Resul
     }
 
     // App likely crashed on startup - fetch logcat for crash info
-    let crash_info = match run_command_os(
+    let crash_info = match run_bounded_adb_command(
         adb,
         [
             "-s",
@@ -356,6 +459,7 @@ async fn wait_for_app_pid(adb: &Path, device_id: &str, bundle_id: &str) -> Resul
             "DEBUG:*",
             "WaterUI:*",
         ],
+        "collecting Android startup crash logs",
     )
     .await
     {
@@ -382,7 +486,12 @@ pub async fn emulator_avd_name_with_adb(adb: &Path, emulator_id: &str) -> eyre::
         eyre::bail!("Not an Android emulator identifier: {emulator_id}");
     }
 
-    let output = run_command_os(adb, ["-s", emulator_id, "emu", "avd", "name"]).await?;
+    let output = run_bounded_adb_command(
+        adb,
+        ["-s", emulator_id, "emu", "avd", "name"],
+        "querying the Android emulator name",
+    )
+    .await?;
     let name = output.lines().next().unwrap_or_default().trim();
     if name.is_empty() {
         eyre::bail!("Failed to query AVD name for {emulator_id}: empty response");
@@ -426,7 +535,8 @@ async fn try_find_running_emulator_for_avd(
 }
 
 async fn adb_emulator_states(adb: &Path) -> eyre::Result<String> {
-    let output = run_command_os(adb, ["devices", "-l"]).await?;
+    let output =
+        run_bounded_adb_command(adb, ["devices", "-l"], "querying Android emulator state").await?;
     let states: Vec<String> = output
         .lines()
         .skip(1)
@@ -443,22 +553,64 @@ async fn adb_emulator_states(adb: &Path) -> eyre::Result<String> {
 }
 
 async fn adb_emulator_boot_completed(adb: &Path, emulator_id: &str) -> bool {
-    run_command_os(
+    run_bounded_adb_command(
         adb,
         ["-s", emulator_id, "shell", "getprop", "sys.boot_completed"],
+        "querying Android emulator boot completion",
     )
     .await
     .is_ok_and(|value| value.trim() == "1")
 }
 
+fn adb_reports_device_ready(output: &str, device_id: &str) -> bool {
+    output.lines().skip(1).any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next() == Some(device_id) && fields.next() == Some("device")
+    })
+}
+
+async fn adb_device_is_ready(adb: &Path, device_id: &str) -> eyre::Result<bool> {
+    let output =
+        run_bounded_adb_command(adb, ["devices", "-l"], "querying Android device readiness")
+            .await?;
+    Ok(adb_reports_device_ready(&output, device_id))
+}
+
+fn command_targets_avd(command: &[OsString], avd_name: &OsStr) -> bool {
+    command
+        .windows(2)
+        .any(|arguments| arguments[0] == "-avd" && arguments[1] == avd_name)
+}
+
+async fn avd_process_is_running(avd_name: &str) -> bool {
+    let avd_name = OsString::from(avd_name);
+    smol::unblock(move || {
+        let mut processes = System::new();
+        processes.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
+        processes
+            .processes()
+            .values()
+            .any(|process| command_targets_avd(process.cmd(), &avd_name))
+    })
+    .await
+}
+
 async fn adb_package_manager_ready(adb: &Path, emulator_id: &str) -> bool {
-    run_command_os(adb, ["-s", emulator_id, "shell", "pm", "path", "android"])
-        .await
-        .is_ok_and(|output| {
-            output
-                .lines()
-                .any(|line| line.trim().starts_with("package:"))
-        })
+    run_bounded_adb_command(
+        adb,
+        ["-s", emulator_id, "shell", "pm", "path", "android"],
+        "querying Android package manager readiness",
+    )
+    .await
+    .is_ok_and(|output| {
+        output
+            .lines()
+            .any(|line| line.trim().starts_with("package:"))
+    })
 }
 
 /// Monitor an Android process and send events when it crashes or exits.
@@ -476,11 +628,21 @@ async fn monitor_android_process(
         // Check if process is still running using pidof
         // Note: We use pidof instead of kill -0 because kill -0 returns "Operation not permitted"
         // when the shell user doesn't have permission to send signals to the app process
-        let output = match run_command_os(&adb, ["-s", device_id, "shell", "pidof", bundle_id])
-            .await
-        {
-            Ok(output) => output,
+        let pids = match query_android_process_pids(&adb, device_id, bundle_id).await {
+            Ok(pids) => pids,
             Err(err) => {
+                if adb_device_is_ready(&adb, device_id)
+                    .await
+                    .is_ok_and(|ready| !ready)
+                {
+                    debug!(
+                        "Android device {device_id} disconnected while monitoring {bundle_id}: {err}"
+                    );
+                    let _ = sender
+                        .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
+                        .await;
+                    break;
+                }
                 debug!(
                     "Failed to query process state via pidof for {bundle_id} on {device_id}: {err}"
                 );
@@ -489,12 +651,9 @@ async fn monitor_android_process(
         };
 
         // Check if the process with the same PID is still running.
-        let still_running = parse_whitespace_separated_u32s(&output).contains(&pid);
+        let still_running = pids.contains(&pid);
 
         if !still_running {
-            // Give crash reporting a brief moment to flush logs.
-            smol::Timer::after(std::time::Duration::from_millis(500)).await;
-
             // Try to fetch logs for this PID (best signal for distinguishing crash vs normal exit).
             let pid_arg = format!("--pid={pid}");
             let pid_log_args = vec![
@@ -509,11 +668,12 @@ async fn monitor_android_process(
                 pid_arg,
                 "*:V".to_string(),
             ];
-            let pid_log = run_command_output_os(
+            let pid_log = run_bounded_adb_output(
                 &adb,
                 pid_log_args
                     .iter()
                     .map(|s| std::ffi::OsStr::new(s.as_str())),
+                "collecting Android process exit logs",
             )
             .await
             .map_or_else(
@@ -531,11 +691,6 @@ async fn monitor_android_process(
                 },
             );
 
-            assert!(
-                !(pid_log.trim().is_empty()),
-                "PID-filtered logcat returned empty output for {bundle_id} (pid={pid}); --pid support is required"
-            );
-
             if android_log_looks_like_crash(&pid_log, bundle_id, pid) {
                 let crash_log = pid_log;
 
@@ -547,11 +702,37 @@ async fn monitor_android_process(
 
                 let _ = sender.send(DeviceEvent::Crashed(error_msg)).await;
             } else {
-                let _ = sender.send(DeviceEvent::Exited).await;
+                let _ = sender
+                    .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
+                    .await;
             }
             break;
         }
     }
+}
+
+async fn query_android_process_pids(
+    adb: &Path,
+    device_id: &str,
+    bundle_id: &str,
+) -> eyre::Result<Vec<u32>> {
+    let output = run_bounded_adb_output(
+        adb,
+        ["-s", device_id, "shell", "pidof", bundle_id].map(OsStr::new),
+        "querying Android process state",
+    )
+    .await?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if output.status.success() || stdout.trim().is_empty() {
+        return Ok(parse_whitespace_separated_u32s(&stdout));
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    eyre::bail!(
+        "pidof failed with status {}: {}",
+        output.status,
+        stderr.trim()
+    );
 }
 
 fn log_mentions_pid(log: &str, pid: u32) -> bool {
@@ -576,24 +757,7 @@ fn android_log_looks_like_crash(log: &str, bundle_id: &str, pid: u32) -> bool {
         return false;
     }
 
-    // Common Java crash markers (AndroidRuntime).
-    if log.contains("FATAL EXCEPTION") {
-        return true;
-    }
-
-    // Common native crash markers (tombstone / debuggerd / libc).
-    if log.contains("Fatal signal") {
-        return true;
-    }
-    if log.contains("SIGSEGV")
-        || log.contains("SIGABRT")
-        || log.contains("SIGBUS")
-        || log.contains("SIGILL")
-        || log.contains("SIGFPE")
-    {
-        return true;
-    }
-    if log.contains("Abort message:") || log.contains("backtrace:") {
+    if android_log_line_looks_like_crash(log) {
         return true;
     }
 
@@ -607,25 +771,42 @@ fn android_log_looks_like_crash(log: &str, bundle_id: &str, pid: u32) -> bool {
         && (log.contains("E AndroidRuntime") || log.contains("Exception"))
 }
 
+fn android_log_line_looks_like_crash(line: &str) -> bool {
+    line.contains("FATAL EXCEPTION")
+        || line.contains("Fatal signal")
+        || line.contains("SIGSEGV")
+        || line.contains("SIGABRT")
+        || line.contains("SIGBUS")
+        || line.contains("SIGILL")
+        || line.contains("SIGFPE")
+        || line.contains("Abort message:")
+        || line.contains("backtrace:")
+}
+
 /// Start log streaming from an Android process using logcat.
 ///
-/// Always streams at minimum fatal level to capture panics.
-/// Returns a receiver for panic info that fires if a panic is detected.
+/// Always streams at minimum info level to capture lifecycle completion and panics.
+/// Returns a receiver that fires when the Activity finishes or the runtime crashes.
 fn start_android_log_stream(
     adb: &Path,
     device_id: &str,
     pid: u32,
     log_level: Option<LogLevel>,
     sender: Sender<DeviceEvent>,
-) -> Receiver<PanicInfo> {
+) -> Receiver<AndroidRuntimeEvent> {
     use futures::StreamExt;
     use futures::io::{AsyncBufReadExt, BufReader};
 
-    // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
-    let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
+    // Bounded channel with capacity 1 acts as a oneshot for the first terminal event.
+    let (runtime_event_tx, runtime_event_rx) = smol::channel::bounded::<AndroidRuntimeEvent>(1);
 
-    // Always stream at fatal level to capture panics, even if user didn't request logs
-    let priority = log_level.map_or('F', super::super::device::LogLevel::to_android_priority);
+    // Lifecycle completion is logged at info, so the internal stream must include info even
+    // when terminal log display is disabled or configured for a stricter level.
+    let priority = match log_level {
+        Some(LogLevel::Debug) => 'D',
+        Some(LogLevel::Verbose) => 'V',
+        Some(LogLevel::Error | LogLevel::Warn | LogLevel::Info) | None => 'I',
+    };
 
     // Build logcat command with PID filter and minimum priority
     let pid_arg = format!("--pid={pid}");
@@ -640,12 +821,12 @@ fn start_android_log_stream(
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("Failed to spawn logcat: {e}");
-            return panic_rx;
+            return runtime_event_rx;
         }
     };
 
     let Some(stdout) = child.stdout.take() else {
-        return panic_rx;
+        return runtime_event_rx;
     };
 
     let reader = BufReader::new(stdout);
@@ -657,23 +838,22 @@ fn start_android_log_stream(
         while let Some(result) = lines.next().await {
             let Ok(line) = result else { break };
 
-            // Extract panic info from log line if present (only first panic via try_send)
-            if line.contains("panic.payload=")
-                && let Some(info) = extract_panic_info_from_log(&line)
-            {
-                let _ = panic_tx.try_send(info);
+            // Extract the first terminal event directly from the live process-filtered stream.
+            if let Some(event) = android_runtime_event_from_log_line(&line) {
+                let _ = runtime_event_tx.try_send(event);
             }
 
             // Only send log events to display if user requested logs
-            if log_level.is_some() {
+            if let Some(requested_level) = log_level {
                 let (parsed_level, message) = parse_logcat_line(&line);
 
-                if sender
-                    .try_send(DeviceEvent::Log {
-                        level: parsed_level,
-                        message,
-                    })
-                    .is_err()
+                if log_level_allows(requested_level, parsed_level)
+                    && sender
+                        .try_send(DeviceEvent::Log {
+                            level: parsed_level,
+                            message,
+                        })
+                        .is_err()
                 {
                     break;
                 }
@@ -685,7 +865,35 @@ fn start_android_log_stream(
     })
     .detach();
 
-    panic_rx
+    runtime_event_rx
+}
+
+fn android_runtime_event_from_log_line(line: &str) -> Option<AndroidRuntimeEvent> {
+    if line.contains("panic.payload=")
+        && let Some(info) = extract_panic_info_from_log(line)
+    {
+        return Some(AndroidRuntimeEvent::Panic(info));
+    }
+    if android_log_line_looks_like_crash(line) {
+        return Some(AndroidRuntimeEvent::NativeCrash(line.to_string()));
+    }
+    if line.contains(ANDROID_ACTIVITY_FINISHED_MARKER) {
+        return Some(AndroidRuntimeEvent::ActivityFinished);
+    }
+    None
+}
+
+fn log_level_allows(requested: LogLevel, actual: tracing::Level) -> bool {
+    match requested {
+        LogLevel::Error => actual == tracing::Level::ERROR,
+        LogLevel::Warn => matches!(actual, tracing::Level::ERROR | tracing::Level::WARN),
+        LogLevel::Info => matches!(
+            actual,
+            tracing::Level::ERROR | tracing::Level::WARN | tracing::Level::INFO
+        ),
+        LogLevel::Debug => actual != tracing::Level::TRACE,
+        LogLevel::Verbose => true,
+    }
 }
 
 /// Extract panic information from a log line containing panic.payload and panic.location fields.
@@ -852,39 +1060,60 @@ impl Device for AndroidEmulator {
     async fn launch(&self) -> eyre::Result<()> {
         let emulator_path =
             AndroidSdk::emulator_path().ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
-
-        // Start the emulator process (don't wait for it here, we'll poll for readiness).
-        // Use std::process::Command so we can isolate process-group behavior.
-        let mut emulator_cmd = std::process::Command::new(&emulator_path);
-        emulator_cmd
-            .arg("-avd")
-            .arg(&self.avd_name)
-            .arg("-no-snapshot-load")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt as _;
-            // Move emulator into its own process group so Ctrl+C in `water run`
-            // only stops the CLI/app and doesn't terminate the emulator process.
-            emulator_cmd.process_group(0);
-        }
-
-        let mut emulator_process = smol::unblock(move || emulator_cmd.spawn()).await?;
-
-        // Wait for the emulator to boot (and match the requested AVD).
         let adb_path = AndroidSdk::adb_path()
             .ok_or_else(|| eyre::eyre!("Android SDK not found or adb not installed"))?;
 
+        let mut emulator_process = if avd_process_is_running(&self.avd_name).await {
+            debug!(
+                "AVD '{}' already has a running emulator process; waiting for it to become ready",
+                self.avd_name
+            );
+            None
+        } else {
+            // Start the emulator process (don't wait for it here, we'll poll for readiness).
+            // Use std::process::Command so we can isolate process-group behavior.
+            let mut emulator_cmd = std::process::Command::new(&emulator_path);
+            emulator_cmd
+                .arg("-avd")
+                .arg(&self.avd_name)
+                .arg("-no-snapshot-load")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt as _;
+                // Move emulator into its own process group so Ctrl+C in `water run`
+                // only stops the CLI/app and doesn't terminate the emulator process.
+                emulator_cmd.process_group(0);
+            }
+
+            Some(smol::unblock(move || emulator_cmd.spawn()).await?)
+        };
+
         let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(300);
+        let timeout = std::time::Duration::from_mins(5);
         let mut last_emulator_states = String::new();
 
         loop {
-            if let Some(status) = emulator_process.try_wait()? {
+            if let Some(process) = emulator_process.as_mut()
+                && let Some(status) = process.try_wait()?
+            {
+                if avd_process_is_running(&self.avd_name).await {
+                    debug!(
+                        "Launched emulator process exited with {status}, but another process owns AVD '{}'; waiting for that instance",
+                        self.avd_name
+                    );
+                    emulator_process = None;
+                } else {
+                    eyre::bail!(
+                        "Emulator process exited before becoming ready (status: {status}). Check AVD configuration and run `emulator -avd {}` manually for details.",
+                        self.avd_name
+                    );
+                }
+            } else if emulator_process.is_none() && !avd_process_is_running(&self.avd_name).await {
                 eyre::bail!(
-                    "Emulator process exited before becoming ready (status: {status}). Check AVD configuration and run `emulator -avd {}` manually for details.",
+                    "Existing emulator process for AVD '{}' exited before becoming ready.",
                     self.avd_name
                 );
             }
@@ -1013,13 +1242,12 @@ pub async fn screenshot(device_id: &str, output: &Path) -> eyre::Result<()> {
     let adb = AndroidSdk::adb_path()
         .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
 
-    let child = Command::new(&adb)
-        .args(["-s", device_id, "exec-out", "screencap", "-p"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    let output_result = child.output().await?;
+    let output_result = run_bounded_adb_output(
+        &adb,
+        ["-s", device_id, "exec-out", "screencap", "-p"],
+        "capturing the Android device screen",
+    )
+    .await?;
 
     if !output_result.status.success() {
         let stderr = String::from_utf8_lossy(&output_result.stderr);
@@ -1045,7 +1273,7 @@ pub async fn tap(device_id: &str, x: u32, y: u32) -> eyre::Result<()> {
     let adb = AndroidSdk::adb_path()
         .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
 
-    run_command_os(
+    run_bounded_adb_command(
         &adb,
         [
             "-s",
@@ -1056,6 +1284,7 @@ pub async fn tap(device_id: &str, x: u32, y: u32) -> eyre::Result<()> {
             &x.to_string(),
             &y.to_string(),
         ],
+        "performing an Android tap",
     )
     .await?;
 
@@ -1102,7 +1331,7 @@ pub async fn swipe(
         args.push(d);
     }
 
-    run_command_os(&adb, args).await?;
+    run_bounded_adb_command(&adb, args, "performing an Android swipe").await?;
 
     Ok(())
 }
@@ -1133,7 +1362,12 @@ pub async fn text(device_id: &str, input: &str) -> eyre::Result<()> {
         .replace('(', "\\(")
         .replace(')', "\\)");
 
-    run_command_os(&adb, ["-s", device_id, "shell", "input", "text", &escaped]).await?;
+    run_bounded_adb_command(
+        &adb,
+        ["-s", device_id, "shell", "input", "text", &escaped],
+        "entering text on an Android device",
+    )
+    .await?;
 
     Ok(())
 }
@@ -1149,13 +1383,12 @@ pub async fn screenshot_bytes(device_id: &str) -> eyre::Result<Vec<u8>> {
     let adb = AndroidSdk::adb_path()
         .ok_or_else(|| eyre!("Android SDK not found or adb not installed"))?;
 
-    let child = Command::new(&adb)
-        .args(["-s", device_id, "exec-out", "screencap", "-p"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    let output = child.output().await?;
+    let output = run_bounded_adb_output(
+        &adb,
+        ["-s", device_id, "exec-out", "screencap", "-p"],
+        "capturing the Android device screen",
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1178,17 +1411,20 @@ pub async fn describe(device_id: &str) -> eyre::Result<String> {
 
     // Dump UI hierarchy to a temp file on device
     let dump_path = "/sdcard/window_dump.xml";
-    run_command_os(
+    run_bounded_adb_command(
         &adb,
         ["-s", device_id, "shell", "uiautomator", "dump", dump_path],
+        "dumping the Android accessibility hierarchy",
     )
     .await?;
 
     // Read the dump file
-    let output = Command::new(&adb)
-        .args(["-s", device_id, "shell", "cat", dump_path])
-        .output()
-        .await?;
+    let output = run_bounded_adb_output(
+        &adb,
+        ["-s", device_id, "shell", "cat", dump_path],
+        "reading the Android accessibility hierarchy",
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1292,7 +1528,14 @@ fn xml_to_ui_json(xml: &str) -> eyre::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{android_log_looks_like_crash, log_mentions_pid};
+    use std::ffi::OsString;
+
+    use super::{
+        AndroidRuntimeEvent, adb_reports_device_ready, android_log_looks_like_crash,
+        android_runtime_event_from_log_line, command_targets_avd, log_level_allows,
+        log_mentions_pid,
+    };
+    use crate::device::LogLevel;
 
     #[test]
     fn detects_pid_mentions_in_threadtime_lines() {
@@ -1321,5 +1564,62 @@ mod tests {
     fn detects_java_crash_for_app() {
         let log = "E AndroidRuntime: FATAL EXCEPTION: main\nE AndroidRuntime: Process: com.example.app, PID: 28184\n";
         assert!(android_log_looks_like_crash(log, "com.example.app", 28184));
+    }
+
+    #[test]
+    fn detects_activity_completion_marker() {
+        let event = android_runtime_event_from_log_line(
+            "07-26 20:00:00.000 28184 28184 I WaterUI.MainActivity: WATERUI_ACTIVITY_FINISHED",
+        );
+        assert!(matches!(event, Some(AndroidRuntimeEvent::ActivityFinished)));
+    }
+
+    #[test]
+    fn filters_internal_lifecycle_logs_from_stricter_user_log_levels() {
+        assert!(!log_level_allows(LogLevel::Error, tracing::Level::INFO));
+        assert!(!log_level_allows(LogLevel::Warn, tracing::Level::INFO));
+        assert!(log_level_allows(LogLevel::Info, tracing::Level::INFO));
+        assert!(log_level_allows(LogLevel::Debug, tracing::Level::DEBUG));
+        assert!(log_level_allows(LogLevel::Verbose, tracing::Level::TRACE));
+    }
+
+    #[test]
+    fn matches_emulator_process_to_exact_avd_argument() {
+        let command = [
+            OsString::from("qemu-system-aarch64"),
+            OsString::from("-netdelay"),
+            OsString::from("none"),
+            OsString::from("-avd"),
+            OsString::from("Pixel_9"),
+        ];
+
+        assert!(command_targets_avd(&command, "Pixel_9".as_ref()));
+        assert!(!command_targets_avd(&command, "Pixel_9_Pro".as_ref()));
+    }
+
+    #[test]
+    fn does_not_match_unrelated_avd_text() {
+        let command = [
+            OsString::from("emulator-helper"),
+            OsString::from("--log"),
+            OsString::from("starting Pixel_9"),
+        ];
+
+        assert!(!command_targets_avd(&command, "Pixel_9".as_ref()));
+    }
+
+    #[test]
+    fn parses_ready_android_device_state() {
+        let output = "List of devices attached\nemulator-5554 device product:sdk_phone64_arm64 transport_id:1\n";
+
+        assert!(adb_reports_device_ready(output, "emulator-5554"));
+        assert!(!adb_reports_device_ready(output, "emulator-5556"));
+    }
+
+    #[test]
+    fn rejects_offline_android_device_state() {
+        let output = "List of devices attached\nemulator-5554 offline transport_id:1\n";
+
+        assert!(!adb_reports_device_ready(output, "emulator-5554"));
     }
 }

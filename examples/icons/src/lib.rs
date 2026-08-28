@@ -7,6 +7,7 @@
 
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::preview;
 
 use waterui_icons_lucide as lucide;
 use waterui_icons_material_icon as mdi;
@@ -19,11 +20,11 @@ fn sf_symbols_demo() -> impl View {
     vstack((
         text("SF Symbols (Apple)").size(18.0),
         hstack((
-            sf::HOUSE_FILL,
-            sf::PERSON_FILL,
-            sf::GEARSHAPE,
-            sf::HEART_FILL,
-            sf::STAR_FILL,
+            sf::house_fill(),
+            sf::person_fill(),
+            sf::gearshape(),
+            sf::heart_fill(),
+            sf::star_fill(),
         ))
         .spacing(16.0),
     ))
@@ -68,17 +69,17 @@ fn colored_icons_demo() -> impl View {
         text("Colored Icons").size(18.0),
         hstack((
             mdi::heart()
-                .size(32.0, 32.0)
-                .tint(Color::srgb_hex("#EF4444")),
+                .tint(Color::srgb_hex("#EF4444"))
+                .size(32.0, 32.0),
             lucide::star()
-                .size(32.0, 32.0)
-                .tint(Color::srgb_hex("#F59E0B")),
+                .tint(Color::srgb_hex("#F59E0B"))
+                .size(32.0, 32.0),
             mdi::check_circle()
-                .size(32.0, 32.0)
-                .tint(Color::srgb_hex("#10B981")),
+                .tint(Color::srgb_hex("#10B981"))
+                .size(32.0, 32.0),
             mdi::information()
-                .size(32.0, 32.0)
-                .tint(Color::srgb_hex("#3B82F6")),
+                .tint(Color::srgb_hex("#3B82F6"))
+                .size(32.0, 32.0),
         ))
         .spacing(16.0),
     ))
@@ -105,7 +106,8 @@ fn all_demos() -> impl View {
     icon_demos()
 }
 
-fn main() -> impl View {
+#[preview]
+pub fn demo() -> impl View {
     scroll(
         vstack((
             text("WaterUI Icon Packs").size(28.0),
@@ -118,5 +120,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }

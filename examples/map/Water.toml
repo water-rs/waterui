@@ -5,6 +5,13 @@ type = "playground"
 name = "Map Example"
 bundle_identifier = "com.waterui.example.map"
 
+# The GPU map realization fetches its style and vector tiles over HTTPS.
+# Without this, Android denies the app DNS resolution outright and every
+# tile request fails with EAI_NODATA.
+[permissions.internet]
+enable = true
+description = "Required to download map tiles"
+
 [permissions.location]
 enable = true
 description = "Required to show user location on the map"

@@ -19,11 +19,12 @@ use std::str::FromStr;
 
 use crate::{
     android::{
+        ANDROID_MIN_API_LEVEL,
         backend::AndroidBackend,
         toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin, java_proxy_properties_from_env},
     },
     assets::{self, ResolvedFont},
-    build::{BuildOptions, RustBuild},
+    build::{BuildOptions, RustBuild, RustDynamicLibraries, RustLinkage},
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
@@ -31,8 +32,6 @@ use crate::{
     toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::copy_file,
 };
-
-const ANDROID_MIN_API_LEVEL: u32 = 24;
 
 fn gradle_cmd(gradlew: &Path, backend_path: &Path, task: &str) -> smol::process::Command {
     let mut cmd = smol::process::Command::new(gradlew);
@@ -385,6 +384,17 @@ impl AndroidPlatform {
     /// # Errors
     /// Returns an error if the build fails.
     pub async fn build(&self, project: &Project, options: BuildOptions) -> eyre::Result<PathBuf> {
+        // Android cannot share the Rust runtime between the application and a
+        // loadable module. `-Cprefer-dynamic` links `std` from the toolchain's
+        // prebuilt dylib, and rustup ships that one with 4 KB-aligned LOAD
+        // segments; a device with 16 KB pages rejects it, and a debuggable build
+        // is told so in an "Android App Compatibility" dialog. Nothing here can
+        // realign a prebuilt, and giving the two objects a static copy each
+        // would give the process two allocators, two panic runtimes and two sets
+        // of thread-locals. So the runtime is linked in, which is what a
+        // packaged build already does — the `-z max-page-size=16384` below then
+        // covers everything the package ships.
+        let options = options.with_static_runtime();
         // Resolve fonts BEFORE cargo build - this ensures icons.json is downloaded
         // for crates like fontawesome7 that need it during build.rs
         let font_declarations = crate::assets::scan_fonts(project).await?;
@@ -393,7 +403,9 @@ impl AndroidPlatform {
         let abi = self.abi();
         let triple = self.triple();
         let build_context = resolve_android_build_context(abi, &triple).await?;
-        let build = configure_android_rust_build(project, &triple, &build_context, &options)?;
+        let build = configure_android_rust_build(project, &triple, &build_context, &options)
+            .await?
+            .with_target_dir(project.water_target_dir(options.linkage()).await?);
 
         let lib_dir = build.build_lib(options.is_release()).await?;
         copy_android_build_outputs(project, &options, abi, &build_context.ndk_path, &lib_dir)
@@ -621,14 +633,38 @@ async fn resolve_android_sdk_paths() -> eyre::Result<(PathBuf, PathBuf)> {
     Ok((sdk_path, android_jar))
 }
 
-fn configure_android_rust_build(
+/// The `waterui-ffi` features an Android runtime is compiled with.
+///
+/// See [`crate::apple::platform::apple_ffi_dependency_features`] for why anything
+/// loaded into that runtime must be compiled with the same set.
+///
+/// # Errors
+///
+/// Returns an error when the project's enabled capabilities cannot be resolved.
+pub(crate) async fn android_ffi_dependency_features(
+    project: &Project,
+) -> eyre::Result<Vec<String>> {
+    let mut features = vec!["waterui-ffi/android-jni".to_string()];
+    features.extend(crate::project_model::assets::capability_ffi_features(project).await?);
+    // Android has no player or map WaterUI bridges, so it draws both itself.
+    features.extend(crate::project_model::assets::self_drawn_realization_features(project).await?);
+    Ok(features)
+}
+
+async fn configure_android_rust_build(
     project: &Project,
     triple: &Triple,
     context: &AndroidBuildContext,
     options: &BuildOptions,
 ) -> eyre::Result<RustBuild> {
+    // Android loads the JNI shared object and nothing else, so build only that crate
+    // type instead of also archiving the whole dependency graph into a staticlib.
     let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
-        .with_feature("waterui-ffi/android-jni");
+        .with_features(android_ffi_dependency_features(project).await?)
+        .with_crate_type_override("cdylib")
+        // Devices with 16 KB pages (Pixel 9 class and Play's 2025 requirement)
+        // refuse or warn on 4 KB-aligned LOAD segments.
+        .with_rustc_flag("-Clink-arg=-Wl,-z,max-page-size=16384");
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
@@ -728,6 +764,15 @@ async fn copy_android_build_outputs(
     let libcxx_path = ndk_libcxx_path(ndk_path, abi);
     if libcxx_path.exists() {
         copy_file(&libcxx_path, &output_dir.join("libc++_shared.so")).await?;
+    }
+
+    if options.linkage() == RustLinkage::SharedRuntime {
+        let triple = AndroidPlatform::new(abi).triple();
+        let libraries = RustDynamicLibraries::resolve(lib_dir, &triple).await?;
+        libraries.stage(&output_dir).await?;
+    } else {
+        RustDynamicLibraries::remove_staged(&output_dir, &AndroidPlatform::new(abi).triple())
+            .await?;
     }
 
     Ok(())

@@ -4,11 +4,10 @@ use core::ops::Deref;
 use core::str::FromStr;
 use std::collections::BTreeSet;
 
-use icu_locid::{LanguageIdentifier, Locale as IcuLocale};
-use icu_locid_transform::LocaleFallbacker;
-use icu_locid_transform::fallback::LocaleFallbackConfig;
+use icu_locale::fallback::LocaleFallbackConfig;
+use icu_locale::{LanguageIdentifier, Locale as IcuLocale, LocaleFallbacker};
 use icu_provider::DataLocale;
-use nami::impl_constant;
+use nami::{Binding, impl_constant};
 use waterui_core::Environment;
 use waterui_core::extract::Extractor;
 
@@ -84,7 +83,7 @@ impl<'a> From<&'a Locale> for &'a LanguageIdentifier {
 }
 
 impl FromStr for Locale {
-    type Err = icu_locid::ParserError;
+    type Err = icu_locale::ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         IcuLocale::from_str(s).map(Self)
@@ -93,7 +92,7 @@ impl FromStr for Locale {
 
 /// Built-in locale constants using ICU4X.
 pub mod locales {
-    use icu_locid::locale;
+    use icu_locale::locale;
 
     use super::Locale;
 
@@ -205,6 +204,56 @@ pub fn get_fallback_chain(locale: &Locale) -> Vec<Locale> {
     results
 }
 
+/// Resolves the first value produced by a locale's ICU fallback chain.
+///
+/// Unlike [`get_fallback_chain`], this visits candidates lazily and stops at the
+/// first match, so translation lookup does not allocate a complete fallback list.
+#[doc(hidden)]
+pub fn find_in_fallback_chain<T>(
+    locale: &Locale,
+    mut resolve: impl FnMut(&Locale) -> Option<T>,
+) -> Option<T> {
+    if let Some(value) = find_in_locale_chain(locale, &mut resolve) {
+        return Some(value);
+    }
+
+    let runtime_settings = regional::current_settings();
+    if runtime_settings.locale_tag() == locale.canonical_tag() {
+        for preferred in runtime_settings.preferred_languages() {
+            if let Ok(preferred_locale) = Locale::from_str(preferred)
+                && let Some(value) = find_in_locale_chain(&preferred_locale, &mut resolve)
+            {
+                return Some(value);
+            }
+        }
+    }
+
+    None
+}
+
+fn find_in_locale_chain<T>(
+    locale: &Locale,
+    resolve: &mut impl FnMut(&Locale) -> Option<T>,
+) -> Option<T> {
+    let fallbacker = LocaleFallbacker::new();
+    let config = fallbacker.for_config(LocaleFallbackConfig::default());
+    let mut iterator = config.fallback_for(DataLocale::from(locale.0.clone()));
+
+    for _ in 0..10 {
+        let current = iterator.get();
+        if current.is_unknown() {
+            break;
+        }
+        let fallback = Locale((*current).into_locale());
+        if let Some(value) = resolve(&fallback) {
+            return Some(value);
+        }
+        iterator.step();
+    }
+
+    None
+}
+
 fn append_fallback_chain(locale: &Locale, seen: &mut BTreeSet<String>, out: &mut Vec<Locale>) {
     let fallbacker = LocaleFallbacker::new();
     let config = fallbacker.for_config(LocaleFallbackConfig::default());
@@ -213,10 +262,10 @@ fn append_fallback_chain(locale: &Locale, seen: &mut BTreeSet<String>, out: &mut
     // Collect up to 10 fallback locales.
     for _ in 0..10 {
         let current = iterator.get();
-        if current.is_und() {
+        if current.is_unknown() {
             break;
         }
-        let fallback = Locale(current.clone().into_locale());
+        let fallback = Locale((*current).into_locale());
         if seen.insert(fallback.canonical_tag()) {
             out.push(fallback);
         }
@@ -225,7 +274,11 @@ fn append_fallback_chain(locale: &Locale, seen: &mut BTreeSet<String>, out: &mut
 }
 
 impl Extractor for Locale {
-    fn extract(env: &Environment) -> Result<Self, anyhow::Error> {
+    fn extract(env: &Environment) -> Result<Self, waterui_core::Error> {
+        if let Some(locale) = env.get::<Binding<Self>>() {
+            return Ok(locale.get());
+        }
+
         if let Some(locale) = env.get::<Self>().cloned() {
             return Ok(locale);
         }

@@ -16,44 +16,51 @@ categories = ["gui"]
 [target.'cfg(target_os = "linux")'.dependencies]
 waterui.workspace = true
 waterui-core.workspace = true
-waterui-backend-core.workspace = true
+waterui-backend-core = { workspace = true, features = ["widgets", "gestures"] }
 waterui-layout.workspace = true
+waterui-locale.workspace = true
 waterui-navigation.workspace = true
 waterui-text.workspace = true
 waterui-icon.workspace = true
 waterui-controls.workspace = true
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-shape.workspace = true
 waterui-form.workspace = true
-waterui-media.workspace = true
-waterui-webview.workspace = true
+waterui-webview = { workspace = true, optional = true }
 nami.workspace = true
+# Insertion order is the eviction order for the split destination cache.
+indexmap = "2"
+num-traits = { version = "0.2", default-features = false }
 tracing.workspace = true
+pin-project-lite.workspace = true
 executor-core.workspace = true
 native-executor.workspace = true
 
-gtk4 = { workspace = true, features = ["v4_6"] }
-gdk4 = { workspace = true, features = ["v4_6"] }
+gtk4 = { workspace = true, features = ["v4_12"] }
+waterui-assets.workspace = true
+gdk4 = { workspace = true, features = ["v4_12"] }
 glib.workspace = true
-cairo-rs.workspace = true
-gdk-pixbuf = "0.20"
-base64 = "0.22"
-serde_json = "1.0"
+kurbo.workspace = true
+# Chromium's own physical-key table, used to name a GDK hardware keycode in the
+# W3C vocabulary the surface input events carry.
+keycode = "1.0"
 
 # GPU surface dependencies (wgpu is required for graphics views & filters).
 wgpu.workspace = true
-glow = "0.16"
+glow.workspace = true
 libloading = "0.9"
-pollster.workspace = true
 
 [build-dependencies]
 pkg-config = "0.3"
 
 [features]
 default = []
+# The platform's own web engine, bridged as a native widget. Every other engine
+# is a crate the application links and installs; this backend never names one.
+webview-system = ["dep:waterui-webview", "webkitgtk"]
 webkitgtk = []
 
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
-ignored = ["cairo-rs", "gdk-pixbuf", "pkg-config", "waterui-media"]
+ignored = ["pkg-config"]

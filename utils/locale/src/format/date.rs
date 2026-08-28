@@ -1,20 +1,23 @@
 //! Locale-aware date and time formatting.
 
-use icu_calendar::{Date as IcuDate, DateTime as IcuDateTime};
+use icu_calendar::{Date as IcuDate, Gregorian, Iso};
 use icu_datetime::{
-    DateFormatter, DateTimeFormatter, TimeFormatter, ZonedDateTimeFormatter,
-    options::{
-        components,
-        length::{self, Date as IcuDateStyle, Time as IcuTimeStyle},
+    DateTimeFormatter, DateTimeFormatterLoadError, NoCalendarFormatter,
+    fieldsets::{
+        E, T, YM, YMD, YMDE,
+        enums::{
+            CalendarPeriodFieldSet, DateAndTimeFieldSet, DateFieldSet, TimeFieldSet,
+            ZonedDateAndTimeFieldSet,
+        },
+        zone,
     },
-    time_zone::TimeZoneFormatterOptions,
 };
-use icu_provider::DataLocale;
-use icu_timezone::{CustomTimeZone, GmtOffset, MetazoneCalculator, TimeZoneIdMapper, ZoneVariant};
+use icu_time::{
+    DateTime as IcuDateTime, Time as IcuTime, TimeZoneInfo, ZonedDateTime, zone::models::AtTime,
+};
 use jiff::{
     ToSpan,
     civil::{Date as CivilDate, DateTime as JiffDateTime, Weekday},
-    tz::Dst,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -95,57 +98,26 @@ impl SimpleTime {
     }
 }
 
-const fn map_date_style(style: DateStyle) -> IcuDateStyle {
-    match style {
-        DateStyle::Short => IcuDateStyle::Short,
-        DateStyle::Medium => IcuDateStyle::Medium,
-        DateStyle::Long => IcuDateStyle::Long,
-        DateStyle::Full => IcuDateStyle::Full,
-    }
+fn to_iso_date(date: SimpleDate) -> Option<IcuDate<Iso>> {
+    IcuDate::try_new_iso(date.year, date.month, date.day).ok()
 }
 
-const fn map_time_style(style: TimeStyle) -> IcuTimeStyle {
-    match style {
-        TimeStyle::Short => IcuTimeStyle::Short,
-        TimeStyle::Medium => IcuTimeStyle::Medium,
-        TimeStyle::Long => IcuTimeStyle::Long,
-        TimeStyle::Full => IcuTimeStyle::Full,
-    }
+fn to_iso_datetime(date: SimpleDate, time: SimpleTime) -> Option<IcuDateTime<Iso>> {
+    Some(IcuDateTime {
+        date: to_iso_date(date)?,
+        time: to_icu_time(time)?,
+    })
 }
 
-fn to_data_locale(locale: &Locale) -> DataLocale {
-    locale.0.clone().into()
+fn to_icu_time(time: SimpleTime) -> Option<IcuTime> {
+    IcuTime::try_new(time.hour, time.minute, time.second, 0).ok()
 }
 
-fn to_iso_date(date: SimpleDate) -> Option<IcuDate<icu_calendar::Iso>> {
-    IcuDate::try_new_iso_date(date.year, date.month, date.day).ok()
-}
-
-fn to_iso_datetime(date: SimpleDate, time: SimpleTime) -> Option<IcuDateTime<icu_calendar::Iso>> {
-    IcuDateTime::try_new_iso_datetime(
-        date.year,
-        date.month,
-        date.day,
-        time.hour,
-        time.minute,
-        time.second,
-    )
-    .ok()
-}
-
-fn to_iso_time_only(time: SimpleTime) -> Option<IcuDateTime<icu_calendar::Iso>> {
-    // Synthetic stable date for time-only formatting.
-    IcuDateTime::try_new_iso_datetime(2000, 1, 1, time.hour, time.minute, time.second).ok()
-}
-
-fn to_iso_civil_datetime(date: CivilDate) -> Option<IcuDateTime<icu_calendar::Iso>> {
-    IcuDateTime::try_new_iso_datetime(
+fn to_iso_civil_date(date: CivilDate) -> Option<IcuDate<Iso>> {
+    IcuDate::try_new_iso(
         i32::from(date.year()),
         date.month().try_into().ok()?,
         date.day().try_into().ok()?,
-        0,
-        0,
-        0,
     )
     .ok()
 }
@@ -164,27 +136,127 @@ fn build_regional_time_zone(
     context: &RegionalContext,
     date: SimpleDate,
     time: SimpleTime,
-) -> Option<CustomTimeZone> {
+) -> Option<ZonedDateTime<Gregorian, TimeZoneInfo<AtTime>>> {
     let local_datetime = to_jiff_datetime(date, time)?;
     let zoned = local_datetime.in_tz(context.timezone()).ok()?;
-    let offset = GmtOffset::try_from_offset_seconds(zoned.offset().seconds()).ok()?;
+    Some((&zoned).into())
+}
 
-    let mut zone = CustomTimeZone::new_with_offset(offset);
-    zone.zone_variant = Some(
-        match zoned.time_zone().to_offset_info(zoned.timestamp()).dst() {
-            Dst::Yes => ZoneVariant::daylight(),
-            Dst::No => ZoneVariant::standard(),
-        },
-    );
+macro_rules! formatter_with_fallback {
+    ($locale:expr, $field_set:expr, $target:ty) => {{
+        let field_set = $field_set;
+        DateTimeFormatter::try_new($locale.0.clone().into(), field_set)
+            .or_else(|_| DateTimeFormatter::try_new(locales::EN.0.clone().into(), field_set))
+            .map(|formatter| formatter.cast_into_fset::<$target>())
+    }};
+}
 
-    let mapper = TimeZoneIdMapper::new();
-    if let Some(time_zone_id) = mapper.as_borrowed().iana_to_bcp47(context.timezone()) {
-        zone.time_zone_id = Some(time_zone_id);
-        let local_iso = to_iso_datetime(date, time)?;
-        zone.maybe_calculate_metazone(&MetazoneCalculator::new(), &local_iso);
+macro_rules! time_formatter_with_fallback {
+    ($locale:expr, $field_set:expr) => {{
+        let field_set = $field_set;
+        NoCalendarFormatter::try_new($locale.0.clone().into(), field_set)
+            .or_else(|_| NoCalendarFormatter::try_new(locales::EN.0.clone().into(), field_set))
+            .map(|formatter| formatter.cast_into_fset::<TimeFieldSet>())
+    }};
+}
+
+fn date_formatter(
+    locale: &Locale,
+    style: DateStyle,
+) -> Result<DateTimeFormatter<DateFieldSet>, DateTimeFormatterLoadError> {
+    match style {
+        DateStyle::Short => formatter_with_fallback!(locale, YMD::short(), DateFieldSet),
+        DateStyle::Medium => formatter_with_fallback!(locale, YMD::medium(), DateFieldSet),
+        DateStyle::Long => formatter_with_fallback!(locale, YMD::long(), DateFieldSet),
+        DateStyle::Full => formatter_with_fallback!(locale, YMDE::long(), DateFieldSet),
+    }
+}
+
+fn calendar_month_formatter(
+    locale: &Locale,
+) -> Result<DateTimeFormatter<CalendarPeriodFieldSet>, DateTimeFormatterLoadError> {
+    formatter_with_fallback!(locale, YM::long(), CalendarPeriodFieldSet)
+}
+
+fn calendar_weekday_formatter(
+    locale: &Locale,
+) -> Result<DateTimeFormatter<DateFieldSet>, DateTimeFormatterLoadError> {
+    formatter_with_fallback!(locale, E::short(), DateFieldSet)
+}
+
+fn time_formatter(
+    locale: &Locale,
+    style: TimeStyle,
+) -> Result<NoCalendarFormatter<TimeFieldSet>, DateTimeFormatterLoadError> {
+    match style {
+        TimeStyle::Short => time_formatter_with_fallback!(locale, T::hm()),
+        TimeStyle::Medium | TimeStyle::Long | TimeStyle::Full => {
+            time_formatter_with_fallback!(locale, T::hms())
+        }
+    }
+}
+
+fn datetime_formatter(
+    locale: &Locale,
+    date_style: DateStyle,
+    time_style: TimeStyle,
+) -> Result<DateTimeFormatter<DateAndTimeFieldSet>, DateTimeFormatterLoadError> {
+    macro_rules! with_time_style {
+        ($field_set:expr) => {
+            match time_style {
+                TimeStyle::Short => {
+                    formatter_with_fallback!(locale, $field_set.with_time_hm(), DateAndTimeFieldSet)
+                }
+                TimeStyle::Medium | TimeStyle::Long | TimeStyle::Full => formatter_with_fallback!(
+                    locale,
+                    $field_set.with_time_hms(),
+                    DateAndTimeFieldSet
+                ),
+            }
+        };
     }
 
-    Some(zone)
+    match date_style {
+        DateStyle::Short => with_time_style!(YMD::short()),
+        DateStyle::Medium => with_time_style!(YMD::medium()),
+        DateStyle::Long => with_time_style!(YMD::long()),
+        DateStyle::Full => with_time_style!(YMDE::long()),
+    }
+}
+
+fn zoned_datetime_formatter(
+    locale: &Locale,
+    date_style: DateStyle,
+    time_style: TimeStyle,
+) -> Result<DateTimeFormatter<ZonedDateAndTimeFieldSet>, DateTimeFormatterLoadError> {
+    macro_rules! with_time_and_zone_style {
+        ($field_set:expr) => {
+            match time_style {
+                TimeStyle::Short => formatter_with_fallback!(
+                    locale,
+                    $field_set.with_time_hm().with_zone(zone::SpecificShort),
+                    ZonedDateAndTimeFieldSet
+                ),
+                TimeStyle::Medium | TimeStyle::Long => formatter_with_fallback!(
+                    locale,
+                    $field_set.with_time_hms().with_zone(zone::SpecificShort),
+                    ZonedDateAndTimeFieldSet
+                ),
+                TimeStyle::Full => formatter_with_fallback!(
+                    locale,
+                    $field_set.with_time_hms().with_zone(zone::SpecificLong),
+                    ZonedDateAndTimeFieldSet
+                ),
+            }
+        };
+    }
+
+    match date_style {
+        DateStyle::Short => with_time_and_zone_style!(YMD::short()),
+        DateStyle::Medium => with_time_and_zone_style!(YMD::medium()),
+        DateStyle::Long => with_time_and_zone_style!(YMD::long()),
+        DateStyle::Full => with_time_and_zone_style!(YMDE::long()),
+    }
 }
 
 fn fallback_date_string(date: SimpleDate) -> String {
@@ -213,21 +285,10 @@ fn report_fallback_once(flag: &AtomicBool, kind: &str, locale: &Locale, reason: 
     }
 }
 
-fn calendar_component_formatter(
-    locale: &Locale,
-    fallback_locale: &Locale,
-    options: components::Bag,
-) -> Result<DateTimeFormatter, icu_datetime::DateTimeError> {
-    let data_locale = to_data_locale(locale);
-    let fallback_data_locale = to_data_locale(fallback_locale);
-    DateTimeFormatter::try_new_experimental(&data_locale, options.into())
-        .or_else(|_| DateTimeFormatter::try_new_experimental(&fallback_data_locale, options.into()))
-}
-
 /// Format a calendar month header using locale conventions.
 #[must_use]
 pub fn format_calendar_month_year(locale: &Locale, date: &CivilDate) -> String {
-    let Some(date_iso) = to_iso_civil_datetime(*date) else {
+    let Some(date_iso) = to_iso_civil_date(*date) else {
         report_fallback_once(
             &DATE_FALLBACK_LOGGED,
             "calendar-month-year",
@@ -237,23 +298,8 @@ pub fn format_calendar_month_year(locale: &Locale, date: &CivilDate) -> String {
         return format!("{}-{:02}", date.year(), date.month());
     };
 
-    let mut bag = components::Bag::default();
-    bag.year = Some(components::Year::Numeric);
-    bag.month = Some(components::Month::Long);
-
-    match calendar_component_formatter(locale, &locales::EN, bag) {
-        Ok(formatter) => formatter.format(&date_iso.to_any()).map_or_else(
-            |err| {
-                report_fallback_once(
-                    &DATE_FALLBACK_LOGGED,
-                    "calendar-month-year",
-                    locale,
-                    &format!("ICU month/year format failed: {err}"),
-                );
-                format!("{}-{:02}", date.year(), date.month())
-            },
-            |formatted| formatted.to_string(),
-        ),
+    match calendar_month_formatter(locale) {
+        Ok(formatter) => formatter.format(&date_iso).to_string(),
         Err(err) => {
             report_fallback_once(
                 &DATE_FALLBACK_LOGGED,
@@ -275,7 +321,7 @@ pub fn format_calendar_month_year(locale: &Locale, date: &CivilDate) -> String {
 pub fn format_calendar_weekday(locale: &Locale, weekday: Weekday) -> String {
     let probe_date = CivilDate::new(2024, 1, 1).expect("calendar weekday probe date must be valid")
         + i32::from(weekday.to_monday_zero_offset()).days();
-    let Some(date_iso) = to_iso_civil_datetime(probe_date) else {
+    let Some(date_iso) = to_iso_civil_date(probe_date) else {
         report_fallback_once(
             &DATE_FALLBACK_LOGGED,
             "calendar-weekday",
@@ -285,22 +331,8 @@ pub fn format_calendar_weekday(locale: &Locale, weekday: Weekday) -> String {
         return weekday.to_monday_one_offset().to_string();
     };
 
-    let mut bag = components::Bag::default();
-    bag.weekday = Some(components::Text::Short);
-
-    match calendar_component_formatter(locale, &locales::EN, bag) {
-        Ok(formatter) => formatter.format(&date_iso.to_any()).map_or_else(
-            |err| {
-                report_fallback_once(
-                    &DATE_FALLBACK_LOGGED,
-                    "calendar-weekday",
-                    locale,
-                    &format!("ICU weekday format failed: {err}"),
-                );
-                weekday.to_monday_one_offset().to_string()
-            },
-            |formatted| formatted.to_string(),
-        ),
+    match calendar_weekday_formatter(locale) {
+        Ok(formatter) => formatter.format(&date_iso).to_string(),
         Err(err) => {
             report_fallback_once(
                 &DATE_FALLBACK_LOGGED,
@@ -326,25 +358,8 @@ pub fn format_date(locale: &Locale, date: &SimpleDate, style: DateStyle) -> Stri
         return fallback_date_string(*date);
     };
 
-    let length = map_date_style(style);
-    let data_locale = to_data_locale(locale);
-
-    let formatter = DateFormatter::try_new_with_length(&data_locale, length)
-        .or_else(|_| DateFormatter::try_new_with_length(&to_data_locale(&locales::EN), length));
-
-    match formatter {
-        Ok(formatter) => formatter.format(&date_iso.to_any()).map_or_else(
-            |err| {
-                report_fallback_once(
-                    &DATE_FALLBACK_LOGGED,
-                    "date",
-                    locale,
-                    &format!("ICU format failed: {err}"),
-                );
-                fallback_date_string(*date)
-            },
-            |formatted| formatted.to_string(),
-        ),
+    match date_formatter(locale, style) {
+        Ok(formatter) => formatter.format(&date_iso).to_string(),
         Err(err) => {
             report_fallback_once(
                 &DATE_FALLBACK_LOGGED,
@@ -360,7 +375,7 @@ pub fn format_date(locale: &Locale, date: &SimpleDate, style: DateStyle) -> Stri
 /// Format a time according to locale conventions.
 #[must_use]
 pub fn format_time(locale: &Locale, time: &SimpleTime, style: TimeStyle) -> String {
-    let Some(time_iso) = to_iso_time_only(*time) else {
+    let Some(time_iso) = to_icu_time(*time) else {
         report_fallback_once(
             &TIME_FALLBACK_LOGGED,
             "time",
@@ -371,13 +386,7 @@ pub fn format_time(locale: &Locale, time: &SimpleTime, style: TimeStyle) -> Stri
         return fallback_time_string(*time, with_seconds);
     };
 
-    let length = map_time_style(style);
-    let data_locale = to_data_locale(locale);
-
-    let formatter = TimeFormatter::try_new_with_length(&data_locale, length)
-        .or_else(|_| TimeFormatter::try_new_with_length(&to_data_locale(&locales::EN), length));
-
-    match formatter {
+    match time_formatter(locale, style) {
         Ok(formatter) => formatter.format(&time_iso).to_string(),
         Err(err) => {
             report_fallback_once(
@@ -413,28 +422,8 @@ pub fn format_datetime(
         return format!("{date_fallback} {time_fallback}");
     };
 
-    let options =
-        length::Bag::from_date_time_style(map_date_style(date_style), map_time_style(time_style));
-    let data_locale = to_data_locale(locale);
-
-    let formatter = DateTimeFormatter::try_new(&data_locale, options.into())
-        .or_else(|_| DateTimeFormatter::try_new(&to_data_locale(&locales::EN), options.into()));
-
-    match formatter {
-        Ok(formatter) => formatter.format(&datetime_iso.to_any()).map_or_else(
-            |_| {
-                report_fallback_once(
-                    &DATETIME_FALLBACK_LOGGED,
-                    "datetime",
-                    locale,
-                    "ICU format failed",
-                );
-                let date_fallback = format_date(locale, date, date_style);
-                let time_fallback = format_time(locale, time, time_style);
-                format!("{date_fallback} {time_fallback}")
-            },
-            |formatted| formatted.to_string(),
-        ),
+    match datetime_formatter(locale, date_style, time_style) {
+        Ok(formatter) => formatter.format(&datetime_iso).to_string(),
         Err(err) => {
             report_fallback_once(
                 &DATETIME_FALLBACK_LOGGED,
@@ -463,19 +452,7 @@ pub fn format_datetime_with_regional_context(
 ) -> String {
     let locale = context.locale();
 
-    let Some(datetime_iso) = to_iso_datetime(*date, *time) else {
-        report_fallback_once(
-            &DATETIME_FALLBACK_LOGGED,
-            "datetime",
-            locale,
-            "invalid date/time components",
-        );
-        let date_fallback = fallback_date_string(*date);
-        let time_fallback = fallback_time_string(*time, !matches!(time_style, TimeStyle::Short));
-        return format!("{date_fallback} {time_fallback}");
-    };
-
-    let Some(time_zone) = build_regional_time_zone(context, *date, *time) else {
+    let Some(zoned_datetime) = build_regional_time_zone(context, *date, *time) else {
         report_fallback_once(
             &DATETIME_FALLBACK_LOGGED,
             "datetime",
@@ -485,35 +462,8 @@ pub fn format_datetime_with_regional_context(
         return format_datetime(locale, date, time, date_style, time_style);
     };
 
-    let options =
-        length::Bag::from_date_time_style(map_date_style(date_style), map_time_style(time_style));
-    let data_locale = to_data_locale(locale);
-
-    let formatter = ZonedDateTimeFormatter::try_new(
-        &data_locale,
-        options.into(),
-        TimeZoneFormatterOptions::default(),
-    )
-    .or_else(|_| {
-        ZonedDateTimeFormatter::try_new(
-            &to_data_locale(&locales::EN),
-            options.into(),
-            TimeZoneFormatterOptions::default(),
-        )
-    });
-
-    match formatter {
-        Ok(formatter) => formatter
-            .format_to_string(&datetime_iso.to_any(), &time_zone)
-            .unwrap_or_else(|err| {
-                report_fallback_once(
-                    &DATETIME_FALLBACK_LOGGED,
-                    "datetime",
-                    locale,
-                    &format!("ICU zoned format failed: {err}"),
-                );
-                format_datetime(locale, date, time, date_style, time_style)
-            }),
+    match zoned_datetime_formatter(locale, date_style, time_style) {
+        Ok(formatter) => formatter.format(&zoned_datetime).to_string(),
         Err(err) => {
             report_fallback_once(
                 &DATETIME_FALLBACK_LOGGED,

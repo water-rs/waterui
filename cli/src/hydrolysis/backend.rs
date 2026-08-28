@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +12,7 @@ use crate::{
     hydrolysis::platform::{
         build_hydrolysis, clean_hydrolysis, is_hydrolysis_platform, package_hydrolysis,
     },
-    platform::{PackageOptions, TargetPlatform},
+    platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::Project,
     templates::{self, TemplateContext},
 };
@@ -57,45 +56,46 @@ impl HydrolysisBackend {
     /// # Errors
     ///
     /// Returns an error when backend `Cargo.toml` exists but cannot be parsed.
-    pub fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
-        let cargo_toml_path = project.backend_path::<Self>().join("Cargo.toml");
-        let lib_rs_path = project.backend_path::<Self>().join("src/lib.rs");
-        let main_rs_path = project.backend_path::<Self>().join("src/main.rs");
-        let preview_runtime_path = project
-            .backend_path::<Self>()
-            .join("src/preview_runtime.rs");
-        let preview_symbol_path = project.backend_path::<Self>().join("src/preview_symbol.rs");
-        let web_index_path = project.backend_path::<Self>().join("web/index.html");
-        if !cargo_toml_path.exists() {
-            return Ok(true);
+    pub async fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
+        let backend_dir = project.backend_path::<Self>();
+        let ctx = Self::template_context(project).await?;
+        let outputs = templates::hydrolysis::rendered_outputs(
+            &ctx,
+            &project.hydrolysis_backend_crate_name(),
+        )?;
+        for (relative, expected) in outputs {
+            let path = backend_dir.join(&relative);
+            // Preview binding files are rewritten with target-specific
+            // content on every preview invocation; only their presence is
+            // managed here.
+            let per_run_binding = relative == Path::new("src/preview_symbol.rs")
+                || relative == Path::new("src/preview_test.rs");
+            match std::fs::read(&path) {
+                Ok(existing) if per_run_binding || existing == expected => {}
+                Ok(_) | Err(_) => return Ok(true),
+            }
         }
+        Ok(false)
+    }
 
-        let manifest =
-            CargoManifest::<cargo_toml::Value>::from_path(&cargo_toml_path).map_err(|error| {
-                eyre::eyre!("failed to parse {}: {error}", cargo_toml_path.display())
-            })?;
-        let main_supports_preview = std::fs::read_to_string(&main_rs_path)
-            .map(|content| {
-                content.contains("feature = \"waterui-preview-mode\"")
-                    && content.contains("mod preview_symbol;")
-            })
-            .unwrap_or(false);
-        let preview_runtime_supports_symbol = std::fs::read_to_string(&preview_runtime_path)
-            .map(|content| {
-                content.contains("use crate::preview_symbol;")
-                    && content.contains("flatten_alpha_over_white")
-            })
-            .unwrap_or(false);
-
-        Ok(!manifest.dependencies.contains_key("waterui")
-            || manifest.lib.is_none()
-            || !lib_rs_path.exists()
-            || !main_rs_path.exists()
-            || !preview_runtime_path.exists()
-            || !preview_symbol_path.exists()
-            || !web_index_path.exists()
-            || !main_supports_preview
-            || !preview_runtime_supports_symbol)
+    /// The template context the CLI manages this backend with; regeneration
+    /// compares the backend on disk against exactly this rendering.
+    async fn template_context(project: &Project) -> eyre::Result<TemplateContext> {
+        let manifest = project.manifest();
+        let app_name = manifest
+            .package
+            .name
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>();
+        Ok(
+            TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
+                .with_backend_project_path(project.backend_path::<Self>())
+                .with_project_root_path(project.root().to_path_buf())
+                .with_webview_enabled(project.links_runtime_package("waterui-webview").await?)
+                .with_chromium_enabled(project.links_runtime_package("waterui-chromium").await?)
+                .with_browser_engine(project.linked_browser_engine().await?),
+        )
     }
 }
 
@@ -108,27 +108,20 @@ impl Default for HydrolysisBackend {
 impl Backend for HydrolysisBackend {
     const DEFAULT_PATH: &'static str = "hydrolysis";
 
-    // Hydrolysis uses Cargo build cache in `target/`.
-    const CACHE_PATHS: &'static [&'static str] = &[];
+    // The build cache lives in the repository `target/`; the lockfile is
+    // dependency state, not generated content, and survives regeneration so
+    // resolved versions stay stable across template updates.
+    const CACHE_PATHS: &'static [&'static str] = &["Cargo.lock"];
 
     fn path(&self) -> &Path {
         &self.project_path
     }
 
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
-        let manifest = project.manifest();
         let project_path = default_hydrolysis_project_path();
-
-        let app_name = manifest
-            .package
-            .name
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .collect::<String>();
-        let ctx =
-            TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
-                .with_backend_project_path(project.backend_path::<Self>())
-                .with_project_root_path(project.root().to_path_buf());
+        let ctx = Self::template_context(project)
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
 
         templates::hydrolysis::scaffold(
             &project.backend_path::<Self>(),
@@ -151,6 +144,9 @@ impl Backend for HydrolysisBackend {
         platform: TargetPlatform,
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
+        project
+            .browser_runtime_plan(platform, TargetBackend::Hydrolysis)
+            .await?;
         build_hydrolysis(project, platform, options).await
     }
 

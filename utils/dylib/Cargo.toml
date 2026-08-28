@@ -1,0 +1,58 @@
+[package]
+name = "waterui-dylib"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Dynamic-link anchor crate for WaterUI"
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+# The rlib is load-bearing, not redundant: Apple's host crate is built as a
+# `staticlib`, and rustc requires every Rust dependency of a staticlib to be
+# available in rlib form ("crate `waterui_dylib` required to be available in rlib
+# format"). Dropping it breaks `water preview` and `water run` on Apple targets.
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+waterui-internal.workspace = true
+
+[features]
+default = [
+    "gpu",
+    "assets",
+    "media",
+    "webview",
+    "inspector",
+    "snackbar",
+    "highlight",
+    "locale-datetime",
+    "locale-list",
+]
+gpu = ["waterui-internal/gpu"]
+highlight = ["waterui-internal/highlight"]
+locale-datetime = ["waterui-internal/locale-datetime"]
+locale-list = ["waterui-internal/locale-list"]
+inspector = ["waterui-internal/inspector"]
+assets = ["waterui-internal/assets"]
+media = ["waterui-internal/media", "video"]
+video = ["waterui-internal/video"]
+video-gpu = ["waterui-internal/video-gpu"]
+webview = ["waterui-internal/webview"]
+navigation-restoration = ["waterui-internal/navigation-restoration"]
+snackbar = ["waterui-internal/snackbar"]
+flow-markdown = ["waterui-internal/flow-markdown"]
+std = ["waterui-internal/std"]
+all = [
+    "waterui-internal/all",
+    "navigation-restoration",
+    "highlight",
+    "locale-datetime",
+    "locale-list",
+]
+
+[lints]
+workspace = true

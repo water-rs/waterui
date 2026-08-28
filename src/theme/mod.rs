@@ -18,7 +18,8 @@
 //!
 //! ### Quick Start
 //!
-//! ```ignore
+//! ```rust
+//! use waterui::color::Srgb;
 //! use waterui::{Environment, theme::{Theme, ColorScheme, ColorSettings}};
 //! use waterui_core::plugin::Plugin;
 //! use nami::binding;
@@ -31,14 +32,14 @@
 //!     .install(&mut env);
 //!
 //! // Or use a reactive binding that follows system preference
-//! let system_scheme = binding(ColorScheme::Light);
+//! let system_scheme = binding::<ColorScheme>(ColorScheme::Light);
 //! Theme::new()
 //!     .color_scheme(system_scheme.clone())
 //!     .install(&mut env);
 //!
 //! // Customize specific colors
 //! Theme::new()
-//!     .colors(ColorSettings::new().accent(my_accent_color))
+//!     .colors(ColorSettings::new().accent(Srgb::from_hex("#0066CC")))
 //!     .install(&mut env);
 //! ```
 //!
@@ -47,12 +48,13 @@
 //! Theme tokens are unit structs that implement `Resolvable`. Use them directly
 //! with view modifiers:
 //!
-//! ```ignore
-//! use waterui::theme::color::{Foreground, Accent, Background};
+//! ```rust
+//! use waterui::prelude::*;
+//! use waterui::theme::color::{Background, Foreground};
 //!
-//! text("Hello, World!")
+//! let themed = text!("Hello, World!")
 //!     .foreground(Foreground)  // Uses theme's foreground color
-//!     .background(Background)  // Uses theme's background color
+//!     .background(Background); // Uses theme's background color
 //! ```
 //!
 //! ### Available Tokens
@@ -69,7 +71,12 @@
 //! - `Foreground` - Primary text and icons
 //! - `MutedForeground` - Secondary/dimmed text
 //! - `Accent` - Interactive elements, links
+//! - `AccentContainer` - Container backgrounds associated with the accent color
 //! - `AccentForeground` - Text on accent backgrounds
+//! - `Tertiary` - Contrasting accent for complementary emphasis
+//! - `TertiaryContainer` - Container backgrounds associated with the tertiary color
+//! - `SelectionContainer` - Fill painted behind a selected item
+//! - `SelectionForeground` - Content drawn on the selection container
 //!
 //! **Fonts**: Use standard font tokens from `waterui::text::font`:
 //! - `Body`, `Title`, `Headline`, `Subheadline`, `Caption`, `Footnote`
@@ -92,7 +99,7 @@
 //! 2. Create `Computed<ResolvedColor>` signals that react to color scheme changes
 //! 3. Install via `Theme::new().color_scheme(binding).colors(ColorSettings::new()...)`
 
-use core::marker::PhantomData;
+use core::{any::TypeId, marker::PhantomData};
 
 use nami::{Computed, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::{Environment, env::Store, plugin::Plugin};
@@ -113,7 +120,7 @@ use crate::{
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// use waterui::theme::{Theme, ColorScheme};
 /// use nami::binding;
 ///
@@ -146,13 +153,13 @@ impl_constant!(ColorScheme);
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// use waterui::color::Srgb;
 /// use waterui::theme::ColorSettings;
-/// use waterui::color::Color;
 ///
 /// let colors = ColorSettings::new()
-///     .accent(my_accent_color)
-///     .foreground(my_text_color);
+///     .accent(Srgb::from_hex("#0066CC"))
+///     .foreground(Srgb::from_hex("#111111"));
 /// ```
 #[derive(Default, Debug)]
 pub struct ColorSettings {
@@ -163,7 +170,12 @@ pub struct ColorSettings {
     foreground: Option<Computed<ResolvedColor>>,
     muted_foreground: Option<Computed<ResolvedColor>>,
     accent: Option<Computed<ResolvedColor>>,
+    accent_container: Option<Computed<ResolvedColor>>,
     accent_foreground: Option<Computed<ResolvedColor>>,
+    tertiary: Option<Computed<ResolvedColor>>,
+    tertiary_container: Option<Computed<ResolvedColor>>,
+    selection_container: Option<Computed<ResolvedColor>>,
+    selection_foreground: Option<Computed<ResolvedColor>>,
 }
 
 impl ColorSettings {
@@ -222,10 +234,45 @@ impl ColorSettings {
         self
     }
 
+    /// Sets the accent container color.
+    #[must_use]
+    pub fn accent_container(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+        self.accent_container = Some(color.into_signal().computed());
+        self
+    }
+
     /// Sets the accent foreground color (text on accent).
     #[must_use]
     pub fn accent_foreground(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
         self.accent_foreground = Some(color.into_signal().computed());
+        self
+    }
+
+    /// Sets the tertiary accent color.
+    #[must_use]
+    pub fn tertiary(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+        self.tertiary = Some(color.into_signal().computed());
+        self
+    }
+
+    /// Sets the tertiary container color.
+    #[must_use]
+    pub fn tertiary_container(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+        self.tertiary_container = Some(color.into_signal().computed());
+        self
+    }
+
+    /// Sets the fill painted behind a selected item.
+    #[must_use]
+    pub fn selection_container(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+        self.selection_container = Some(color.into_signal().computed());
+        self
+    }
+
+    /// Sets the foreground drawn on the selection container.
+    #[must_use]
+    pub fn selection_foreground(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+        self.selection_foreground = Some(color.into_signal().computed());
         self
     }
 
@@ -253,8 +300,23 @@ impl ColorSettings {
         if let Some(signal) = self.accent {
             install_color_signal::<color::Accent>(env, signal);
         }
+        if let Some(signal) = self.accent_container {
+            install_color_signal::<color::AccentContainer>(env, signal);
+        }
         if let Some(signal) = self.accent_foreground {
             install_color_signal::<color::AccentForeground>(env, signal);
+        }
+        if let Some(signal) = self.tertiary {
+            install_color_signal::<color::Tertiary>(env, signal);
+        }
+        if let Some(signal) = self.tertiary_container {
+            install_color_signal::<color::TertiaryContainer>(env, signal);
+        }
+        if let Some(signal) = self.selection_container {
+            install_color_signal::<color::SelectionContainer>(env, signal);
+        }
+        if let Some(signal) = self.selection_foreground {
+            install_color_signal::<color::SelectionForeground>(env, signal);
         }
     }
 }
@@ -270,13 +332,13 @@ impl ColorSettings {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
+/// use waterui::text::font::{FontWeight, ResolvedFont};
 /// use waterui::theme::FontSettings;
-/// use waterui::text::font::ResolvedFont;
 ///
 /// let fonts = FontSettings::new()
-///     .body(my_body_font)
-///     .title(my_title_font);
+///     .body(ResolvedFont::new(16.0, FontWeight::Normal))
+///     .title(ResolvedFont::new(28.0, FontWeight::Bold));
 /// ```
 #[derive(Default, Debug)]
 pub struct FontSettings {
@@ -372,16 +434,22 @@ impl FontSettings {
 ///
 /// # Example
 ///
-/// ```ignore
-/// use waterui::theme::{Theme, ColorScheme, ColorSettings, FontSettings};
+/// ```rust
 /// use nami::binding;
+/// use waterui::Environment;
+/// use waterui::color::Srgb;
+/// use waterui::text::font::{FontWeight, ResolvedFont};
+/// use waterui::theme::{ColorScheme, ColorSettings, FontSettings, Theme};
+/// use waterui_core::plugin::Plugin;
+///
+/// let mut env = Environment::new();
 ///
 /// // Create a theme with reactive color scheme
-/// let scheme = binding(ColorScheme::Light);
+/// let scheme = binding::<ColorScheme>(ColorScheme::Light);
 /// Theme::new()
 ///     .color_scheme(scheme)
-///     .colors(ColorSettings::new().accent(my_accent))
-///     .fonts(FontSettings::new().body(my_body_font))
+///     .colors(ColorSettings::new().accent(Srgb::from_hex("#0066CC")))
+///     .fonts(FontSettings::new().body(ResolvedFont::new(16.0, FontWeight::Normal)))
 ///     .install(&mut env);
 /// ```
 #[derive(Default, Debug)]
@@ -491,7 +559,27 @@ pub mod color {
     define_color_token!(Foreground, "Primary text and icon color.");
     define_color_token!(MutedForeground, "Secondary/dimmed text color.");
     define_color_token!(Accent, "Accent color for interactive elements.");
+    define_color_token!(
+        AccentContainer,
+        "Container color associated with the accent."
+    );
     define_color_token!(AccentForeground, "Foreground on accent backgrounds.");
+    define_color_token!(
+        Tertiary,
+        "Contrasting accent color for complementary emphasis."
+    );
+    define_color_token!(
+        TertiaryContainer,
+        "Container color associated with the tertiary accent."
+    );
+    define_color_token!(
+        SelectionContainer,
+        "The fill a platform paints behind a selected item."
+    );
+    define_color_token!(
+        SelectionForeground,
+        "Foreground drawn on the selection container."
+    );
 }
 
 // ============================================================================
@@ -518,24 +606,17 @@ impl<T> ColorSlotValue<T> {
     }
 }
 
-/// Resolves a color slot by looking up the stored signal.
-///
-/// Returns a transparent fallback if no signal is installed. Native backends
-/// should always install proper defaults.
+/// Resolves a color slot by looking up the signal installed by the backend or theme.
 fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<ResolvedColor> {
-    env.get::<ColorSlotValue<T>>().map_or_else(
-        || {
-            // Fallback: transparent (native should provide real defaults)
-            Computed::constant(ResolvedColor {
-                red: 0.0,
-                green: 0.0,
-                blue: 0.0,
-                headroom: 0.0,
-                opacity: 0.0,
-            })
-        },
-        |v| v.signal.clone(),
-    )
+    env.get::<ColorSlotValue<T>>()
+        .unwrap_or_else(|| {
+            panic!(
+                "WaterUI color token `{}` is not installed in the environment",
+                core::any::type_name::<T>()
+            )
+        })
+        .signal
+        .clone()
 }
 
 // ============================================================================
@@ -544,11 +625,19 @@ fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<ResolvedColor> 
 
 /// Returns the current color scheme signal from the environment.
 ///
-/// If no color scheme is installed, returns a constant `Light` signal.
+/// # Panics
+///
+/// Panics when the active backend or theme has not installed a color scheme.
 #[must_use]
 pub fn current_color_scheme(env: &Environment) -> Computed<ColorScheme> {
+    installed_color_scheme(env).expect("WaterUI color scheme is not installed in the environment")
+}
+
+/// Returns the color-scheme signal installed by the active backend or theme.
+#[must_use]
+pub fn installed_color_scheme(env: &Environment) -> Option<Computed<ColorScheme>> {
     env.get::<ColorSchemeSignal>()
-        .map_or_else(|| Computed::constant(ColorScheme::Light), |s| s.0.clone())
+        .map(|signal| signal.0.clone())
 }
 
 /// Installs an explicit color signal for a specific slot.
@@ -558,15 +647,69 @@ pub fn current_color_scheme(env: &Environment) -> Computed<ColorScheme> {
 ///
 /// # Example
 ///
-/// ```ignore
-/// // Native backend creates a reactive color signal
-/// let dark_mode_color: Computed<ResolvedColor> = native_create_signal();
+/// ```rust
+/// use nami::Computed;
+/// use waterui::Environment;
+/// use waterui::color::ResolvedColor;
+/// use waterui::theme::{color, install_color_signal};
+///
+/// let mut env = Environment::new();
+///
+/// // A backend supplies a reactive colour for the slot.
+/// let dark_mode_color: Computed<ResolvedColor> =
+///     Computed::constant(ResolvedColor::default());
 ///
 /// // Install it for the Foreground slot
 /// install_color_signal::<color::Foreground>(&mut env, dark_mode_color);
 /// ```
 pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<ResolvedColor>) {
-    env.insert(ColorSlotValue::<T>::new(signal));
+    env.insert(ColorSlotValue::<T>::new(signal.clone()));
+
+    macro_rules! mirror_graphics_color {
+        ($theme_slot:ty, $graphics_slot:ty) => {
+            if TypeId::of::<T>() == TypeId::of::<$theme_slot>() {
+                env.insert(Store::<$graphics_slot, Computed<ResolvedColor>>::new(
+                    signal,
+                ));
+                return;
+            }
+        };
+    }
+
+    mirror_graphics_color!(color::Background, waterui_graphics::color::BackgroundColor);
+    mirror_graphics_color!(color::Surface, waterui_graphics::color::SurfaceColor);
+    mirror_graphics_color!(
+        color::SurfaceVariant,
+        waterui_graphics::color::SurfaceVariantColor
+    );
+    mirror_graphics_color!(color::Border, waterui_graphics::color::BorderColor);
+    mirror_graphics_color!(color::Foreground, waterui_graphics::color::ForegroundColor);
+    mirror_graphics_color!(
+        color::MutedForeground,
+        waterui_graphics::color::MutedForegroundColor
+    );
+    mirror_graphics_color!(color::Accent, waterui_graphics::color::AccentColor);
+    mirror_graphics_color!(
+        color::AccentContainer,
+        waterui_graphics::color::AccentContainerColor
+    );
+    mirror_graphics_color!(
+        color::AccentForeground,
+        waterui_graphics::color::AccentForegroundColor
+    );
+    mirror_graphics_color!(color::Tertiary, waterui_graphics::color::TertiaryColor);
+    mirror_graphics_color!(
+        color::TertiaryContainer,
+        waterui_graphics::color::TertiaryContainerColor
+    );
+    mirror_graphics_color!(
+        color::SelectionContainer,
+        waterui_graphics::color::SelectionContainerColor
+    );
+    mirror_graphics_color!(
+        color::SelectionForeground,
+        waterui_graphics::color::SelectionForegroundColor
+    );
 }
 
 /// Returns an installed color signal for the requested slot when one exists.
@@ -621,5 +764,36 @@ impl Plugin for ForegroundOverride {
     fn install(self, env: &mut Environment) {
         let resolved = self.color.resolve(env);
         install_color_signal::<color::Foreground>(env, resolved);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::rc::Rc;
+    use core::cell::Cell;
+    use nami::{Binding, Signal, SignalExt};
+    use waterui_graphics::color::{AccentColor, Color};
+
+    use super::*;
+
+    #[test]
+    fn graphics_accent_color_tracks_installed_theme_signal() {
+        let accent = Binding::container(ResolvedColor::default());
+        let mut env = Environment::new();
+        install_color_signal::<color::Accent>(&mut env, accent.computed());
+        let resolved = Color::new(AccentColor).resolve(&env);
+        let observed_red = Rc::new(Cell::new(0.0));
+        let captured_red = Rc::clone(&observed_red);
+        let _guard = resolved.watch(move |context| {
+            captured_red.set(context.into_value().red);
+        });
+
+        accent.set(ResolvedColor {
+            red: 1.0,
+            ..ResolvedColor::default()
+        });
+
+        assert!((observed_red.get() - 1.0).abs() < f32::EPSILON);
+        assert!((resolved.get().red - 1.0).abs() < f32::EPSILON);
     }
 }

@@ -6,7 +6,6 @@ authors = ["Lexo Liu"]
 description = "High-pressure stress test app for WaterUI rendering and animation pipelines"
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
 keywords = ["ui", "framework", "example", "stress", "performance"]
 categories = ["gui"]
 publish = false
@@ -16,6 +15,10 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
+
+[dev-dependencies]
+waterui-testing.workspace = true
+hydrolysis-m3.workspace = true
 
 [lints]
 workspace = true

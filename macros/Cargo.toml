@@ -1,6 +1,6 @@
 [package]
 name = "waterui-macros"
-version = "0.2.1"
+version = "0.3.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -16,18 +16,26 @@ proc-macro = true
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"
-syn = { version = "2.0", features = ["full", "visit-mut"] }
-icu_locid = "1.5"
-icu_locid_transform = "1.5"
-toml = "0.8"
+syn = { version = "3.0", features = ["full", "visit-mut"] }
+icu_locale_core = { version = "2.2", features = ["alloc"] }
+icu_locid = "2.0"
+icu_locid_transform = "2.0"
+toml = "1.1"
 proc-macro-crate = "3"
 
 [dev-dependencies]
+hydrolysis-m3 = { path = "../backends/hydrolysis_m3" }
 trybuild = "1.0"
-waterui.workspace = true
-waterui-testing.workspace = true
+# The JavaScript-bridge macros expand against `::waterui::webview`, which is not
+# a default feature; their doc examples cannot compile without it.
+waterui = { path = "..", features = ["webview"] }
+waterui-testing = { path = "../testing" }
 
 [lints]
 workspace = true
+# icu_locid/icu_locid_transform are used by generated code rather than by this
+# crate's own source; hydrolysis-m3 is reachable only from doc examples (the #[waterui::test]
+# snippets install its theme) and cargo-machete does not analyze doctests, so
+# it reads as unused.
 [package.metadata.cargo-machete]
-ignored = ["icu_locid", "icu_locid_transform"]
+ignored = ["icu_locid", "icu_locid_transform", "hydrolysis-m3"]

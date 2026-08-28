@@ -186,6 +186,8 @@ impl Error {
     /// Returns `Err(self)` if the error cannot be downcast to the specified type `T`.
     pub fn downcast<T: 'static>(self) -> Result<Box<T>, Self> {
         if ErrorImpl::type_id(&*self.inner) == TypeId::of::<T>() {
+            // SAFETY: the type check in the branch condition proves the boxed value is
+            // a `T`, so re-typing the box preserves its layout and ownership.
             unsafe { Ok(Box::from_raw(Box::into_raw(self.inner).cast::<T>())) }
         } else {
             Err(self)

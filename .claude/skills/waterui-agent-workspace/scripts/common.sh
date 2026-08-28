@@ -1,0 +1,763 @@
+#!/bin/zsh
+
+# Per-machine locations. Each is overridable through the matching WATERUI_AGENT_*
+# environment variable when a machine's layout differs; the defaults are derived
+# so nothing user- or agent-specific is frozen into the repository.
+typeset -gr WORKSPACE_ROOT="${WATERUI_AGENT_WORKSPACE_ROOT:-${HOME}/.waterui-agent/workspaces}"
+typeset -gr LOCK_ROOT="${WATERUI_AGENT_LOCK_ROOT:-${HOME}/.waterui-agent/locks}"
+typeset -gr BRANCH_PREFIX="${WATERUI_AGENT_BRANCH_PREFIX:-agent}"
+
+# The canonical source repository, derived from git context rather than hardcoded:
+# - run from the canonical checkout (e.g. create_workspace.sh), it is this
+#   repository's top level;
+# - run from inside an agent workspace clone (sync/finish), the canonical source
+#   is that clone's `origin`, which create_workspace.sh points back here.
+# Outside any git repository it resolves empty, leaving the per-script context
+# checks to report the problem clearly.
+#
+# Which of the two we are in is decided by what the checkout *is*, not by where
+# it sits. A workspace was cloned from a checkout on this machine, so its origin
+# is a local path to another working tree; the canonical checkout's origin is
+# the remote it is published to. Asking WORKSPACE_ROOT instead — as this did —
+# means the answer changes when WATERUI_AGENT_WORKSPACE_ROOT changes, and every
+# workspace created under the old value is then read as the canonical
+# repository, so sync and finish refuse to run and the work inside them is
+# stranded with no way to merge it back.
+_waterui_resolve_source_repo() {
+  local top origin
+  if ! top="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    return 0
+  fi
+  origin="$(git -C "$top" remote get-url origin 2>/dev/null)" || origin=""
+  if [[ -n "$origin" && -d "$origin" ]] &&
+    git -C "$origin" rev-parse --show-toplevel >/dev/null 2>&1; then
+    print -- "$origin"
+  else
+    print -- "$top"
+  fi
+}
+typeset -gr SOURCE_REPO="${WATERUI_AGENT_SOURCE_REPO:-$(_waterui_resolve_source_repo)}"
+
+warn() {
+  print -u2 -- "warning: $*"
+}
+
+die() {
+  print -u2 -- "error: $*"
+  exit 1
+}
+
+# Runs a command, saying nothing unless it fails — and saying everything if it
+# does.
+#
+# Discarding both streams outright is what these calls used to do, and it makes
+# a failure undiagnosable: `git clone` reporting "Input/output error" from a
+# dying disk surfaced only as "failed to clone canonical repository", which sent
+# the reader looking for a git problem that was not there. Letting stderr
+# through instead is no good either, because git narrates success on stderr too
+# ("Switched to a new branch ..."). So: hold the output, drop it when the
+# command succeeds, print it when it does not.
+run_quietly() {
+  local output
+
+  if ! output="$("$@" 2>&1)"; then
+    [[ -z "$output" ]] || print -u2 -- "$output"
+    return 1
+  fi
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+ensure_nightly_cargo() {
+  cargo -V | rg -q 'nightly' || die "nightly cargo is required to inspect Cargo configuration"
+}
+
+canonical_dir() {
+  local path="$1"
+  [[ -d "$path" ]] || die "directory does not exist: $path"
+  (
+    cd "$path"
+    pwd -P
+  )
+}
+
+device_id() {
+  stat -f '%d' "$1"
+}
+
+mount_device() {
+  df "$1" | awk 'NR == 2 { print $1 }'
+}
+
+ensure_apfs() {
+  local target="$1"
+  local device
+  local info
+
+  device="$(mount_device "$target")"
+  info="$(diskutil info "$device" 2>/dev/null)" || die "failed to inspect filesystem for $target"
+  print -- "$info" | rg -q '^ *Type \(Bundle\): +apfs$' || die "filesystem for $target is not APFS"
+}
+
+# `git clone --local` hardlinks the source object store into the clone, which
+# cannot span volumes. A cross-volume workspace root copies the objects instead;
+# same-volume roots keep the cheap hardlinks. `reference` must be a path that
+# already exists on the destination volume.
+local_clone_options() {
+  local source="$1"
+  local reference="$2"
+
+  if [[ "$(device_id "$source")" == "$(device_id "$reference")" ]]; then
+    print -- "--local"
+  else
+    print -- "--local --no-hardlinks"
+  fi
+}
+
+clone_superproject_locally() {
+  local source_root="$1"
+  local destination="$2"
+  local source_branch="$3"
+  local clone_options
+
+  clone_options="$(local_clone_options "$source_root" "${destination:h}")"
+  run_quietly git clone ${=clone_options} --branch "$source_branch" --single-branch "$source_root" "$destination" || die "failed to clone canonical repository into $destination"
+}
+
+submodule_gitlink_commit() {
+  local repo_root="$1"
+  local submodule_relpath="$2"
+  local commit
+
+  commit="$(git -C "$repo_root" ls-tree HEAD "$submodule_relpath" | awk '{ print $3 }')"
+  [[ -n "$commit" ]] || die "failed to resolve gitlink commit for ${submodule_relpath} in $repo_root"
+  print -- "$commit"
+}
+
+clone_submodules_locally() {
+  local source_root="$1"
+  local destination_root="$2"
+  local name
+  local submodule_relpath
+  local source_submodule
+  local destination_submodule
+  local desired_commit
+  local clone_options
+
+  clone_options="$(local_clone_options "$source_root" "$destination_root")"
+  while IFS=$'\t' read -r name submodule_relpath; do
+    [[ -n "${name:-}" ]] || continue
+    source_submodule="${source_root}/${submodule_relpath}"
+    destination_submodule="${destination_root}/${submodule_relpath}"
+    desired_commit="$(submodule_gitlink_commit "$destination_root" "$submodule_relpath")"
+
+    run_quietly git -C "$destination_root" submodule init -- "$submodule_relpath" || die "failed to initialize submodule config for ${submodule_relpath}"
+    run_quietly git clone ${=clone_options} --no-checkout "$source_submodule" "$destination_submodule" || die "failed to clone submodule ${submodule_relpath}"
+    run_quietly git -C "$destination_submodule" checkout "$desired_commit" || die "failed to checkout ${desired_commit} in submodule ${submodule_relpath}"
+    run_quietly git -C "$destination_root" submodule absorbgitdirs -- "$submodule_relpath" || die "failed to absorb gitdir for submodule ${submodule_relpath}"
+  done < <(submodule_records "$source_root")
+}
+
+# The canonical `target/` is a live cache, and an unrelated build (Xcode, Gradle,
+# `water run`) may be writing into it while a workspace is created. rustc's
+# per-CGU object files exist only for the duration of one invocation, so a copy
+# can enumerate an entry that is gone by the time it is read. That lost race is
+# harmless — the entry is a build temporary and cargo rebuilds whatever is
+# missing — so it is retried, and the retry no longer enumerates the vanished
+# entry. Any other failure, a full destination volume above all, is fatal at
+# once rather than retried. Each attempt copies directory *contents* so a retry
+# lands on the same path instead of nesting inside the partial copy.
+copy_target_entry() {
+  local source="$1"
+  local destination="$2"
+  local attempt
+  local errors
+  local line
+
+  for attempt in 1 2 3; do
+    if [[ -d "$source" && ! -L "$source" ]]; then
+      mkdir -p "$destination"
+      errors="$(LC_ALL=C cp -cR "$source/." "$destination" 2>&1 >/dev/null)" && return 0
+    else
+      errors="$(LC_ALL=C cp -cR "$source" "$destination" 2>&1 >/dev/null)" && return 0
+    fi
+
+    [[ -n "$errors" ]] || die "failed to copy ${source} into ${destination}"
+    for line in ${(f)errors}; do
+      [[ "$line" == *': No such file or directory' ]] ||
+        die "failed to copy ${source} into ${destination}: ${line}"
+    done
+  done
+
+  warn "left ${source:t} out of the warm target cache: it kept vanishing under the copy, so another build is writing to ${source:h}"
+}
+
+copy_target_cow() {
+  local source_root="$1"
+  local destination_root="$2"
+  local source_target="${source_root}/target"
+  local destination_target="${destination_root}/target"
+  local top
+  local child
+
+  [[ -d "$source_target" ]] || return 0
+  mkdir -p "$destination_target"
+  # Copy entry-by-entry instead of one `cp -cR target` so the per-profile
+  # `incremental/` caches can be skipped: they are the largest and
+  # fastest-diverging piece of `target/` (tens of GB), every workspace build
+  # rewrites them immediately (turning shared COW blocks into real copies),
+  # and sccache already covers the cold recompiles they would have saved.
+  # With N concurrent workspaces this is the difference between sharing one
+  # dependency cache and carrying N diverging full copies.
+  for top in "$source_target"/*(DN); do
+    if [[ -d "$top" && ! -L "$top" ]]; then
+      mkdir -p "${destination_target}/${top:t}"
+      for child in "$top"/*(DN); do
+        [[ "${child:t}" == "incremental" ]] && continue
+        copy_target_entry "$child" "${destination_target}/${top:t}/${child:t}"
+      done
+    else
+      copy_target_entry "$top" "${destination_target}/${top:t}"
+    fi
+  done
+}
+
+submodule_records() {
+  local repo_root="$1"
+  git -C "$repo_root" config --file .gitmodules --get-regexp '^submodule\..*\.path$' |
+    awk '{ sub(/^submodule\./, "", $1); sub(/\.path$/, "", $1); print $1 "\t" $2 }'
+}
+
+configured_submodule_branch() {
+  local repo_root="$1"
+  local submodule_name="$2"
+  git -C "$repo_root" config --file .gitmodules --get "submodule.${submodule_name}.branch" 2>/dev/null || true
+}
+
+ensure_source_submodules_ready() {
+  local repo_root="$1"
+  local name
+  local submodule_relpath
+  local submodule_path
+  local submodule_git_dir
+
+  while IFS=$'\t' read -r name submodule_relpath; do
+    [[ -n "${name:-}" ]] || continue
+    submodule_path="${repo_root}/${submodule_relpath}"
+    [[ -d "$submodule_path" ]] || die "submodule working tree missing: $submodule_relpath"
+    submodule_git_dir="$(git -C "$submodule_path" rev-parse --git-dir 2>/dev/null)" || die "submodule is not a valid git worktree: $submodule_relpath"
+    [[ "$submodule_git_dir" == "${repo_root}/.git/modules/"* ]] || die "submodule gitdir does not live under source repo metadata: $submodule_relpath -> $submodule_git_dir"
+  done < <(submodule_records "$repo_root")
+}
+
+ensure_repo_and_submodules_clean() {
+  local repo_root="$1"
+  local label="$2"
+  local name
+  local submodule_relpath
+
+  ensure_clean_worktree "$repo_root" "$label"
+
+  while IFS=$'\t' read -r name submodule_relpath; do
+    [[ -n "${name:-}" ]] || continue
+    ensure_clean_worktree "${repo_root}/${submodule_relpath}" "${label} submodule ${submodule_relpath}"
+  done < <(submodule_records "$SOURCE_REPO")
+}
+
+# The same question as a yes-or-no, for callers that want to mention the state
+# rather than refuse to run.
+#
+# Asking it through the checking form keeps one definition of "clean": `die`
+# ends the subshell rather than this script, so the exit status answers.
+repo_and_submodules_are_clean() {
+  (ensure_repo_and_submodules_clean "$1" "canonical repository") >/dev/null 2>&1
+}
+
+activate_all_submodules() {
+  local repo_root="$1"
+  git -C "$repo_root" config submodule.active . || die "failed to activate submodules in workspace"
+}
+
+ensure_branch() {
+  local repo_root="$1"
+  local branch_name="$2"
+
+  if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch_name"; then
+    run_quietly git -C "$repo_root" switch "$branch_name" || die "failed to switch to existing branch $branch_name in $repo_root"
+  else
+    run_quietly git -C "$repo_root" switch -c "$branch_name" || die "failed to create branch $branch_name in $repo_root"
+  fi
+}
+
+branch_submodules() {
+  local repo_root="$1"
+  local branch_name="$2"
+  local name
+  local submodule_relpath
+  local submodule_path
+
+  while IFS=$'\t' read -r name submodule_relpath; do
+    [[ -n "${name:-}" ]] || continue
+    submodule_path="${repo_root}/${submodule_relpath}"
+    git -C "$submodule_path" rev-parse --git-dir >/dev/null 2>&1 || die "submodule is not a valid git worktree after clone: $submodule_relpath"
+    ensure_branch "$submodule_path" "$branch_name"
+  done < <(submodule_records "$repo_root")
+}
+
+ensure_no_shared_target_dir() {
+  local configured_target
+
+  if configured_target="$(cargo -Z unstable-options config get build.target-dir 2>/dev/null)"; then
+    die "cargo build.target-dir is configured (${configured_target//$'\n'/ }); remove it before creating agent workspaces"
+  fi
+}
+
+validate_slug() {
+  local slug="$1"
+  [[ "$slug" =~ '^[a-z0-9]+([a-z0-9-]*[a-z0-9]+)?$|^[a-z0-9]+$' ]] || die "task slug must be lowercase letters, digits, and hyphens"
+}
+
+current_branch() {
+  local repo_root="$1"
+  local branch_name
+
+  branch_name="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null)" || die "failed to determine current branch for $repo_root"
+  [[ "$branch_name" != "HEAD" ]] || die "repository is in detached HEAD state: $repo_root"
+  print -- "$branch_name"
+}
+
+ensure_clean_worktree() {
+  local repo_root="$1"
+  local label="$2"
+  local untracked_output
+  local filtered_untracked
+
+  git -C "$repo_root" diff --quiet --exit-code || die "${label} has unstaged changes"
+  git -C "$repo_root" diff --cached --quiet --exit-code || die "${label} has staged but uncommitted changes"
+
+  untracked_output="$(git -C "$repo_root" ls-files --others --exclude-standard)"
+  filtered_untracked="$(print -- "$untracked_output" | rg -v '(^|/)\.worktrees(/|$)|(^|/)\.water(/|$)' || true)"
+  [[ -z "$filtered_untracked" ]] || die "${label} has untracked files"
+}
+
+ensure_branch_available() {
+  local repo_root="$1"
+  local branch_name="$2"
+
+  if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch_name"; then
+    run_quietly git -C "$repo_root" switch "$branch_name" || die "failed to switch to ${branch_name} in $repo_root"
+    return
+  fi
+
+  if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/$branch_name"; then
+    run_quietly git -C "$repo_root" switch -c "$branch_name" --track "origin/$branch_name" || die "failed to create local branch ${branch_name} in $repo_root"
+    return
+  fi
+
+  die "branch ${branch_name} does not exist in $repo_root"
+}
+
+resolve_branch_tip() {
+  local repo_root="$1"
+  local branch_name="$2"
+  local remote_commit
+  local local_commit
+
+  if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch_name"; then
+    local_commit="$(git -C "$repo_root" rev-parse "refs/heads/$branch_name")" || die "failed to resolve branch ${branch_name} in $repo_root"
+    print -- "$local_commit"
+    return 0
+  fi
+
+  if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/$branch_name"; then
+    remote_commit="$(git -C "$repo_root" rev-parse "refs/remotes/origin/$branch_name")" || die "failed to resolve origin/${branch_name} in $repo_root"
+    print -- "$remote_commit"
+    return 0
+  fi
+
+  die "branch ${branch_name} does not exist in $repo_root"
+}
+
+merge_branch_ff_only() {
+  local destination_repo="$1"
+  local source_repo="$2"
+  local source_branch="$3"
+  local label="$4"
+
+  git -C "$source_repo" show-ref --verify --quiet "refs/heads/$source_branch" || die "${label} source branch ${source_branch} does not exist in $source_repo"
+  run_quietly git -C "$destination_repo" fetch "$source_repo" "$source_branch" || die "failed to fetch ${label} branch ${source_branch} from $source_repo"
+  run_quietly git -C "$destination_repo" merge --ff-only FETCH_HEAD || die "failed to fast-forward merge ${label} from ${source_repo}; update or rebase the workspace first"
+}
+
+ensure_fast_forward_possible() {
+  local destination_repo="$1"
+  local source_repo="$2"
+  local source_branch="$3"
+  local label="$4"
+  local destination_head
+  local source_head
+
+  destination_head="$(git -C "$destination_repo" rev-parse HEAD)" || die "failed to resolve ${label} destination HEAD"
+  source_head="$(git -C "$source_repo" rev-parse "refs/heads/${source_branch}")" || die "failed to resolve ${label} source branch ${source_branch}"
+  git -C "$source_repo" merge-base --is-ancestor "$destination_head" "$source_head" >/dev/null 2>&1 || die "${label} cannot be fast-forwarded from ${source_repo}; update or rebase the workspace first"
+}
+
+workspace_contains_source_layout() {
+  local workspace_root="$1"
+  local name
+  local submodule_relpath
+
+  [[ -d "${workspace_root}/.git" ]] || die "workspace is missing .git metadata: $workspace_root"
+
+  while IFS=$'\t' read -r name submodule_relpath; do
+    [[ -n "${name:-}" ]] || continue
+    [[ -d "${workspace_root}/${submodule_relpath}" ]] || die "workspace is missing submodule path ${submodule_relpath}"
+  done < <(submodule_records "$SOURCE_REPO")
+}
+
+# --- Slot model ---------------------------------------------------------
+#
+# Workspaces used to live at a fresh timestamped path every time, which meant
+# every `create_workspace.sh` handed Cargo a directory it had never seen
+# before. Cargo folds the package path into `-C metadata` for every
+# workspace-member crate (it has to: two crates with the same name at
+# different paths must not collide in the build graph), so a new path means a
+# new metadata hash for every WaterUI crate, which means every workspace
+# crate looks unbuilt and recompiles from scratch — incremental caches from
+# the last task are unreachable, and even sccache cannot help, because its
+# cache key includes that same metadata. Only registry dependencies, whose
+# path is the same everywhere, ever hit warm cache.
+#
+# The fix is to stop generating fresh paths. A slot is a workspace at a fixed
+# path — `$WORKSPACE_ROOT/slot-1`, `slot-2`, ... — that persists across tasks
+# instead of being deleted when one finishes. Reusing a slot means the path,
+# and therefore `-C metadata`, and therefore every crate's build cache key,
+# is identical to the last time that slot was used: Cargo's own incremental
+# cache (never discarded now — `copy_target_cow` still skips `incremental/`,
+# but only when *seeding* a brand new slot) and sccache both come back warm.
+#
+# A slot's state is entirely self-describing, the same philosophy
+# `ensure_workspace_context` already uses to tell a workspace from the
+# canonical checkout: nothing external tracks which slots are in use.
+#   - FREE: the superproject is checked out on the canonical integration
+#     branch (never an `agent/` branch) and the whole tree, submodules
+#     included, has no local changes. `slot_is_free` below is the read-only
+#     check for this and never fetches or mutates anything.
+#   - BUSY: some agent workspace flow switched it to `agent/<slug>/<ts>` and
+#     may have uncommitted work in progress. The same branch-prefix evidence
+#     `ensure_workspace_context` reads is what makes a slot BUSY — claiming a
+#     slot and claiming "this checkout is an agent workspace" are the same
+#     act.
+#   - CORRUPT: looks like a FREE candidate (right branch, clean) but its
+#     history diverged from canonical instead of being a pure ancestor of it,
+#     so it cannot be fast-forwarded. This should not happen from ordinary
+#     use of these scripts — a FREE slot is untouched by anything else — so
+#     it is treated as an anomaly: warn, skip it, try the next slot. Recovery
+#     is manual: delete the slot directory. The next `create_workspace.sh`
+#     either reuses that now-missing number for a fresh clone or leaves it
+#     alone and uses a different slot; either way nothing needs to track the
+#     gap.
+
+# A slot directory basename, as opposed to a legacy timestamped workspace
+# path (`<timestamp>-<slug>`) from before this model existed. `finish_workspace.sh`
+# keys its post-merge behaviour off this: a slot is returned to FREE, a
+# legacy workspace is still deleted.
+is_slot_workspace() {
+  local workspace_root="$1"
+  [[ "${workspace_root:t}" == slot-<1-> ]]
+}
+
+# Every slot directory under `workspace_root`, sorted by slot number. A slot
+# recovered from CORRUPT state is removed by deleting its directory (see
+# SKILL.md), which leaves a gap in the numbering rather than a contiguous
+# run — so slots are found by listing what is actually on disk, never by
+# counting upward until the first miss.
+existing_slot_paths() {
+  local workspace_root="$1"
+  local path
+
+  setopt local_options numericglobsort
+  for path in "${workspace_root}"/slot-<1->(N/); do
+    print -- "$path"
+  done
+}
+
+# The lowest unused slot number under `workspace_root`, so a deleted
+# (recovered) slot's number is reused before the pool grows.
+new_slot_path() {
+  local workspace_root="$1"
+  local n=1
+
+  while [[ -e "${workspace_root}/slot-${n}" ]]; do
+    n=$((n + 1))
+  done
+  print -- "${workspace_root}/slot-${n}"
+}
+
+# Read-only FREE check — see the slot model comment above. Never fetches or
+# mutates, so it is cheap to run over every slot on every
+# `create_workspace.sh` call.
+slot_is_free() {
+  local slot="$1"
+  local integration_branch="$2"
+  local branch
+
+  (workspace_contains_source_layout "$slot") >/dev/null 2>&1 || return 1
+  branch="$(git -C "$slot" rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 1
+  [[ "$branch" == "$integration_branch" ]] || return 1
+  repo_and_submodules_are_clean "$slot"
+}
+
+# Brings a FREE slot up to date with canonical and claims it for `branch_name`:
+# fast-forwards the superproject's integration branch, then for each
+# submodule fast-forwards its own configured integration branch and hard-
+# aligns the checkout to the exact commit the superproject's tree now records
+# for it (in steady state this is the same commit the branch fast-forward
+# already landed on — every canonical commit that advances a submodule
+# pointer is paired with the submodule's own advance — so the checkout is a
+# consistency check as much as an alignment), and finally branches the
+# superproject and every submodule to `branch_name`.
+#
+# Runs entirely inside a captured subshell: any step's failure (typically a
+# fast-forward refused because the slot diverged from canonical) reaches the
+# caller as a plain exit status rather than tearing down the whole script, so
+# a CORRUPT slot can be skipped in favour of the next one instead of killing
+# `create_workspace.sh` outright.
+_claim_free_slot_impl() {
+  local slot="$1"
+  local source_root="$2"
+  local integration_branch="$3"
+  local branch_name="$4"
+  local name
+  local submodule_relpath
+  local submodule_path
+  local canonical_submodule
+  local target_branch
+  local actual_branch
+  local desired_commit
+
+  merge_branch_ff_only "$slot" "$source_root" "$integration_branch" "superproject"
+
+  while IFS=$'\t' read -r name submodule_relpath; do
+    [[ -n "${name:-}" ]] || continue
+    submodule_path="${slot}/${submodule_relpath}"
+    canonical_submodule="${source_root}/${submodule_relpath}"
+    target_branch="$(configured_submodule_branch "$source_root" "$name")"
+    [[ -n "$target_branch" ]] || die "submodule ${submodule_relpath} has no configured integration branch in .gitmodules"
+
+    actual_branch="$(current_branch "$submodule_path")"
+    [[ "$actual_branch" == "$target_branch" ]] || die "slot submodule ${submodule_relpath} is on ${actual_branch}, expected ${target_branch}"
+
+    merge_branch_ff_only "$submodule_path" "$canonical_submodule" "$target_branch" "submodule ${submodule_relpath}"
+
+    desired_commit="$(submodule_gitlink_commit "$slot" "$submodule_relpath")"
+    run_quietly git -C "$submodule_path" checkout "$desired_commit" || die "failed to align submodule ${submodule_relpath} to ${desired_commit}"
+  done < <(submodule_records "$source_root")
+
+  ensure_branch "$slot" "$branch_name"
+  branch_submodules "$slot" "$branch_name"
+}
+
+claim_free_slot() {
+  local slot="$1"
+  local source_root="$2"
+  local integration_branch="$3"
+  local branch_name="$4"
+  local output
+
+  if output="$(_claim_free_slot_impl "$slot" "$source_root" "$integration_branch" "$branch_name" 2>&1)"; then
+    [[ -z "$output" ]] || print -u2 -- "$output"
+    return 0
+  fi
+
+  warn "slot ${slot:t} looked FREE but would not fast-forward cleanly onto canonical (diverged garbage?); skipping it"
+  [[ -z "$output" ]] || print -u2 -- "$output"
+  return 1
+}
+
+# Scans every existing slot for one this task can use, claiming the first
+# FREE one that fast-forwards cleanly. Prints the claimed slot path and
+# returns 0, or prints nothing and returns 1 if every slot is BUSY or
+# CORRUPT.
+find_and_claim_free_slot() {
+  local workspace_root="$1"
+  local source_root="$2"
+  local integration_branch="$3"
+  local branch_name="$4"
+  local slot
+
+  for slot in $(existing_slot_paths "$workspace_root"); do
+    slot_is_free "$slot" "$integration_branch" || continue
+    if claim_free_slot "$slot" "$source_root" "$integration_branch" "$branch_name"; then
+      print -- "$slot"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+ensure_workspace_context() {
+  local current_root
+  local expected_source
+  local current_branch
+
+  current_root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "run this script from an agent workspace"
+  current_root="$(canonical_dir "$current_root")"
+  expected_source="$(canonical_dir "$SOURCE_REPO")"
+
+  [[ "$current_root" != "$expected_source" ]] || die "run this script from an agent workspace, not the canonical repository"
+
+  # Being a clone of a local checkout is not on its own enough to earn the
+  # things finish_workspace does — fast-forwarding the canonical repository from
+  # here, then deleting this directory. Someone's own second clone would qualify
+  # on origin alone. The branch create_workspace.sh puts a workspace on is the
+  # other half of the evidence, and unlike a location it travels with the
+  # checkout.
+  current_branch="$(git -C "$current_root" rev-parse --abbrev-ref HEAD 2>/dev/null)" ||
+    die "workspace has no checked-out branch"
+  [[ "$current_branch" == "${BRANCH_PREFIX}/"* ]] ||
+    die "not an agent workspace: expected a ${BRANCH_PREFIX}/ branch, found ${current_branch}"
+
+  print -- "$current_root"
+}
+
+ensure_workspace_branch_consistency() {
+  local workspace_root="$1"
+  local workspace_branch="$2"
+  local name
+  local submodule_relpath
+  local submodule_path
+  local submodule_branch
+
+  while IFS=$'\t' read -r name submodule_relpath; do
+    [[ -n "${name:-}" ]] || continue
+    submodule_path="${workspace_root}/${submodule_relpath}"
+    submodule_branch="$(current_branch "$submodule_path")"
+    [[ "$submodule_branch" == "$workspace_branch" ]] || die "submodule ${submodule_relpath} is on ${submodule_branch}, expected ${workspace_branch}"
+  done < <(submodule_records "$SOURCE_REPO")
+}
+
+# Whether a lock directory has an owner that is still doing the work the lock
+# is for.
+#
+# The recorded pid existing is not enough. A run killed with `kill -9`, or lost
+# to a power cut, never reaches its trap, and by the time anyone looks the kernel
+# may have handed that pid number to something unrelated — so the command has to
+# match too. Anything else is a lock nobody can end, which is a worse failure
+# than the one the lock exists to prevent.
+lock_has_live_owner() {
+  local lock_dir="$1"
+  local owner_pattern="$2"
+  local pid
+
+  pid="$(cat "${lock_dir}/pid" 2>/dev/null)" || return 1
+  [[ -n "$pid" ]] || return 1
+  ps -p "$pid" -o command= 2>/dev/null | rg -q "$owner_pattern"
+}
+
+# Claims `lock_dir` with a `mkdir`-based lock: refuses if a live process
+# matching `owner_pattern` already holds it, reclaims it (with a warning) if
+# the recorded holder is gone. Shared by the integration lock
+# (finish_workspace.sh, one merge into canonical at a time) and the slot claim
+# lock (create_workspace.sh, one slot selection at a time) — same stale-pid
+# problem, same fix, two different holders to look for.
+acquire_lock() {
+  local lock_dir="$1"
+  local owner_pattern="$2"
+  local busy_message="$3"
+
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    if lock_has_live_owner "$lock_dir" "$owner_pattern"; then
+      die "${busy_message} (holder pid $(cat "${lock_dir}/pid" 2>/dev/null))"
+    fi
+    # Nobody is behind it. Clear it and race for it again: whoever loses the
+    # second `mkdir` has a live winner and is refused, so reclaiming cannot hand
+    # the lock to two runs at once.
+    warn "clearing a lock whose holder is gone (pid $(cat "${lock_dir}/pid" 2>/dev/null))"
+    rm -rf "$lock_dir"
+    mkdir "$lock_dir" 2>/dev/null || die "$busy_message"
+  fi
+  print -- "$$" >"${lock_dir}/pid"
+  print -- "$lock_dir"
+}
+
+release_lock() {
+  local lock_dir="${1:-}"
+  [[ -n "$lock_dir" && -d "$lock_dir" ]] || return 0
+  rm -rf "$lock_dir"
+}
+
+integration_lock_dir_for_source() {
+  local source_root="$1"
+  local lock_root
+  local lock_key
+
+  mkdir -p "$LOCK_ROOT" || die "failed to create lock root: $LOCK_ROOT"
+  lock_root="$(canonical_dir "$LOCK_ROOT")"
+  lock_key="$(print -n -- "$source_root" | shasum -a 256 | awk '{ print $1 }')"
+  print -- "${lock_root}/${lock_key}.lock"
+}
+
+ensure_no_integration_lock() {
+  local source_root="$1"
+  local lock_dir
+
+  lock_dir="$(integration_lock_dir_for_source "$source_root")"
+  [[ ! -d "$lock_dir" ]] || die "another agent is already integrating into $source_root"
+}
+
+acquire_integration_lock() {
+  local source_root="$1"
+  local lock_dir
+
+  lock_dir="$(integration_lock_dir_for_source "$source_root")"
+  lock_dir="$(acquire_lock "$lock_dir" 'finish_workspace\.sh' "another agent is already integrating into $source_root")"
+  print -- "$WORKSPACE_ROOT" >"${lock_dir}/workspace-root"
+  print -- "$source_root" >"${lock_dir}/source-repo"
+  print -- "$lock_dir"
+}
+
+release_integration_lock() {
+  release_lock "$1"
+}
+
+slot_claim_lock_dir_for_workspace_root() {
+  local workspace_root="$1"
+  local lock_root
+  local lock_key
+
+  mkdir -p "$LOCK_ROOT" || die "failed to create lock root: $LOCK_ROOT"
+  lock_root="$(canonical_dir "$LOCK_ROOT")"
+  lock_key="$(print -n -- "${workspace_root}:slot-claim" | shasum -a 256 | awk '{ print $1 }')"
+  print -- "${lock_root}/${lock_key}.lock"
+}
+
+# Held only across slot *selection* — scanning existing slots for a FREE one
+# and claiming it, or branching a brand new one — never across the slow
+# `target/` seed copy a new slot still needs. Two `create_workspace.sh` runs
+# racing on the same machine would otherwise both see the same FREE slot and
+# both try to switch it onto their own agent branch.
+acquire_slot_claim_lock() {
+  local workspace_root="$1"
+  local lock_dir
+
+  lock_dir="$(slot_claim_lock_dir_for_workspace_root "$workspace_root")"
+  acquire_lock "$lock_dir" 'create_workspace\.sh' "another agent is already claiming a workspace slot under $workspace_root"
+}
+
+release_slot_claim_lock() {
+  release_lock "$1"
+}
+
+rebase_current_branch_onto_source_branch() {
+  local workspace_repo="$1"
+  local source_repo="$2"
+  local source_branch="$3"
+  local label="$4"
+
+  run_quietly git -C "$workspace_repo" fetch "$source_repo" "$source_branch" || die "failed to fetch ${label} branch ${source_branch} from $source_repo"
+  run_quietly git -C "$workspace_repo" rebase FETCH_HEAD || die "rebase stopped in ${label}; resolve conflicts inside the workspace and continue or abort manually"
+}

@@ -42,13 +42,55 @@ jobs:
         run: |
           git submodule update --remote --init ${{ steps.get_submodule.outputs.paths }}
 
-      - name: Commit and push if changed
+      # `cli/Cargo.toml` pins the backend commits a published CLI fetches when it has no
+      # submodules to read from. A workspace build ignores those literals, so nothing here
+      # notices when they go stale — but a released CLI would then scaffold projects
+      # against a backend behind the one this repository builds against. Repinning in the
+      # same step that moves the submodule keeps the two from ever diverging; leaving it to
+      # a follow-up meant every automated bump shipped a stale pin.
+      - name: Repin backend commits for release builds
+        run: |
+          for path in ${{ steps.get_submodule.outputs.paths }}; do
+            backend="${path#backends/}"
+            commit="$(git -C "$path" rev-parse HEAD)"
+            sed -i "s|^${backend}-backend-commit = .*|${backend}-backend-commit = \"${commit}\"|" cli/Cargo.toml
+            grep -q "^${backend}-backend-commit = \"${commit}\"$" cli/Cargo.toml \
+              || { echo "failed to repin ${backend}-backend-commit in cli/Cargo.toml"; exit 1; }
+          done
+
+      # Opened as a pull request rather than pushed to `dev`. CI runs on `pull_request`,
+      # so a bump reaches the integration branch only after clippy and the full test
+      # suite have seen it. Pushing straight to `dev` inverted that: the bump landed
+      # first and CI reported afterwards, which is how a stale backend pin sat on `dev`
+      # with its guard test failing. A backend is an FFI peer of this repository, so its
+      # commits are not automatically compatible with the superproject and deserve the
+      # same gate as any other change.
+      # The commit itself is left as-is: staging a submodule gitlink is the one part of
+      # this job that was already known to work, and `create-pull-request` stages changes
+      # its own way. Only the destination changes — a branch and a pull request instead of
+      # `dev` directly.
+      - name: Open a pull request if changed
+        env:
+          GH_TOKEN: ${{ secrets.SUBMODULE_UPDATE_PAT }}
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          if ! git diff --quiet; then
-            git commit -am "chore: update ${{ steps.get_submodule.outputs.names }} backend submodule(s)"
-            git push origin dev
-          else
+          if git diff --quiet; then
             echo "Submodules are already up-to-date."
+            exit 0
+          fi
+
+          title="chore: update ${{ steps.get_submodule.outputs.names }} backend submodule(s)"
+          branch="chore/update-backend-submodules"
+          git switch -c "$branch"
+          git commit -am "$title"
+          git push --force-with-lease origin "$branch"
+
+          # One rolling branch, so a burst of backend pushes updates the open pull
+          # request instead of opening a new one for each.
+          if [ -z "$(gh pr list --head "$branch" --base dev --state open --json number --jq '.[].number')" ]; then
+            gh pr create --base dev --head "$branch" --title "$title" --body \
+              'Automated backend submodule bump, with `cli/Cargo.toml`'"'"'s release fallback pins updated to match.
+
+          Merging is gated on CI: a backend commit can require a corresponding change in this repository — a regenerated FFI header, or an adaptation to a changed API — and nothing about the bump itself proves the pair still builds.'
           fi

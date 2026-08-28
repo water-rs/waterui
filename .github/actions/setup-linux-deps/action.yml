@@ -1,0 +1,55 @@
+name: Setup Linux native dependencies
+description: >
+  Installs (and caches across runs) the native libraries a Linux build of the
+  workspace needs: audio (ALSA, PipeWire), video (VA-API, nasm-assembled
+  codecs), fonts, GTK4, and udev. Every job that builds on Linux needs this
+  same list, so it lives here once instead of four independent `apt-get`
+  invocations drifting apart.
+
+inputs:
+  gpu:
+    description: >
+      Also install the Vulkan ICD loader (mesa-vulkan-drivers, libvulkan1).
+      Only jobs that actually run GPU-backed tests or benches need this; the
+      software Vulkan implementation (llvmpipe/lavapipe) is what lets those
+      run headless on a GitHub-hosted runner with no real GPU.
+    required: false
+    default: "false"
+  gcc-version:
+    description: >
+      Install this GCC/G++ major. The caller selects it through explicit
+      CC/CXX values. Leave empty for jobs that use the runner default.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Compute package list
+      id: pkgs
+      shell: bash
+      run: |
+        packages="nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev"
+        if [ "${{ inputs.gpu }}" = "true" ]; then
+          packages="$packages mesa-vulkan-drivers libvulkan1"
+        fi
+        if [ -n "${{ inputs.gcc-version }}" ]; then
+          packages="$packages gcc-${{ inputs.gcc-version }} g++-${{ inputs.gcc-version }}"
+        fi
+        echo "packages=$packages" >> "$GITHUB_OUTPUT"
+
+    # cache-apt-pkgs-action caches the downloaded .debs and restores them with
+    # `dpkg -i` instead of hitting the network apt mirror on every job. It
+    # skips postinst scripts by default (`execute_install_scripts: false`);
+    # we turn that on because several of these packages are shared libraries
+    # whose postinst runs ldconfig, and a plain `dpkg -i` restore without it
+    # leaves the linker cache stale until something else happens to rebuild
+    # it. Pinned to a release tag rather than the floating `@v1` for the same
+    # reason `crate-ci/typos` is pinned above: an unpinned action changing
+    # behavior underneath a caching step is a hard failure mode to diagnose.
+    - name: Install native dependencies
+      uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+      with:
+        packages: ${{ steps.pkgs.outputs.packages }}
+        version: "1.0"
+        execute_install_scripts: true

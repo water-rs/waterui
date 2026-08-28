@@ -1,0 +1,27 @@
+[package]
+name = "waterui-layout"
+version = "0.3.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Layout components for WaterUI"
+keywords = ["layout", "ui", "components", "flexbox"]
+categories = ["gui"]
+
+
+[dependencies]
+waterui-core.workspace = true
+nami.workspace = true
+waterui-graphics.workspace = true
+num-traits = { version = "0.2", default-features = false }
+
+[dev-dependencies]
+hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+
+
+[lints]
+workspace = true

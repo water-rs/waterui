@@ -1,27 +1,34 @@
 use std::time::Instant;
 
+use shaderloom::{CompiledShader, CompiledShaderModule};
 use waterui::app::App;
-use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck, wgpu};
-use waterui::layout::{ProposalSize, Size, StretchAxis, SubView};
+use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
 use waterui::prelude::*;
 use waterui::preview;
 
 #[preview]
-fn main() -> impl View {
+pub fn demo() -> impl View {
     vstack((
-        text("Cinematic HDR Flame (GpuSurface)").size(24),
-        text("HDR film buffer + bloom + ACES tonemap").size(14),
+        text("Cinematic HDR Flame (GpuSurface)")
+            .size(24)
+            .foreground(Color::srgb(245, 247, 250)),
+        text("HDR film buffer + bloom + ACES tonemap")
+            .size(14)
+            .foreground(Color::srgb(210, 216, 224)),
         GpuSurface::new(FlameRenderer::default()).size(400.0, 500.0),
-        text("Rendered at 120fps").size(12),
+        text("Rendered at 120fps")
+            .size(12)
+            .foreground(Color::srgb(210, 216, 224)),
     ))
+    .background(Color::srgb(31, 35, 38))
     .padding()
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
 }
 
-const FILM_WGSL: &str = include_str!("shaders/film.wgsl");
+const FILM_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/film.rs"));
 
 struct FlameRenderer {
     last_tick: Instant,
@@ -307,12 +314,15 @@ impl GpuView for FlameRenderer {
         self.last_tick = Instant::now();
         self.sim_time = 0.0;
 
-        let shader = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Flame Film Shader"),
-                source: wgpu::ShaderSource::Wgsl(FILM_WGSL.into()),
-            });
+        let (vertex_shader, fragment_shaders) = FILM_SHADER.create_render_entry_points(
+            ctx.device,
+            "vs_main",
+            &["fs_flame", "fs_downsample", "fs_blur", "fs_final"],
+        );
+        let [flame_shader, downsample_shader, blur_shader, final_shader]: [CompiledShaderModule;
+            4] = fragment_shaders
+            .try_into()
+            .expect("four flame fragment entry points were requested");
 
         let globals_size = Self::GLOBALS_SIZE;
         let globals_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
@@ -354,7 +364,7 @@ impl GpuView for FlameRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
 
@@ -431,16 +441,16 @@ impl GpuView for FlameRenderer {
             ctx.device
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Flame Pipeline Layout"),
-                    bind_group_layouts: &[&globals_layout],
-                    push_constant_ranges: &[],
+                    bind_group_layouts: &[Some(&globals_layout)],
+                    immediate_size: 0,
                 });
 
         let composite_pipeline_layout =
             ctx.device
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Flame Composite Layout"),
-                    bind_group_layouts: &[&globals_layout, &sample_layout],
-                    push_constant_ranges: &[],
+                    bind_group_layouts: &[Some(&globals_layout), Some(&sample_layout)],
+                    immediate_size: 0,
                 });
 
         // Blur shader uses @group(2), so we must provide layouts for groups 0..=2.
@@ -448,8 +458,12 @@ impl GpuView for FlameRenderer {
             ctx.device
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Flame Blur Pipeline Layout"),
-                    bind_group_layouts: &[&globals_layout, &sample_layout, &blur_layout],
-                    push_constant_ranges: &[],
+                    bind_group_layouts: &[
+                        Some(&globals_layout),
+                        Some(&sample_layout),
+                        Some(&blur_layout),
+                    ],
+                    immediate_size: 0,
                 });
 
         let flame_pipeline = ctx
@@ -458,14 +472,14 @@ impl GpuView for FlameRenderer {
                 label: Some("Flame Pass Pipeline"),
                 layout: Some(&flame_pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_flame"),
+                    module: flame_shader.module(),
+                    entry_point: Some(flame_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: Self::FILM_FORMAT,
                         blend: Some(wgpu::BlendState::REPLACE),
@@ -479,8 +493,8 @@ impl GpuView for FlameRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
+                multiview_mask: None,
+                cache: None,
             });
 
         let downsample_pipeline =
@@ -489,14 +503,14 @@ impl GpuView for FlameRenderer {
                     label: Some("Flame Bloom Downsample Pipeline"),
                     layout: Some(&composite_pipeline_layout),
                     vertex: wgpu::VertexState {
-                        module: &shader,
-                        entry_point: Some("vs_main"),
+                        module: vertex_shader.module(),
+                        entry_point: Some(vertex_shader.entry_point()),
                         buffers: &[],
                         compilation_options: wgpu::PipelineCompilationOptions::default(),
                     },
                     fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: Some("fs_downsample"),
+                        module: downsample_shader.module(),
+                        entry_point: Some(downsample_shader.entry_point()),
                         targets: &[Some(wgpu::ColorTargetState {
                             format: Self::FILM_FORMAT,
                             blend: Some(wgpu::BlendState::REPLACE),
@@ -510,8 +524,8 @@ impl GpuView for FlameRenderer {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
-                    cache: ctx.pipeline_cache,
+                    multiview_mask: None,
+                    cache: None,
                 });
 
         let blur_pipeline = ctx
@@ -520,14 +534,14 @@ impl GpuView for FlameRenderer {
                 label: Some("Flame Bloom Blur Pipeline"),
                 layout: Some(&blur_pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_blur"),
+                    module: blur_shader.module(),
+                    entry_point: Some(blur_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: Self::FILM_FORMAT,
                         blend: Some(wgpu::BlendState::REPLACE),
@@ -541,8 +555,8 @@ impl GpuView for FlameRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
+                multiview_mask: None,
+                cache: None,
             });
 
         let final_pipeline = ctx
@@ -551,14 +565,14 @@ impl GpuView for FlameRenderer {
                 label: Some("Flame Final Pipeline"),
                 layout: Some(&composite_pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
+                    module: vertex_shader.module(),
+                    entry_point: Some(vertex_shader.entry_point()),
                     buffers: &[],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_final"),
+                    module: final_shader.module(),
+                    entry_point: Some(final_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: ctx.surface_format,
                         blend: Some(wgpu::BlendState::REPLACE),
@@ -572,8 +586,8 @@ impl GpuView for FlameRenderer {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: ctx.pipeline_cache,
+                multiview_mask: None,
+                cache: None,
             });
 
         self.globals_buffer = Some(globals_buffer);
@@ -712,6 +726,7 @@ impl GpuView for FlameRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(flame_pipeline);
             pass.set_bind_group(0, globals_bind_group, &[]);
@@ -734,6 +749,7 @@ impl GpuView for FlameRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(downsample_pipeline);
             pass.set_bind_group(0, globals_bind_group, &[]);
@@ -757,6 +773,7 @@ impl GpuView for FlameRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(blur_pipeline);
             pass.set_bind_group(0, globals_bind_group, &[]);
@@ -781,6 +798,7 @@ impl GpuView for FlameRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(blur_pipeline);
             pass.set_bind_group(0, globals_bind_group, &[]);
@@ -805,6 +823,7 @@ impl GpuView for FlameRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(final_pipeline);
             pass.set_bind_group(0, globals_bind_group, &[]);
@@ -814,22 +833,5 @@ impl GpuView for FlameRenderer {
 
         frame.queue.submit(std::iter::once(encoder.finish()));
         frame.request_redraw();
-    }
-}
-
-impl SubView for FlameRenderer {
-    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(Size::new(
-            proposal.width.unwrap_or(0.0),
-            proposal.height.unwrap_or(0.0),
-        ))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-
-    fn priority(&self) -> i32 {
-        0
     }
 }

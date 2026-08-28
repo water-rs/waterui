@@ -6,14 +6,15 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```rust
+//! use waterui::component::lazy::Lazy;
 //! use waterui::prelude::*;
 //!
 //! // Create a lazy vertical stack with 1000 items
-//! let list = Lazy::vstack((0..1000).map(|i| text(format!("Item {}", i))));
+//! let list = Lazy::vstack((0..1000).map(|i| text!("Item {i}")).collect::<Vec<_>>());
 //! ```
 
-use nami::collection::Collection;
+use nami::{Computed, collection::Collection};
 use waterui_core::{View, id::Identifiable};
 use waterui_layout::{
     LazyContainer,
@@ -38,8 +39,11 @@ impl Lazy {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// let list = Lazy::vstack((0..1000).map(|i| text(format!("Item {}", i))));
+    /// ```rust
+    /// use waterui::component::lazy::Lazy;
+    /// use waterui::prelude::*;
+    ///
+    /// let list = Lazy::vstack((0..1000).map(|i| text!("Item {i}")).collect::<Vec<_>>());
     /// ```
     pub fn vstack<V: View>(contents: impl Views<View = V> + 'static) -> impl View {
         scroll(LazyContainer::new(VStackLayout::default(), contents))
@@ -52,7 +56,7 @@ impl Lazy {
     ) -> impl View {
         scroll(LazyContainer::new(
             VStackLayout {
-                spacing,
+                spacing: Computed::constant(spacing),
                 ..Default::default()
             },
             contents,
@@ -74,7 +78,7 @@ impl Lazy {
     ) -> impl View {
         scroll(LazyContainer::new(
             HStackLayout {
-                spacing,
+                spacing: Computed::constant(spacing),
                 ..Default::default()
             },
             contents,
@@ -85,9 +89,30 @@ impl Lazy {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// let items = vec![Item::new(1, "First"), Item::new(2, "Second")];
-    /// let list = Lazy::for_each(items, |item| text(item.name));
+    /// ```rust
+    /// use waterui::component::lazy::Lazy;
+    /// use waterui::prelude::*;
+    /// use waterui::id::Id;
+    ///
+    /// #[derive(Clone)]
+    /// struct Item {
+    ///     id: Id,
+    ///     name: &'static str,
+    /// }
+    ///
+    /// impl waterui_core::id::Identifiable for Item {
+    ///     type Id = Id;
+    ///
+    ///     fn id(&self) -> Id {
+    ///         self.id
+    ///     }
+    /// }
+    ///
+    /// let items = vec![
+    ///     Item { id: Id::try_from(1).unwrap(), name: "First" },
+    ///     Item { id: Id::try_from(2).unwrap(), name: "Second" },
+    /// ];
+    /// let list = Lazy::for_each(items, |item| text::text(item.name));
     /// ```
     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
     where

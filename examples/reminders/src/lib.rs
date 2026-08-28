@@ -5,8 +5,8 @@ use waterui::component::list::{List, ListItem};
 use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
 use waterui::shape::RoundedRectangle;
-use waterui::view;
-use waterui_icon::SystemIcon;
+use waterui::widget::condition::when;
+use waterui_icons_material_icon as mdi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SidebarDestination {
@@ -28,13 +28,13 @@ impl SidebarDestination {
         }
     }
 
-    const fn icon_name(self) -> &'static str {
+    fn icon(self) -> waterui_icons_material_icon::Svg {
         match self {
-            Self::Today => "calendar.circle.fill",
-            Self::Scheduled => "calendar.badge.clock",
-            Self::All => "tray.fill",
-            Self::Flagged => "flag.fill",
-            Self::Completed => "checkmark.circle.fill",
+            Self::Today => mdi::calendar_today(),
+            Self::Scheduled => mdi::calendar_clock(),
+            Self::All => mdi::inbox(),
+            Self::Flagged => mdi::flag(),
+            Self::Completed => mdi::check_circle(),
         }
     }
 
@@ -49,39 +49,25 @@ impl SidebarDestination {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Identifiable)]
 struct SidebarRow {
+    #[id]
     id: u32,
     dest: SidebarDestination,
     count: i32,
 }
 
-impl Identifiable for SidebarRow {
-    type Id = u32;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-}
-
-#[derive(Clone)]
+#[derive(Clone, Identifiable)]
 struct ReminderRow {
+    #[id]
     id: u64,
     title: &'static str,
     subtitle: Option<&'static str>,
     flagged: bool,
 }
 
-impl Identifiable for ReminderRow {
-    type Id = u64;
-
-    fn id(&self) -> Self::Id {
-        self.id
-    }
-}
-
-fn sidebar_rows() -> Vec<SidebarRow> {
-    vec![
+fn sidebar_rows() -> [SidebarRow; 5] {
+    [
         SidebarRow {
             id: 1,
             dest: SidebarDestination::Today,
@@ -110,10 +96,10 @@ fn sidebar_rows() -> Vec<SidebarRow> {
     ]
 }
 
-fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow>) {
+fn reminders_for(dest: SidebarDestination) -> (&'static [ReminderRow], &'static [ReminderRow]) {
     match dest {
         SidebarDestination::Today => (
-            vec![
+            &[
                 ReminderRow {
                     id: 1,
                     title: "Call dentist",
@@ -127,7 +113,7 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
                     flagged: true,
                 },
             ],
-            vec![ReminderRow {
+            &[ReminderRow {
                 id: 3,
                 title: "Pick up package",
                 subtitle: Some("Tomorrow 10:00 AM"),
@@ -135,13 +121,13 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
             }],
         ),
         SidebarDestination::Scheduled => (
-            vec![ReminderRow {
+            &[ReminderRow {
                 id: 4,
                 title: "Book flight",
                 subtitle: Some("Fri"),
                 flagged: false,
             }],
-            vec![ReminderRow {
+            &[ReminderRow {
                 id: 5,
                 title: "Pay utilities",
                 subtitle: Some("Next week"),
@@ -149,7 +135,7 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
             }],
         ),
         SidebarDestination::All => (
-            vec![
+            &[
                 ReminderRow {
                     id: 6,
                     title: "Plan weekend",
@@ -163,7 +149,7 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
                     flagged: true,
                 },
             ],
-            vec![ReminderRow {
+            &[ReminderRow {
                 id: 8,
                 title: "Refactor split navigation chrome",
                 subtitle: Some("Cross-platform"),
@@ -171,16 +157,16 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
             }],
         ),
         SidebarDestination::Flagged => (
-            vec![ReminderRow {
+            &[ReminderRow {
                 id: 9,
                 title: "Prepare demo",
                 subtitle: Some("High priority"),
                 flagged: true,
             }],
-            vec![],
+            &[],
         ),
         SidebarDestination::Completed => (
-            vec![
+            &[
                 ReminderRow {
                     id: 10,
                     title: "Submit timesheet",
@@ -194,7 +180,7 @@ fn reminders_for(dest: SidebarDestination) -> (Vec<ReminderRow>, Vec<ReminderRow
                     flagged: false,
                 },
             ],
-            vec![],
+            &[],
         ),
     }
 }
@@ -220,17 +206,14 @@ fn reminder_matches_query(reminder: &ReminderRow, query: &str) -> bool {
     title_matches || subtitle_matches
 }
 
-fn filter_reminders(rows: Vec<ReminderRow>, normalized_query: Option<&str>) -> Vec<ReminderRow> {
-    match normalized_query {
-        Some(query) => rows
-            .into_iter()
-            .filter(|row| reminder_matches_query(row, query))
-            .collect(),
-        None => rows,
-    }
+fn matching_reminder_count(rows: &[ReminderRow], normalized_query: &str) -> usize {
+    rows.iter()
+        .filter(|row| reminder_matches_query(row, normalized_query))
+        .count()
 }
 
-fn main_view() -> impl View {
+#[preview]
+pub fn demo() -> impl View {
     let selection = Binding::container(Some(SidebarDestination::Today));
     let search = Binding::container(Str::default());
 
@@ -246,8 +229,8 @@ fn main_view() -> impl View {
             move |dest| detail_view(dest, search.clone())
         },
     )
-    .sidebar_width(300.0)
-    .placeholder(|| placeholder_view())
+    .sidebar_width(ColumnWidth::new(240.0, 300.0, 420.0))
+    .placeholder(placeholder_view)
 }
 
 fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>) -> impl View {
@@ -278,8 +261,8 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
             let count = query.map(move |query| {
                 if let Some(query) = query.as_deref() {
                     let (today_rows, upcoming_rows) = reminders_for(dest);
-                    filter_reminders(today_rows, Some(query)).len() as i32
-                        + filter_reminders(upcoming_rows, Some(query)).len() as i32
+                    matching_reminder_count(today_rows, query) as i32
+                        + matching_reminder_count(upcoming_rows, query) as i32
                 } else {
                     row.count
                 }
@@ -287,15 +270,13 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
 
             ListItem::new(
                 hstack((
-                    SystemIcon::from_static(dest.icon_name())
-                        .size(18.0, 18.0)
-                        .foreground(dest.icon_color()),
+                    dest.icon().tint(dest.icon_color()).size(18.0, 18.0),
                     text(dest.title()).body().foreground(Foreground),
                     spacer(),
                     text!("{count}").caption().foreground(MutedForeground),
                 ))
                 .padding_with(EdgeInsets::symmetric(10.0, 14.0))
-                .background(bg)
+                .background(signal_color(bg))
                 .clip(RoundedRectangle::new(10.0))
                 .on_tap({
                     let selection_for_action = selection_for_action.clone();
@@ -309,27 +290,23 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
 }
 
 fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView {
-    Dynamic::watch(search.clone(), move |query| {
-        let normalized_query = normalized_search_query(&query);
-        let (today_rows, upcoming_rows) = reminders_for(dest);
-        let today_rows = filter_reminders(today_rows, normalized_query.as_deref());
-        let upcoming_rows = filter_reminders(upcoming_rows, normalized_query.as_deref());
+    let (today_rows, upcoming_rows) = reminders_for(dest);
 
-        vstack((
-            content_header(dest),
-            Divider,
-            reminder_section("Today", today_rows),
-            (!upcoming_rows.is_empty()).then(|| reminder_section("Upcoming", upcoming_rows)),
-        ))
-        .background(Material::Regular)
-    })
+    vstack((
+        content_header(dest),
+        Divider,
+        reminder_section("Today", today_rows, search.clone()),
+        reminder_section("Upcoming", upcoming_rows, search.clone()),
+    ))
+    .background(Material::Regular)
     .title(dest.title())
     .searchable(&search, "Search reminders")
-    .navigation_bar_trailing(
-        button(Label::new("").icon(SystemIcon::PLUS))
+    .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::new(
+        NavigationToolbarPlacement::PrimaryAction,
+        button(label("").icon(mdi::plus()))
             .style(ButtonStyle::Borderless)
             .action(|| {}),
-    )
+    )]))
 }
 
 fn placeholder_view() -> impl View {
@@ -354,17 +331,47 @@ fn content_header(dest: SidebarDestination) -> impl View {
     .padding_with(EdgeInsets::new(14.0, 18.0, 12.0, 18.0))
 }
 
-fn reminder_section(title: &'static str, rows: Vec<ReminderRow>) -> impl View {
+fn reminder_visible(search: Binding<Str>, row: ReminderRow) -> Computed<bool> {
+    search
+        .map(move |query| {
+            normalized_search_query(&query)
+                .as_deref()
+                .is_none_or(|query| reminder_matches_query(&row, query))
+        })
+        .computed()
+}
+
+fn section_visible(search: Binding<Str>, rows: &'static [ReminderRow]) -> Computed<bool> {
+    search
+        .map(move |query| {
+            let normalized_query = normalized_search_query(&query);
+            match normalized_query.as_deref() {
+                Some(query) => rows
+                    .iter()
+                    .any(|reminder| reminder_matches_query(reminder, query)),
+                None => !rows.is_empty(),
+            }
+        })
+        .computed()
+}
+
+fn reminder_section(
+    title: &'static str,
+    rows: &'static [ReminderRow],
+    search: Binding<Str>,
+) -> impl View {
+    let visible = section_visible(search.clone(), rows);
     vstack((
         text(title)
             .caption()
             .bold()
             .foreground(MutedForeground)
             .padding_with(EdgeInsets::new(8.0, 18.0, 0.0, 18.0)),
-        List::for_each(rows, |row| {
+        List::for_each(rows, move |row| {
+            let visible = reminder_visible(search.clone(), row.clone());
             ListItem::new(
                 hstack((
-                    SystemIcon::from_static("circle")
+                    mdi::circle_outline()
                         .size(16.0, 16.0)
                         .foreground(MutedForeground),
                     vstack((
@@ -374,27 +381,19 @@ fn reminder_section(title: &'static str, rows: Vec<ReminderRow>) -> impl View {
                     ))
                     .spacing(2.0),
                     spacer(),
-                    view! {
-                        if row.flagged {
-                            SystemIcon::from_static("flag.fill")
-                                .size(12.0, 12.0)
-                                .foreground(Srgb::from_hex("#F28A34"))
-                        } else {
-                            spacer().width(12.0)
-                        }
-                    },
+                    when(row.flagged, || {
+                        mdi::flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
+                    })
+                    .otherwise(|| spacer().width(12.0)),
                 ))
-                .padding_with(EdgeInsets::symmetric(10.0, 18.0)),
+                .padding_with(EdgeInsets::symmetric(10.0, 18.0))
+                .visible(visible),
             )
         }),
     ))
+    .visible(visible)
 }
 
 pub fn app(env: Environment) -> App {
-    App::new(main_view, env)
-}
-
-#[preview]
-fn reminders_preview() -> impl View {
-    main_view()
+    App::new(demo, env)
 }

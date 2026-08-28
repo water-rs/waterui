@@ -28,14 +28,33 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 import Darwin
 import AppKit
 import WaterUI
+{% if ctx.cef_runtime_enabled() %}
+import WaterUICEF
+{% endif %}
+{% if ctx.chromium_enabled() %}
+import WaterUIChromium
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+import WaterUICefWebView
+{% endif %}
 
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow?
     private var headlessContext: WuiRootContext?
+    private var headlessTask: Task<Void, Never>?
     private let isAccessory: Bool = {{ ctx.accessory }}
 
     static func main() {
+{% if ctx.cef_runtime_enabled() %}
+        prepareWaterUICEFApplication()
+{% endif %}
+{% if ctx.chromium_enabled() %}
+        installWaterUIChromium()
+{% endif %}
+{% if ctx.cef_webview_enabled() %}
+        installWaterUICefWebView()
+{% endif %}
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -57,10 +76,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if isAccessory {
-            let context = WuiRootContext()
-            // Force view construction so Preview::body runs and TCP server starts.
-            _ = context.rootView
-            headlessContext = context
+            headlessTask = Task { @MainActor [weak self] in
+                let context = await WuiRootContext()
+                guard !Task.isCancelled else { return }
+                // Force view construction so Preview::body runs and TCP server starts.
+                _ = context.rootView
+                self?.headlessContext = context
+            }
             return
         }
 
@@ -70,11 +92,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "{{ ctx.app_name }}"
+        window.title = "{{ ctx.app_display_name }}"
         window.contentView = WaterUIView(frame: window.contentRect(forFrameRect: window.frame))
         window.center()
         window.makeKeyAndOrderFront(nil)
         self.window = window
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        !isAccessory
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        headlessTask?.cancel()
+        headlessTask = nil
+        headlessContext = nil
     }
 }
 #endif

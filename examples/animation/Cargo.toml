@@ -6,7 +6,6 @@ authors = ["Lexo Liu"]
 description = "Animation example for WaterUI framework"
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
 keywords = ["ui", "framework", "example", "animation"]
 categories = ["gui"]
 publish = false

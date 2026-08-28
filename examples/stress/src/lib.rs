@@ -1,23 +1,29 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "intentional lossy numeric cast in rendering/layout code"
+)]
 //! Stress Example - High pressure real-app workload for profiling
 //!
-//! This app is intended for professional profiling (xctrace/perfetto), not preview.
+//! This app is intended for professional profiling through native tools and `WaterUI` preview perf.
 //! It drives three independent pressure paths:
 //! - System animation path (metadata -> native animation acceleration)
 //! - Custom animation path (framework/self-rendered GPU animation)
 //! - Filter path (framework interpolation + effect rendering)
 //!
 //! Tune load via env vars:
-//! - WATERUI_STRESS_SYSTEM_COUNT (default: 120)
-//! - WATERUI_STRESS_CUSTOM_COUNT (default: 96)
-//! - WATERUI_STRESS_FILTER_COUNT (default: 144)
-//! - WATERUI_STRESS_TOGGLE_MS (default: 680)
-//! - WATERUI_STRESS_FILTER_TOGGLE_MS (default: 240)
+//! - `WATERUI_STRESS_SYSTEM_COUNT` (default: 120)
+//! - `WATERUI_STRESS_CUSTOM_COUNT` (default: 96)
+//! - `WATERUI_STRESS_FILTER_COUNT` (default: 144)
+//! - `WATERUI_STRESS_TOGGLE_MS` (default: 680)
+//! - `WATERUI_STRESS_FILTER_TOGGLE_MS` (default: 240)
 
 use core::time::Duration;
 
 use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::preview;
 use waterui::reactive::Binding;
 use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
 use waterui::task::{sleep, spawn_local};
@@ -51,13 +57,13 @@ fn system_tile(toggle: &Binding<bool>, index: usize) -> impl View {
     let fast = Duration::from_millis(520);
     let easing = Animation::bezier(fast, 0.22, 1.0, 0.36, 1.0);
 
-    let amp = 8.0 + (index % 5) as f32 * 2.0;
-    let hi_scale = 0.9 + (index % 4) as f32 * 0.09;
-    let lo_scale = 0.45 + (index % 3) as f32 * 0.08;
+    let amp = ((index % 5) as f32).mul_add(2.0, 8.0);
+    let hi_scale = ((index % 4) as f32).mul_add(0.09, 0.9);
+    let lo_scale = ((index % 3) as f32).mul_add(0.08, 0.45);
     let hi_rot = (index % 8) as f32 * 22.5;
 
     let scale = toggle.select(hi_scale, lo_scale).with(easing.clone());
-    let rotation = toggle.select(hi_rot, -hi_rot).with(easing.clone());
+    let rotation = toggle.select(hi_rot, -hi_rot).with(easing);
     let offset_x = toggle
         .select(amp, -amp)
         .with(Animation::spring(260.0, 20.0));
@@ -88,17 +94,17 @@ fn filter_tile(
 
     let blur = blur_target
         .clone()
-        .map(move |v| (v + (idx * 0.17).sin() * 1.6).clamp(0.0, 12.0) as f32)
+        .map(move |v| (idx * 0.17).sin().mul_add(1.6, v).clamp(0.0, 12.0) as f32)
         .with(Animation::spring(220.0, 14.0));
 
     let saturation = saturation_target
         .clone()
-        .map(move |v| (v + (idx * 0.11).cos() * 0.35).clamp(0.0, 2.0) as f32)
+        .map(move |v| (idx * 0.11).cos().mul_add(0.35, v).clamp(0.0, 2.0) as f32)
         .with(Animation::ease_in_out(Duration::from_millis(380)));
 
     let hue = hue_target
         .clone()
-        .map(move |v| (v + idx * 11.0).rem_euclid(360.0) as f32)
+        .map(move |v| idx.mul_add(11.0, v).rem_euclid(360.0) as f32)
         .with(Animation::ease_in_out(Duration::from_millis(420)));
 
     zstack((
@@ -188,7 +194,34 @@ fn filter_section(
     .padding()
 }
 
-fn main() -> impl View {
+#[preview]
+fn system_pressure_preview() -> impl View {
+    let toggle = Binding::bool(false);
+    scroll(system_section(120, &toggle))
+}
+
+#[preview]
+fn custom_pressure_preview() -> impl View {
+    scroll(custom_section(96))
+}
+
+#[preview]
+fn filter_pressure_preview() -> impl View {
+    let blur_target = Binding::f64(1.0);
+    let saturation_target = Binding::f64(1.0);
+    let hue_target = Binding::f64(0.0);
+    scroll(filter_section(
+        144,
+        &blur_target,
+        &saturation_target,
+        &hue_target,
+    ))
+}
+
+/// High-pressure profiling workload. Counts are tunable via the
+/// `WATERUI_STRESS_*` environment variables.
+#[preview]
+pub fn demo() -> impl View {
     let system_count = env_usize("WATERUI_STRESS_SYSTEM_COUNT", 120).clamp(18, 1_440);
     let custom_count = env_usize("WATERUI_STRESS_CUSTOM_COUNT", 96).clamp(14, 1_120);
     let filter_count = env_usize("WATERUI_STRESS_FILTER_COUNT", 144).clamp(12, 1_200);
@@ -255,6 +288,52 @@ fn main() -> impl View {
     )
 }
 
+/// Standalone entry point for the stress example.
 pub fn app(env: Environment) -> App {
-    App::new(main, env)
+    App::new(demo, env)
+}
+
+#[cfg(test)]
+mod bench {
+    use waterui::prelude::*;
+    use waterui_testing::PerfApp;
+
+    use super::{custom_section, filter_section, system_section};
+
+    /// The three stress pressure paths at their default preview scale, without
+    /// the app's background toggle tasks: the bench drives frames itself.
+    fn stress_scene() -> impl View {
+        let system_toggle = Binding::bool(true);
+        let blur_target = Binding::f64(1.0);
+        let saturation_target = Binding::f64(1.0);
+        let hue_target = Binding::f64(0.0);
+        scroll(
+            vstack((
+                system_section(120, &system_toggle),
+                custom_section(96),
+                filter_section(144, &blur_target, &saturation_target, &hue_target),
+            ))
+            .padding(),
+        )
+    }
+
+    // Counter budgets derived from a full local run (observed: rebuilt 0/840,
+    // compositor layers 1, gpu-surface layers 0, clip pushes 1) with generous
+    // headroom; they guard structural regressions, which are hardware
+    // independent. Frame-time ceilings are left to CI via `water bench
+    // --max-p95-us`, which knows its own hardware.
+    #[waterui::bench(
+        stress_scene,
+        theme = hydrolysis_m3::install,
+        viewport = (390, 844),
+        max_rebuild_ratio = 0.05,
+        max_scene_layers = 4,
+        max_gpu_surface_layers = 2,
+        max_clip_layers = 8,
+    )]
+    fn stress_steady_redraw(perf: &mut PerfApp) {
+        perf.measure("steady-redraw", |run| {
+            run.redraw();
+        });
+    }
 }

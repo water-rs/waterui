@@ -9,12 +9,17 @@ use std::{
 use executor_core::spawn_local;
 use nami::{
     Computed, Signal,
+    collection::List as ReactiveList,
     signal::IntoComputed,
     watcher::{Context, Metadata as WatcherMetadata},
 };
 use native_executor::sleep;
 use tree_sitter::{InputEdit, Parser, Point, Tree};
-use waterui_core::{AnyView, Metadata, Retain, View, dynamic::Dynamic};
+use waterui_core::{
+    AnyView, Metadata, Retain, View,
+    dynamic::{Dynamic, DynamicHandler},
+    id::Identifiable,
+};
 use waterui_graphics::color::Srgb;
 use waterui_layout::stack::{HorizontalAlignment, VStack};
 use waterui_str::Str;
@@ -34,7 +39,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct FlowMarkdown {
     source: Computed<Str>,
-    config: FlowMarkdownConfig,
+    config: Computed<FlowMarkdownConfig>,
 }
 
 /// Convenience constructor for [`FlowMarkdown`].
@@ -49,14 +54,25 @@ impl FlowMarkdown {
     pub fn new(source: impl IntoComputed<Str>) -> Self {
         Self {
             source: source.into_computed(),
-            config: FlowMarkdownConfig::default(),
+            config: Computed::constant(FlowMarkdownConfig::default()),
         }
+    }
+
+    /// Sets the dynamic configuration for this markdown view.
+    #[must_use]
+    pub fn configuration(mut self, config: impl IntoComputed<FlowMarkdownConfig>) -> Self {
+        self.config = config.into_computed();
+        self
     }
 
     /// Sets the animation preset.
     #[must_use]
-    pub const fn preset(mut self, preset: FlowAnimationPreset) -> Self {
-        self.config.preset = preset;
+    pub fn preset(mut self, preset: FlowAnimationPreset) -> Self {
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.preset = preset;
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 
@@ -67,28 +83,44 @@ impl FlowMarkdown {
         kind: FlowElementKind,
         policy: FlowAnimationPolicy,
     ) -> Self {
-        self.config.overrides.insert(kind, policy);
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.overrides.insert(kind, policy.clone());
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 
     /// Sets stream mode.
     #[must_use]
-    pub const fn stream(mut self, mode: FlowStreamMode) -> Self {
-        self.config.stream_mode = mode;
+    pub fn stream(mut self, mode: FlowStreamMode) -> Self {
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.stream_mode = mode;
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 
     /// Sets max pending bytes kept for partial parsing.
     #[must_use]
     pub fn max_pending_bytes(mut self, bytes: usize) -> Self {
-        self.config.max_pending_bytes = bytes.max(256);
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.max_pending_bytes = bytes.max(256);
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 
     /// Sets table rendering policy for incomplete streamed tables.
     #[must_use]
-    pub const fn table_policy(mut self, policy: FlowTablePolicy) -> Self {
-        self.config.table_policy = policy;
+    pub fn table_policy(mut self, policy: FlowTablePolicy) -> Self {
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.table_policy = policy;
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 
@@ -96,8 +128,12 @@ impl FlowMarkdown {
     ///
     /// Use `None` to disable token fade-in.
     #[must_use]
-    pub const fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
-        self.config.typewriter_token_fade_in = animation;
+    pub fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
+        let config = nami::SignalExt::map(&self.config, move |mut config| {
+            config.typewriter_token_fade_in.clone_from(&animation);
+            config
+        });
+        self.config = nami::SignalExt::computed(&config);
         self
     }
 }
@@ -105,37 +141,55 @@ impl FlowMarkdown {
 impl View for FlowMarkdown {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         let Self { source, config } = self;
-        let (handler, dynamic) = Dynamic::new();
-        let state = Rc::new(RefCell::new(FlowMarkdownState::new(config)));
+        let blocks = ReactiveList::new();
+        let state = Rc::new(RefCell::new(FlowMarkdownState::new(
+            config.get(),
+            blocks.clone(),
+        )));
 
         let initial = source.get();
         let initial_update = state
             .borrow_mut()
             .recompute(initial.as_str(), WatcherMetadata::new());
-        let initial_typewriter = initial_update.typewriter.clone();
-        handler.set_with_metadata(initial_update.view, initial_update.metadata);
-        spawn_typewriter_reveal_if_needed(&state, &handler, initial_typewriter);
+        spawn_typewriter_reveal_if_needed(&state, initial_update.typewriter);
 
         let guard_source = source.clone();
-        let guard = source.watch({
+        let guard_config = config.clone();
+        let source_guard = source.watch({
             let state = Rc::clone(&state);
             move |ctx: Context<Str>| {
                 let metadata = ctx.metadata().clone();
                 let markdown = ctx.into_value();
                 let update = state.borrow_mut().recompute(markdown.as_str(), metadata);
-                let typewriter = update.typewriter.clone();
-                handler.set_with_metadata(update.view, update.metadata);
-                spawn_typewriter_reveal_if_needed(&state, &handler, typewriter);
+                spawn_typewriter_reveal_if_needed(&state, update.typewriter);
+            }
+        });
+        let config_guard = config.watch({
+            let state = Rc::clone(&state);
+            move |ctx: Context<FlowMarkdownConfig>| {
+                let metadata = ctx.metadata().clone();
+                let update = state.borrow_mut().reconfigure(ctx.into_value(), metadata);
+                spawn_typewriter_reveal_if_needed(&state, update.typewriter);
             }
         });
 
-        Metadata::new(dynamic, Retain::new((guard, guard_source, state)))
+        let content = VStack::for_each(blocks, |block: FlowBlockSlot| block.content.view())
+            .alignment(HorizontalAlignment::Leading);
+        Metadata::new(
+            content,
+            Retain::new((
+                source_guard,
+                config_guard,
+                guard_source,
+                guard_config,
+                state,
+            )),
+        )
     }
 }
 
 fn spawn_typewriter_reveal_if_needed(
     state: &Rc<RefCell<FlowMarkdownState>>,
-    handler: &waterui_core::dynamic::DynamicHandler,
     run: Option<TypewriterRun>,
 ) {
     let Some(run) = run else {
@@ -143,21 +197,15 @@ fn spawn_typewriter_reveal_if_needed(
     };
 
     let state = Rc::clone(state);
-    let handler = handler.clone();
     spawn_local(async move {
         loop {
             sleep(Duration::from_millis(run.batch_ms)).await;
-            let next = {
+            let advanced = {
                 let mut state = state.borrow_mut();
-                state.advance_typewriter(run.revision, run.batch_chars)
+                state.advance_typewriter(run.revision, run.batch_chars, run.token_fade_in.clone())
             };
-            let Some(view) = next else {
+            if !advanced {
                 return;
-            };
-            if let Some(animation) = run.token_fade_in.clone() {
-                handler.set_with_metadata(view, WatcherMetadata::new().with(animation));
-            } else {
-                handler.set(view);
             }
         }
     })
@@ -175,6 +223,11 @@ pub struct FlowMarkdownConfig {
     typewriter_token_fade_in: Option<Animation>,
 }
 
+// A configuration value is a signal that never changes, so a bare
+// `FlowMarkdownConfig` satisfies `IntoComputed<FlowMarkdownConfig>` and callers
+// of `FlowMarkdown::configuration` need no `Computed::constant` wrapper.
+nami::impl_constant!(FlowMarkdownConfig);
+
 impl Default for FlowMarkdownConfig {
     fn default() -> Self {
         Self {
@@ -185,6 +238,56 @@ impl Default for FlowMarkdownConfig {
             table_policy: FlowTablePolicy::NoAnimationReadablePending,
             typewriter_token_fade_in: None,
         }
+    }
+}
+
+impl FlowMarkdownConfig {
+    /// Sets the animation preset.
+    #[must_use]
+    pub const fn preset(mut self, preset: FlowAnimationPreset) -> Self {
+        self.preset = preset;
+        self
+    }
+
+    /// Overrides animation policy for a specific element kind.
+    #[must_use]
+    pub fn override_animation(
+        mut self,
+        kind: FlowElementKind,
+        policy: FlowAnimationPolicy,
+    ) -> Self {
+        self.overrides.insert(kind, policy);
+        self
+    }
+
+    /// Sets stream mode.
+    #[must_use]
+    pub const fn stream(mut self, mode: FlowStreamMode) -> Self {
+        self.stream_mode = mode;
+        self
+    }
+
+    /// Sets max pending bytes kept for partial parsing.
+    #[must_use]
+    pub const fn max_pending_bytes(mut self, bytes: usize) -> Self {
+        self.max_pending_bytes = if bytes > 256 { bytes } else { 256 };
+        self
+    }
+
+    /// Sets table rendering policy for incomplete streamed tables.
+    #[must_use]
+    pub const fn table_policy(mut self, policy: FlowTablePolicy) -> Self {
+        self.table_policy = policy;
+        self
+    }
+
+    /// Sets fade animation for newly revealed typewriter token batches.
+    ///
+    /// Use `None` to disable token fade-in.
+    #[must_use]
+    pub const fn token_fade_in(mut self, animation: Option<Animation>) -> Self {
+        self.typewriter_token_fade_in = animation;
+        self
     }
 }
 
@@ -270,6 +373,7 @@ pub enum FlowTablePolicy {
 
 #[derive(Debug, Clone)]
 struct FlowBlock {
+    identity: u64,
     range: Range<usize>,
     kind: FlowElementKind,
     elements: Vec<RichTextElement>,
@@ -277,9 +381,111 @@ struct FlowBlock {
 
 #[derive(Debug)]
 struct FlowUpdate {
-    view: AnyView,
-    metadata: WatcherMetadata,
     typewriter: Option<TypewriterRun>,
+}
+
+#[derive(Clone, crate::Identifiable)]
+struct FlowBlockSlot {
+    #[id]
+    identity: u64,
+    content: FlowBlockContent,
+}
+
+#[derive(Clone)]
+struct FlowBlockRender {
+    block: FlowBlock,
+    remaining: usize,
+    enforce_budget: bool,
+    config: FlowMarkdownConfig,
+}
+
+impl FlowBlockRender {
+    fn view(self) -> AnyView {
+        let mut remaining = self.remaining;
+        build_flow_block_view(
+            &self.block,
+            &mut remaining,
+            self.enforce_budget,
+            &self.config,
+        )
+    }
+}
+
+#[derive(Clone)]
+struct FlowBlockContent(Rc<RefCell<FlowBlockContentState>>);
+
+struct FlowBlockContentState {
+    current: FlowBlockRender,
+    subscribers: HashMap<u64, DynamicHandler>,
+    next_subscriber_identity: u64,
+}
+
+impl FlowBlockContent {
+    fn new(current: FlowBlockRender) -> Self {
+        Self(Rc::new(RefCell::new(FlowBlockContentState {
+            current,
+            subscribers: HashMap::new(),
+            next_subscriber_identity: 1,
+        })))
+    }
+
+    fn set_with_metadata(&self, current: &FlowBlockRender, metadata: &WatcherMetadata) {
+        let subscribers = {
+            let mut state = self.0.borrow_mut();
+            state.current = current.clone();
+            state.subscribers.values().cloned().collect::<Vec<_>>()
+        };
+        for subscriber in subscribers {
+            subscriber.set_with_metadata(current.clone().view(), metadata.clone());
+        }
+    }
+
+    fn view(&self) -> impl View + use<> {
+        let current = self.0.borrow().current.clone();
+        let (handler, dynamic) = Dynamic::new();
+        handler.set(current.view());
+        let identity = {
+            let mut state = self.0.borrow_mut();
+            let identity = state.next_subscriber_identity;
+            state.next_subscriber_identity = state
+                .next_subscriber_identity
+                .checked_add(1)
+                .expect("FlowMarkdown block subscriber identity exhausted");
+            let previous = state.subscribers.insert(identity, handler);
+            assert!(
+                previous.is_none(),
+                "FlowMarkdown block subscriber identity reused"
+            );
+            identity
+        };
+        Metadata::new(
+            dynamic,
+            Retain::new(FlowBlockSubscription {
+                content: self.clone(),
+                identity,
+            }),
+        )
+    }
+}
+
+struct FlowBlockSubscription {
+    content: FlowBlockContent,
+    identity: u64,
+}
+
+impl Drop for FlowBlockSubscription {
+    fn drop(&mut self) {
+        let removed = self
+            .content
+            .0
+            .borrow_mut()
+            .subscribers
+            .remove(&self.identity);
+        assert!(
+            removed.is_some(),
+            "FlowMarkdown block subscriber disappeared before its retained view"
+        );
+    }
 }
 
 struct FlowMarkdownState {
@@ -289,6 +495,10 @@ struct FlowMarkdownState {
     source: String,
     source_end_point: Point,
     blocks: Vec<FlowBlock>,
+    slots: ReactiveList<FlowBlockSlot>,
+    rendered_blocks: HashMap<u64, (usize, u64, usize)>,
+    next_block_identity: u64,
+    configuration_revision: u64,
     typewriter_visible_chars: usize,
     typewriter_target_chars: usize,
     typewriter_revision: u64,
@@ -303,7 +513,7 @@ struct TypewriterRun {
 }
 
 impl FlowMarkdownState {
-    fn new(config: FlowMarkdownConfig) -> Self {
+    fn new(config: FlowMarkdownConfig, slots: ReactiveList<FlowBlockSlot>) -> Self {
         Self {
             config,
             parser: init_markdown_parser(),
@@ -311,16 +521,43 @@ impl FlowMarkdownState {
             source: String::new(),
             source_end_point: Point { row: 0, column: 0 },
             blocks: Vec::new(),
+            slots,
+            rendered_blocks: HashMap::new(),
+            next_block_identity: 1,
+            configuration_revision: 0,
             typewriter_visible_chars: 0,
             typewriter_target_chars: 0,
             typewriter_revision: 0,
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Streaming markdown reconciliation keeps the parser state transition in one readable pass"
-    )]
+    fn previous_block_indexes(&self) -> (HashMap<(usize, usize), FlowBlock>, HashMap<usize, u64>) {
+        let by_range = self
+            .blocks
+            .iter()
+            .cloned()
+            .map(|block| ((block.range.start, block.range.end), block))
+            .collect();
+        let identity_by_start = self
+            .blocks
+            .iter()
+            .map(|block| (block.range.start, block.identity))
+            .collect();
+        (by_range, identity_by_start)
+    }
+
+    fn reused_or_new_block_identity(
+        &mut self,
+        incremental: bool,
+        start: usize,
+        previous_identity_by_start: &HashMap<usize, u64>,
+    ) -> u64 {
+        if incremental && let Some(identity) = previous_identity_by_start.get(&start) {
+            return *identity;
+        }
+        self.allocate_block_identity()
+    }
+
     fn recompute(&mut self, markdown: &str, upstream_metadata: WatcherMetadata) -> FlowUpdate {
         let previous_len = self.source.len();
         let is_append_only = markdown.starts_with(&self.source);
@@ -329,7 +566,6 @@ impl FlowMarkdownState {
             && is_append_only
             && !self.source.is_empty();
 
-        let mut previous_tree_for_diff = None;
         let (next_tree, next_source_end_point) = if should_incremental {
             let mut previous_tree = self
                 .tree
@@ -341,7 +577,6 @@ impl FlowMarkdownState {
                 .parser
                 .parse(markdown, Some(&previous_tree))
                 .expect("FlowMarkdown incremental parse returned no syntax tree");
-            previous_tree_for_diff = Some(previous_tree);
             (next_tree, edit.new_end_position)
         } else {
             let next_tree = self
@@ -354,46 +589,43 @@ impl FlowMarkdownState {
         let mut changed_kinds = HashSet::new();
         let mut blocks = Vec::new();
         let ranges = collect_block_ranges(&next_tree, markdown.len());
-        let changed_ranges = collect_changed_ranges(
-            previous_tree_for_diff.as_ref(),
-            &next_tree,
-            markdown.len(),
-            should_incremental,
-        );
-
-        let previous_map: HashMap<(usize, usize), FlowBlock> = self
-            .blocks
-            .iter()
-            .cloned()
-            .map(|b| ((b.range.start, b.range.end), b))
-            .collect();
+        let (previous_map, previous_identity_by_start) = self.previous_block_indexes();
 
         for block in ranges {
             let key = (block.range.start, block.range.end);
-            let has_changed = changed_ranges
-                .iter()
-                .any(|range| ranges_overlap(range, &block.range));
-
-            if !has_changed
-                && should_incremental
-                && let Some(old) = previous_map.get(&key)
-            {
-                blocks.push(old.clone());
-                continue;
+            if should_incremental && let Some(old) = previous_map.get(&key) {
+                let previous_source = self
+                    .source
+                    .as_str()
+                    .get(old.range.clone())
+                    .expect("FlowMarkdown cached block range must be a valid UTF-8 slice");
+                let current_source = markdown
+                    .get(block.range.clone())
+                    .expect("FlowMarkdown parsed block range must be a valid UTF-8 slice");
+                if previous_source == current_source {
+                    blocks.push(old.clone());
+                    continue;
+                }
             }
 
-            let parsed = parse_block(
+            let mut parsed = parse_block(
                 markdown,
                 &block,
                 self.config.table_policy,
                 self.config.max_pending_bytes,
+            );
+            parsed.identity = self.reused_or_new_block_identity(
+                should_incremental,
+                block.range.start,
+                &previous_identity_by_start,
             );
             changed_kinds.insert(parsed.kind);
             blocks.push(parsed);
         }
 
         if blocks.is_empty() && !markdown.is_empty() {
-            let fallback = parse_fallback(markdown);
+            let mut fallback = parse_fallback(markdown);
+            fallback.identity = self.allocate_block_identity();
             changed_kinds.insert(FlowElementKind::Text);
             blocks.push(fallback);
         }
@@ -432,30 +664,118 @@ impl FlowMarkdownState {
         } else {
             self.resolve_animation_metadata(upstream_metadata, &changed_kinds)
         };
-        let view = self.build_current_view();
-        FlowUpdate {
-            view,
-            metadata,
-            typewriter,
-        }
+        self.sync_current_view(metadata);
+        FlowUpdate { typewriter }
     }
 
-    fn advance_typewriter(&mut self, revision: u64, batch_chars: usize) -> Option<AnyView> {
+    fn advance_typewriter(
+        &mut self,
+        revision: u64,
+        batch_chars: usize,
+        token_fade_in: Option<Animation>,
+    ) -> bool {
         if revision != self.typewriter_revision
             || self.typewriter_visible_chars >= self.typewriter_target_chars
         {
-            return None;
+            return false;
         }
 
         self.typewriter_visible_chars =
             (self.typewriter_visible_chars + batch_chars.max(1)).min(self.typewriter_target_chars);
-        Some(self.build_current_view())
+        let metadata = token_fade_in.map_or_else(WatcherMetadata::new, |animation| {
+            WatcherMetadata::new().with(animation)
+        });
+        self.sync_current_view(metadata);
+        true
     }
 
-    fn build_current_view(&self) -> AnyView {
+    fn reconfigure(
+        &mut self,
+        config: FlowMarkdownConfig,
+        upstream_metadata: WatcherMetadata,
+    ) -> FlowUpdate {
+        self.config = config;
+        self.configuration_revision = self.configuration_revision.wrapping_add(1);
+        self.typewriter_revision = self.typewriter_revision.wrapping_add(1);
+        let full_typewriter_chars = self.total_typewriter_char_count(&self.blocks);
+        self.typewriter_visible_chars = self.typewriter_visible_chars.min(full_typewriter_chars);
+        self.typewriter_target_chars = full_typewriter_chars;
+        self.sync_current_view(upstream_metadata);
+        FlowUpdate { typewriter: None }
+    }
+
+    const fn allocate_block_identity(&mut self) -> u64 {
+        let identity = self.next_block_identity;
+        self.next_block_identity = self
+            .next_block_identity
+            .checked_add(1)
+            .expect("FlowMarkdown block identity exhausted");
+        identity
+    }
+
+    fn sync_current_view(&mut self, metadata: WatcherMetadata) {
         let budget = (self.typewriter_visible_chars < self.typewriter_target_chars)
             .then_some(self.typewriter_visible_chars);
-        build_flow_view(&self.blocks, budget, &self.config)
+        let mut remaining = budget.unwrap_or(usize::MAX);
+        let enforce_budget = budget.is_some();
+        let previous_slots = self.slots.snapshot();
+        let existing_slots: HashMap<u64, FlowBlockSlot> = previous_slots
+            .iter()
+            .cloned()
+            .map(|slot| (slot.identity, slot))
+            .collect();
+        let mut next_slots = Vec::with_capacity(self.blocks.len());
+        let mut next_rendered = HashMap::with_capacity(self.blocks.len());
+
+        for block in &self.blocks {
+            let block_chars = block
+                .elements
+                .iter()
+                .map(rich_text_element_text_len)
+                .sum::<usize>();
+            let consumes_budget = enforce_budget && self.has_typewriter_policy(block.kind);
+            let render_budget = if consumes_budget {
+                remaining.min(block_chars)
+            } else {
+                usize::MAX
+            };
+            let next_remaining = if consumes_budget {
+                remaining.saturating_sub(block_chars)
+            } else {
+                remaining
+            };
+            let render_key = (render_budget, self.configuration_revision, block.range.end);
+
+            let render = FlowBlockRender {
+                block: block.clone(),
+                remaining,
+                enforce_budget,
+                config: self.config.clone(),
+            };
+            let slot = existing_slots
+                .get(&block.identity)
+                .cloned()
+                .unwrap_or_else(|| FlowBlockSlot {
+                    identity: block.identity,
+                    content: FlowBlockContent::new(render.clone()),
+                });
+            if self.rendered_blocks.get(&block.identity) != Some(&render_key) {
+                slot.content.set_with_metadata(&render, &metadata);
+            }
+            remaining = next_remaining;
+            next_rendered.insert(block.identity, render_key);
+            next_slots.push(slot);
+        }
+
+        let membership_changed = previous_slots.len() != next_slots.len()
+            || previous_slots
+                .iter()
+                .zip(&next_slots)
+                .any(|(previous, next)| previous.identity != next.identity);
+        if membership_changed {
+            let _previous = self.slots.replace_with_metadata(next_slots, metadata);
+        }
+        self.rendered_blocks = next_rendered;
     }
 
     fn total_typewriter_char_count(&self, blocks: &[FlowBlock]) -> usize {
@@ -573,36 +893,11 @@ fn init_markdown_parser() -> Parser {
     parser
 }
 
-fn collect_changed_ranges(
-    previous: Option<&Tree>,
-    next: &Tree,
-    text_len: usize,
-    incremental: bool,
-) -> Vec<Range<usize>> {
-    if let Some(previous) = previous
-        && incremental
-    {
-        let ranges: Vec<Range<usize>> = previous
-            .changed_ranges(next)
-            .map(|range| range.start_byte.min(text_len)..range.end_byte.min(text_len))
-            .filter(|range| range.start < range.end)
-            .collect();
-        if !ranges.is_empty() {
-            return ranges;
-        }
-    }
-
-    core::iter::once(0..text_len).collect()
-}
-
 fn collect_block_ranges(tree: &Tree, text_len: usize) -> Vec<BlockRange> {
     let mut blocks = Vec::new();
     let root = tree.root_node();
-    let child_count = root.named_child_count();
-    for i in 0..child_count {
-        let Some(child) = root.named_child(i) else {
-            continue;
-        };
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
         let start = child.start_byte();
         let end = child.end_byte().min(text_len);
         if start >= end {
@@ -688,6 +983,7 @@ fn parse_block(
     let kind = infer_block_kind(block.kind, &elements);
 
     FlowBlock {
+        identity: 0,
         range: block.range.clone(),
         kind,
         elements,
@@ -1184,35 +1480,32 @@ fn rich_text_contains_kind(element: &RichTextElement, kind: FlowElementKind) -> 
 
 fn parse_fallback(markdown: &str) -> FlowBlock {
     FlowBlock {
+        identity: 0,
         range: 0..markdown.len(),
         kind: FlowElementKind::Text,
         elements: RichText::from_markdown(markdown).elements().to_vec(),
     }
 }
 
-fn build_flow_view(
-    blocks: &[FlowBlock],
-    typewriter_budget: Option<usize>,
+fn build_flow_block_view(
+    block: &FlowBlock,
+    remaining: &mut usize,
+    enforce_budget: bool,
     config: &FlowMarkdownConfig,
 ) -> AnyView {
     let mut views = Vec::new();
-    let mut remaining = typewriter_budget.unwrap_or(usize::MAX);
-    let enforce_budget = typewriter_budget.is_some();
-
-    for block in blocks {
-        if enforce_budget && has_typewriter_policy_for_kind(block.kind, config) {
-            for element in &block.elements {
-                if remaining == 0 {
-                    break;
-                }
-                if let Some(truncated) = truncate_rich_text_element(element, &mut remaining) {
-                    push_rich_text_element_view(&mut views, truncated);
-                }
+    if enforce_budget && has_typewriter_policy_for_kind(block.kind, config) {
+        for element in &block.elements {
+            if *remaining == 0 {
+                break;
             }
-        } else {
-            for element in &block.elements {
-                push_rich_text_element_view(&mut views, element.clone());
+            if let Some(truncated) = truncate_rich_text_element(element, remaining) {
+                push_rich_text_element_view(&mut views, truncated);
             }
+        }
+    } else {
+        for element in &block.elements {
+            push_rich_text_element_view(&mut views, element.clone());
         }
     }
 
@@ -1449,11 +1742,9 @@ fn collect_leaf_tokens(node: tree_sitter::Node<'_>, out: &mut Vec<(usize, usize,
         return;
     }
 
-    let child_count = node.child_count();
-    for i in 0..child_count {
-        if let Some(child) = node.child(i) {
-            collect_leaf_tokens(child, out);
-        }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_leaf_tokens(child, out);
     }
 }
 
@@ -1620,10 +1911,6 @@ fn advance_point(mut point: Point, text: &str) -> Point {
     point
 }
 
-const fn ranges_overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
-    a.start < b.end && b.start < a.end
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1656,6 +1943,14 @@ mod tests {
             .expect("group should keep visible content");
         assert_eq!(remaining, 0);
         assert_eq!(rich_text_element_text_len(&truncated), 4);
+    }
+
+    #[test]
+    fn configuration_accepts_a_bare_config() {
+        // A plain `FlowMarkdownConfig` is a constant signal, so this compiles
+        // without a `Computed::constant` wrapper at the call site.
+        let view = flow_markdown("hi").configuration(FlowMarkdownConfig::default());
+        assert_eq!(view.config.get().max_pending_bytes, 32 * 1024);
     }
 
     #[test]
@@ -1715,12 +2010,13 @@ mod tests {
 
     #[test]
     fn typewriter_run_includes_token_fade_animation_when_enabled() {
-        let mut config = FlowMarkdownConfig::default();
-        config.typewriter_token_fade_in = Some(Animation::ease_in_out(Duration::from_millis(140)));
-        let mut state = FlowMarkdownState::new(config);
+        let config = FlowMarkdownConfig {
+            typewriter_token_fade_in: Some(Animation::ease_in_out(Duration::from_millis(140))),
+            ..FlowMarkdownConfig::default()
+        };
+        let mut state = FlowMarkdownState::new(config, ReactiveList::new());
 
-        let first = state.recompute("# Title", WatcherMetadata::new());
-        core::mem::drop(first.view);
+        state.recompute("# Title", WatcherMetadata::new());
 
         let update = state.recompute("# Title\n\nNew streamed tokens", WatcherMetadata::new());
         let run = update
@@ -1731,7 +2027,6 @@ mod tests {
             run.token_fade_in.is_some(),
             "typewriter run should carry token fade-in animation"
         );
-        core::mem::drop(update.view);
     }
 
     #[test]
@@ -1812,7 +2107,6 @@ mod tests {
             streamed.extend(chars[offset..end].iter().copied());
             let update = state.recompute(streamed.as_str(), WatcherMetadata::new());
             saw_typewriter |= update.typewriter.is_some();
-            core::mem::drop(update.view);
             offset = end;
         }
 
@@ -1846,7 +2140,8 @@ mod tests {
         ];
 
         for markdown in DOCS {
-            let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default());
+            let mut state =
+                FlowMarkdownState::new(FlowMarkdownConfig::default(), ReactiveList::new());
             let saw_typewriter = stream_with_constant_chars_per_second(&mut state, markdown, 16);
             assert!(
                 saw_typewriter,
@@ -1858,16 +2153,15 @@ mod tests {
                 settled.typewriter.is_none(),
                 "idempotent recompute with full markdown should not schedule new typewriter run"
             );
-            core::mem::drop(settled.view);
         }
     }
 
     #[test]
     fn recompute_handles_streaming_append_sequence_with_tables_and_code() {
-        let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default());
+        let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default(), ReactiveList::new());
         let mut markdown = String::new();
         let chunks = [
-            "# FlowMarkdown E2E\n\nStreaming response starts here.\n\n",
+            "# Flow Markdown\n\nStreaming response starts here.\n\n",
             "## Highlights\n\n- Tail append updates\n- Typewriter reveal\n\n",
             "| Metric | Value |\n| --- | --- |\n| Throughput | 128 tok/s |\n",
             "| Latency | 42 ms |\n\n```rust\nfn answer() -> i32 {\n    42\n}\n```\n\n",
@@ -1876,45 +2170,38 @@ mod tests {
 
         for chunk in chunks {
             markdown.push_str(chunk);
-            let update = state.recompute(markdown.as_str(), WatcherMetadata::new());
-            let view = update.view;
-            core::mem::drop(view);
+            state.recompute(markdown.as_str(), WatcherMetadata::new());
         }
 
         // Continue appending at char granularity to stress streaming parse path.
         let tail = "\n\n- postscript";
         for ch in tail.chars() {
             markdown.push(ch);
-            let update = state.recompute(markdown.as_str(), WatcherMetadata::new());
-            let view = update.view;
-            core::mem::drop(view);
+            state.recompute(markdown.as_str(), WatcherMetadata::new());
         }
     }
 
     #[test]
     fn recompute_uses_full_parse_for_rewrites_then_recovers_incremental_appends() {
-        let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default());
+        let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default(), ReactiveList::new());
 
         let first = state.recompute("# Title", WatcherMetadata::new());
         assert!(
             first.typewriter.is_none(),
             "initial render should not use incremental typewriter run"
         );
-        core::mem::drop(first.view);
 
         let appended = state.recompute("# Title\n\nnext line", WatcherMetadata::new());
         assert!(
             appended.typewriter.is_some(),
             "append updates should use incremental typewriter run"
         );
-        core::mem::drop(appended.view);
 
         let rewritten = state.recompute("## Rewritten\n\nnew root", WatcherMetadata::new());
         assert!(
             rewritten.typewriter.is_none(),
             "non-append rewrites should force a full reparse"
         );
-        core::mem::drop(rewritten.view);
 
         let appended_after_rewrite =
             state.recompute("## Rewritten\n\nnew root\n\n+ tail", WatcherMetadata::new());
@@ -1922,6 +2209,46 @@ mod tests {
             appended_after_rewrite.typewriter.is_some(),
             "append after rewrite should recover incremental mode"
         );
-        core::mem::drop(appended_after_rewrite.view);
+    }
+
+    #[test]
+    fn incremental_append_preserves_stable_block_identities() {
+        let slots = ReactiveList::new();
+        let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default(), slots.clone());
+        state.recompute(
+            "# Stable heading\n\n# Streaming body",
+            WatcherMetadata::new(),
+        );
+        let before = slots
+            .snapshot()
+            .into_iter()
+            .map(|slot| slot.identity)
+            .collect::<Vec<_>>();
+
+        let update = state.recompute(
+            "# Stable heading\n\n# Streaming body grows",
+            WatcherMetadata::new(),
+        );
+        let after_append = slots
+            .snapshot()
+            .into_iter()
+            .map(|slot| slot.identity)
+            .collect::<Vec<_>>();
+
+        assert_eq!(before.len(), 2);
+        assert_eq!(after_append.len(), 2);
+        assert_eq!(before[0], after_append[0]);
+        assert_eq!(before[1], after_append[1]);
+
+        let run = update
+            .typewriter
+            .expect("append must start the configured typewriter update");
+        assert!(state.advance_typewriter(run.revision, run.batch_chars, run.token_fade_in,));
+        let after_tick = slots
+            .snapshot()
+            .into_iter()
+            .map(|slot| slot.identity)
+            .collect::<Vec<_>>();
+        assert_eq!(after_append, after_tick);
     }
 }

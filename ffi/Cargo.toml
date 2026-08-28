@@ -1,7 +1,7 @@
 [package]
 name = "waterui-ffi"
 build = "build.rs"
-version = "0.2.1"
+version = "0.3.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -13,30 +13,33 @@ keywords = ["ffi", "ui", "framework", "gui", "cross-platform"]
 categories = ["gui", "api-bindings"]
 
 [dependencies]
-waterui.workspace = true
+# Not workspace-inherited: the workspace entry carries default features (gpu
+# included), and Cargo forbids a member from turning them off. The FFI crate
+# must not re-root the GPU stack when the app opted out, so it declares the
+# dependency itself and forwards `gpu` explicitly.
+waterui = { version = "0.3.0", path = "..", default-features = false, features = ["assets", "media", "inspector"] }
 waterui-core.workspace = true
 waterui-text.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
 waterui-navigation.workspace = true
-waterui-media.workspace = true
 waterui-video.workspace = true
 native-executor.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
 executor-core.workspace = true
-cbindgen = { version = "0.29.2", optional = true }
+cbindgen = { version = "0.29.4", optional = true }
 # JNI crate - optional, enabled by android-jni feature for Android builds
-jni = { version = "0.21.1", optional = true }
-bytemuck = { version = "1.25", optional = true }
+jni = { version = "0.22.4", optional = true }
 waterui-graphics.workspace = true
-waterui-svg.workspace = true
+waterui-svg = { workspace = true, optional = true }
 waterui-icon.workspace = true
 waterui-webview.workspace = true
-waterui-map.workspace = true
+cookie = "0.18.1"
+waterui-map = { workspace = true, optional = true }
 waterui-str.workspace = true
 waterui-locale.workspace = true
-wgpu.workspace = true
+wgpu = { workspace = true, optional = true }
 async-channel = "2.5"
 base64 = "0.22.1"
 pastey.workspace = true
@@ -44,22 +47,29 @@ tracing.workspace = true
 tracing-panic.workspace = true
 jiff.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-pollster = "0.4"
+pollster = { workspace = true, optional = true }
 raw-window-handle = "0.6"
+waterui-browser-cef = { workspace = true, optional = true }
+waterui-chromium = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
+# Android's video surface bridge is marshalled through this crate, so the
+# player is a real dependency here. Which realization *renders* video is not
+# this crate's decision any more: the composition root installs it, selected by
+# the application's `waterui/video-gpu` feature.
+waterui-video-gpu = { workspace = true, optional = true }
 tracing-android = "0.2"
 ndk-context = "0.1.1"
-jni = "0.21.1"
-ndk = { version = "0.9", features = ["api-level-26"] }
+jni = "0.22.4"
 ndk-sys = "0.6"
-ash = "0.38"
-wgpu-hal = { workspace = true, features = ["vulkan"] }
+wgpu-hal = { workspace = true, features = ["vulkan"], optional = true }
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 tracing-oslog = "0.3"
-metal = "0.32"
-wgpu-hal = { workspace = true, features = ["metal"] }
+objc2 = "0.6"
+objc2-metal = { version = "0.3", features = ["MTLDevice", "MTLPixelFormat", "MTLTexture"], optional = true }
+wgpu-hal = { workspace = true, features = ["metal"], optional = true }
+waterkit-audio = { workspace = true, default-features = false, features = ["apple-artwork"] }
 
 
 [[bin]]
@@ -67,15 +77,66 @@ name = "generate_header"
 path = "generate_header.rs"
 required-features = ["cbindgen"]
 
+[lints]
+workspace = true
+
 [features]
-default = ["std", "c-api"]
+default = ["std", "c-api", "gpu"]
 std = []
+# The GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg) and
+# every GPU-backed FFI surface (GpuSurface, ViewEffect, AppliedFilter, the
+# GPU video pipeline). Default-on so existing consumers are unaffected;
+# disabling it removes the wgpu/vello graph and the corresponding
+# `waterui_*` symbols, so an app that opts out of `waterui/gpu` is not
+# silently re-rooted through the FFI crate.
+gpu = [
+    "waterui/gpu",
+    "waterui-graphics/gpu",
+    "dep:waterui-svg",
+    "dep:wgpu",
+    "dep:wgpu-hal",
+    "dep:waterui-video-gpu",
+    "dep:objc2-metal",
+    "dep:pollster",
+]
 # C FFI for Apple/GTK backends (default)
-c-api = []
-# Enable shared GPU context initialization in `__init()`.
-gpu = []
+c-api = ["std"]
 # JNI for Android backend - mutually exclusive with c-api
 # Note: android-jni requires std because jni crate uses std
-android-jni = ["dep:jni", "dep:bytemuck", "std"]
+android-jni = ["dep:jni", "std"]
+# Map support is off by default: the portable realization pulls in the vector
+# tile, styling, and image-decoding stack, which no app that never shows a map
+# should pay for. Apple bridges MapKit instead and only needs the marshalling.
+map = ["dep:waterui-map"]
+# The checked-in `waterui.h` is a superset of every optional surface, so header
+# generation turns them all on. Native backends compile the matching component
+# only when the app enabled that feature.
+cbindgen = ["dep:cbindgen", "header"]
+# Every optional C surface the checked-in `waterui.h` must declare. Header
+# generation and the header's macro expansion both read this one list, so a new
+# optional surface is added in exactly one place.
+header = ["cef-header", "map"]
+cef-runtime = [
+    "gpu",
+    "dep:waterui-browser-cef",
+    "waterui-browser-cef/cef-runtime",
+]
+# Header generation compiles CEF's Rust API without downloading or linking the runtime.
+cef-header = [
+    "dep:waterui-browser-cef",
+    "dep:waterui-chromium",
+    "waterui-browser-cef/compile-only",
+    "waterui-browser-cef/chromium",
+    "waterui-browser-cef/webview",
+]
+chromium = [
+    "cef-runtime",
+    "dep:waterui-chromium",
+    "waterui-browser-cef/chromium",
+]
+webview-cef = [
+    "cef-runtime",
+    "waterui-browser-cef/webview",
+]
 [package.metadata.cargo-machete]
-ignored = ["bytemuck", "waterui-media", "waterui-svg"]
+ignored = ["waterui-svg"]

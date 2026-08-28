@@ -3,4 +3,4 @@ waterui_path = "../.."
 [package]
 type = "playground"
 name = "reminders"
-bundle_identifier = "com.example.reminders"
+bundle_identifier = "dev.waterui.reminders"

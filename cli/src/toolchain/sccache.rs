@@ -1,8 +1,9 @@
 //! Toolchain support for `sccache` - shared compilation cache.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use color_eyre::eyre;
+use smol::process::Command;
 
 use crate::{
     brew::Brew,
@@ -11,6 +12,19 @@ use crate::{
     toolchain::{Installation, Toolchain, ToolchainError},
     utils::{sccache_install_hint, which},
 };
+
+/// Route a Cargo invocation's compiles through `sccache`.
+///
+/// Caching only bites because generated-crate builds also disable incremental
+/// compilation — Cargo does not pass `-C incremental` to registry dependencies but does
+/// pass it to every *path* dependency, which for a `WaterUI` build is the entire
+/// framework, and `sccache` refuses to cache an incremental compile. That setting lives
+/// in [`crate::build::configure_generated_crate_compilation`] rather than here, because
+/// it must not depend on whether a machine happens to have `sccache` installed: it
+/// changes the compiled ABI, and two builds in one flow have to agree on it.
+pub fn configure_compilation_cache(command: &mut Command, sccache_path: &Path) {
+    command.env("RUSTC_WRAPPER", sccache_path);
+}
 
 /// Toolchain for `sccache` - a shared compilation cache for Rust.
 ///

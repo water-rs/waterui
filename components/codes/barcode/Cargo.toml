@@ -1,0 +1,38 @@
+[package]
+name = "waterui-barcode"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+readme = "../../../README.md"
+repository = "https://github.com/water-rs/waterui"
+description = "WaterUI barcode and QR code component"
+keywords = ["gpu", "barcode", "qrcode", "waterui"]
+categories = ["graphics", "rendering", "gui"]
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+nami.workspace = true
+waterui-core.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+shaderloom.workspace = true
+wgpu.workspace = true
+bytemuck = { version = "1", features = ["derive"] }
+fast_qr = "0.13"
+barcoders = { version = "2.0.0", default-features = false }
+thiserror.workspace = true
+
+[build-dependencies]
+shaderloom = { workspace = true, features = ["build"] }
+
+[dev-dependencies]
+pollster.workspace = true
+rxing.workspace = true
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+
+# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+[package.metadata.cargo-machete]
+ignored = ["shaderloom"]

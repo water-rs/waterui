@@ -11,10 +11,36 @@ description = "Core backend infrastructure shared by WaterUI backends"
 keywords = ["ui", "backend", "waterui", "gui", "framework"]
 categories = ["gui"]
 
+[features]
+default = ["widgets", "gestures"]
+# Widget theme vocabulary (Brush/DrawContext/WidgetTheme) and animated-scalar
+# sampling; pulls the control/form/text/graphics config types it describes.
+widgets = [
+    "dep:waterui-controls",
+    "dep:waterui-form",
+    "dep:waterui-graphics",
+    "dep:waterui-text",
+]
+# Gesture recognition state machines; pulls the `waterui` facade where the
+# gesture event types are defined.
+gestures = ["dep:waterui"]
+
 [dependencies]
+waterui = { version = "0.3.0", path = "../..", default-features = false, optional = true }
 waterui-core.workspace = true
+waterui-controls = { workspace = true, optional = true }
+waterui-form = { workspace = true, optional = true }
+waterui-graphics = { workspace = true, optional = true }
+waterui-layout.workspace = true
+waterui-text = { workspace = true, optional = true }
 nami.workspace = true
+num-traits = { version = "0.2", default-features = false }
 tracing.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1"
 
 [lints]
 workspace = true

@@ -1,0 +1,8 @@
+<section class="diagnosis">
+<div><span>p95</span><strong>{{ p95 }}</strong><small>mean {{ mean }} / median {{ median }}</small></div>
+<div><span>rendered p95</span><strong>{{ rendered_p95 }}</strong><small>{{ rendered_frames }} rendered / {{ idle_frames }} idle</small></div>
+<div><span>worst sample</span><strong>{{ worst_frame }}</strong><small>{{ samples }} samples</small></div>
+<div><span>bottleneck</span><strong>{{ bottleneck_name }}</strong><small>{{ bottleneck_mean }}</small></div>
+<div><span>rebuild pressure</span><strong>{{ rebuild_ratio }}%</strong><small>{{ rebuilt_frames }}/{{ samples }} frames</small></div>
+<div><span>layout cache</span><strong>{{ cache_hit_ratio }}% hit</strong><small>{{ cache_hits }} hits / {{ cache_misses }} misses</small></div>
+</section>

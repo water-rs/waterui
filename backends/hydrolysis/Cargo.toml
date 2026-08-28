@@ -13,46 +13,127 @@ categories.workspace = true
 
 [dependencies]
 waterui-core.workspace = true
-waterui = { version = "0.2.1", path = "../..", default-features = false }
+waterui-assets.workspace = true
+# Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG).
+png = "0.18"
+waterui = { version = "0.3.0", path = "../..", default-features = false, features = ["gpu", "inspector"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 nami.workspace = true
-waterui-graphics.workspace = true
-waterui-canvas.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+shaderloom.workspace = true
 waterui-text.workspace = true
 waterui-icon.workspace = true
 waterui-shape.workspace = true
-waterui-video.workspace = true
 waterui-map.workspace = true
 waterui-webview.workspace = true
-hydrolysis-m3.workspace = true
-waterui-layout.workspace = true
+waterui-layout = { workspace = true }
 waterui-controls.workspace = true
 waterui-form.workspace = true
-waterui-backend-core.workspace = true
+waterui-backend-core = { workspace = true, features = ["widgets", "gestures"] }
 waterkit-clipboard.workspace = true
+waterui-locale.workspace = true
 vello.workspace = true
-parley.workspace = true
+parley = { workspace = true, features = ["system"] }
 wgpu.workspace = true
+lru.workspace = true
+rayon = "1.12"
 pollster.workspace = true
 executor-core.workspace = true
+rustc-hash.workspace = true
+unicode-segmentation = "1.12"
 async-task = "4.7"
 native-executor.workspace = true
 winit = { version = "0.30", optional = true }
+keyboard-types.workspace = true
+ui-events-winit = { workspace = true, optional = true }
 accesskit = { version = "0.24", optional = true }
-accesskit_winit = { version = "0.32.1", optional = true }
+waterui-inspector-protocol.workspace = true
+accesskit_winit = { version = "0.33.2", optional = true }
 
 [build-dependencies]
-cfg_aliases = "0.2.1"
+cfg_aliases = "0.2.2"
+shaderloom = { workspace = true, features = ["build"] }
+
+# Termination signals for the windowed desktop runner. No windowing system
+# delivers SIGINT/SIGTERM/SIGHUP (or the Windows console close events) to winit,
+# so the runner installs its own handler on every desktop target it builds for.
+[target.'cfg(any(unix, windows))'.dependencies]
+ctrlc = { version = "3.5", features = ["termination"], optional = true }
+
+# Explicit ProMotion opt-in on macOS: a CADisplayLink created from the winit
+# window's NSView declares the 120Hz frame-rate demand (see
+# platform/macos_display_link.rs). All of these are already in winit's own
+# dependency graph.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { version = "0.6", optional = true }
+cookie = { version = "0.18", optional = true }
+futures = { workspace = true, optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, features = [
+    "NSAnimation",
+    "NSResponder",
+    "NSView",
+    "objc2-quartz-core",
+] }
+objc2-core-graphics = { version = "0.3", optional = true, features = ["CGPath"] }
+objc2-foundation = { version = "0.3", optional = true, features = [
+    "NSArray",
+    "NSData",
+    "NSDate",
+    "NSDictionary",
+    "NSError",
+    "NSGeometry",
+    "NSHTTPCookie",
+    "NSJSONSerialization",
+    "NSObject",
+    "NSRunLoop",
+    "NSString",
+    "NSURL",
+    "NSURLError",
+    "NSURLRequest",
+    "NSURLResponse",
+] }
+objc2-quartz-core = { version = "0.3", optional = true, features = [
+    "CALayer",
+    "CADisplayLink",
+    "CAFrameRateRange",
+    "CAMetalLayer",
+    "CAShapeLayer",
+    "objc2-core-graphics",
+] }
+objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-app-kit",
+    "objc2-core-foundation",
+    "WKBackForwardList",
+    "WKContentWorld",
+    "WKFrameInfo",
+    "WKSecurityOrigin",
+    "WKHTTPCookieStore",
+    "WKNavigation",
+    "WKNavigationAction",
+    "WKNavigationDelegate",
+    "WKNavigationResponse",
+    "WKScriptMessage",
+    "WKScriptMessageHandler",
+    "WKUserContentController",
+    "WKUserScript",
+    "WKWebView",
+    "WKWebViewConfiguration",
+    "WKWebsiteDataStore",
+] }
+serde_json = { version = "1", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-fontique = "0.7"
 js-sys = "0.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
-web-time = "1"
 web-sys = { version = "0.3", optional = true, features = [
     "Response",
     "CompositionEvent",
@@ -72,11 +153,58 @@ web-sys = { version = "0.3", optional = true, features = [
     "Window",
 ] }
 
+[dev-dependencies]
+# The renderer itself knows nothing about `Canvas`: it resolves to a
+# `SceneView` before it reaches layout. The tests still author canvases, which
+# is what keeps that resolution honest.
+waterui-canvas.workspace = true
+# The wayland examples need a widget theme; m3 is the one this workspace ships.
+# A dev-dependency back onto a crate that depends on this one is a cycle cargo
+# allows, and it keeps the examples next to the renderer they exercise.
+hydrolysis-m3 = { path = "../hydrolysis_m3" }
+waterui-testing = { path = "../../testing" }
+waterui-navigation = { path = "../../components/foundation/navigation" }
+jiff.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+waterui = { path = "../..", default-features = false, features = ["flow-markdown", "gpu"] }
+base64 = "0.22"
+executor-core = { workspace = true, features = ["async-executor"] }
+tiny_http = "0.12"
+
+# `WKWebView` is `MainThreadOnly` and libtest runs tests on worker threads, so
+# the macOS real-engine suite owns its `main` and pumps the main run loop.
+[[test]]
+name = "real_engine_macos"
+harness = false
+required-features = ["webview-system", "winit"]
+
 [features]
 default = []
 accessibility = ["dep:accesskit"]
 testing = []
-winit = ["accessibility", "dep:winit", "dep:accesskit_winit"]
-web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
+inspector-signals = ["waterui/inspector-signals"]
+# The platform's own web engine, bridged as a native subview. Every other engine
+# is a crate the application links and installs; this backend never names one.
+webview-system = [
+    "dep:block2",
+    "dep:cookie",
+    "dep:futures",
+    "dep:objc2-web-kit",
+    "dep:serde_json",
+]
+winit = [
+    "accessibility",
+    "dep:winit",
+    "dep:ui-events-winit",
+    "dep:accesskit_winit",
+    "dep:ctrlc",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-core-graphics",
+    "dep:objc2-foundation",
+    "dep:objc2-quartz-core",
+]
+web = ["accessibility", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
+# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]
-ignored = ["cfg_aliases", "waterui-backend-core"]
+ignored = ["cfg_aliases", "shaderloom"]

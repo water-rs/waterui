@@ -1,0 +1,5 @@
+error: duplicate `#[waterui::bench(...)]` budget `max_p95_us`
+ --> tests/ui/waterui_bench/fail_duplicate_budget.rs:5:51
+  |
+5 | #[waterui::bench(sample_view, max_p95_us = 1_000, max_p95_us = 2_000)]
+  |                                                   ^^^^^^^^^^

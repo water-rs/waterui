@@ -1,0 +1,5 @@
+error: `#[waterui::bench(...)]` accepts an optional view function path followed by `theme = <installer>`, `viewport = (width, height)`, and the budgets `max_p95_us`, `max_mean_us`, `max_rebuild_ratio`, `max_scene_layers`, `max_gpu_surface_layers`, `max_clip_layers`
+ --> tests/ui/waterui_bench/fail_unknown_argument.rs:5:31
+  |
+5 | #[waterui::bench(sample_view, max_bogus = 3)]
+  |                               ^^^^^^^^^

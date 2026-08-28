@@ -1,0 +1,25 @@
+[package]
+name = "waterui-preview-protocol"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../../../README.md"
+repository.workspace = true
+description = "Shared TCP protocol for WaterUI preview"
+keywords.workspace = true
+categories.workspace = true
+build = "build.rs"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0"
+bincode = { version = "2.0.1", features = ["serde"] }
+thiserror.workspace = true
+futures-lite = "2.6"
+hex = "0.4"
+dirs.workspace = true
+
+[lints]
+workspace = true

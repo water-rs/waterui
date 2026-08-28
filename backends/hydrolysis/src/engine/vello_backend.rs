@@ -1,5 +1,7 @@
 use super::{Brush, DrawContext};
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, RoundedRectRadii};
+use vello::kurbo::{
+    Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, RoundedRectRadii, Shape,
+};
 
 pub struct VelloDrawContext<'a> {
     scene: &'a mut vello::Scene,
@@ -21,39 +23,56 @@ impl<'a> VelloDrawContext<'a> {
             .expect("vello draw context transform stack is empty")
     }
 
-    fn brush(brush: &Brush) -> &vello::peniko::Color {
+    fn fill_shape(&mut self, shape: &impl Shape, brush: &Brush) {
         match brush {
-            Brush::Solid(color) => color,
+            Brush::Solid(color) => {
+                self.scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    self.transform(),
+                    color,
+                    None,
+                    shape,
+                );
+            }
+            Brush::Gradient(gradient) => {
+                self.scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    self.transform(),
+                    gradient,
+                    None,
+                    shape,
+                );
+            }
+        }
+    }
+
+    fn stroke_shape(&mut self, shape: &impl Shape, brush: &Brush, width: f64) {
+        let stroke = vello::kurbo::Stroke::new(width);
+        match brush {
+            Brush::Solid(color) => {
+                self.scene
+                    .stroke(&stroke, self.transform(), color, None, shape);
+            }
+            Brush::Gradient(gradient) => {
+                self.scene
+                    .stroke(&stroke, self.transform(), gradient, None, shape);
+            }
         }
     }
 }
 
 impl DrawContext for VelloDrawContext<'_> {
     fn fill_rect(&mut self, rect: Rect, brush: &Brush) {
-        self.scene.fill(
-            vello::peniko::Fill::NonZero,
-            self.transform(),
-            Self::brush(brush),
-            None,
-            &rect,
-        );
+        self.fill_shape(&rect, brush);
     }
 
     fn fill_rounded_rect(&mut self, rect: Rect, radii: RoundedRectRadii, brush: &Brush) {
         let rounded = RoundedRect::from_rect(rect, radii);
-        self.scene.fill(
-            vello::peniko::Fill::NonZero,
-            self.transform(),
-            Self::brush(brush),
-            None,
-            &rounded,
-        );
+        self.fill_shape(&rounded, brush);
     }
 
     fn stroke_rect(&mut self, rect: Rect, brush: &Brush, width: f64) {
-        let stroke = vello::kurbo::Stroke::new(width);
-        self.scene
-            .stroke(&stroke, self.transform(), Self::brush(brush), None, &rect);
+        self.stroke_shape(&rect, brush, width);
     }
 
     fn stroke_rounded_rect(
@@ -63,62 +82,48 @@ impl DrawContext for VelloDrawContext<'_> {
         brush: &Brush,
         width: f64,
     ) {
-        let stroke = vello::kurbo::Stroke::new(width);
         let rounded = RoundedRect::from_rect(rect, radii);
-        self.scene.stroke(
-            &stroke,
-            self.transform(),
-            Self::brush(brush),
-            None,
-            &rounded,
-        );
+        self.stroke_shape(&rounded, brush, width);
     }
 
     fn stroke_line(&mut self, from: Point, to: Point, brush: &Brush, width: f64) {
-        let stroke = vello::kurbo::Stroke::new(width);
         let line = Line::new(from, to);
-        self.scene
-            .stroke(&stroke, self.transform(), Self::brush(brush), None, &line);
+        self.stroke_shape(&line, brush, width);
     }
 
     fn stroke_circle(&mut self, center: Point, radius: f64, brush: &Brush, width: f64) {
-        let stroke = vello::kurbo::Stroke::new(width);
         let circle = Circle::new(center, radius);
-        self.scene
-            .stroke(&stroke, self.transform(), Self::brush(brush), None, &circle);
+        self.stroke_shape(&circle, brush, width);
     }
 
     fn fill_circle(&mut self, center: Point, radius: f64, brush: &Brush) {
         let circle = Circle::new(center, radius);
-        self.scene.fill(
-            vello::peniko::Fill::NonZero,
-            self.transform(),
-            Self::brush(brush),
-            None,
-            &circle,
-        );
+        self.fill_shape(&circle, brush);
     }
 
     fn fill_path(&mut self, path: &BezPath, brush: &Brush) {
-        self.scene.fill(
-            vello::peniko::Fill::NonZero,
-            self.transform(),
-            Self::brush(brush),
-            None,
-            path,
-        );
+        self.fill_shape(path, brush);
     }
 
     fn stroke_path(&mut self, path: &BezPath, brush: &Brush, width: f64) {
-        let stroke = vello::kurbo::Stroke::new(width);
-        self.scene
-            .stroke(&stroke, self.transform(), Self::brush(brush), None, path);
+        self.stroke_shape(path, brush, width);
     }
 
     fn push_layer(&mut self, alpha: f32, clip: Option<&Rect>) {
         let clip = clip
             .copied()
             .unwrap_or(Rect::new(-1.0e9, -1.0e9, 1.0e9, 1.0e9));
+        self.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            self.transform(),
+            &clip,
+        );
+    }
+
+    fn push_rounded_layer(&mut self, alpha: f32, clip: Rect, radii: RoundedRectRadii) {
+        let clip = RoundedRect::from_rect(clip, radii);
         self.scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),

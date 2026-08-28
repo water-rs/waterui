@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use hydrolysis::{HydrolysisRenderer, OffscreenWindow, PlatformWindow};
+use hydrolysis::{HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, PlatformWindow};
 use waterui::graphics::SceneViewMergeToParent;
-use waterui_core::{Environment, View};
+use waterui_core::{AnyView, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 
@@ -42,6 +42,11 @@ impl Snapshot {
 #[derive(Debug)]
 pub struct TestHost {
     env: Environment,
+    /// Requested once and shared by every render this host performs. A wgpu
+    /// device is expensive to request and expensive to hold on a runner whose
+    /// only adapter is a software rasterizer; a host that renders ten views
+    /// should ask for one device, not ten.
+    gpu: OffscreenGpuContext,
     width: u32,
     height: u32,
 }
@@ -49,8 +54,13 @@ pub struct TestHost {
 impl TestHost {
     /// Creates a test host with a fixed render size.
     #[must_use]
-    pub const fn new(env: Environment, width: u32, height: u32) -> Self {
-        Self { env, width, height }
+    pub fn new(env: Environment, width: u32, height: u32) -> Self {
+        Self {
+            env,
+            gpu: OffscreenGpuContext::new_for_tests_blocking(),
+            width,
+            height,
+        }
     }
 
     /// Renders a view and returns the captured RGBA8 snapshot.
@@ -59,7 +69,8 @@ impl TestHost {
     ///
     /// Panics if the offscreen Hydrolysis surface cannot acquire a frame.
     pub fn render<V: View>(&self, view: V) -> Snapshot {
-        let mut platform = OffscreenWindow::new_for_tests(
+        let mut platform = OffscreenWindow::on_context(
+            self.gpu.clone(),
             self.width.max(1),
             self.height.max(1),
             wgpu::TextureFormat::Rgba8Unorm,
@@ -76,19 +87,27 @@ impl TestHost {
         );
 
         let surface = platform.surface();
-        renderer.set_frame_resources(surface.device(), surface.queue());
+        renderer.set_frame_resources(surface.adapter(), surface.device(), surface.queue());
         renderer.reset_scene();
         renderer.begin_rebuild_frame();
         let env = self.env.clone().extending(SceneViewMergeToParent);
-        renderer.dispatch(view, &env, bounds);
+        renderer.capture_window_tree(
+            AnyView::new(view),
+            &env,
+            bounds,
+            vello::kurbo::Affine::IDENTITY,
+            vello::kurbo::Affine::IDENTITY,
+        );
         renderer.finish_rebuild_frame();
 
         let frame = surface
             .acquire()
             .expect("waterui-testing failed to acquire offscreen frame");
         renderer.render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
+            adapter: surface.adapter(),
             device: surface.device(),
             queue: surface.queue(),
+            texture: Some(frame.texture()),
             view: frame.view(),
             format: surface.format(),
             width: self.width.max(1),
@@ -104,6 +123,11 @@ impl TestHost {
         );
         renderer.clear_frame_resources();
         surface.present(frame);
+        drop(renderer);
+        drop(platform);
+        // Both owners of this render's GPU resources are gone; let the device
+        // release them before the next render allocates its own.
+        self.gpu.reclaim();
 
         Snapshot {
             width: self.width.max(1),

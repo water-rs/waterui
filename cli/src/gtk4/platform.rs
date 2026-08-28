@@ -11,13 +11,13 @@ use smol::fs;
 use tracing::info;
 
 use crate::{
-    assets,
-    build::BuildOptions,
+    assets, browser_runtime,
+    build::{BuildOptions, RustBuild, RustDynamicLibraries, RustLinkage},
     device::Artifact,
     gtk4::backend::Gtk4Backend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    utils::{command, run_command_os},
+    utils::run_command_os,
 };
 
 #[cfg(target_os = "linux")]
@@ -29,6 +29,21 @@ const GTK4_INIT_HINT: &str = "initialize GTK4 backend on Linux";
 // Build Utilities
 // ============================================================================
 
+/// Cargo profile directory the GTK4 backend's artifacts land in.
+///
+/// Build, clean and package must agree on this path, so all three go through here.
+async fn gtk4_profile_dir(
+    project: &Project,
+    profile: &str,
+    linkage: RustLinkage,
+) -> eyre::Result<PathBuf> {
+    Ok(project
+        .water_target_dir(linkage)
+        .await?
+        .join(TargetPlatform::Linux.triple().to_string())
+        .join(profile))
+}
+
 /// Build GTK4 binary for the host platform.
 ///
 /// # Errors
@@ -38,7 +53,6 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
 
     let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
-    let backend_target_dir = project.backend_target_dir("gtk4").await?;
 
     if !cargo_toml.exists() {
         bail!(
@@ -47,41 +61,28 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
         );
     }
 
-    // Build the GTK4 binary crate.
-    let profile = if options.is_release() {
-        "release"
-    } else {
-        "debug"
-    };
-
-    let mut cargo = smol::process::Command::new("cargo");
-    let cargo = command(&mut cargo);
-    cargo.arg("build").arg("--manifest-path").arg(&cargo_toml);
-    cargo.arg("--target-dir").arg(&backend_target_dir);
-    if options.is_release() {
-        cargo.arg("--release");
-    }
-
-    let output = cargo.output().await?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let details = if stderr.is_empty() {
-            stdout.to_string()
-        } else {
-            stderr.to_string()
-        };
-        bail!(
-            "Failed to build GTK4 backend with cargo (status {}):\n{}",
-            output.status,
-            details
+    let mut build = RustBuild::new(&backend_path, TargetPlatform::Linux.triple())
+        .with_target_dir(project.water_target_dir(options.linkage()).await?)
+        .with_linkage(
+            options.linkage(),
+            &format!("{}/dev", project.crate_name()),
+            Some("$ORIGIN"),
         );
+    if let Some(sccache_path) = options.sccache_path() {
+        build = build.with_sccache(sccache_path.to_path_buf());
     }
+    build
+        .build_binary(
+            project.gtk_backend_crate_name().as_str(),
+            options.is_release(),
+        )
+        .await
+        .map_err(|error| eyre::eyre!("Failed to build GTK4 backend with cargo: {error}"))?;
 
-    // Return the target directory where the binary was built
-    // GTK4 uses its own target directory since it's a standalone project
-    let target_dir = backend_target_dir.join(profile);
-    Ok(target_dir)
+    build
+        .lib_output_dir(options.is_release())
+        .await
+        .map_err(Into::into)
 }
 
 // ============================================================================
@@ -97,21 +98,29 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
 
     let backend_path = project.backend_path::<Gtk4Backend>();
     let cargo_toml = backend_path.join("Cargo.toml");
-    let backend_target_dir = project.backend_target_dir("gtk4").await?;
-
     if !cargo_toml.exists() {
         return Ok(()); // Nothing to clean
     }
 
-    // Run cargo clean for the GTK4 crate
-    let args: Vec<OsString> = vec![
-        "clean".into(),
-        "--manifest-path".into(),
-        cargo_toml.as_os_str().to_owned(),
-        "--target-dir".into(),
-        backend_target_dir.as_os_str().to_owned(),
-    ];
-    run_command_os("cargo", args).await?;
+    // The target directories are shared with every other generated backend, so only
+    // this backend's own package is cleaned — its dependency artifacts stay for
+    // the other backends that resolve them identically.
+    for linkage in [RustLinkage::SharedRuntime, RustLinkage::Static] {
+        let backend_target_dir = project.water_target_dir(linkage).await?;
+        if !backend_target_dir.exists() {
+            continue;
+        }
+        let args: Vec<OsString> = vec![
+            "clean".into(),
+            "--manifest-path".into(),
+            cargo_toml.as_os_str().to_owned(),
+            "--target-dir".into(),
+            backend_target_dir.as_os_str().to_owned(),
+            "--package".into(),
+            project.gtk_backend_crate_name().as_str().into(),
+        ];
+        run_command_os("cargo", args).await?;
+    }
 
     Ok(())
 }
@@ -139,7 +148,12 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
     // Copy project assets and dependency fonts
     copy_assets_and_fonts(project, &backend_path).await?;
 
-    let target_dir = project.backend_target_dir("gtk4").await?.join(profile);
+    let linkage = if options.uses_shared_rust_runtime() {
+        RustLinkage::SharedRuntime
+    } else {
+        RustLinkage::Static
+    };
+    let target_dir = gtk4_profile_dir(project, profile, linkage).await?;
 
     // The binary name is the GTK4 crate name (project-gtk4)
     let binary_name = project.gtk_backend_crate_name();
@@ -161,6 +175,31 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
             );
         }
     };
+    let runtime_plan = project
+        .browser_runtime_plan(TargetPlatform::Linux, crate::platform::TargetBackend::Gtk4)
+        .await?;
+    let runtime_dir = final_binary_path.parent().ok_or_else(|| {
+        eyre::eyre!(
+            "GTK4 binary path has no output directory: {}",
+            final_binary_path.display()
+        )
+    })?;
+    browser_runtime::stage(
+        runtime_plan,
+        TargetPlatform::Linux,
+        &target_dir,
+        runtime_dir,
+    )
+    .await?;
+
+    if options.uses_shared_rust_runtime() {
+        RustDynamicLibraries::resolve(runtime_dir, &TargetPlatform::Linux.triple())
+            .await?
+            .stage(runtime_dir)
+            .await?;
+    } else {
+        RustDynamicLibraries::remove_staged(runtime_dir, &TargetPlatform::Linux.triple()).await?;
+    }
 
     Ok(Artifact::new(
         project.bundle_identifier(),
@@ -182,7 +221,7 @@ fn ensure_linux_host() -> eyre::Result<()> {
     if cfg!(target_os = "linux") {
         Ok(())
     } else {
-        bail!("GTK4 backend is only supported on Linux hosts")
+        bail!("GTK4 backend is only supported on Linux hosts");
     }
 }
 
@@ -200,6 +239,7 @@ async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::
 
     // Stage project assets using platform-native conventions.
     assets::stage_project_assets_for_gtk(project, &resources_dir).await?;
+    assets::stage_hicolor_icons(project, &resources_dir.join("icons")).await?;
 
     // Scan and resolve dependency fonts
     let font_declarations = assets::scan_fonts(project).await?;

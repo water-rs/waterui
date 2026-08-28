@@ -1,0 +1,29 @@
+[package]
+name = "waterui-icon"
+version = "0.3.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository = "https://github.com/water-rs/waterui"
+description = "Icon components for WaterUI"
+keywords = ["icon", "icons", "ui", "waterui", "gui"]
+categories = ["gui"]
+
+[features]
+default = []
+svg = ["dep:waterui-svg"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-graphics = { workspace = true, default-features = false }
+waterui-str.workspace = true
+waterui-text.workspace = true
+waterui-svg = { workspace = true, optional = true }
+
+[dev-dependencies]
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+
+[lints]
+workspace = true

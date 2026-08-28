@@ -12,10 +12,11 @@ use color_eyre::eyre::{Result, bail};
 use futures::{FutureExt as _, pin_mut, select};
 use smol::Timer;
 use smol::net::TcpStream;
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use super::protocol::{
-    AppError, AppRequest, AppResponse, DylibId, DylibSource, PreviewRuntimePlatform,
-    PreviewTcpConfig, Size,
+    AppError, AppRequest, AppResponse, DylibId, DylibSource, PREVIEW_PROTOCOL_COMMIT,
+    PreviewProtocolInfo, PreviewRuntimePlatform, PreviewTcpConfig, Size,
 };
 
 use waterui_preview_protocol::registry::{PreviewAppInstance, preview_instance_registry_dir};
@@ -76,7 +77,7 @@ impl PreviewAppClient {
 
         bail!(
             "Could not connect to a matching registered preview app. Launch a new preview support app for the current runtime."
-        )
+        );
     }
 
     /// Try to connect to a running preview app.
@@ -105,7 +106,7 @@ impl PreviewAppClient {
             "Could not connect to preview app. Make sure it is running.\nThe preview app listens on ports {}..={}.",
             config.port_start,
             config.ports().end()
-        )
+        );
     }
 
     async fn connect_on_port(
@@ -149,19 +150,22 @@ impl PreviewAppClient {
             .await
         {
             Ok(AppResponse::Pong { protocol }) => {
-                if protocol.waterui_core_fingerprint == expected_waterui_core_fingerprint
-                    && protocol.platform == expected_platform
-                {
+                if protocol_is_compatible(
+                    &protocol,
+                    expected_waterui_core_fingerprint,
+                    expected_platform,
+                ) {
                     return Some(client);
                 }
 
                 tracing::warn!(
-                    "Preview runtime mismatch on {addr}: app waterui_core='{}' platform={:?} (build {}), expected='{}' platform={:?}",
+                    "Preview runtime mismatch on {addr}: app waterui_core='{}' platform={:?} protocol={}, expected waterui_core='{}' platform={:?} protocol={}",
                     protocol.waterui_core_fingerprint,
                     protocol.platform,
                     protocol.build_commit,
                     expected_waterui_core_fingerprint,
                     expected_platform,
+                    PREVIEW_PROTOCOL_COMMIT,
                 );
             }
             Ok(other) => {
@@ -206,38 +210,14 @@ impl PreviewAppClient {
         prefer_local_path: bool,
     ) -> Result<Vec<u8>, AppError> {
         let total_start = Instant::now();
-        if self.present_dylibs.contains(&dylib_id) {
-            let png = self
-                .render_with_source(DylibSource::Cached { id: dylib_id }, symbol, width, height)
-                .await?;
+        if let Some(png) = self
+            .render_cached_if_present(dylib_id, symbol, width, height)
+            .await?
+        {
             tracing::info!(
                 dylib_id = %dylib_id,
                 elapsed_ms = total_start.elapsed().as_millis(),
-                "Preview rendered with in-connection cached dylib"
-            );
-            return Ok(png);
-        }
-
-        let has_dylib_start = Instant::now();
-        let present = self
-            .has_dylib(dylib_id)
-            .await
-            .map_err(|e| AppError::RenderFailed(format!("transport error: {e}")))?;
-        tracing::info!(
-            dylib_id = %dylib_id,
-            present,
-            elapsed_ms = has_dylib_start.elapsed().as_millis(),
-            "Preview queried support-app dylib cache"
-        );
-        if present {
-            self.present_dylibs.insert(dylib_id);
-            let png = self
-                .render_with_source(DylibSource::Cached { id: dylib_id }, symbol, width, height)
-                .await?;
-            tracing::info!(
-                dylib_id = %dylib_id,
-                elapsed_ms = total_start.elapsed().as_millis(),
-                "Preview rendered with support-app cached dylib"
+                "Preview rendered with cached dylib"
             );
             return Ok(png);
         }
@@ -270,9 +250,7 @@ impl PreviewAppClient {
                 "Preview rendered after transferring dylib path"
             );
 
-            if result.is_ok() || matches!(result, Err(AppError::SymbolNotFound(_))) {
-                self.present_dylibs.insert(dylib_id);
-            }
+            self.record_rendered_dylib(dylib_id, &result);
 
             return result;
         }
@@ -307,9 +285,7 @@ impl PreviewAppClient {
             "Preview rendered after transferring dylib bytes"
         );
 
-        if result.is_ok() || matches!(result, Err(AppError::SymbolNotFound(_))) {
-            self.present_dylibs.insert(dylib_id);
-        }
+        self.record_rendered_dylib(dylib_id, &result);
 
         result
     }
@@ -326,33 +302,79 @@ impl PreviewAppClient {
         width: f32,
         height: f32,
     ) -> Result<Vec<u8>, AppError> {
-        let dylib = if self.present_dylibs.contains(&dylib_id) {
-            DylibSource::Cached { id: dylib_id }
-        } else {
-            let present = self
-                .has_dylib(dylib_id)
-                .await
-                .map_err(|e| AppError::RenderFailed(format!("transport error: {e}")))?;
-            if present {
-                self.present_dylibs.insert(dylib_id);
-                DylibSource::Cached { id: dylib_id }
-            } else {
+        if let Some(png) = self
+            .render_cached_if_present(dylib_id, symbol, width, height)
+            .await?
+        {
+            return Ok(png);
+        }
+
+        let result = self
+            .render_with_source(
                 DylibSource::Bytes {
                     id: dylib_id,
                     bytes: dylib_bytes.to_vec(),
+                },
+                symbol,
+                width,
+                height,
+            )
+            .await;
+        self.record_rendered_dylib(dylib_id, &result);
+        result
+    }
+
+    async fn render_cached_if_present(
+        &mut self,
+        dylib_id: DylibId,
+        symbol: &str,
+        width: f32,
+        height: f32,
+    ) -> Result<Option<Vec<u8>>, AppError> {
+        if self.present_dylibs.insert(dylib_id) {
+            let query_start = Instant::now();
+            let present = match self.has_dylib(dylib_id).await {
+                Ok(present) => present,
+                Err(error) => {
+                    self.present_dylibs.remove(&dylib_id);
+                    return Err(AppError::RenderFailed(format!("transport error: {error}")));
                 }
+            };
+            tracing::info!(
+                dylib_id = %dylib_id,
+                present,
+                elapsed_ms = query_start.elapsed().as_millis(),
+                "Preview queried support-app dylib cache"
+            );
+            if !present {
+                self.present_dylibs.remove(&dylib_id);
+                return Ok(None);
             }
-        };
-
-        let result = self.render_with_source(dylib, symbol, width, height).await;
-
-        if result.is_ok() || matches!(result, Err(AppError::SymbolNotFound(_))) {
-            self.present_dylibs.insert(dylib_id);
-        } else if matches!(result, Err(AppError::UnknownDylibId(_))) {
-            self.present_dylibs.remove(&dylib_id);
         }
 
-        result
+        match self
+            .render_with_source(DylibSource::Cached { id: dylib_id }, symbol, width, height)
+            .await
+        {
+            Ok(png) => Ok(Some(png)),
+            Err(AppError::UnknownDylibId(_)) => {
+                self.present_dylibs.remove(&dylib_id);
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn record_rendered_dylib(&mut self, dylib_id: DylibId, result: &Result<Vec<u8>, AppError>) {
+        match result {
+            Ok(_) | Err(AppError::SymbolNotFound(_)) => {
+                self.present_dylibs.insert(dylib_id);
+            }
+            Err(AppError::UnknownDylibId(_)) => {
+                self.present_dylibs.remove(&dylib_id);
+            }
+            Err(AppError::DylibLoad(_) | AppError::RenderFailed(_)) => {}
+        }
     }
 
     async fn render_with_source(
@@ -392,7 +414,9 @@ impl PreviewAppClient {
         let response = self.request(AppRequest::Shutdown).await?;
         match response {
             waterui_preview_protocol::PreviewResponse::Shutdown => Ok(()),
-            other => bail!("Protocol error: unexpected response to Shutdown: {other:?}"),
+            other => {
+                bail!("Protocol error: unexpected response to Shutdown: {other:?}");
+            }
         }
     }
 
@@ -400,7 +424,9 @@ impl PreviewAppClient {
         let response = self.request(AppRequest::HasDylib { id }).await?;
         match response {
             waterui_preview_protocol::PreviewResponse::HasDylib { present } => Ok(present),
-            other => bail!("Protocol error: unexpected response to HasDylib: {other:?}"),
+            other => {
+                bail!("Protocol error: unexpected response to HasDylib: {other:?}");
+            }
         }
     }
 
@@ -425,7 +451,7 @@ impl PreviewAppClient {
                 Ok(response) => Ok(response),
                 Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                     bail!(
-                        "Preview app connection closed unexpectedly (the preview process likely crashed). Check crash logs in ~/Library/Logs/DiagnosticReports/WaterUIApp-*.ips"
+                        "Preview app connection closed unexpectedly (the preview process likely crashed). Check crash logs in ~/Library/Logs/DiagnosticReports/, filed under the preview application's own name"
                     );
                 }
                 Err(err) => Err(err).wrap_err("Failed to receive response"),
@@ -455,13 +481,23 @@ impl PreviewAppClient {
     }
 }
 
+fn protocol_is_compatible(
+    protocol: &PreviewProtocolInfo,
+    expected_waterui_core_fingerprint: &str,
+    expected_platform: PreviewRuntimePlatform,
+) -> bool {
+    protocol.waterui_core_fingerprint == expected_waterui_core_fingerprint
+        && protocol.platform == expected_platform
+        && protocol.build_commit == PREVIEW_PROTOCOL_COMMIT
+}
+
 fn load_registered_instances_sync(
     expected_waterui_core_fingerprint: &str,
 ) -> io::Result<Vec<PreviewAppInstance>> {
     let dir = preview_instance_registry_dir();
     fs::create_dir_all(&dir)?;
 
-    let mut matching = Vec::new();
+    let mut candidates = Vec::new();
     let mut stale_paths = Vec::new();
 
     for entry in fs::read_dir(&dir)? {
@@ -482,63 +518,71 @@ fn load_registered_instances_sync(
             continue;
         };
 
-        if !is_pid_alive_sync(instance.pid) {
-            stale_paths.push(path);
-            continue;
-        }
-
         if instance.waterui_core_fingerprint == expected_waterui_core_fingerprint {
-            matching.push(instance);
+            candidates.push((instance, path));
         }
     }
 
-    matching.sort_by(|left, right| right.registered_at_unix_ms.cmp(&left.registered_at_unix_ms));
+    let mut matching = Vec::with_capacity(candidates.len());
+    if !candidates.is_empty() {
+        let mut processes = System::new();
+        processes.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        for (instance, path) in candidates {
+            if processes.process(Pid::from_u32(instance.pid)).is_some() {
+                matching.push(instance);
+            } else {
+                stale_paths.push(path);
+            }
+        }
+    }
+
+    matching.sort_by_key(|registration| std::cmp::Reverse(registration.registered_at_unix_ms));
 
     for path in stale_paths {
-        let _ = fs::remove_file(path);
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
     }
 
     Ok(matching)
 }
 
-fn is_pid_alive_sync(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
 fn connect_timeout() -> Duration {
     const DEFAULT_MS: u64 = 100;
-    std::env::var("WATERUI_PREVIEW_CONNECT_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map_or_else(|| Duration::from_millis(DEFAULT_MS), Duration::from_millis)
+    timeout_from_env("WATERUI_PREVIEW_CONNECT_TIMEOUT_MS", DEFAULT_MS)
 }
 
 fn handshake_timeout() -> Duration {
     const DEFAULT_MS: u64 = 500;
-    std::env::var("WATERUI_PREVIEW_HANDSHAKE_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map_or_else(|| Duration::from_millis(DEFAULT_MS), Duration::from_millis)
+    timeout_from_env("WATERUI_PREVIEW_HANDSHAKE_TIMEOUT_MS", DEFAULT_MS)
 }
 
 fn request_timeout() -> Duration {
     const DEFAULT_MS: u64 = 20_000;
-    std::env::var("WATERUI_PREVIEW_REQUEST_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map_or_else(|| Duration::from_millis(DEFAULT_MS), Duration::from_millis)
+    timeout_from_env("WATERUI_PREVIEW_REQUEST_TIMEOUT_MS", DEFAULT_MS)
 }
 
 fn render_request_timeout() -> Duration {
     const DEFAULT_MS: u64 = 120_000;
-    std::env::var("WATERUI_PREVIEW_RENDER_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map_or_else(|| Duration::from_millis(DEFAULT_MS), Duration::from_millis)
+    timeout_from_env("WATERUI_PREVIEW_RENDER_TIMEOUT_MS", DEFAULT_MS)
+}
+
+fn timeout_from_env(name: &str, default_ms: u64) -> Duration {
+    match std::env::var(name) {
+        Ok(value) => Duration::from_millis(
+            value
+                .parse::<u64>()
+                .unwrap_or_else(|error| panic!("invalid {name} value `{value}`: {error}")),
+        ),
+        Err(std::env::VarError::NotPresent) => Duration::from_millis(default_ms),
+        Err(std::env::VarError::NotUnicode(_)) => panic!("{name} must be valid UTF-8"),
+    }
 }
 
 fn request_timeout_for(request: &AppRequest) -> Duration {
@@ -567,5 +611,34 @@ async fn connect_with_timeout(addr: SocketAddr, timeout: Duration) -> io::Result
     select! {
         result = connect => result,
         _ = timeout_fut => Err(io::Error::new(io::ErrorKind::TimedOut, "preview TCP connect timed out")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_match_requires_exact_preview_build() {
+        let protocol = PreviewProtocolInfo {
+            build_commit: PREVIEW_PROTOCOL_COMMIT.to_string(),
+            waterui_core_fingerprint: "runtime-fingerprint".to_string(),
+            platform: PreviewRuntimePlatform::Macos,
+        };
+        assert!(protocol_is_compatible(
+            &protocol,
+            "runtime-fingerprint",
+            PreviewRuntimePlatform::Macos
+        ));
+
+        let stale = PreviewProtocolInfo {
+            build_commit: "stale-preview-build".to_string(),
+            ..protocol
+        };
+        assert!(!protocol_is_compatible(
+            &stale,
+            "runtime-fingerprint",
+            PreviewRuntimePlatform::Macos
+        ));
     }
 }

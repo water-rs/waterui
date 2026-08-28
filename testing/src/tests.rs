@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use crate::driver::{A11yDriver, DriverPumpResult};
 use accesskit::{ActionRequest as AccessibilityActionRequest, NodeId as AccessibilityNodeId};
-use hydrolysis::{HydrolysisRenderer, OffscreenWindow, PlatformWindow};
+use hydrolysis::{HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, PlatformWindow};
+use hydrolysis_m3::install as install_m3;
 use vello::kurbo::Shape;
 use waterui::Computed;
 use waterui::View as _;
@@ -15,6 +16,7 @@ use waterui::component::{text, vstack};
 use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::color::Srgb;
 use waterui::graphics::{Scene2D, SceneContent, SceneView};
+use waterui::text::Text;
 use waterui::theme;
 use waterui_canvas::Canvas;
 use waterui_core::handler::AnyViewBuilder;
@@ -41,32 +43,77 @@ impl A11yDriver for NoopDriver {
         }
     }
 
+    fn pump_step(
+        &mut self,
+        _step: std::time::Duration,
+        _content: &AnyViewBuilder<AnyView>,
+        _env: &Environment,
+    ) -> DriverPumpResult {
+        DriverPumpResult {
+            rebuilt: false,
+            tree_update: None,
+            snapshot: None,
+            ui_focus: None,
+        }
+    }
+
+    fn is_settled(&self) -> bool {
+        true
+    }
+
+    fn has_pending_semantic_update(&self) -> bool {
+        false
+    }
+
     fn perform_action(&mut self, _request: AccessibilityActionRequest, _env: &Environment) -> bool {
         false
     }
 
-    fn hover_at(&mut self, _x: f32, _y: f32, _env: &Environment) -> bool {
-        false
+    fn hover_at(&mut self, _x: f32, _y: f32, _env: &Environment) {}
+
+    fn pointer_down(&mut self, _x: f32, _y: f32, _env: &Environment) {}
+
+    fn pointer_move(&mut self, _x: f32, _y: f32, _env: &Environment) {}
+
+    fn pointer_up(&mut self, _x: f32, _y: f32, _env: &Environment) {}
+
+    fn secondary_click(&mut self, _x: f32, _y: f32, _env: &Environment) {}
+
+    fn scroll_at(
+        &mut self,
+        _x: f32,
+        _y: f32,
+        _dx: f32,
+        _dy: f32,
+        _is_line_delta: bool,
+        _env: &Environment,
+    ) {
     }
 
-    fn pointer_down(&mut self, _x: f32, _y: f32, _env: &Environment) -> bool {
-        false
+    fn text_input(&mut self, _text: String, _env: &Environment) {}
+
+    fn key_press(
+        &mut self,
+        _key: hydrolysis::KeyCode,
+        _modifiers: hydrolysis::Modifiers,
+        _env: &Environment,
+    ) {
     }
 
-    fn pointer_move(&mut self, _x: f32, _y: f32, _env: &Environment) -> bool {
-        false
-    }
-
-    fn pointer_up(&mut self, _x: f32, _y: f32, _env: &Environment) -> bool {
-        false
-    }
-
-    fn magnify_at(&mut self, _x: f32, _y: f32, _factor: f32, _env: &Environment) -> bool {
-        false
-    }
+    fn magnify_at(&mut self, _x: f32, _y: f32, _factor: f32, _env: &Environment) {}
 
     fn clear_ui_focus(&mut self, _env: &Environment) -> bool {
         false
+    }
+
+    fn request_redraw(&mut self, _content: &AnyViewBuilder<AnyView>, _env: &Environment) {}
+
+    fn pump_frame(
+        &mut self,
+        _content: &AnyViewBuilder<AnyView>,
+        _env: &Environment,
+    ) -> crate::driver::FrameTiming {
+        crate::driver::FrameTiming::default()
     }
 }
 
@@ -85,12 +132,14 @@ fn node(
         id: node_id(id),
         role,
         label: label.map(ToOwned::to_owned),
+        identifier: None,
         value: value.map(ToOwned::to_owned),
         bounds: None,
         enabled,
         selected: false,
         checked: None,
         expanded: None,
+        busy: false,
         hidden: false,
         children: Vec::new(),
     }
@@ -147,8 +196,8 @@ fn scoped_tree() -> TreeSnapshot {
     ])
 }
 
-fn mounted(tree: TreeSnapshot) -> MountedApp {
-    MountedApp {
+fn mounted(tree: TreeSnapshot) -> SemanticApp {
+    SemanticApp {
         env: Environment::new(),
         content: AnyViewBuilder::new(|| AnyView::new(())),
         driver: Box::new(NoopDriver),
@@ -179,20 +228,24 @@ fn smoke_snapshot_size_matches_target() {
 
 #[test]
 fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
-    let mut env = Environment::new();
-    theme::install_color_signal::<theme::color::Foreground>(
-        &mut env,
-        Computed::constant(ResolvedColor {
-            red: 1.0,
-            green: 1.0,
-            blue: 1.0,
-            opacity: 1.0,
-            headroom: 1.0,
-        }),
-    );
-    let mut app = UiTest::new().environment(env).viewport(240, 120).mount(|| {
-        vstack((text("Theme slot").body(), text("Theme slot").body())).background(Srgb::BLACK)
-    });
+    let mut app = ui()
+        .viewport(240, 120)
+        .theme(|env: &mut Environment| {
+            install_m3(env);
+            theme::install_color_signal::<theme::color::Foreground>(
+                env,
+                Computed::constant(ResolvedColor {
+                    red: 1.0,
+                    green: 1.0,
+                    blue: 1.0,
+                    opacity: 1.0,
+                    headroom: 1.0,
+                }),
+            );
+        })
+        .mount_offscreen(|| {
+            vstack((text("Theme slot").body(), text("Theme slot").body())).background(Srgb::BLACK)
+        });
     assert_eq!(
         app.query()
             .role(Role::LABEL)
@@ -209,21 +262,114 @@ fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
 }
 
 #[test]
-fn ui_test_environment_builder_preserves_custom_theme() {
-    let mut env = Environment::new();
-    theme::install_color_signal::<theme::color::Foreground>(
-        &mut env,
-        Computed::constant(ResolvedColor {
-            red: 1.0,
-            green: 1.0,
-            blue: 1.0,
-            opacity: 1.0,
-            headroom: 1.0,
-        }),
-    );
-    let mut app = UiTest::new().environment(env).viewport(240, 120).mount(|| {
-        vstack((text("Mounted theme").body(), text("Mounted theme").body())).background(Srgb::BLACK)
+fn semantic_builder_does_not_require_theme_package() {
+    let mut app = ui()
+        .viewport(180, 80)
+        .mount(|| text("Semantic only").body());
+    let _ = app
+        .query()
+        .role(Role::LABEL)
+        .label("Semantic only")
+        .single();
+}
+
+#[test]
+fn a11y_identifier_flows_from_modifier_to_selector() {
+    let mut app = ui().theme(install_m3).mount(|| {
+        vstack((
+            waterui::component::button("Submit").a11y_id("login.submit"),
+            waterui::component::button("Submit"),
+        ))
     });
+    let element = app.query().identifier("login.submit").single();
+    assert_eq!(element.node().identifier(), Some("login.submit"));
+    assert_eq!(element.node().label(), Some("Submit"));
+    // The identifier is nearest-consumer metadata: the second, unadorned
+    // button must not inherit it.
+    assert_eq!(
+        app.query().role(Role::BUTTON).all().len(),
+        2,
+        "both buttons stay queryable by role"
+    );
+    app.query().identifier("login.submit").tap();
+}
+
+#[test]
+fn themed_builder_exposes_offscreen_perf_closure_api() {
+    let report = ui()
+        .viewport(96, 72)
+        .theme(install_m3)
+        .perf_config(PerfConfig {
+            warmups: 1,
+            samples: 3,
+            repetitions: 1,
+        })
+        .perf_with(
+            || text("Measured").body(),
+            |perf| {
+                perf.measure("steady", |run| {
+                    let _ = run
+                        .app()
+                        .query()
+                        .role(Role::LABEL)
+                        .label("Measured")
+                        .single();
+                });
+            },
+        );
+
+    let measurements = report.measurements();
+    assert_eq!(measurements.len(), 1);
+    assert_eq!(measurements[0].name, "steady");
+    let stats = measurements[0].stats();
+    assert_eq!(stats.samples, 3);
+}
+
+#[test]
+fn themed_builder_default_perf_requests_redraw() {
+    let report = ui()
+        .viewport(96, 72)
+        .theme(install_m3)
+        .perf_config(PerfConfig {
+            warmups: 1,
+            samples: 3,
+            repetitions: 1,
+        })
+        .perf(|| text("Redraw measured").body());
+
+    let measurements = report.measurements();
+    assert_eq!(measurements.len(), 1);
+    assert_eq!(measurements[0].name, "steady-redraw");
+    let stats = measurements[0].stats();
+    assert_eq!(stats.samples, 3);
+    assert_eq!(stats.rebuilt_frames, 0);
+    assert!(
+        stats.phases.render.p95 > Duration::ZERO,
+        "default perf should measure real redraw frames"
+    );
+}
+
+#[test]
+fn ui_test_environment_builder_preserves_custom_theme() {
+    let mut app = ui()
+        .viewport(240, 120)
+        .theme(|env: &mut Environment| {
+            install_m3(env);
+            theme::install_color_signal::<theme::color::Foreground>(
+                env,
+                Computed::constant(ResolvedColor {
+                    red: 1.0,
+                    green: 1.0,
+                    blue: 1.0,
+                    opacity: 1.0,
+                    headroom: 1.0,
+                }),
+            );
+        })
+        .mount_offscreen(|| {
+            vstack((text("Mounted theme").body(), text("Mounted theme").body()))
+                .background(Srgb::BLACK)
+        });
     assert_eq!(
         app.query()
             .role(Role::LABEL)
@@ -231,7 +377,7 @@ fn ui_test_environment_builder_preserves_custom_theme() {
             .all()
             .len(),
         2,
-        "UiTest environment builder should keep mounted text semantics intact"
+        "UiBuilder environment builder should keep mounted text semantics intact"
     );
     let snapshot = app.snapshot();
     assert_eq!(snapshot.width, 240);
@@ -241,13 +387,16 @@ fn ui_test_environment_builder_preserves_custom_theme() {
 
 #[test]
 fn smoke_text_color_snapshot_preserves_semantic_labels() {
-    let mut app = UiTest::new().viewport(240, 120).mount(|| {
-        vstack((
-            text("Explicit color").body().color(Srgb::WHITE),
-            text("Explicit color").body().color(Srgb::WHITE),
-        ))
-        .background(Srgb::BLACK)
-    });
+    let mut app = ui()
+        .viewport(240, 120)
+        .theme(install_m3)
+        .mount_offscreen(|| {
+            vstack((
+                text("Explicit color").body().color(Srgb::WHITE),
+                text("Explicit color").body().color(Srgb::WHITE),
+            ))
+            .background(Srgb::BLACK)
+        });
     assert_eq!(
         app.query()
             .role(Role::LABEL)
@@ -261,7 +410,7 @@ fn smoke_text_color_snapshot_preserves_semantic_labels() {
 
 #[test]
 fn smoke_text_snapshot_preserves_semantic_labels() {
-    let mut app = UiTest::new().viewport(240, 120).mount(|| {
+    let mut app = ui().viewport(240, 120).mount(|| {
         vstack((
             text("Focused datum").body().foreground(Srgb::WHITE),
             text("Selected datum").body().foreground(Srgb::WHITE),
@@ -279,26 +428,61 @@ fn smoke_text_snapshot_preserves_semantic_labels() {
 }
 
 #[test]
-fn ui_test_snapshot_renders_text_after_canvas() {
-    let mut app = UiTest::new().viewport(320, 320).mount(|| {
-        vstack((
-            Canvas::new(|ctx| {
-                ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+fn tappable_composed_view_exposes_clickable_accessibility_node() {
+    let tapped = Rc::new(Cell::new(false));
+    let tapped_for_view = Rc::clone(&tapped);
+    let mut app = ui().viewport(160, 96).mount(move || {
+        text("Assist")
+            .body()
+            .padding_with(6.0)
+            .on_tap({
+                let tapped_for_view = Rc::clone(&tapped_for_view);
+                move || tapped_for_view.set(true)
             })
-            .size(240.0, 180.0)
-            .a11y_role(waterui::accessibility::AccessibilityRole::Image)
-            .a11y_label("Canvas layer"),
-            text("W")
-                .size(48.0)
-                .color(Srgb::WHITE)
-                .body()
-                .padding_with(6.0)
-                .a11y_label("Letter W"),
-        ))
-        .spacing(6.0)
-        .background(Srgb::BLACK)
+            .a11y_label("Assist")
+            .a11y_role(waterui::accessibility::AccessibilityRole::Button)
+            .a11y_children(waterui::accessibility::AccessibilityChildren::ExcludeDescendants)
     });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Assist")
+        .assert_exists();
+    app.query().role(Role::BUTTON).label("Assist").tap();
+    assert!(
+        tapped.get(),
+        "accessibility click should trigger tap gesture"
+    );
+    app.query()
+        .role(Role::LABEL)
+        .label("Assist")
+        .assert_not_exists();
+}
+
+#[test]
+fn ui_test_snapshot_renders_text_after_canvas() {
+    let mut app = ui()
+        .viewport(320, 320)
+        .theme(install_m3)
+        .mount_offscreen(|| {
+            vstack((
+                Canvas::new(|ctx| {
+                    ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
+                    ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+                })
+                .size(240.0, 180.0)
+                .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+                .a11y_label("Canvas layer"),
+                text("W")
+                    .size(48.0)
+                    .color(Srgb::WHITE)
+                    .body()
+                    .padding_with(6.0)
+                    .a11y_label("Letter W"),
+            ))
+            .spacing(6.0)
+            .background(Srgb::BLACK)
+        });
     app.query()
         .role(Role::IMAGE)
         .label("Canvas layer")
@@ -314,7 +498,7 @@ fn ui_test_snapshot_renders_text_after_canvas() {
 
 #[test]
 fn smoke_canvas_snapshot_preserves_accessibility_metadata() {
-    let mut app = UiTest::new().viewport(96, 72).mount(|| {
+    let mut app = ui().viewport(96, 72).theme(install_m3).mount_offscreen(|| {
         Canvas::new(|ctx| {
             ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
             ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
@@ -346,6 +530,7 @@ impl SceneContent for TestSceneContent {
             vello::peniko::Fill::NonZero,
             vello::kurbo::Affine::IDENTITY,
             &brush,
+            None,
             &rect,
         );
         false
@@ -366,7 +551,12 @@ fn scene_view_body_merges_to_native_when_marker_is_present() {
 #[test]
 fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     let build_called = Rc::new(Cell::new(false));
-    let mut platform = OffscreenWindow::new_for_tests(96, 72, wgpu::TextureFormat::Rgba8Unorm);
+    let mut platform = OffscreenWindow::on_context(
+        OffscreenGpuContext::new_for_tests_blocking(),
+        96,
+        72,
+        wgpu::TextureFormat::Rgba8Unorm,
+    );
     let mut renderer = {
         let surface = platform.surface();
         HydrolysisRenderer::new(surface.device())
@@ -375,13 +565,15 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     let env = Environment::new().extending(SceneViewMergeToParent);
 
     let surface = platform.surface();
-    renderer.set_frame_resources(surface.device(), surface.queue());
+    renderer.set_frame_resources(surface.adapter(), surface.device(), surface.queue());
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
-    renderer.dispatch(
-        SceneView::new(TestSceneContent(Rc::clone(&build_called))),
+    renderer.capture_window_tree(
+        AnyView::new(SceneView::new(TestSceneContent(Rc::clone(&build_called)))),
         &env,
         bounds,
+        vello::kurbo::Affine::IDENTITY,
+        vello::kurbo::Affine::IDENTITY,
     );
     renderer.finish_rebuild_frame();
     assert!(build_called.get(), "expected scene view build_scene to run");
@@ -390,8 +582,10 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
         .acquire()
         .expect("waterui-testing failed to acquire offscreen frame");
     renderer.render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
+        adapter: surface.adapter(),
         device: surface.device(),
         queue: surface.queue(),
+        texture: Some(frame.texture()),
         view: frame.view(),
         format: surface.format(),
         width: 96,
@@ -517,6 +711,22 @@ fn value_contains_matches_semantic_values() {
 }
 
 #[test]
+fn mixed_and_busy_selectors_preserve_complete_accessibility_state() {
+    let mut state = node(2, Role::CHECKBOX, Some("Sync all"), None, true);
+    state.checked = Some(CheckedState::Mixed);
+    state.busy = true;
+    let mut app = mounted(tree(vec![
+        node(1, Role::GROUP, Some("root"), None, true),
+        state,
+    ]));
+
+    let element = app.query().role(Role::CHECKBOX).mixed().busy(true).single();
+
+    assert_eq!(element.node().checked_state(), Some(CheckedState::Mixed));
+    assert!(element.node().busy());
+}
+
+#[test]
 fn wait_for_existence_and_nonexistence_complete_immediately() {
     let mut app = mounted(tree(vec![
         node(1, Role::LIST, Some("root"), None, true),
@@ -560,6 +770,60 @@ fn wait_for_panics_on_empty_expectations() {
         app.wait_for(&[], WaitOptions::default());
     }));
     assert!(outcome.is_err());
+}
+
+#[test]
+fn wait_for_ordered_expectations_skip_inverted_positions() {
+    let mut app = mounted(tree(vec![
+        node(1, Role::LIST, Some("root"), None, true),
+        node(2, Role::LABEL, Some("Ready"), None, true),
+        node(3, Role::BUTTON, Some("Continue"), None, true),
+    ]));
+
+    // An inverted expectation holds no position in the required order, so the
+    // two present elements fulfill in list order and the wait completes.
+    let expectations = [
+        app.expect_exists(Selector::default().role(Role::BUTTON).label("Delete"))
+            .inverted(),
+        app.expect_exists(Selector::default().role(Role::LABEL).label("Ready")),
+        app.expect_exists(Selector::default().role(Role::BUTTON).label("Continue")),
+    ];
+    let result = app.wait_for(
+        &expectations,
+        WaitOptions::new(Duration::from_millis(10)).enforce_order(true),
+    );
+    assert_eq!(result, WaitResult::Completed);
+}
+
+#[test]
+fn query_exists_is_true_for_multiple_matches() {
+    let mut app = mounted(tree(vec![
+        node(1, Role::LIST, Some("root"), None, true),
+        node(2, Role::BUTTON, Some("A"), None, true),
+        node(3, Role::BUTTON, Some("A"), None, true),
+    ]));
+
+    assert!(app.query().role(Role::BUTTON).label("A").exists());
+    assert!(!app.query().role(Role::BUTTON).label("B").exists());
+}
+
+#[test]
+fn assert_ui_focus_failure_names_the_actual_focus_target() {
+    let mut app = mounted(tree(vec![
+        node(1, Role::LIST, Some("root"), None, true),
+        node(2, Role::BUTTON, Some("Save"), None, true),
+        node(3, Role::BUTTON, Some("Cancel"), None, true),
+    ]));
+    app.ui_focus = Some(node_id(3));
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        app.assert_ui_focus(&Selector::default().role(Role::BUTTON).label("Save"));
+    }));
+    let message = panic_message(&*outcome.expect_err("assertion must fail"));
+    assert!(
+        message.contains("Cancel"),
+        "failure must name the actual focus target: {message}"
+    );
 }
 
 #[test]
@@ -608,7 +872,7 @@ fn stale_handle_panics_for_interaction_and_relative_query() {
     app.tree.revision = 99;
 
     let interaction = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = edit.tap(&mut app);
+        edit.tap(&mut app);
     }));
     let interaction_payload = interaction.expect_err("stale handle should panic");
     let interaction_message = panic_message(&*interaction_payload);
@@ -655,7 +919,7 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
     let scale = Binding::f32(1.0);
     let hovered = Binding::bool(false);
 
-    let mut app = UiTest::new().viewport(160, 160).mount({
+    let mut app = ui().viewport(160, 160).mount({
         let offset = offset.clone();
         let scale = scale.clone();
         let hovered = hovered.clone();
@@ -697,27 +961,24 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
     let initial_bounds = app.query().label("interactive canvas").single().bounds();
     assert!(initial_bounds.width() > 0.0 && initial_bounds.height() > 0.0);
 
-    assert!(app.query().label("interactive canvas").hover());
+    app.query().label("interactive canvas").hover();
     assert!(hovered.get(), "hover should update the tracked binding");
 
     let center_before_drag = app.query().label("interactive canvas").single().center();
-    assert!(app.magnify_at(center_before_drag.0, center_before_drag.1, 1.2));
+    app.magnify_at(center_before_drag.0, center_before_drag.1, 1.2);
     assert!(
         (scale.get() - 1.2).abs() < 0.001,
         "magnify should update the tracked scale binding"
     );
 
-    assert!(app.query().label("interactive canvas").drag_by(24.0, 0.0));
+    app.query().label("interactive canvas").drag_by(24.0, 0.0);
     assert!(
         (offset.get() - 24.0).abs() < 0.001,
         "drag should update the tracked offset binding"
     );
 
     let center_after_drag = app.query().label("interactive canvas").single().center();
-    assert!(
-        app.magnify_at(center_after_drag.0, center_after_drag.1, 1.4),
-        "magnify after drag should still target stacked gesture observers"
-    );
+    app.magnify_at(center_after_drag.0, center_after_drag.1, 1.4);
     assert!(
         (scale.get() - 1.4).abs() < 0.001,
         "second magnify should update the tracked scale binding"
@@ -746,7 +1007,7 @@ fn ui_test_drains_local_tasks_through_headless_runtime() {
     let status = Binding::container(String::from("idle"));
     let status_for_view = status.clone();
 
-    let mut app = UiTest::new().mount(move || {
+    let mut app = ui().theme(install_m3).mount_offscreen(move || {
         waterui::text!("{status_for_view}")
             .on_appear(|status: waterui::State<Binding<String>>| {
                 spawn_local(async move {
@@ -783,11 +1044,9 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     let username = Binding::container(Str::from(""));
     let password = Binding::container(Secure::default());
     let focus_for_view = focus.clone();
-    let mut app = UiTest::new().mount(move || {
+    let mut app = ui().theme(hydrolysis_m3::install).mount(move || {
         vstack((
-            TextField::new(&username)
-                .label(text("Username"))
-                .focused(&focus_for_view, Field::Username),
+            TextField::new(text("Username"), &username).focused(&focus_for_view, Field::Username),
             SecureField::new(text("Password"), &password).focused(&focus_for_view, Field::Password),
             button("Submit"),
         ))
@@ -813,13 +1072,10 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         .id();
     assert_eq!(app.ui_focus(), Some(username_id));
 
-    assert!(
-        app.query()
-            .role(Role::PASSWORD_INPUT)
-            .label("Password")
-            .focus(),
-        "expected password field focus action to succeed"
-    );
+    app.query()
+        .role(Role::PASSWORD_INPUT)
+        .label("Password")
+        .focus();
     let password_id = app
         .query()
         .role(Role::PASSWORD_INPUT)
@@ -830,20 +1086,246 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     assert_eq!(app.ui_focus(), Some(password_id));
     assert_eq!(focus.get(), Some(Field::Password));
 
-    assert!(
-        app.query().role(Role::BUTTON).label("Submit").focus(),
-        "expected button accessibility focus action to succeed"
-    );
+    app.query().role(Role::BUTTON).label("Submit").focus();
     let submit_id = app.query().role(Role::BUTTON).label("Submit").single().id();
     assert_eq!(submit_id, app.tree().focus());
     assert_eq!(app.ui_focus(), Some(password_id));
     assert_eq!(focus.get(), Some(Field::Password));
 
-    assert!(
-        app.clear_ui_focus(),
-        "expected clear_ui_focus to clear the active FocusState target"
-    );
+    app.clear_ui_focus();
     assert_eq!(app.ui_focus(), None);
     assert_eq!(focus.get(), None);
     assert_eq!(app.tree().focus(), submit_id);
+}
+
+#[test]
+fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
+    use waterui::prelude::*;
+
+    let value = Binding::container(Str::from(""));
+    let value_for_view = value.clone();
+    let mut app = ui()
+        .theme(hydrolysis_m3::install)
+        .mount(move || TextField::new(text("Full Name"), &value_for_view));
+
+    app.query()
+        .role(Role::TEXT_INPUT)
+        .label("Full Name")
+        .focus();
+
+    let mut expected = String::new();
+    for character in "Lexo Liu".chars() {
+        expected.push(character);
+        app.text_input(character.to_string());
+        assert_eq!(
+            value.get().as_str(),
+            expected,
+            "each retained refresh must preserve the caret after the committed prefix"
+        );
+    }
+}
+
+// ============================================================================
+// Async GPU setup must complete before a frame is captured (issue #149)
+// ============================================================================
+
+use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, wgpu};
+
+/// A `GpuView` whose `setup` yields before it is ready, the way a real one does
+/// while it builds pipelines. It draws nothing until setup has completed, so a
+/// capture taken before the executor has driven that future sees only the
+/// window background.
+#[derive(Debug)]
+struct DeferredClearRenderer {
+    color: wgpu::Color,
+    ready: Rc<Cell<bool>>,
+}
+
+impl GpuView for DeferredClearRenderer {
+    #[expect(
+        clippy::future_not_send,
+        reason = "GpuView::setup runs on the main thread and takes &mut Environment, which is Rc-backed and deliberately !Send"
+    )]
+    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
+        YieldOnce::default().await;
+        self.ready.set(true);
+    }
+
+    fn render(&mut self, frame: &mut GpuFrame) {
+        if !self.ready.get() {
+            return;
+        }
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hydrolysis_deferred_gpu_surface_encoder"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hydrolysis_deferred_gpu_surface_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+        frame.queue.submit([encoder.finish()]);
+    }
+}
+
+/// Returns `Pending` exactly once, so a future awaiting it needs a second poll.
+#[derive(Default)]
+struct YieldOnce {
+    polled: bool,
+}
+
+impl std::future::Future for YieldOnce {
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        if self.polled {
+            return std::task::Poll::Ready(());
+        }
+        self.polled = true;
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    }
+}
+
+/// A `GpuSurface` must reach the captured frame even though its `setup` is
+/// async. Capturing the very first pumped frame photographs the surface before
+/// any GPU content exists — the regression that made every GPU preview in the
+/// book render as a flat background.
+#[test]
+fn headless_capture_waits_for_async_gpu_setup() {
+    let ready = Rc::new(Cell::new(false));
+    let ready_for_view = Rc::clone(&ready);
+    let content = AnyViewBuilder::new(move || {
+        AnyView::new(GpuSurface::new(DeferredClearRenderer {
+            color: wgpu::Color {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
+            ready: Rc::clone(&ready_for_view),
+        }))
+    });
+
+    let mut env = Environment::new();
+    hydrolysis::testing::install_theme(&mut env);
+    install_m3(&mut env);
+    let mut runtime = hydrolysis::HeadlessRuntime::new_for_tests(env, content, 64, 64);
+
+    // Pump until the frame settles, exactly as the preview runtime does.
+    let mut settled = false;
+    for _ in 0..64 {
+        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "frame never settled");
+    assert!(
+        ready.get(),
+        "the async GpuView::setup must have been driven to completion"
+    );
+
+    let snapshot = runtime
+        .pump_at(true, std::time::Instant::now())
+        .snapshot
+        .expect("capture must produce a snapshot");
+    let center = ((snapshot.width as usize / 2)
+        + (snapshot.height as usize / 2) * snapshot.width as usize)
+        * 4;
+    assert_eq!(
+        &snapshot.rgba8[center..center + 3],
+        &[255, 0, 0],
+        "the GpuSurface content must be present in the captured frame"
+    );
+}
+
+/// A query answers about the app's state now, not as of the last interaction.
+///
+/// Every input path settles after dispatching, so a tap's consequences are in
+/// the tree by the time the call returns. State a test changes directly — a
+/// `Binding` it owns, set the way app code would — goes through no such path.
+/// Without the sync on read, the next query answered from the tree as it stood
+/// before the change: it reported the old label, and an assertion that should
+/// have failed passed.
+#[test]
+fn a_query_sees_state_changed_since_the_last_pump() {
+    let label = waterui::reactive::binding(waterui::Str::from("before"));
+    let probe = label.clone();
+    let mut app = crate::ui().mount(move || vstack((Text::computed(label.clone()),)));
+
+    app.query()
+        .role(crate::Role::LABEL)
+        .label("before")
+        .assert_exists();
+
+    probe.set(waterui::Str::from("after"));
+
+    app.query()
+        .role(crate::Role::LABEL)
+        .label("after")
+        .assert_exists();
+    app.query()
+        .role(crate::Role::LABEL)
+        .label("before")
+        .assert_not_exists();
+}
+
+/// An app that never comes to rest still answers queries promptly.
+///
+/// An indeterminate indicator keeps the runtime unsettled forever, so a read
+/// that waited for quiescence would spend its whole pump budget on every
+/// query and still find the app busy. Reading waits on *unapplied* work
+/// instead, which is a state the app does reach between changes.
+#[test]
+fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
+    let label = waterui::reactive::binding(waterui::Str::from("before"));
+    let probe = label.clone();
+    let mut app = crate::ui().theme(install_m3).mount(move || {
+        vstack((
+            waterui::component::progress::loading().label("Loading"),
+            Text::computed(label.clone()),
+        ))
+    });
+
+    assert!(
+        !app.driver.is_settled(),
+        "an indeterminate indicator keeps the runtime busy for as long as it is on screen"
+    );
+    assert!(
+        !app.driver.has_pending_semantic_update(),
+        "busy is not the same as stale: with nothing unapplied the tree is current"
+    );
+
+    probe.set(waterui::Str::from("after"));
+    assert!(
+        app.driver.has_pending_semantic_update(),
+        "a signal change leaves an update the last flush did not apply"
+    );
+
+    app.query()
+        .role(crate::Role::LABEL)
+        .label("after")
+        .assert_exists();
+    assert!(
+        !app.driver.has_pending_semantic_update(),
+        "reading the tree must have applied the update, not merely waited for it"
+    );
 }

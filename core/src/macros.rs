@@ -20,13 +20,19 @@ macro_rules! impl_debug {
 ///
 /// # Usage
 ///
-/// ```ignore
-/// // Default stretch axis (None)
-/// raw_view!(Text);
+/// ```
+/// use waterui_core::{layout::StretchAxis, raw_view};
 ///
-/// // With explicit stretch axis
-/// raw_view!(Color, StretchAxis::Both);
-/// raw_view!(Spacer, StretchAxis::MainAxis);
+/// // Default stretch axis (None): the view is sized by its content.
+/// struct Badge;
+/// raw_view!(Badge);
+///
+/// // With an explicit stretch axis.
+/// struct Backdrop;
+/// raw_view!(Backdrop, StretchAxis::Both);
+///
+/// struct Divider;
+/// raw_view!(Divider, StretchAxis::Horizontal);
 /// ```
 #[macro_export]
 macro_rules! raw_view {
@@ -72,24 +78,49 @@ macro_rules! raw_view {
 ///
 /// # Usage
 ///
-/// ```ignore
-/// // Default stretch axis (None) - for content-sized views
-/// configurable!(Button, ButtonConfig);
+/// ```
+/// use waterui_core::{configurable, layout::StretchAxis};
 ///
-/// // With explicit stretch axis - for views that expand
+/// // Default stretch axis (None) - for content-sized views.
+/// #[derive(Debug, Default)]
+/// pub struct BadgeConfig {
+///     pub count: u32,
+/// }
+/// configurable!(Badge, BadgeConfig);
+///
+/// // With an explicit stretch axis - for views that expand.
+/// #[derive(Debug, Default)]
+/// pub struct SliderConfig {
+///     pub value: f64,
+/// }
 /// configurable!(Slider, SliderConfig, StretchAxis::Horizontal);
-/// configurable!(Color, ColorConfig, StretchAxis::Both);
 ///
-/// // With dynamic stretch axis (closure) - for runtime-dependent behavior
-/// configurable!(Progress, ProgressConfig, |config| match config.style {
-///     ProgressStyle::Linear => StretchAxis::Horizontal,
-///     ProgressStyle::Circular => StretchAxis::None,
+/// // With a dynamic stretch axis - for runtime-dependent behaviour.
+/// #[derive(Debug, Default)]
+/// pub struct ProgressConfig {
+///     pub circular: bool,
+/// }
+/// configurable!(Progress, ProgressConfig, |config| if config.circular {
+///     StretchAxis::None
+/// } else {
+///     StretchAxis::Horizontal
 /// });
 /// ```
 #[macro_export]
 macro_rules! configurable {
     // Internal implementation with stretch axis
     (@impl $(#[$meta:meta])*; $view:ident, $config:ty, $axis:expr) => {
+        $crate::configurable!(
+            @impl $(#[$meta])*;
+            $view,
+            $config,
+            $axis,
+            |config: $config, _env: &$crate::Environment| config
+        );
+    };
+
+    // Internal implementation with stretch axis and a native payload resolver.
+    (@impl $(#[$meta:meta])*; $view:ident, $config:ty, $axis:expr, $resolve_native:expr) => {
         $(#[$meta])*
         pub struct $view($config);
 
@@ -120,7 +151,7 @@ macro_rules! configurable {
                 if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
                     $crate::AnyView::new(hook.apply(env, config))
                 } else {
-                    $crate::AnyView::new($crate::Native::new(config))
+                    $crate::AnyView::new($crate::Native::new(($resolve_native)(config, env)))
                 }
             }
 
@@ -133,6 +164,17 @@ macro_rules! configurable {
     // Dynamic stretch axis with closure/function
     // Internal implementation that generates NativeView with the provided function
     (@impl_dynamic $(#[$meta:meta])*; $view:ident, $config:ty, $stretch_fn:expr) => {
+        $crate::configurable!(
+            @impl_dynamic $(#[$meta])*;
+            $view,
+            $config,
+            $stretch_fn,
+            |config: $config, _env: &$crate::Environment| config
+        );
+    };
+
+    // Dynamic stretch axis with closure/function and a native payload resolver.
+    (@impl_dynamic $(#[$meta:meta])*; $view:ident, $config:ty, $stretch_fn:expr, $resolve_native:expr) => {
         $(#[$meta])*
         #[derive(Debug)]
         pub struct $view($config);
@@ -164,7 +206,7 @@ macro_rules! configurable {
                 if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
                     $crate::AnyView::new(hook.apply(env, config))
                 } else {
-                    $crate::AnyView::new($crate::Native::new(config))
+                    $crate::AnyView::new($crate::Native::new(($resolve_native)(config, env)))
                 }
             }
 
@@ -174,15 +216,48 @@ macro_rules! configurable {
         }
     };
 
+    // Dynamic stretch axis with a native payload resolver.
+    ($(#[$meta:meta])* $view:ident, $config:ty, |$param:ident| $body:expr, resolve |$config_param:ident, $env_param:ident| $resolve_body:expr) => {
+        $crate::configurable!(
+            @impl_dynamic $(#[$meta])*;
+            $view,
+            $config,
+            |$param: &$config| $body,
+            |$config_param: $config, $env_param: &$crate::Environment| $resolve_body
+        );
+    };
+
     // Public variant for dynamic stretch_axis with closure: |config| -> StretchAxis
     // IMPORTANT: This must come BEFORE the $axis:expr variant (closure pattern)
     ($(#[$meta:meta])* $view:ident, $config:ty, |$param:ident| $body:expr) => {
         $crate::configurable!(@impl_dynamic $(#[$meta])*; $view, $config, |$param: &$config| $body);
     };
 
+    // Explicit stretch axis with a native payload resolver.
+    ($(#[$meta:meta])* $view:ident, $config:ty, $axis:expr, resolve |$config_param:ident, $env_param:ident| $body:expr) => {
+        $crate::configurable!(
+            @impl $(#[$meta])*;
+            $view,
+            $config,
+            $axis,
+            |$config_param: $config, $env_param: &$crate::Environment| $body
+        );
+    };
+
     // With explicit stretch axis
     ($(#[$meta:meta])* $view:ident, $config:ty, $axis:expr) => {
         $crate::configurable!(@impl $(#[$meta])*; $view, $config, $axis);
+    };
+
+    // Default stretch axis with a native payload resolver.
+    ($(#[$meta:meta])* $view:ident, $config:ty, resolve |$config_param:ident, $env_param:ident| $body:expr) => {
+        $crate::configurable!(
+            @impl $(#[$meta])*;
+            $view,
+            $config,
+            $crate::layout::StretchAxis::None,
+            |$config_param: $config, $env_param: &$crate::Environment| $body
+        );
     };
 
     // Default stretch axis (None)

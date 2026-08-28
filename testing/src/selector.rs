@@ -4,19 +4,21 @@ use std::fmt::Write as _;
 
 use accesskit::{Action as AccessibilityAction, ActionData as AccessibilityActionData};
 
-use crate::app::MountedApp;
-use crate::semantics::{NodeBounds, NodeId, NodeSnapshot, Role};
+use crate::app::SemanticApp;
+use crate::semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role};
 
 /// Chainable semantic selector.
 #[derive(Debug, Clone)]
 pub struct Selector {
     role: Option<Role>,
+    identifier: Option<String>,
     label_exact: Option<String>,
     label_contains: Option<String>,
     enabled: Option<bool>,
     selected: Option<bool>,
-    checked: Option<bool>,
+    checked: Option<CheckedState>,
     expanded: Option<bool>,
+    busy: Option<bool>,
     value_exact: Option<String>,
     value_contains: Option<String>,
     hidden: Option<bool>,
@@ -27,12 +29,14 @@ impl Default for Selector {
     fn default() -> Self {
         Self {
             role: None,
+            identifier: None,
             label_exact: None,
             label_contains: None,
             enabled: None,
             selected: None,
             checked: None,
             expanded: None,
+            busy: None,
             value_exact: None,
             value_contains: None,
             hidden: Some(false),
@@ -46,6 +50,13 @@ impl Selector {
     #[must_use]
     pub const fn role(mut self, role: Role) -> Self {
         self.role = Some(role);
+        self
+    }
+
+    /// Restricts matches to a stable automation identifier (`a11y_id`).
+    #[must_use]
+    pub fn identifier(mut self, identifier: impl Into<String>) -> Self {
+        self.identifier = Some(identifier.into());
         self
     }
 
@@ -80,7 +91,18 @@ impl Selector {
     /// Restricts matches to a checked state.
     #[must_use]
     pub const fn checked(mut self, checked: bool) -> Self {
-        self.checked = Some(checked);
+        self.checked = Some(if checked {
+            CheckedState::True
+        } else {
+            CheckedState::False
+        });
+        self
+    }
+
+    /// Restricts matches to nodes with an indeterminate checked state.
+    #[must_use]
+    pub const fn mixed(mut self) -> Self {
+        self.checked = Some(CheckedState::Mixed);
         self
     }
 
@@ -88,6 +110,13 @@ impl Selector {
     #[must_use]
     pub const fn expanded(mut self, expanded: bool) -> Self {
         self.expanded = Some(expanded);
+        self
+    }
+
+    /// Restricts matches to nodes with the requested busy state.
+    #[must_use]
+    pub const fn busy(mut self, busy: bool) -> Self {
+        self.busy = Some(busy);
         self
     }
 
@@ -135,6 +164,9 @@ impl Selector {
         if let Some(role) = self.role {
             parts.push(format!("role={role:?}"));
         }
+        if let Some(identifier) = self.identifier.as_deref() {
+            parts.push(format!("identifier={identifier:?}"));
+        }
         if let Some(label) = self.label_exact.as_deref() {
             parts.push(format!("label={label:?}"));
         }
@@ -148,10 +180,13 @@ impl Selector {
             parts.push(format!("selected={selected}"));
         }
         if let Some(checked) = self.checked {
-            parts.push(format!("checked={checked}"));
+            parts.push(format!("checked={checked:?}"));
         }
         if let Some(expanded) = self.expanded {
             parts.push(format!("expanded={expanded}"));
+        }
+        if let Some(busy) = self.busy {
+            parts.push(format!("busy={busy}"));
         }
         if let Some(value) = self.value_exact.as_deref() {
             parts.push(format!("value={value:?}"));
@@ -171,6 +206,12 @@ impl Selector {
     pub(crate) fn matches(&self, node: &NodeSnapshot) -> bool {
         if let Some(role) = self.role
             && node.role().as_accesskit() != role.as_accesskit()
+        {
+            return false;
+        }
+
+        if let Some(expected) = self.identifier.as_deref()
+            && node.identifier() != Some(expected)
         {
             return false;
         }
@@ -203,13 +244,19 @@ impl Selector {
         }
 
         if let Some(expected) = self.checked
-            && node.checked() != Some(expected)
+            && node.checked_state() != Some(expected)
         {
             return false;
         }
 
         if let Some(expected) = self.expanded
             && node.expanded() != Some(expected)
+        {
+            return false;
+        }
+
+        if let Some(expected) = self.busy
+            && node.busy() != expected
         {
             return false;
         }
@@ -332,69 +379,80 @@ impl ElementRef {
     }
 
     /// Performs a click/tap action.
-    pub fn tap(&self, app: &mut MountedApp) -> bool {
+    pub fn tap(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "tap");
-        app.perform_action(self.node_id, AccessibilityAction::Click, None)
+        app.perform_action(self.node_id, AccessibilityAction::Click, None);
     }
 
     /// Performs a pointer tap at the provided normalized coordinates.
-    pub fn tap_at(&self, app: &mut MountedApp, normalized_x: f32, normalized_y: f32) -> bool {
+    pub fn tap_at(&self, app: &mut SemanticApp, normalized_x: f32, normalized_y: f32) {
         app.assert_current_element(self, "tap_at");
         let (x, y) = self.normalized_point(normalized_x, normalized_y);
-        app.tap_at(x, y)
+        app.tap_at(x, y);
     }
 
     /// Requests accessibility focus on the element.
-    pub fn focus(&self, app: &mut MountedApp) -> bool {
+    pub fn focus(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "focus");
-        app.perform_action(self.node_id, AccessibilityAction::Focus, None)
+        app.perform_action(self.node_id, AccessibilityAction::Focus, None);
     }
 
     /// Moves hover to the element center.
-    pub fn hover(&self, app: &mut MountedApp) -> bool {
+    pub fn hover(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "hover");
         let (x, y) = self.center();
-        app.hover_at(x, y)
+        app.hover_at(x, y);
     }
 
     /// Moves hover to the provided normalized coordinates within the element.
-    pub fn hover_at(&self, app: &mut MountedApp, normalized_x: f32, normalized_y: f32) -> bool {
+    pub fn hover_at(&self, app: &mut SemanticApp, normalized_x: f32, normalized_y: f32) {
         app.assert_current_element(self, "hover_at");
         let (x, y) = self.normalized_point(normalized_x, normalized_y);
-        app.hover_at(x, y)
+        app.hover_at(x, y);
     }
 
     /// Drags from the element center by the provided delta.
-    pub fn drag_by(&self, app: &mut MountedApp, dx: f32, dy: f32) -> bool {
+    pub fn drag_by(&self, app: &mut SemanticApp, dx: f32, dy: f32) {
+        self.drag_by_with(app, dx, dy, crate::app::DragOptions::default());
+    }
+
+    /// Drags from the element center by a delta with step/timing control.
+    pub fn drag_by_with(
+        &self,
+        app: &mut SemanticApp,
+        dx: f32,
+        dy: f32,
+        options: crate::app::DragOptions,
+    ) {
         app.assert_current_element(self, "drag_by");
         let (x, y) = self.center();
-        app.drag_from_to(x, y, x + dx, y + dy)
+        app.drag_from_to_with(x, y, x + dx, y + dy, options);
     }
 
     /// Drags between two normalized coordinates within the element.
     pub fn drag_between(
         &self,
-        app: &mut MountedApp,
+        app: &mut SemanticApp,
         from_x: f32,
         from_y: f32,
         to_x: f32,
         to_y: f32,
-    ) -> bool {
+    ) {
         app.assert_current_element(self, "drag_between");
         let (start_x, start_y) = self.normalized_point(from_x, from_y);
         let (end_x, end_y) = self.normalized_point(to_x, to_y);
-        app.drag_from_to(start_x, start_y, end_x, end_y)
+        app.drag_from_to(start_x, start_y, end_x, end_y);
     }
 
     /// Applies a magnification gesture centered on the element.
-    pub fn magnify(&self, app: &mut MountedApp, factor: f32) -> bool {
+    pub fn magnify(&self, app: &mut SemanticApp, factor: f32) {
         app.assert_current_element(self, "magnify");
         let (x, y) = self.center();
-        app.magnify_at(x, y, factor)
+        app.magnify_at(x, y, factor);
     }
 
     /// Sets textual value on editable controls.
-    pub fn set_text(&self, app: &mut MountedApp, value: impl Into<String>) -> bool {
+    pub fn set_text(&self, app: &mut SemanticApp, value: impl Into<String>) {
         app.assert_current_element(self, "set_text");
         app.perform_action(
             self.node_id,
@@ -402,25 +460,25 @@ impl ElementRef {
             Some(AccessibilityActionData::Value(
                 value.into().into_boxed_str(),
             )),
-        )
+        );
     }
 
     /// Increments current value for slider/stepper-like controls.
-    pub fn increment(&self, app: &mut MountedApp) -> bool {
+    pub fn increment(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "increment");
-        app.perform_action(self.node_id, AccessibilityAction::Increment, None)
+        app.perform_action(self.node_id, AccessibilityAction::Increment, None);
     }
 
     /// Decrements current value for slider/stepper-like controls.
-    pub fn decrement(&self, app: &mut MountedApp) -> bool {
+    pub fn decrement(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "decrement");
-        app.perform_action(self.node_id, AccessibilityAction::Decrement, None)
+        app.perform_action(self.node_id, AccessibilityAction::Decrement, None);
     }
 
     /// Scrolls down when supported by the node.
-    pub fn scroll_down(&self, app: &mut MountedApp) -> bool {
+    pub fn scroll_down(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "scroll_down");
-        app.perform_action(self.node_id, AccessibilityAction::ScrollDown, None)
+        app.perform_action(self.node_id, AccessibilityAction::ScrollDown, None);
     }
 }
 
