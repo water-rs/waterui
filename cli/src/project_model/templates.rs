@@ -10,15 +10,16 @@ use std::{
 
 use crate::build_info::{
     ANDROID_BACKEND, APPLE_BACKEND, DEW_VERSION, GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION,
-    HYDROLYSIS_VERSION, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, WATERUI_CORE_VERSION,
-    WATERUI_FFI_VERSION, WATERUI_VERSION,
+    HYDROLYSIS_VERSION, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, WATERUI_BROWSER_CEF_VERSION,
+    WATERUI_CORE_VERSION, WATERUI_FFI_VERSION, WATERUI_VERSION,
 };
 use askama::Template;
+
+use crate::project::ResolvedWebViewBackend;
 
 use include_dir::{Dir, include_dir};
 use smol::fs;
 
-use crate::project::WebViewBackend;
 use crate::project_types::{BundleIdentifier, CrateName, RustIdent};
 
 /// Normalize a path to use forward slashes for config files (Cargo.toml, Xcode projects, etc.)
@@ -215,25 +216,20 @@ impl Default for Esp32TemplateEntry {
     }
 }
 
-/// Browser features rendered into a generated backend manifest.
-#[derive(Debug, Clone, Copy)]
+/// What the application's own dependency graph says about browser components.
+///
+/// Nothing here is configuration: the engine that draws a `WebView` is a crate
+/// the application links and installs, so the generated backend only has to
+/// know whether it should bridge the platform's own engine, and whether the
+/// package needs a CEF subprocess helper.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct BrowserTemplateContext {
-    /// Standard `WebView` engine selected by `Water.toml`.
-    pub webview_backend: WebViewBackend,
     /// Whether the packaged application links the standard `WebView` component.
     pub webview_enabled: bool,
     /// Whether the packaged application links the independent Chromium component.
     pub chromium_enabled: bool,
-}
-
-impl BrowserTemplateContext {
-    const fn new(webview_backend: WebViewBackend) -> Self {
-        Self {
-            webview_backend,
-            webview_enabled: false,
-            chromium_enabled: false,
-        }
-    }
+    /// The browser engine crate the application links, if any.
+    pub engine: Option<ResolvedWebViewBackend>,
 }
 
 /// Context for rendering templates with type-safe substitutions.
@@ -300,7 +296,7 @@ impl TemplateContext {
                 .map(|path| path.join("backends/android")),
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
-            browser: BrowserTemplateContext::new(WebViewBackend::Default),
+            browser: BrowserTemplateContext::default(),
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
@@ -330,7 +326,7 @@ impl TemplateContext {
             android_backend_path: None,
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
-            browser: BrowserTemplateContext::new(manifest.webview_backend),
+            browser: BrowserTemplateContext::default(),
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
@@ -376,7 +372,7 @@ impl TemplateContext {
             android_backend_path,
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
-            browser: BrowserTemplateContext::new(WebViewBackend::Default),
+            browser: BrowserTemplateContext::default(),
             backend_project_path: None,
             project_root_path,
             android_permissions: Vec::new(),
@@ -418,22 +414,38 @@ impl TemplateContext {
         self
     }
 
-    fn webview_backend_feature(&self) -> Option<&'static str> {
-        self.browser
-            .webview_enabled
-            .then_some(self.browser.webview_backend.cargo_feature())
+    /// Set the browser engine crate the application's runtime graph links.
+    #[must_use]
+    pub const fn with_browser_engine(mut self, engine: Option<ResolvedWebViewBackend>) -> Self {
+        self.browser.engine = engine;
+        self
+    }
+
+    /// The backend feature that bridges the platform's own web engine.
+    ///
+    /// An application that linked an engine of its own draws through that
+    /// instead, and the bridge would take the component by type before the
+    /// application's realization was ever consulted — so the backend compiles
+    /// no web engine at all.
+    const fn webview_backend_feature(&self) -> Option<&'static str> {
+        if self.browser.webview_enabled && self.browser.engine.is_none() {
+            Some("webview-system")
+        } else {
+            None
+        }
     }
 
     const fn chromium_enabled(&self) -> bool {
         self.browser.chromium_enabled
     }
 
+    /// Whether the standard `WebView` in this application is drawn by CEF.
     const fn cef_webview_enabled(&self) -> bool {
-        self.browser.webview_enabled && matches!(self.browser.webview_backend, WebViewBackend::Cef)
+        self.browser.webview_enabled && self.cef_runtime_enabled()
     }
 
     const fn cef_runtime_enabled(&self) -> bool {
-        self.chromium_enabled() || self.cef_webview_enabled()
+        matches!(self.browser.engine, Some(ResolvedWebViewBackend::Cef))
     }
 
     /// Set the exact `WaterUI` feature set used by a preview support runtime.
@@ -946,11 +958,10 @@ mod tests {
     use super::{
         ANDROID_BACKEND, APPLE_BACKEND, BrowserTemplateContext, Esp32TemplateEntry,
         GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION,
-        TemplateContext, TemplateNamespace, WATERUI_CORE_VERSION, embedded,
-        jitpack_dependency_coordinate, normalize_path_for_config, preview_ffi,
-        render_scaffold_template,
+        ResolvedWebViewBackend, TemplateContext, TemplateNamespace, WATERUI_BROWSER_CEF_VERSION,
+        WATERUI_CORE_VERSION, embedded, jitpack_dependency_coordinate, normalize_path_for_config,
+        preview_ffi, render_scaffold_template,
     };
-    use crate::project::WebViewBackend;
     use crate::project_types::{BundleIdentifier, CrateName};
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -971,7 +982,7 @@ mod tests {
             android_backend_path: None,
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
-            browser: BrowserTemplateContext::new(WebViewBackend::Default),
+            browser: BrowserTemplateContext::default(),
             backend_project_path,
             project_root_path,
             android_permissions: Vec::new(),
@@ -1221,7 +1232,9 @@ mod tests {
 
     #[test]
     fn apple_chromium_template_links_and_initializes_cef_before_appkit() {
-        let ctx = app_ctx().with_chromium_enabled(true);
+        let ctx = app_ctx()
+            .with_chromium_enabled(true)
+            .with_browser_engine(Some(ResolvedWebViewBackend::Cef));
         let project_template = embedded::APPLE
             .get_file("AppName.xcodeproj/project.pbxproj.tpl")
             .expect("apple project template must exist")
@@ -1261,8 +1274,9 @@ mod tests {
 
     #[test]
     fn apple_cef_webview_template_links_only_the_standard_cef_component() {
-        let mut ctx = app_ctx().with_webview_enabled(true);
-        ctx.browser.webview_backend = WebViewBackend::Cef;
+        let ctx = app_ctx()
+            .with_webview_enabled(true)
+            .with_browser_engine(Some(ResolvedWebViewBackend::Cef));
         let project_template = embedded::APPLE
             .get_file("AppName.xcodeproj/project.pbxproj.tpl")
             .expect("apple project template must exist")
@@ -1404,9 +1418,10 @@ mod tests {
     }
 
     #[test]
-    fn generated_native_backends_only_select_webview_when_linked() {
-        let mut gtk_ctx = app_ctx().with_webview_enabled(true);
-        gtk_ctx.browser.webview_backend = WebViewBackend::Wpe;
+    fn generated_native_backends_only_bridge_the_platform_engine_when_no_engine_is_linked() {
+        // No engine crate in the graph: the backend bridges what the platform
+        // gives it.
+        let gtk_ctx = app_ctx().with_webview_enabled(true);
         let tempdir = tempdir().expect("temporary gtk webview scaffold dir");
         smol::block_on(crate::templates::gtk4::scaffold(
             tempdir.path(),
@@ -1416,23 +1431,27 @@ mod tests {
         .expect("gtk4 webview scaffold should succeed");
         let gtk_manifest = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
             .expect("gtk4 Cargo.toml should be written");
-        assert!(gtk_manifest.contains("features = [\"webview-wpe\"]"));
+        assert!(gtk_manifest.contains("features = [\"webview-system\"]"));
 
-        let mut gtk_cef_ctx = app_ctx().with_webview_enabled(true);
-        gtk_cef_ctx.browser.webview_backend = WebViewBackend::Cef;
-        let gtk_cef_manifest =
-            crate::templates::gtk4::rendered_outputs(&gtk_cef_ctx, "waterui-test-gtk-cef")
-                .expect("GTK CEF outputs should render")
+        // An application that linked its own engine draws through that, so the
+        // backend compiles no web engine at all.
+        let gtk_wpe_ctx = app_ctx()
+            .with_webview_enabled(true)
+            .with_browser_engine(Some(ResolvedWebViewBackend::Wpe));
+        let gtk_wpe_manifest =
+            crate::templates::gtk4::rendered_outputs(&gtk_wpe_ctx, "waterui-test-gtk-wpe")
+                .expect("GTK WPE outputs should render")
                 .into_iter()
                 .find_map(|(path, content)| {
                     (path == std::path::Path::new("Cargo.toml"))
                         .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
                 })
-                .expect("GTK CEF Cargo.toml output should exist");
-        assert!(gtk_cef_manifest.contains("features = [\"webview-cef\"]"));
+                .expect("GTK WPE Cargo.toml output should exist");
+        assert!(!gtk_wpe_manifest.contains("webview-system"));
 
-        let mut hydrolysis_ctx = app_ctx().with_webview_enabled(true);
-        hydrolysis_ctx.browser.webview_backend = WebViewBackend::Cef;
+        let hydrolysis_ctx = app_ctx()
+            .with_webview_enabled(true)
+            .with_browser_engine(Some(ResolvedWebViewBackend::Cef));
         let cargo_toml = crate::templates::hydrolysis::rendered_outputs(
             &hydrolysis_ctx,
             "waterui-test-hydrolysis",
@@ -1468,13 +1487,19 @@ mod tests {
             native_dependencies["hydrolysis-m3"]["version"].as_str(),
             Some(HYDROLYSIS_M3_VERSION),
         );
+        // The subprocess helper dispatches into Chromium directly, so the
+        // generated crate depends on the engine the application chose.
+        assert_eq!(
+            native_dependencies["waterui-browser-cef"]["version"].as_str(),
+            Some(WATERUI_BROWSER_CEF_VERSION),
+        );
         let features = native_dependencies["hydrolysis"]["features"]
             .as_array()
             .expect("hydrolysis dependency features should be an array")
             .iter()
             .map(|feature| feature.as_str().expect("feature should be a string"))
             .collect::<Vec<_>>();
-        assert_eq!(features, ["winit", "webview-cef"]);
+        assert_eq!(features, ["winit"]);
         assert_eq!(manifest["package"]["autobins"].as_bool(), Some(false));
         let bins = manifest["bin"]
             .as_array()
@@ -1581,7 +1606,8 @@ mod tests {
         let ctx = app_ctx()
             .with_backend_project_path(ffi_dir.clone())
             .with_project_root_path(tempdir.path().to_path_buf())
-            .with_chromium_enabled(true);
+            .with_chromium_enabled(true)
+            .with_browser_engine(Some(ResolvedWebViewBackend::Cef));
 
         smol::block_on(crate::templates::ffi::scaffold(
             &ffi_dir,
@@ -2553,13 +2579,10 @@ pub mod gtk4 {
         package_name: &str,
     ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
         let mut outputs = super::render_dir_outputs(TemplateNamespace::Gtk4, &embedded::GTK4, ctx)?;
-        let mut features = ctx
+        let features = ctx
             .webview_backend_feature()
             .into_iter()
             .collect::<Vec<_>>();
-        if ctx.browser.chromium_enabled {
-            features.push("chromium");
-        }
         let dependencies = [NativeBackendDependencySpec::new(
             "waterui-gtk",
             GTK_BACKEND_VERSION,
@@ -2580,13 +2603,10 @@ pub mod gtk4 {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        let mut features = ctx
+        let features = ctx
             .webview_backend_feature()
             .into_iter()
             .collect::<Vec<_>>();
-        if ctx.browser.chromium_enabled {
-            features.push("chromium");
-        }
         let dependencies = [NativeBackendDependencySpec::new(
             "waterui-gtk",
             GTK_BACKEND_VERSION,
@@ -2604,8 +2624,8 @@ pub mod hydrolysis {
         GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection,
         HYDROLYSIS_M3_VERSION, HYDROLYSIS_VERSION, NativeBackendDependencyPathKind,
         NativeBackendDependencySpec, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, Path,
-        TemplateContext, TemplateNamespace, WATERUI_CORE_VERSION, WATERUI_VERSION, embedded, io,
-        scaffold_dir, write_generated_cargo_toml,
+        TemplateContext, TemplateNamespace, WATERUI_BROWSER_CEF_VERSION, WATERUI_CORE_VERSION,
+        WATERUI_VERSION, embedded, io, scaffold_dir, write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
 
@@ -2699,8 +2719,13 @@ pub mod hydrolysis {
         }
     }
 
-    fn requires_cef(ctx: &TemplateContext) -> bool {
-        ctx.browser.chromium_enabled || ctx.webview_backend_feature() == Some("webview-cef")
+    /// Whether this application's graph links the bundled CEF runtime.
+    ///
+    /// A packaged CEF application needs a subprocess helper binary, and the
+    /// helper needs the engine crate; both follow the application's own
+    /// dependencies, never a manifest setting.
+    const fn requires_cef(ctx: &TemplateContext) -> bool {
+        ctx.cef_runtime_enabled()
     }
 
     async fn generate_cargo_toml(
@@ -2777,10 +2802,7 @@ pub mod hydrolysis {
     ) -> BTreeMap<String, GeneratedDependencyValue> {
         let mut hydrolysis_features = vec!["winit"];
         hydrolysis_features.extend(ctx.webview_backend_feature());
-        if ctx.browser.chromium_enabled {
-            hydrolysis_features.push("chromium");
-        }
-        BTreeMap::from([
+        let mut dependencies: BTreeMap<String, GeneratedDependencyValue> = BTreeMap::from([
             (
                 "hydrolysis".to_string(),
                 GeneratedDependencyValue::detailed(
@@ -2887,7 +2909,29 @@ pub mod hydrolysis {
                     .with_default_features(false),
                 ),
             ),
-        ])
+        ]);
+        // The CEF subprocess helper is a second binary in this crate, and it is
+        // the one process that must not start WaterUI at all: it dispatches
+        // straight into Chromium. The engine crate is the application's choice,
+        // so the helper only exists — and this dependency only appears — when
+        // the application's own graph links it.
+        if requires_cef(ctx) {
+            dependencies.insert(
+                "waterui-browser-cef".to_string(),
+                GeneratedDependencyValue::detailed(super::generated_dependency_from_spec(
+                    ctx,
+                    NativeBackendDependencySpec::new(
+                        "waterui-browser-cef",
+                        WATERUI_BROWSER_CEF_VERSION,
+                        &[],
+                        Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
+                            "components/platform/browser-cef",
+                        )),
+                    ),
+                )),
+            );
+        }
+        dependencies
     }
 
     fn wasm_target_dependencies(

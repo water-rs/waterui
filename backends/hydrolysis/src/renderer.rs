@@ -114,8 +114,6 @@ use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::theme;
 use waterui::widget::Divider;
 use waterui::window::{Window, WindowState, WindowStyle};
-#[cfg(feature = "chromium")]
-use waterui_chromium::ChromiumView;
 use waterui_controls::button::{Button, ButtonConfig, ButtonStyle};
 use waterui_controls::label::Label as SemanticLabel;
 use waterui_controls::menu::{ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
@@ -132,6 +130,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 use waterui_core::metadata::MetadataKey;
+use waterui_core::view::Hook;
 use waterui_core::views::Views;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View, impl_extractor,

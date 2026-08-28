@@ -623,13 +623,16 @@ impl RenderNode {
             Ok(map) => return RenderNode::build_map((*map).into_inner(), env, renderer),
             Err(view) => view,
         };
+        // This backend bridges the platform's own web engine, and it only wins
+        // by default: an application that linked a browser engine of its own
+        // installed a `Hook<WebView>`, and taking the component by type here
+        // would draw it with an engine the application did not pick — and hand
+        // the macOS bridge a page handle from another engine.
         let view = match view.downcast::<WebView>() {
-            Ok(webview) => return RenderNode::build_webview(*webview, env, renderer),
-            Err(view) => view,
-        };
-        #[cfg(feature = "chromium")]
-        let view = match view.downcast::<ChromiumView>() {
-            Ok(chromium) => return RenderNode::build_chromium(*chromium, env, renderer),
+            Ok(webview) if env.get::<Hook<WebView>>().is_none() => {
+                return RenderNode::build_webview(*webview, env, renderer);
+            }
+            Ok(webview) => AnyView::new(*webview),
             Err(view) => view,
         };
         // Navigation containers (navigation view / split / stack / tabs): each is a

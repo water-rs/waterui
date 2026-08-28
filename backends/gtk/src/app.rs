@@ -1,8 +1,6 @@
 //! GTK Application setup and lifecycle management.
 
 use std::future::Future;
-#[cfg(any(feature = "webview-cef", feature = "chromium"))]
-use std::{cell::Cell, rc::Rc};
 
 use executor_core::{
     LocalExecutor,
@@ -17,11 +15,7 @@ use waterui_core::{Environment, View};
 
 use crate::renderer::GtkRenderer;
 use crate::util::{store_watcher_guards, subscribe_then_get};
-#[cfg(any(
-    feature = "webview-default",
-    feature = "webview-system",
-    feature = "webview-wpe"
-))]
+#[cfg(feature = "webview-system")]
 use crate::webview::ensure_webview_controller;
 use crate::window::{apply_window_background, create_window, install_inspect_gesture};
 
@@ -124,36 +118,19 @@ impl GtkApp {
     /// Panics if the GPU runtime cannot be created.
     #[must_use = "the returned value is the process exit status"]
     pub fn run<V: View + Clone + 'static>(self, view: V, env: Environment) -> i32 {
-        // `env` is only mutated when a browser feature installs services into it.
-        #[cfg(any(
-            feature = "webview-default",
-            feature = "webview-system",
-            feature = "webview-wpe",
-            feature = "webview-cef",
-            feature = "chromium"
-        ))]
+        // `env` is only mutated when the system WebView bridge installs its
+        // controller into it.
+        #[cfg(feature = "webview-system")]
         let mut env = env;
-        #[cfg(any(
-            feature = "webview-default",
-            feature = "webview-system",
-            feature = "webview-wpe"
-        ))]
+        #[cfg(feature = "webview-system")]
         ensure_webview_controller(&mut env);
-        #[cfg(any(feature = "webview-cef", feature = "chromium"))]
-        let cef_runtime = crate::browser_cef::ensure_runtime(&mut env);
         let env = env;
-        #[cfg(any(feature = "webview-cef", feature = "chromium"))]
-        let cef_pump_started = Rc::new(Cell::new(false));
 
         self.app.connect_activate(move |app| {
             if let Some(app_id) = app.application_id() {
                 install_app_icon(app_id.as_str());
             }
             let inspector = init_main_thread_executors();
-            #[cfg(any(feature = "webview-cef", feature = "chromium"))]
-            if !cef_pump_started.replace(true) {
-                crate::browser_cef::start_message_pump(cef_runtime.clone());
-            }
             let app = app.clone();
             let view = view.clone();
             let mut env = env.clone();
@@ -188,14 +165,9 @@ impl GtkApp {
     #[must_use = "the returned value is the process exit status"]
     pub fn run_app(self, waterui_app: App) -> i32 {
         let (windows, _menu_bar, env) = waterui_app.into_parts();
-        // `env` is only mutated when a browser feature installs services into it.
-        #[cfg(any(
-            feature = "webview-default",
-            feature = "webview-system",
-            feature = "webview-wpe",
-            feature = "webview-cef",
-            feature = "chromium"
-        ))]
+        // `env` is only mutated when the system WebView bridge installs its
+        // controller into it.
+        #[cfg(feature = "webview-system")]
         let mut env = env;
         let main_window = windows
             .into_iter()
@@ -204,23 +176,11 @@ impl GtkApp {
         let title = main_window.display_title();
         let background = main_window.background.clone();
         let content = main_window.content;
-        #[cfg(any(
-            feature = "webview-default",
-            feature = "webview-system",
-            feature = "webview-wpe"
-        ))]
+        #[cfg(feature = "webview-system")]
         ensure_webview_controller(&mut env);
-        #[cfg(any(feature = "webview-cef", feature = "chromium"))]
-        let cef_runtime = crate::browser_cef::ensure_runtime(&mut env);
-        #[cfg(any(feature = "webview-cef", feature = "chromium"))]
-        let cef_pump_started = Rc::new(Cell::new(false));
 
         self.app.connect_activate(move |app| {
             let inspector = init_main_thread_executors();
-            #[cfg(any(feature = "webview-cef", feature = "chromium"))]
-            if !cef_pump_started.replace(true) {
-                crate::browser_cef::start_message_pump(cef_runtime.clone());
-            }
             let app = app.clone();
             let content = content.build();
             let title = title.clone();

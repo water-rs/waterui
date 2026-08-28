@@ -23,15 +23,7 @@
 
 #[cfg(target_os = "linux")]
 pub mod app;
-#[cfg(all(
-    target_os = "linux",
-    any(feature = "webview-cef", feature = "chromium")
-))]
-mod browser_cef;
-#[cfg(all(
-    target_os = "linux",
-    any(feature = "webview-wpe", feature = "webview-cef", feature = "chromium")
-))]
+#[cfg(target_os = "linux")]
 mod browser_input;
 #[cfg(target_os = "linux")]
 pub mod component;
@@ -45,33 +37,12 @@ pub mod renderer;
 mod theme;
 #[cfg(target_os = "linux")]
 pub mod util;
-#[cfg(all(
-    target_os = "linux",
-    feature = "webview-system",
-    any(feature = "webview-wpe", feature = "webview-cef")
-))]
-compile_error!("GTK WebView selects exactly one of `system`, `wpe`, or `cef`");
-#[cfg(all(target_os = "linux", feature = "webview-wpe", feature = "webview-cef"))]
-compile_error!("GTK WebView selects exactly one of `system`, `wpe`, or `cef`");
-
+// The only web engine this backend bridges is the platform's own, `WebKitGTK`.
+// Every other engine is a crate the application links and installs, and it
+// reaches the screen as an ordinary `GpuSurface` this backend draws like any
+// other — see `components::graphics::gpu_surface`.
 #[cfg(all(target_os = "linux", feature = "webview-system"))]
 #[path = "webview_system.rs"]
-pub mod webview;
-#[cfg(all(
-    target_os = "linux",
-    feature = "webview-wpe",
-    not(feature = "webview-system"),
-    not(feature = "webview-cef")
-))]
-#[path = "webview_wpe.rs"]
-pub mod webview;
-#[cfg(all(
-    target_os = "linux",
-    feature = "webview-cef",
-    not(feature = "webview-system"),
-    not(feature = "webview-wpe")
-))]
-#[path = "webview_cef.rs"]
 pub mod webview;
 #[cfg(target_os = "linux")]
 pub mod window;

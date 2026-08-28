@@ -399,7 +399,14 @@ pub fn demo() -> impl View {
 }
 
 /// Creates the example application with the environment prepared by the backend.
-pub fn app(env: Environment) -> App {
+/// Builds the example with the bundled Chromium runtime it draws through.
+///
+/// Which runtime backs `ChromiumView` is the application's choice: depending on
+/// `waterui-browser-cef` and calling `install_chromium` starts the packaged CEF
+/// runtime, supplies the `ChromiumController` the code above extracts from the
+/// environment, and registers the realization that draws a visible page.
+pub fn app(mut env: Environment) -> App {
+    waterui_browser_cef::install_chromium(&mut env);
     App::new(demo, env)
 }
 

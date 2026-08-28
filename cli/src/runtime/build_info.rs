@@ -16,6 +16,8 @@ pub const HYDROLYSIS_M3_VERSION: &str = env!("WATERUI_CLI_HYDROLYSIS_M3_VERSION"
 pub const DEW_VERSION: &str = env!("WATERUI_CLI_WATERUI_DEW_VERSION");
 /// Exact `waterui-gtk` version used when scaffolding registry-based projects.
 pub const GTK_BACKEND_VERSION: &str = env!("WATERUI_CLI_WATERUI_GTK_VERSION");
+/// Exact `waterui-browser-cef` version used when scaffolding a CEF subprocess helper.
+pub const WATERUI_BROWSER_CEF_VERSION: &str = env!("WATERUI_CLI_WATERUI_BROWSER_CEF_VERSION");
 /// Exact `waterui-preview` version used when scaffolding registry-based projects.
 pub const PREVIEW_VERSION: &str = env!("WATERUI_CLI_WATERUI_PREVIEW_VERSION");
 /// Exact `waterui-preview-protocol` version used when scaffolding registry-based projects.
@@ -168,6 +170,10 @@ mod tests {
         assert_eq!(
             manifest_scaffold_field(&cli_manifest, "waterui-gtk-version"),
             package_version(&workspace_root.join("backends/gtk/Cargo.toml")),
+        );
+        assert_eq!(
+            manifest_scaffold_field(&cli_manifest, "waterui-browser-cef-version"),
+            package_version(&workspace_root.join("components/platform/browser-cef/Cargo.toml")),
         );
         assert_eq!(
             manifest_scaffold_field(&cli_manifest, "waterui-preview-version"),

@@ -87,11 +87,11 @@ jobs:
         run: cargo check -p skill_snippets --all-targets --features compile-gate-tests
       - uses: taiki-e/install-action@nextest
       # One full-workspace pass under default features. A workspace-wide
-      # `--all-features` pass is structurally impossible here — hydrolysis
-      # enforces "exactly one WebView engine" with a `compile_error!`
-      # (backends/hydrolysis/src/lib.rs), so enabling `webview-system` and
-      # `webview-cef` together can never build. The old second pass that
-      # *looked* workspace-wide (`cargo nextest run --all-features`) never was:
+      # `--all-features` pass is structurally impossible here — `waterui-ffi`
+      # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
+      # enabling `c-api` and `android-jni` together can never build. The old
+      # second pass that *looked* workspace-wide (`cargo nextest run
+      # --all-features`) never was:
       # the root manifest has both `[workspace]` and `[package]`, so without
       # `--workspace` cargo narrowed it to the root `waterui` crate — the only
       # crate whose features are all mutually compatible.
