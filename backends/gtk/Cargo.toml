@@ -46,6 +46,10 @@ gdk4 = { workspace = true, features = ["v4_12"] }
 glib.workspace = true
 cairo-rs.workspace = true
 gdk-pixbuf = "0.22"
+kurbo.workspace = true
+# Chromium's own physical-key table, used to name a GDK hardware keycode in the
+# W3C vocabulary the surface input events carry.
+keycode = { version = "1.0", optional = true }
 
 # GPU surface dependencies (wgpu is required for graphics views & filters).
 wgpu.workspace = true
@@ -65,12 +69,14 @@ webview-wpe = [
     "waterui-browser-wpe/webview",
 ]
 webview-cef = [
+    "dep:keycode",
     "dep:waterui-webview",
     "dep:waterui-browser-cef",
     "waterui-browser-cef/cef-runtime",
     "waterui-browser-cef/webview",
 ]
 chromium = [
+    "dep:keycode",
     "dep:waterui-chromium",
     "dep:waterui-browser-cef",
     "waterui-browser-cef/cef-runtime",

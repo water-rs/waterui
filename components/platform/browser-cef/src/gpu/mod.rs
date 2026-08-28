@@ -4,6 +4,8 @@ use std::rc::Rc;
 use waterui_graphics::gpu_surface::GpuFrame;
 
 use crate::CefPageHandle;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use crate::input::{CefInputGpuView, CefSurfaceInput};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -89,4 +91,23 @@ pub fn gpu_view(
     viewport: CefViewport,
 ) -> impl waterui_graphics::gpu_surface::GpuView {
     windows::CefGpuView::new(page, viewport)
+}
+
+/// Creates the presenter for one visible CEF page, wired to take its own input.
+///
+/// The view reports
+/// [`wants_input_events`](waterui_graphics::gpu_surface::GpuView::wants_input_events),
+/// so a backend that routes surface input to GPU views needs nothing
+/// CEF-specific: the pointer, keyboard, scroll and composition events landing
+/// on this layer reach Chromium through [`CefSurfaceInput`]. A backend whose
+/// input arrives somewhere else entirely — GTK delivers it to the `GtkGLArea`'s
+/// event controllers — uses [`gpu_view`] and owns a [`CefSurfaceInput`] beside
+/// it instead.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[must_use]
+pub fn gpu_view_with_input(
+    page: CefPageHandle,
+    viewport: CefViewport,
+) -> impl waterui_graphics::gpu_surface::GpuView {
+    CefInputGpuView::new(gpu_view(page.clone(), viewport), CefSurfaceInput::new(page))
 }
