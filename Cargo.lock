@@ -395,12 +395,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0348a1c054491f4bfe6ab86a7b6ab1e44e45d899005de92f58b3df180b36ddaf"
 dependencies = [
  "clipboard-win",
- "image",
  "log",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
- "objc2-core-foundation",
- "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
@@ -659,15 +656,6 @@ dependencies = [
  "async-io",
  "blocking",
  "futures-lite",
-]
-
-[[package]]
-name = "async-oneshot"
-version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae47de2a02d543205f3f5457a90b6ecbc9494db70557bd29590ec8f1ddff5463"
-dependencies = [
- "futures-micro",
 ]
 
 [[package]]
@@ -3966,15 +3954,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
-]
-
-[[package]]
-name = "futures-micro"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b460264b3593d68b16a7bc35f7bc226ddfebdf9a1c8db1ed95d5cc6b7168c826"
-dependencies = [
- "pin-project-lite",
 ]
 
 [[package]]
@@ -12240,12 +12219,10 @@ version = "0.1.0"
 dependencies = [
  "blocking",
  "dirs",
- "executor-core",
  "hex",
  "memmap2",
  "sha2",
  "tempfile",
- "thiserror 2.0.20",
  "tracing",
  "waterui-core",
  "waterui-media",
@@ -12580,7 +12557,6 @@ version = "0.3.0"
 dependencies = [
  "async-channel",
  "base64 0.22.1",
- "bytemuck",
  "cbindgen",
  "cookie",
  "executor-core",
@@ -12612,7 +12588,6 @@ dependencies = [
  "waterui-layout",
  "waterui-locale",
  "waterui-map",
- "waterui-media",
  "waterui-navigation",
  "waterui-str",
  "waterui-svg",
@@ -12688,9 +12663,7 @@ dependencies = [
 name = "waterui-gtk"
 version = "0.1.0"
 dependencies = [
- "cairo-rs",
  "executor-core",
- "gdk-pixbuf",
  "gdk4",
  "glib",
  "glow",
@@ -12715,7 +12688,6 @@ dependencies = [
  "waterui-icon",
  "waterui-layout",
  "waterui-locale",
- "waterui-media",
  "waterui-navigation",
  "waterui-shape",
  "waterui-text",
@@ -12860,18 +12832,15 @@ dependencies = [
  "android_clipboard",
  "arboard",
  "async-channel",
- "async-fs",
  "cpu-time",
  "executor-core",
  "futures",
- "libloading 0.9.0",
  "minstant",
  "nami",
  "native-executor",
  "pastey 0.2.3",
  "pulldown-cmark",
  "robius-open",
- "serde",
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
@@ -12917,7 +12886,6 @@ dependencies = [
  "waterui-video-gpu",
  "waterui-webview",
  "web-sys",
- "zenwave",
 ]
 
 [[package]]
@@ -13032,15 +13000,12 @@ dependencies = [
 name = "waterui-media"
 version = "0.3.0"
 dependencies = [
- "async-oneshot",
- "base64 0.22.1",
  "blocking",
  "executor-core",
  "filtrate-core",
  "futures",
  "hydrolysis-m3",
  "image",
- "mime",
  "tracing",
  "waterkit-codec",
  "waterkit-dialog",
@@ -13103,19 +13068,15 @@ dependencies = [
  "async-io",
  "async-process",
  "blocking",
- "dispatch",
  "executor-core",
  "futures-lite",
  "image",
  "indexmap 2.14.0",
- "libc",
  "libloading 0.9.0",
  "serde_json",
  "tracing",
  "tracing-subscriber",
- "waterkit-fs",
  "waterui-core",
- "waterui-graphics",
  "waterui-layout",
  "waterui-preview-protocol",
 ]

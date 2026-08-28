@@ -23,7 +23,6 @@ waterui-text.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
 waterui-navigation.workspace = true
-waterui-media.workspace = true
 waterui-video.workspace = true
 native-executor.workspace = true
 waterui-layout.workspace = true
@@ -32,7 +31,6 @@ executor-core.workspace = true
 cbindgen = { version = "0.29.4", optional = true }
 # JNI crate - optional, enabled by android-jni feature for Android builds
 jni = { version = "0.22.4", optional = true }
-bytemuck = { version = "1.25", optional = true }
 waterui-graphics.workspace = true
 waterui-svg = { workspace = true, optional = true }
 waterui-icon.workspace = true
@@ -105,7 +103,7 @@ gpu = [
 c-api = ["std"]
 # JNI for Android backend - mutually exclusive with c-api
 # Note: android-jni requires std because jni crate uses std
-android-jni = ["dep:jni", "dep:bytemuck", "std"]
+android-jni = ["dep:jni", "std"]
 # Map support is off by default: the portable realization pulls in the vector
 # tile, styling, and image-decoding stack, which no app that never shows a map
 # should pay for. Apple bridges MapKit instead and only needs the marshalling.
@@ -141,4 +139,4 @@ webview-cef = [
     "waterui-browser-cef/webview",
 ]
 [package.metadata.cargo-machete]
-ignored = ["bytemuck", "waterui-media", "waterui-svg"]
+ignored = ["waterui-svg"]
