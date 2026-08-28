@@ -15,9 +15,7 @@ waterui-core.workspace = true
 waterui-url = { workspace = true, features = ["std"] }
 waterui-media.workspace = true
 waterui-video.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
-executor-core.workspace = true
 blocking = "1.6.2"
 
 # Caching
@@ -35,5 +33,3 @@ std = ["waterui-core/std"]
 
 [lints]
 workspace = true
-[package.metadata.cargo-machete]
-ignored = ["executor-core", "thiserror"]
