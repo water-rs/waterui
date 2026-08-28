@@ -67,15 +67,6 @@ impl KeyCode {
     }
 }
 
-/// Platform-native key metadata retained for embedded browser engines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeKey {
-    /// Native hardware keycode.
-    pub keycode: u32,
-    /// Platform keysym or virtual-key value.
-    pub keyval: u32,
-}
-
 /// Active key modifiers snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Modifiers {
@@ -177,7 +168,6 @@ pub enum InputEvent {
     },
     Key {
         key: KeyCode,
-        native: Option<NativeKey>,
         /// The logical key in the W3C UI Events vocabulary — what the layout
         /// and modifiers produce. Unlike `key`, this is never suppressed when
         /// the same keystroke also produces text: an embedded engine needs the
@@ -1123,8 +1113,6 @@ mod winit_impl {
     #[cfg(hydrolysis_macos_system_webview)]
     use objc2_web_kit::WKWebView;
     use waterui::window::WindowState;
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    use winit::platform::scancode::PhysicalKeyExtScancode as _;
     #[cfg(hydrolysis_macos_system_webview)]
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use winit::{
@@ -1141,9 +1129,9 @@ mod winit_impl {
     };
 
     use super::{
-        CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, NativeKey, PlatformWindow,
-        PointerButton, PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider,
-        TextInputPurpose, TextInputState, TouchPhase,
+        CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
+        PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
+        TextInputState, TouchPhase,
     };
 
     #[derive(Clone)]
@@ -2078,7 +2066,6 @@ mod winit_impl {
                     );
                     self.pending_events.push(InputEvent::Key {
                         key: map_key_event(event, self.modifiers),
-                        native: native_key_event(event),
                         logical_key: ui_events_winit::keyboard::from_winit_key(
                             event.logical_key.clone(),
                         ),
@@ -2376,78 +2363,6 @@ mod winit_impl {
             return KeyCode::Unidentified;
         }
         map_key(&event.logical_key)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn native_key_event(event: &KeyEvent) -> Option<NativeKey> {
-        // winit reports the evdev scancode, and XKB numbers the same key eight
-        // higher. A key winit cannot name a scancode for has no XKB keycode
-        // either, so there is nothing to report — same as the macOS arm below.
-        let keycode = event
-            .physical_key
-            .to_scancode()?
-            .checked_add(8)
-            .expect("Linux XKB keycode overflow");
-        Some(NativeKey {
-            keycode,
-            keyval: linux_keysym(&event.logical_key),
-        })
-    }
-
-    #[cfg(target_os = "macos")]
-    fn native_key_event(event: &KeyEvent) -> Option<NativeKey> {
-        Some(NativeKey {
-            keycode: event.physical_key.to_scancode()?,
-            keyval: 0,
-        })
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    fn native_key_event(_event: &KeyEvent) -> Option<NativeKey> {
-        None
-    }
-
-    #[cfg(target_os = "linux")]
-    fn linux_keysym(key: &Key) -> u32 {
-        use xkeysym::{Keysym, key as xk};
-
-        match key {
-            Key::Character(value) => value
-                .chars()
-                .next()
-                .map_or(xk::NoSymbol, |character| Keysym::from_char(character).raw()),
-            Key::Named(value) => match value {
-                winit::keyboard::NamedKey::Backspace => xk::BackSpace,
-                winit::keyboard::NamedKey::Tab => xk::Tab,
-                winit::keyboard::NamedKey::Enter => xk::Return,
-                winit::keyboard::NamedKey::Escape => xk::Escape,
-                winit::keyboard::NamedKey::Space => xk::space,
-                winit::keyboard::NamedKey::Home => xk::Home,
-                winit::keyboard::NamedKey::End => xk::End,
-                winit::keyboard::NamedKey::PageUp => xk::Page_Up,
-                winit::keyboard::NamedKey::PageDown => xk::Page_Down,
-                winit::keyboard::NamedKey::ArrowLeft => xk::Left,
-                winit::keyboard::NamedKey::ArrowUp => xk::Up,
-                winit::keyboard::NamedKey::ArrowRight => xk::Right,
-                winit::keyboard::NamedKey::ArrowDown => xk::Down,
-                winit::keyboard::NamedKey::Insert => xk::Insert,
-                winit::keyboard::NamedKey::Delete => xk::Delete,
-                winit::keyboard::NamedKey::F1 => xk::F1,
-                winit::keyboard::NamedKey::F2 => xk::F2,
-                winit::keyboard::NamedKey::F3 => xk::F3,
-                winit::keyboard::NamedKey::F4 => xk::F4,
-                winit::keyboard::NamedKey::F5 => xk::F5,
-                winit::keyboard::NamedKey::F6 => xk::F6,
-                winit::keyboard::NamedKey::F7 => xk::F7,
-                winit::keyboard::NamedKey::F8 => xk::F8,
-                winit::keyboard::NamedKey::F9 => xk::F9,
-                winit::keyboard::NamedKey::F10 => xk::F10,
-                winit::keyboard::NamedKey::F11 => xk::F11,
-                winit::keyboard::NamedKey::F12 => xk::F12,
-                _ => xk::NoSymbol,
-            },
-            _ => xk::NoSymbol,
-        }
     }
 
     fn keyboard_text_payload(event: &KeyEvent) -> Option<String> {

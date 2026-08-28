@@ -68,13 +68,11 @@ fn main() {
                 hydrolysis_cef_webview
             )
         },
-        // The engines that still take their input through the renderer's own
-        // browser bridge, which is WPE alone. CEF moved onto the
-        // backend-neutral `SurfaceInputEvent` vocabulary: its GPU view reports
-        // `wants_input_events`, and the adapter that speaks Chromium's input
-        // ABI lives in `waterui-browser-cef`, so it needs nothing from here.
-        // The macOS system webview is a native subview and receives input from
+        // No alias for "engines the renderer itself feeds input to": there are
+        // none left. CEF and WPE both take their input as `SurfaceInputEvent`
+        // through GPU views that report `wants_input_events`, with the engine
+        // semantics owned by `waterui-browser-cef` and `waterui-browser-wpe`;
+        // the macOS system webview is a native subview and receives input from
         // AppKit itself.
-        hydrolysis_browser_input: { hydrolysis_linux_wpe_webview },
     }
 }
