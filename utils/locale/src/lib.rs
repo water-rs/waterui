@@ -2,13 +2,22 @@
 //!
 //! Internationalization (i18n) support for `WaterUI` applications.
 //!
-//! ## Features
+//! ## What it does
+//!
+//! Always available:
 //!
 //! - **Type-safe locales**: Using ICU4X for locale identifiers
 //! - **CLDR plural rules**: Proper pluralization for all languages
 //! - **Smart fallback**: zh-TW → zh-Hant → zh (not zh-Hans!)
-//! - **Unit wrappers**: `Length<Meter>`, `Temperature<Celsius>` with automatic conversion
 //! - **`LocalizedDisplay`**: Trait for locale-aware formatting
+//!
+//! Behind a cargo feature, because each carries its own slice of CLDR data:
+//!
+//! - `number`: `format_number`, `format_percent`, `format_currency`, the unit
+//!   wrappers (`Length<Meter>`, `Temperature<Celsius>`, …) that render through
+//!   them, and the numeric interpolation `text!` performs
+//! - `datetime`: `format::date`, the locale-aware date and time formatters
+//! - `list`: `LocalizedList`, locale-aware list conjunction
 //!
 //! ## Usage
 //!
@@ -47,9 +56,15 @@ mod system;
 
 // Re-exports
 pub use catalog::TranslationCatalog;
+#[cfg(feature = "number")]
+pub use format::LocalizedArgument;
+pub use format::LocalizedDisplay;
+#[cfg(feature = "list")]
+pub use format::LocalizedList;
+#[cfg(feature = "number")]
 pub use format::number::{Currency, format_currency, format_number, format_percent};
+#[cfg(feature = "number")]
 pub use format::unit::{Feet, Kilometer, Length, LengthUnit, Meter, Mile};
-pub use format::{LocalizedArgument, LocalizedDisplay, LocalizedList};
 pub use locale::{Locale, locales};
 pub use plural::{PluralCategory, select_plural, valid_categories};
 

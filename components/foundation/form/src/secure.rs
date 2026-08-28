@@ -71,6 +71,7 @@ impl Secure {
     /// # Returns
     ///
     /// A bcrypt hash of the inner string data.
+    #[cfg(feature = "password-hash")]
     #[allow(clippy::missing_panics_doc)] // bcrypt::hash never panics
     #[must_use]
     pub fn hash(&self) -> String {
