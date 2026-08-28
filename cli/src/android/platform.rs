@@ -646,6 +646,8 @@ pub(crate) async fn android_ffi_dependency_features(
 ) -> eyre::Result<Vec<String>> {
     let mut features = vec!["waterui-ffi/android-jni".to_string()];
     features.extend(crate::project_model::assets::capability_ffi_features(project).await?);
+    // Android has no player or map WaterUI bridges, so it draws both itself.
+    features.extend(crate::project_model::assets::self_drawn_realization_features(project).await?);
     Ok(features)
 }
 

@@ -114,7 +114,6 @@ use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::theme;
 use waterui::widget::Divider;
 use waterui::window::{Window, WindowState, WindowStyle};
-use waterui_canvas::Canvas;
 #[cfg(feature = "chromium")]
 use waterui_chromium::ChromiumView;
 use waterui_controls::button::{Button, ButtonConfig, ButtonStyle};

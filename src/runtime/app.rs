@@ -71,6 +71,9 @@ impl App {
                 waterui_locale::layout_direction_computed(&env),
             ));
         }
+        // Realizations have to be in place before any view resolves, and this
+        // is the last moment the environment is still the composition root's.
+        crate::realization::install(&mut env);
         Self {
             main_window,
             windows: iter.collect(),

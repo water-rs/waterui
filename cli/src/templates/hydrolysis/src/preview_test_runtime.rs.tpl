@@ -39,6 +39,9 @@ fn load_run_config() -> PreviewRunConfig {
 fn run_semantic(width: f32, height: f32) {
     let mut env = waterui::env::Environment::new();
     preview_test::install_preview_theme(&mut env);
+    // This environment never passes through `App::new`, which is what
+    // installs the self-drawn realizations for a normal run.
+    waterui::realization::install(&mut env);
     let mut app = ui()
         .environment(env)
         .viewport(dimension_to_u32(width), dimension_to_u32(height))
