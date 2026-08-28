@@ -208,9 +208,11 @@ use waterui::task::{sleep, spawn_local};               // async utilities
 ```
 
 Components behind cargo features are also absent until you enable them. `waterui`'s
-defaults are `gpu`, `assets`, `media`, `inspector`, `snackbar`; `webview`, `chart`,
-`barcode`, `map`, `particle`, and `flow-markdown` are opt-in in `Cargo.toml`. Keep the
-generated `dev = ["waterui/dynamic_linking"]` feature — it is what makes `water preview`
+defaults are `gpu`, `assets`, `media`, `inspector`, `snackbar`; `webview` and
+`flow-markdown` are opt-in in `Cargo.toml`. Charts, maps, barcodes and particles are not
+features but crates of their own — `waterui-chart`, `waterui-map`, `waterui-barcode`,
+`waterui-particle` — added as direct dependencies and imported as `waterui_chart::…`. Keep
+the generated `dev = ["waterui/dynamic_linking"]` feature — it is what makes `water preview`
 and the fast dev loop link dynamically ([references/project.md](references/project.md)).
 
 ## Core building blocks

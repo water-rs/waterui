@@ -42,17 +42,9 @@ pub mod prelude {
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
     #[cfg(feature = "gpu")]
     pub use super::FilterViewExt;
-    #[cfg(feature = "barcode")]
-    pub use super::barcode;
-    #[cfg(feature = "chart")]
-    pub use super::chart;
     pub use super::env::Environment;
-    #[cfg(feature = "map")]
-    pub use super::map;
     #[cfg(feature = "media")]
     pub use super::media;
-    #[cfg(feature = "particle")]
-    pub use super::particle;
     #[cfg(feature = "video")]
     pub use super::video;
     #[cfg(feature = "webview")]
@@ -136,10 +128,6 @@ pub use form::FormBuilder;
 pub use view::FilterViewExt;
 #[doc(inline)]
 pub use view::ViewExt;
-#[cfg(feature = "barcode")]
-pub use waterui_barcode as barcode;
-#[cfg(feature = "chart")]
-pub use waterui_chart as chart;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
 #[cfg(feature = "gpu")]
@@ -167,13 +155,9 @@ pub use waterui_locale::regional;
 pub use waterui_macros::ui_test as test;
 #[doc(inline)]
 pub use waterui_macros::*;
-#[cfg(feature = "map")]
-pub use waterui_map as map;
 #[cfg(feature = "media")]
 pub use waterui_media as media;
 pub use waterui_navigation as navigation;
-#[cfg(feature = "particle")]
-pub use waterui_particle as particle;
 #[cfg(feature = "gpu")]
 pub use waterui_svg as svg;
 pub use waterui_text as text;

@@ -12,7 +12,8 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-waterui = { workspace = true, features = ["chart"] }
+waterui.workspace = true
+waterui-chart.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-icons-lucide.workspace = true
 waterui-controls.workspace = true

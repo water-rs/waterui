@@ -172,7 +172,7 @@ use waterui_canvas::{Canvas, DrawingContext};   // its own crate — add waterui
 
 Canvas::new(|ctx: &mut DrawingContext| { /* immediate-mode drawing */ })
 
-use waterui::barcode::Barcode;           // feature = "barcode"
+use waterui_barcode::Barcode;            // its own crate — add waterui-barcode to Cargo.toml
 Barcode::qr("https://waterui.dev").size(120.0, 120.0)
 Barcode::code128("012345").size(160.0, 60.0)
 
@@ -196,7 +196,7 @@ graph: holding cloned `Binding`s on the renderer struct and `.get()`ing them per
 correct there. `waterui::graphics` re-exports `bytemuck`. Verify GPU components with
 offscreen rendering, never by reasoning about the code.
 
-Particles (feature `particle`, or the `waterui-particle` crate directly):
+Particles (`waterui-particle`, imported as `use waterui_particle::ParticleSystem;`):
 
 ```rust
 ParticleSystem::new(10_000)             // max particles
@@ -216,7 +216,7 @@ rule for `RoundedRectangle`.
 
 ## Data: charts and maps
 
-Charts (feature `chart`, or `waterui-chart` directly). Two facts govern the whole family:
+Charts (`waterui-chart`). Two facts govern the whole family:
 
 - Every constructor takes a **`Signal` of the data**, not `impl IntoComputed`. `Vec<T>`
   of the point types is a constant signal already (`BarChart::new(vec![..])` compiles);
@@ -227,7 +227,7 @@ Charts (feature `chart`, or `waterui-chart` directly). Two facts govern the whol
   take four normalized `f32` components `(r, g, b, a)`.
 
 ```rust
-use waterui::chart::{AxisConfig, BarChart, ChartExt, DataBounds, DataPoint, LineChart};
+use waterui_chart::{AxisConfig, BarChart, ChartExt, DataBounds, DataPoint, LineChart};
 
 let bounds = DataBounds::from_points(&points);
 LineChart::new(binding(points))
@@ -250,10 +250,10 @@ levels)`; `RadarData::new(axis_count).labels(..).series(RadarSeries::new(name, v
 ascending order) with `.arc(ArcAngles::from_degrees(-135.0, 135.0))` and
 `.radii(GaugeRadii::new(0.3, 0.45))` (normalized).
 
-Maps (feature `map`, or `waterui-map` directly):
+Maps (`waterui-map`):
 
 ```rust
-use waterui::map::{Annotation, Coordinate, Map, MapStyle, Region};
+use waterui_map::{Annotation, Coordinate, Map, MapStyle, Region};
 
 let center = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
 let region: Binding<Region> = binding(Region::new(center, 0.05, 0.05));   // deltas are degree
@@ -270,12 +270,17 @@ Map::new(region.clone())                     // impl IntoComputed<Region>
 handler that `.set()`s a region with scaled deltas. `Coordinate::from_degrees` returns a
 `Result`; out-of-range coordinates are errors, not clamps.
 
-On GPU/self-drawn backends the map has **no built-in tile source** — install one in
-`app(env)` or the map draws nothing (`waterui-map-gpu` + `waterui-url` as direct deps):
+`waterui-map` is the semantic component; who *draws* it is the application's choice, made
+in `app(env)`. Apple platforms bridge MapKit and need nothing. Every other platform draws
+the map itself, from `waterui-map-gpu`, which the app installs and gives a tile source —
+there is no built-in one, and without both lines the map draws nothing (`waterui-map-gpu` +
+`waterui-url` as direct deps):
 
 ```rust
 use waterui_map_gpu::MapGpuOptions;
 env.insert(MapGpuOptions::new(waterui_url::Url::new("https://tiles.openfreemap.org/styles/positron")));
+#[cfg(not(target_vendor = "apple"))] // Apple bridges MapKit; installing here would bypass it
+waterui_map_gpu::install(&mut env);
 ```
 
 Maps need the `internet` permission; showing the user's location needs the `location`

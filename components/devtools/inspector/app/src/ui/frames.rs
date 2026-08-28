@@ -4,10 +4,10 @@
 //! way to see whether a hitch is layout, encoding, or presentation, and whether
 //! the renderer is skipping work it should be doing.
 
-use waterui::chart::{DataPoint, LineChart};
 use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::widget::condition::when;
+use waterui_chart::{DataPoint, LineChart};
 use waterui_inspector_protocol::{FrameKind, FrameSample};
 
 use crate::model::Model;

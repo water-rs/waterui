@@ -119,10 +119,12 @@ impl UiBuilder {
         let mut env = self.env.clone();
         (self.theme)(&mut env);
         // The harness mounts views without going through `App::new`, which is
-        // where a real app installs its self-drawn realizations. Install them
-        // here so a test binary that enables `waterui/video-gpu` or
-        // `waterui/map-gpu` exercises the same hooks an app would; a
-        // pre-registered bridge in `self.env` still wins, exactly as in an app.
+        // where a real app installs the self-drawn realizations the facade
+        // carries. Install them here so a test binary that enables
+        // `waterui/video-gpu` exercises the same hooks an app would. A
+        // realization from a component crate of its own — `waterui-map-gpu` —
+        // is installed by the test itself, into the environment it passes here,
+        // exactly as an application installs it in `app(env)`.
         waterui::realization::install(&mut env);
         env
     }
