@@ -145,6 +145,11 @@ impl RenderNode {
             Ok(meta) => {
                 let (content, scoped_env) =
                     flatten_environment_metadata_owned(AnyView::new(*meta), env);
+                // The snapshot replaces the environment wholesale, so the
+                // accessibility naming scope this build installed above it has
+                // to be carried across or the name is lost — see
+                // `restore_a11y_naming_scope`.
+                let scoped_env = restore_a11y_naming_scope(env, scoped_env);
                 // Carry the scoped environment in the node (not flattened away), so
                 // it is also the env used at flush/measure/layout — text shaping and
                 // a11y read env every frame.
