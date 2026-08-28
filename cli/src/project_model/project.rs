@@ -1852,6 +1852,36 @@ mod webview_backend_tests {
             "CEF WebView example graph: {cef_webview:#?}"
         );
     }
+
+    /// The `map` capability — the Apple `MapKit` bridge's `-DWATERUI_MAP`, and
+    /// the FFI's `map` feature — is read off the application's own graph, the
+    /// same way the browser engine is. `waterui-map` is a component crate an
+    /// application depends on directly; no facade feature announces it any
+    /// more, so linking it is what the capability has to see.
+    #[test]
+    fn the_map_capability_is_read_from_the_application_graph() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("CLI crate must be inside the WaterUI repository");
+
+        let map = smol::block_on(resolve_linked_runtime_packages(
+            repository.join("examples/map"),
+        ))
+        .expect("map example runtime graph must resolve");
+        assert!(
+            map.contains_key("waterui-map"),
+            "map example graph: {map:#?}"
+        );
+
+        let webview = smol::block_on(resolve_linked_runtime_packages(
+            repository.join("examples/webview"),
+        ))
+        .expect("WebView example runtime graph must resolve");
+        assert!(
+            !webview.contains_key("waterui-map"),
+            "an application that shows no map must not carry the map stack: {webview:#?}"
+        );
+    }
 }
 
 #[cfg(test)]

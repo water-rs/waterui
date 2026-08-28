@@ -254,7 +254,7 @@ pub fn media_block_08() {
         })
     };
 
-    use waterui::barcode::Barcode; // feature = "barcode"
+    use waterui_barcode::Barcode; // its own crate — add waterui-barcode to Cargo.toml
     let _ = { Barcode::qr("https://waterui.dev").size(120.0, 120.0) };
     let _ = { Barcode::code128("012345").size(160.0, 60.0) };
 
@@ -278,7 +278,7 @@ pub fn media_block_09() -> impl View {
 // ---------------------------------------------------------------------------
 pub fn media_block_10() -> impl View {
     use waterui::color::Srgb;
-    use waterui::particle::ParticleSystem;
+    use waterui_particle::ParticleSystem;
 
     ParticleSystem::new(10_000) // max particles
         .emit_from_rect(1.5, 0.1)
@@ -299,7 +299,7 @@ pub fn media_block_11() -> impl View {
     use waterui::color::Srgb;
     use waterui::reactive::binding;
 
-    use waterui::chart::{AxisConfig, BarChart, ChartExt, DataBounds, DataPoint, LineChart};
+    use waterui_chart::{AxisConfig, BarChart, ChartExt, DataBounds, DataPoint, LineChart};
 
     let points = vec![DataPoint::new(0.0, 1.0), DataPoint::new(1.0, 2.0)];
 
@@ -320,10 +320,10 @@ pub fn media_block_11() -> impl View {
 pub fn media_block_12() -> impl View {
     use waterui::reactive::binding;
 
-    use waterui::map::{Annotation, Coordinate, Map, MapStyle, Region};
+    use waterui_map::{Annotation, Coordinate, Map, MapStyle, Region};
 
     let pins = Binding::container(Vec::<Annotation>::new());
-    let loc = Binding::container(None::<waterui::map::Location>);
+    let loc = Binding::container(None::<waterui_map::Location>);
 
     let center = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
     let region: Binding<Region> = binding(Region::new(center, 0.05, 0.05)); // deltas are degree
@@ -342,9 +342,11 @@ pub fn media_block_12() -> impl View {
 // ---------------------------------------------------------------------------
 // media.md § "## Data: charts and maps" — rust block 13/13
 // ---------------------------------------------------------------------------
-pub fn media_block_13(env: &mut Environment) {
+pub fn media_block_13(mut env: Environment) {
     use waterui_map_gpu::MapGpuOptions;
     env.insert(MapGpuOptions::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
+    #[cfg(not(target_vendor = "apple"))] // Apple bridges MapKit; installing here would bypass it
+    waterui_map_gpu::install(&mut env);
 }

@@ -22,22 +22,19 @@ dev = ["waterui/dynamic_linking"]
 compile-gate-tests = []
 
 [dependencies]
-waterui = { workspace = true, features = [
-    "chart",
-    "map",
-    "barcode",
-    "webview",
-    "particle",
-    "flow-markdown",
-] }
+waterui = { workspace = true, features = ["webview", "flow-markdown"] }
 waterui-icons-material-icon.workspace = true
 waterui-icons-lucide.workspace = true
 # Direct-crate dependencies the skill's own snippets name.
+waterui-barcode.workspace = true                             # media.md, Barcode
 waterui-canvas.workspace = true                              # media.md, Canvas
+waterui-chart.workspace = true                               # media.md, charts
 waterui-graphics = { workspace = true, features = ["gpu"] }  # styling.md, GPU gradients
 # i18n.md, formatting: dates, numbers and currency.
 waterui-locale = { workspace = true, features = ["datetime", "number"] }
+waterui-map.workspace = true                                 # media.md, Map
 waterui-map-gpu.workspace = true                             # media.md, tile source
+waterui-particle.workspace = true                            # media.md, ParticleSystem
 waterui-url.workspace = true                                 # media.md, MapGpuOptions
 waterkit-permission.workspace = true                         # project.md, runtime permissions
 jiff.workspace = true                                        # components.md, date pickers

@@ -170,10 +170,19 @@ pub fn demo() -> impl View {
     content(MapExampleState::new())
 }
 
+/// Builds the example with whichever map realization this platform needs.
+///
+/// Selecting the map realization is the application's job, not the framework's:
+/// `waterui-map` is the semantic component, `waterui-map-gpu` is one way to draw
+/// it. Apple platforms bridge `MapKit`, so nothing is installed there and the
+/// same `Map` view above draws through the native bridge. Every other platform
+/// draws the map itself, and the tile source below is what it draws from.
 pub fn app(mut env: Environment) -> App {
     env.insert(MapGpuOptions::new(Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
+    #[cfg(not(target_vendor = "apple"))]
+    waterui_map_gpu::install(&mut env);
     let state = MapExampleState::new();
     App::new(move || content(state.clone()), env)
 }

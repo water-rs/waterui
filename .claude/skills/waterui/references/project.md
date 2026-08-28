@@ -82,9 +82,9 @@ WaterUI repository declares exactly this stanza; a hand-added crate that omits i
 cold static builds and a preview pipeline that cannot load it. It is a build strategy,
 not a capability — release builds ignore it.
 
-Component features (`chart`, `map`, `webview`, …) are covered in
-`references/components.md`, including the direct-crate alternative
-(`waterui-chart` instead of `waterui = { features = ["chart"] }`).
+Component features (`webview`, `flow-markdown`, …) are covered in
+`references/components.md`, along with the components that are crates of their own rather
+than features (`waterui-chart`, `waterui-map`, `waterui-barcode`, `waterui-particle`).
 
 ## `Water.toml`
 

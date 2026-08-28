@@ -31,6 +31,7 @@ use waterui_core::{
         DragEvent, DragGesture, GestureObserver, GesturePhase, MagnificationEvent,
         MagnificationGesture,
     },
+    view::Hook,
 };
 use waterui_map::{Coordinate, MapConfig, MapStyle, Region};
 use waterui_url::Url;
@@ -263,17 +264,26 @@ impl MapGpuOptions {
     }
 }
 
-/// Installs the GPU map hook for a self-drawn backend.
+/// Installs the GPU map as this application's map realization.
+///
+/// The application calls this from its own `app(env)`, on a platform with no
+/// platform map to bridge. A backend that *does* bridge one — Apple's `MapKit`,
+/// say — registers its hook on the environment before the application is built,
+/// and that bridge is the realization the platform wants, so this yields to it
+/// and installs nothing.
 ///
 /// The application environment must contain [`MapGpuOptions`]. Keeping provider
 /// configuration in the application prevents `WaterUI` from hard-coding a tile
-/// service and lets native backends continue to use their platform map.
+/// service.
 ///
 /// # Panics
 ///
 /// The installed hook panics when a GPU map is realized without
 /// [`MapGpuOptions`] in its environment.
 pub fn install(env: &mut Environment) {
+    if env.get::<Hook<MapConfig>>().is_some() {
+        return;
+    }
     env.insert_hook::<MapConfig, AnyView>(|env, mut config| {
         let options = env
             .get::<MapGpuOptions>()
@@ -681,6 +691,47 @@ impl MapLoadError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A backend that bridged the platform's own map registered its hook before
+    /// the application installed this realization, and that bridge wins.
+    #[test]
+    fn a_native_map_bridge_is_left_alone() {
+        use std::cell::Cell;
+
+        use waterui_core::view::ConfigurableView as _;
+        use waterui_map::Map;
+
+        let bridged = Rc::new(Cell::new(false));
+        let mut env = Environment::new();
+        env.insert_hook::<MapConfig, AnyView>({
+            let bridged = Rc::clone(&bridged);
+            move |_env, _config| {
+                bridged.set(true);
+                AnyView::new(())
+            }
+        });
+
+        install(&mut env);
+
+        let hook = env
+            .get::<Hook<MapConfig>>()
+            .expect("the bridge's hook must survive");
+        let region = Region::new(Coordinate::default(), 1.0, 1.0);
+        let _ = hook.apply(&env, Map::new(region).config());
+        assert!(
+            bridged.get(),
+            "the map must still be drawn by the platform bridge"
+        );
+    }
+
+    /// With no bridge registered, this crate is the realization.
+    #[test]
+    fn an_unbridged_map_gets_the_gpu_realization() {
+        let mut env = Environment::new();
+        assert!(env.get::<Hook<MapConfig>>().is_none());
+        install(&mut env);
+        assert!(env.get::<Hook<MapConfig>>().is_some());
+    }
 
     /// The surface draws into one GPU texture, so this label is the only thing
     /// assistive technology can read off the map.
