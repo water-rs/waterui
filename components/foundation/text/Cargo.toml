@@ -45,4 +45,10 @@ waterui-text = { path = ".", features = ["markdown"] }
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
-ignored = ["waterui-macros"]
+ignored = [
+    "waterui-macros",
+    # The dev-dependency on itself, which turns `markdown` on for this crate's
+    # own test targets. cargo-machete looks for `use waterui_text` in the
+    # sources and never finds one, because the crate is already `crate`.
+    "waterui-text",
+]

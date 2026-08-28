@@ -73,4 +73,11 @@ workspace = true
 # `waterui` is reachable only from a doc example, and cargo-machete does not
 # analyze doctests, so it reads as unused.
 [package.metadata.cargo-machete]
-ignored = ["waterui"]
+ignored = [
+    "waterui",
+    # The dev-dependency on itself, which turns the formatter features on for
+    # this crate's own test targets. cargo-machete looks for `use
+    # waterui_locale` in the sources and never finds one, because the crate is
+    # already `crate`.
+    "waterui-locale",
+]
