@@ -1144,7 +1144,7 @@ impl CefPageHandle {
     /// nothing there waits, but the browser must actually be told to go away,
     /// or its renderer process outlives the view and `CefShutdown` later runs
     /// with it still alive.
-    #[cfg(any(feature = "chromium", feature = "webview"))]
+    #[cfg(feature = "webview")]
     pub(crate) fn request_close(&self) {
         self.host.close_browser(1);
     }

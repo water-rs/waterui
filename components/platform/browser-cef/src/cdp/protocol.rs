@@ -20,21 +20,25 @@ pub trait CdpCommand: Serialize {
 }
 
 /// Enables the runtime domain, which [`AddBinding`] needs.
+#[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 pub struct RuntimeEnable {}
 
+#[cfg(feature = "webview")]
 impl CdpCommand for RuntimeEnable {
     const METHOD: &'static str = "Runtime.enable";
     type Response = Empty;
 }
 
 /// Installs a function the page can call to reach native code.
+#[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 pub struct AddBinding {
     /// The global the page calls.
     pub name: &'static str,
 }
 
+#[cfg(feature = "webview")]
 impl CdpCommand for AddBinding {
     const METHOD: &'static str = "Runtime.addBinding";
     type Response = Empty;
@@ -46,27 +50,32 @@ impl CdpCommand for AddBinding {
 /// enabled, and only *runs* the registered scripts while it is, so leaving this
 /// out installed the bridge into no document at all and reported success doing
 /// it.
+#[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 pub struct PageEnable {}
 
+#[cfg(feature = "webview")]
 impl CdpCommand for PageEnable {
     const METHOD: &'static str = "Page.enable";
     type Response = Empty;
 }
 
 /// Registers a script that runs before anything else in each new document.
+#[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 pub struct AddScriptToEvaluateOnNewDocument<'a> {
     /// The script source.
     pub source: &'a str,
 }
 
+#[cfg(feature = "webview")]
 impl CdpCommand for AddScriptToEvaluateOnNewDocument<'_> {
     const METHOD: &'static str = "Page.addScriptToEvaluateOnNewDocument";
     type Response = ScriptIdentifier;
 }
 
 /// Identifies a registered document-start script.
+#[cfg(feature = "webview")]
 #[derive(Debug, Deserialize)]
 pub struct ScriptIdentifier {
     /// Chromium's handle for the script, used to replace or remove it.
@@ -79,6 +88,7 @@ pub struct ScriptIdentifier {
 /// Replacement is add-then-remove: a keyed injection has to drop the script it
 /// supersedes, or a view that re-seeds its mirrored state on every navigation
 /// accumulates one stale seed per navigation and the oldest still runs first.
+#[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveScriptToEvaluateOnNewDocument<'a> {
@@ -86,12 +96,14 @@ pub struct RemoveScriptToEvaluateOnNewDocument<'a> {
     pub identifier: &'a str,
 }
 
+#[cfg(feature = "webview")]
 impl CdpCommand for RemoveScriptToEvaluateOnNewDocument<'_> {
     const METHOD: &'static str = "Page.removeScriptToEvaluateOnNewDocument";
     type Response = Empty;
 }
 
 /// Evaluates an expression in the page.
+#[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Evaluate<'a> {
@@ -111,12 +123,14 @@ pub struct Evaluate<'a> {
     pub context_id: Option<i64>,
 }
 
+#[cfg(feature = "webview")]
 impl CdpCommand for Evaluate<'_> {
     const METHOD: &'static str = "Runtime.evaluate";
     type Response = EvaluateResponse;
 }
 
 /// The outcome of an evaluation.
+#[cfg(feature = "webview")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvaluateResponse {
@@ -128,6 +142,7 @@ pub struct EvaluateResponse {
 }
 
 /// A value the page produced.
+#[cfg(feature = "webview")]
 #[derive(Debug, Deserialize)]
 pub struct RemoteObject {
     /// The value, when it could be returned by value.
@@ -139,6 +154,7 @@ pub struct RemoteObject {
 }
 
 /// Why an evaluation failed.
+#[cfg(feature = "webview")]
 #[derive(Debug, Deserialize)]
 pub struct ExceptionDetails {
     /// The message Chromium reports.
@@ -166,6 +182,7 @@ impl CdpCommand for SetUserAgentOverride<'_> {
 }
 
 /// Stores one cookie.
+#[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetCookie<'a> {
@@ -194,24 +211,28 @@ pub struct SetCookie<'a> {
     pub expires: Option<i64>,
 }
 
+#[cfg(feature = "webview")]
 impl CdpCommand for SetCookie<'_> {
     const METHOD: &'static str = "Network.setCookie";
     type Response = Empty;
 }
 
 /// Reads the cookies visible to the given URLs.
+#[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 pub struct GetCookies<'a> {
     /// The URLs whose cookies to read. Empty means the current document's.
     pub urls: Vec<&'a str>,
 }
 
+#[cfg(feature = "webview")]
 impl CdpCommand for GetCookies<'_> {
     const METHOD: &'static str = "Network.getCookies";
     type Response = GetCookiesResponse;
 }
 
 /// The cookies Chromium returned.
+#[cfg(feature = "webview")]
 #[derive(Debug, Deserialize)]
 pub struct GetCookiesResponse {
     /// One entry per cookie.
@@ -219,6 +240,7 @@ pub struct GetCookiesResponse {
 }
 
 /// One stored cookie.
+#[cfg(feature = "webview")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cookie {
@@ -312,9 +334,11 @@ pub struct Empty {}
 mod tests {
     #[cfg(feature = "chromium")]
     use super::CaptureScreenshot;
+    #[cfg(feature = "webview")]
     use super::{CdpCommand, Cookie, Evaluate, EvaluateResponse, SetCookie};
 
     #[test]
+    #[cfg(feature = "webview")]
     fn parameters_serialize_under_the_names_chromium_expects() {
         let evaluate = Evaluate {
             expression: "1 + 1",
@@ -334,6 +358,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "webview")]
     fn absent_optional_parameters_are_omitted_rather_than_sent_as_null() {
         let cookie = SetCookie {
             name: "session",
@@ -367,6 +392,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "webview")]
     fn a_response_missing_its_optional_fields_still_parses() {
         // Previously each of these absent fields was an `expect` away from a panic.
         let response: EvaluateResponse = serde_json::from_str(r#"{"result":{}}"#).expect("parses");
