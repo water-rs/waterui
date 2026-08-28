@@ -118,6 +118,12 @@ impl UiBuilder {
     fn themed_env(&self) -> Environment {
         let mut env = self.env.clone();
         (self.theme)(&mut env);
+        // The harness mounts views without going through `App::new`, which is
+        // where a real app installs its self-drawn realizations. Install them
+        // here so a test binary that enables `waterui/video-gpu` or
+        // `waterui/map-gpu` exercises the same hooks an app would; a
+        // pre-registered bridge in `self.env` still wins, exactly as in an app.
+        waterui::realization::install(&mut env);
         env
     }
 

@@ -48,7 +48,7 @@ std = ["waterui-core/std", "dep:waterkit-dialog"]
 
 [dev-dependencies]
 hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
-waterui = { path = "../../.." }
+waterui = { path = "../../..", features = ["video-gpu"] }
 waterui-testing = { path = "../../../testing" }
 waterkit-codec = { path = "../../../kit/multimedia/codec", features = ["software-fallback"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
