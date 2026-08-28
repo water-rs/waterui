@@ -1,20 +1,21 @@
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
+use std::str::FromStr as _;
 use std::time::Instant;
 
-use gtk4::gdk::{Key, ModifierType};
-use gtk4::glib::translate::IntoGlib as _;
+use gtk4::gdk::{Key as GdkKey, ModifierType};
 use gtk4::prelude::*;
+use kurbo::Point;
 use waterui_browser_cef::{
-    CefInputModifiers, CefKeyInput, CefPageHandle, CefPointerButton, CefRuntime,
-    CefRuntimeConfiguration, CefViewport, gpu_view,
+    CefPageHandle, CefRuntime, CefRuntimeConfiguration, CefSurfaceInput, CefViewport, gpu_view,
 };
 use waterui_core::Environment;
 use waterui_graphics::gpu_surface::GpuSurface;
+use waterui_graphics::input::{
+    Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
+};
 
 use crate::browser_input::{GtkBrowserInput, PointerSample, install};
-
-const CEF_WHEEL_DELTA: f64 = 120.0;
 
 pub(crate) fn ensure_runtime(env: &mut Environment) -> CefRuntime {
     let runtime = env
@@ -63,61 +64,42 @@ pub(crate) fn render_page(
     widget
 }
 
+/// Translates the `GtkGLArea`'s event controllers into the backend-neutral
+/// surface vocabulary and hands the result to the CEF engine crate.
+///
+/// Nothing Chromium-specific lives here: the wheel unit, the virtual-key table,
+/// the modifier word, the pressed-button state and the editing shortcuts are
+/// all [`CefSurfaceInput`]'s, shared with every other backend that embeds a CEF
+/// page. GTK's only job is to say what happened in the vocabulary every
+/// interactive surface speaks.
 struct CefGtkInput {
-    page: CefPageHandle,
-    buttons: Cell<(bool, bool, bool)>,
-    wheel_remainder: Cell<(f64, f64)>,
+    input: RefCell<CefSurfaceInput>,
 }
 
 impl CefGtkInput {
     fn new(page: CefPageHandle) -> Self {
         Self {
-            page,
-            buttons: Cell::new((false, false, false)),
-            wheel_remainder: Cell::new((0.0, 0.0)),
+            input: RefCell::new(CefSurfaceInput::new(page)),
         }
     }
 
-    fn modifiers(&self, modifiers: ModifierType) -> CefInputModifiers {
-        let (primary_button, middle_button, secondary_button) = self.buttons.get();
-        CefInputModifiers {
-            shift: modifiers.contains(ModifierType::SHIFT_MASK),
-            control: modifiers.contains(ModifierType::CONTROL_MASK),
-            alt: modifiers.contains(ModifierType::ALT_MASK),
-            command: modifiers.intersects(
-                ModifierType::META_MASK | ModifierType::SUPER_MASK | ModifierType::HYPER_MASK,
-            ),
-            primary_button,
-            middle_button,
-            secondary_button,
-        }
+    fn send(&self, event: &SurfaceInputEvent) {
+        self.input.borrow_mut().handle(event);
     }
 
-    fn button(button: u32) -> Option<CefPointerButton> {
-        match button {
-            1 => Some(CefPointerButton::Primary),
-            2 => Some(CefPointerButton::Middle),
-            3 => Some(CefPointerButton::Secondary),
-            4 | 5 => None,
-            other => panic!("CEF received unsupported GTK pointer button {other}"),
-        }
-    }
-
-    fn update_button(&self, button: CefPointerButton, pressed: bool) {
-        let (mut primary, mut middle, mut secondary) = self.buttons.get();
-        match button {
-            CefPointerButton::Primary => primary = pressed,
-            CefPointerButton::Middle => middle = pressed,
-            CefPointerButton::Secondary => secondary = pressed,
-        }
-        self.buttons.set((primary, middle, secondary));
+    /// GTK reports the modifier chord on every event; the surface vocabulary
+    /// reports it when it changes, so publish it before the event carrying it.
+    fn send_modifiers(&self, modifiers: ModifierType) {
+        self.send(&SurfaceInputEvent::Modifiers(surface_modifiers(modifiers)));
     }
 }
 
 impl GtkBrowserInput for CefGtkInput {
     fn pointer_move(&self, sample: PointerSample) {
-        self.page
-            .pointer_move(sample.x, sample.y, self.modifiers(sample.modifiers));
+        self.send_modifiers(sample.modifiers);
+        self.send(&SurfaceInputEvent::PointerMove {
+            position: Point::new(sample.x, sample.y),
+        });
     }
 
     fn pointer_button(
@@ -129,61 +111,148 @@ impl GtkBrowserInput for CefGtkInput {
         modifiers: ModifierType,
         _time_ms: u32,
     ) {
-        let Some(button) = Self::button(button) else {
-            if pressed {
-                match button {
-                    4 => self.page.go_back(),
-                    5 => self.page.go_forward(),
-                    _ => unreachable!("only GTK navigation buttons omit a CEF pointer button"),
-                }
-            }
-            return;
-        };
-        self.update_button(button, pressed);
-        self.page
-            .pointer_button(pressed, button, x, y, self.modifiers(modifiers));
+        self.send_modifiers(modifiers);
+        self.send(&SurfaceInputEvent::PointerButton {
+            pressed,
+            button: surface_pointer_button(button),
+            position: Point::new(x, y),
+        });
     }
 
     fn scroll(&self, sample: PointerSample, finished: bool) {
-        if finished {
-            return;
-        }
-        let remainder = self.wheel_remainder.get();
-        let delta_x = sample.delta_x.mul_add(CEF_WHEEL_DELTA, remainder.0);
-        let delta_y = sample.delta_y.mul_add(CEF_WHEEL_DELTA, remainder.1);
-        let integral_x = delta_x.round();
-        let integral_y = delta_y.round();
-        self.wheel_remainder
-            .set((delta_x - integral_x, delta_y - integral_y));
-        self.page.scroll(
-            sample.x,
-            sample.y,
-            integral_x,
-            integral_y,
-            self.modifiers(sample.modifiers),
-        );
+        self.send_modifiers(sample.modifiers);
+        self.send(&SurfaceInputEvent::Scroll {
+            position: Point::new(sample.x, sample.y),
+            delta_x: sample.delta_x,
+            delta_y: sample.delta_y,
+            // GTK's scroll controller counts wheel notches, not pixels, on both
+            // axes; a kinetic glide is delivered in fractions of one.
+            unit: ScrollUnit::Line,
+            finished,
+        });
     }
 
     fn focus(&self, focused: bool) {
-        self.page.set_focus(focused);
+        self.send(&SurfaceInputEvent::Focus(focused));
     }
 
     fn key(
         &self,
         pressed: bool,
-        keyval: Key,
+        keyval: GdkKey,
         keycode: u32,
         modifiers: ModifierType,
         _time_ms: u32,
     ) {
-        self.page.key(
+        self.send(&SurfaceInputEvent::Key {
             pressed,
-            CefKeyInput {
-                native_keycode: keycode,
-                keyval: keyval.into_glib(),
-                character: keyval.to_unicode(),
-            },
-            self.modifiers(modifiers),
-        );
+            key: surface_key(keyval),
+            code: surface_code(keycode),
+            modifiers: surface_modifiers(modifiers),
+            // GDK's key controller does not distinguish an auto-repeat press
+            // from a fresh one.
+            repeat: false,
+        });
     }
+}
+
+fn surface_modifiers(modifiers: ModifierType) -> Modifiers {
+    let mut result = Modifiers::empty();
+    result.set(
+        Modifiers::SHIFT,
+        modifiers.contains(ModifierType::SHIFT_MASK),
+    );
+    result.set(
+        Modifiers::CONTROL,
+        modifiers.contains(ModifierType::CONTROL_MASK),
+    );
+    result.set(Modifiers::ALT, modifiers.contains(ModifierType::ALT_MASK));
+    result.set(
+        Modifiers::META,
+        modifiers.intersects(
+            ModifierType::META_MASK | ModifierType::SUPER_MASK | ModifierType::HYPER_MASK,
+        ),
+    );
+    result
+}
+
+/// # Panics
+///
+/// Panics on a GTK button number outside the five the W3C vocabulary names.
+fn surface_pointer_button(button: u32) -> SurfacePointerButton {
+    match button {
+        1 => SurfacePointerButton::Primary,
+        2 => SurfacePointerButton::Middle,
+        3 => SurfacePointerButton::Secondary,
+        4 => SurfacePointerButton::Back,
+        5 => SurfacePointerButton::Forward,
+        other => panic!("GTK reported unsupported pointer button {other}"),
+    }
+}
+
+/// The physical key a GDK hardware keycode denotes.
+///
+/// GTK reports the XKB keycode, and Chromium's own keycode table names the same
+/// physical key in the W3C vocabulary the surface events carry.
+fn surface_code(keycode: u32) -> Code {
+    let Ok(keycode) = u16::try_from(keycode) else {
+        return Code::Unidentified;
+    };
+    let Ok(map) = keycode::KeyMap::try_from(keycode::KeyMapping::Xkb(keycode)) else {
+        return Code::Unidentified;
+    };
+    map.code
+        .and_then(|code| Code::from_str(&code.to_string()).ok())
+        .unwrap_or(Code::Unidentified)
+}
+
+/// The logical key a GDK keyval denotes.
+///
+/// A keyval that types something is that character; the rest are named, and GDK
+/// names them after their X11 keysyms.
+fn surface_key(keyval: GdkKey) -> Key {
+    if let Some(character) = keyval.to_unicode()
+        && !character.is_control()
+    {
+        return Key::Character(character.to_string());
+    }
+    keyval
+        .name()
+        .and_then(|name| named_key(&name))
+        .map_or(Key::Named(NamedKey::Unidentified), Key::Named)
+}
+
+/// The W3C name for an X11 keysym name.
+///
+/// Most keys are spelled the same in both vocabularies, so only the ones that
+/// differ are listed; everything else — the function keys, `Home`, `End`,
+/// `Insert`, `Delete`, `Escape` — is handed to `NamedKey`'s own parser as is.
+fn named_key(name: &str) -> Option<NamedKey> {
+    let w3c = match name {
+        "BackSpace" => "Backspace",
+        "Return" | "KP_Enter" | "ISO_Enter" => "Enter",
+        "ISO_Left_Tab" => "Tab",
+        "Left" | "KP_Left" => "ArrowLeft",
+        "Right" | "KP_Right" => "ArrowRight",
+        "Up" | "KP_Up" => "ArrowUp",
+        "Down" | "KP_Down" => "ArrowDown",
+        "Prior" | "Page_Up" | "KP_Prior" | "KP_Page_Up" => "PageUp",
+        "Next" | "Page_Down" | "KP_Next" | "KP_Page_Down" => "PageDown",
+        "KP_Home" => "Home",
+        "KP_End" => "End",
+        "KP_Insert" => "Insert",
+        "KP_Delete" => "Delete",
+        "Shift_L" | "Shift_R" => "Shift",
+        "Control_L" | "Control_R" => "Control",
+        "Alt_L" | "Alt_R" => "Alt",
+        "Meta_L" | "Meta_R" | "Super_L" | "Super_R" | "Hyper_L" | "Hyper_R" => "Meta",
+        "ISO_Level3_Shift" | "ISO_Level5_Shift" => "AltGraph",
+        "Caps_Lock" => "CapsLock",
+        "Num_Lock" => "NumLock",
+        "Scroll_Lock" => "ScrollLock",
+        "Print" => "PrintScreen",
+        "Menu" => "ContextMenu",
+        other => other,
+    };
+    NamedKey::from_str(w3c).ok()
 }
