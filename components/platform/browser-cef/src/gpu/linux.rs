@@ -3,15 +3,15 @@ use std::rc::Rc;
 
 use cef::{AcceleratedPaintInfo, ColorType, PaintElementType, Rect};
 use num_traits::ToPrimitive as _;
-use waterui_browser_wpe::{DmaBufFormat, DmaBufFrame, DmaBufFrameCopier, DmaBufPlane};
 use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
+use wgpu_external_frame::dma_buf::{DmaBufFormat, DmaBufFrame, DmaBufImporter, DmaBufPlane};
 
 use super::presenter::{OwnedFrameMailbox, TexturePresenter};
 use super::{CefViewport, request_browser_frame};
 use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
 
 struct LinuxFrameSink {
-    copier: Rc<DmaBufFrameCopier>,
+    importer: Rc<DmaBufImporter>,
     mailbox: Rc<OwnedFrameMailbox>,
 }
 
@@ -49,7 +49,7 @@ impl AcceleratedFrameSink for LinuxFrameSink {
         } else {
             panic!("CEF returned unsupported Linux accelerated color format")
         };
-        let borrowed_frame = DmaBufFrame::owned(
+        let borrowed_frame = DmaBufFrame::new(
             width,
             height,
             format,
@@ -74,7 +74,7 @@ impl AcceleratedFrameSink for LinuxFrameSink {
             _ => borrowed_frame,
         };
         self.mailbox
-            .publish(element, self.copier.copy(borrowed_frame));
+            .publish(element, self.importer.copy_to_texture(borrowed_frame));
     }
 
     fn set_popup_rect(&self, rect: Option<CefPopupRect>) {
@@ -117,7 +117,11 @@ impl GpuView for CefGpuView {
         self.mailbox
             .set_waker(Rc::new(move || redraw.request_redraw()));
         self.page.set_frame_sink(LinuxFrameSink {
-            copier: Rc::new(DmaBufFrameCopier::new(context)),
+            importer: Rc::new(DmaBufImporter::new(
+                context.device,
+                context.queue,
+                context.adapter,
+            )),
             mailbox: Rc::clone(&self.mailbox),
         });
         self.presenter = Some(TexturePresenter::new(context));

@@ -15,7 +15,6 @@ tracing.workspace = true
 executor-core.workspace = true
 cookie = { version = "0.18.1", optional = true }
 futures = { workspace = true, optional = true }
-libc = "0.2"
 libloading = "0.9"
 nami = { workspace = true, optional = true }
 num-traits = "0.2"
@@ -27,10 +26,9 @@ waterui-url = { workspace = true, optional = true }
 waterui-webview = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ash = "0.38"
-glow.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
 wgpu.workspace = true
+wgpu-external-frame.workspace = true
 
 [dev-dependencies]
 base64 = "0.22"

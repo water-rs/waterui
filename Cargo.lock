@@ -12421,15 +12421,12 @@ dependencies = [
  "num-traits",
  "objc2 0.6.4",
  "objc2-core-foundation",
- "objc2-io-surface",
- "objc2-metal 0.3.2",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tiny_http",
  "tracing",
  "tracing-subscriber",
- "waterui-browser-wpe",
  "waterui-chromium",
  "waterui-core",
  "waterui-graphics",
@@ -12437,20 +12434,17 @@ dependencies = [
  "waterui-url",
  "waterui-webview",
  "wgpu",
- "windows 0.62.2",
+ "wgpu-external-frame",
 ]
 
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
 dependencies = [
- "ash",
  "base64 0.22.1",
  "cookie",
  "executor-core",
  "futures",
- "glow",
- "libc",
  "libloading 0.9.0",
  "nami",
  "num-traits",
@@ -12465,6 +12459,7 @@ dependencies = [
  "waterui-url",
  "waterui-webview",
  "wgpu",
+ "wgpu-external-frame",
 ]
 
 [[package]]
@@ -13697,6 +13692,22 @@ version = "29.0.4"
 source = "git+https://github.com/lexoliu/wgpu?branch=mali-negative-viewport#3b9bdf1c8aa5193ca7766a31e665f1d689dfd2b6"
 dependencies = [
  "wgpu-hal",
+]
+
+[[package]]
+name = "wgpu-external-frame"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "glow",
+ "libc",
+ "libloading 0.9.0",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
+ "wgpu",
+ "windows 0.62.2",
 ]
 
 [[package]]
