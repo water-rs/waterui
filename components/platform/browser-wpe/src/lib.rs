@@ -29,6 +29,8 @@ mod frame;
 #[cfg(target_os = "linux")]
 mod gpu;
 #[cfg(all(feature = "webview", target_os = "linux"))]
+mod input;
+#[cfg(all(feature = "webview", target_os = "linux"))]
 mod page;
 #[cfg(all(feature = "webview", target_os = "linux"))]
 mod runtime;
@@ -37,10 +39,12 @@ mod webview;
 
 #[cfg(all(feature = "webview", target_os = "linux"))]
 pub use frame::WpeFrameLease;
-#[cfg(all(target_os = "linux", feature = "webview"))]
-pub use gpu::WpeGpuView;
 #[cfg(target_os = "linux")]
 pub use gpu::{DmaBufFrameSource, DmaBufGpuView, WpeViewport};
+#[cfg(all(target_os = "linux", feature = "webview"))]
+pub use gpu::{WpeGpuView, gpu_view_with_input};
+#[cfg(all(feature = "webview", target_os = "linux"))]
+pub use input::{WpeInputGpuView, WpeSurfaceInput};
 #[cfg(all(feature = "webview", target_os = "linux"))]
 pub use page::{PointerButton, WpePage};
 #[cfg(all(feature = "webview", target_os = "linux"))]

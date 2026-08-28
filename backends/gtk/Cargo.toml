@@ -64,6 +64,7 @@ default = []
 webview-default = ["webview-wpe"]
 webview-system = ["dep:waterui-webview", "webkitgtk"]
 webview-wpe = [
+    "dep:keycode",
     "dep:waterui-webview",
     "dep:waterui-browser-wpe",
     "waterui-browser-wpe/webview",

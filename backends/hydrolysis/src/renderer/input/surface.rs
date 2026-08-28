@@ -7,40 +7,20 @@
 //! [`wants_input_events`](waterui_graphics::GpuView::wants_input_events).
 //!
 //! There is one target list, one hit-test arbitration and one focus/capture
-//! state machine for both, reached through [`EmbeddedInputSink`]. The GPU-view
-//! sink translates into the backend-neutral
-//! [`SurfaceInputEvent`](waterui_graphics::input::SurfaceInputEvent)
-//! vocabulary; the browser sink (see [`super::browser`]) forwards to the
-//! engine bridges' own [`BrowserInputHandler`](super::BrowserInputHandler)
-//! until those engines move onto the neutral vocabulary too.
+//! state machine for both, reached through [`EmbeddedInputSink`], and one
+//! vocabulary at the far end of it: every sink translates into the
+//! backend-neutral
+//! [`SurfaceInputEvent`](waterui_graphics::input::SurfaceInputEvent). The
+//! browser engines are ordinary GPU surfaces now — the CEF and WPE crates own
+//! their own input ABIs — so the renderer knows nothing about any of them.
 
 use super::*;
-use crate::platform::NativeKey;
 use crate::renderer::render::EmbeddedGpuSurfaceRuntime;
 use waterui_graphics::input::{Code, Key, ScrollUnit, SurfaceInputEvent, SurfacePointerButton};
 
-/// One key transition, carried in both vocabularies at once.
-///
-/// `logical`/`code`/`repeat` are the W3C UI Events pair every new consumer
-/// reads; `key`/`native` are what the browser bridges still match on.
+/// One key transition, in the W3C UI Events vocabulary.
 pub(crate) struct KeyDelivery<'a> {
     pub(crate) pressed: bool,
-    #[cfg_attr(
-        not(hydrolysis_browser_input),
-        expect(
-            dead_code,
-            reason = "the legacy key vocabulary is read only by the embedded browser bridges"
-        )
-    )]
-    pub(crate) key: &'a KeyCode,
-    #[cfg_attr(
-        not(hydrolysis_browser_input),
-        expect(
-            dead_code,
-            reason = "native key metadata is read only by the embedded browser bridges"
-        )
-    )]
-    pub(crate) native: Option<NativeKey>,
     pub(crate) logical: &'a Key,
     pub(crate) code: Code,
     pub(crate) repeat: bool,
