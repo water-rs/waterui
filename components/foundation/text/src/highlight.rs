@@ -7,10 +7,12 @@ use core::{
 
 use alloc::{string::ToString, vec::Vec};
 use nami::impl_constant;
+#[cfg(feature = "highlight")]
 use syntect::{
     highlighting::{Theme, ThemeSet},
     parsing::{SyntaxReference, SyntaxSet},
 };
+#[cfg(feature = "highlight")]
 use two_face::syntax::extra_newlines;
 use waterui_graphics::color::Srgb;
 
@@ -163,23 +165,27 @@ impl Display for ParseLanguageError {
 impl Error for ParseLanguageError {}
 
 /// Default syntax highlighter implementation using the syntect library.
+#[cfg(feature = "highlight")]
 pub struct DefaultHighlighter {
     syntax_set: SyntaxSet,
     theme: Theme,
 }
 
+#[cfg(feature = "highlight")]
 impl Debug for DefaultHighlighter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DefaultHighlighter").finish()
     }
 }
 
+#[cfg(feature = "highlight")]
 impl Default for DefaultHighlighter {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "highlight")]
 impl DefaultHighlighter {
     /// Creates a new highlighter backed by syntect with extended syntax support.
     #[must_use]
@@ -198,6 +204,7 @@ impl DefaultHighlighter {
     }
 }
 
+#[cfg(feature = "highlight")]
 impl Highlighter for DefaultHighlighter {
     fn highlight<'a>(&mut self, language: Language, text: &'a str) -> Vec<HighlightChunk<'a>> {
         use syntect::easy::HighlightLines;
@@ -263,7 +270,7 @@ impl HighlightChunk<'_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "highlight"))]
 mod tests {
     use super::*;
 

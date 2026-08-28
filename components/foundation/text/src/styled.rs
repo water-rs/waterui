@@ -8,6 +8,7 @@ use crate::{
 use alloc::{string::String, vec::Vec};
 use core::ops::AddAssign;
 use nami::impl_constant;
+#[cfg(feature = "markdown")]
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 use waterui_core::{Str, View};
 use waterui_graphics::color::{Color, SurfaceVariantColor};
@@ -151,6 +152,7 @@ impl StyledStr {
     ///
     /// Supported features include headings, emphasis, strong text,
     /// strikethrough, and inline code styling.
+    #[cfg(feature = "markdown")]
     #[must_use]
     pub fn from_markdown(markdown: &str) -> Self {
         let options =
@@ -574,6 +576,7 @@ impl MarkdownInlineBuilder {
 }
 
 /// Returns the default style applied to Markdown headings.
+#[cfg(feature = "markdown")]
 #[must_use]
 pub fn heading_style(level: HeadingLevel) -> Style {
     use crate::font::{Body, Caption, Footnote, Headline, Subheadline, Title};
@@ -668,6 +671,7 @@ const fn is_bidi_control(character: char) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn parses_emphasis_markdown() {
         let styled = StyledStr::from_markdown("Hello *world*!");
@@ -679,6 +683,7 @@ mod tests {
         assert_eq!(chunks[2].0.as_str(), "!");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn parses_heading_markdown() {
         let styled = StyledStr::from_markdown("# Title");
@@ -687,6 +692,7 @@ mod tests {
         assert_eq!(chunks[0].0.as_str(), "Title");
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn parses_strikethrough_markdown() {
         let styled = StyledStr::from_markdown("Normal ~~removed~~ text");
@@ -696,6 +702,7 @@ mod tests {
         assert!(chunks[1].1.strikethrough);
     }
 
+    #[cfg(feature = "markdown")]
     #[test]
     fn parses_inline_code_markdown() {
         let styled = StyledStr::from_markdown("Run `cargo test` now");

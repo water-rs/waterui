@@ -11,19 +11,23 @@ pub use suspense::{Suspense, suspense};
 // pub use tree::{TreeNode, TreeView, tree_view};
 
 /// Syntax highlighted code widget.
+#[cfg(feature = "highlight")]
 pub mod code;
 /// Rich text widget support.
+#[cfg(feature = "flow-markdown")]
 #[macro_use]
 pub mod rich_text;
 #[cfg(feature = "flow-markdown")]
 /// Streaming Markdown renderer with incremental flow animations.
 pub mod flow_markdown;
+#[cfg(feature = "highlight")]
 pub use code::{Code, code};
 #[cfg(feature = "flow-markdown")]
 pub use flow_markdown::{
     FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
     FlowTablePolicy, flow_markdown,
 };
+#[cfg(feature = "flow-markdown")]
 pub use rich_text::{RichText, RichTextElement, rich_text};
 pub mod divider;
 pub use divider::Divider;

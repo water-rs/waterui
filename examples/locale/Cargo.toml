@@ -16,4 +16,5 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-locale.workspace = true
+# The example formats dates and unit quantities.
+waterui-locale = { workspace = true, features = ["datetime", "number"] }
