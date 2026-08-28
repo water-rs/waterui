@@ -30,7 +30,7 @@ waterui-webview = { workspace = true, optional = true }
 nami.workspace = true
 # Insertion order is the eviction order for the split destination cache.
 indexmap = "2"
-num-traits = "0.2"
+num-traits = { version = "0.2", default-features = false }
 tracing.workspace = true
 pin-project-lite.workspace = true
 executor-core.workspace = true
