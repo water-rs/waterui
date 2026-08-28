@@ -67,4 +67,12 @@ waterui-form = { path = ".", features = ["password-hash", "regex-validation"] }
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
-ignored = ["getrandom", "waterui-macros"]
+ignored = [
+    "getrandom",
+    "waterui-macros",
+    # The dev-dependency on itself, which turns `password-hash` and
+    # `regex-validation` on for this crate's own test targets. cargo-machete
+    # looks for `use waterui_form` in the sources and only finds it in doc
+    # examples, which it does not always scan.
+    "waterui-form",
+]
