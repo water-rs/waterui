@@ -52,10 +52,8 @@ waterui-url.workspace = true
 waterui-webview = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-block2 = "0.6"
 libloading = "0.9"
 objc2 = "0.6"
-objc2-core-foundation = "0.3"
 wgpu.workspace = true
 wgpu-external-frame.workspace = true
 
