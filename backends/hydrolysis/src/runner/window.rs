@@ -1187,7 +1187,6 @@ where
             }
             InputEvent::Key {
                 key,
-                native,
                 logical_key,
                 physical_code,
                 repeat,
@@ -1196,8 +1195,6 @@ where
             } => {
                 let changed = runtime.renderer.handle_embedded_key(&KeyDelivery {
                     pressed: true,
-                    key: &key,
-                    native,
                     logical: &logical_key,
                     code: physical_code,
                     repeat,
@@ -1256,7 +1253,6 @@ where
             }
             InputEvent::Key {
                 key,
-                native,
                 logical_key,
                 physical_code,
                 repeat,
@@ -1265,8 +1261,6 @@ where
             } => {
                 let changed = runtime.renderer.handle_embedded_key(&KeyDelivery {
                     pressed: false,
-                    key: &key,
-                    native,
                     logical: &logical_key,
                     code: physical_code,
                     repeat,

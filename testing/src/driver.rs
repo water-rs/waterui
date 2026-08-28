@@ -351,7 +351,6 @@ impl A11yDriver for HydrolysisA11yDriver {
             physical_code: hydrolysis::keyboard_types::Code::Unidentified,
             repeat: false,
             key,
-            native: None,
             state: KeyState::Pressed,
             modifiers,
         });

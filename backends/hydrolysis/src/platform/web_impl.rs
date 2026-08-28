@@ -478,7 +478,6 @@ fn register_listeners(
                 }
                 pending_events.borrow_mut().push(InputEvent::Key {
                     key: map_keyboard_key(&event),
-                    native: None,
                     logical_key: map_w3c_key(&event),
                     physical_code: map_w3c_code(&event),
                     repeat: event.repeat(),
@@ -504,7 +503,6 @@ fn register_listeners(
             }
             pending_events.borrow_mut().push(InputEvent::Key {
                 key: map_keyboard_key(&event),
-                native: None,
                 logical_key: map_w3c_key(&event),
                 physical_code: map_w3c_code(&event),
                 repeat: event.repeat(),
@@ -698,7 +696,6 @@ fn register_listeners(
                         event.prevent_default();
                         pending_events.borrow_mut().push(InputEvent::Key {
                             key: KeyCode::Named("Backspace".to_string()),
-                            native: None,
                             logical_key: keyboard_types::Key::Named(
                                 keyboard_types::NamedKey::Backspace,
                             ),
@@ -718,7 +715,6 @@ fn register_listeners(
                         event.prevent_default();
                         pending_events.borrow_mut().push(InputEvent::Key {
                             key: KeyCode::Named("Tab".to_string()),
-                            native: None,
                             logical_key: keyboard_types::Key::Named(keyboard_types::NamedKey::Tab),
                             physical_code: keyboard_types::Code::Tab,
                             repeat: event.repeat(),

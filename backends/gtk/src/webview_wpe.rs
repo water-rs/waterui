@@ -1,16 +1,16 @@
 //! Bundled WPE `WebKit` implementation for the GTK backend.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use gtk4::gdk::{Key, ModifierType};
-use gtk4::glib::translate::IntoGlib as _;
 use gtk4::prelude::*;
-use waterui_browser_wpe::{PointerButton, WpeController, WpeGpuView, WpePage, WpeViewport};
+use waterui_browser_wpe::{WpeController, WpeGpuView, WpePage, WpeSurfaceInput, WpeViewport};
 use waterui_core::Environment;
 use waterui_graphics::gpu_surface::GpuSurface;
+use waterui_graphics::input::SurfaceInputEvent;
 use waterui_webview::WebViewController;
 
-use crate::browser_input::{GtkBrowserInput, PointerSample, install};
+use crate::browser_input::{SurfaceInputSink, install};
 
 pub use waterui_browser_wpe::WpeWebViewHandle as GtkWebViewHandle;
 
@@ -30,10 +30,7 @@ pub fn ensure_webview_controller(env: &mut Environment) {
 pub(crate) fn render_webview(handle: &GtkWebViewHandle, env: &Environment) -> gtk4::Widget {
     let page = handle.page().clone();
     let viewport = WpeViewport::new();
-    let surface = GpuSurface::new(WpeGpuView::with_external_input(
-        page.clone(),
-        viewport.clone(),
-    ));
+    let surface = GpuSurface::new(WpeGpuView::with_viewport(page.clone(), viewport.clone()));
     let widget = crate::components::graphics::gpu_surface::render_gpu_surface(surface, env.clone());
     let area = widget
         .clone()
@@ -45,96 +42,30 @@ pub(crate) fn render_webview(handle: &GtkWebViewHandle, env: &Environment) -> gt
         viewport.set_scale(f64::from(area.scale_factor().max(1)));
         area.queue_render();
     });
-    install(&area, Rc::new(WpeGtkInput(page)));
+    install(&area, Rc::new(WpeGtkInput::new(page)));
     widget
 }
 
-struct WpeGtkInput(WpePage);
+/// Hands the `GtkGLArea`'s translated input to the WPE engine crate.
+///
+/// Nothing `WPEPlatform`-specific lives in this backend: the modifier word, the
+/// button numbering, the XKB keycode and keysym tables and the event clock are
+/// all [`WpeSurfaceInput`]'s, shared with every other backend that embeds a WPE
+/// page.
+struct WpeGtkInput {
+    input: RefCell<WpeSurfaceInput>,
+}
 
-impl GtkBrowserInput for WpeGtkInput {
-    fn pointer_move(&self, sample: PointerSample) {
-        self.0.pointer_move(
-            sample.x,
-            sample.y,
-            sample.delta_x,
-            sample.delta_y,
-            wpe_modifiers(sample.modifiers),
-            sample.time_ms,
-        );
-    }
-
-    fn pointer_button(
-        &self,
-        pressed: bool,
-        button: u32,
-        x: f64,
-        y: f64,
-        modifiers: ModifierType,
-        time_ms: u32,
-    ) {
-        self.0.pointer_button(
-            pressed,
-            pointer_button(button),
-            x,
-            y,
-            wpe_modifiers(modifiers),
-            time_ms,
-        );
-    }
-
-    fn scroll(&self, sample: PointerSample, finished: bool) {
-        self.0.scroll(
-            sample.x,
-            sample.y,
-            sample.delta_x,
-            sample.delta_y,
-            true,
-            finished,
-            wpe_modifiers(sample.modifiers),
-            sample.time_ms,
-        );
-    }
-
-    fn focus(&self, focused: bool) {
-        self.0.set_focus(focused);
-    }
-
-    fn key(&self, pressed: bool, keyval: Key, keycode: u32, modifiers: ModifierType, time_ms: u32) {
-        self.0.key(
-            pressed,
-            keycode,
-            keyval.into_glib(),
-            wpe_modifiers(modifiers),
-            time_ms,
-        );
+impl WpeGtkInput {
+    fn new(page: WpePage) -> Self {
+        Self {
+            input: RefCell::new(WpeSurfaceInput::new(page)),
+        }
     }
 }
 
-fn pointer_button(button: u32) -> PointerButton {
-    match button {
-        1 => PointerButton::Primary,
-        2 => PointerButton::Middle,
-        3 => PointerButton::Secondary,
-        4 => PointerButton::Back,
-        5 => PointerButton::Forward,
-        other => panic!("WPE received unsupported GTK pointer button {other}"),
+impl SurfaceInputSink for WpeGtkInput {
+    fn handle(&self, event: &SurfaceInputEvent) {
+        self.input.borrow_mut().handle(event);
     }
-}
-
-fn wpe_modifiers(modifiers: ModifierType) -> u32 {
-    let mut result = 0;
-    result |= u32::from(modifiers.contains(ModifierType::CONTROL_MASK));
-    result |= u32::from(modifiers.contains(ModifierType::SHIFT_MASK)) << 1;
-    result |= u32::from(modifiers.contains(ModifierType::ALT_MASK)) << 2;
-    result |=
-        u32::from(modifiers.intersects(
-            ModifierType::META_MASK | ModifierType::SUPER_MASK | ModifierType::HYPER_MASK,
-        )) << 3;
-    result |= u32::from(modifiers.contains(ModifierType::LOCK_MASK)) << 4;
-    result |= u32::from(modifiers.contains(ModifierType::BUTTON1_MASK)) << 8;
-    result |= u32::from(modifiers.contains(ModifierType::BUTTON2_MASK)) << 9;
-    result |= u32::from(modifiers.contains(ModifierType::BUTTON3_MASK)) << 10;
-    result |= u32::from(modifiers.contains(ModifierType::BUTTON4_MASK)) << 11;
-    result |= u32::from(modifiers.contains(ModifierType::BUTTON5_MASK)) << 12;
-    result
 }

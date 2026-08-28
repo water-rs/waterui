@@ -141,7 +141,6 @@ fn press_at(runtime: &mut HeadlessRuntime, local_x: f64, local_y: f64) {
 fn key_event(character: &str, code: Code, state: KeyState) -> InputEvent {
     InputEvent::Key {
         key: KeyCode::Character(character.to_owned()),
-        native: None,
         logical_key: Key::Character(character.to_owned()),
         physical_code: code,
         repeat: false,
@@ -306,7 +305,6 @@ fn modifiers_reach_the_focused_surface_with_its_keys() {
     runtime.push_input_event(InputEvent::ModifiersChanged(modifiers));
     runtime.push_input_event(InputEvent::Key {
         key: KeyCode::Named("ArrowLeft".to_owned()),
-        native: None,
         logical_key: Key::Named(NamedKey::ArrowLeft),
         physical_code: Code::ArrowLeft,
         repeat: true,

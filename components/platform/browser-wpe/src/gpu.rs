@@ -6,6 +6,8 @@ use wgpu_external_frame::dma_buf::{DmaBufFrame, DmaBufImporter};
 
 #[cfg(feature = "webview")]
 use crate::WpePage;
+#[cfg(feature = "webview")]
+use crate::input::{WpeInputGpuView, WpeSurfaceInput};
 
 struct SourceTexture {
     size: (u32, u32),
@@ -135,17 +137,31 @@ impl<S: DmaBufFrameSource> DmaBufGpuView<S> {
         }
     }
 
-    /// Creates a renderer whose host backend forwards all input directly.
-    #[must_use]
-    pub const fn with_external_input(source: S, viewport: WpeViewport) -> Self {
-        Self::with_viewport(source, viewport)
-    }
-
     /// Returns the frame source.
     #[must_use]
     pub const fn source(&self) -> &S {
         &self.source
     }
+}
+
+/// Creates the presenter for one visible WPE page, wired to take its own input.
+///
+/// The view reports
+/// [`wants_input_events`](waterui_graphics::gpu_surface::GpuView::wants_input_events),
+/// so a backend that routes surface input to GPU views needs nothing
+/// WPE-specific: the pointer, keyboard, scroll and composition events landing
+/// on this layer reach `WPEPlatform` through
+/// [`WpeSurfaceInput`](crate::WpeSurfaceInput). A backend whose input arrives
+/// somewhere else entirely — GTK delivers it to the `GtkGLArea`'s event
+/// controllers — builds a [`DmaBufGpuView`] and owns a `WpeSurfaceInput` beside
+/// it instead.
+#[cfg(feature = "webview")]
+#[must_use]
+pub fn gpu_view_with_input(page: WpePage, viewport: WpeViewport) -> impl GpuView {
+    WpeInputGpuView::new(
+        DmaBufGpuView::with_viewport(page.clone(), viewport),
+        WpeSurfaceInput::new(page),
+    )
 }
 
 impl<S: DmaBufFrameSource> GpuView for DmaBufGpuView<S> {
