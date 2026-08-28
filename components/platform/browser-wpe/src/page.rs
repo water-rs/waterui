@@ -21,9 +21,10 @@ use num_traits::ToPrimitive as _;
 use waterui_str::Str;
 use waterui_url::Url;
 use waterui_webview::{BackendEvent, WatcherSet, WebViewError, WebViewEvent, bridge};
+use wgpu_external_frame::dma_buf::DmaBufFrame;
 
 use crate::abi::{WaterWpeBytes, WaterWpeFrame, WaterWpePage};
-use crate::frame::DmaBufFrame;
+use crate::frame::frame_from_abi;
 use crate::runtime::{RuntimeApi, WpeRuntime, take_error};
 
 const EVENT_NAVIGATION_STARTED: u32 = 1;
@@ -629,7 +630,7 @@ unsafe extern "C" fn frame_callback(context: *mut c_void, frame: *const WaterWpe
     // SAFETY: bridge ABI call on the page this type owns; see the module safety
     // note.
     let frame = unsafe {
-        DmaBufFrame::from_abi(
+        frame_from_abi(
             std::sync::Arc::clone(&state.api),
             frame.as_ref().expect("WPE frame callback received null"),
         )

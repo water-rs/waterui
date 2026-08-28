@@ -47,29 +47,16 @@ block2 = "0.6"
 libloading = "0.9"
 objc2 = "0.6"
 objc2-core-foundation = "0.3"
-objc2-io-surface = "0.3"
-objc2-metal = { version = "0.3", default-features = false, features = [
-    "std",
-    "MTLAllocation",
-    "MTLDevice",
-    "MTLPixelFormat",
-    "MTLResource",
-    "MTLTexture",
-    "objc2-io-surface",
-] }
 wgpu.workspace = true
+wgpu-external-frame.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-waterui-browser-wpe.workspace = true
 wgpu.workspace = true
+wgpu-external-frame.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 wgpu.workspace = true
-windows = { version = "0.62", features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Direct3D12",
-    "Win32_System_Threading",
-] }
+wgpu-external-frame.workspace = true
 
 [dev-dependencies]
 askama = "0.16"
