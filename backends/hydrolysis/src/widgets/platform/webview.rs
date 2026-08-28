@@ -1,60 +1,29 @@
-//! The `WebView` leaf and the engine that backs it.
+//! The `WebView` leaf, as this backend bridges it.
 //!
-//! # Which engine a build gets
+//! Hydrolysis bridges exactly one web engine: the platform's own. On macOS that
+//! is `WKWebView`, composed into the winit window as a native subview by the
+//! `webview-system` feature. Every other engine — CEF, WPE `WebKit` — is a
+//! crate the *application* links and installs, and it reaches the screen as an
+//! ordinary `GpuSurface` this renderer knows nothing browser-specific about.
 //!
-//! Selecting a `webview-*` feature does not by itself produce an engine: each
-//! one names a bridge that exists on some targets only, and a feature that
-//! resolves to nothing used to leave `WebView` silently contentless — or, when
-//! `webview-system` was enabled without `winit`, fail to build with a missing
-//! `install_controller`. Every declared combination now either resolves to an
-//! engine or says here what to enable.
+//! A build with neither still renders the component: it occupies its layout slot
+//! and publishes its accessibility node, which is the configuration the testing
+//! harness runs in.
 
 #[cfg(all(feature = "webview-system", not(hydrolysis_macos_system_webview)))]
 compile_error!(
     "the `webview-system` feature selects the macOS WKWebView bridge, which needs \
      `target_os = \"macos\"` and the `winit` feature (WKWebView is composed into the \
-     winit window's AppKit view). Enable `winit`, build for macOS, or select \
-     `webview-cef`/`webview-wpe` instead."
+     winit window's AppKit view). Enable `winit`, build for macOS, or link a browser \
+     engine crate (`waterui-browser-cef`, `waterui-browser-wpe`) in the application \
+     instead."
 );
-
-#[cfg(all(feature = "webview-wpe", not(hydrolysis_linux_wpe_webview)))]
-compile_error!(
-    "the `webview-wpe` feature selects the WPE WebKit engine, which exists on Linux \
-     only. Build for Linux, or select `webview-cef` (macOS/Linux/Windows) or \
-     `webview-system` (macOS)."
-);
-
-#[cfg(all(feature = "webview-cef", not(hydrolysis_cef_webview)))]
-compile_error!(
-    "the `webview-cef` feature selects the CEF runtime, which is supported on macOS, \
-     Linux and Windows only."
-);
-
-#[cfg(all(
-    feature = "webview-default",
-    not(any(
-        hydrolysis_macos_system_webview,
-        hydrolysis_linux_wpe_webview,
-        hydrolysis_cef_webview
-    ))
-))]
-compile_error!(
-    "the `webview-default` feature resolves to WKWebView on macOS (which also needs \
-     the `winit` feature) and to WPE WebKit on Linux; this target has neither. Enable \
-     `winit` if you are on macOS, or select `webview-cef`."
-);
-
-// Two engines at once is the other way a feature combination goes wrong, and
-// `lib.rs` already refuses it; the checks above are only about a request that
-// resolves to no engine at all.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-#[cfg(hydrolysis_linux_wpe_webview)]
-use waterui_graphics::gpu_surface::GpuSurface;
 use waterui_webview::WebView;
 
 #[cfg(hydrolysis_macos_system_webview)]
@@ -63,8 +32,6 @@ mod macos;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use macos::MacSystemWebViewController;
 
-#[cfg(hydrolysis_linux_wpe_webview)]
-use crate::renderer::{EmbeddedGpuSurfaceRuntime, GpuSurfaceSource};
 use crate::renderer::{HydroNativeView, HydroState, HydrolysisRenderer, WidgetRenderContext};
 
 /// Retains the semantic WebView and its selected native engine for the node lifetime.
@@ -77,12 +44,6 @@ pub(crate) struct WebViewRenderState {
     /// lives exactly as long as the node the native view belongs to.
     #[cfg(hydrolysis_macos_system_webview)]
     occlusion: Rc<RefCell<Vec<vello::kurbo::Rect>>>,
-    #[cfg(hydrolysis_linux_wpe_webview)]
-    gpu: Rc<RefCell<EmbeddedGpuSurfaceRuntime>>,
-    #[cfg(hydrolysis_linux_wpe_webview)]
-    viewport: waterui_browser_wpe::WpeViewport,
-    #[cfg(hydrolysis_cef_webview)]
-    cef: crate::widgets::platform::browser_cef::CefSurfaceRenderState,
 }
 
 impl WebViewRenderState {
@@ -103,66 +64,19 @@ impl WebViewRenderState {
         }
     }
 
-    #[cfg(hydrolysis_linux_wpe_webview)]
-    pub(crate) fn from_view(view: WebView, env: &Environment) -> Self {
-        let handle = view
-            .handle()
-            .downcast_ref::<waterui_browser_wpe::WpeWebViewHandle>()
-            .unwrap_or_else(|| {
-                panic!("Hydrolysis Linux WebView handle does not use the selected WPE backend")
-            });
-        let viewport = waterui_browser_wpe::WpeViewport::new();
-        // The WPE view takes its own input: it reports `wants_input_events`, so
-        // the renderer routes what lands on this layer straight into the engine
-        // crate's adapter and Hydrolysis owns no `WPEPlatform` semantics.
-        let surface = GpuSurface::new(waterui_browser_wpe::gpu_view_with_input(
-            handle.page().clone(),
-            viewport.clone(),
-        ));
-        Self {
-            _source: view,
-            gpu: Rc::new(RefCell::new(EmbeddedGpuSurfaceRuntime::new(surface, env))),
-            viewport,
-        }
-    }
-
-    #[cfg(hydrolysis_cef_webview)]
-    pub(crate) fn from_view(view: WebView, env: &Environment) -> Self {
-        let page = view
-            .handle()
-            .downcast_ref::<waterui_browser_cef::CefWebViewHandle>()
-            .unwrap_or_else(|| {
-                panic!("Hydrolysis WebView handle does not use the selected CEF backend")
-            })
-            .page()
-            .clone();
-        Self {
-            _source: view,
-            cef: crate::widgets::platform::browser_cef::CefSurfaceRenderState::new(page, env),
-        }
-    }
-
-    /// Built when no web engine feature is selected.
+    /// Built when this backend bridges no platform web engine.
     ///
     /// The component still occupies its layout slot and still reports itself to
-    /// the accessibility tree; only the web content is absent. A build without an
-    /// engine is a missing feature, not a crash, and it is the configuration the
+    /// the accessibility tree; only the web content is absent. A build without a
+    /// bridge is a missing feature, not a crash, and it is the configuration the
     /// testing harness runs in.
-    #[cfg(not(any(
-        hydrolysis_macos_system_webview,
-        hydrolysis_linux_wpe_webview,
-        hydrolysis_cef_webview
-    )))]
+    #[cfg(not(hydrolysis_macos_system_webview))]
     pub(crate) fn from_view(view: WebView, env: &Environment) -> Self {
         let _ = env;
         Self { _source: view }
     }
 
     pub(crate) fn prebuild(&mut self, renderer: &mut HydrolysisRenderer, env: &Environment) {
-        #[cfg(hydrolysis_linux_wpe_webview)]
-        renderer.register_node_gpu_surface(Rc::clone(&self.gpu));
-        #[cfg(hydrolysis_cef_webview)]
-        self.cef.prebuild(renderer);
         let _ = (renderer, env);
     }
 }
@@ -237,48 +151,10 @@ pub(crate) fn render_webview_node(
         );
         renderer.record_native_view_layer(native, transform, bounds, occlusion);
     }
-    #[cfg(hydrolysis_linux_wpe_webview)]
-    {
-        let _ = env;
-        use crate::renderer::transformed_rect;
-
-        let bounds = ctx.bounds;
-        let transform = ctx.render_context().transform;
-        let hit_transform = ctx.hit_transform;
-        let state = state.borrow();
-        state
-            .viewport
-            .set_scale(transform.determinant().abs().sqrt());
-        let gpu = Rc::clone(&state.gpu);
-        drop(state);
-        let renderer = ctx.renderer_mut();
-        renderer.register_gpu_surface_input_target(bounds, hit_transform, Rc::clone(&gpu));
-        renderer.push_gpu_surface_layer(
-            GpuSurfaceSource::Owned(gpu),
-            transform,
-            bounds,
-            transformed_rect(hit_transform, bounds),
-        );
-    }
-    #[cfg(hydrolysis_cef_webview)]
-    {
-        let _ = env;
-        let bounds = ctx.bounds;
-        let transform = ctx.render_context().transform;
-        let hit_transform = ctx.hit_transform;
-        state
-            .borrow()
-            .cef
-            .render(ctx.renderer_mut(), bounds, transform, hit_transform);
-    }
-    // No engine: the semantic node registered above is the whole rendering, and
+    // No bridge: the semantic node registered above is the whole rendering, and
     // it has already happened. Registering it a second time here published two
     // nodes for one web view, which a screen reader reads as two.
-    #[cfg(not(any(
-        hydrolysis_macos_system_webview,
-        hydrolysis_linux_wpe_webview,
-        hydrolysis_cef_webview
-    )))]
+    #[cfg(not(hydrolysis_macos_system_webview))]
     let _ = state;
 }
 
@@ -287,28 +163,10 @@ pub(crate) fn install_controller(env: &mut Environment) {
     macos::install(env);
 }
 
-#[cfg(hydrolysis_linux_wpe_webview)]
-pub(crate) fn install_controller(env: &mut Environment) {
-    use waterui_webview::WebViewController;
-
-    // The backend supplies the *default* controller. An application or test
-    // that already installed one of its own keeps it: overwriting here made the
-    // engine this build happens to select silently outrank an explicit choice,
-    // which is how test doubles ended up shadowed by the packaged WPE runtime.
-    if env.get::<WebViewController>().is_some() {
-        return;
-    }
-    let controller = waterui_browser_wpe::WpeController::packaged();
-    env.insert(WebViewController::new(controller));
-}
-
-// No `install_controller` without an engine. The caller is gated on the two
-// engine cfgs above rather than on `hydrolysis_webview`, which is true for any
-// webview feature and so covers engine-less combinations too.
-//
-// A build with no engine therefore installs no controller, and a `WebView`
-// created in it fails where it is created — this backend has no page to show and
-// says so, rather than quietly rendering an empty rectangle. An application that
-// wants the contentless web view on purpose asks for it by name, with
+// No `install_controller` without the macOS bridge. A build that bridges no
+// platform engine installs no controller, and a `WebView` created in it fails
+// where it is created unless the application linked a browser engine crate,
+// whose own `install` supplies the controller. An application that wants the
+// contentless web view on purpose asks for it by name, with
 // `WebViewController::without_engine()`; the rendering path above then publishes
 // its accessibility node and nothing else.

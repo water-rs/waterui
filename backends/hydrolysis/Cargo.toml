@@ -27,8 +27,6 @@ waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-map.workspace = true
 waterui-webview.workspace = true
-waterui-chromium = { workspace = true, optional = true }
-waterui-browser-cef = { workspace = true, optional = true }
 waterui-layout = { workspace = true }
 waterui-controls.workspace = true
 waterui-form.workspace = true
@@ -129,7 +127,6 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
 serde_json = { version = "1", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-waterui-browser-wpe = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
@@ -186,36 +183,14 @@ default = []
 accessibility = ["dep:accesskit"]
 testing = []
 inspector-signals = ["waterui/inspector-signals"]
-webview-default = [
-    "dep:waterui-browser-wpe",
-    "waterui-browser-wpe/webview",
-    "dep:block2",
-    "dep:cookie",
-    "dep:futures",
-    "dep:objc2-web-kit",
-    "dep:serde_json",
-]
+# The platform's own web engine, bridged as a native subview. Every other engine
+# is a crate the application links and installs; this backend never names one.
 webview-system = [
     "dep:block2",
     "dep:cookie",
     "dep:futures",
     "dep:objc2-web-kit",
     "dep:serde_json",
-]
-webview-wpe = [
-    "dep:waterui-browser-wpe",
-    "waterui-browser-wpe/webview",
-]
-webview-cef = [
-    "dep:waterui-browser-cef",
-    "waterui-browser-cef/cef-runtime",
-    "waterui-browser-cef/webview",
-]
-chromium = [
-    "dep:waterui-chromium",
-    "dep:waterui-browser-cef",
-    "waterui-browser-cef/cef-runtime",
-    "waterui-browser-cef/chromium",
 ]
 winit = [
     "accessibility",

@@ -43,7 +43,6 @@ waterui-str.workspace = true
 waterui-locale.workspace = true
 wgpu = { workspace = true, optional = true }
 async-channel = "2.5"
-async-io = { version = "2.6", optional = true }
 base64 = "0.22.1"
 pastey.workspace = true
 tracing.workspace = true
@@ -121,13 +120,11 @@ cbindgen = ["dep:cbindgen", "header"]
 header = ["cef-header", "map"]
 cef-runtime = [
     "gpu",
-    "dep:async-io",
     "dep:waterui-browser-cef",
     "waterui-browser-cef/cef-runtime",
 ]
 # Header generation compiles CEF's Rust API without downloading or linking the runtime.
 cef-header = [
-    "dep:async-io",
     "dep:waterui-browser-cef",
     "dep:waterui-chromium",
     "waterui-browser-cef/compile-only",

@@ -1,5 +1,4 @@
 use num_traits::ToPrimitive as _;
-use std::cell::Cell;
 use std::rc::Rc;
 use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
 use wgpu_external_frame::dma_buf::{DmaBufFrame, DmaBufImporter};
@@ -60,7 +59,6 @@ impl DmaBufFrameSource for WpePage {
 /// GPU view that composites a Linux browser DMA-BUF stream without CPU readback.
 pub struct DmaBufGpuView<S> {
     source: S,
-    viewport: WpeViewport,
     gpu: Option<GpuState>,
     pending_frame: Option<DmaBufFrame>,
 }
@@ -68,50 +66,6 @@ pub struct DmaBufGpuView<S> {
 /// WPE-specialized DMA-BUF GPU view.
 #[cfg(feature = "webview")]
 pub type WpeGpuView = DmaBufGpuView<WpePage>;
-
-/// Shared viewport scale updated by the host backend.
-#[derive(Debug, Clone)]
-pub struct WpeViewport(Rc<Cell<f64>>);
-
-impl WpeViewport {
-    /// Creates a viewport at device scale 1.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Rc::new(Cell::new(1.0)))
-    }
-
-    /// Creates a viewport from a host-owned shared scale cell.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn from_shared(scale: Rc<Cell<f64>>) -> Self {
-        Self(scale)
-    }
-
-    /// Updates the device scale used for WPE layout and input coordinates.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `scale` is not positive and finite.
-    pub fn set_scale(&self, scale: f64) {
-        assert!(
-            scale.is_finite() && scale > 0.0,
-            "WPE viewport scale must be positive and finite"
-        );
-        self.0.set(scale);
-    }
-
-    /// Returns the current device scale.
-    #[must_use]
-    pub fn scale(&self) -> f64 {
-        self.0.get()
-    }
-}
-
-impl Default for WpeViewport {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 impl<S> core::fmt::Debug for DmaBufGpuView<S> {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -121,17 +75,13 @@ impl<S> core::fmt::Debug for DmaBufGpuView<S> {
 
 impl<S: DmaBufFrameSource> DmaBufGpuView<S> {
     /// Creates a renderer for `source`.
+    ///
+    /// The device scale comes from the frame the host draws — see
+    /// [`GpuFrame::scale`] — so nothing has to publish it separately.
     #[must_use]
-    pub fn new(source: S) -> Self {
-        Self::with_viewport(source, WpeViewport::new())
-    }
-
-    /// Creates a renderer driven by a backend-owned viewport scale.
-    #[must_use]
-    pub const fn with_viewport(source: S, viewport: WpeViewport) -> Self {
+    pub const fn new(source: S) -> Self {
         Self {
             source,
-            viewport,
             gpu: None,
             pending_frame: None,
         }
@@ -157,11 +107,8 @@ impl<S: DmaBufFrameSource> DmaBufGpuView<S> {
 /// it instead.
 #[cfg(feature = "webview")]
 #[must_use]
-pub fn gpu_view_with_input(page: WpePage, viewport: WpeViewport) -> impl GpuView {
-    WpeInputGpuView::new(
-        DmaBufGpuView::with_viewport(page.clone(), viewport),
-        WpeSurfaceInput::new(page),
-    )
+pub fn gpu_view_with_input(page: WpePage) -> impl GpuView {
+    WpeInputGpuView::new(DmaBufGpuView::new(page.clone()), WpeSurfaceInput::new(page))
 }
 
 impl<S: DmaBufFrameSource> GpuView for DmaBufGpuView<S> {
@@ -178,7 +125,7 @@ impl<S: DmaBufFrameSource> GpuView for DmaBufGpuView<S> {
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
         self.source.pump();
-        resize_browser_source(&self.source, &self.viewport, frame);
+        resize_browser_source(&self.source, frame);
         if self.pending_frame.is_none() {
             self.pending_frame = self.source.take_frame();
         }
@@ -208,12 +155,8 @@ impl<S: DmaBufFrameSource> GpuView for DmaBufGpuView<S> {
     }
 }
 
-fn resize_browser_source<S: DmaBufFrameSource>(
-    source: &S,
-    viewport: &WpeViewport,
-    frame: &GpuFrame<'_>,
-) {
-    let scale = viewport.scale();
+fn resize_browser_source<S: DmaBufFrameSource>(source: &S, frame: &GpuFrame<'_>) {
+    let scale = frame.scale();
     let logical_width = (f64::from(frame.width) / scale)
         .round()
         .max(1.0)

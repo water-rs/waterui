@@ -16,4 +16,5 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-webview-example = { path = "../webview" }
+waterui-browser-cef = { workspace = true, features = ["webview"] }
+webview-example = { path = "../webview", default-features = false }

@@ -14,8 +14,8 @@ mod cdp;
 mod gpu;
 #[cfg(any(feature = "chromium", feature = "webview"))]
 mod input;
-#[cfg(target_os = "macos")]
-mod message_pump_macos;
+#[cfg(any(feature = "chromium", feature = "webview"))]
+mod install;
 #[cfg(any(feature = "chromium", feature = "webview"))]
 mod page;
 mod runtime;
@@ -27,11 +27,13 @@ pub use application_mac::initialize_macos_application;
 #[cfg(any(feature = "chromium", feature = "webview"))]
 pub use cdp::CefCdpSession;
 #[cfg(any(feature = "chromium", feature = "webview"))]
-pub use gpu::{CefViewport, gpu_view, gpu_view_with_input};
+pub use gpu::{gpu_view, gpu_view_with_input};
 #[cfg(any(feature = "chromium", feature = "webview"))]
 pub use input::CefSurfaceInput;
-#[cfg(target_os = "macos")]
-pub use message_pump_macos::CefMacOsMessagePump;
+#[cfg(feature = "webview")]
+pub use install::install;
+#[cfg(feature = "chromium")]
+pub use install::install_chromium;
 #[cfg(any(feature = "chromium", feature = "webview"))]
 pub use page::{
     AcceleratedFrameSink, CefInputModifiers, CefKeyInput, CefPageHandle, CefPointerButton,

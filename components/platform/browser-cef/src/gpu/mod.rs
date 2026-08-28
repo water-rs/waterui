@@ -1,5 +1,5 @@
-use std::cell::Cell;
-use std::rc::Rc;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+use num_traits::ToPrimitive as _;
 
 use waterui_graphics::gpu_surface::GpuFrame;
 
@@ -16,40 +16,30 @@ mod presenter;
 #[cfg(target_os = "windows")]
 mod windows;
 
-/// Shared device scale used by the host layout and CEF OSR viewport.
-#[derive(Debug, Clone)]
-pub struct CefViewport(Rc<Cell<f64>>);
-
-impl CefViewport {
-    /// Creates a viewport at scale one.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Rc::new(Cell::new(1.0)))
-    }
-
-    /// Updates the browser device scale.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `scale` is not positive and finite.
-    pub fn set_scale(&self, scale: f64) {
-        assert!(
-            scale.is_finite() && scale > 0.0,
-            "CEF viewport scale must be finite and positive"
-        );
-        self.0.set(scale);
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    pub(crate) fn scale(&self) -> f64 {
-        self.0.get()
-    }
-}
-
-impl Default for CefViewport {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Sizes the browser's off-screen viewport to `frame` and returns its scale.
+///
+/// The device-pixel ratio is the frame's own — every backend already tells the
+/// surface how many physical pixels a logical unit spans, so there is nothing
+/// for a host to remember to publish separately.
+///
+/// # Panics
+///
+/// Panics when the logical viewport does not fit a `u32`, or the scale a `f32`.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn sync_browser_viewport(page: &CefPageHandle, frame: &GpuFrame<'_>) -> f64 {
+    let scale = frame.scale();
+    let logical_width = (f64::from(frame.width) / scale).round().max(1.0);
+    let logical_height = (f64::from(frame.height) / scale).round().max(1.0);
+    page.set_viewport(
+        logical_width
+            .to_u32()
+            .expect("CEF logical width exceeds u32"),
+        logical_height
+            .to_u32()
+            .expect("CEF logical height exceeds u32"),
+        scale.to_f32().expect("CEF scale exceeds f32"),
+    );
+    scale
 }
 
 #[cfg(target_os = "macos")]
@@ -66,31 +56,22 @@ fn request_browser_frame(page: &CefPageHandle, frame: &mut GpuFrame<'_>) {
 /// Creates the target-specific GPU-only presenter for one visible CEF page.
 #[cfg(target_os = "linux")]
 #[must_use]
-pub fn gpu_view(
-    page: CefPageHandle,
-    viewport: CefViewport,
-) -> impl waterui_graphics::gpu_surface::GpuView {
-    linux::gpu_view(page, viewport)
+pub fn gpu_view(page: CefPageHandle) -> impl waterui_graphics::gpu_surface::GpuView {
+    linux::gpu_view(page)
 }
 
 /// Creates the target-specific GPU-only presenter for one visible CEF page.
 #[cfg(target_os = "macos")]
 #[must_use]
-pub fn gpu_view(
-    page: CefPageHandle,
-    viewport: CefViewport,
-) -> impl waterui_graphics::gpu_surface::GpuView {
-    macos::CefGpuView::new(page, viewport)
+pub fn gpu_view(page: CefPageHandle) -> impl waterui_graphics::gpu_surface::GpuView {
+    macos::CefGpuView::new(page)
 }
 
 /// Creates the target-specific GPU-only presenter for one visible CEF page.
 #[cfg(target_os = "windows")]
 #[must_use]
-pub fn gpu_view(
-    page: CefPageHandle,
-    viewport: CefViewport,
-) -> impl waterui_graphics::gpu_surface::GpuView {
-    windows::CefGpuView::new(page, viewport)
+pub fn gpu_view(page: CefPageHandle) -> impl waterui_graphics::gpu_surface::GpuView {
+    windows::CefGpuView::new(page)
 }
 
 /// Creates the presenter for one visible CEF page, wired to take its own input.
@@ -105,9 +86,6 @@ pub fn gpu_view(
 /// it instead.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[must_use]
-pub fn gpu_view_with_input(
-    page: CefPageHandle,
-    viewport: CefViewport,
-) -> impl waterui_graphics::gpu_surface::GpuView {
-    CefInputGpuView::new(gpu_view(page.clone(), viewport), CefSurfaceInput::new(page))
+pub fn gpu_view_with_input(page: CefPageHandle) -> impl waterui_graphics::gpu_surface::GpuView {
+    CefInputGpuView::new(gpu_view(page.clone()), CefSurfaceInput::new(page))
 }

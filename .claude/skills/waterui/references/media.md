@@ -146,13 +146,19 @@ WebView::open(url).serve(PageApi { address, greetings })
 A typed `Json<T>` payload requires `T: Serialize`/`Deserialize`, so the app needs `serde`
 (with the `derive` feature) as a direct dependency.
 
-Engine selection is a project setting (`webview_backend` in `Water.toml`), not a code
-decision.
+Which browser engine draws a `WebView` follows the app's own dependencies, not a project
+setting. Link nothing and the platform's engine is used (`WKWebView`, Android `WebView`,
+`WebKitGTK`). To pick one of WaterUI's bundled engines instead, add `waterui-browser-cef`
+or `waterui-browser-wpe` as a dependency and call its `install(&mut env)` in `app` before
+`App::new` — the `WebView` code above is unchanged either way. Installing two engines
+panics: one component, one engine. Linux outside GTK bridges no system engine, so a
+`WebView` there needs one of these crates.
 
 `waterui-chromium` is the separate, heavier component for a full Chromium surface,
 headless pages, screenshots, and DevTools Protocol access. It is a direct crate
-dependency (not a `waterui` feature): the backend installs a `ChromiumController` into
-the environment (`env.get::<ChromiumController>()`); `controller.open(config)` returns a
+dependency (not a `waterui` feature), paired with `waterui-browser-cef`'s `chromium`
+feature; calling `waterui_browser_cef::install_chromium(&mut env)` in `app` installs a
+`ChromiumController` into the environment (`env.get::<ChromiumController>()`); `controller.open(config)` returns a
 value that is both a `View` and a handle (`.page()` — clone the page out *before* the
 view moves into the layout); `page.watch(|event: ChromiumEvent| ..)` observes lifecycle
 (this is an event subscription, not the reactive `watch`); `page.cdp()` executes raw or

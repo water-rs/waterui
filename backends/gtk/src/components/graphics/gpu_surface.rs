@@ -37,8 +37,10 @@ use waterui_graphics::gpu_surface::{
     GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle,
     preferred_msaa_samples,
 };
+use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::{SceneEngine, SharedSceneRenderer};
 
+use crate::browser_input::{SurfaceInputSink, install as install_surface_input};
 use crate::component::GtkComponent;
 use crate::renderer::{CSS_CLASS_DYNAMIC_RANGE_HDR, CSS_CLASS_DYNAMIC_RANGE_SDR, GtkRenderer};
 
@@ -1182,6 +1184,40 @@ fn apply_stretch_sizing(area: &gtk4::GLArea, gpu_surface: &GpuSurface) {
     }
 }
 
+/// Delivers `GtkGLArea` input to a GPU view that asked to handle its own.
+///
+/// The surface is briefly absent from the state while an in-flight `setup`
+/// owns it; an event that lands then is dropped, which is what a view that has
+/// not finished initializing can do with it anyway.
+struct GpuSurfaceInput {
+    area: gtk4::GLArea,
+    state: Rc<RefCell<GpuState>>,
+}
+
+impl GpuSurfaceInput {
+    fn new(area: &gtk4::GLArea, state: &Rc<RefCell<GpuState>>) -> Self {
+        Self {
+            area: area.clone(),
+            state: Rc::clone(state),
+        }
+    }
+}
+
+impl SurfaceInputSink for GpuSurfaceInput {
+    fn handle(&self, event: &SurfaceInputEvent) {
+        {
+            let mut state = self.state.borrow_mut();
+            let Some(surface) = state.gpu_surface.as_mut() else {
+                return;
+            };
+            surface.input(event);
+        }
+        // The view draws its own response to the event, and this widget renders
+        // on demand.
+        self.area.queue_render();
+    }
+}
+
 pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> gtk4::Widget {
     tracing::debug!("[gtk-gpu] create GLArea widget");
     let area = gtk4::GLArea::new();
@@ -1192,8 +1228,18 @@ pub(crate) fn render_gpu_surface(gpu_surface: GpuSurface, env: Environment) -> g
     area.set_has_depth_buffer(false);
     area.set_has_stencil_buffer(false);
 
+    let wants_input_events = gpu_surface.wants_input_events();
     let state = Rc::new(RefCell::new(GpuState::new(gpu_surface, env)));
     install_input_controllers(&area, &state);
+    // A view that draws its own interactive content — a browser page, a
+    // terminal, an editor — takes the raw events instead of the per-frame
+    // pointer snapshot. GTK delivers them to the `GtkGLArea`'s own event
+    // controllers rather than through a renderer that hit-tests layers, so this
+    // is where the routing lives; nothing here knows what the surface is.
+    if wants_input_events {
+        area.set_focusable(true);
+        install_surface_input(&area, Rc::new(GpuSurfaceInput::new(&area, &state)));
+    }
 
     area.connect_realize({
         let state = Rc::clone(&state);
