@@ -67,7 +67,7 @@ compile_error!(
 pub fn run_browser_subprocess() -> i32 {
     #[cfg(any(hydrolysis_cef_webview, feature = "chromium"))]
     {
-        return waterui_browser_cef::run_packaged_subprocess();
+        waterui_browser_cef::run_packaged_subprocess()
     }
     #[cfg(not(any(hydrolysis_cef_webview, feature = "chromium")))]
     panic!("this Hydrolysis backend was built without a CEF browser component")
