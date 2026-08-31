@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788088417029,
+  "lastUpdate": 1788178973280,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -687,6 +687,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 34371,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "id": "bf9545ce3621a1248944b209e137b26757dde472",
+          "message": "docs: require GitHub issues and PRs targeting dev\n\nAgents must file each finding as a self-contained GitHub issue and land\nthe fix as a pull request against `dev`. Direct pushes to `dev` and\n`main` are no longer allowed. Issues must not be phased or sequenced\nslices of a larger plan.",
+          "timestamp": "2026-08-29T04:01:35Z",
+          "url": "https://github.com/water-rs/waterui/commit/bf9545ce3621a1248944b209e137b26757dde472"
+        },
+        "date": 1788178971888,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 463610,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 453066,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 39579,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 35294,
             "unit": "us"
           }
         ]
