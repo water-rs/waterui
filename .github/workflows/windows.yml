@@ -82,7 +82,7 @@ jobs:
       # `--all-features` pass is structurally impossible — `waterui-ffi`
       # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
       # enabling `c-api` and `android-jni` together can never build.
-      - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude cef_webview_example --exclude chromium-example --profile ci
+      - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example --profile ci
       # The root crate's feature-gated re-export surface. `--features all` rather
       # than `--all-features`: the latter turns on `dynamic_linking`, which pulls
       # in `waterui-dylib`, and that crate exports 77k symbols against a PE
@@ -96,7 +96,7 @@ jobs:
       # Compile the CEF backend without its binary distribution.
       - run: cargo check -p waterui-browser-cef --features compile-only
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude cef_webview_example --exclude chromium-example
+      - run: cargo test --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example
       # Windows-only code is invisible to every other leg: a `cfg(windows)` body
       # is compiled nowhere else, so a lint that fires only there reaches
       # nobody.
