@@ -211,14 +211,18 @@ advances.
 
 ## Feature-gated FFI and GPU packages
 
-The map FFI is off by default, while the common GPU stack is a default-on
-feature. Consumers that disable defaults must opt into exactly the exported
-surface they use:
+The map FFI is off by default in `waterui-ffi`, while the common GPU stack is a
+default-on feature. Consumers that disable defaults must opt into the facade
+and FFI features they use. Map is no longer a `waterui` facade feature; depend
+on `waterui-map` directly, and add `waterui-map-gpu` when using the self-drawn
+realization:
 
 ```toml
 [dependencies]
-waterui = { version = "0.3", default-features = false, features = ["gpu", "map"] }
+waterui = { version = "0.3", default-features = false, features = ["gpu"] }
 waterui-ffi = { version = "0.3", default-features = false, features = ["gpu", "map"] }
+waterui-map = "0.1"
+waterui-map-gpu = "0.1"
 ```
 
 Regenerate native bindings and generated projects after changing these
