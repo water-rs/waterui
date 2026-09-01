@@ -73,21 +73,28 @@ runs:
     # ...and check what it did, because the action cannot fail on its own: a
     # fetch error leaves it reporting success over an empty package set, and the
     # next thing to notice is a cargo build twenty minutes later blaming
-    # whichever pkg-config crate it happened to reach first. `all-package-
-    # version-list` is the action's own record of what is installed, on both the
-    # install and the cache-restore path, so ask it directly.
+    # whichever pkg-config crate it happened to reach first.
+    #
+    # Two sources, because neither alone covers every package. The action's
+    # `all-package-version-list` is what it unpacked or restored from its cache,
+    # and a cache restore is a plain untar that never reaches dpkg's database.
+    # dpkg covers the rest: a package the runner image already ships is never
+    # unpacked and so never appears in that list.
     - name: Verify native dependencies are installed
       shell: bash
       env:
         REQUESTED: ${{ steps.pkgs.outputs.packages }}
-        INSTALLED: ${{ steps.apt.outputs.all-package-version-list }}
+        UNPACKED: ${{ steps.apt.outputs.all-package-version-list }}
       run: |
         missing=""
         for package in $REQUESTED; do
-          case ",$INSTALLED," in
-            *",$package="*) ;;
-            *) missing="$missing $package" ;;
+          case ",$UNPACKED," in
+            *",$package="*) continue ;;
           esac
+          status="$(dpkg-query --show --showformat='${Status}' "$package" 2>/dev/null || true)"
+          if [ "$status" != "install ok installed" ]; then
+            missing="$missing $package"
+          fi
         done
         if [ -n "$missing" ]; then
           echo "::error::apt reported success but did not install:$missing"
