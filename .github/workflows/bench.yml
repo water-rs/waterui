@@ -49,10 +49,6 @@ jobs:
     name: Bench (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
-    # Windows GPU tests currently die in wgpu-on-WARP submission timeouts —
-    # https://github.com/water-rs/waterui/issues/152 — so its bench leg
-    # reports but does not gate until that issue is closed.
-    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       # macOS runners have a real (paravirtualized Metal) GPU and run the full
@@ -66,13 +62,10 @@ jobs:
         include:
           - os: ubuntu-latest
             bench-shape: --warmups 2 --samples 24 --repetitions 3
-            experimental: false
           - os: macos-latest
             bench-shape: ""
-            experimental: false
           - os: windows-latest
             bench-shape: --warmups 2 --samples 24 --repetitions 3
-            experimental: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -167,8 +160,7 @@ jobs:
           pattern: bench-gha-*
           path: bench-gha
       - name: Track benchmark history (ubuntu)
-        # A leg that failed uploads no JSON, and a non-gating leg is expected
-        # to fail (see #152 for Windows). Recording the platforms that did
+        # A leg that failed uploads no JSON. Recording the platforms that did
         # produce results is the point; erroring on the ones that did not
         # would let one platform's breakage discard everyone else's history.
         if: hashFiles('bench-gha/bench-gha-ubuntu-latest/bench-gha.json') != ''
@@ -188,8 +180,7 @@ jobs:
           # on violation. This is a trend alert, not a merge gate.
           fail-on-alert: false
       - name: Track benchmark history (macos)
-        # A leg that failed uploads no JSON, and a non-gating leg is expected
-        # to fail (see #152 for Windows). Recording the platforms that did
+        # A leg that failed uploads no JSON. Recording the platforms that did
         # produce results is the point; erroring on the ones that did not
         # would let one platform's breakage discard everyone else's history.
         if: hashFiles('bench-gha/bench-gha-macos-latest/bench-gha.json') != ''
@@ -205,8 +196,7 @@ jobs:
           alert-threshold: "150%"
           fail-on-alert: false
       - name: Track benchmark history (windows)
-        # A leg that failed uploads no JSON, and a non-gating leg is expected
-        # to fail (see #152 for Windows). Recording the platforms that did
+        # A leg that failed uploads no JSON. Recording the platforms that did
         # produce results is the point; erroring on the ones that did not
         # would let one platform's breakage discard everyone else's history.
         if: hashFiles('bench-gha/bench-gha-windows-latest/bench-gha.json') != ''
