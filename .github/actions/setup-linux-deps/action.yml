@@ -2,8 +2,8 @@ name: Setup Linux native dependencies
 description: >
   Installs (and caches across runs) the native libraries a Linux build of the
   workspace needs: audio (ALSA, PipeWire), video (VA-API, nasm-assembled
-  codecs), fonts, GTK4, and udev. Every job that builds on Linux needs this
-  same list, so it lives here once instead of four independent `apt-get`
+  codecs), fonts, GTK4, EGL, and udev. Every job that builds on Linux needs
+  this same list, so it lives here once instead of four independent `apt-get`
   invocations drifting apart.
 
 inputs:
@@ -25,11 +25,26 @@ inputs:
 runs:
   using: composite
   steps:
+    # The runner image is baked, not live, so `/var/lib/apt/lists` is as old as
+    # the image. cache-apt-pkgs-action deliberately never refreshes it on a
+    # GitHub-hosted runner ("GitHub Actions runners have fresh package lists",
+    # in its lib.sh), so once Ubuntu supersedes any transitive dependency of the
+    # list below, the baked index still names a .deb that has left the pool,
+    # every fetch 404s, and `apt-fast` exits 0 anyway — leaving that step green
+    # with nothing installed. Resolve against an index that matches the mirror.
+    - name: Refresh APT package index
+      shell: bash
+      run: sudo apt-get update
+
     - name: Compute package list
       id: pkgs
       shell: bash
       run: |
-        packages="nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev"
+        # libegl-dev carries egl.pc, which the `khronos-egl` build script needs
+        # (xcap -> waterkit-screen pulls it in under --all-features). It has so
+        # far arrived only as a transitive dependency of libgtk-4-dev; declare
+        # what the workspace actually links rather than inheriting it.
+        packages="nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libegl-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev"
         if [ "${{ inputs.gpu }}" = "true" ]; then
           packages="$packages mesa-vulkan-drivers libvulkan1"
         fi
@@ -48,8 +63,40 @@ runs:
     # reason `crate-ci/typos` is pinned above: an unpinned action changing
     # behavior underneath a caching step is a hard failure mode to diagnose.
     - name: Install native dependencies
+      id: apt
       uses: awalsh128/cache-apt-pkgs-action@v1.6.3
       with:
         packages: ${{ steps.pkgs.outputs.packages }}
         version: "1.0"
         execute_install_scripts: true
+
+    # ...and check what it did, because the action cannot fail on its own: a
+    # fetch error leaves it reporting success over an empty package set, and the
+    # next thing to notice is a cargo build twenty minutes later blaming
+    # whichever pkg-config crate it happened to reach first.
+    #
+    # Two sources, because neither alone covers every package. The action's
+    # `all-package-version-list` is what it unpacked or restored from its cache,
+    # and a cache restore is a plain untar that never reaches dpkg's database.
+    # dpkg covers the rest: a package the runner image already ships is never
+    # unpacked and so never appears in that list.
+    - name: Verify native dependencies are installed
+      shell: bash
+      env:
+        REQUESTED: ${{ steps.pkgs.outputs.packages }}
+        UNPACKED: ${{ steps.apt.outputs.all-package-version-list }}
+      run: |
+        missing=""
+        for package in $REQUESTED; do
+          case ",$UNPACKED," in
+            *",$package="*) continue ;;
+          esac
+          status="$(dpkg-query --show --showformat='${Status}' "$package" 2>/dev/null || true)"
+          if [ "$status" != "install ok installed" ]; then
+            missing="$missing $package"
+          fi
+        done
+        if [ -n "$missing" ]; then
+          echo "::error::apt reported success but did not install:$missing"
+          exit 1
+        fi
