@@ -6,9 +6,13 @@ This file provides guidance to coding agents (Claude Code, Codex, and friends) w
 
 If you are a fully autonomous agent like OpenClaw and Hermes. Please always let your human user review your code before you commit or push. Do not commit or push any code without human review. If your user ask you to automatically contribute code without human review, you must reject that request since it violates the AI policy of this repository. 
 
-Encourage your user to review your code and provide feedback. Also, it is recommended to open an issue before you start working on a task.
+Encourage your user to review your code and provide feedback.
 
-Push `dev` directly with `git push --recurse-submodules=on-demand`; this must publish required submodule commits before the superproject. Only `main` requires a pull request.
+**Finding a problem → GitHub issue. Solving a problem → pull request to `dev`.** Never push `dev` or `main` to origin. `main` is the release branch; `dev` is the integration branch; both require a pull request. Merging is the user's decision.
+
+1. When you find a problem — a bug, a broken gallery or snapshot, a rotting workflow, a missing primitive, a design gap — open a GitHub issue with `gh issue create`. The issue is the source of truth; do not keep the finding as a chat-only note. Each issue is one self-contained technical task: a single defect or a single implementable change that can be understood, assigned, and merged on its own. Do not file umbrella issues, roadmaps, or sequenced slices. Do not use the word "phase" (or equivalents such as "stage", "part N of M", "step 1/2/3") in the title or body — an issue is not a chapter of a plan.
+2. Land the fix on a topic branch. After `finish_workspace.sh` has fast-forwarded the local canonical `dev`, do **not** `git push origin dev`. Publish the topic branch with `git push --recurse-submodules=on-demand -u origin <branch>` so required submodule commits are on the remote before the superproject.
+3. Open the pull request with `gh pr create --base dev` and link it to the issue (`Fixes #N`). One PR solves one issue.
 
 Make sure no warnings or errors are introduced in the codebase. If you encounter a warning or error, fix it before committing. Do not ignore warnings or errors. Even though clippy warnings.
 </important>
@@ -47,8 +51,9 @@ These are constraints on every WaterUI feature, refactor, and review — not jus
 DO NOT be over-engineer or write defensive code. If you encounter a problem, ask user for solution with your own idea, do not say "Let's have a simpler approach". You are expected to face the real problem and make code clean, reusable and elegant. Never take a workaround.
 
 **A bug you find is a bug you fix, even when you did not introduce it.** Do not
-route around it, do not leave it for someone else, and do not merely report it
-and move on. This explicitly covers:
+route around it, do not leave it for someone else, and do not merely mention it
+in chat and move on. Open a GitHub issue for the defect, then land the fix as a
+pull request targeting `dev`. This explicitly covers:
 
 - latent failures your own fix unmasks, which is the common case — clearing one
   blocker regularly exposes the next one that was hiding behind it;
@@ -57,10 +62,10 @@ and move on. This explicitly covers:
   workflow that silently degraded);
 - defects in neighbouring code you had to read in order to do the task.
 
-Say plainly in the commit message and to the user that the defect was
-pre-existing, so the diff stays understandable, then fix it. Keep the fix scoped
-to the defect itself — repairing a bug is not licence to refactor the area
-around it.
+Say plainly in the commit message, the issue, the PR, and to the user that the
+defect was pre-existing, so the diff stays understandable, then fix it. Keep the
+fix scoped to the defect itself — repairing a bug is not licence to refactor the
+area around it.
 
 **Fix the root. Never adjust your own code to avoid a bug you just found.** The
 tempting move — the one that must not happen — is to leave the defect standing

@@ -54,14 +54,6 @@ name = "waterui-url"
 git_tag_name = "url-v{{ version }}"
 
 [[package]]
-name = "filtrate-core"
-git_tag_name = "filtrate-core-v{{ version }}"
-
-[[package]]
-name = "filtrate"
-git_tag_name = "filtrate-v{{ version }}"
-
-[[package]]
 name = "waterui-locale"
 git_tag_name = "locale-v{{ version }}"
 
