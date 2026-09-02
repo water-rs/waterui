@@ -1109,6 +1109,55 @@ mod tests {
         );
     }
 
+    /// The registry must offer a face carrying an OpenType `MATH` table, and it
+    /// must be reached through the archive code path.
+    #[test]
+    fn font_registry_offers_a_math_face() {
+        let registry = FontRegistry::builtin().expect("registry parses");
+        let url = registry
+            .url("STIX Two Math")
+            .expect("registry must offer an OpenType MATH font");
+        assert!(
+            is_zip_url(url),
+            "the math font must resolve through the archive path so the single \
+             matching face is extracted rather than the whole distribution"
+        );
+    }
+
+    /// `STIX Two Math` ships in the same archive as eight `STIX Two Text` faces,
+    /// none of which carry a `MATH` table. Picking a Text face would leave
+    /// formula layout with no table to read, and nothing downstream would say
+    /// so — the font would simply be there and be useless.
+    #[test]
+    fn math_face_wins_over_its_text_siblings_in_the_same_archive() {
+        let extracted = tempdir().expect("temp dir");
+        let root = extracted.path().join("static_otf");
+        fs::create_dir_all(&root).expect("create extract dir");
+        for face in [
+            "STIXTwoMath-Regular.otf",
+            "STIXTwoText-Bold.otf",
+            "STIXTwoText-BoldItalic.otf",
+            "STIXTwoText-Italic.otf",
+            "STIXTwoText-Medium.otf",
+            "STIXTwoText-MediumItalic.otf",
+            "STIXTwoText-Regular.otf",
+            "STIXTwoText-SemiBold.otf",
+            "STIXTwoText-SemiBoldItalic.otf",
+        ] {
+            fs::write(root.join(face), []).expect("write face");
+        }
+
+        let selected = smol::block_on(find_font_file(extracted.path(), "STIX Two Math"))
+            .expect("math face must be found");
+
+        assert_eq!(
+            selected.file_name().expect("selected face has a name"),
+            "STIXTwoMath-Regular.otf",
+            "selected {} instead of the Math face",
+            selected.display()
+        );
+    }
+
     #[test]
     fn hydrolysis_default_fonts_include_material_base_and_script_fallbacks() {
         let declarations = hydrolysis_default_font_declarations();

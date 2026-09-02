@@ -60,3 +60,19 @@ url = "https://github.com/tonsky/FiraCode/releases/download/6.2/Fira_Code_v6.2.z
 [[font]]
 name = "SourceCodePro"
 url = "https://github.com/adobe-fonts/source-code-pro/releases/download/2.042R-u%2F1.062R-i%2F1.026R-vf/OTF-source-code-pro-2.042R-u_1.062R-i.zip"
+
+# Math fonts.
+#
+# A math font is not a stylistic choice: formula layout is computed from the
+# OpenType `MATH` table — axis height, fraction and radical metrics, script
+# shifts, glyph variants and assemblies — so a face without that table cannot
+# lay out a formula at all.
+#
+# The upstream STIX releases carry no attachments, so this points at the
+# `zipfiles/` archive in the tagged tree. That archive also holds eight
+# `STIX Two Text` faces, none of which carry a `MATH` table; only the Math face
+# matches this entry's name.
+
+[[font]]
+name = "STIX Two Math"
+url = "https://raw.githubusercontent.com/stipub/stixfonts/v2.13b171/zipfiles/static_otf.zip"
