@@ -45,7 +45,11 @@ unsafe extern "C" fn jni_navigation_apply(
                 JObject::null(),
             )
             .expect("failed to allocate navigation transaction destination array");
-        for (index, view) in transaction.inserted.iter().enumerate() {
+        // SAFETY: the transaction owns `inserted`, each destination is taken exactly
+        // once for the conversion that consumes it, and `consume` below frees the
+        // buffer without dropping the moved-out destinations.
+        let views = unsafe { crate::jni::convert::take_ffi_array_elements(&transaction.inserted) };
+        for (index, view) in views.enumerate() {
             let view = crate::jni::convert::struct_to_java(env, view);
             inserted
                 .set_element(env, index, view)
@@ -232,7 +236,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_tabContent<'local>(
         )
     };
     super::with_env(&mut env, |env| {
-        crate::jni::convert::struct_to_java(env, &nav_view).into_raw()
+        crate::jni::convert::struct_to_java(env, nav_view).into_raw()
     })
 }
 
@@ -257,6 +261,6 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_splitNavigationDetail
         )
     };
     super::with_env(&mut env, |env| {
-        crate::jni::convert::struct_to_java(env, &nav_view).into_raw()
+        crate::jni::convert::struct_to_java(env, nav_view).into_raw()
     })
 }
