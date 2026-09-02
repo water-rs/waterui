@@ -67,9 +67,10 @@ impl Layout for FrameLayout {
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         let resolved = self.resolved();
-        // A Frame proposes a modified size to its single child.
-        // It uses its own ideal dimensions if they exist, otherwise parent's proposal,
-        // then clamps that proposal by the frame's min/max constraints.
+        // A Frame proposes a modified size to its single child. The parent's
+        // proposal is what the child hears; an ideal only fills in a dimension
+        // the parent left unspecified. Either way the frame's own min/max limit
+        // what it passes down.
         let child_proposal = ProposalSize {
             width: frame_child_proposal_axis(
                 proposal.width,
@@ -93,10 +94,11 @@ impl Layout for FrameLayout {
             });
         let child_size = child_dimensions.size;
 
-        // Resolve the frame size on each axis.
-        //
-        // If parent proposes a concrete size, we respect it but clamp through frame constraints.
-        // If parent leaves axis unspecified, use frame ideal or measured child size, then clamp.
+        // Resolve the frame size on each axis. With no bound on an axis the
+        // frame is exactly as big as the child it just measured; a maximum is
+        // something to grow into, so there the frame takes the extent it was
+        // offered instead. `place` proposes that resolved extent back to the
+        // child, so the child is measured at the extent it will be placed in.
         let final_width = frame_resolved_axis(
             proposal.width,
             child_size.width,
@@ -122,14 +124,16 @@ impl Layout for FrameLayout {
 
         let resolved = self.resolved();
         // The frame's own extent is already settled by the time it is placed:
-        // `size_that_fits` answered the proposal with the ideal where one was
-        // wanted, and the parent handed back `bounds`. The child is therefore
-        // proposed the frame's resolved extent, never the ideal again — an
-        // ideal answers an unconstrained proposal, it is not a cap on the
-        // child, so a frame that grew past its ideal (`.frame(idealWidth: 24,
-        // maxWidth: .infinity)`, or a parent that stretched it) has a child
-        // that fills it. Min/max still bind here because the frame keeps its
-        // own constraints even when a parent offers bounds that violate them.
+        // `size_that_fits` resolved it and the parent handed it back as
+        // `bounds`. The child is therefore proposed that resolved extent, which
+        // is the extent it was measured at — a resizable child already reported
+        // it, and a rigid one reports the same natural size either way. The
+        // ideal gets no second say: it answers an unspecified proposal, it is
+        // not a cap on the child, so a frame that grew past its ideal
+        // (`.frame(idealWidth: 24, maxWidth: .infinity)`, or a parent that
+        // stretched it) has a child that fills it. Min/max still bind here
+        // because the frame keeps its own constraints even when a parent offers
+        // bounds that violate them.
         let child_proposal = ProposalSize {
             width: Some(clamp_frame_axis(
                 bounds.width(),
@@ -262,6 +266,17 @@ fn clamp_frame_axis(value: f32, min: Option<f32>, max: Option<f32>) -> f32 {
         .min(max.unwrap_or(f32::INFINITY))
 }
 
+/// The proposal a frame hands its child on one axis.
+///
+/// `SwiftUI`'s flexible frame proposes the size proposed to the frame, limited
+/// by any constraints, with any ideal dimensions replacing the *unspecified*
+/// dimensions of that proposal. So a parent that has a size in mind is the one
+/// the child hears, the ideal answers only the axes nobody had an opinion on,
+/// and the frame's own `min`/`max` bind whichever of the two came through.
+///
+/// An ideal that outranked the proposal would be a cap on the child, and a cap
+/// is what `max` is for: it would leave a resizable drawing unable to fill the
+/// frame it had already grown into.
 #[inline]
 fn frame_child_proposal_axis(
     parent_proposal: Option<f32>,
@@ -269,8 +284,8 @@ fn frame_child_proposal_axis(
     ideal: Option<f32>,
     max: Option<f32>,
 ) -> Option<f32> {
-    ideal
-        .or(parent_proposal)
+    parent_proposal
+        .or(ideal)
         .map(|value| clamp_frame_axis(value, min, max))
 }
 
@@ -278,16 +293,21 @@ fn frame_child_proposal_axis(
 ///
 /// A frame grows into the space offered *up to* the maximum it was given, which
 /// is how `.frame(maxWidth: .infinity)` fills and `.frame(maxWidth: 100)` fills
-/// to a hundred points. Without a maximum there is nothing to grow into, so the
-/// frame stays the size of its content — `.frame(minHeight: 44)` on a label
-/// leaves a 44pt-tall label, rather than a label stretched over whatever height
-/// the parent happened to propose.
+/// to a hundred points. The extent it grows into is the one it was offered —
+/// the parent's proposal, or the ideal when the parent proposed nothing.
 ///
-/// An *ideal* extent is the size this axis asks for when nobody proposes one.
-/// It never grows the frame past a proposal, and it must not refuse to shrink
-/// below one either: an ideal that outranked the proposal would be a pin, and
-/// `min`/`max` are how a caller asks for a pin. That distinction is what lets
-/// an icon carry its natural size and still fit the box `.size(…)` gives it.
+/// Without a maximum there is nothing to grow into, so the frame adopts its
+/// child's sizing behaviour on that axis: it is exactly as big as the child it
+/// measured, clamped up by any minimum. That is what keeps `.frame(minHeight:
+/// 44)` on a label a 44pt-tall label rather than one stretched over whatever
+/// height the parent happened to propose.
+///
+/// It is also why an *ideal* is an answer to an unspecified proposal rather
+/// than a pin. The ideal reaches the child through
+/// [`frame_child_proposal_axis`] and comes back as the child's own answer: a
+/// child that takes what it is offered reports the ideal, a rigid one reports
+/// its natural size, and neither is overridden here. `min`/`max` are how a
+/// caller asks for a pin.
 #[inline]
 fn frame_resolved_axis(
     parent_proposal: Option<f32>,
@@ -296,14 +316,12 @@ fn frame_resolved_axis(
     ideal: Option<f32>,
     max: Option<f32>,
 ) -> f32 {
-    let content = ideal.unwrap_or(child_size);
-    match (parent_proposal, max) {
-        (Some(proposed), Some(_)) => clamp_frame_axis(proposed, min, max),
-        (Some(proposed), None) if ideal.is_some() => {
-            clamp_frame_axis(proposed.min(content), min, max)
-        }
-        _ => clamp_frame_axis(content, min, max),
-    }
+    let content = if max.is_some() {
+        parent_proposal.or(ideal).unwrap_or(child_size)
+    } else {
+        child_size
+    };
+    clamp_frame_axis(content, min, max)
 }
 
 /// A view that provides a frame with optional size constraints and alignment for its child.
@@ -508,72 +526,101 @@ mod tests {
     }
 
     #[test]
-    fn test_frame_with_ideal_size() {
+    fn an_ideal_frame_still_adopts_a_rigid_childs_size() {
+        // `.frame(idealWidth: 100, idealHeight: 50)` with nothing proposed. The
+        // ideal is what the child is asked for, but with neither a minimum nor
+        // a maximum the frame has no size of its own — it is whatever the child
+        // answered, and a rigid 30x20 drawing answers 30x20.
         let layout = FrameLayout {
             ideal_width: Some(Computed::constant(100.0)),
             ideal_height: Some(Computed::constant(50.0)),
             ..Default::default()
         };
 
-        let mut child = MockSubView {
+        let child = RecordingSubView::new(MockSubView {
             size: Size::new(30.0, 20.0),
-        };
-        let children: Vec<&dyn SubView> = vec![&mut child];
+        });
 
-        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &[&child]);
 
-        // Frame uses ideal dimensions
-        assert!((size.width - 100.0).abs() < f32::EPSILON);
-        assert!((size.height - 50.0).abs() < f32::EPSILON);
+        assert_eq!(
+            child.proposal(),
+            ProposalSize::new(Some(100.0), Some(50.0)),
+            "the ideal should answer the dimensions the parent left unspecified"
+        );
+        assert_extent(size.width, 30.0, "the frame's width");
+        assert_extent(size.height, 20.0, "the frame's height");
     }
 
     #[test]
-    fn ideal_size_yields_to_a_smaller_proposal() {
-        // An icon carrying its natural 24pt size, offered 8pt by `.size(8, 8)`.
+    fn an_ideal_answers_only_the_dimensions_the_parent_left_unspecified() {
+        // `.frame(idealWidth: 24, idealHeight: 24)` under a 48x36 proposal. The
+        // parent has an opinion on both dimensions, so the ideal has nothing to
+        // say: the child hears 48x36. With neither a minimum nor a maximum the
+        // frame then adopts its child's sizing behaviour — a resizable drawing
+        // takes the whole 48x36, a rigid one stays at its own 24x24 — which is
+        // what `SwiftUI` gives for the same frame.
         let layout = FrameLayout {
             ideal_width: Some(Computed::constant(24.0)),
             ideal_height: Some(Computed::constant(24.0)),
             ..Default::default()
         };
+        let proposal = ProposalSize::new(Some(48.0), Some(36.0));
 
-        let mut child = MockSubView {
-            size: Size::new(24.0, 24.0),
-        };
-        let children: Vec<&dyn SubView> = vec![&mut child];
-
-        let size = layout.size_that_fits(
-            ProposalSize {
-                width: Some(8.0),
-                height: Some(8.0),
-            },
-            &children,
+        let resizable = RecordingSubView::new(FillingSubView {
+            intrinsic: Size::new(24.0, 24.0),
+        });
+        let filled = layout.size_that_fits(proposal, &[&resizable]);
+        assert_eq!(
+            resizable.proposal(),
+            proposal,
+            "the child should hear the parent's proposal, not the ideal"
         );
+        assert_extent(filled.width, 48.0, "a resizable child's frame width");
+        assert_extent(filled.height, 36.0, "a resizable child's frame height");
 
-        assert!((size.width - 8.0).abs() < f32::EPSILON);
-        assert!((size.height - 8.0).abs() < f32::EPSILON);
+        // Placement agrees with measurement by construction: the frame proposes
+        // the extent it resolved to, which is the extent the child was measured
+        // at and reported back.
+        let rects = layout.place(Rect::new(Point::new(0.0, 0.0), filled), &[&resizable]);
+        assert_eq!(
+            resizable.proposal(),
+            proposal,
+            "placement should re-propose the extent the child was measured at"
+        );
+        assert_extent(rects[0].width(), 48.0, "the resizable child's width");
+        assert_extent(rects[0].height(), 36.0, "the resizable child's height");
+
+        let rigid = RecordingSubView::new(MockSubView {
+            size: Size::new(24.0, 24.0),
+        });
+        let hugged = layout.size_that_fits(proposal, &[&rigid]);
+        assert_eq!(
+            rigid.proposal(),
+            proposal,
+            "a rigid child hears the proposal too; it just declines it"
+        );
+        assert_extent(hugged.width, 24.0, "a rigid child's frame width");
+        assert_extent(hugged.height, 24.0, "a rigid child's frame height");
     }
 
     #[test]
-    fn ideal_size_does_not_grow_into_a_larger_proposal() {
+    fn a_rigid_child_does_not_grow_into_a_larger_proposal() {
+        // The same frame around a rigid 24pt drawing offered 400pt: the drawing
+        // declines, and with no maximum the frame has nothing to grow into. A
+        // resizable child would take the 400 — see the test above.
         let layout = FrameLayout {
             ideal_width: Some(Computed::constant(24.0)),
             ..Default::default()
         };
 
-        let mut child = MockSubView {
+        let child = MockSubView {
             size: Size::new(24.0, 24.0),
         };
-        let children: Vec<&dyn SubView> = vec![&mut child];
 
-        let size = layout.size_that_fits(
-            ProposalSize {
-                width: Some(400.0),
-                height: None,
-            },
-            &children,
-        );
+        let size = layout.size_that_fits(ProposalSize::new(Some(400.0), None), &[&child]);
 
-        assert!((size.width - 24.0).abs() < f32::EPSILON);
+        assert_extent(size.width, 24.0, "the frame's width");
     }
 
     #[test]
@@ -723,26 +770,25 @@ mod tests {
             ..Default::default()
         };
 
-        let child = MockSubView {
-            size: Size::new(30.0, 20.0),
+        let child = FillingSubView {
+            intrinsic: Size::new(30.0, 20.0),
         };
 
-        // Nothing proposed: the frame asks for its ideal rather than the child's.
+        // Nothing proposed: the ideal is what the child is asked for, and a
+        // child that takes what it is offered hands the ideal back.
         let unconstrained = layout.size_that_fits(ProposalSize::UNSPECIFIED, &[&child]);
-        assert!(
-            (unconstrained.width - 120.0).abs() < f32::EPSILON,
-            "expected the ideal width, got {}",
-            unconstrained.width
+        assert_extent(
+            unconstrained.width,
+            120.0,
+            "the unconstrained frame's width",
         );
 
-        // An ideal alone sets no maximum, so a parent that does propose a size
-        // does not get to stretch the frame past its content.
-        let proposed = layout.size_that_fits(ProposalSize::new(Some(300.0), None), &[&child]);
-        assert!(
-            (proposed.width - 120.0).abs() < f32::EPSILON,
-            "an ideal width is not a licence to fill, got {}",
-            proposed.width
-        );
+        // A parent that does have a size in mind is heard instead: the ideal
+        // replaces unspecified dimensions only, and it is no more a cap on the
+        // child than it is a pin, so a resizable child fills the 300 offered.
+        let proposed = layout.size_that_fits(ProposalSize::new(Some(300.0), Some(90.0)), &[&child]);
+        assert_extent(proposed.width, 300.0, "the proposed frame's width");
+        assert_extent(proposed.height, 90.0, "the proposed frame's height");
     }
 
     #[test]
@@ -830,6 +876,57 @@ mod tests {
             ProposalSize::new(Some(120.0), Some(40.0)),
             "the child's proposal should be the bounds clamped by the frame"
         );
+    }
+
+    #[test]
+    fn an_ideal_that_is_also_the_maximum_is_a_natural_size_that_only_shrinks() {
+        // The shape `waterui-svg` carries an icon's intrinsic size in:
+        // `.frame(idealWidth: 24, idealHeight: 24, maxWidth: 24, maxHeight: 24)`
+        // around a scene that takes whatever it is proposed. The ideal answers
+        // the axes nobody proposed, the maximum keeps the drawing from growing
+        // past its natural size, and the absence of a minimum leaves it free to
+        // shrink into a smaller box.
+        let layout = FrameLayout {
+            ideal_width: Some(Computed::constant(24.0)),
+            ideal_height: Some(Computed::constant(24.0)),
+            max_width: Some(Computed::constant(24.0)),
+            max_height: Some(Computed::constant(24.0)),
+            ..Default::default()
+        };
+        let scene = || {
+            RecordingSubView::new(FillingSubView {
+                intrinsic: Size::zero(),
+            })
+        };
+
+        // Nothing proposed: the natural size.
+        let child = scene();
+        let natural = layout.size_that_fits(ProposalSize::UNSPECIFIED, &[&child]);
+        assert_extent(natural.width, 24.0, "the unproposed width");
+        assert_extent(natural.height, 24.0, "the unproposed height");
+
+        // A row that proposes its own height — `HStack` hands a non-stretching
+        // child `(None, bounds.height())` — leaves the icon at 24, not 44.
+        let child = scene();
+        let in_a_row = layout.size_that_fits(ProposalSize::new(None, Some(44.0)), &[&child]);
+        assert_eq!(
+            child.proposal(),
+            ProposalSize::new(Some(24.0), Some(24.0)),
+            "the scene should never be offered more than the natural size"
+        );
+        assert_extent(in_a_row.width, 24.0, "the width in a taller row");
+        assert_extent(in_a_row.height, 24.0, "the height in a taller row");
+
+        // `.size(8, 10)` still gets through: there is no minimum to stop it.
+        let child = scene();
+        let resized = layout.size_that_fits(ProposalSize::new(Some(8.0), Some(10.0)), &[&child]);
+        assert_eq!(
+            child.proposal(),
+            ProposalSize::new(Some(8.0), Some(10.0)),
+            "a smaller box should reach the scene unaltered"
+        );
+        assert_extent(resized.width, 8.0, "the resized width");
+        assert_extent(resized.height, 10.0, "the resized height");
     }
 
     #[test]
