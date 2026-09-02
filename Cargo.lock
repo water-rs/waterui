@@ -6866,7 +6866,6 @@ dependencies = [
  "num-traits",
  "once_cell",
  "rustc-hash 1.1.0",
- "spirv",
  "thiserror 2.0.20",
  "unicode-ident",
 ]
@@ -9672,11 +9671,11 @@ dependencies = [
 
 [[package]]
 name = "shaderloom"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef95e00f176da60d5e802773d563a7a263d24e99bcb91c07488ebeabfd8d7851"
+checksum = "abfe38a4a8d473f595240dd001b51c5778b30ee439a0c5f4960554a977bcba93"
 dependencies = [
- "naga 30.0.0",
+ "naga 29.0.4",
  "wgpu",
 ]
 
