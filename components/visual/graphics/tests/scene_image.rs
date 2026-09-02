@@ -110,7 +110,7 @@ fn render(runtime: &GpuRuntime, engine: SceneEngine) -> Vec<u8> {
     let output = pollster::block_on(surface.render_offscreen(runtime, config, &mut env))
         .expect("offscreen render should succeed");
 
-    let directory = artifact_root().join("scene_image");
+    let directory = artifact_root().join("scene_image").join("image_brush");
     std::fs::create_dir_all(&directory).expect("artifact directory must be creatable");
     let name = match engine {
         SceneEngine::Classic => "classic",
@@ -135,7 +135,7 @@ fn hybrid_scene_engine_draws_an_image_brush() {
     // The engine the device picks for itself is not what this test renders
     // with, but it is what an application on this machine gets, so it is
     // recorded next to the snapshots.
-    let directory = artifact_root().join("scene_image");
+    let directory = artifact_root().join("scene_image").join("image_brush");
     std::fs::create_dir_all(&directory).expect("artifact directory must be creatable");
     let adapter = runtime.context().adapter.get_info();
     std::fs::write(
