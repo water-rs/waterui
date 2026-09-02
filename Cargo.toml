@@ -210,6 +210,11 @@ vello_hybrid = { version = "0.2", default-features = false, features = ["std", "
 # release is a different major version, and a glyph from one is not a glyph from
 # the other.
 glifo = { version = "0.3.0", default-features = false, features = ["std"] }
+# The paint and pixel types `vello_hybrid` takes but does not re-export. An
+# image is drawn there by naming a handle into the renderer's atlas, and the
+# handle, the paint that samples it, and the premultiplied conversion that
+# fills it all live here.
+vello_common = { version = "0.2", default-features = false, features = ["std"] }
 parley = { version = "0.11", default-features = false }
 # SVG documents are parsed here and drawn through `Scene2D`; nothing in the
 # workspace renders one with `vello_svg`, so the parser is depended on directly

@@ -12,7 +12,7 @@ use waterui_core::MainThreadBound;
 use crate::gpu::shared_context::SceneEngine;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuView};
 use crate::scene_view::SceneContent;
-use crate::scene2d_hybrid::HybridScene2D;
+use crate::scene2d_hybrid::{HybridScene2D, HybridUpload};
 use crate::scene2d_vello::VelloScene2D;
 
 /// The scene this surface builds each frame, in whichever engine's form.
@@ -364,13 +364,16 @@ impl SceneSurfaceRenderer {
             multiview_mask: None,
         }));
 
-        // The content is built inside the renderer's lock because glyphs
-        // rasterize into an atlas the renderer owns: a run of text is recorded
-        // against those resources, not against the scene alone.
+        // The content is built inside the renderer's lock because glyphs and
+        // images live in atlases the renderer owns: a run of text or an image
+        // is recorded against those resources, not against the scene alone.
+        // Uploads go into the same encoder the frame is rendered with, so an
+        // image reaches the atlas before the pass that samples it.
         let content = &mut self.content;
         let needs_next_frame = renderer.with_hybrid(frame.device, frame.format, |hybrid| {
             let needs_next_frame = {
-                let mut scene2d = HybridScene2D::new(scene, &mut hybrid.resources);
+                let upload = HybridUpload::new(frame.device, frame.queue, &mut encoder);
+                let mut scene2d = HybridScene2D::new(scene, hybrid, upload);
                 content.build_scene(&mut scene2d, frame.width as f32, frame.height as f32)
             };
             hybrid
