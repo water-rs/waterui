@@ -78,7 +78,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
             let rgba_data = {
                 let device = surface.device();
                 let queue = surface.queue();
-                let mut renderer = HydrolysisRenderer::new(device);
+                let mut renderer = HydrolysisRenderer::new(surface.adapter(), device);
                 renderer.set_frame_resources(surface.adapter(), device, queue);
                 renderer.reset_scene();
                 renderer.begin_rebuild_frame();

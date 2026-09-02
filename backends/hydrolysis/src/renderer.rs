@@ -149,7 +149,8 @@ use waterui_graphics::view_effect::{
 };
 use waterui_graphics::{
     AppliedFilter, GpuContext, GpuFrame, GpuSurface, GradientType, PointerState, RedrawHandle,
-    ResolvedGradient, ResolvedGradientStop, SceneView, VelloScene2D,
+    ResolvedGradient, ResolvedGradientStop, SceneEngine, SceneView, SharedSceneRenderer,
+    VelloScene2D,
 };
 
 use waterui_icon::SystemIcon;
@@ -232,7 +233,7 @@ pub struct HydrolysisRenderer {
     shader_cache: Arc<WgslModuleCache>,
     /// The scene renderer embedded GPU surfaces share, for the same reason: its
     /// pipelines belong to the device rather than to any one scene.
-    scene_renderer: Arc<waterui_graphics::SharedSceneRenderer>,
+    scene_renderer: Arc<SharedSceneRenderer>,
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
     frame_instant: Instant,
@@ -308,9 +309,16 @@ impl HydrolysisRenderer {
         core::mem::take(&mut self.subview_structural_change)
     }
 
+    /// A renderer for `device`, which `adapter` produced.
+    ///
+    /// The adapter is not a formality: the scene renderer that embedded GPU
+    /// surfaces share is built for the engine `adapter` can actually run, and
+    /// an adapter without indirect execution aborts inside wgpu rather than
+    /// degrading when asked to run the classic compute pipeline.
     #[must_use]
-    pub fn new(device: &wgpu::Device) -> Self {
+    pub fn new(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Self {
         Self::new_with_options(
+            adapter,
             device,
             vello::RendererOptions {
                 use_cpu: false,
@@ -324,8 +332,13 @@ impl HydrolysisRenderer {
         )
     }
 
+    /// As [`Self::new`], with the window renderer's Vello options spelled out.
     #[must_use]
-    pub fn new_with_options(device: &wgpu::Device, options: vello::RendererOptions) -> Self {
+    pub fn new_with_options(
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        options: vello::RendererOptions,
+    ) -> Self {
         let vello_renderer =
             vello::Renderer::new(device, options).expect("failed to create hydrolysis renderer");
         let frame_instant = Instant::now();
@@ -346,7 +359,7 @@ impl HydrolysisRenderer {
             signals: FrameSignals::new(frame_instant),
             host_redraw_handle: None,
             shader_cache: Arc::new(WgslModuleCache::new()),
-            scene_renderer: Arc::default(),
+            scene_renderer: Arc::new(SharedSceneRenderer::new(SceneEngine::for_adapter(adapter))),
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
             frame_instant,
