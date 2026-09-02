@@ -144,7 +144,6 @@ waterui-math = { version = "0.1.0", path = "components/visual/math" }
 waterui-ffi = { version = "0.3.0", path = "ffi" }
 waterui-layout = { version = "0.3.0", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.3.0", path = "components/foundation/navigation" }
-waterui-web-surface = { version = "0.1.0", path = "components/platform/web-surface" }
 waterui-webview = { version = "0.3.0", path = "components/platform/webview" }
 waterui-chromium = { version = "0.1.0", path = "components/platform/chromium" }
 waterui-browser-cef = { version = "0.1.0", path = "components/platform/browser-cef", default-features = false }

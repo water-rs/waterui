@@ -24,7 +24,6 @@ waterui-core.workspace = true
 waterui-str = { workspace = true, optional = true }
 waterui-url = { workspace = true, optional = true }
 waterui-watcher-set = { workspace = true, optional = true }
-waterui-web-surface = { workspace = true, optional = true }
 waterui-webview = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -63,7 +62,6 @@ webview = [
     "dep:waterui-str",
     "dep:waterui-url",
     "dep:waterui-watcher-set",
-    "dep:waterui-web-surface",
     "dep:waterui-webview",
     "dep:xkeysym",
 ]

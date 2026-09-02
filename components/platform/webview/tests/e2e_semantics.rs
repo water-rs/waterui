@@ -24,9 +24,10 @@ use waterui::component::vstack;
 use waterui::shape::{Rectangle, ShapeExt as _};
 use waterui::text;
 use waterui::{Color, Environment, SignalExt as _, Str};
+use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::{AnyView, Metadata, Retain, binding};
 use waterui_testing::{Role, UiBuilder};
-use waterui_webview::{Url, WebView, WebViewController, web_surface_semantics};
+use waterui_webview::{Url, WebView, WebViewController};
 
 const DOCS_URL: &str = "https://waterui.dev/docs";
 const API_URL: &str = "https://waterui.dev/api";
@@ -123,14 +124,14 @@ fn changing_the_url_binding_keeps_the_same_webview(ui: UiBuilder) {
 /// by type before `body` ever ran.
 ///
 /// The hook stands in for `waterui_browser_cef::install` / `..._wpe::install`
-/// without the engine: what it returns is [`web_surface_semantics`] wrapped
-/// around opaque self-drawn content, exactly as those two wrap their
+/// without the engine: what it returns is [`default_role`] wrapped around
+/// opaque self-drawn content, exactly as those two wrap their
 /// `GpuSurface`. A filled shape stands in for the surface because it reaches
 /// the renderer's self-drawn-graphics leaf the same way and needs no GPU
 /// device, so this also proves the accessibility half of the engine path — the
 /// node a screen reader gets when nothing in the host tree can see into the
-/// page, and the role `web_surface_semantics` gives it in place of the `Image`
-/// a graphics leaf would default to.
+/// page, and the role the realization gives it in place of the `Image` a
+/// graphics leaf would default to.
 #[waterui::test(viewport = (420, 420))]
 fn an_installed_realization_draws_the_webview_and_keeps_its_node(ui: UiBuilder) {
     let drawn = Rc::new(Cell::new(false));
@@ -143,7 +144,11 @@ fn an_installed_realization_draws_the_webview_and_keeps_its_node(ui: UiBuilder) 
             // The realization owns the semantic component for the surface's
             // lifetime, the way every engine install does.
             AnyView::new(Metadata::new(
-                web_surface_semantics(env, Rectangle.fill(Color::srgb_hex("#3B82F6"))),
+                default_role(
+                    env,
+                    Rectangle.fill(Color::srgb_hex("#3B82F6")),
+                    AccessibilityRole::Group,
+                ),
                 Retain::new(webview),
             ))
         }
