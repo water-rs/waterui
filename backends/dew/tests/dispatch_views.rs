@@ -59,7 +59,7 @@ fn vstack_of_colors_splits_the_screen() {
 /// Text must produce a real shaped glyph run in the retained display list.
 #[test]
 fn text_emits_shaped_glyphs() {
-    let mut renderer = waterui_dew::DewRenderer::default();
+    let mut renderer = support::test_renderer();
     let list = renderer.render_tree(
         AnyView::new(text("Hello, dew!")),
         &support::test_environment(),
