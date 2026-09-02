@@ -1,0 +1,44 @@
+[package]
+name = "waterui-mermaid"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Mermaid diagram component for WaterUI, drawn through Scene2D"
+keywords = ["mermaid", "diagram", "flowchart", "waterui"]
+categories = ["gui", "visualization"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-canvas.workspace = true
+waterui-graphics.workspace = true
+waterui-layout.workspace = true
+waterui-text.workspace = true
+waterui-str.workspace = true
+nami.workspace = true
+merman-core.workspace = true
+merman-render.workspace = true
+# Only to read Mermaid's own `fontSize` out of the effective config, which
+# `merman-core` exposes as a JSON value.
+serde_json.workspace = true
+# The host text measurement `merman-render` lays diagrams out with. Same engine
+# and the same `system` font source `waterui-canvas` draws labels with, so the
+# boxes layout reserves are the boxes the glyphs land in.
+parley = { workspace = true, features = ["system"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+
+[lints]
+workspace = true
+
+[package.metadata.cargo-machete]
+# The crate-level example is a doctest, and doctests are the one place
+# `cargo machete` does not look. `waterui` is what its `use waterui::prelude::*`
+# resolves against.
+ignored = ["waterui"]
