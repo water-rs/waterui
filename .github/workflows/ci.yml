@@ -207,8 +207,12 @@ jobs:
           shared-key: ffi-header-macos
           cache-targets: false
           cache-on-failure: true
+      # `+nightly` is named rather than inherited: `rust-toolchain.toml` pins the
+      # repository to stable and overrides what the action above sets, so an
+      # ambient `cargo run` here would generate the header with the wrong
+      # channel and cbindgen would lose the macro expansion.
       - name: Regenerate the header
-        run: cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
+        run: cargo +nightly run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
       - name: Verify the committed header matches
         run: |
           set -euo pipefail
