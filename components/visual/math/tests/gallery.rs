@@ -18,11 +18,42 @@
 
 use std::path::{Path, PathBuf};
 
-use peniko::{Brush, Color};
+use kurbo::{Affine, Rect, Shape};
+use peniko::{Brush, Color, Fill};
 use waterui_graphics::shared_context::SceneEngine;
-use waterui_graphics::{GpuRuntime, OffscreenRenderConfig, OffscreenSize, SceneView};
+use waterui_graphics::{
+    GpuRuntime, OffscreenRenderConfig, OffscreenSize, Scene2D, SceneContent, SceneInvalidator,
+    SceneView,
+};
 use waterui_math::ast::MathStyle;
 use waterui_math::view::{DEFAULT_MATH_FAMILY, MathContent};
+
+/// Paints an opaque ground under the formula.
+///
+/// The renderer leaves the canvas transparent, and a transparent PNG of black
+/// glyphs is invisible in half the viewers someone might open it in. A review
+/// image nobody can see is not a review image.
+struct OnWhite {
+    formula: MathContent,
+}
+
+impl SceneContent for OnWhite {
+    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
+        let ground = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Brush::Solid(Color::WHITE),
+            None,
+            &ground.to_path(0.1),
+        );
+        self.formula.build_scene(scene, width, height)
+    }
+
+    fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
+        self.formula.set_invalidator(invalidator);
+    }
+}
 
 /// Formulas chosen to exercise each construct the layout engine implements,
 /// and the ones an earlier attempt got visibly wrong.
@@ -82,7 +113,7 @@ fn renders_the_formula_gallery_on_both_scene_engines() {
                 DEFAULT_MATH_FAMILY,
                 Brush::Solid(Color::BLACK),
             );
-            let surface = SceneView::new(content).into_gpu_surface();
+            let surface = SceneView::new(OnWhite { formula: content }).into_gpu_surface();
             let config = OffscreenRenderConfig::new(size)
                 .format(wgpu::TextureFormat::Rgba8Unorm)
                 .scene_engine(engine);
