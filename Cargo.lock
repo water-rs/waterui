@@ -12922,17 +12922,11 @@ version = "0.1.0"
 dependencies = [
  "arkiv",
  "dirs",
- "hex",
  "serde",
  "serde_json",
- "sha2",
- "waterui-core",
- "waterui-graphics",
  "waterui-icon",
  "waterui-icons-codegen",
- "waterui-str",
  "waterui-svg",
- "waterui-text",
 ]
 
 [[package]]
