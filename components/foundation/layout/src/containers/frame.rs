@@ -121,17 +121,23 @@ impl Layout for FrameLayout {
         }
 
         let resolved = self.resolved();
-        let proposed_width = resolved.ideal_width.unwrap_or_else(|| bounds.width());
-        let proposed_height = resolved.ideal_height.unwrap_or_else(|| bounds.height());
-
+        // The frame's own extent is already settled by the time it is placed:
+        // `size_that_fits` answered the proposal with the ideal where one was
+        // wanted, and the parent handed back `bounds`. The child is therefore
+        // proposed the frame's resolved extent, never the ideal again — an
+        // ideal answers an unconstrained proposal, it is not a cap on the
+        // child, so a frame that grew past its ideal (`.frame(idealWidth: 24,
+        // maxWidth: .infinity)`, or a parent that stretched it) has a child
+        // that fills it. Min/max still bind here because the frame keeps its
+        // own constraints even when a parent offers bounds that violate them.
         let child_proposal = ProposalSize {
             width: Some(clamp_frame_axis(
-                proposed_width.min(bounds.width()),
+                bounds.width(),
                 resolved.min_width,
                 resolved.max_width,
             )),
             height: Some(clamp_frame_axis(
-                proposed_height.min(bounds.height()),
+                bounds.height(),
                 resolved.min_height,
                 resolved.max_height,
             )),
@@ -438,6 +444,69 @@ mod tests {
         }
     }
 
+    /// A greedy child: it takes whatever extent it is offered, the way a
+    /// `Color` or a fill-scaled image does, and falls back to its intrinsic
+    /// size on an axis nobody proposed.
+    struct FillingSubView {
+        intrinsic: Size,
+    }
+
+    impl SubView for FillingSubView {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(Size::new(
+                proposal.width.unwrap_or(self.intrinsic.width),
+                proposal.height.unwrap_or(self.intrinsic.height),
+            ))
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::Both
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    /// Wraps a child so a test can see the proposal the frame handed it.
+    struct RecordingSubView<C> {
+        inner: C,
+        proposal: Cell<Option<ProposalSize>>,
+    }
+
+    impl<C> RecordingSubView<C> {
+        fn new(inner: C) -> Self {
+            Self {
+                inner,
+                proposal: Cell::new(None),
+            }
+        }
+
+        fn proposal(&self) -> ProposalSize {
+            self.proposal
+                .get()
+                .expect("the frame never measured its child")
+        }
+    }
+
+    impl<C: SubView> SubView for RecordingSubView<C> {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            self.proposal.set(Some(proposal));
+            self.inner.measure(proposal)
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            self.inner.stretch_axis()
+        }
+        fn priority(&self) -> i32 {
+            self.inner.priority()
+        }
+    }
+
+    fn assert_extent(actual: f32, expected: f32, what: &str) {
+        assert!(
+            (actual - expected).abs() < f32::EPSILON,
+            "expected {what} to be {expected}, got {actual}"
+        );
+    }
+
     #[test]
     fn test_frame_with_ideal_size() {
         let layout = FrameLayout {
@@ -674,5 +743,120 @@ mod tests {
             "an ideal width is not a licence to fill, got {}",
             proposed.width
         );
+    }
+
+    #[test]
+    fn an_ideal_does_not_cap_the_child_once_the_frame_has_grown() {
+        // `.frame(idealWidth: 100, idealHeight: 50, maxWidth: .infinity,
+        // maxHeight: .infinity)` in a 320x180 slot. The ideal answered the
+        // sizing question; the maximum then let the frame fill, and the child
+        // is proposed the frame it actually got, not the ideal.
+        let layout = FrameLayout {
+            ideal_width: Some(Computed::constant(100.0)),
+            ideal_height: Some(Computed::constant(50.0)),
+            max_width: Some(Computed::constant(f32::INFINITY)),
+            max_height: Some(Computed::constant(f32::INFINITY)),
+            ..Default::default()
+        };
+
+        let child = RecordingSubView::new(FillingSubView {
+            intrinsic: Size::new(30.0, 20.0),
+        });
+
+        let size = layout.size_that_fits(ProposalSize::new(Some(320.0), Some(180.0)), &[&child]);
+        assert_extent(size.width, 320.0, "the frame's width");
+        assert_extent(size.height, 180.0, "the frame's height");
+
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(320.0, 180.0));
+        let rects = layout.place(bounds, &[&child]);
+
+        assert_eq!(
+            child.proposal(),
+            ProposalSize::new(Some(320.0), Some(180.0)),
+            "the child should be proposed the frame's resolved bounds"
+        );
+        assert_extent(rects[0].width(), 320.0, "the child's width");
+        assert_extent(rects[0].height(), 180.0, "the child's height");
+    }
+
+    #[test]
+    fn an_unconstrained_frame_takes_its_ideal_and_hands_that_to_the_child() {
+        // Nobody proposes anything, so the ideal is the frame — and the child
+        // hears the ideal because that is what the frame resolved to.
+        let layout = FrameLayout {
+            ideal_width: Some(Computed::constant(100.0)),
+            ideal_height: Some(Computed::constant(50.0)),
+            ..Default::default()
+        };
+
+        let child = RecordingSubView::new(FillingSubView {
+            intrinsic: Size::new(30.0, 20.0),
+        });
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &[&child]);
+        assert_extent(size.width, 100.0, "the frame's width");
+        assert_extent(size.height, 50.0, "the frame's height");
+
+        let rects = layout.place(Rect::new(Point::new(0.0, 0.0), size), &[&child]);
+        assert_eq!(
+            child.proposal(),
+            ProposalSize::new(Some(100.0), Some(50.0)),
+            "the child should be proposed the ideal the frame resolved to"
+        );
+        assert_extent(rects[0].width(), 100.0, "the child's width");
+        assert_extent(rects[0].height(), 50.0, "the child's height");
+    }
+
+    #[test]
+    fn placement_holds_the_frames_own_minimum_and_maximum() {
+        // `.frame(minWidth: 120, maxHeight: 40)` handed an 80x300 slot: the
+        // frame's own constraints still bind on the proposal it passes down,
+        // so the child hears 120 wide and 40 tall rather than the raw bounds.
+        let layout = FrameLayout {
+            min_width: Some(Computed::constant(120.0)),
+            max_height: Some(Computed::constant(40.0)),
+            ..Default::default()
+        };
+
+        let child = RecordingSubView::new(FillingSubView {
+            intrinsic: Size::new(30.0, 20.0),
+        });
+
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(80.0, 300.0));
+        layout.place(bounds, &[&child]);
+
+        assert_eq!(
+            child.proposal(),
+            ProposalSize::new(Some(120.0), Some(40.0)),
+            "the child's proposal should be the bounds clamped by the frame"
+        );
+    }
+
+    #[test]
+    fn a_filling_frame_offers_its_whole_width_to_a_rigid_child() {
+        // `.frame(maxWidth: .infinity)` around a 30x20 icon in a 320x180 slot.
+        // The frame fills the width and stays the icon's height; the icon is
+        // offered all of that width, declines it, and is centred in it.
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(f32::INFINITY)),
+            ..Default::default()
+        };
+
+        let child = RecordingSubView::new(MockSubView {
+            size: Size::new(30.0, 20.0),
+        });
+
+        let size = layout.size_that_fits(ProposalSize::new(Some(320.0), Some(180.0)), &[&child]);
+        assert_extent(size.width, 320.0, "the frame's width");
+        assert_extent(size.height, 20.0, "the frame's height");
+
+        let rects = layout.place(Rect::new(Point::new(0.0, 0.0), size), &[&child]);
+        assert_eq!(
+            child.proposal(),
+            ProposalSize::new(Some(320.0), Some(20.0)),
+            "a rigid child is still offered the frame it sits in"
+        );
+        assert_extent(rects[0].width(), 30.0, "the child's width");
+        assert_extent(rects[0].x(), 145.0, "the child's x");
     }
 }
