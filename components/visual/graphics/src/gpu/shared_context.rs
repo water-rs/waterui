@@ -10,6 +10,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use shaderloom::WgslModuleCache;
 
+use crate::scene2d_hybrid::HybridImageAtlas;
+pub use crate::scene2d_hybrid::HybridRenderer;
+
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
 
@@ -127,17 +130,6 @@ pub struct SharedSceneRenderer {
     hybrid: Mutex<Vec<(wgpu::TextureFormat, HybridRenderer)>>,
 }
 
-/// The hybrid renderer and the resources it draws with.
-///
-/// They are created together and used together, so they are kept together.
-#[derive(Debug)]
-pub struct HybridRenderer {
-    /// The renderer itself.
-    pub renderer: vello_hybrid::Renderer,
-    /// Its atlas and buffer resources.
-    pub resources: vello_hybrid::Resources,
-}
-
 impl fmt::Debug for SharedSceneRenderer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -240,6 +232,7 @@ impl SharedSceneRenderer {
                     HybridRenderer {
                         renderer,
                         resources,
+                        images: HybridImageAtlas::default(),
                     },
                 ));
                 renderers.len() - 1
