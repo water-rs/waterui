@@ -1,7 +1,8 @@
 use core::error::Error;
 #[cfg(feature = "snackbar")]
 use waterui_core::State;
-use waterui_core::View;
+use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
+use waterui_core::{AnyView, Environment, View};
 use waterui_graphics::color::Color;
 use waterui_layout::{
     spacer,
@@ -74,6 +75,7 @@ fn copy_to_clipboard(text: &str) {
 /// View that renders syntax-highlighted code snippets.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Code {
+    info: Option<Str>,
     language: Language,
     content: Str,
 }
@@ -86,50 +88,122 @@ impl Code {
     /// Panics if the language cannot be converted into a supported [`Language`].
     pub fn new(language: impl TryInto<Language, Error: Error>, content: impl Into<Str>) -> Self {
         Self {
+            info: None,
             language: language.try_into().expect("Invalid language"),
             content: content.into(),
+        }
+    }
+
+    /// Records the fence's info token as the author wrote it.
+    ///
+    /// Markdown calls this so a realization can claim a token no [`Language`]
+    /// answers to — `mermaid`, `plantuml`, `vega` — which would otherwise be
+    /// indistinguishable from a fence carrying no info string at all.
+    #[must_use]
+    pub fn info(mut self, info: impl Into<Str>) -> Self {
+        self.info = Some(info.into());
+        self
+    }
+}
+
+/// Everything a fenced code block is, before anything decides how to show it.
+///
+/// An application claims a fence by installing a [`Hook<CodeConfig>`] on its
+/// environment; a hook that does not recognise [`info`](Self::info) calls
+/// [`ViewConfiguration::render`] to get the ordinary code block back.
+#[derive(Debug, Clone)]
+pub struct CodeConfig {
+    /// The fence's info token as written (`mermaid`, `rust`, …), if it had one.
+    pub info: Option<Str>,
+    /// The language that token resolved to; [`Language::Plaintext`] when it
+    /// resolved to nothing.
+    pub language: Language,
+    /// The block's text, verbatim.
+    pub content: Str,
+}
+
+impl ViewConfiguration for CodeConfig {
+    type View = Code;
+
+    fn render(self) -> Self::View {
+        Code {
+            info: self.info,
+            language: self.language,
+            content: self.content,
+        }
+    }
+}
+
+impl ConfigurableView for Code {
+    type Config = CodeConfig;
+
+    fn config(self) -> Self::Config {
+        CodeConfig {
+            info: self.info,
+            language: self.language,
+            content: self.content,
         }
     }
 }
 
 impl View for Code {
-    fn body(self, _env: &waterui_core::Environment) -> impl View {
-        let lang_name = self.language.to_string();
-        let content_for_copy = self.content.to_string();
-        let mut highlighter = DefaultHighlighter::new();
-        let chunks = highlighter.highlight(self.language, &self.content);
-
-        let code_font = Font::from(Body).size(14.0);
-        let styled = chunks.into_iter().fold(StyledStr::empty(), |mut s, chunk| {
-            s.push(
-                chunk.text.to_string(),
-                Style::default()
-                    .foreground(chunk.color)
-                    .font(code_font.clone()),
-            );
-            s
-        });
-
-        // Code block with dark background, left-aligned content. Copy
-        // feedback is presented through the window's SnackbarManager (a
-        // semantic object owned by the runtime) instead of view-local state.
-        VStack::new(
-            HorizontalAlignment::Leading,
-            8.0,
-            (
-                hstack((
-                    text(lang_name)
-                        .bold()
-                        .foreground(Color::srgb_f32(0.85, 0.86, 0.9)),
-                    spacer(),
-                    copy_button(content_for_copy),
-                )),
-                text(styled),
-            ),
-        )
-        .padding()
-        .background(Color::srgb_f32(0.15, 0.15, 0.18))
+    fn body(self, env: &Environment) -> impl View {
+        let config = self.config();
+        // `Hook::from` removes the hook from the environment it hands to the
+        // closure, so a realization that does not recognise the info token can
+        // call `config.render()` and get this default rendering back without
+        // recursing into itself.
+        if let Some(hook) = env.get::<Hook<CodeConfig>>() {
+            AnyView::new(hook.apply(env, config))
+        } else {
+            AnyView::new(default_rendering(config))
+        }
     }
+}
+
+/// What a fence looks like when nothing claims it: a header naming the
+/// language, a copy button, and the highlighted source.
+fn default_rendering(config: CodeConfig) -> impl View {
+    let CodeConfig {
+        info: _,
+        language,
+        content,
+    } = config;
+    let lang_name = language.to_string();
+    let content_for_copy = content.to_string();
+    let mut highlighter = DefaultHighlighter::new();
+    let chunks = highlighter.highlight(language, &content);
+
+    let code_font = Font::from(Body).size(14.0);
+    let styled = chunks.into_iter().fold(StyledStr::empty(), |mut s, chunk| {
+        s.push(
+            chunk.text.to_string(),
+            Style::default()
+                .foreground(chunk.color)
+                .font(code_font.clone()),
+        );
+        s
+    });
+
+    // Code block with dark background, left-aligned content. Copy
+    // feedback is presented through the window's SnackbarManager (a
+    // semantic object owned by the runtime) instead of view-local state.
+    VStack::new(
+        HorizontalAlignment::Leading,
+        8.0,
+        (
+            hstack((
+                text(lang_name)
+                    .bold()
+                    .foreground(Color::srgb_f32(0.85, 0.86, 0.9)),
+                spacer(),
+                copy_button(content_for_copy),
+            )),
+            text(styled),
+        ),
+    )
+    .padding()
+    .background(Color::srgb_f32(0.15, 0.15, 0.18))
 }
 
 #[cfg(feature = "snackbar")]

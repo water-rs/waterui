@@ -55,18 +55,11 @@ waterkit-haptic = { workspace = true, optional = true }
 waterui-video-gpu = { workspace = true, optional = true }
 
 pastey.workspace = true
+# The document parser `FlowMarkdown` re-parses incrementally as a stream
+# arrives. Only the Markdown grammar: fenced code is highlighted by the `Code`
+# widget through syntect, not by a per-language tree-sitter grammar.
 tree-sitter = { version = "0.26", optional = true }
 tree-sitter-md = { version = "0.5.3", optional = true }
-tree-sitter-rust = { version = "0.24", optional = true }
-tree-sitter-javascript = { version = "0.25", optional = true }
-tree-sitter-typescript = { version = "0.23", optional = true }
-tree-sitter-python = { version = "0.25", optional = true }
-tree-sitter-go = { version = "0.25", optional = true }
-tree-sitter-java = { version = "0.23", optional = true }
-tree-sitter-swift = { version = "0.7", optional = true }
-tree-sitter-json = { version = "0.24", optional = true }
-tree-sitter-bash = { version = "0.25", optional = true }
-tree-sitter-sequel = { version = "0.3.11", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_clipboard = "0.1.0"
@@ -151,9 +144,9 @@ webview = ["dep:waterui-webview"]
 navigation-restoration = ["waterui-navigation/serde"]
 # Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
 # with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which
-# re-highlights fenced code with tree-sitter grammars. Off by default — a
-# CommonMark parser and a dozen grammars are a lot of binary for an application
-# that shows no Markdown.
+# re-parses the document incrementally with the tree-sitter Markdown grammar.
+# Off by default — a CommonMark parser and a document grammar are a lot of
+# binary for an application that shows no Markdown.
 flow-markdown = [
     "dep:pulldown-cmark",
     "waterui-text/markdown",
@@ -161,16 +154,6 @@ flow-markdown = [
     "highlight",
     "dep:tree-sitter",
     "dep:tree-sitter-md",
-    "dep:tree-sitter-rust",
-    "dep:tree-sitter-javascript",
-    "dep:tree-sitter-typescript",
-    "dep:tree-sitter-python",
-    "dep:tree-sitter-go",
-    "dep:tree-sitter-java",
-    "dep:tree-sitter-swift",
-    "dep:tree-sitter-json",
-    "dep:tree-sitter-bash",
-    "dep:tree-sitter-sequel",
 ]
 # Mathematical formulas in Markdown: `$…$` and `$$…$$` are parsed and typeset
 # through `waterui-math`. Off by default, and deliberately so — it brings a
