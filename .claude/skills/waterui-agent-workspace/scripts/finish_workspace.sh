@@ -172,7 +172,6 @@ main() {
   require_command rm
   require_command shasum
 
-  ensure_nightly_cargo
   ensure_no_shared_target_dir
 
   source_root="$(canonical_dir "$SOURCE_REPO")"
