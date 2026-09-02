@@ -12728,6 +12728,7 @@ dependencies = [
  "waterui",
  "waterui-backend-core",
  "waterui-canvas",
+ "waterui-chart",
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
