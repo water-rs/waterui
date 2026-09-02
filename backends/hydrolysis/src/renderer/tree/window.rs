@@ -160,6 +160,12 @@ impl HydrolysisRenderer {
         hit_transform: vello::kurbo::Affine,
     ) {
         let size = Size::new(bounds.width() as f32, bounds.height() as f32);
+        // The viewport is recorded here rather than by each caller: every host
+        // that builds a window tree — the runner, and a `HydrolysisGpuView`
+        // embedding one in someone else's surface — has to agree on where the
+        // window lands in device pixels, and forgetting to say so left the
+        // embedded host reading a stale one.
+        self.set_window_viewport(bounds, transform);
         let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
         // The tree is built once and persists. A later "rebuild" request reuses
         // it — applying pending Dynamic patches, relaying out, and re-flushing —
@@ -194,9 +200,9 @@ impl HydrolysisRenderer {
         let Some(mut tree) = self.render_tree.take() else {
             return false;
         };
-        // Track the live window bounds every frame: text-context-menu clamping and
-        // effect-rect checks read the stored bounds.
-        self.set_window_bounds(bounds);
+        // Track the live window viewport every frame: text-context-menu clamping,
+        // effect-rect checks and the direct-to-target test read it.
+        self.set_window_viewport(bounds, transform);
         // Roll over this frame's Retain watcher guards exactly like the build path:
         // every re-encode re-reads and re-subscribes reactive visual inputs.
         self.lifecycle.begin_rebuild_frame();

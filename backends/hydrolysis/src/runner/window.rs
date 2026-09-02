@@ -216,6 +216,11 @@ pub struct FrameCounters {
     pub vello_scene_layers: u32,
     /// Number of embedded GPU surface layers submitted for this frame.
     pub gpu_surface_layers: u32,
+    /// Number of GPU surfaces that rendered straight into the window's own
+    /// target this frame, skipping the offscreen intermediate and the
+    /// compositor pass. At most one: the path exists only for a surface that is
+    /// the window's whole content.
+    pub direct_gpu_surfaces: u32,
     /// Number of Vello clip layers pushed while building this frame.
     pub clip_layers: u32,
     /// Maximum nested Vello clip depth while building this frame.
@@ -387,7 +392,6 @@ fn build_window_scene<P: PlatformWindow>(
 ) {
     runtime.renderer.reset_scene();
     runtime.renderer.begin_rebuild_frame();
-    runtime.renderer.set_window_bounds(bounds);
     let build_content_started_at = Instant::now();
     let content = runtime.window.build_content();
     phases.build_content += build_content_started_at.elapsed();
@@ -782,8 +786,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                 runtime.platform.request_redraw();
                 let (measurement_cache_hits, measurement_cache_misses) =
                     runtime.renderer.measurement_cache_stats();
-                let (scene_layers, vello_scene_layers, gpu_surface_layers) =
-                    runtime.renderer.render_layer_stats();
+                let layer_stats = runtime.renderer.render_layer_stats();
                 let (clip_layers, max_clip_depth) = runtime.renderer.clip_layer_stats();
                 let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
                     runtime.renderer.applied_filter_stats();
@@ -802,9 +805,10 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                             rebuild_iterations: u32::from(pump_outcome.built),
                             measurement_cache_hits,
                             measurement_cache_misses,
-                            scene_layers,
-                            vello_scene_layers,
-                            gpu_surface_layers,
+                            scene_layers: layer_stats.composited_scene_layers,
+                            vello_scene_layers: layer_stats.vello_scene_layers,
+                            gpu_surface_layers: layer_stats.gpu_surface_layers,
+                            direct_gpu_surfaces: layer_stats.direct_gpu_surfaces,
                             clip_layers,
                             max_clip_depth,
                             applied_filter_count,
@@ -828,8 +832,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
         runtime.renderer.clear_frame_resources();
         let (measurement_cache_hits, measurement_cache_misses) =
             runtime.renderer.measurement_cache_stats();
-        let (scene_layers, vello_scene_layers, gpu_surface_layers) =
-            runtime.renderer.render_layer_stats();
+        let layer_stats = runtime.renderer.render_layer_stats();
         let (clip_layers, max_clip_depth) = runtime.renderer.clip_layer_stats();
         let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
             runtime.renderer.applied_filter_stats();
@@ -848,9 +851,10 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                 rebuild_iterations: u32::from(pump_outcome.built),
                 measurement_cache_hits,
                 measurement_cache_misses,
-                scene_layers,
-                vello_scene_layers,
-                gpu_surface_layers,
+                scene_layers: layer_stats.composited_scene_layers,
+                vello_scene_layers: layer_stats.vello_scene_layers,
+                gpu_surface_layers: layer_stats.gpu_surface_layers,
+                direct_gpu_surfaces: layer_stats.direct_gpu_surfaces,
                 clip_layers,
                 max_clip_depth,
                 applied_filter_count,
