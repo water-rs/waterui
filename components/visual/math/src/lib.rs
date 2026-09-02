@@ -10,6 +10,43 @@
 //! also the accessibility representation: a formula drawn as anonymous vector
 //! paths is unreadable to a screen reader, and the tree is what `MathML` is
 //! published from.
+//!
+//! # Displaying a formula
+//!
+//! ```
+//! use waterui_math::view::Math;
+//!
+//! let quadratic = Math::new(r"x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}")
+//!     .display()
+//!     .font_size(28.0);
+//! ```
+//!
+//! # Reading one without drawing it
+//!
+//! Parsing and the accessibility markup need no font and no GPU, which is what
+//! makes them usable from a test or a server.
+//!
+//! ```
+//! use waterui_math::ast::MathStyle;
+//! use waterui_math::{latex, mathml};
+//!
+//! let formula = latex::parse(r"\frac{a}{b}")?;
+//! let markup = mathml::to_mathml(&formula, MathStyle::Display)?;
+//!
+//! assert!(markup.contains("<mfrac>"));
+//! assert!(markup.contains(r#"display="block""#));
+//! # Ok::<(), Box<dyn core::error::Error>>(())
+//! ```
+//!
+//! A construct the layout engine does not implement is refused by name rather
+//! than silently dropped, so a formula never renders as a quietly wrong one.
+//!
+//! ```
+//! use waterui_math::latex::{self, LatexError};
+//!
+//! let refused = latex::parse(r"\begin{matrix}a & b\\c & d\end{matrix}");
+//! assert!(matches!(refused, Err(LatexError::Unsupported { .. })));
+//! ```
 
 extern crate alloc;
 
