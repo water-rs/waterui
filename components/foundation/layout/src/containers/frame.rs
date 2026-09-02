@@ -526,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ideal_frame_still_adopts_a_rigid_childs_size() {
+    fn an_ideal_frame_still_adopts_a_rigid_child_size() {
         // `.frame(idealWidth: 100, idealHeight: 50)` with nothing proposed. The
         // ideal is what the child is asked for, but with neither a minimum nor
         // a maximum the frame has no size of its own — it is whatever the child
