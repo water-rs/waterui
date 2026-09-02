@@ -131,7 +131,7 @@ macro_rules! ffi_view {
                         let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
                         let view = (*any.downcast_unchecked::<waterui_core::Native<$view>>());
                         let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(view);
-                        $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                        $crate::jni::convert::struct_to_java(env, ffi_struct).into_raw()
                     }
                 })
             }
@@ -229,7 +229,7 @@ macro_rules! ffi_metadata {
                         let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
                         let metadata = *any.downcast_unchecked::<waterui_core::Metadata<$ty>>();
                         let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(metadata);
-                        $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                        $crate::jni::convert::struct_to_java(env, ffi_struct).into_raw()
                     }
                 })
             }
@@ -319,7 +319,7 @@ macro_rules! ffi_ignorable_metadata {
                         let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
                         let metadata = *any.downcast_unchecked::<waterui_core::IgnorableMetadata<$ty>>();
                         let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(metadata);
-                        $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                        $crate::jni::convert::struct_to_java(env, ffi_struct).into_raw()
                     }
                 })
             }
