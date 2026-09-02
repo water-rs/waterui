@@ -178,6 +178,25 @@ mod tests {
         SpacingTable::load().expect("the shipped spacing table must load")
     }
 
+    /// Well under the smallest gap the table can produce (3mu, or 1/6 em), so
+    /// it separates "no gap" from "a gap" without asserting on exact float
+    /// equality.
+    const TOLERANCE: f32 = 1e-6;
+
+    fn assert_no_gap(actual: f32, message: &str) {
+        assert!(
+            actual.abs() < TOLERANCE,
+            "{message}: expected no gap, got {actual}"
+        );
+    }
+
+    fn assert_same_gap(left: f32, right: f32, message: &str) {
+        assert!(
+            (left - right).abs() < TOLERANCE,
+            "{message}: {left} and {right} should be the same gap"
+        );
+    }
+
     /// The shipped table must be well formed; this is the test that turns a
     /// typo in `spacing.toml` into a failure rather than a mis-spaced formula.
     #[test]
@@ -194,7 +213,7 @@ mod tests {
         let binary = table.between(MathClass::Ord, MathClass::Bin, MathStyle::Text);
         let relation = table.between(MathClass::Ord, MathClass::Rel, MathStyle::Text);
 
-        assert_eq!(ordinary, 0.0, "adjacent ordinary atoms must not be spaced");
+        assert_no_gap(ordinary, "adjacent ordinary atoms");
         assert!(
             binary > ordinary,
             "a binary operator must be spaced away from its left operand"
@@ -210,13 +229,13 @@ mod tests {
     #[test]
     fn an_opening_fence_does_not_take_a_gap() {
         let table = table();
-        assert_eq!(
+        assert_no_gap(
             table.between(MathClass::Ord, MathClass::Open, MathStyle::Text),
-            0.0
+            "before an opening fence",
         );
-        assert_eq!(
+        assert_no_gap(
             table.between(MathClass::Open, MathClass::Ord, MathStyle::Text),
-            0.0
+            "after an opening fence",
         );
     }
 
@@ -226,15 +245,13 @@ mod tests {
     fn wide_gaps_vanish_in_script_styles() {
         let table = table();
         for style in [MathStyle::Script, MathStyle::ScriptScript] {
-            assert_eq!(
+            assert_no_gap(
                 table.between(MathClass::Ord, MathClass::Rel, style),
-                0.0,
-                "{style:?} must suppress the relation gap"
+                &alloc::format!("{style:?} must suppress the relation gap"),
             );
-            assert_eq!(
+            assert_no_gap(
                 table.between(MathClass::Ord, MathClass::Bin, style),
-                0.0,
-                "{style:?} must suppress the binary gap"
+                &alloc::format!("{style:?} must suppress the binary gap"),
             );
         }
     }
@@ -246,7 +263,7 @@ mod tests {
         let text = table.between(MathClass::Ord, MathClass::Op, MathStyle::Text);
         let script = table.between(MathClass::Ord, MathClass::Op, MathStyle::Script);
         assert!(text > 0.0);
-        assert_eq!(text, script);
+        assert_same_gap(text, script, "an unsuppressed gap in text and script style");
     }
 
     /// The table is not symmetric, and must not be "tidied" into symmetry:
@@ -256,9 +273,9 @@ mod tests {
     fn the_table_is_deliberately_asymmetric() {
         let table = table();
         assert!(table.between(MathClass::Close, MathClass::Bin, MathStyle::Text) > 0.0);
-        assert_eq!(
+        assert_no_gap(
             table.between(MathClass::Bin, MathClass::Close, MathStyle::Text),
-            0.0
+            "a binary operator before a closing fence",
         );
     }
 }
