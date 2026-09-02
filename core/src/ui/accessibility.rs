@@ -12,6 +12,7 @@ use nami::{Computed, impl_constant, signal::IntoComputed};
 use waterui_str::Str;
 
 use crate::metadata::MetadataKey;
+use crate::{AnyView, Environment, IgnorableMetadata, View};
 
 /// Overrides the spoken label for a component when the default text is not
 /// adequate.
@@ -147,6 +148,33 @@ pub enum AccessibilityRole {
 }
 
 impl MetadataKey for AccessibilityRole {}
+
+/// Gives `view` `role` unless the application already chose a role for it.
+///
+/// A component that draws itself into one opaque surface — a GPU texture, a
+/// platform subview nothing can see into — publishes no accessibility nodes on
+/// its own, so the whole region is missing from a screen reader unless the view
+/// itself carries a role. Every realization of such a component owes the tree
+/// the same node, and that node is this one.
+///
+/// Whatever the application said with `.a11y_role(...)` wins: an explicit role
+/// in the environment passes the view straight through, because the application
+/// knows what its surface is and the component only knows what it draws.
+///
+/// The role is attached as [`IgnorableMetadata`], so a renderer that consumes no
+/// accessibility metadata skips it instead of refusing the whole view.
+///
+/// No label is defaulted here. Only the application knows what the surface
+/// shows, and an invented label reads worse than none; a component with
+/// something true to say about its own contents attaches its own
+/// [`AccessibilityLabel`] on top.
+pub fn default_role(env: &Environment, view: impl View, role: AccessibilityRole) -> AnyView {
+    if env.get::<AccessibilityRole>().is_some() {
+        AnyView::new(view)
+    } else {
+        AnyView::new(IgnorableMetadata::new(view, role))
+    }
+}
 
 /// Controls whether this view should participate in accessibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,5 +365,37 @@ impl AccessibilityStateSignal {
     #[must_use]
     pub const fn state(&self) -> &Computed<AccessibilityState> {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AccessibilityRole, default_role};
+    use crate::{Environment, IgnorableMetadata};
+
+    /// A surface with nothing said about it publishes the role it was given.
+    #[test]
+    fn an_undescribed_surface_is_given_the_default_role() {
+        let view = default_role(&Environment::new(), (), AccessibilityRole::Group);
+
+        let wrapper = view
+            .downcast_ref::<IgnorableMetadata<AccessibilityRole>>()
+            .expect("the default role is attached as ignorable metadata");
+        assert_eq!(wrapper.value, AccessibilityRole::Group);
+    }
+
+    /// The application's own role wins, and nothing is attached over it.
+    #[test]
+    fn an_application_supplied_role_passes_the_view_through_untouched() {
+        let mut env = Environment::new();
+        env.insert(AccessibilityRole::Image);
+
+        let view = default_role(&env, (), AccessibilityRole::Group);
+
+        assert!(
+            view.downcast_ref::<IgnorableMetadata<AccessibilityRole>>()
+                .is_none(),
+            "a view whose role the application chose must not be wrapped again"
+        );
     }
 }

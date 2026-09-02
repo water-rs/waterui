@@ -6,6 +6,7 @@
 //! it draws the [`GpuSurface`] this hook returns exactly like any other — and a
 //! build that never asks for CEF links none of it.
 
+use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::{AnyView, Environment, Metadata, Retain, view::Hook};
 use waterui_graphics::gpu_surface::GpuSurface;
 
@@ -50,7 +51,7 @@ fn ensure_runtime(env: &mut Environment) -> CefRuntime {
 /// by type before the hook is ever consulted.
 #[cfg(feature = "webview")]
 pub fn install(env: &mut Environment) {
-    use waterui_webview::{WebView, WebViewController, web_surface_semantics};
+    use waterui_webview::{WebView, WebViewController};
 
     use crate::CefWebViewHandle;
 
@@ -82,8 +83,10 @@ pub fn install(env: &mut Environment) {
         // `can_go_back` / `can_go_forward`, the event signal, and the URL and
         // user-agent bindings. Dropping it here would leave a live page whose
         // reactive state had gone dead.
+        // The page is drawn into a texture the host tree cannot see into, so
+        // the surface publishes the accessibility node itself.
         AnyView::new(Metadata::new(
-            web_surface_semantics(env, surface),
+            default_role(env, surface, AccessibilityRole::Group),
             Retain::new(webview),
         ))
     });
@@ -102,10 +105,8 @@ pub fn install(env: &mut Environment) {
 /// reason [`install`] does.
 #[cfg(feature = "chromium")]
 pub fn install_chromium(env: &mut Environment) {
-    use waterui_chromium::{ChromiumController, ChromiumView, PageMode};
-    use waterui_webview::web_surface_semantics;
-
     use crate::CefPageHandle;
+    use waterui_chromium::{ChromiumController, ChromiumView, PageMode};
 
     assert!(
         env.get::<Hook<ChromiumView>>().is_none(),
@@ -131,8 +132,10 @@ pub fn install_chromium(env: &mut Environment) {
             )
             .clone();
         let surface = GpuSurface::new(crate::gpu_view_with_input(page));
+        // The page is drawn into a texture the host tree cannot see into, so
+        // the surface publishes the accessibility node itself.
         AnyView::new(Metadata::new(
-            web_surface_semantics(env, surface),
+            default_role(env, surface, AccessibilityRole::Group),
             Retain::new(chromium),
         ))
     });

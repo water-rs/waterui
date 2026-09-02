@@ -12523,6 +12523,7 @@ dependencies = [
  "waterui-graphics",
  "waterui-str",
  "waterui-url",
+ "waterui-watcher-set",
  "waterui-webview",
  "wgpu",
  "wgpu-external-frame",
@@ -12550,6 +12551,7 @@ dependencies = [
  "waterui-graphics",
  "waterui-str",
  "waterui-url",
+ "waterui-watcher-set",
  "waterui-webview",
  "wgpu",
  "wgpu-external-frame",
@@ -13493,6 +13495,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-watcher-set"
+version = "0.1.0"
+
+[[package]]
 name = "waterui-webview"
 version = "0.3.0"
 dependencies = [
@@ -13510,6 +13516,7 @@ dependencies = [
  "waterui-str",
  "waterui-testing",
  "waterui-url",
+ "waterui-watcher-set",
 ]
 
 [[package]]

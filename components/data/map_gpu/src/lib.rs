@@ -25,7 +25,7 @@ use std::{
 use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, watcher::BoxWatcherGuard};
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Metadata, Str,
-    accessibility::{AccessibilityLabel, AccessibilityRole},
+    accessibility::{AccessibilityLabel, AccessibilityRole, default_role},
     animation::Animation,
     gesture::{
         DragEvent, DragGesture, GestureObserver, GesturePhase, MagnificationEvent,
@@ -291,9 +291,10 @@ pub fn install(env: &mut Environment) {
             .clone();
         let semantics = map_semantics(env, &config);
         if !config.interactivity.is_interactive() {
-            return semantics.apply(AnyView::new(render::map_surface(MapScene::new(
-                config, options,
-            ))));
+            return semantics.apply(
+                env,
+                AnyView::new(render::map_surface(MapScene::new(config, options))),
+            );
         }
 
         let controller = Rc::new(MapGestureController::new(&config.region));
@@ -322,15 +323,19 @@ pub fn install(env: &mut Environment) {
                 },
             ),
         );
-        semantics.apply(AnyView::new(Metadata::new(
-            scene,
-            GestureObserver::new(MagnificationGesture::new(1.0), move |env: Environment| {
-                magnification_controller.handle_magnification(
-                    env.get::<MagnificationEvent>()
-                        .expect("MagnificationGesture observer must receive a MagnificationEvent"),
-                );
-            }),
-        )))
+        semantics.apply(
+            env,
+            AnyView::new(Metadata::new(
+                scene,
+                GestureObserver::new(MagnificationGesture::new(1.0), move |env: Environment| {
+                    magnification_controller.handle_magnification(
+                        env.get::<MagnificationEvent>().expect(
+                            "MagnificationGesture observer must receive a MagnificationEvent",
+                        ),
+                    );
+                }),
+            )),
+        )
     });
 }
 
@@ -342,18 +347,14 @@ pub fn install(env: &mut Environment) {
 /// rebuilding the map.
 struct MapSemantics {
     label: Option<AccessibilityLabel>,
-    role: Option<AccessibilityRole>,
 }
 
 impl MapSemantics {
     /// Attaches the semantics as `IgnorableMetadata`, so a renderer that does
     /// not consume accessibility metadata skips it instead of refusing the
     /// whole view.
-    fn apply(self, view: AnyView) -> AnyView {
-        let view = match self.role {
-            Some(role) => AnyView::new(IgnorableMetadata::new(view, role)),
-            None => view,
-        };
+    fn apply(self, env: &Environment, view: AnyView) -> AnyView {
+        let view = default_role(env, view, AccessibilityRole::Image);
         match self.label {
             Some(label) => AnyView::new(IgnorableMetadata::new(view, label)),
             None => view,
@@ -361,13 +362,10 @@ impl MapSemantics {
     }
 }
 
-/// Builds the map's semantics, deferring to anything the application already
-/// set with `.a11y_label(...)` / `.a11y_role(...)` rather than overriding it.
+/// Builds the map's label, deferring to anything the application already set
+/// with `.a11y_label(...)` rather than overriding it. The role is
+/// [`default_role`]'s business.
 fn map_semantics(env: &Environment, config: &MapConfig) -> MapSemantics {
-    let role = env
-        .get::<AccessibilityRole>()
-        .is_none()
-        .then_some(AccessibilityRole::Image);
     let label = env.get::<AccessibilityLabel>().is_none().then(|| {
         AccessibilityLabel::new(
             config
@@ -377,7 +375,7 @@ fn map_semantics(env: &Environment, config: &MapConfig) -> MapSemantics {
                 .computed(),
         )
     });
-    MapSemantics { label, role }
+    MapSemantics { label }
 }
 
 /// Describes what the map currently shows, for assistive technology.
@@ -789,7 +787,6 @@ mod tests {
         let semantics = map_semantics(&env, &config);
 
         assert!(semantics.label.is_none());
-        assert!(semantics.role.is_none());
     }
 
     use waterui_core::gesture::GesturePoint;

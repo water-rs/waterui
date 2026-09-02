@@ -6,9 +6,10 @@
 //! it draws the [`GpuSurface`] this hook returns exactly like any other — and a
 //! build that never asks for WPE links none of it.
 
+use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::{AnyView, Environment, Metadata, Retain, view::Hook};
 use waterui_graphics::gpu_surface::GpuSurface;
-use waterui_webview::{WebView, WebViewController, web_surface_semantics};
+use waterui_webview::{WebView, WebViewController};
 
 use crate::{WpeController, WpeWebViewHandle, gpu_view_with_input};
 
@@ -65,8 +66,10 @@ pub fn install(env: &mut Environment) {
         // `can_go_back` / `can_go_forward`, the event signal, and the URL and
         // user-agent bindings. Dropping it here would leave a live page whose
         // reactive state had gone dead.
+        // The page is drawn into a texture the host tree cannot see into, so
+        // the surface publishes the accessibility node itself.
         AnyView::new(Metadata::new(
-            web_surface_semantics(env, surface),
+            default_role(env, surface, AccessibilityRole::Group),
             Retain::new(webview),
         ))
     });
