@@ -202,7 +202,7 @@ unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsWebView
             let any: waterui::AnyView = view_ptr.into_rust();
             let view = *any.downcast_unchecked::<waterui_core::Native<waterui_webview::WebView>>();
             let ffi = view.into_inner().into_ffi();
-            crate::jni::convert::struct_to_java(env, &ffi).into_raw()
+            crate::jni::convert::struct_to_java(env, ffi).into_raw()
         }
     })
 }
