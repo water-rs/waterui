@@ -12,24 +12,25 @@ readme = "../../../README.md"
 
 [features]
 default = ["webfont"]
-svg = []
+svg = ["dep:waterui-svg"]
 webfont = ["dep:waterui-icon"]
 
 [dependencies]
-waterui-graphics = { workspace = true, features = ["gpu"] }
-waterui-svg.workspace = true
-waterui-text = { workspace = true, optional = true }
-waterui-core.workspace = true
-waterui-str.workspace = true
+# Only the two rendering entry points are linked: the generated modules refer
+# to `crate::Svg` (svg feature) and the re-exported `IconGlyph` (webfont).
+waterui-svg = { workspace = true, optional = true }
 waterui-icon = { workspace = true, optional = true }
+
+# cargo-machete does not follow build.rs, so the build-script dependencies
+# are listed here, as in the sibling icon crates.
+[package.metadata.cargo-machete]
+ignored = ["serde", "serde_json", "arkiv", "dirs", "waterui-icons-codegen"]
 
 [build-dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 arkiv = { version = "0.7", features = ["download"] }
 dirs = "6"
-sha2 = "0.11"
-hex = "0.4"
 waterui-icons-codegen.workspace = true
 
 [lints]
@@ -55,17 +56,3 @@ required-feature = "webfont"
 name = "Font Awesome 7 Brands"
 remote_path = "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip"
 required-feature = "webfont"
-[package.metadata.cargo-machete]
-ignored = [
-    "arkiv",
-    "dirs",
-    "hex",
-    "serde",
-    "serde_json",
-    "sha2",
-    "waterui-icons-codegen",
-    "waterui-core",
-    "waterui-graphics",
-    "waterui-str",
-    "waterui-text",
-]
