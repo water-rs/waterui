@@ -14,7 +14,8 @@ use waterui_text::Text;
 
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, WidgetRenderContext,
-    measure_view_dimensions_with_proposal, measure_view_intrinsic, normalize_view_for_render,
+    measure_transient_view_intrinsic, measure_view_dimensions_with_proposal,
+    normalize_view_for_render,
 };
 
 const MAP_SURFACE_HEIGHT: f32 = 184.0;
@@ -181,7 +182,7 @@ impl HydroNativeView for Native<MapConfig> {
     fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
         let render_env = map_render_env(env);
         let surface_label = map_surface_label(env);
-        measure_view_intrinsic(
+        measure_transient_view_intrinsic(
             &map_content(view.as_inner(), &surface_label, &render_env),
             state,
             &render_env,
