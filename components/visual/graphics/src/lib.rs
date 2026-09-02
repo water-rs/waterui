@@ -124,7 +124,10 @@ pub use image_generator::{
     LinearGradientGenerator, NoiseGenerator, RadialGradientGenerator, StripeGenerator,
 };
 
-pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent};
+pub use scene_view::{
+    SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, resolve_scene_proposal,
+    scene_stretch_axis,
+};
 pub use scene2d::{Glyph, GlyphRun, Scene2D, SceneRecording};
 #[cfg(feature = "vello-scene")]
 pub use scene2d_hybrid::{HybridImageAtlas, HybridRenderer, HybridScene2D, HybridUpload};

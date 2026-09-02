@@ -3,6 +3,7 @@ use alloc::rc::Rc;
 use core::{any::Any, cell::Cell};
 
 use waterui_core::Signal;
+use waterui_core::layout::Size;
 use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator};
 
 use crate::scene_data::SvgSceneData;
@@ -27,6 +28,10 @@ impl SceneContent for SvgSceneContent {
     fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
         self.scene_data.draw(scene, width, height);
         false
+    }
+
+    fn intrinsic_size(&self) -> Option<Size> {
+        Some(self.scene_data.intrinsic_size())
     }
 }
 
@@ -64,16 +69,22 @@ where
 {
     /// Content drawing `svg_template`, with its colour placeholder replaced by
     /// whatever `tint` currently reads.
+    ///
+    /// The document is parsed here rather than at the first draw: its geometry is
+    /// the same whatever the tint is, and layout asks for the size before anything
+    /// has drawn.
     #[must_use]
     pub fn new(svg_template: alloc::string::String, tint: S) -> Self {
-        Self {
+        let mut content = Self {
             svg_template,
             tint,
             scene_data: None,
             current_color: None,
             pending_update: Rc::new(Cell::new(true)),
             watcher_guard: None,
-        }
+        };
+        content.ensure_scene_data();
+        content
     }
 
     fn ensure_scene_data(&mut self) {
@@ -105,6 +116,15 @@ where
             .expect("reactive svg scene data must be initialized")
             .draw(scene, width, height);
         false
+    }
+
+    fn intrinsic_size(&self) -> Option<Size> {
+        Some(
+            self.scene_data
+                .as_ref()
+                .expect("reactive svg scene data is parsed when the content is created")
+                .intrinsic_size(),
+        )
     }
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
