@@ -46,6 +46,9 @@ pub(crate) struct MeasurementCaches {
     dynamic_proposal: FxHashMap<(usize, ProposalKey), ViewDimensions>,
     /// Re-entrancy guard: `Dynamic` nodes currently being measured.
     dynamic_measurement_stack: Vec<(usize, ProposalSize)>,
+    /// Depth of the transient-measurement scopes currently open; see
+    /// [`MeasurementCaches::begin_transient_measurement`].
+    transient_depth: u32,
     hits: u32,
     misses: u32,
 }
@@ -53,12 +56,19 @@ pub(crate) struct MeasurementCaches {
 impl MeasurementCaches {
     /// Cached dimensions for a concrete view under a proposal, counting the
     /// lookup in the per-frame hit/miss statistics.
+    ///
+    /// Answers `None` inside a transient scope, where an address does not
+    /// identify a view.
     pub(crate) fn view_dimensions(
         &mut self,
         view_identity: usize,
         env_identity: usize,
         proposal: ProposalSize,
     ) -> Option<ViewDimensions> {
+        if self.transient_depth > 0 {
+            self.misses += 1;
+            return None;
+        }
         let key = ViewMeasurementKey {
             view_identity,
             env_identity,
@@ -73,6 +83,9 @@ impl MeasurementCaches {
         cached
     }
 
+    /// Records a view's dimensions, unless a transient scope is open — a view
+    /// that dies with the measurement must leave nothing behind under an
+    /// address the next one will be handed.
     pub(crate) fn store_view_dimensions(
         &mut self,
         view_identity: usize,
@@ -80,12 +93,43 @@ impl MeasurementCaches {
         proposal: ProposalSize,
         dimensions: ViewDimensions,
     ) {
+        if self.transient_depth > 0 {
+            return;
+        }
         let key = ViewMeasurementKey {
             view_identity,
             env_identity,
             proposal: proposal.into(),
         };
         self.view_dimensions.insert(key, dimensions);
+    }
+
+    /// Opens a scope in which measured views are materialized by the
+    /// measurement itself rather than owned by the retained tree.
+    ///
+    /// `view_dimensions` is keyed by a view's heap address, which names one
+    /// view only while that view is allocated. A view built to be measured — a
+    /// list row pulled out of its collection, a control's label re-erased into
+    /// an `AnyView`, a tab's content built for a size — is dropped the moment
+    /// the measurement returns, and the allocator hands its address straight to
+    /// the next such view *within the same frame*. Clearing the cache per frame
+    /// therefore does not make the key sound: the stale entry is read back as
+    /// the new view's size, and a list reports its neighbour's row height.
+    ///
+    /// Inside the scope the cache is neither read nor written, so an address in
+    /// it always belongs to the view that is still holding it. The scope covers
+    /// the whole subtree because a view materialized here owns its children:
+    /// their addresses die with it.
+    pub(crate) fn begin_transient_measurement(&mut self) {
+        self.transient_depth += 1;
+    }
+
+    /// Closes a scope opened by [`Self::begin_transient_measurement`].
+    pub(crate) fn end_transient_measurement(&mut self) {
+        self.transient_depth = self
+            .transient_depth
+            .checked_sub(1)
+            .expect("hydrolysis transient measurement scope underflow");
     }
 
     pub(crate) fn dynamic_intrinsic(&self, identity: usize) -> Option<ViewDimensions> {
@@ -159,8 +203,12 @@ impl MeasurementCaches {
     /// each view's `stable_ptr` (its heap address), which is unique only while
     /// that view is alive: across frames a freed view's address is reused by a
     /// new, different view, so a stale entry under the reused address would
-    /// otherwise be returned as that new view's measurement. Clearing per frame
-    /// keeps the cache sound while preserving within-frame memoization.
+    /// otherwise be returned as that new view's measurement.
+    ///
+    /// Clearing per frame covers views that live as long as the tree does.
+    /// Views a measurement materializes for itself are freed *within* the
+    /// frame, and [`Self::begin_transient_measurement`] keeps those out of the
+    /// cache entirely.
     pub(crate) fn begin_frame(&mut self) {
         self.view_dimensions.clear();
         self.reset_counters();

@@ -6,9 +6,9 @@ use crate::renderer::accessibility_activation_point;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, measure_navigation_view_intrinsic,
-    measure_owned_navigation_view_intrinsic, measure_view_intrinsic, navigation_back_button_rect,
-    navigation_base_bar_height_for_display_mode, normalize_layout_view, resolved_color_to_peniko,
-    split_compact_threshold, transformed_rect,
+    measure_owned_navigation_view_intrinsic, measure_transient_view_intrinsic,
+    navigation_back_button_rect, navigation_base_bar_height_for_display_mode,
+    normalize_layout_view, resolved_color_to_peniko, split_compact_threshold, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -798,7 +798,7 @@ fn measure_navigation_split_layout(
     env: &Environment,
 ) -> LayoutSize {
     let primary_view = normalize_layout_view(split.primary_builder().build(), env);
-    let primary = measure_view_intrinsic(&primary_view, state, env);
+    let primary = measure_transient_view_intrinsic(&primary_view, state, env);
     let primary_selection = split.primary_selection().get();
     let content = split.content_builder().and_then(|builder| {
         primary_selection.map(|selected| {
@@ -811,7 +811,7 @@ fn measure_navigation_split_layout(
     let detail = match detail_selection {
         None => {
             let placeholder = normalize_layout_view(split.placeholder_builder().build(), env);
-            measure_view_intrinsic(&placeholder, state, env)
+            measure_transient_view_intrinsic(&placeholder, state, env)
         }
         Some(selected) => measure_owned_navigation_view_intrinsic(
             split.detail_builder().build(selected),

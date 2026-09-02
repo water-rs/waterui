@@ -1,7 +1,7 @@
 use crate::renderer::lazy::{LazyStackAxisConfig, lazy_stack_axis_config};
 use crate::renderer::{
     HydroNativeView, HydroState, estimate_layout_intrinsic, measure_layout_dimensions,
-    measure_view_intrinsic, normalize_layout_view,
+    measure_transient_view_intrinsic, normalize_layout_view,
 };
 use nami::Signal;
 use waterui::views::Views;
@@ -58,7 +58,7 @@ impl HydroNativeView for Native<LazyContainer> {
         let sample = children
             .get_view(0)
             .map(|view| normalize_layout_view(view, env))
-            .map(|view| measure_view_intrinsic(&view, state, env))
+            .map(|view| measure_transient_view_intrinsic(&view, state, env))
             .unwrap_or_else(|| panic!("LazyContainer failed to materialize child at index 0"));
         let count = child_count as f64;
         match axis {

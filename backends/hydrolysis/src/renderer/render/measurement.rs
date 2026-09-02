@@ -101,18 +101,38 @@ pub(crate) fn measure_view_intrinsic(
     measure_view_dimensions(view, state, env).size
 }
 
+/// Measures a view this measurement materialized rather than one the retained
+/// tree owns.
+///
+/// The intrinsic-measurement cache is keyed by heap address, which names a view
+/// only while that view is allocated, so a view built in order to be measured —
+/// and dropped the moment it has been — must not reach that cache: the next one
+/// materialized in the same frame is handed its address and reads its size back
+/// as its own. Use this at every site that measures a view it just built. See
+/// [`begin_transient_measurement`](MeasurementCaches::begin_transient_measurement).
+pub(crate) fn measure_transient_view_intrinsic(
+    view: &AnyView,
+    state: &mut HydroState,
+    env: &Environment,
+) -> LayoutSize {
+    state.measurement.begin_transient_measurement();
+    let size = measure_view_intrinsic(view, state, env);
+    state.measurement.end_transient_measurement();
+    size
+}
+
 /// Measures the intrinsic visual size of a control's [`Label`].
 ///
-/// Hydrolysis caches intrinsic measurements by `AnyView` identity, so the
-/// label is type-erased at this single boundary rather than at every call
-/// site. The semantic identity of the label remains typed inside the
-/// control's config.
+/// The label is type-erased at this single boundary rather than at every call
+/// site. The `AnyView` exists only for the measurement, so this goes through
+/// [`measure_transient_view_intrinsic`]. The semantic identity of the label
+/// remains typed inside the control's config.
 pub(crate) fn measure_label_intrinsic(
     label: &waterui_controls::label::Label,
     state: &mut HydroState,
     env: &Environment,
 ) -> LayoutSize {
-    measure_view_intrinsic(&AnyView::new(label.clone()), state, env)
+    measure_transient_view_intrinsic(&AnyView::new(label.clone()), state, env)
 }
 
 pub(crate) fn measure_view_dimensions(
@@ -579,7 +599,7 @@ pub(crate) fn measure_navigation_view_intrinsic(
             .prompt(search.prompt.clone());
         let search_body =
             normalize_layout_view(AnyView::new(search_field.body(&body_env)), &body_env);
-        measure_view_intrinsic(&search_body, state, &body_env)
+        measure_transient_view_intrinsic(&search_body, state, &body_env)
     } else {
         LayoutSize::zero()
     };
@@ -610,7 +630,13 @@ pub(crate) fn measure_owned_navigation_view_intrinsic(
         item.content = normalize_layout_view(core::mem::take(&mut item.content), env);
     }
     navigation.content = normalize_layout_view(navigation.content, env);
-    measure_navigation_view_intrinsic(&navigation, state, env)
+    // The whole `NavigationView` was built here, so its bar, toolbar and
+    // content die with this call: measure it as transient so none of them
+    // leave an entry under an address the next build is handed.
+    state.measurement.begin_transient_measurement();
+    let size = measure_navigation_view_intrinsic(&navigation, state, env);
+    state.measurement.end_transient_measurement();
+    size
 }
 
 pub(crate) fn measure_tabs_intrinsic(
@@ -633,7 +659,7 @@ pub(crate) fn measure_tabs_intrinsic(
             .max(metrics.button_min_width);
 
         let content = normalize_layout_view(AnyView::new(tab.content.build()), env);
-        let content_size = measure_view_intrinsic(&content, state, env);
+        let content_size = measure_transient_view_intrinsic(&content, state, env);
         max_content_width = max_content_width.max(f64::from(content_size.width));
         max_content_height = max_content_height.max(f64::from(content_size.height));
     }
@@ -731,7 +757,7 @@ pub(crate) fn measure_list_intrinsic(
         .get_view(0)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
     first_item.content = normalize_layout_view(first_item.content, env);
-    let content_size = measure_view_intrinsic(&first_item.content, state, env);
+    let content_size = measure_transient_view_intrinsic(&first_item.content, state, env);
     let metrics = widget_theme(env).list_metrics();
     let row_height = (f64::from(content_size.height) + metrics.vertical_inset * 2.0)
         .max(metrics.one_line_row_height);
@@ -788,7 +814,7 @@ pub(crate) fn measure_list_item_row_height(
     state: &mut HydroState,
     env: &Environment,
 ) -> f64 {
-    let intrinsic = measure_view_intrinsic(&item.content, state, env);
+    let intrinsic = measure_transient_view_intrinsic(&item.content, state, env);
     let metrics = widget_theme(env).list_metrics();
     (f64::from(intrinsic.height) + metrics.vertical_inset * 2.0).max(metrics.one_line_row_height)
 }
@@ -938,7 +964,7 @@ pub(crate) fn measure_table_metrics(
     for column in columns {
         let mut width = metrics.min_column_width;
         let label_view = normalize_layout_view(AnyView::new(column.label()), env);
-        let label_size = measure_view_intrinsic(&label_view, state, env);
+        let label_size = measure_transient_view_intrinsic(&label_view, state, env);
         width = width.max(f64::from(label_size.width) + metrics.cell_horizontal_padding);
 
         let rows = column.rows();
@@ -966,7 +992,7 @@ pub(crate) fn refresh_table_slot_baseline(
     slot.max_rows = 0;
     for (index, column) in columns.iter().enumerate() {
         let label_view = normalize_layout_view(AnyView::new(column.label()), env);
-        let label_size = measure_view_intrinsic(&label_view, state, env);
+        let label_size = measure_transient_view_intrinsic(&label_view, state, env);
         let width = (f64::from(label_size.width) + metrics.cell_horizontal_padding)
             .max(metrics.min_column_width);
         if slot.column_widths[index] < width {
@@ -995,7 +1021,7 @@ pub(crate) fn update_table_slot_visible_cell_widths(
         for row_index in row_window.start..row_window.end {
             if let Some(cell) = rows.get_view(row_index) {
                 let cell_view = normalize_layout_view(AnyView::new(cell), env);
-                let size = measure_view_intrinsic(&cell_view, state, env);
+                let size = measure_transient_view_intrinsic(&cell_view, state, env);
                 let width = (f64::from(size.width) + metrics.cell_horizontal_padding)
                     .max(metrics.min_column_width);
                 if slot.column_widths[column_index] < width {
