@@ -23,6 +23,8 @@ serde_json = { version = "1.0", optional = true }
 waterui-core.workspace = true
 waterui-str = { workspace = true, optional = true }
 waterui-url = { workspace = true, optional = true }
+waterui-watcher-set = { workspace = true, optional = true }
+waterui-web-surface = { workspace = true, optional = true }
 waterui-webview = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -60,6 +62,8 @@ webview = [
     "dep:serde_json",
     "dep:waterui-str",
     "dep:waterui-url",
+    "dep:waterui-watcher-set",
+    "dep:waterui-web-surface",
     "dep:waterui-webview",
     "dep:xkeysym",
 ]

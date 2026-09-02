@@ -12,7 +12,7 @@ use cef::{
 };
 use futures::channel::oneshot;
 use serde_json::{Value, json};
-use waterui_webview::{WatcherGuard, WatcherSet};
+use waterui_watcher_set::{WatcherGuard, WatcherSet};
 
 struct PendingCommand {
     method: String,
