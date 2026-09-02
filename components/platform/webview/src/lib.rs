@@ -40,7 +40,6 @@ pub use waterui_url::{IntoUrl, Url};
 mod url_signal;
 pub use url_signal::IntoUrlSignal;
 pub use waterui_watcher_set::{WatcherGuard, WatcherSet};
-pub use waterui_web_surface::web_surface_semantics;
 pub mod bridge;
 mod script;
 pub use script::{DOCUMENT_START_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram};

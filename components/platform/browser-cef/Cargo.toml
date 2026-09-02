@@ -21,7 +21,6 @@ chromium = [
     "dep:keycode",
     "dep:waterui-chromium",
     "dep:waterui-watcher-set",
-    "dep:waterui-web-surface",
 ]
 real-engine = ["cef-runtime", "webview"]
 webview = [
@@ -29,7 +28,6 @@ webview = [
     "dep:keycode",
     "dep:waterui-str",
     "dep:waterui-watcher-set",
-    "dep:waterui-web-surface",
     "dep:waterui-webview",
 ]
 
@@ -56,7 +54,6 @@ waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-str = { workspace = true, optional = true }
 waterui-url.workspace = true
 waterui-watcher-set = { workspace = true, optional = true }
-waterui-web-surface = { workspace = true, optional = true }
 waterui-webview = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
