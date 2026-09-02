@@ -77,6 +77,16 @@ jobs:
       - name: Clippy (WPE real engine)
         if: runner.os == 'Linux'
         run: cargo clippy -p waterui-browser-wpe --features real-engine --all-targets -- -D warnings
+      # Dew's firmware shape, which is a first-class configuration rather than
+      # a degraded one. Neither pass above compiles dew's test targets without
+      # default features, and the `Features` job's `--each-feature` sweep runs
+      # `--no-dev-deps`, so the shape a device actually ships was the one
+      # configuration nothing checked — and its test targets had stopped
+      # compiling entirely (#259). `--all-targets` is the whole point: the
+      # library alone has always been clean here.
+      - name: Clippy (dew firmware shape)
+        if: runner.os == 'Linux'
+        run: cargo clippy -p waterui-dew --all-targets --no-default-features -- -D warnings
       # The waterui skill's snippet compile gate: every rust fence in
       # .claude/skills/waterui is transcribed into .claude/skills/waterui/skill_snippets
       # and must keep compiling. The non-default feature exposes the test/bench
