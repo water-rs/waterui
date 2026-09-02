@@ -29,7 +29,6 @@ toml.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-waterui = { path = "../../.." }
 # The gallery drives a headless surface, which is the only thing in this crate
 # that touches the GPU stack at all.
 waterui-graphics = { workspace = true, features = ["gpu"] }
