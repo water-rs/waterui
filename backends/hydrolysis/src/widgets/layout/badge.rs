@@ -10,7 +10,7 @@ use waterui_text::styled::StyledStr;
 use crate::renderer::transformed_rect;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, measure_view_dimensions_with_proposal, measure_view_intrinsic,
+    WidgetRenderContext, measure_transient_view_intrinsic, measure_view_dimensions_with_proposal,
     normalize_view_for_render,
 };
 use crate::widgets::widget_theme;
@@ -53,7 +53,7 @@ fn badge_content_size(
     env: &Environment,
 ) -> LayoutSize {
     let content = normalize_view_for_render(badge.as_inner().content.build(), env);
-    measure_view_intrinsic(&content, state, env)
+    measure_transient_view_intrinsic(&content, state, env)
 }
 
 fn badge_large_label(value: i32, env: &Environment) -> StyledStr {
