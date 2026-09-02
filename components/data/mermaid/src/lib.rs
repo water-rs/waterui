@@ -45,8 +45,10 @@ use alloc::format;
 use alloc::vec::Vec;
 
 use nami::SignalExt as _;
+use waterui::widget::code::CodeConfig;
 use waterui_canvas::Canvas;
 use waterui_core::layout::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView};
+use waterui_core::view::{Hook, ViewConfiguration as _};
 use waterui_core::{AnyView, Environment, View, resolve::Resolvable as _};
 use waterui_layout::container::FixedContainer;
 use waterui_str::Str;
@@ -93,6 +95,30 @@ impl Mermaid {
 #[must_use]
 pub fn mermaid(source: impl Into<Str>) -> Mermaid {
     Mermaid::new(source)
+}
+
+/// Installs the realization that turns a `mermaid` fence into a diagram.
+///
+/// Call it from the application's `app(env)`, as with any component that lives
+/// in its own crate — the `waterui` crate does not depend on this one, so
+/// nothing installs this on an application's behalf. A `Hook<CodeConfig>`
+/// already present — a platform bridge, another realization — wins, and this
+/// is a no-op.
+///
+/// A fence tagged anything else keeps the ordinary [`Code`](waterui::widget::Code)
+/// rendering: `Hook::from` hands the closure an environment with this hook
+/// already removed, so [`ViewConfiguration::render`] cannot recurse back into
+/// it.
+pub fn install(env: &mut Environment) {
+    if env.get::<Hook<CodeConfig>>().is_some() {
+        return;
+    }
+    env.insert_hook::<CodeConfig, AnyView>(|_env, config| match config.info.as_deref() {
+        // `mmd` is Mermaid's own file extension, and the tag editors emit for a
+        // Mermaid block alongside the spelled-out one.
+        Some("mermaid" | "mmd") => AnyView::new(Mermaid::new(config.content)),
+        _ => AnyView::new(config.render()),
+    });
 }
 
 impl View for Mermaid {
