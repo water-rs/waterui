@@ -478,13 +478,42 @@ pub fn drain_device_before_teardown(device: &wgpu::Device) {
 
 impl Drop for SharedGpuContext {
     fn drop(&mut self) {
+        // Draining first leaves the completion thread nothing left to wait for,
+        // so the join that follows — when `submission_completion_driver`, the
+        // last field, drops — returns immediately. The device is destroyed
+        // inside that join rather than after this context is gone.
         drain_device_before_teardown(&self.device);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{required_device_limits, required_media_features};
+    use super::{GpuRuntime, required_device_limits, required_media_features};
+    use std::sync::Arc;
+
+    /// A runtime that has been dropped must leave no GPU handle behind.
+    ///
+    /// The submission completion thread is the device's only other owner, so
+    /// after the runtime is gone the device is destroyed exactly when that
+    /// thread has been joined. Before it was joined, the device outlived its
+    /// runtime by however long the detached thread took to notice — and the
+    /// destruction it then ran raced whatever the program did next, which in a
+    /// test binary is `exit()` unloading the very driver being destroyed.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn dropping_a_runtime_destroys_its_device_before_returning() {
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("GPU runtime teardown requires a working GPU runtime");
+        let device = Arc::downgrade(&runtime.context().device);
+
+        drop(runtime);
+
+        assert!(
+            device.upgrade().is_none(),
+            "the GPU device outlived its runtime: the submission completion thread was still \
+             holding it when the runtime finished dropping"
+        );
+    }
 
     fn adapter_features_with_16bit_norm() -> wgpu::Features {
         let mut features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
@@ -543,15 +572,66 @@ mod tests {
 #[cfg(not(target_arch = "wasm32"))]
 type SubmissionCompletion = (wgpu::SubmissionIndex, Box<dyn FnOnce() + Send>);
 
+/// The dedicated thread that resolves submission completions, and the join that
+/// keeps it from outliving the runtime that owns it.
+///
+/// The thread holds its own handle on the device it polls, so it outlives the
+/// context that spawned it and is that device's last owner: closing its channel
+/// makes it exit and *then* destroy the device. Leaving that unjoined hands a
+/// `wgpu` device's destruction — `vkDestroyDevice` and everything the driver
+/// unwinds under it — to a detached thread racing the rest of the program, and
+/// in a test binary the rest of the program is `exit()` unloading that same
+/// driver. That race is what made a GPU test report `test result: ok` and then
+/// take the process down with SIGSEGV on a software adapter.
+#[cfg(not(target_arch = "wasm32"))]
+struct CompletionThread {
+    /// Taken in [`Drop`] to close the channel, which is what tells the thread to
+    /// stop. `Some` for as long as the thread is running.
+    jobs: Option<mpsc::Sender<SubmissionCompletion>>,
+    /// Taken in [`Drop`] to join. `Some` for as long as the thread is running.
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl CompletionThread {
+    /// Queues one submission wait, panicking when the thread is gone.
+    fn submit(&self, job: SubmissionCompletion) {
+        self.jobs
+            .as_ref()
+            .expect("the GPU submission completion driver is shutting down")
+            .send(job)
+            .expect("GPU submission completion driver stopped unexpectedly");
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for CompletionThread {
+    fn drop(&mut self) {
+        // Order matters and is explicit rather than left to field declaration
+        // order: the thread only leaves `recv` once every sender is gone, so the
+        // channel closes first and the join follows.
+        drop(self.jobs.take());
+        if let Some(handle) = self.handle.take() {
+            handle
+                .join()
+                .expect("the GPU submission completion driver panicked");
+        }
+    }
+}
+
 /// Serial completion driver for submissions on one GPU device.
 ///
 /// Native runtimes confine submission waits to one dedicated thread. WebGPU
 /// runtimes use the browser-driven queue completion callback.
+///
+/// Every clone shares the one thread, so it is torn down — and joined — when the
+/// last clone goes away, which for a runtime's own driver is the moment its
+/// [`SharedGpuContext`] finishes dropping.
 #[derive(Clone)]
 #[doc(hidden)]
 pub struct GpuSubmissionCompletionDriver {
     #[cfg(not(target_arch = "wasm32"))]
-    sender: mpsc::Sender<SubmissionCompletion>,
+    thread: Arc<CompletionThread>,
     #[cfg(target_arch = "wasm32")]
     queue: Arc<wgpu::Queue>,
 }
@@ -568,7 +648,7 @@ impl GpuSubmissionCompletionDriver {
     #[cfg(not(target_arch = "wasm32"))]
     fn new(device: Arc<wgpu::Device>, _queue: Arc<wgpu::Queue>) -> Self {
         let (sender, receiver) = mpsc::channel::<SubmissionCompletion>();
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("waterui-gpu-completion".to_owned())
             .spawn(move || {
                 while let Ok((submission, completion)) = receiver.recv() {
@@ -582,7 +662,12 @@ impl GpuSubmissionCompletionDriver {
                 }
             })
             .expect("failed to start the GPU submission completion driver");
-        Self { sender }
+        Self {
+            thread: Arc::new(CompletionThread {
+                jobs: Some(sender),
+                handle: Some(handle),
+            }),
+        }
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -601,9 +686,7 @@ impl GpuSubmissionCompletionDriver {
         submission: wgpu::SubmissionIndex,
         completion: impl FnOnce() + Send + 'static,
     ) {
-        self.sender
-            .send((submission, Box::new(completion)))
-            .expect("GPU submission completion driver stopped unexpectedly");
+        self.thread.submit((submission, Box::new(completion)));
     }
 
     /// Runs `completion` after all work submitted through this queue has finished.
