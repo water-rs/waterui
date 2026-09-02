@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn styled_spans_produce_distinct_font_sizes() {
         let env = test_environment();
-        let mut state = DewState::default();
+        let mut state = DewState::new(crate::test_fonts());
         let mut styled = StyledStr::empty();
         styled.push("Heading", Style::new().font(Title));
         styled.push(" subhead", Style::new().font(Subheadline));
@@ -726,7 +726,7 @@ mod tests {
     #[test]
     fn bold_span_splits_into_its_own_run() {
         let env = test_environment();
-        let mut state = DewState::default();
+        let mut state = DewState::new(crate::test_fonts());
         let mut styled = StyledStr::empty();
         styled.push("normal ", Style::new());
         styled.push("bold", Style::new().bold());
@@ -752,7 +752,7 @@ mod tests {
         use waterui_graphics::color::Color;
 
         let env = test_environment();
-        let mut state = DewState::default();
+        let mut state = DewState::new(crate::test_fonts());
         let mut styled = StyledStr::empty();
         styled.push("red", Style::new().foreground(Color::srgb(255, 0, 0)));
 
