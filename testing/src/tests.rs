@@ -559,7 +559,7 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     );
     let mut renderer = {
         let surface = platform.surface();
-        HydrolysisRenderer::new(surface.device())
+        HydrolysisRenderer::new(surface.adapter(), surface.device())
     };
     let bounds = vello::kurbo::Rect::new(0.0, 0.0, 96.0, 72.0);
     let env = Environment::new().extending(SceneViewMergeToParent);

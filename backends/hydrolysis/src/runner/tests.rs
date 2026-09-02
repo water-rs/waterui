@@ -329,7 +329,7 @@ fn runtime_window_sized(
     platform.apply_properties(&window);
     let renderer = {
         let surface = platform.surface();
-        HydrolysisRenderer::new(surface.device())
+        HydrolysisRenderer::new(surface.adapter(), surface.device())
     };
     RuntimeWindow::new(
         window,
@@ -434,7 +434,7 @@ fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
     platform.apply_properties(&window);
     let renderer = {
         let surface = platform.surface();
-        HydrolysisRenderer::new(surface.device())
+        HydrolysisRenderer::new(surface.adapter(), surface.device())
     };
     RuntimeWindow::new(
         window,
