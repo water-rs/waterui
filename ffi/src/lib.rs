@@ -189,7 +189,11 @@ pub fn __configure_browser_environment(env: &mut waterui::Environment) {
 #[cfg(all(target_os = "android", feature = "android-jni"))]
 #[inline]
 pub unsafe fn __jni_init(vm: *mut core::ffi::c_void) -> i32 {
-    unsafe { jni::init(vm as *mut jni::jni::sys::JavaVM) }
+    // SAFETY: this is `JNI_OnLoad`'s own contract, restated by the caller
+    // requirement above: `vm` is the live `JavaVM` the runtime just handed the
+    // library, so re-typing the erased pointer recovers exactly that, which is
+    // what `jni::init` requires.
+    unsafe { jni::init(vm.cast::<jni::jni::sys::JavaVM>()) }
 }
 
 #[cfg(all(target_os = "android", not(feature = "android-jni")))]
@@ -219,6 +223,9 @@ pub unsafe fn __init() -> Option<waterui::inspector::InspectorRuntime> {
 /// Must run on the platform main thread exactly once.
 unsafe fn __init_impl() -> Option<waterui::inspector::InspectorRuntime> {
     #[cfg(target_os = "android")]
+    // SAFETY: `register_android_main_thread` records the calling thread as the
+    // platform main thread, which is only correct when called once from that
+    // thread — precisely this function's own caller contract.
     unsafe {
         native_executor::android::register_android_main_thread()
             .expect("Failed to register Android main thread");
@@ -1516,11 +1523,17 @@ pub struct WuiRetain {
 
 #[cfg(feature = "android-jni")]
 impl WuiRetain {
-    pub(crate) fn opaque_ptr(&self) -> *mut () {
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the leading underscore spells `_opaque` in the committed C ABI \
+                  header, where it marks the field as opaque to renderers rather \
+                  than unused; renaming it would change waterui.h"
+    )]
+    pub(crate) const fn opaque_ptr(&self) -> *mut () {
         self._opaque
     }
 
-    pub(crate) fn from_ptr(ptr: *mut ()) -> Self {
+    pub(crate) const fn from_ptr(ptr: *mut ()) -> Self {
         Self { _opaque: ptr }
     }
 }

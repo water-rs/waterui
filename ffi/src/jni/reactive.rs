@@ -85,6 +85,8 @@ where
 {
     use waterui::Signal;
 
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiComputed<T>` and is only read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<T>) };
     computed.get().into_ffi().into_jint()
 }
@@ -93,7 +95,7 @@ where
 // Helper Functions for Complex Type Conversion
 // ============================================================================
 
-/// Create a ResolvedColorStruct Java object from Rust values.
+/// Create a `ResolvedColorStruct` Java object from Rust values.
 fn create_resolved_color_struct<'local>(
     env: &mut Env<'local>,
     red: f32,
@@ -116,19 +118,19 @@ fn create_resolved_color_struct<'local>(
     .expect("Failed to create ResolvedColorStruct")
 }
 
-/// Create a ResolvedFontStruct Java object from Rust values.
+/// Create a `ResolvedFontStruct` Java object from Rust values.
 fn create_resolved_font_struct<'local>(
     env: &mut Env<'local>,
     size: f32,
     weight: i32,
-    family: Option<&str>,
+    family: &str,
 ) -> JObject<'local> {
-    let family: JObject<'local> = match family {
-        Some(family) => env
-            .new_string(family)
+    let family: JObject<'local> = if family.is_empty() {
+        JObject::null()
+    } else {
+        env.new_string(family)
             .expect("Failed to create font family string")
-            .into(),
-        None => JObject::null(),
+            .into()
     };
     env.new_object(
         RESOLVED_FONT_CLASS,
@@ -142,7 +144,7 @@ fn create_resolved_font_struct<'local>(
     .expect("Failed to create ResolvedFontStruct")
 }
 
-/// Create a DateStruct Java object from Rust values.
+/// Create a `DateStruct` Java object from Rust values.
 fn create_date_struct<'local>(
     env: &mut Env<'local>,
     year: i32,
@@ -187,6 +189,8 @@ fn create_date_time_struct<'local>(
 
 /// Helper for reading a Str binding as Java String.
 fn read_binding_str_to_java_string(env: &mut Env, binding_ptr: jlong) -> jobject {
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Str>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<waterui::Str>) };
     let s: waterui::Str = binding.get();
     env.new_string(s.as_str())
@@ -200,6 +204,8 @@ fn set_binding_str_from_java_string<'local>(
     binding_ptr: jlong,
     value: &JString<'local>,
 ) {
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Str>`; `Binding::set` needs only a shared reference.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<waterui::Str>) };
     let value = crate::jni::convert::string_from_java(env, value);
     binding.set(waterui::Str::from(value));
@@ -246,6 +252,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingSecure<'lo
 ) -> jobject {
     use waterui_form::secure::Secure;
 
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Secure>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Secure>) };
     super::with_env(&mut env, |env| {
         env.new_string(binding.get().expose())
@@ -263,6 +271,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingSecure<'loc
 ) {
     use waterui_form::secure::Secure;
 
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Secure>`; `Binding::set` needs only a shared reference.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Secure>) };
     super::with_env(&mut env, |env| {
         let value = crate::jni::convert::string_from_java(env, &value);
@@ -283,17 +293,25 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_watchBindingSecure<'l
     let (data_ptr, call_ptr, drop_ptr) = super::with_env(&mut env, |env| {
         crate::jni::extract_watcher_struct(env, &watcher)
     });
+    // SAFETY: `extract_watcher_struct` read the three fields of one `WatcherStruct`, so
+    // `call_ptr` is the entry point the runtime registered for a `WuiStr` value, which
+    // is what this signature restates.
     let call_fn: unsafe extern "C" fn(
         *mut (),
         crate::WuiStr,
         *mut crate::reactive::WuiWatcherMetadata,
     ) = unsafe { core::mem::transmute(call_ptr as *const ()) };
+    // SAFETY: as above, for the drop entry point of the same struct.
     let drop_fn: unsafe extern "C" fn(*mut ()) =
         unsafe { core::mem::transmute(drop_ptr as *const ()) };
+    // SAFETY: the three values come from the same `WatcherStruct`, and this
+    // registration is the only owner of that payload.
     let watcher = unsafe {
         crate::reactive::WuiWatcher::<Secure>::new(data_ptr as *mut (), call_fn, drop_fn)
     }
     .into_inner();
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Secure>` and outlives the guard returned below.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Secure>) };
     let guard = binding.watch(move |context| {
         let callback = Rc::clone(&watcher);
@@ -310,6 +328,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingId<'local>
 ) -> jint {
     use waterui_core::id::Id;
 
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Id>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Id>) };
     binding.get().into_ffi().into_jint()
 }
@@ -323,7 +343,11 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingId<'local>(
 ) {
     use waterui_core::id::Id;
 
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Id>`; `Binding::set` needs only a shared reference.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Id>) };
+    // SAFETY: Kotlin echoes back an id this binding previously produced, so it is a
+    // non-zero `Id` the mapping still knows.
     let value = unsafe { WuiId { inner: value }.into_rust() };
     binding.set(value);
 }
@@ -336,6 +360,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingStyledStrP
 ) -> jobject {
     use waterui_text::styled::StyledStr;
 
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<StyledStr>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<StyledStr>) };
     super::with_env(&mut env, |env| {
         env.new_string(binding.get().to_plain().as_str())
@@ -353,6 +379,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingStyledStrPl
 ) {
     use waterui_text::styled::StyledStr;
 
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<StyledStr>`; `Binding::set` needs only a shared reference.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<StyledStr>) };
     super::with_env(&mut env, |env| {
         let value = crate::jni::convert::string_from_java(env, &value);
@@ -370,7 +398,9 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateVec<'l
 ) -> jobjectArray {
     use waterui_form::picker::date::Date;
 
-    let binding = unsafe { &*(binding_ptr as *mut WuiBinding<Vec<Date>>) };
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Vec<Date>>` and is only read here.
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<Vec<Date>>) };
     let dates = binding.get();
     super::with_env(&mut env, |env| {
         let date_class = env
@@ -381,7 +411,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateVec<'l
             .expect("Failed to create date struct array");
         for (index, date) in dates.into_iter().enumerate() {
             let ffi = date.into_ffi();
-            let java_date = create_date_struct(env, ffi.year, ffi.month as i32, ffi.day as i32);
+            let java_date =
+                create_date_struct(env, ffi.year, i32::from(ffi.month), i32::from(ffi.day));
             array
                 .set_element(env, index, java_date)
                 .expect("Failed to write date struct array element");
@@ -407,8 +438,12 @@ unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDate
     use crate::components::form::WuiDate;
     use waterui_form::picker::date::Date;
 
-    let binding = unsafe { &*(binding_ptr as *mut WuiBinding<Vec<Date>>) };
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Vec<Date>>`; `Binding::set` needs only a shared reference.
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<Vec<Date>>) };
     super::with_env(&mut env, |env| {
+        // SAFETY: the caller contract above makes `dates` a local reference the JVM
+        // keeps valid for this call.
         let dates = unsafe { JObjectArray::<JObject>::from_raw(env, dates) };
         let length = dates.len(env).expect("Failed to get date array length");
         let mut rust_dates = Vec::with_capacity(length);
@@ -433,9 +468,11 @@ unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDate
                 .expect("DateStruct.day must be int");
             let ffi_date = WuiDate {
                 year,
-                month: month as u8,
-                day: day as u8,
+                month: u8::try_from(month).expect("DateStruct.month must be a calendar month"),
+                day: u8::try_from(day).expect("DateStruct.day must be a calendar day"),
             };
+            // SAFETY: `ffi_date` was built field by field just above, so it is a
+            // well-formed calendar date this call consumes.
             rust_dates.push(unsafe { ffi_date.into_rust() });
         }
         binding.set(rust_dates);
@@ -453,7 +490,9 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateTime<'
     use crate::IntoFFI;
     use jiff::civil::DateTime;
 
-    let binding = unsafe { &*(binding_ptr as *mut WuiBinding<DateTime>) };
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<DateTime>` and is only read here.
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<DateTime>) };
     let date_time: DateTime = binding.get();
     let ffi = date_time.into_ffi();
 
@@ -461,11 +500,11 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateTime<'
         create_date_time_struct(
             env,
             ffi.year,
-            ffi.month as i32,
-            ffi.day as i32,
-            ffi.hour as i32,
-            ffi.minute as i32,
-            ffi.second as i32,
+            i32::from(ffi.month),
+            i32::from(ffi.day),
+            i32::from(ffi.hour),
+            i32::from(ffi.minute),
+            i32::from(ffi.second),
         )
         .into_raw()
     })
@@ -487,15 +526,19 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingDateTime<'l
     use crate::components::form::WuiDateTime;
     use jiff::civil::DateTime;
 
-    let binding = unsafe { &*(binding_ptr as *mut WuiBinding<DateTime>) };
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<DateTime>`; `Binding::set` needs only a shared reference.
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<DateTime>) };
     let wui_date_time = WuiDateTime {
         year,
-        month: month as u8,
-        day: day as u8,
-        hour: hour as u8,
-        minute: minute as u8,
-        second: second as u8,
+        month: u8::try_from(month).expect("DateTimeStruct.month must be a calendar month"),
+        day: u8::try_from(day).expect("DateTimeStruct.day must be a calendar day"),
+        hour: u8::try_from(hour).expect("DateTimeStruct.hour must be an hour of the day"),
+        minute: u8::try_from(minute).expect("DateTimeStruct.minute must be a minute of the hour"),
+        second: u8::try_from(second).expect("DateTimeStruct.second must be a second of the minute"),
     };
+    // SAFETY: `wui_date_time` was built field by field just above, so it is a
+    // well-formed civil date-time this call consumes.
     let date_time = unsafe { wui_date_time.into_rust() };
     binding.set(date_time);
 }
@@ -512,6 +555,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropBindingSecure<'lo
 ) {
     use waterui_form::secure::Secure;
 
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one
+    // `WuiBinding<Secure>`, and the runtime drops each handle once.
     unsafe { drop(Box::from_raw(binding_ptr as *mut WuiBinding<Secure>)) };
 }
 
@@ -545,7 +590,7 @@ jni_read_computed_int!(ColorScheme, waterui::theme::ColorScheme);
 jni_read_computed_int!(CursorStyle, waterui::cursor::CursorStyle);
 jni_read_computed_int!(HorizontalAlignment, waterui::layout::HorizontalAlignment);
 
-/// Read a ResolvedColor computed value and return Java ResolvedColorStruct.
+/// Read a `ResolvedColor` computed value and return Java `ResolvedColorStruct`.
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedColor<'local>(
     mut env: EnvUnowned<'local>,
@@ -557,7 +602,9 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedC
     use waterui::Signal;
     use waterui_graphics::color::ResolvedColor;
 
-    let computed = unsafe { &*(computed_ptr as *mut WuiComputed<ResolvedColor>) };
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiComputed<ResolvedColor>` and is only read here.
+    let computed = unsafe { &*(computed_ptr as *const WuiComputed<ResolvedColor>) };
     let resolved: ResolvedColor = computed.get();
     let ffi: WuiResolvedColor = resolved.into_ffi();
 
@@ -567,7 +614,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedC
     })
 }
 
-/// Read a ResolvedFont computed value and return Java ResolvedFontStruct.
+/// Read a `ResolvedFont` computed value and return Java `ResolvedFontStruct`.
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedFont<'local>(
     mut env: EnvUnowned<'local>,
@@ -578,20 +625,23 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedF
     use waterui::Signal;
     use waterui_text::font::ResolvedFont;
 
-    let computed = unsafe { &*(computed_ptr as *mut WuiComputed<ResolvedFont>) };
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiComputed<ResolvedFont>` and is only read here.
+    let computed = unsafe { &*(computed_ptr as *const WuiComputed<ResolvedFont>) };
     let resolved: ResolvedFont = computed.get();
     let ffi = resolved.into_ffi();
 
     // Convert weight enum to int (the enum repr(C) matches Java expectations)
     let weight_int = ffi.weight as i32;
+    // SAFETY: `ffi` is the owned FFI font this call just produced, so its family
+    // string is moved out exactly once.
     let family: waterui::Str = unsafe { crate::IntoRust::into_rust(ffi.family) };
-    let family = (!family.is_empty()).then(|| family.as_str());
     super::with_env(&mut env, |env| {
-        create_resolved_font_struct(env, ffi.size, weight_int, family).into_raw()
+        create_resolved_font_struct(env, ffi.size, weight_int, family.as_str()).into_raw()
     })
 }
 
-/// Read a StyledStr computed value and return Java StyledStrStruct.
+/// Read a `StyledStr` computed value and return Java `StyledStrStruct`.
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedStyledStr<'local>(
     mut env: EnvUnowned<'local>,
@@ -601,7 +651,9 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedStyledStr
     use waterui::Signal;
     use waterui_text::styled::StyledStr;
 
-    let computed = unsafe { &*(computed_ptr as *mut WuiComputed<StyledStr>) };
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiComputed<StyledStr>` and is only read here.
+    let computed = unsafe { &*(computed_ptr as *const WuiComputed<StyledStr>) };
     let styled_str: StyledStr = computed.get();
 
     super::with_env(&mut env, |env| {
@@ -609,7 +661,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedStyledStr
     })
 }
 
-/// Convert StyledStr to Java StyledStrStruct.
+/// Convert `StyledStr` to Java `StyledStrStruct`.
 fn styled_str_to_java<'local>(
     env: &mut Env<'local>,
     styled_str: waterui_text::styled::StyledStr,
@@ -632,6 +684,9 @@ fn styled_str_to_java<'local>(
         .expect("Failed to create chunk array");
 
     for index in 0..chunk_count {
+        // SAFETY: `chunk_ptr` is the base of the owned chunk slice and `index` is
+        // below its length, so each chunk is moved out of the array exactly once;
+        // `ffi.chunks.consume()` below releases the emptied allocation.
         let chunk = unsafe { core::ptr::read(chunk_ptr.add(index)) };
         let style = chunk.style;
         let text_style = env
@@ -649,6 +704,7 @@ fn styled_str_to_java<'local>(
             )
             .expect("Failed to create TextStyleStruct");
 
+        // SAFETY: `chunk` owns its text, moved out here exactly once.
         let text: waterui::Str = unsafe { chunk.text.into_rust() };
         let text_jstring = env
             .new_string(text.as_str())
@@ -686,7 +742,9 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateVec<'
     use nami::Signal;
     use waterui_form::picker::date::Date;
 
-    let computed = unsafe { &*(computed_ptr as *mut WuiComputed<Vec<Date>>) };
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiComputed<Vec<Date>>` and is only read here.
+    let computed = unsafe { &*(computed_ptr as *const WuiComputed<Vec<Date>>) };
     let dates = computed.get();
     super::with_env(&mut env, |env| {
         let date_class = env
@@ -697,7 +755,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateVec<'
             .expect("Failed to create computed date array");
         for (index, date) in dates.into_iter().enumerate() {
             let ffi = date.into_ffi();
-            let java_date = create_date_struct(env, ffi.year, ffi.month as i32, ffi.day as i32);
+            let java_date =
+                create_date_struct(env, ffi.year, i32::from(ffi.month), i32::from(ffi.day));
             array
                 .set_element(env, index, java_date)
                 .expect("Failed to write computed date array element");
@@ -715,6 +774,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropWatcherGuard<'loc
     _class: JClass<'local>,
     guard_ptr: jlong,
 ) {
+    // SAFETY: Kotlin passes back the guard handle a `watch*` entry point returned, and
+    // the runtime drops each guard once.
     unsafe { drop(Box::from_raw(guard_ptr as *mut WuiWatcherGuard)) };
 }
 
@@ -769,6 +830,9 @@ impl JavaConstructor {
         env: &mut Env<'local>,
         args: &[jni::sys::jvalue],
     ) -> JObject<'local> {
+        // SAFETY: `class` and `method` were loaded together in `load`, so the method id
+        // belongs to that class and is a constructor; the caller passes the arguments
+        // its descriptor names.
         unsafe {
             env.new_object_unchecked(
                 &self.class,
@@ -797,19 +861,30 @@ impl WatcherData {
     }
 }
 
-/// Drop function for watcher data - releases the Global<JObject<'static>>.
+/// Drop function for watcher data - releases the `Global<JObject<'static>>`.
 unsafe extern "C" fn watcher_drop(data: *mut ()) {
-    let _: Box<Rc<WatcherData>> = unsafe { Box::from_raw(data as *mut Rc<WatcherData>) };
+    // SAFETY: `data` is the boxed `Rc<WatcherData>` that `create_watcher_struct_with_call`
+    // registered with this drop entry point, and the signal invokes it once.
+    let _: Box<Rc<WatcherData>> = unsafe { Box::from_raw(data.cast::<Rc<WatcherData>>()) };
 }
 
+/// Clones the watcher's own handle to its JNI capabilities.
+///
+/// # Safety
+///
+/// `data` must be the payload of a watcher that has not been dropped yet.
 unsafe fn retain_watcher_data(data: *mut ()) -> Rc<WatcherData> {
-    unsafe { Rc::clone(&*(data as *const Rc<WatcherData>)) }
+    // SAFETY: the caller contract makes `data` the live boxed `Rc<WatcherData>` from
+    // `create_watcher_struct_with_call`, so cloning it only bumps its refcount.
+    unsafe { Rc::clone(&*data.cast_const().cast::<Rc<WatcherData>>()) }
 }
 
 fn with_watcher_env<R>(
     data: *mut (),
     operation: impl FnOnce(&mut Env<'_>, &WatcherData) -> R,
 ) -> R {
+    // SAFETY: every call entry point below is reached only through the watcher the
+    // payload was registered with, which the signal keeps alive until `watcher_drop`.
     let watcher_data = unsafe { retain_watcher_data(data) };
     super::with_attached_env(&watcher_data.jvm, |env| operation(env, &watcher_data))
         .expect("Failed to attach watcher JVM thread")
@@ -834,6 +909,9 @@ fn create_metadata_object<'local>(
     watcher_data: &WatcherData,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) -> JavaWatcherMetadata<'local> {
+    // SAFETY: the signal hands each callback an owning metadata handle; reclaiming it
+    // here scopes it to the callback, and `JavaWatcherMetadata` keeps it alive while
+    // the Java object built from it is in use.
     let owned = unsafe { Box::from_raw(metadata_ptr) };
     let object = watcher_data
         .metadata_constructor
@@ -975,6 +1053,7 @@ unsafe extern "C" fn watcher_call_string(
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
     with_watcher_env(data, |env, watcher_data| {
+        // SAFETY: the signal hands the callback an owned `WuiStr` for this one update.
         let value: waterui::Str = unsafe { crate::IntoRust::into_rust(value) };
         let java_string = env
             .new_string(value.as_str())
@@ -1010,7 +1089,7 @@ fn invoke_owned_pointer_callback(
     });
 }
 
-/// Call function for AnyView watcher (returns an owned Long pointer).
+/// Call function for `AnyView` watcher (returns an owned `Long` pointer).
 unsafe extern "C" fn watcher_call_any_view(
     data: *mut (),
     value: *mut crate::WuiAnyView,
@@ -1019,7 +1098,7 @@ unsafe extern "C" fn watcher_call_any_view(
     invoke_owned_pointer_callback(data, value.cast(), metadata_ptr);
 }
 
-/// Call function for Color watcher (returns an owned Long pointer).
+/// Call function for `Color` watcher (returns an owned `Long` pointer).
 unsafe extern "C" fn watcher_call_color(
     data: *mut (),
     value: *mut crate::color::WuiColor,
@@ -1028,7 +1107,7 @@ unsafe extern "C" fn watcher_call_color(
     invoke_owned_pointer_callback(data, value.cast(), metadata_ptr);
 }
 
-/// Call function for ResolvedColor watcher.
+/// Call function for `ResolvedColor` watcher.
 unsafe extern "C" fn watcher_call_resolved_color(
     data: *mut (),
     value: crate::color::WuiResolvedColor,
@@ -1051,13 +1130,15 @@ unsafe extern "C" fn watcher_call_resolved_color(
     });
 }
 
-/// Call function for ResolvedFont watcher.
+/// Call function for `ResolvedFont` watcher.
 unsafe extern "C" fn watcher_call_resolved_font(
     data: *mut (),
     value: crate::components::text::WuiResolvedFont,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
     with_watcher_env(data, |env, watcher_data| {
+        // SAFETY: the signal hands the callback an owned font whose family string is
+        // moved out here exactly once.
         let family: waterui::Str = unsafe { crate::IntoRust::into_rust(value.family) };
         let family = if family.is_empty() {
             JObject::null()
@@ -1080,7 +1161,7 @@ unsafe extern "C" fn watcher_call_resolved_font(
     });
 }
 
-/// Call function for StyledStr watcher.
+/// Call function for `StyledStr` watcher.
 unsafe extern "C" fn watcher_call_styled_str(
     data: *mut (),
     value: crate::components::text::WuiStyledStr,
@@ -1099,6 +1180,8 @@ unsafe extern "C" fn watcher_call_styled_str_plain(
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
     with_watcher_env(data, |env, watcher_data| {
+        // SAFETY: the signal hands the callback an owned `WuiStyledStr` for this one
+        // update, converted back exactly once.
         let value: waterui_text::styled::StyledStr = unsafe { crate::IntoRust::into_rust(value) };
         let java_value = env
             .new_string(value.to_plain().as_str())
@@ -1132,6 +1215,9 @@ fn wui_styled_str_to_java<'local>(
         .expect("Failed to create chunk array");
 
     for index in 0..chunk_count {
+        // SAFETY: `chunk_ptr` is the base of the owned chunk slice and `index` is
+        // below its length, so each chunk is moved out of the array exactly once;
+        // `ffi.chunks.consume()` below releases the emptied allocation.
         let chunk = unsafe { core::ptr::read(chunk_ptr.add(index)) };
         let style = chunk.style;
         let text_style = text_style_constructor.new_object(
@@ -1146,6 +1232,7 @@ fn wui_styled_str_to_java<'local>(
             ],
         );
 
+        // SAFETY: `chunk` owns its text, moved out here exactly once.
         let text: waterui::Str = unsafe { chunk.text.into_rust() };
         let text_jstring = env
             .new_string(text.as_str())
@@ -1189,8 +1276,8 @@ unsafe extern "C" fn watcher_call_date_vec(
                 env,
                 &[
                     JValue::Int(date.year).as_jni(),
-                    JValue::Int(date.month as i32).as_jni(),
-                    JValue::Int(date.day as i32).as_jni(),
+                    JValue::Int(i32::from(date.month)).as_jni(),
+                    JValue::Int(i32::from(date.day)).as_jni(),
                 ],
             );
             array
@@ -1204,7 +1291,7 @@ unsafe extern "C" fn watcher_call_date_vec(
     });
 }
 
-/// Call function for DateTime watcher.
+/// Call function for `DateTime` watcher.
 unsafe extern "C" fn watcher_call_date_time(
     data: *mut (),
     value: crate::components::form::WuiDateTime,
@@ -1215,11 +1302,11 @@ unsafe extern "C" fn watcher_call_date_time(
             env,
             &[
                 JValue::Int(value.year).as_jni(),
-                JValue::Int(value.month as i32).as_jni(),
-                JValue::Int(value.day as i32).as_jni(),
-                JValue::Int(value.hour as i32).as_jni(),
-                JValue::Int(value.minute as i32).as_jni(),
-                JValue::Int(value.second as i32).as_jni(),
+                JValue::Int(i32::from(value.month)).as_jni(),
+                JValue::Int(i32::from(value.day)).as_jni(),
+                JValue::Int(i32::from(value.hour)).as_jni(),
+                JValue::Int(i32::from(value.minute)).as_jni(),
+                JValue::Int(i32::from(value.second)).as_jni(),
             ],
         );
 
@@ -1233,6 +1320,8 @@ unsafe fn call_jni_int_watcher<T: JniIntValue>(
     value: T,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
+    // SAFETY: `data` and `metadata_ptr` are forwarded unchanged from this call entry
+    // point's own caller, which is the watcher that registered them.
     unsafe { watcher_call_int(data, value.into_jint(), metadata_ptr) };
 }
 
@@ -1241,6 +1330,8 @@ unsafe extern "C" fn watcher_call_id(
     value: WuiId,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
+    // SAFETY: `data` and `metadata_ptr` are forwarded unchanged from the watcher that
+    // registered this entry point.
     unsafe { call_jni_int_watcher(data, value, metadata_ptr) };
 }
 
@@ -1249,6 +1340,8 @@ unsafe extern "C" fn watcher_call_color_scheme(
     value: WuiColorScheme,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
+    // SAFETY: `data` and `metadata_ptr` are forwarded unchanged from the watcher that
+    // registered this entry point.
     unsafe { call_jni_int_watcher(data, value, metadata_ptr) };
 }
 
@@ -1257,6 +1350,8 @@ unsafe extern "C" fn watcher_call_cursor_style(
     value: WuiCursorStyle,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
+    // SAFETY: `data` and `metadata_ptr` are forwarded unchanged from the watcher that
+    // registered this entry point.
     unsafe { call_jni_int_watcher(data, value, metadata_ptr) };
 }
 
@@ -1265,6 +1360,8 @@ unsafe extern "C" fn watcher_call_horizontal_alignment(
     value: WuiHorizontalAlignment,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
+    // SAFETY: `data` and `metadata_ptr` are forwarded unchanged from the watcher that
+    // registered this entry point.
     unsafe { call_jni_int_watcher(data, value, metadata_ptr) };
 }
 
@@ -1401,14 +1498,20 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dynamicConnect<'local
         crate::jni::extract_watcher_struct(env, &watcher)
     });
 
+    // SAFETY: `extract_watcher_struct` read the three fields of one `WatcherStruct`, so
+    // `call_ptr` is the entry point the runtime registered for an `AnyView` value,
+    // which is what this signature restates.
     let call_fn: unsafe extern "C" fn(
         *mut (),
         *mut crate::WuiAnyView,
         *mut crate::reactive::WuiWatcherMetadata,
     ) = unsafe { core::mem::transmute(call_ptr as *const ()) };
+    // SAFETY: as above, for the drop entry point of the same struct.
     let drop_fn: unsafe extern "C" fn(*mut ()) =
         unsafe { core::mem::transmute(drop_ptr as *const ()) };
 
+    // SAFETY: the three values come from the same `WatcherStruct`, and this
+    // registration is the only owner of that payload.
     let watcher = unsafe {
         crate::reactive::WuiWatcher::<waterui::AnyView>::new(data_ptr as *mut (), call_fn, drop_fn)
     };
@@ -1416,6 +1519,9 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dynamicConnect<'local
     // Ownership of the watcher is transferred to Rust; it will be dropped when the
     // Dynamic view is dropped, triggering drop_fn to release the Java callback.
     let watcher_ptr = Box::into_raw(Box::new(watcher));
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiDynamic`, and `watcher_ptr` is the freshly boxed watcher whose ownership
+    // moves into it.
     unsafe {
         crate::components::dynamic::waterui_dynamic_connect(
             dynamic_ptr as *mut crate::components::dynamic::WuiDynamic,
