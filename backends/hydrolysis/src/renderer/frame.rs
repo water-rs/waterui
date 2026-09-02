@@ -3,6 +3,21 @@
 
 use super::*;
 
+/// What one frame's window pass was made of.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RenderLayerStats {
+    /// Layers the compositor drew, which is every layer unless the window pass
+    /// was handed to a GPU surface outright.
+    pub(crate) composited_scene_layers: u32,
+    /// Composited layers that were Vello scenes.
+    pub(crate) vello_scene_layers: u32,
+    /// Composited layers that were embedded GPU surfaces.
+    pub(crate) gpu_surface_layers: u32,
+    /// GPU surfaces that rendered straight into the window's own target,
+    /// skipping the offscreen intermediate and the composite entirely.
+    pub(crate) direct_gpu_surfaces: u32,
+}
+
 pub(crate) fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
@@ -33,8 +48,27 @@ pub(crate) fn color_to_wgpu(color: vello::peniko::Color) -> wgpu::Color {
 }
 
 impl HydrolysisRenderer {
-    pub(crate) fn set_window_bounds(&mut self, bounds: vello::kurbo::Rect) {
+    /// Records the window's logical bounds and the root transform that maps
+    /// them onto the target's physical pixel grid.
+    ///
+    /// Both halves are needed together: the bounds alone say how big the window
+    /// is in layout units, and only the transform says which device pixels that
+    /// covers — which is the rectangle a full-window GPU surface has to match to
+    /// be rendered straight into the target.
+    pub(crate) fn set_window_viewport(
+        &mut self,
+        bounds: vello::kurbo::Rect,
+        root_transform: vello::kurbo::Affine,
+    ) {
         self.window_bounds = bounds;
+        self.window_root_transform = root_transform;
+    }
+
+    /// The window's viewport in physical pixels: where the root transform puts
+    /// the window's logical bounds.
+    pub(crate) fn window_viewport(&self) -> vello::kurbo::Rect {
+        self.window_root_transform
+            .transform_rect_bbox(self.window_bounds)
     }
 
     /// Whether the persistent render tree has been built. The view tree's `body()`
@@ -467,7 +501,7 @@ impl HydrolysisRenderer {
         self.state.measurement.stats()
     }
 
-    pub(crate) fn render_layer_stats(&self) -> (u32, u32, u32) {
+    pub(crate) fn render_layer_stats(&self) -> RenderLayerStats {
         let scene_layers = u32::try_from(self.compositor.render_layers.len())
             .expect("hydrolysis render layer count exceeds u32");
         let vello_scene_layers = u32::try_from(
@@ -478,22 +512,12 @@ impl HydrolysisRenderer {
                 .count(),
         )
         .expect("hydrolysis Vello scene layer count exceeds u32");
-        let direct_gpu_surfaces = u32::try_from(
-            self.compositor
-                .render_layers
-                .iter()
-                .filter(|layer| {
-                    matches!(
-                        layer,
-                        RenderLayer::GpuSurface(GpuSurfaceLayer {
-                            direct_to_target: true,
-                            ..
-                        })
-                    )
-                })
-                .count(),
-        )
-        .expect("hydrolysis direct GpuSurface count exceeds u32");
+        // What was rendered directly is recorded by the render pass itself, not
+        // re-derived from the layer's `direct_to_target` flag: that flag says
+        // the layer is eligible on geometry, structure and opacity, and the
+        // render pass adds the one condition only it can see — that the target
+        // already carries the format the view was set up for.
+        let direct_gpu_surfaces = self.frame_direct_gpu_surfaces;
         let gpu_surface_layers = scene_layers
             .checked_sub(vello_scene_layers)
             .and_then(|count| count.checked_sub(direct_gpu_surfaces))
@@ -501,11 +525,12 @@ impl HydrolysisRenderer {
         let composited_scene_layers = scene_layers
             .checked_sub(direct_gpu_surfaces)
             .expect("hydrolysis render layer count accounting underflow");
-        (
+        RenderLayerStats {
             composited_scene_layers,
             vello_scene_layers,
             gpu_surface_layers,
-        )
+            direct_gpu_surfaces,
+        }
     }
 
     pub(crate) fn clip_layer_stats(&self) -> (u32, u32) {

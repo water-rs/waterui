@@ -648,6 +648,26 @@ pub trait GpuView: 'static {
         None
     }
 
+    /// Whether every pixel this view is handed comes back fully opaque.
+    ///
+    /// A view returning `true` promises that [`GpuView::render`] writes the
+    /// whole of `frame.view` on every frame it is asked for — a clear that
+    /// covers the surface, or geometry that provably does — with alpha `1`
+    /// everywhere. Nothing that was in the texture beforehand may show
+    /// through, because a backend is then free to hand this view the window's
+    /// own swapchain texture, uncleared and holding the previous frame, and
+    /// skip both the offscreen intermediate and the composite that would have
+    /// cleared it to the window's base colour.
+    ///
+    /// The default is `false`: a view that leaves any pixel untouched, or
+    /// writes translucent colour anywhere, is composited over the window's
+    /// cleared base colour like any other layer. Declaring opacity a view does
+    /// not have shows the previous frame through the gaps, so leave this alone
+    /// unless the promise above is unconditional.
+    fn is_opaque(&self) -> bool {
+        false
+    }
+
     /// Whether this view handles its own keyboard, IME, pointer and scroll
     /// input.
     ///
@@ -1051,6 +1071,7 @@ trait GpuViewImpl: 'static {
     fn stretch_axis(&self) -> StretchAxis;
     fn priority(&self) -> i32;
     fn preferred_surface_hdr(&self) -> Option<bool>;
+    fn is_opaque(&self) -> bool;
     fn wants_input_events(&self) -> bool;
     fn input(&mut self, event: &SurfaceInputEvent);
     fn ime_caret(&self) -> Option<kurbo::Rect>;
@@ -1083,6 +1104,10 @@ impl<T: GpuView> GpuViewImpl for T {
 
     fn preferred_surface_hdr(&self) -> Option<bool> {
         GpuView::preferred_surface_hdr(self)
+    }
+
+    fn is_opaque(&self) -> bool {
+        GpuView::is_opaque(self)
     }
 
     fn wants_input_events(&self) -> bool {
@@ -1478,6 +1503,17 @@ impl GpuSurface {
     #[must_use]
     pub fn priority(&self) -> i32 {
         self.renderer.priority()
+    }
+
+    /// Whether the GPU view fills every pixel it is handed opaquely.
+    ///
+    /// See [`GpuView::is_opaque`]: a backend asks this to decide whether the
+    /// view may be given the window's own target texture, uncleared, instead
+    /// of an offscreen intermediate that is composited over the window's base
+    /// colour.
+    #[must_use]
+    pub fn is_opaque(&self) -> bool {
+        self.renderer.is_opaque()
     }
 
     /// Whether the GPU view handles its own input.
