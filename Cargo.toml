@@ -139,6 +139,7 @@ merman-core = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c
 merman-render = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c05844003a0e765a3cf78df6678d", default-features = false }
 waterui-shape = { version = "0.1.0", path = "components/foundation/shape", default-features = false }
 waterui-svg = { version = "0.1.0", path = "components/visual/svg" }
+waterui-math = { version = "0.1.0", path = "components/visual/math" }
 waterui-ffi = { version = "0.3.0", path = "ffi" }
 waterui-layout = { version = "0.3.0", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.3.0", path = "components/foundation/navigation" }
