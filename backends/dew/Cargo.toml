@@ -153,6 +153,14 @@ name = "form_render"
 required-features = ["host", "progress"]
 
 [[test]]
+name = "interaction_metadata"
+required-features = ["host", "gestures"]
+
+[[test]]
+name = "interaction_without_gestures"
+required-features = ["host", "system-fonts"]
+
+[[test]]
 name = "navigation_render"
 required-features = ["host"]
 
