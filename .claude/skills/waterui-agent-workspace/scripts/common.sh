@@ -70,10 +70,6 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
-ensure_nightly_cargo() {
-  cargo -V | rg -q 'nightly' || die "nightly cargo is required to inspect Cargo configuration"
-}
-
 canonical_dir() {
   local path="$1"
   [[ -d "$path" ]] || die "directory does not exist: $path"
@@ -306,12 +302,39 @@ branch_submodules() {
   done < <(submodule_records "$repo_root")
 }
 
+# Refuse to run while every slot would share one target directory.
+#
+# Read the setting the way cargo resolves it, rather than through
+# `cargo -Z unstable-options config get`: that subcommand is nightly-only, and
+# requiring nightly to be the *active* toolchain broke both scripts once the
+# repository standardised on stable. Nothing else here needs a nightly cargo.
+#
+# `CARGO_TARGET_DIR` wins over the config files, and among those cargo merges
+# `$CARGO_HOME/config.toml` with every `.cargo/config.toml` from the working
+# directory upward, nearest first.
 ensure_no_shared_target_dir() {
-  local configured_target
+  local search config
 
-  if configured_target="$(cargo -Z unstable-options config get build.target-dir 2>/dev/null)"; then
-    die "cargo build.target-dir is configured (${configured_target//$'\n'/ }); remove it before creating agent workspaces"
+  if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+    die "CARGO_TARGET_DIR is set ($CARGO_TARGET_DIR); unset it before creating agent workspaces"
   fi
+
+  search="$PWD"
+  while true; do
+    for config in "$search/.cargo/config.toml" "$search/.cargo/config"; do
+      if [[ -f "$config" ]] && rg -q '^\s*target-dir\s*=' "$config"; then
+        die "cargo target-dir is configured in $config; remove it before creating agent workspaces"
+      fi
+    done
+    [[ "$search" == "/" ]] && break
+    search="$(dirname "$search")"
+  done
+
+  for config in "${CARGO_HOME:-$HOME/.cargo}/config.toml" "${CARGO_HOME:-$HOME/.cargo}/config"; do
+    if [[ -f "$config" ]] && rg -q '^\s*target-dir\s*=' "$config"; then
+      die "cargo target-dir is configured in $config; remove it before creating agent workspaces"
+    fi
+  done
 }
 
 validate_slug() {
