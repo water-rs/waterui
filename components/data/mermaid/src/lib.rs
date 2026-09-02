@@ -107,8 +107,8 @@ pub fn mermaid(source: impl Into<Str>) -> Mermaid {
 ///
 /// A fence tagged anything else keeps the ordinary [`Code`](waterui::widget::Code)
 /// rendering: `Hook::from` hands the closure an environment with this hook
-/// already removed, so [`ViewConfiguration::render`] cannot recurse back into
-/// it.
+/// already removed, so [`ViewConfiguration::render`](waterui_core::view::ViewConfiguration::render)
+/// cannot recurse back into it.
 pub fn install(env: &mut Environment) {
     if env.get::<Hook<CodeConfig>>().is_some() {
         return;
