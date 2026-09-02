@@ -1792,7 +1792,10 @@ mod tests {
             "armv7-linux-androideabi".to_string(),
             "x86_64-linux-android".to_string(),
         ];
-        assert!(missing_android_rust_targets(&installed, &required).is_empty());
+        assert_eq!(
+            missing_android_rust_targets(&installed, &required),
+            [] as [String; 0]
+        );
     }
 
     #[test]

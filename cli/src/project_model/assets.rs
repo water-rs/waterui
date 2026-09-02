@@ -1508,7 +1508,10 @@ mod permission_audit_tests {
         let enabled = HashSet::from([PermissionKey::Internet]);
         let required = vec![requirement(PermissionKey::Internet)];
 
-        assert!(missing_permissions(&enabled, &required, |_| true).is_empty());
+        assert_eq!(
+            missing_permissions(&enabled, &required, |_| true),
+            [] as [&RequiredPermission; 0]
+        );
     }
 
     #[test]
