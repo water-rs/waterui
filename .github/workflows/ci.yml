@@ -241,6 +241,11 @@ jobs:
         with:
           targets: aarch64-linux-android
           components: clippy
+      # `--all-targets` reaches the crate's dev-dependency graph, part of which
+      # is built for the host: without this the Linux-only `cros-libva` build
+      # script fails on the missing `libva-dev`, long before anything Android
+      # is compiled.
+      - uses: ./.github/actions/setup-linux-deps
       - uses: nttld/setup-ndk@v1
         id: ndk
         with:
