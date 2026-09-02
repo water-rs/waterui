@@ -3,7 +3,7 @@ use core::fmt;
 use nami::{Computed, SignalExt as _, signal::IntoComputed};
 use waterui_core::{
     AnyView, Environment, Str, View,
-    accessibility::{AccessibilityLabel, AccessibilityRole},
+    accessibility::{AccessibilityLabel, AccessibilityRole, default_role},
     flatten_signal,
     layout::UnitPoint,
     metadata::IgnorableMetadata,
@@ -81,10 +81,7 @@ fn apply_barcode_semantics(
     content: &Computed<Str>,
     view: impl View,
 ) -> AnyView {
-    let mut view = AnyView::new(view);
-    if env.get::<AccessibilityRole>().is_none() {
-        view = AnyView::new(IgnorableMetadata::new(view, AccessibilityRole::Image));
-    }
+    let mut view = default_role(env, view, AccessibilityRole::Image);
     if env.get::<AccessibilityLabel>().is_none() {
         view = AnyView::new(IgnorableMetadata::new(
             view,
