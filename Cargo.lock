@@ -12790,6 +12790,7 @@ dependencies = [
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
+ "waterui-math",
  "waterui-media",
  "waterui-navigation",
  "waterui-shape",

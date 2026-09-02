@@ -80,6 +80,17 @@ pub enum RichTextElement {
     Text(StyledStr),
     /// A horizontal divider.
     Divider,
+    /// A mathematical formula, as LaTeX source.
+    ///
+    /// Only produced when the `markdown-math` feature is on, because that is
+    /// what enables the parser extension that recognises `$…$`.
+    #[cfg(feature = "markdown-math")]
+    Math {
+        /// The LaTeX between the delimiters.
+        source: Str,
+        /// `$$…$$` is set on its own line in display style; `$…$` is inline.
+        block: bool,
+    },
     /// A hyperlink.
     Link {
         /// The link label.
@@ -155,6 +166,8 @@ impl View for RichTextElement {
                 AnyView::new(crate::component::link::link(text(label), url))
             }
             Self::Image { src, alt: _ } => AnyView::new(render_image(&src)),
+            #[cfg(feature = "markdown-math")]
+            Self::Math { source, block } => AnyView::new(render_math(source, block)),
             Self::Table {
                 headers,
                 rows,
@@ -179,6 +192,33 @@ impl View for RichTextElement {
             Self::Divider => AnyView::new(Divider),
         }
     }
+}
+
+/// Recognising `$…$` is only correct when something can typeset the result.
+///
+/// Left on in a build with no math renderer, every dollar sign in prose would
+/// start a formula that nothing could draw — so the extension is enabled with
+/// the renderer and not otherwise.
+#[cfg(feature = "markdown-math")]
+const MATH_OPTIONS: Options = Options::ENABLE_MATH;
+
+/// The Markdown parser recognises no math without a renderer for it.
+#[cfg(not(feature = "markdown-math"))]
+const MATH_OPTIONS: Options = Options::empty();
+
+/// Typesets a formula parsed out of Markdown.
+///
+/// `$$…$$` is set in display style, which is what gives a summation its
+/// full-height limits and a fraction its wider spacing; `$…$` is set inline so
+/// it sits at the size of the surrounding prose.
+#[cfg(feature = "markdown-math")]
+fn render_math(source: Str, block: bool) -> AnyView {
+    let formula = waterui_math::view::Math::new(source);
+    AnyView::new(if block {
+        formula.display()
+    } else {
+        formula.inline()
+    })
 }
 
 fn render_image(src: &Str) -> AnyView {
@@ -493,7 +533,8 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS;
+        | Options::ENABLE_TASKLISTS
+        | MATH_OPTIONS;
     let parser = Parser::new_ext(markdown, options);
 
     let mut stack = vec![Container::Root(Vec::new())];
@@ -769,11 +810,41 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     push_to_parent(&mut stack, RichTextElement::Text(styled));
                 }
             }
-            Event::Html(text)
-            | Event::FootnoteReference(text)
-            | Event::InlineMath(text)
-            | Event::DisplayMath(text)
-            | Event::InlineHtml(text) => {
+            // `$…$` and `$$…$$`. These only arrive when the parser is built
+            // with `ENABLE_MATH`, which happens only under this feature, so
+            // without it a dollar sign stays ordinary text.
+            #[cfg(feature = "markdown-math")]
+            Event::InlineMath(source) => {
+                push_inline_element(
+                    &mut stack,
+                    RichTextElement::Math {
+                        source: Str::from(source.as_ref().to_string()),
+                        block: false,
+                    },
+                );
+            }
+            #[cfg(feature = "markdown-math")]
+            Event::DisplayMath(source) => {
+                push_inline_element(
+                    &mut stack,
+                    RichTextElement::Math {
+                        source: Str::from(source.as_ref().to_string()),
+                        block: true,
+                    },
+                );
+            }
+            // Without the feature the parser is built without `ENABLE_MATH`,
+            // so these cannot be produced. Saying so is better than a silent
+            // arm that would quietly render a formula as its own source if the
+            // options above ever changed.
+            #[cfg(not(feature = "markdown-math"))]
+            Event::InlineMath(_) | Event::DisplayMath(_) => {
+                unreachable!(
+                    "pulldown-cmark emitted a math event, but the parser is built without \
+                     ENABLE_MATH; enable the `markdown-math` feature to render formulas"
+                )
+            }
+            Event::Html(text) | Event::FootnoteReference(text) | Event::InlineHtml(text) => {
                 if let Some(mut sink) = current_inline_sink(&mut stack) {
                     sink.push_text(text.as_ref());
                 } else {
@@ -1123,6 +1194,64 @@ impl Default for InlineGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Collects a document's elements into a shape that is easy to assert on.
+    fn plain_text_of(elements: &[RichTextElement]) -> String {
+        elements.iter().map(element_to_plain_text).collect()
+    }
+
+    /// With the renderer present, `$…$` becomes a formula rather than prose.
+    #[cfg(feature = "markdown-math")]
+    #[test]
+    fn inline_and_display_math_become_math_elements() {
+        let elements = parse_markdown("before $e^{i\\pi}+1=0$ after\n\n$$\\frac{a}{b}$$");
+
+        let mut inline = 0;
+        let mut block = 0;
+        fn count(elements: &[RichTextElement], inline: &mut usize, block: &mut usize) {
+            for element in elements {
+                match element {
+                    RichTextElement::Math { block: true, .. } => *block += 1,
+                    RichTextElement::Math { block: false, .. } => *inline += 1,
+                    RichTextElement::Group { elements, .. }
+                    | RichTextElement::Quote { content: elements } => {
+                        count(elements, inline, block);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        count(&elements, &mut inline, &mut block);
+
+        assert_eq!(inline, 1, "expected one inline formula in {elements:?}");
+        assert_eq!(block, 1, "expected one display formula in {elements:?}");
+    }
+
+    /// The formula's LaTeX must not also appear as prose. Rendering the source
+    /// alongside, or instead of, the formula is the defect this replaces.
+    #[cfg(feature = "markdown-math")]
+    #[test]
+    fn math_source_does_not_leak_into_the_text() {
+        let elements = parse_markdown("value $x^2$ end");
+        let prose = plain_text_of(&elements);
+        assert!(
+            !prose.contains("x^2"),
+            "the LaTeX source must not be rendered as text, got {prose:?}"
+        );
+    }
+
+    /// Without the renderer the parser has no math extension, so a dollar sign
+    /// is an ordinary character and nothing panics on prose that contains one.
+    #[cfg(not(feature = "markdown-math"))]
+    #[test]
+    fn a_dollar_sign_is_ordinary_text_without_the_math_feature() {
+        let elements = parse_markdown("it costs $5 and $10, or $x$ if you prefer");
+        let prose = plain_text_of(&elements);
+        assert!(
+            prose.contains("$5") && prose.contains("$10"),
+            "prices must survive as written, got {prose:?}"
+        );
+    }
 
     struct MockTableCell {
         size: Size,

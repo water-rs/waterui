@@ -44,6 +44,7 @@ waterui-graphics = { workspace = true, default-features = false }
 waterui-icon.workspace = true
 waterui-shape = { workspace = true, default-features = false }
 waterui-svg = { workspace = true, optional = true }
+waterui-math = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
 waterui-inspector-protocol = { workspace = true, optional = true }
@@ -171,6 +172,15 @@ flow-markdown = [
     "dep:tree-sitter-bash",
     "dep:tree-sitter-sequel",
 ]
+# Mathematical formulas in Markdown: `$…$` and `$$…$$` are parsed and typeset
+# through `waterui-math`. Off by default, and deliberately so — it brings a
+# layout engine, an OpenType `MATH` table reader and a LaTeX parser, and the
+# component declares a math font for the asset pipeline to bundle. An
+# application that shows no formulas should pay none of that.
+#
+# With this off the Markdown parser is built without `ENABLE_MATH`, so a dollar
+# sign in prose stays a dollar sign, exactly as it does today.
+markdown-math = ["flow-markdown", "dep:waterui-math"]
 std = ["dep:waterkit-haptic"]
 all = [
     "std",
@@ -182,6 +192,7 @@ all = [
     "media",
     "webview",
     "flow-markdown",
+    "markdown-math",
     "video-gpu",
     "navigation-restoration",
     "snackbar",
