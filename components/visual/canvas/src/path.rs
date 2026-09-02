@@ -117,80 +117,106 @@ impl Path {
         }
     }
 
-    /// Draws an arc between two points with a given radius.
+    /// Draws a circular arc tangent to the two lines `current -> point1` and
+    /// `point1 -> point2`, joined to the current point by a straight line.
     ///
-    /// This is equivalent to HTML5 Canvas `arcTo()`.
+    /// This is HTML5 Canvas `arcTo()`: `point1` is the corner being rounded and
+    /// `point2` only supplies the outgoing direction — the path never reaches
+    /// it. When the three points are collinear, or `radius` is zero, or the
+    /// corner coincides with a neighbour, the arc degenerates and a straight
+    /// line is drawn to `point1`, as the platform does.
+    ///
+    /// `radius` is clamped so the fillet fits inside both segments; a radius
+    /// larger than the corner can accommodate rounds it as much as it can
+    /// rather than overshooting into the neighbouring corner.
+    ///
+    /// Does nothing if the path has no current point.
     ///
     /// # Arguments
-    /// * `point1` - First control point
-    /// * `point2` - Second control point
-    /// * `radius` - Radius of the arc
+    /// * `point1` - The corner to round
+    /// * `point2` - The point the outgoing edge heads towards
+    /// * `radius` - Radius of the fillet
     pub fn arc_to(&mut self, point1: Point, point2: Point, radius: f32) {
-        // Get current point
-        let current = self.inner.elements().last().and_then(|el| match el {
-            kurbo::PathEl::MoveTo(p)
-            | kurbo::PathEl::LineTo(p)
-            | kurbo::PathEl::CurveTo(_, _, p)
-            | kurbo::PathEl::QuadTo(_, p) => Some(*p),
-            kurbo::PathEl::ClosePath => None,
-        });
+        let Some(current) = self.current_point() else {
+            return;
+        };
 
-        if let Some(current_pt) = current {
-            let p0 = current_pt;
-            let p1 = point_to_kurbo(point1);
-            let p2 = point_to_kurbo(point2);
-            let r = f64::from(radius);
+        let corner = point_to_kurbo(point1);
+        let p0 = current;
+        let p2 = point_to_kurbo(point2);
 
-            // Calculate tangent arc between two lines
-            let v0 = kurbo::Vec2::new(p1.x - p0.x, p1.y - p0.y);
-            let v1 = kurbo::Vec2::new(p2.x - p1.x, p2.y - p1.y);
+        // Both vectors point away from the corner: that is the frame a fillet
+        // is defined in, and using the travel directions instead is what makes
+        // the angle come out as the supplement of the one that is wanted.
+        let back = p0 - corner;
+        let forward = p2 - corner;
+        let (back_len, forward_len) = (back.hypot(), forward.hypot());
 
-            let len0 = v0.hypot();
-            let len1 = v1.hypot();
-
-            if len0 > 0.0 && len1 > 0.0 {
-                let v0_norm = v0 / len0;
-                let v1_norm = v1 / len1;
-
-                // Angle between vectors
-                let cos_angle = v0_norm.dot(v1_norm).clamp(-1.0, 1.0);
-                let angle = cos_angle.acos();
-
-                if angle > 0.01 {
-                    // Not parallel
-                    let tan_half = (angle / 2.0).tan();
-                    let dist = r / tan_half;
-
-                    let start_pt = p1 - v0_norm * dist;
-                    let end_pt = p1 + v1_norm * dist;
-
-                    // Draw line to arc start
-                    self.inner.line_to(start_pt);
-
-                    // Calculate arc center and angles
-                    let bisector = (v0_norm + v1_norm).normalize();
-                    let center_dist = r / (angle / 2.0).sin();
-                    let center = p1 + bisector * center_dist;
-
-                    let start_angle = (start_pt.y - center.y).atan2(start_pt.x - center.x);
-                    let end_angle = (end_pt.y - center.y).atan2(end_pt.x - center.x);
-                    let mut sweep = end_angle - start_angle;
-
-                    // Normalize sweep to be in correct direction
-                    if sweep > core::f64::consts::PI {
-                        sweep -= core::f64::consts::TAU;
-                    } else if sweep < -core::f64::consts::PI {
-                        sweep += core::f64::consts::TAU;
-                    }
-
-                    let arc = kurbo::Arc::new(center, (r, r), start_angle, sweep, 0.0);
-                    let arc_path = arc.to_path(0.1);
-                    for el in arc_path.elements() {
-                        self.inner.push(*el);
-                    }
-                }
-            }
+        let degenerate = radius <= 0.0 || back_len == 0.0 || forward_len == 0.0;
+        if degenerate {
+            self.inner.line_to(corner);
+            return;
         }
+
+        let back = back / back_len;
+        let forward = forward / forward_len;
+        let interior = back.dot(forward).clamp(-1.0, 1.0).acos();
+        // Collinear in either sense: nothing to round.
+        if !interior.is_finite() || interior < 1e-4 || (core::f64::consts::PI - interior) < 1e-4 {
+            self.inner.line_to(corner);
+            return;
+        }
+
+        let half = interior / 2.0;
+        // Distance from the corner to each tangent point, clamped so the fillet
+        // cannot eat past either neighbour, with the radius reduced to match.
+        let tangent = (f64::from(radius) / half.tan())
+            .min(back_len)
+            .min(forward_len);
+        let effective_radius = tangent * half.tan();
+
+        let start = corner + back * tangent;
+        let end = corner + forward * tangent;
+        let center = corner + (back + forward).normalize() * (effective_radius / half.sin());
+
+        self.inner.line_to(start);
+
+        let start_angle = (start - center).atan2();
+        let end_angle = (end - center).atan2();
+        let mut sweep = end_angle - start_angle;
+        if sweep > core::f64::consts::PI {
+            sweep -= core::f64::consts::TAU;
+        } else if sweep < -core::f64::consts::PI {
+            sweep += core::f64::consts::TAU;
+        }
+
+        let arc = kurbo::Arc::new(
+            center,
+            (effective_radius, effective_radius),
+            start_angle,
+            sweep,
+            0.0,
+        );
+        // `Arc::to_path` opens with a `MoveTo` to the arc's start. Appending it
+        // would lift the pen and start a new contour, breaking the outline into
+        // fragments and leaving `close` to close the wrong one.
+        for element in arc.to_path(0.1).elements().iter().skip(1) {
+            self.inner.push(*element);
+        }
+    }
+
+    /// The point the pen is currently at, if the path has been started.
+    fn current_point(&self) -> Option<kurbo::Point> {
+        self.inner
+            .elements()
+            .last()
+            .and_then(|element| match element {
+                kurbo::PathEl::MoveTo(point)
+                | kurbo::PathEl::LineTo(point)
+                | kurbo::PathEl::CurveTo(_, _, point)
+                | kurbo::PathEl::QuadTo(_, point) => Some(*point),
+                kurbo::PathEl::ClosePath => None,
+            })
     }
 
     /// Draws an elliptical arc.
@@ -274,5 +300,124 @@ impl fmt::Debug for Path {
         f.debug_struct("Path")
             .field("elements", &self.inner.elements().len())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod arc_to_tests {
+    use super::{Path, Point};
+
+    /// Every element after the first `MoveTo` must continue the same contour.
+    /// An interior `MoveTo` lifts the pen, which is what turns a rounded outline
+    /// into loose fragments and leaves `close` closing the wrong one.
+    fn interior_move_tos(path: &Path) -> usize {
+        path.inner()
+            .elements()
+            .iter()
+            .skip(1)
+            .filter(|element| matches!(element, kurbo::PathEl::MoveTo(_)))
+            .count()
+    }
+
+    /// How far the path strays from the box its three points span. A fillet
+    /// lives inside the corner, so it can never leave that box.
+    fn overshoot(path: &Path, min: Point, max: Point) -> f64 {
+        path.inner()
+            .elements()
+            .iter()
+            .filter_map(|element| match element {
+                kurbo::PathEl::MoveTo(p)
+                | kurbo::PathEl::LineTo(p)
+                | kurbo::PathEl::CurveTo(_, _, p)
+                | kurbo::PathEl::QuadTo(_, p) => Some(*p),
+                kurbo::PathEl::ClosePath => None,
+            })
+            .map(|p| {
+                let dx = (f64::from(min.x) - p.x)
+                    .max(p.x - f64::from(max.x))
+                    .max(0.0);
+                let dy = (f64::from(min.y) - p.y)
+                    .max(p.y - f64::from(max.y))
+                    .max(0.0);
+                dx.max(dy)
+            })
+            .fold(0.0_f64, f64::max)
+    }
+
+    #[test]
+    fn a_rounded_corner_stays_one_contour() {
+        let mut path = Path::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.arc_to(Point::new(100.0, 0.0), Point::new(100.0, 100.0), 20.0);
+        assert_eq!(interior_move_tos(&path), 0);
+    }
+
+    /// The bug this replaced put the arc centre 90 degrees off and computed the
+    /// tangent distance from the supplement of the interior angle, so the path
+    /// wandered outside the corner it was meant to round.
+    #[test]
+    fn a_right_angle_fillet_stays_inside_its_corner() {
+        let mut path = Path::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.arc_to(Point::new(100.0, 0.0), Point::new(100.0, 100.0), 20.0);
+        assert!(
+            overshoot(&path, Point::new(0.0, 0.0), Point::new(100.0, 100.0)) < 0.5,
+            "the fillet left the box its own points span: {path:?}"
+        );
+    }
+
+    /// A nearly straight turn rounds by almost nothing. Computing the angle the
+    /// wrong way round inverted this: the shallower the turn, the further the
+    /// path shot away from it.
+    #[test]
+    fn a_shallow_turn_rounds_by_a_little_not_a_lot() {
+        let mut path = Path::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.arc_to(Point::new(100.0, 0.0), Point::new(200.0, 10.0), 8.0);
+        assert!(
+            overshoot(&path, Point::new(0.0, -1.0), Point::new(200.0, 11.0)) < 0.5,
+            "a 6-degree turn threw the path off the polyline it follows: {path:?}"
+        );
+    }
+
+    #[test]
+    fn collinear_points_draw_a_straight_line_to_the_corner() {
+        let mut path = Path::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.arc_to(Point::new(50.0, 0.0), Point::new(100.0, 0.0), 10.0);
+        let last = path.inner().elements().last().copied();
+        assert!(
+            matches!(last, Some(kurbo::PathEl::LineTo(p)) if (p.x - 50.0).abs() < 1e-6),
+            "collinear input should degenerate to a line to the corner, got {last:?}"
+        );
+    }
+
+    #[test]
+    fn a_zero_radius_draws_a_straight_line_to_the_corner() {
+        let mut path = Path::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.arc_to(Point::new(50.0, 0.0), Point::new(50.0, 50.0), 0.0);
+        let last = path.inner().elements().last().copied();
+        assert!(matches!(last, Some(kurbo::PathEl::LineTo(_))), "{last:?}");
+    }
+
+    /// A radius larger than either segment is clamped rather than allowed to
+    /// overshoot into the neighbouring corner.
+    #[test]
+    fn an_oversized_radius_is_clamped_to_the_segments() {
+        let mut path = Path::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.arc_to(Point::new(10.0, 0.0), Point::new(10.0, 10.0), 1000.0);
+        assert!(
+            overshoot(&path, Point::new(0.0, 0.0), Point::new(10.0, 10.0)) < 0.5,
+            "an oversized radius escaped its corner: {path:?}"
+        );
+    }
+
+    #[test]
+    fn arc_to_without_a_current_point_does_nothing() {
+        let mut path = Path::new();
+        path.arc_to(Point::new(10.0, 0.0), Point::new(10.0, 10.0), 5.0);
+        assert_eq!(path.inner().elements().len(), 0);
     }
 }
