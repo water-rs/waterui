@@ -177,13 +177,28 @@ impl Svg {
     /// Wraps a view in a frame carrying the SVG's intrinsic size.
     ///
     /// The intrinsic size is what the drawing asks for when nothing else has an
-    /// opinion, so it belongs in the frame's *ideal* extent, not its pinned
-    /// one. Pinning it made `.size(…)` on an icon impossible to honour: the
-    /// frame reported the natural size whatever it was offered, and the icon
-    /// drew outside the box it had been given.
+    /// opinion, so it is the frame's *ideal* extent, not its pinned one.
+    /// Pinning it made `.size(…)` on an icon impossible to honour: the frame
+    /// reported the natural size whatever it was offered, and the icon drew
+    /// outside the box it had been given.
+    ///
+    /// It is also the frame's *maximum*, because the natural size is a ceiling
+    /// as well as a default: a 24pt icon in a 44pt row is a 24pt icon. The
+    /// scene the frame wraps takes whatever extent it is proposed — that is
+    /// right for a `Canvas`, and it is why an icon needs the ceiling said out
+    /// loud. Without it a stack that proposes its row height (`HStack` proposes
+    /// the bounds height to a child that does not stretch) would get an icon
+    /// stretched to that height. There is deliberately no *minimum*: the
+    /// drawing stays free to shrink into a smaller box.
     fn frame_view(&self, view: impl View) -> AnyView {
         match (self.width, self.height) {
-            (Some(w), Some(h)) => AnyView::new(Frame::new(view).ideal_width(w).ideal_height(h)),
+            (Some(w), Some(h)) => AnyView::new(
+                Frame::new(view)
+                    .ideal_width(w)
+                    .ideal_height(h)
+                    .max_width(w)
+                    .max_height(h),
+            ),
             _ => AnyView::new(Frame::new(view)),
         }
     }
