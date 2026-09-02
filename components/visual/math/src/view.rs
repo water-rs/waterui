@@ -4,6 +4,7 @@ use alloc::string::String;
 use core::cell::RefCell;
 
 use nami::signal::IntoComputed;
+use nami::watcher::BoxWatcherGuard;
 use parley::FontContext;
 use peniko::{Brush, Color as PenikoColor, FontData};
 use waterui_core::layout::Size;
@@ -209,6 +210,10 @@ pub struct MathContent {
     brush: Brush,
     cache: RefCell<MathCache>,
     invalidator: Option<SceneInvalidator>,
+    /// Keeps the source watcher installed by [`SceneContent::set_invalidator`]
+    /// alive. Dropping it stops asking for redraws, which is what clearing the
+    /// invalidator means.
+    source_guard: Option<BoxWatcherGuard>,
 }
 
 /// The font collection and the last measurement, shared by drawing and layout.
@@ -246,6 +251,7 @@ impl MathContent {
             brush,
             cache: RefCell::new(MathCache::default()),
             invalidator: None,
+            source_guard: None,
         }
     }
 
@@ -357,6 +363,15 @@ impl SceneContent for MathContent {
     }
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
+        // A formula is typeset from the source read in `build_scene`, so a
+        // surface that is never told the source changed keeps presenting the
+        // box it typeset last. Watching the signal schedules the frame that
+        // re-typesets it; this is scene invalidation, not a subtree rebuild,
+        // so the content instance and its resolved font survive the change.
+        self.source_guard = invalidator.as_ref().map(|invalidator| {
+            let invalidator = SceneInvalidator::clone(invalidator);
+            self.source.watch(move |_| invalidator())
+        });
         self.invalidator = invalidator;
     }
 }
@@ -400,4 +415,72 @@ fn to_peniko(color: &ResolvedColor) -> PenikoColor {
         channel(srgb.blue),
         channel(color.opacity),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::rc::Rc;
+    use core::cell::Cell;
+
+    use nami::Binding;
+    use peniko::{Brush, Color as PenikoColor};
+    use waterui_graphics::{SceneContent, SceneInvalidator};
+    use waterui_str::Str;
+
+    use super::{DEFAULT_MATH_FAMILY, MathContent};
+    use crate::ast::MathStyle;
+
+    /// A [`SceneInvalidator`] that counts the frames it was asked for.
+    fn counting_invalidator() -> (SceneInvalidator, Rc<Cell<usize>>) {
+        let redraws = Rc::new(Cell::new(0_usize));
+        let counted = Rc::clone(&redraws);
+        let invalidator: SceneInvalidator = Rc::new(move || counted.set(counted.get() + 1));
+        (invalidator, redraws)
+    }
+
+    fn content(source: &Binding<Str>) -> MathContent {
+        MathContent::new(
+            source.clone(),
+            18.0,
+            MathStyle::Text,
+            DEFAULT_MATH_FAMILY,
+            Brush::Solid(PenikoColor::BLACK),
+        )
+    }
+
+    #[test]
+    fn changing_the_source_asks_for_a_frame() {
+        let source = Binding::container(Str::from_static("x"));
+        let mut content = content(&source);
+        let (invalidator, redraws) = counting_invalidator();
+
+        content.set_invalidator(Some(invalidator));
+        let installed = redraws.get();
+
+        source.set(Str::from_static("y"));
+
+        assert!(
+            redraws.get() > installed,
+            "a formula bound to state must schedule a frame when its source changes"
+        );
+    }
+
+    #[test]
+    fn clearing_the_invalidator_stops_the_frames() {
+        let source = Binding::container(Str::from_static("x"));
+        let mut content = content(&source);
+        let (invalidator, redraws) = counting_invalidator();
+
+        content.set_invalidator(Some(invalidator));
+        content.set_invalidator(None);
+        let cleared = redraws.get();
+
+        source.set(Str::from_static("y"));
+
+        assert_eq!(
+            redraws.get(),
+            cleared,
+            "a surface that took its invalidator back must stop being asked for frames"
+        );
+    }
 }
