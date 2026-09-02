@@ -2109,10 +2109,6 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInput<'l
 /// same W3C key/code parsing — as every other backend.
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the signature is the flat input carrier, spelled out for JNI"
-)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSendInputEvent<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
