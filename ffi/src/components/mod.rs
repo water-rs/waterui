@@ -38,7 +38,7 @@ pub use typography::text;
 #[cfg(all(feature = "android-jni", feature = "gpu"))]
 pub(crate) use visual::gpu_runtime;
 #[cfg(feature = "gpu")]
-pub use visual::gpu_surface;
+pub use visual::{gpu_surface, gpu_surface_input};
 pub use visual::view_renderer;
 #[cfg(all(feature = "c-api", feature = "gpu"))]
 pub use visual::{applied_filter, view_effect};

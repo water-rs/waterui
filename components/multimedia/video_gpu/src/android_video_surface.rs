@@ -186,15 +186,22 @@ impl From<jni::errors::Error> for AttachedSurfaceError {
 
 impl AndroidVideoSurfacePort {
     pub(crate) fn playback_context(&self) -> Result<AndroidPlaybackContext, VideoError> {
+        // SAFETY: `with_env` attaches this port's own `JavaVM` — the application
+        // JVM that owns every media object built from this context.
         self.with_env(|env| unsafe { AndroidPlaybackContext::from_jni(env) })
     }
 
     pub(crate) fn drm_context(&self) -> Result<AndroidDrmContext, VideoError> {
+        // SAFETY: as above, `env` belongs to the application JVM that owns the
+        // media objects this DRM context is used with.
         self.with_env(|env| unsafe { AndroidDrmContext::from_jni(env) })
     }
 
     pub(crate) fn acquire_protected(&self) -> Result<AndroidProtectedSurface, VideoError> {
         let surface = self.acquire(true)?;
+        // SAFETY: `acquire(true)` asks the host for its secure surface, which the
+        // host creates from a `SurfaceView` whose secure flag is set before the
+        // window is attached — the invariant Android cannot report back.
         Ok(unsafe { AndroidProtectedSurface::from_video_surface(surface) })
     }
 
@@ -221,6 +228,9 @@ impl AndroidVideoSurfacePort {
                     "Android video surface host returned a null Surface",
                 )));
             }
+            // SAFETY: `surface` is the non-null `android.view.Surface` this host
+            // just returned from `acquireVideoSurface`, retained for the playback
+            // host's lifetime, and `env` is the JVM it came from.
             unsafe { AndroidVideoSurface::from_jni(env, &surface) }
         })
     }

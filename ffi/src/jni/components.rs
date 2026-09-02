@@ -17,6 +17,8 @@ use core::ffi::c_void;
 use jni::objects::{Global, JClass, JObject, JObjectArray, JValue};
 #[cfg(target_os = "android")]
 use jni::sys::jboolean;
+#[cfg(target_os = "android")]
+use jni::sys::jdouble;
 use jni::sys::{jfloat, jint, jintArray, jlong, jobject, jobjectArray};
 use jni::{Env, EnvUnowned, jni_sig, jni_str};
 use nami::SignalExt;
@@ -1877,6 +1879,195 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInput<'l
     unsafe {
         crate::components::gpu_surface::waterui_gpu_surface_set_input(wrapper.state, input);
     }
+}
+
+/// Forwards one key, IME, scroll or focus event to an input-taking GPU view.
+///
+/// The arguments are the flat `WuiSurfaceInputEvent` carrier spelled out as a
+/// JNI signature: the C ABI has no envelope worth allocating per keystroke, and
+/// rebuilding the struct here keeps Android on the same conversion — and the
+/// same W3C key/code parsing — as every other backend.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+#[unsafe(no_mangle)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the signature is the flat input carrier, spelled out for JNI"
+)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSendInputEvent<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+    kind: jint,
+    focused: jboolean,
+    modifiers: jint,
+    x: jdouble,
+    y: jdouble,
+    pressed: jboolean,
+    button: jint,
+    delta_x: jdouble,
+    delta_y: jdouble,
+    scroll_unit: jint,
+    finished: jboolean,
+    key: jni::objects::JString<'local>,
+    code: jni::objects::JString<'local>,
+    text: jni::objects::JString<'local>,
+    is_repeat: jboolean,
+    caret: jlong,
+) -> jboolean {
+    use crate::components::gpu_surface_input::{WuiScrollUnit, WuiSurfaceInputEvent};
+
+    super::with_env(&mut env, |env| {
+        let state_ptr = state_ptr as *mut JniGpuSurfaceState;
+        // SAFETY: Kotlin passes back the handle `gpuSurfaceCreate` returned, which
+        // stays alive until `gpuSurfaceDrop`, and the JNI call is single-threaded
+        // on the UI thread that owns it.
+        let wrapper = unsafe { &mut *state_ptr };
+        let event = WuiSurfaceInputEvent {
+            kind: surface_input_event_kind(kind),
+            focused,
+            modifiers: u32::try_from(modifiers)
+                .expect("WatcherJni.gpuSurfaceSendInputEvent: modifier bits must be non-negative"),
+            x,
+            y,
+            pressed,
+            button: surface_pointer_button(button),
+            delta_x,
+            delta_y,
+            scroll_unit: match scroll_unit {
+                0 => WuiScrollUnit::Line,
+                1 => WuiScrollUnit::Pixel,
+                other => panic!("WatcherJni.gpuSurfaceSendInputEvent: unknown scroll unit {other}"),
+            },
+            finished,
+            key: java_surface_string(env, &key),
+            code: java_surface_string(env, &code),
+            text: java_surface_string(env, &text),
+            repeat: is_repeat,
+            caret,
+        };
+        // SAFETY: `wrapper.state` is the live surface state built by
+        // `gpuSurfaceCreate`, and every string in `event` was just built by
+        // `java_surface_string` as a fresh owning handle.
+        unsafe {
+            crate::components::gpu_surface_input::waterui_gpu_surface_send_input_event(
+                wrapper.state,
+                event,
+            )
+        }
+    })
+}
+
+/// Reads one Java string into the owning `WuiStr` the carrier expects.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+fn java_surface_string<'local>(
+    env: &mut Env<'local>,
+    value: &jni::objects::JString<'local>,
+) -> crate::WuiStr {
+    use waterui_core::Str;
+    Str::from(super::convert::string_from_java(env, value)).into_ffi()
+}
+
+/// The carrier's event tag, as Kotlin's `WuiSurfaceInputEventKind` ordinal.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+fn surface_input_event_kind(
+    kind: jint,
+) -> crate::components::gpu_surface_input::WuiSurfaceInputEventKind {
+    use crate::components::gpu_surface_input::WuiSurfaceInputEventKind as Kind;
+    match kind {
+        0 => Kind::Focus,
+        1 => Kind::Modifiers,
+        2 => Kind::PointerMove,
+        3 => Kind::PointerButton,
+        4 => Kind::Scroll,
+        5 => Kind::Key,
+        6 => Kind::TextInput,
+        7 => Kind::CompositionStart,
+        8 => Kind::CompositionUpdate,
+        9 => Kind::CompositionCommit,
+        10 => Kind::CompositionCancel,
+        other => panic!("WatcherJni.gpuSurfaceSendInputEvent: unknown event kind {other}"),
+    }
+}
+
+/// The carrier's pointer button, as Kotlin's `WuiSurfacePointerButton` ordinal.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+fn surface_pointer_button(
+    button: jint,
+) -> crate::components::gpu_surface_input::WuiSurfacePointerButton {
+    use crate::components::gpu_surface_input::WuiSurfacePointerButton as Button;
+    match button {
+        0 => Button::Primary,
+        1 => Button::Secondary,
+        2 => Button::Middle,
+        3 => Button::Back,
+        4 => Button::Forward,
+        other => panic!("WatcherJni.gpuSurfaceSendInputEvent: unknown pointer button {other}"),
+    }
+}
+
+/// Whether this GPU view takes its own keyboard, IME and scroll input.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+#[unsafe(no_mangle)]
+const extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceWantsInputEvents<
+    'local,
+>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+) -> jboolean {
+    let state_ptr = state_ptr as *const JniGpuSurfaceState;
+    // SAFETY: as for every other `gpuSurface*` entry point, Kotlin passes back the
+    // handle `gpuSurfaceCreate` returned and only borrows it for this call.
+    let wrapper = unsafe { &*state_ptr };
+    // SAFETY: `wrapper.state` is the live surface state that handle owns.
+    unsafe {
+        crate::components::gpu_surface_input::waterui_gpu_surface_wants_input_events(wrapper.state)
+    }
+}
+
+/// The GPU view's text caret in logical surface-local points.
+///
+/// Returns `left`, `top`, `width`, `height`, or `null` when the view has no
+/// caret to anchor an input-method panel against.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceImeCaret<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+) -> jni::sys::jfloatArray {
+    super::with_env(&mut env, |env| {
+        let state_ptr = state_ptr as *const JniGpuSurfaceState;
+        // SAFETY: Kotlin passes back the live handle from `gpuSurfaceCreate`.
+        let wrapper = unsafe { &*state_ptr };
+        let mut rect = core::mem::MaybeUninit::<crate::components::layout::WuiRect>::uninit();
+        // SAFETY: `wrapper.state` is live and `rect` is writable storage for one
+        // `WuiRect`, which the entry point only writes when it answers `true`.
+        let has_caret = unsafe {
+            crate::components::gpu_surface_input::waterui_gpu_surface_ime_caret(
+                wrapper.state,
+                rect.as_mut_ptr(),
+            )
+        };
+        if !has_caret {
+            return core::ptr::null_mut();
+        }
+        // The C entry point is the single conversion, range checks included; this
+        // only unpacks its result into the array Kotlin reads.
+        // SAFETY: `has_caret` proves the entry point initialized `rect`, and the
+        // `WuiRect` it wrote owns nothing beyond its four floats.
+        let rect: waterui_layout::Rect = unsafe { crate::IntoRust::into_rust(rect.assume_init()) };
+        let origin = rect.origin();
+        let size = *rect.size();
+        let values: [jfloat; 4] = [origin.x, origin.y, size.width, size.height];
+        let array = env
+            .new_float_array(values.len())
+            .expect("gpuSurfaceImeCaret: failed to allocate the caret array");
+        array
+            .set_region(env, 0, &values)
+            .expect("gpuSurfaceImeCaret: failed to write the caret array");
+        array.into_raw()
+    })
 }
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
