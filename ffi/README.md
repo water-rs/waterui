@@ -382,7 +382,6 @@ Native backends (Android, Apple, etc.) must follow a specific initialization seq
 │    - Install appearance: waterui_theme_install_color_scheme()       │
 │    - Install colors:     waterui_theme_install_color()              │
 │    - Install fonts:      waterui_theme_install_font()               │
-│    - Legacy: waterui_env_install_theme() is deprecated              │
 ├─────────────────────────────────────────────────────────────────────┤
 │ 3. waterui_app(env)                                                 │
 │    - Creates the application from user's app(env) function          │
