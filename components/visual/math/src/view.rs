@@ -196,7 +196,10 @@ pub fn resolve_font(fonts: &mut FontContext, family: &str) -> Result<FontData, M
 }
 
 /// Scene content that draws one formula.
-struct MathContent {
+///
+/// [`Math`] wraps this, and a backend that wants to draw a formula into a scene
+/// it already owns can use it directly rather than going through a view.
+pub struct MathContent {
     source: Computed<Str>,
     style: MathStyle,
     font_size: f32,
@@ -205,6 +208,32 @@ struct MathContent {
     fonts: Option<FontContext>,
     font: Option<FontData>,
     invalidator: Option<SceneInvalidator>,
+}
+
+impl MathContent {
+    /// Scene content drawing `source` at `font_size` in `style`.
+    ///
+    /// The family must carry an OpenType `MATH` table;
+    /// [`DEFAULT_MATH_FAMILY`] is the one this crate asks for by default.
+    #[must_use]
+    pub fn new(
+        source: impl IntoComputed<Str>,
+        font_size: f32,
+        style: MathStyle,
+        family: impl Into<Str>,
+        brush: Brush,
+    ) -> Self {
+        Self {
+            source: source.into_computed(),
+            style,
+            font_size,
+            family: family.into(),
+            brush,
+            fonts: None,
+            font: None,
+            invalidator: None,
+        }
+    }
 }
 
 impl core::fmt::Debug for MathContent {
@@ -288,16 +317,7 @@ impl View for Math {
             |signal| Brush::Solid(to_peniko(&signal.get())),
         );
 
-        let content = MathContent {
-            source: self.source,
-            style: self.style,
-            font_size: self.font_size,
-            family: self.family,
-            brush,
-            fonts: None,
-            font: None,
-            invalidator: None,
-        };
+        let content = MathContent::new(self.source, self.font_size, self.style, self.family, brush);
 
         Frame::new(SceneView::new(content))
     }

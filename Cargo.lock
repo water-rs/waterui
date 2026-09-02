@@ -12920,6 +12920,7 @@ dependencies = [
  "nami",
  "parley",
  "peniko",
+ "pollster 1.0.1",
  "pulldown-latex",
  "quick-xml",
  "serde",
@@ -12932,6 +12933,7 @@ dependencies = [
  "waterui-graphics",
  "waterui-layout",
  "waterui-str",
+ "wgpu",
 ]
 
 [[package]]
