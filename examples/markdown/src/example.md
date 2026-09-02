@@ -29,6 +29,18 @@ struct ContentView: View {
 }
 ```
 
+## Diagrams
+
+A fence tagged `mermaid` is claimed by `waterui-mermaid` and drawn as a diagram;
+every other fence stays a code block.
+
+```mermaid
+flowchart TD
+    A[Markdown] --> B{Fence tagged?}
+    B -->|mermaid| C([Diagram])
+    B -->|rust| D[Code block]
+```
+
 ## Lists
 
 ### Unordered List
