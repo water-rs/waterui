@@ -15,7 +15,17 @@ default = ["gpu"]
 # The `Scene2D` contract needs no rendering engine, so the two engine-backed
 # implementations of it are their own feature: a crate that only draws through
 # the contract, and lets a backend supply the scene, does not pull Vello.
-vello-scene = ["dep:vello", "dep:vello_hybrid", "dep:glifo"]
+#
+# `wgpu` is here because the hybrid engine keeps images in an atlas texture the
+# renderer owns: drawing one means uploading it to the device, so the engine
+# implementation names the device, the queue and the encoder that fills it.
+vello-scene = [
+    "dep:vello",
+    "dep:vello_hybrid",
+    "dep:vello_common",
+    "dep:glifo",
+    "dep:wgpu",
+]
 gpu = [
     "vello-scene",
     "dep:keyboard-types",
@@ -45,6 +55,7 @@ pastey.workspace = true
 wgpu = { workspace = true, optional = true }
 vello = { workspace = true, optional = true }
 vello_hybrid = { workspace = true, optional = true }
+vello_common = { workspace = true, optional = true }
 glifo = { workspace = true, optional = true }
 kurbo.workspace = true
 keyboard-types = { workspace = true, optional = true }

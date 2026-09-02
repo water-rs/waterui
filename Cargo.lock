@@ -12850,6 +12850,7 @@ dependencies = [
  "shaderloom",
  "tracing",
  "vello",
+ "vello_common 0.2.0",
  "vello_hybrid",
  "waterui",
  "waterui-core",
