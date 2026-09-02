@@ -1,10 +1,12 @@
 //! The `Math` view.
 
 use alloc::string::String;
+use core::cell::RefCell;
 
 use nami::signal::IntoComputed;
 use parley::FontContext;
 use peniko::{Brush, Color as PenikoColor, FontData};
+use waterui_core::layout::Size;
 use waterui_core::{Computed, Environment, Signal, View};
 use waterui_graphics::color::{Color, ForegroundColor, ResolvedColor};
 use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
@@ -205,9 +207,22 @@ pub struct MathContent {
     font_size: f32,
     family: Str,
     brush: Brush,
+    cache: RefCell<MathCache>,
+    invalidator: Option<SceneInvalidator>,
+}
+
+/// The font collection and the last measurement, shared by drawing and layout.
+///
+/// Measuring a formula *is* laying it out, and a container probes a child
+/// several times in one pass, so the answer is kept. A plain `RefCell` is the
+/// right cell for it: layout is single-threaded by contract and runs on the same
+/// thread that draws.
+#[derive(Default)]
+struct MathCache {
     fonts: Option<FontContext>,
     font: Option<FontData>,
-    invalidator: Option<SceneInvalidator>,
+    /// The formula last measured and the box it occupies.
+    measured: Option<(Str, Size)>,
 }
 
 impl MathContent {
@@ -229,10 +244,30 @@ impl MathContent {
             font_size,
             family: family.into(),
             brush,
-            fonts: None,
-            font: None,
+            cache: RefCell::new(MathCache::default()),
             invalidator: None,
         }
+    }
+
+    /// The math face this formula is set in, resolved once and kept.
+    ///
+    /// `None` means no installed family by that name carries a `MATH` table, and
+    /// there is deliberately no substitute — a face without the table has no
+    /// layout constants, so the formula has no geometry at all.
+    fn font(&self) -> Option<FontData> {
+        let mut cache = self.cache.borrow_mut();
+        if cache.font.is_none() {
+            let cache = &mut *cache;
+            let fonts = cache.fonts.get_or_insert_with(FontContext::new);
+            match resolve_font(fonts, self.family.as_str()) {
+                Ok(font) => cache.font = Some(font),
+                Err(error) => {
+                    tracing::error!(%error, "math formula has no usable font");
+                    return None;
+                }
+            }
+        }
+        cache.font.clone()
     }
 }
 
@@ -255,17 +290,7 @@ impl SceneContent for MathContent {
 
         // The font collection is discovered once and kept for the life of this
         // surface, which is where per-surface resources belong.
-        if self.font.is_none() {
-            let fonts = self.fonts.get_or_insert_with(FontContext::new);
-            match resolve_font(fonts, self.family.as_str()) {
-                Ok(font) => self.font = Some(font),
-                Err(error) => {
-                    tracing::error!(%error, "math formula has no usable font");
-                    return false;
-                }
-            }
-        }
-        let Some(font) = self.font.clone() else {
+        let Some(font) = self.font() else {
             return false;
         };
 
@@ -294,6 +319,41 @@ impl SceneContent for MathContent {
 
         scene::draw(&layout, scene, &font, &self.brush, 0.0, prepared.ascent);
         false
+    }
+
+    /// The typeset box the formula occupies, at this content's em size.
+    ///
+    /// A formula is text: it is exactly as wide as its advance and as tall as its
+    /// ascent plus descent, and a container that names neither axis should get
+    /// that rather than nothing. `None` when the family carries no `MATH` table,
+    /// when the source does not parse, or when the formula is empty — none of
+    /// which is a size.
+    fn intrinsic_size(&self) -> Option<Size> {
+        let source = self.source.get();
+        let cached = self.cache.borrow().measured.clone();
+        if let Some((measured, size)) = cached
+            && measured == source
+        {
+            return Some(size);
+        }
+
+        let font = self.font()?;
+        let prepared = match prepare(source.as_str(), &font, self.font_size, self.style) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tracing::error!(%error, formula = %source, "could not measure math formula");
+                return None;
+            }
+        };
+        let size = Size::new(prepared.width, prepared.height());
+        if !(size.width.is_finite() && size.height.is_finite())
+            || size.width <= 0.0
+            || size.height <= 0.0
+        {
+            return None;
+        }
+        self.cache.borrow_mut().measured = Some((source, size));
+        Some(size)
     }
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {

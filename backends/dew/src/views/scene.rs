@@ -29,7 +29,9 @@ use accesskit::{Node as AccessibilityNode, NodeId, Role};
 use kurbo::{Affine, Rect};
 use waterui_backend_core::frame_signals::FrameSignals;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_graphics::{SceneContent, SceneRecording, SceneView};
+use waterui_graphics::{
+    SceneContent, SceneRecording, SceneView, resolve_scene_proposal, scene_stretch_axis,
+};
 
 use crate::dispatch::{DewNode, DewRenderer, RenderContext};
 use crate::display_list::DrawCommand;
@@ -55,9 +57,12 @@ struct SceneNode {
 
 impl DewNode for SceneNode {
     fn measure(&self, _state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
-        // A scene has no intrinsic size: it fills whatever it is proposed,
-        // like a colour or a shape, and is sized by `.frame()` or its
-        // container.
+        // Content that is naturally a size (an SVG's viewBox, a formula's
+        // typeset box) answers with it on whichever axis the container left
+        // open, and keeps its aspect ratio when only one axis was named.
+        // Content that has no size of its own fills whatever it is proposed,
+        // like a colour or a shape, and is sized by `.frame()` or its container.
+        let proposal = resolve_scene_proposal(self.content.intrinsic_size(), proposal);
         ViewDimensions::new(Size::new(
             proposal
                 .width
@@ -132,7 +137,7 @@ impl DewNode for SceneNode {
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
+        scene_stretch_axis(self.content.intrinsic_size())
     }
 }
 

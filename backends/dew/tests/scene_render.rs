@@ -31,6 +31,7 @@ use waterui_dew::{
 };
 use waterui_graphics::color::Srgb;
 use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
+use waterui_layout::scroll::ScrollView;
 use waterui_svg::Svg;
 
 mod support;
@@ -325,4 +326,63 @@ fn animated_content_keeps_asking_for_frames() {
         );
     }
     assert_eq!(builds.get(), 4, "every frame redraws the animated content");
+}
+
+/// Scene content that *is* 100 x 200 logical points — an SVG's `viewBox`, an
+/// image's pixel size, a formula's typeset box.
+struct NaturallySizedContent;
+
+impl SceneContent for NaturallySizedContent {
+    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
+        let path = Rect::new(0.0, 0.0, f64::from(width), f64::from(height)).to_path(0.1);
+        let brush: peniko::Brush = peniko::Color::new([0.0, 0.4, 1.0, 1.0]).into();
+        scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, &brush, None, &path);
+        false
+    }
+
+    fn intrinsic_size(&self) -> Option<Size> {
+        Some(Size::new(100.0, 200.0))
+    }
+}
+
+/// The one scene command in a list that also carries a scroll view's chrome.
+fn find_scene(list: &DisplayList) -> (&DrawCommand, Rect) {
+    let placed = list
+        .commands()
+        .iter()
+        .find(|placed| matches!(placed.command(), DrawCommand::Scene { .. }))
+        .expect("the list must carry exactly one scene command");
+    (placed.command(), placed.bounds())
+}
+
+/// Dew resolves an unconstrained scroll axis from the content's natural size,
+/// exactly as hydrolysis does — the two self-drawn backends must not disagree
+/// about how big a drawing is (water-rs/waterui#253).
+#[test]
+fn an_unconstrained_scroll_axis_resolves_to_the_natural_size() {
+    let list = render_scene(
+        || ScrollView::vertical(SceneView::new(NaturallySizedContent)),
+        100,
+        120,
+    );
+    let (command, _) = find_scene(&list);
+    let DrawCommand::Scene { bounds: local, .. } = command else {
+        unreachable!("find_scene asserted the variant")
+    };
+    // The viewport names the width (100, the natural width), and leaves the
+    // scroll axis open; the drawing is laid out at the 200 points it is, rather
+    // than collapsing to zero and being clamped up to the 120-point viewport.
+    assert_eq!(*local, Rect::new(0.0, 0.0, 100.0, 200.0));
+}
+
+/// Content with no natural size still fills the viewport on the scroll axis,
+/// which is what a background or a shader wants.
+#[test]
+fn a_sizeless_scene_still_fills_an_unconstrained_scroll_axis() {
+    let list = render_scene(|| ScrollView::vertical(swatch()), 100, 120);
+    let (command, _) = find_scene(&list);
+    let DrawCommand::Scene { bounds: local, .. } = command else {
+        unreachable!("find_scene asserted the variant")
+    };
+    assert_eq!(*local, Rect::new(0.0, 0.0, 100.0, 120.0));
 }
