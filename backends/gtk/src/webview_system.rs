@@ -26,11 +26,32 @@ type JsHandler = Rc<waterui_webview::ScriptMessageHandler>;
 
 /// What the handle's `impl Future` methods return.
 ///
-/// Boxed because the configuration with no linkable WebKitGTK produces no future
+/// Boxed because the configuration with no linkable `WebKitGTK` produces no future
 /// at all — it fast-fails — and the two arms still have to name one type.
 type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
 
 const WEBKIT_FEATURE_MSG: &str = "WebView requires waterui-gtk feature `webkitgtk` and linkable WebKitGTK 6 libraries on Linux (fast-fail: no placeholder backend)";
+
+/// The fast-fail the future-returning handle methods take when no `WebKitGTK`
+/// is linkable.
+///
+/// A function rather than the bare `panic!` the value-returning methods use,
+/// because `!` does not implement `Future`: a method returning `impl Future`
+/// still has to name a type for the compiler to hide, and that type is
+/// [`BoxFuture`]. Writing the panic inline instead — `let f: BoxFuture<T> =
+/// panic!(…); f` — types the binding through a diverging initializer, which
+/// leaves the binding unused and everything after it unreachable. Behind this
+/// signature the divergence is the whole body and the call site is ordinary
+/// code, so the two configurations stay symmetric.
+#[cfg(not(all(
+    feature = "webkitgtk",
+    gtk_webkitgtk_link_available,
+    unix,
+    not(target_os = "macos")
+)))]
+fn webkit_unavailable<T>() -> BoxFuture<T> {
+    panic!("{WEBKIT_FEATURE_MSG}");
+}
 
 /// Adapts the shared bridge's one-function transport onto `WebKitGTK`'s message handler.
 const TRANSPORT_SCRIPT: &str = concat!(
@@ -1689,6 +1710,10 @@ impl WebViewHandle for GtkWebViewHandle {
     /// Queried live rather than read from a cache refreshed at load: a cookie the
     /// page sets afterwards — an XHR that logs in — was invisible until the next
     /// navigation, while every other backend answered from the live store.
+    #[expect(
+        clippy::future_not_send,
+        reason = "a web view and its handle are main-thread-affine"
+    )]
     fn get_cookies(&self) -> impl std::future::Future<Output = Vec<Cookie<'static>>> {
         #[cfg(all(
             feature = "webkitgtk",
@@ -1718,10 +1743,14 @@ impl WebViewHandle for GtkWebViewHandle {
             unix,
             not(target_os = "macos")
         )))]
-        let cookies: BoxFuture<Vec<Cookie<'static>>> = panic!("{WEBKIT_FEATURE_MSG}");
+        let cookies: BoxFuture<Vec<Cookie<'static>>> = webkit_unavailable();
         cookies
     }
 
+    #[expect(
+        clippy::future_not_send,
+        reason = "a web view and its handle are main-thread-affine"
+    )]
     fn run_javascript(&self, script: &str) -> impl std::future::Future<Output = Result<Str, Str>> {
         #[cfg(all(
             feature = "webkitgtk",
@@ -1734,8 +1763,8 @@ impl WebViewHandle for GtkWebViewHandle {
             webkitgtk::evaluate_javascript,
             webkitgtk::evaluate_javascript_finish,
         ));
-        // Every other method fast-fails without a linkable WebKitGTK; this one used
-        // to answer with an `Err` instead, which reads as "the script failed".
+        // Every other method fast-fails without a linkable `WebKitGTK`; this one
+        // used to answer with an `Err` instead, which reads as "the script failed".
         #[cfg(not(all(
             feature = "webkitgtk",
             gtk_webkitgtk_link_available,
@@ -1744,11 +1773,15 @@ impl WebViewHandle for GtkWebViewHandle {
         )))]
         let result: BoxFuture<Result<Str, Str>> = {
             let _ = script;
-            panic!("{WEBKIT_FEATURE_MSG}")
+            webkit_unavailable()
         };
         result
     }
 
+    #[expect(
+        clippy::future_not_send,
+        reason = "a web view and its handle are main-thread-affine"
+    )]
     fn call_async_javascript(
         &self,
         body: &str,
@@ -1772,7 +1805,7 @@ impl WebViewHandle for GtkWebViewHandle {
         )))]
         let result: BoxFuture<Result<Str, Str>> = {
             let _ = body;
-            panic!("{WEBKIT_FEATURE_MSG}")
+            webkit_unavailable()
         };
         result
     }
@@ -2185,7 +2218,7 @@ unsafe extern "C" fn on_script_message_received(
 /// means. No policy installed denies: the policy is installed before the first
 /// handler exists, so a call arriving without one cannot be authenticated.
 ///
-/// WebKitGTK reports script messages without the frame that sent them, so this
+/// `WebKitGTK` reports script messages without the frame that sent them, so this
 /// authenticates the document the view is showing. Subframe content is kept away
 /// from the bridge by injecting the transport into the top frame only, and only
 /// into documents the policy's URI patterns admit.
