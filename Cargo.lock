@@ -8630,6 +8630,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 
 [[package]]
+name = "pulldown-latex"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cf850381ae0dbb131f36e31d6090f55363d079ab3e518ad0323b9cb6a96d115"
+dependencies = [
+ "bumpalo",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12901,6 +12910,29 @@ dependencies = [
  "waterui-url",
  "wgpu",
  "zenwave",
+]
+
+[[package]]
+name = "waterui-math"
+version = "0.1.0"
+dependencies = [
+ "kurbo 0.13.1",
+ "nami",
+ "parley",
+ "peniko",
+ "pollster 1.0.1",
+ "pulldown-latex",
+ "quick-xml",
+ "serde",
+ "thiserror 2.0.20",
+ "toml 1.1.4+spec-1.1.0",
+ "tracing",
+ "ttf-parser",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-layout",
+ "waterui-str",
+ "wgpu",
 ]
 
 [[package]]
