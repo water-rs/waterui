@@ -32,6 +32,9 @@ cbindgen = { version = "0.29.4", optional = true }
 # JNI crate - optional, enabled by android-jni feature for Android builds
 jni = { version = "0.22.4", optional = true }
 waterui-graphics.workspace = true
+# The geometry vocabulary of the `GpuSurface` input contract: surface-local
+# points on the way in, the IME caret rect on the way out.
+kurbo = { workspace = true, optional = true }
 waterui-svg = { workspace = true, optional = true }
 waterui-icon.workspace = true
 waterui-webview.workspace = true
@@ -98,6 +101,7 @@ gpu = [
     "dep:waterui-video-gpu",
     "dep:objc2-metal",
     "dep:pollster",
+    "dep:kurbo",
 ]
 # C FFI for Apple/GTK backends (default)
 c-api = ["std"]

@@ -12758,6 +12758,7 @@ dependencies = [
  "executor-core",
  "jiff",
  "jni 0.22.4",
+ "kurbo 0.13.1",
  "nami",
  "native-executor",
  "ndk-context",

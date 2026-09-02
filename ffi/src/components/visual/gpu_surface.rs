@@ -120,6 +120,14 @@ pub struct WuiGpuSurfaceState {
     last_frame_time: Instant,
     /// Redraw handle for external redraw triggers.
     redraw_handle: RedrawHandle,
+    /// Whether the semantic GPU view takes its own keyboard, IME and scroll
+    /// input, captured once when this state is created.
+    ///
+    /// `GpuView::wants_input_events` answers a registration-time question, and
+    /// hosts ask it before the asynchronous renderer setup has necessarily
+    /// finished — while the semantic slot is temporarily empty. Caching the
+    /// answer keeps it available for the whole life of the state.
+    wants_input_events: bool,
 }
 
 impl core::fmt::Debug for WuiGpuSurfaceState {
@@ -128,6 +136,27 @@ impl core::fmt::Debug for WuiGpuSurfaceState {
             .field("current_width", &self.current_width)
             .field("current_height", &self.current_height)
             .finish_non_exhaustive()
+    }
+}
+
+impl WuiGpuSurfaceState {
+    /// Whether the semantic GPU view takes its own input.
+    ///
+    /// See the field of the same name for why the answer is cached rather than
+    /// asked of the renderer on every call.
+    pub(super) const fn wants_input_events(&self) -> bool {
+        self.wants_input_events
+    }
+
+    /// The semantic GPU view's text caret, in logical surface-local coordinates.
+    ///
+    /// `None` while the renderer's asynchronous setup is still running, and
+    /// whenever the view has no caret to place an input-method panel against.
+    pub(super) fn ime_caret(&self) -> Option<kurbo::Rect> {
+        self.semantic
+            .borrow()
+            .as_ref()
+            .and_then(|semantic| semantic.gpu_surface.ime_caret())
     }
 }
 
@@ -391,6 +420,23 @@ fn with_semantic_mut<T>(
     )
 }
 
+/// Runs `use_surface` against the semantic GPU view when one is available.
+///
+/// Unlike [`with_semantic_mut`], a missing renderer is not a contract
+/// violation here: input can land on a surface whose asynchronous setup has not
+/// finished, and the caller reports that to the host as "the event did not
+/// reach the view" rather than crashing on the user's keystroke.
+pub(super) fn with_semantic_input<T>(
+    state: &WuiGpuSurfaceState,
+    use_surface: impl FnOnce(&mut GpuSurface) -> T,
+) -> Option<T> {
+    state
+        .semantic
+        .borrow_mut()
+        .as_mut()
+        .map(|semantic| use_surface(&mut semantic.gpu_surface))
+}
+
 fn attached_surface<'a>(
     state: &'a WuiGpuSurfaceState,
     scope: &'static str,
@@ -447,6 +493,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_create(
 
     let msaa_max_samples = gpu_surface.msaa_sample_limit();
     let priority = gpu_surface.priority();
+    let wants_input_events = gpu_surface.wants_input_events();
     // SAFETY: the caller contract requires `env` to be a valid handle alive for this
     // call; it is only borrowed before cloning.
     let env = unsafe { &*env }.0.clone();
@@ -470,6 +517,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_create(
             .checked_sub(Duration::from_secs_f32(1.0 / 60.0))
             .unwrap(),
         redraw_handle: RedrawHandle::new(),
+        wants_input_events,
     }))
 }
 
