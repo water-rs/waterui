@@ -103,6 +103,9 @@ impl crate::jni::JniPrimitive for Color {
         self.into_ffi() as Self::Jni
     }
     fn from_jni(val: Self::Jni) -> Self {
+        // SAFETY: `JniPrimitive` round-trips one value: `val` is the `jlong` produced
+        // by `to_jni` above, which is an owning `WuiColor` pointer, and reclaiming it
+        // here consumes it exactly once.
         unsafe { IntoRust::into_rust(val as *mut WuiColor) }
     }
 }

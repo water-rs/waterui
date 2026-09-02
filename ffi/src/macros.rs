@@ -121,12 +121,18 @@ macro_rules! ffi_view {
                 view_ptr: $crate::jni::jlong,
             ) -> $crate::jni::jobject {
                 use $crate::jni::convert::jlong_to_ptr_mut;
-                $crate::jni::with_env(&mut env, |env| unsafe {
-                    let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
-                    let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
-                    let view = (*any.downcast_unchecked::<waterui_core::Native<$view>>());
-                    let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(view);
-                    $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                $crate::jni::with_env(&mut env, |env| {
+                    // SAFETY: the caller contract above makes `view_ptr` a valid owning
+                    // handle that this call consumes, so taking ownership is sound, and
+                    // guarantees its erased value is a `Native<$view>`, which is what the
+                    // unchecked downcast relies on.
+                    unsafe {
+                        let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
+                        let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
+                        let view = (*any.downcast_unchecked::<waterui_core::Native<$view>>());
+                        let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(view);
+                        $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                    }
                 })
             }
         }
@@ -203,7 +209,7 @@ macro_rules! ffi_metadata {
             }
 
             #[cfg(all(feature = "android-jni", $jni_force))]
-            /// JNI: Force-casts an AnyView pointer to this metadata type.
+            /// JNI: Force-casts an `AnyView` pointer to this metadata type.
             ///
             /// # Safety
             /// The view pointer must be valid and contain the expected metadata type.
@@ -214,12 +220,17 @@ macro_rules! ffi_metadata {
                 view_ptr: $crate::jni::jlong,
             ) -> $crate::jni::jobject {
                 use $crate::jni::convert::jlong_to_ptr_mut;
-                $crate::jni::with_env(&mut env, |env| unsafe {
-                    let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
-                    let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
-                    let metadata = *any.downcast_unchecked::<waterui_core::Metadata<$ty>>();
-                    let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(metadata);
-                    $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                $crate::jni::with_env(&mut env, |env| {
+                    // SAFETY: the caller contract above makes `view_ptr` a valid owning
+                    // handle holding a `Metadata<$ty>`, which is what the unchecked
+                    // downcast relies on; the handle is consumed here.
+                    unsafe {
+                        let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
+                        let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
+                        let metadata = *any.downcast_unchecked::<waterui_core::Metadata<$ty>>();
+                        let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(metadata);
+                        $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                    }
                 })
             }
         }
@@ -288,7 +299,7 @@ macro_rules! ffi_ignorable_metadata {
             }
 
             #[cfg(feature = "android-jni")]
-            /// JNI: Force-casts an AnyView pointer to this ignorable metadata type.
+            /// JNI: Force-casts an `AnyView` pointer to this ignorable metadata type.
             ///
             /// # Safety
             /// The view pointer must be valid and contain the expected ignorable metadata type.
@@ -299,12 +310,17 @@ macro_rules! ffi_ignorable_metadata {
                 view_ptr: $crate::jni::jlong,
             ) -> $crate::jni::jobject {
                 use $crate::jni::convert::jlong_to_ptr_mut;
-                $crate::jni::with_env(&mut env, |env| unsafe {
-                    let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
-                    let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
-                    let metadata = *any.downcast_unchecked::<waterui_core::IgnorableMetadata<$ty>>();
-                    let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(metadata);
-                    $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                $crate::jni::with_env(&mut env, |env| {
+                    // SAFETY: the caller contract above makes `view_ptr` a valid owning
+                    // handle holding an `IgnorableMetadata<$ty>`, which is what the
+                    // unchecked downcast relies on; the handle is consumed here.
+                    unsafe {
+                        let view_ptr: *mut $crate::WuiAnyView = jlong_to_ptr_mut(view_ptr);
+                        let any: waterui::AnyView = $crate::IntoRust::into_rust(view_ptr);
+                        let metadata = *any.downcast_unchecked::<waterui_core::IgnorableMetadata<$ty>>();
+                        let ffi_struct: $ffi = $crate::IntoFFI::into_ffi(metadata);
+                        $crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+                    }
                 })
             }
         }
@@ -389,6 +405,9 @@ macro_rules! opaque {
                 ptr: $crate::jni::jlong,
             ) {
                 use $crate::jni::convert::jlong_to_ptr_mut;
+                // SAFETY: the caller contract above makes `ptr` a handle from the
+                // matching FFI constructor that has not been dropped, so reclaiming it
+                // once and letting it fall out of scope frees it exactly once.
                 unsafe {
                     let ptr: *mut $name = jlong_to_ptr_mut(ptr);
                     let _ = $crate::IntoRust::into_rust(ptr);
