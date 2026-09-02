@@ -127,6 +127,14 @@ pub enum RichTextElement {
     Code {
         /// The code content.
         code: Str,
+        /// The fence's info token as written, before it was resolved to a
+        /// [`Language`]; what a realization dispatches on.
+        ///
+        /// `None` for an indented block and for a fence with an empty info
+        /// string. A token no [`Language`] recognises — `mermaid`, say —
+        /// survives here even though `language` resolved to
+        /// [`Language::Plaintext`].
+        info: Option<Str>,
         /// Optional language specification.
         language: Language,
     },
@@ -178,7 +186,17 @@ impl View for RichTextElement {
                 ordered,
                 start,
             } => AnyView::new(render_list(items.as_slice(), ordered, start)),
-            Self::Code { code, language } => AnyView::new(crate::widget::code(language, code)),
+            Self::Code {
+                code,
+                info,
+                language,
+            } => {
+                let view = crate::widget::code(language, code);
+                AnyView::new(match info {
+                    Some(info) => view.info(info),
+                    None => view,
+                })
+            }
             Self::Quote { content } => AnyView::new(quote(content)),
             Self::Group { elements, inline } => {
                 if inline {
@@ -572,6 +590,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     flush_list_item_inline(&mut stack);
                     let language = language_from_kind(&kind);
                     stack.push(Container::CodeBlock {
+                        info: info_from_kind(&kind),
                         language,
                         code: String::new(),
                     });
@@ -694,10 +713,16 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     }
                 }
                 pulldown_cmark::TagEnd::CodeBlock => {
-                    if let Some(Container::CodeBlock { language, code }) = stack.pop() {
+                    if let Some(Container::CodeBlock {
+                        info,
+                        language,
+                        code,
+                    }) = stack.pop()
+                    {
                         push_to_parent(
                             &mut stack,
                             RichTextElement::Code {
+                                info,
                                 language,
                                 code: code.into(),
                             },
@@ -883,6 +908,22 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
     match stack.pop() {
         Some(Container::Root(elements)) => elements,
         _ => Vec::new(),
+    }
+}
+
+/// The fence's info token as the author wrote it.
+///
+/// `language_from_kind` throws this away whenever no [`Language`] answers to
+/// it, which is exactly the case a realization needs to see: a ` ```mermaid `
+/// fence and an untagged one both resolve to [`Language::Plaintext`] and are
+/// told apart only by this token.
+fn info_from_kind(kind: &CodeBlockKind) -> Option<Str> {
+    match kind {
+        CodeBlockKind::Fenced(info) => info
+            .split_whitespace()
+            .next()
+            .map(|token| Str::from(token.to_owned())),
+        CodeBlockKind::Indented => None,
     }
 }
 
@@ -1091,6 +1132,7 @@ enum Container {
         alt: MarkdownInlineBuilder,
     },
     CodeBlock {
+        info: Option<Str>,
         language: Language,
         code: String,
     },
@@ -1319,6 +1361,46 @@ fn main() {
             .iter()
             .any(|el| matches!(el, RichTextElement::Code { .. }));
         assert!(has_code, "Expected a Code element in the parsed markdown");
+    }
+
+    /// The fence's info token, not the [`Language`] it resolved to.
+    ///
+    /// `mermaid` is the case that matters: no [`Language`] answers to it, so
+    /// the resolved language is [`Language::Plaintext`] — exactly what an
+    /// untagged fence resolves to. Only the preserved token tells the two
+    /// apart, and a realization has nothing else to dispatch on.
+    fn only_code_block(markdown: &str) -> (Option<Str>, Language) {
+        RichText::from_markdown(markdown)
+            .elements()
+            .iter()
+            .find_map(|el| match el {
+                RichTextElement::Code { info, language, .. } => {
+                    Some((info.clone(), language.clone()))
+                }
+                _ => None,
+            })
+            .expect("expected a code block")
+    }
+
+    #[test]
+    fn an_unrecognised_info_token_survives_as_written() {
+        let (info, language) = only_code_block("```mermaid\nflowchart TD\n  A --> B\n```\n");
+        assert_eq!(info.as_deref(), Some("mermaid"));
+        assert_eq!(language, Language::Plaintext);
+    }
+
+    #[test]
+    fn a_recognised_info_token_is_kept_alongside_its_language() {
+        let (info, language) = only_code_block("```rust\nfn main() {}\n```\n");
+        assert_eq!(info.as_deref(), Some("rust"));
+        assert_eq!(language, Language::Rust);
+    }
+
+    #[test]
+    fn an_indented_block_has_no_info_token() {
+        let (info, language) = only_code_block("    fn main() {}\n");
+        assert_eq!(info, None);
+        assert_eq!(language, Language::Plaintext);
     }
 
     #[test]
