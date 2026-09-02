@@ -108,8 +108,25 @@ impl<B: Board> DewRuntime<B> {
             while let Some(request) = self.board.poll_accessibility_action() {
                 input_changed |= self.renderer.handle_accessibility_action(&request);
             }
+            // One instant for the whole batch: the board reports positions,
+            // not timestamps, and a pump is a single cadence slot — dating the
+            // samples apart would be inventing precision the device never had.
+            #[cfg(feature = "gestures")]
+            let now = self.board.now();
             while let Some(sample) = self.board.poll_pointer() {
                 input_changed |= self.renderer.handle_pointer(sample);
+                #[cfg(feature = "gestures")]
+                {
+                    input_changed |= self
+                        .renderer
+                        .handle_interaction_pointer(sample, now, &self.env);
+                }
+            }
+            // A long press is recognized by time passing rather than by input
+            // arriving, so it needs the frame pump to carry the clock to it.
+            #[cfg(feature = "gestures")]
+            {
+                input_changed |= self.renderer.tick_interaction(now, &self.env);
             }
         }
         if input_changed {
