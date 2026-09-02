@@ -39,8 +39,8 @@ pub use proxy::WebViewProxy;
 pub use waterui_url::{IntoUrl, Url};
 mod url_signal;
 pub use url_signal::IntoUrlSignal;
-mod watcher;
-pub use watcher::{WatcherGuard, WatcherSet};
+pub use waterui_watcher_set::{WatcherGuard, WatcherSet};
+pub use waterui_web_surface::web_surface_semantics;
 pub mod bridge;
 mod script;
 pub use script::{DOCUMENT_START_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram};
@@ -899,28 +899,6 @@ impl View for WebViewOpen {
 
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
-    }
-}
-
-/// Wraps a realization of web page content in the accessibility node it owes
-/// the tree.
-///
-/// The page is opaque to the host accessibility tree — an engine draws it into
-/// a texture or a subview nothing can see into — so the surface itself has to
-/// appear or the whole region is missing from a screen reader. Every engine
-/// realization publishes the same node, and whatever the application already
-/// said with `.a11y_role(...)` wins over this default.
-///
-/// The label is deliberately not defaulted: only the application knows what the
-/// page is, and a made-up one reads worse than none.
-pub fn web_surface_semantics(env: &Environment, view: impl View) -> AnyView {
-    use waterui_core::IgnorableMetadata;
-    use waterui_core::accessibility::AccessibilityRole;
-
-    if env.get::<AccessibilityRole>().is_some() {
-        AnyView::new(view)
-    } else {
-        AnyView::new(IgnorableMetadata::new(view, AccessibilityRole::Group))
     }
 }
 

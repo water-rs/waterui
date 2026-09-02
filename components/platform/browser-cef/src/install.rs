@@ -50,7 +50,8 @@ fn ensure_runtime(env: &mut Environment) -> CefRuntime {
 /// by type before the hook is ever consulted.
 #[cfg(feature = "webview")]
 pub fn install(env: &mut Environment) {
-    use waterui_webview::{WebView, WebViewController, web_surface_semantics};
+    use waterui_web_surface::web_surface_semantics;
+    use waterui_webview::{WebView, WebViewController};
 
     use crate::CefWebViewHandle;
 
@@ -103,7 +104,7 @@ pub fn install(env: &mut Environment) {
 #[cfg(feature = "chromium")]
 pub fn install_chromium(env: &mut Environment) {
     use waterui_chromium::{ChromiumController, ChromiumView, PageMode};
-    use waterui_webview::web_surface_semantics;
+    use waterui_web_surface::web_surface_semantics;
 
     use crate::CefPageHandle;
 
