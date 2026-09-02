@@ -138,12 +138,6 @@ pub struct HybridRenderer {
     pub resources: vello_hybrid::Resources,
 }
 
-impl Default for SharedSceneRenderer {
-    fn default() -> Self {
-        Self::new(SceneEngine::Classic)
-    }
-}
-
 impl fmt::Debug for SharedSceneRenderer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter

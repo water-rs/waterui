@@ -24,64 +24,51 @@ mod icon;
 mod unified;
 mod web;
 
-/// Built-in font registry mapping font names to download URLs.
+/// A font the CLI can fetch when a crate names it and nothing else.
+#[derive(Debug, Clone, Deserialize)]
+struct RegistryFont {
+    /// Family name a crate declares.
+    name: String,
+    /// Where the face, or an archive containing it, is fetched from.
+    url: String,
+}
+
+/// The built-in font registry.
 ///
-/// These fonts can be declared in Cargo.toml with just a name:
+/// The list is data, so it lives in `assets/fonts.toml` rather than in Rust
+/// literals, and is parsed rather than compiled into a table. Fonts it offers
+/// can be declared in Cargo.toml with a name alone:
+///
 /// ```toml
 /// [[package.metadata.waterui.assets.font]]
 /// name = "Inter"
 /// ```
 ///
-/// Note: Icon pack fonts (Font Awesome, Material Icons, Lucide, etc.) should
-/// NOT be in this registry. They should declare their fonts in their own
-/// Cargo.toml with `remote_path` and `required-feature` fields.
-const FONT_REGISTRY: &[(&str, &str)] = &[
-    // Popular text fonts
-    (
-        "Inter",
-        "https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip",
-    ),
-    (
-        "Roboto",
-        "https://github.com/googlefonts/roboto/releases/download/v2.138/roboto-android.zip",
-    ),
-    (
-        "Noto Sans CJK JP",
-        "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/06_NotoSansCJKjp.zip",
-    ),
-    (
-        "Noto Sans CJK KR",
-        "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/07_NotoSansCJKkr.zip",
-    ),
-    (
-        "Noto Sans CJK SC",
-        "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/08_NotoSansCJKsc.zip",
-    ),
-    (
-        "Noto Sans CJK TC",
-        "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/09_NotoSansCJKtc.zip",
-    ),
-    (
-        "Noto Sans Arabic",
-        "https://github.com/notofonts/arabic/releases/download/NotoSansArabic-v2.013/NotoSansArabic-v2.013.zip",
-    ),
-    (
-        "Noto Sans Hebrew",
-        "https://github.com/notofonts/hebrew/releases/download/NotoSansHebrew-v3.001/NotoSansHebrew-v3.001.zip",
-    ),
-    (
-        "JetBrainsMono",
-        "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip",
-    ),
-    (
-        "FiraCode",
-        "https://github.com/tonsky/FiraCode/releases/download/6.2/Fira_Code_v6.2.zip",
-    ),
-    (
-        "SourceCodePro",
-        "https://github.com/adobe-fonts/source-code-pro/releases/download/2.042R-u%2F1.062R-i%2F1.026R-vf/OTF-source-code-pro-2.042R-u_1.062R-i.zip",
-    ),
-];
+/// Icon pack fonts (Font Awesome, Material Icons, Lucide, ...) do NOT belong
+/// here. They declare their own faces in their own Cargo.toml with
+/// `remote_path` and `required-feature`.
+#[derive(Debug, Clone, Deserialize)]
+struct FontRegistry {
+    #[serde(rename = "font")]
+    fonts: Vec<RegistryFont>,
+}
+
+impl FontRegistry {
+    /// The registry shipped with this CLI.
+    fn builtin() -> eyre::Result<Self> {
+        toml::from_str(include_str!("assets/fonts.toml")).wrap_err(
+            "built-in font registry `cli/src/project_model/assets/fonts.toml` is malformed",
+        )
+    }
+
+    /// Where `name` is fetched from, if the registry offers it.
+    fn url(&self, name: &str) -> Option<&str> {
+        self.fonts
+            .iter()
+            .find(|font| font.name == name)
+            .map(|font| font.url.as_str())
+    }
+}
 const HYDROLYSIS_DEFAULT_FONT_FAMILY: &str = "Roboto";
 const HYDROLYSIS_WEB_FONT_MANIFEST_FILE_NAME: &str = "waterui-fonts.json";
 const HYDROLYSIS_DEFAULT_FONT_FAMILIES: &[&str] = &[
@@ -363,6 +350,7 @@ pub async fn resolve_fonts(declarations: Vec<FontDeclaration>) -> eyre::Result<V
 
     let mut resolved = Vec::new();
     let cache_dir = cache_dir()?;
+    let registry = FontRegistry::builtin()?;
 
     for (name, decls) in by_name {
         // Sort by priority: Local > Remote > BuiltIn
@@ -402,13 +390,7 @@ pub async fn resolve_fonts(declarations: Vec<FontDeclaration>) -> eyre::Result<V
             },
             FontSource::Remote { url } => download_font(&name, url, &cache_dir).await?,
             FontSource::BuiltIn => {
-                // Look up in registry
-                let url = FONT_REGISTRY
-                    .iter()
-                    .find(|(n, _)| *n == name)
-                    .map(|(_, url)| *url);
-
-                if let Some(url) = url {
+                if let Some(url) = registry.url(&name) {
                     download_font(&name, url, &cache_dir).await?
                 } else {
                     warn!(
@@ -1107,24 +1089,72 @@ mod tests {
 
     #[test]
     fn test_font_registry_has_entries() {
-        assert!(!FONT_REGISTRY.is_empty());
-        assert!(FONT_REGISTRY.iter().any(|(name, _)| *name == "Inter"));
-        assert!(FONT_REGISTRY.iter().any(|(name, _)| *name == "Roboto"));
-        assert!(
-            FONT_REGISTRY
-                .iter()
-                .any(|(name, _)| *name == "Noto Sans CJK SC")
-        );
+        let registry = FontRegistry::builtin().expect("registry parses");
+        assert!(!registry.fonts.is_empty());
+        assert!(registry.url("Inter").is_some());
+        assert!(registry.url("Roboto").is_some());
+        assert!(registry.url("Noto Sans CJK SC").is_some());
         // Icon pack fonts should NOT be in the built-in registry
         assert!(
-            !FONT_REGISTRY
+            !registry
+                .fonts
                 .iter()
-                .any(|(name, _)| name.contains("Font Awesome"))
+                .any(|font| font.name.contains("Font Awesome"))
         );
         assert!(
-            !FONT_REGISTRY
+            !registry
+                .fonts
                 .iter()
-                .any(|(name, _)| name.contains("Material Design"))
+                .any(|font| font.name.contains("Material Design"))
+        );
+    }
+
+    /// The registry must offer a face carrying an OpenType `MATH` table, and it
+    /// must be reached through the archive code path.
+    #[test]
+    fn font_registry_offers_a_math_face() {
+        let registry = FontRegistry::builtin().expect("registry parses");
+        let url = registry
+            .url("STIX Two Math")
+            .expect("registry must offer an OpenType MATH font");
+        assert!(
+            is_zip_url(url),
+            "the math font must resolve through the archive path so the single \
+             matching face is extracted rather than the whole distribution"
+        );
+    }
+
+    /// `STIX Two Math` ships in the same archive as eight `STIX Two Text` faces,
+    /// none of which carry a `MATH` table. Picking a Text face would leave
+    /// formula layout with no table to read, and nothing downstream would say
+    /// so — the font would simply be there and be useless.
+    #[test]
+    fn math_face_wins_over_its_text_siblings_in_the_same_archive() {
+        let extracted = tempdir().expect("temp dir");
+        let root = extracted.path().join("static_otf");
+        fs::create_dir_all(&root).expect("create extract dir");
+        for face in [
+            "STIXTwoMath-Regular.otf",
+            "STIXTwoText-Bold.otf",
+            "STIXTwoText-BoldItalic.otf",
+            "STIXTwoText-Italic.otf",
+            "STIXTwoText-Medium.otf",
+            "STIXTwoText-MediumItalic.otf",
+            "STIXTwoText-Regular.otf",
+            "STIXTwoText-SemiBold.otf",
+            "STIXTwoText-SemiBoldItalic.otf",
+        ] {
+            fs::write(root.join(face), []).expect("write face");
+        }
+
+        let selected = smol::block_on(find_font_file(extracted.path(), "STIX Two Math"))
+            .expect("math face must be found");
+
+        assert_eq!(
+            selected.file_name().expect("selected face has a name"),
+            "STIXTwoMath-Regular.otf",
+            "selected {} instead of the Math face",
+            selected.display()
         );
     }
 
