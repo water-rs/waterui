@@ -145,7 +145,7 @@ unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsListIte
             let view_ptr: *mut WuiAnyView = jlong_to_ptr_mut(view_ptr);
             let any: waterui::AnyView = crate::IntoRust::into_rust(view_ptr);
             let ffi_struct: WuiListItem = (*any.downcast_unchecked::<ListItem>()).into_ffi();
-            crate::jni::convert::struct_to_java(env, &ffi_struct).into_raw()
+            crate::jni::convert::struct_to_java(env, ffi_struct).into_raw()
         }
     })
 }
