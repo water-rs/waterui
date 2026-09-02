@@ -167,7 +167,6 @@ fn capture_window_tree_renders_mixed_widgets() {
     let bounds = Rect::new(0.0, 0.0, 220.0, 200.0);
 
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(bounds);
     renderer.capture_window_tree(view, &env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(
         !renderer.scene_is_empty(),
@@ -187,7 +186,6 @@ fn flush_window_tree_reuses_retained_tree() {
         button("Tap").action(|| {}),
     )));
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(bounds);
     renderer.capture_window_tree(view, &env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     renderer.finish_rebuild_frame();
 
@@ -196,7 +194,7 @@ fn flush_window_tree_reuses_retained_tree() {
     // scene into the compositor's layer stack), so verify a Vello layer resulted.
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "a retained tree must be present to flush");
-    let (_, vello_layers, _) = renderer.render_layer_stats();
+    let vello_layers = renderer.render_layer_stats().vello_scene_layers;
     assert!(
         vello_layers > 0,
         "re-flushing the retained tree must produce a Vello scene layer"
@@ -1024,7 +1022,6 @@ fn lifecycle_hooks_fire_after_first_flush_and_on_drop() {
 
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(bounds);
     renderer.capture_window_tree(
         AnyView::new(()),
         &env,
@@ -1090,7 +1087,6 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
 
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(bounds);
     renderer.capture_window_tree(
         AnyView::new(()),
         &env,
@@ -1133,7 +1129,6 @@ fn applied_filter_renders_through_retained_tree() {
     let bounds = Rect::new(0.0, 0.0, 120.0, 120.0);
 
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(bounds);
     renderer.capture_window_tree(
         blurred_box(),
         &env,
