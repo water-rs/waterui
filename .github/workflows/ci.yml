@@ -279,6 +279,15 @@ jobs:
             exit 1
           fi
           bin="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # The wrapper is a shell script that execs `clang` beside it, so a
+          # half-restored NDK fails inside a `cc` build script six minutes
+          # later with nothing but "exit status 127". Prove the toolchain runs
+          # here instead, where the evidence is still on screen.
+          if ! "$bin/aarch64-linux-android$api-clang" --version; then
+            echo "::error::the NDK toolchain at $bin cannot compile for API $api"
+            ls -la "$bin" | head -60
+            exit 1
+          fi
           {
             echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
             echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT"
