@@ -1,7 +1,7 @@
-//! JNI bindings for WaterUI Android backend.
+//! JNI bindings for the `WaterUI` Android backend.
 //!
 //! This module provides pure Rust JNI bindings using jni-rs, replacing the
-//! previous C++ JNI layer (waterui_jni.cpp).
+//! previous C++ JNI layer (`waterui_jni.cpp`).
 //!
 //! The module is only compiled when the `android-jni` feature is enabled.
 
@@ -47,6 +47,10 @@ pub fn with_env<'local, T: Default>(
 }
 
 /// Attaches the current Rust thread to a JVM for the duration of one operation.
+///
+/// # Errors
+///
+/// Returns the JNI error when the thread cannot be attached to `vm`.
 pub fn with_attached_env<T>(
     vm: &JavaVM,
     operation: impl FnOnce(&mut Env<'_>) -> T,
@@ -55,18 +59,28 @@ pub fn with_attached_env<T>(
 }
 
 /// Converts a Rust collection length to the signed width required by JNI arrays.
+///
+/// # Panics
+///
+/// Panics when `len` exceeds `jint::MAX`, which no JNI array can represent.
+#[must_use]
 pub fn array_len(len: usize) -> jint {
     jint::try_from(len).expect("JNI array length exceeds jint capacity")
 }
 
-/// Convert a WuiTypeId to a Java TypeIdStruct object.
+/// Convert a `WuiTypeId` to a Java `TypeIdStruct` object.
+///
+/// # Panics
+///
+/// Panics when the `TypeIdStruct` class or its constructor is missing from the
+/// running Android runtime.
 pub fn type_id_to_java<'local>(
     env: &mut Env<'local>,
     type_id: crate::WuiTypeId,
 ) -> JObject<'local> {
     // TypeIdStruct is (low, high) to match Kotlin WuiTypeId(low, high).
-    let low = type_id.low as jlong;
-    let high = type_id.high as jlong;
+    let low = type_id.low.cast_signed();
+    let high = type_id.high.cast_signed();
     env.new_object(
         jni_str!("dev/waterui/android/runtime/TypeIdStruct"),
         jni_sig!("(JJ)V"),
@@ -75,10 +89,15 @@ pub fn type_id_to_java<'local>(
     .expect("Failed to create TypeIdStruct")
 }
 
-/// Extracts (data_ptr, call_ptr, drop_ptr) from a Java WatcherStruct object.
+/// Extracts (`data_ptr`, `call_ptr`, `drop_ptr`) from a Java `WatcherStruct` object.
 ///
 /// This function is used by the generated JNI watch functions in `ffi_computed!`
 /// and `ffi_binding!` macros to extract the watcher callback pointers.
+///
+/// # Panics
+///
+/// Panics when `watcher` is not a `WatcherStruct`, whose three `long` fields this
+/// reads by name.
 pub fn extract_watcher_struct(env: &mut Env<'_>, watcher: &JObject) -> (jlong, jlong, jlong) {
     let data_ptr = env
         .get_field(watcher, jni_str!("dataPtr"), jni_sig!("J"))

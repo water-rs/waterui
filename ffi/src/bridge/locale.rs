@@ -94,6 +94,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallLocaleTag<'
 ) {
     crate::jni::with_env(&mut jni_env, |jni_env| {
         let locale_tag = crate::jni::convert::string_from_java(jni_env, &locale_tag);
+        // SAFETY: the Android runtime passes back the `WuiEnv` handle it received
+        // from `waterui_init`, and holds it for the duration of this call.
         let env = unsafe { crate::borrow_ffi_mut(env_ptr as *mut WuiEnv) };
         install_locale_tag(env, &locale_tag);
     });

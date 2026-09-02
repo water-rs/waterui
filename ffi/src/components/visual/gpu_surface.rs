@@ -1169,6 +1169,9 @@ pub(crate) fn create_surface_from_layer(
     let window_ptr = NonNull::new(layer).expect("ANativeWindow pointer must be non-null");
     let handle = AndroidNdkWindowHandle::new(window_ptr);
 
+    // SAFETY: `create_surface_unsafe` requires the raw handle to stay valid for as
+    // long as the returned surface. `layer` is the `ANativeWindow*` the Android
+    // backend holds for this surface and releases only after dropping it.
     unsafe {
         instance
             .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {

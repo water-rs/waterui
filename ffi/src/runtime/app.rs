@@ -91,6 +91,7 @@ impl WuiApp {
     /// Projects and transfers the two Android-owned handles across the C ABI.
     #[cfg(feature = "android-jni")]
     #[doc(hidden)]
+    #[must_use]
     pub fn into_android_handles(self) -> WuiAndroidAppHandles {
         let (content, env) = self.into_android_projection().into_raw_parts();
         WuiAndroidAppHandles {

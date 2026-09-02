@@ -23,6 +23,55 @@ opaque!(WuiWatcherMetadata, Metadata, watcher_metadata, any());
 
 opaque!(WuiWatcherGuard, BoxWatcherGuard, box_watcher_guard, any());
 
+/// Owns one Kotlin watcher registration for as long as a Rust signal holds it.
+///
+/// The Android runtime hands `watchBinding*` / `watchComputed*` a `WatcherStruct`
+/// of three `long`s: the callback payload, the call entry point, and the drop
+/// entry point. The signal keeps the callback closure alive, so this releases the
+/// payload through `drop_fn` exactly when that closure is dropped.
+#[cfg(feature = "android-jni")]
+pub struct JniWatcherCleaner {
+    data: *mut (),
+    drop_fn: unsafe extern "C" fn(*mut ()),
+}
+
+#[cfg(feature = "android-jni")]
+impl fmt::Debug for JniWatcherCleaner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JniWatcherCleaner").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "android-jni")]
+impl JniWatcherCleaner {
+    /// Takes ownership of one watcher registration.
+    ///
+    /// # Safety
+    ///
+    /// `data` and `drop_fn` must be the payload and drop entry point of a single
+    /// `WatcherStruct` the Android runtime produced, and ownership of `data` must
+    /// pass to this value: nothing else may release it.
+    #[must_use]
+    pub const unsafe fn new(data: *mut (), drop_fn: unsafe extern "C" fn(*mut ())) -> Self {
+        Self { data, drop_fn }
+    }
+
+    /// The callback payload to pass back to the runtime's call entry point.
+    #[must_use]
+    pub const fn data(&self) -> *mut () {
+        self.data
+    }
+}
+
+#[cfg(feature = "android-jni")]
+impl Drop for JniWatcherCleaner {
+    fn drop(&mut self) {
+        // SAFETY: `new` took ownership of a matched (`data`, `drop_fn`) pair from the
+        // runtime, and `Drop::drop` runs once, so the payload is released once.
+        unsafe { (self.drop_fn)(self.data) }
+    }
+}
+
 /// FFI-owned wrapper around a [`waterui::Computed`] signal.
 ///
 /// Opaque to native code; accessed only through the `waterui_read_computed_*`,
@@ -367,6 +416,8 @@ macro_rules! ffi_computed {
                 _class: $crate::jni::JClass<'local>,
                 computed_ptr: $crate::jni::jlong,
             ) {
+                // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns
+                // one `WuiComputed<$ty>`, and the runtime drops each handle once.
                 unsafe { drop(alloc::boxed::Box::from_raw(computed_ptr as *mut $crate::reactive::WuiComputed<$ty>)) };
             }
 
@@ -387,28 +438,23 @@ macro_rules! ffi_computed {
                 $crate::jni::with_env(&mut env, |env| {
                 let (data_ptr, call_ptr, drop_ptr) = $crate::jni::extract_watcher_struct(env, &watcher);
 
-                // Cast function pointers
                 let call_fn: unsafe extern "C" fn(*mut (), $ffi, *mut $crate::reactive::WuiWatcherMetadata) =
+                    // SAFETY: `extract_watcher_struct` read the three fields of one
+                    // `WatcherStruct`, so `call_ptr` is the entry point the runtime
+                    // registered for a `$ffi` value, which is what this signature restates.
                     unsafe { core::mem::transmute(call_ptr as *const ()) };
                 let drop_fn: unsafe extern "C" fn(*mut ()) =
+                    // SAFETY: as above, for the drop entry point of the same struct.
                     unsafe { core::mem::transmute(drop_ptr as *const ()) };
 
-                // Get the computed reference
+                // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns
+                // one `WuiComputed<$ty>` and outlives the guard returned below.
                 let computed = unsafe { &*(computed_ptr as *const $crate::reactive::WuiComputed<$ty>) };
 
-                // Create a cleaner to ensure drop_fn is called when the watcher is dropped
-                struct Cleaner {
-                    data: *mut (),
-                    drop_fn: unsafe extern "C" fn(*mut ()),
-                }
-                impl Drop for Cleaner {
-                    fn drop(&mut self) {
-                        unsafe { (self.drop_fn)(self.data) }
-                    }
-                }
-                let cleaner = Rc::new(Cleaner {
-                    data: data_ptr as *mut (),
-                    drop_fn,
+                // SAFETY: `data_ptr` and `drop_fn` come from the same `WatcherStruct`, and
+                // this registration is the only owner of that payload.
+                let cleaner = Rc::new(unsafe {
+                    $crate::reactive::JniWatcherCleaner::new(data_ptr as *mut (), drop_fn)
                 });
                 let cleaner_clone = cleaner.clone();
 
@@ -417,8 +463,10 @@ macro_rules! ffi_computed {
                     let cleaner = Rc::clone(&cleaner_clone);
                     let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
                     let value: $ty = ctx.into_value();
+                    // SAFETY: `cleaner` still owns the payload `call_fn` was registered
+                    // with, and both FFI values are freshly created for this one call.
                     unsafe {
-                        call_fn(cleaner.data, value.into_ffi(), metadata.into_ffi());
+                        call_fn(cleaner.data(), value.into_ffi(), metadata.into_ffi());
                     }
                 });
 
@@ -571,6 +619,8 @@ macro_rules! ffi_binding {
                 _class: $crate::jni::JClass<'local>,
                 binding_ptr: $crate::jni::jlong,
             ) {
+                // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns
+                // one `WuiBinding<$ty>`, and the runtime drops each handle once.
                 unsafe { drop(alloc::boxed::Box::from_raw(binding_ptr as *mut $crate::reactive::WuiBinding<$ty>)) };
             }
 
@@ -591,28 +641,23 @@ macro_rules! ffi_binding {
                 $crate::jni::with_env(&mut env, |env| {
                 let (data_ptr, call_ptr, drop_ptr) = $crate::jni::extract_watcher_struct(env, &watcher);
 
-                // Cast function pointers
                 let call_fn: unsafe extern "C" fn(*mut (), $ffi, *mut $crate::reactive::WuiWatcherMetadata) =
+                    // SAFETY: `extract_watcher_struct` read the three fields of one
+                    // `WatcherStruct`, so `call_ptr` is the entry point the runtime
+                    // registered for a `$ffi` value, which is what this signature restates.
                     unsafe { core::mem::transmute(call_ptr as *const ()) };
                 let drop_fn: unsafe extern "C" fn(*mut ()) =
+                    // SAFETY: as above, for the drop entry point of the same struct.
                     unsafe { core::mem::transmute(drop_ptr as *const ()) };
 
-                // Get the binding reference
+                // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns
+                // one `WuiBinding<$ty>` and outlives the guard returned below.
                 let binding = unsafe { &*(binding_ptr as *const $crate::reactive::WuiBinding<$ty>) };
 
-                // Create a cleaner to ensure drop_fn is called when the watcher is dropped
-                struct Cleaner {
-                    data: *mut (),
-                    drop_fn: unsafe extern "C" fn(*mut ()),
-                }
-                impl Drop for Cleaner {
-                    fn drop(&mut self) {
-                        unsafe { (self.drop_fn)(self.data) }
-                    }
-                }
-                let cleaner = Rc::new(Cleaner {
-                    data: data_ptr as *mut (),
-                    drop_fn,
+                // SAFETY: `data_ptr` and `drop_fn` come from the same `WatcherStruct`, and
+                // this registration is the only owner of that payload.
+                let cleaner = Rc::new(unsafe {
+                    $crate::reactive::JniWatcherCleaner::new(data_ptr as *mut (), drop_fn)
                 });
                 let cleaner_clone = cleaner.clone();
 
@@ -621,8 +666,10 @@ macro_rules! ffi_binding {
                     let cleaner = Rc::clone(&cleaner_clone);
                     let metadata: waterui::reactive::watcher::Metadata = ctx.metadata().clone();
                     let value: $ty = ctx.into_value();
+                    // SAFETY: `cleaner` still owns the payload `call_fn` was registered
+                    // with, and both FFI values are freshly created for this one call.
                     unsafe {
-                        call_fn(cleaner.data, value.into_ffi(), metadata.into_ffi());
+                        call_fn(cleaner.data(), value.into_ffi(), metadata.into_ffi());
                     }
                 });
 
@@ -744,6 +791,8 @@ macro_rules! jni_binding_primitive {
                 binding_ptr: $crate::jni::jlong,
             ) -> <$rust_ty as $crate::jni::JniPrimitive>::Jni {
                 use $crate::jni::JniPrimitive;
+                // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns
+                // one live `WuiBinding<$rust_ty>` and is only read here.
                 let binding = unsafe { &*(binding_ptr as *const $crate::reactive::WuiBinding<$rust_ty>) };
                 binding.get().to_jni()
             }
@@ -757,6 +806,9 @@ macro_rules! jni_binding_primitive {
                 value: <$rust_ty as $crate::jni::JniPrimitive>::Jni,
             ) {
                 use $crate::jni::JniPrimitive;
+                // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns
+                // one live `WuiBinding<$rust_ty>`; `Binding::set` needs only a shared
+                // reference.
                 let binding = unsafe { &*(binding_ptr as *const $crate::reactive::WuiBinding<$rust_ty>) };
                 binding.set(<$rust_ty>::from_jni(value));
             }
@@ -778,6 +830,8 @@ macro_rules! jni_computed_primitive {
             ) -> <$rust_ty as $crate::jni::JniPrimitive>::Jni {
                 use waterui::Signal;
                 use $crate::jni::JniPrimitive;
+                // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns
+                // one live `WuiComputed<$rust_ty>` and is only read here.
                 let computed = unsafe { &*(computed_ptr as *const $crate::reactive::WuiComputed<$rust_ty>) };
                 computed.get().to_jni()
             }
@@ -1019,7 +1073,10 @@ mod tests {
         let data = unsafe { &*data.cast::<NativeWatcherData>() };
         data.events.borrow_mut().push("call");
         // SAFETY: the watcher hands the callback an owning metadata handle to release.
-        unsafe { super::waterui_drop_watcher_metadata(metadata) };
+        // `into_rust` is the exact inverse of the `into_ffi` that produced it, and is
+        // what the C entry point `waterui_drop_watcher_metadata` does internally — but
+        // that entry point only exists under `c-api`, and this test is ABI-agnostic.
+        drop(unsafe { <*mut WuiWatcherMetadata as crate::IntoRust>::into_rust(metadata) });
     }
 
     unsafe extern "C" fn record_drop(data: *mut ()) {
