@@ -130,6 +130,7 @@ waterui-graphics = { version = "0.3.0", path = "components/visual/graphics", def
 waterui-canvas = { version = "0.1.0", path = "components/visual/canvas" }
 waterui-shape = { version = "0.1.0", path = "components/foundation/shape", default-features = false }
 waterui-svg = { version = "0.1.0", path = "components/visual/svg" }
+waterui-math = { version = "0.1.0", path = "components/visual/math" }
 waterui-ffi = { version = "0.3.0", path = "ffi" }
 waterui-layout = { version = "0.3.0", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.3.0", path = "components/foundation/navigation" }
