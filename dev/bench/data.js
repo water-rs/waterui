@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788348302061,
+  "lastUpdate": 1788348305441,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -2009,6 +2009,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 43412,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ce31ee685c242b052555d89dd8b064c40f3eba95",
+          "message": "Merge pull request #242 from water-rs/agent/hydrolysis-scene-engine-per-adapter-v2\n\nfix(hydrolysis): keep materialized views out of the address-keyed measure cache",
+          "timestamp": "2026-09-02T09:22:39Z",
+          "url": "https://github.com/water-rs/waterui/commit/ce31ee685c242b052555d89dd8b064c40f3eba95"
+        },
+        "date": 1788348304821,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 6829201,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 6009994,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 81730,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 50399,
             "unit": "us"
           }
         ]
