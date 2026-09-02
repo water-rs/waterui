@@ -1547,6 +1547,10 @@ fn rich_text_element_text_len(element: &RichTextElement) -> usize {
         RichTextElement::Group { elements, .. } => {
             elements.iter().map(rich_text_element_text_len).sum()
         }
+        // A formula's LaTeX source is not prose, so it does not count toward
+        // the visible character budget the streaming renderer meters.
+        #[cfg(feature = "markdown-math")]
+        RichTextElement::Math { .. } => 0,
         RichTextElement::Divider => 0,
     }
 }
@@ -1644,6 +1648,11 @@ fn truncate_rich_text_element(
                 Some(RichTextElement::Quote { content: kept })
             }
         }
+        // A formula reveals whole or not at all: there is no meaningful way to
+        // show the first few characters of one, and typing out its LaTeX would
+        // show the reader the source rather than the formula.
+        #[cfg(feature = "markdown-math")]
+        RichTextElement::Math { .. } => (*remaining > 0).then_some(element.clone()),
         // For non-textual structures we only show them after at least one text character
         // from this typewriter window has been revealed.
         RichTextElement::Divider
