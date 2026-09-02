@@ -472,9 +472,11 @@ unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_navigationStac
 ) -> crate::jni::jlong {
     use crate::jni::convert::{jlong_to_ptr, jlong_to_ptr_mut};
 
-    let root = unsafe { jlong_to_ptr_mut(root_ptr) };
-    let env = unsafe { jlong_to_ptr(env_ptr) };
-    let resolved = unsafe { resolve_navigation_stack_root(root, env) };
+    // SAFETY: the caller contract above makes `root_ptr` an owning unresolved stack
+    // root and `env_ptr` a live controller-scoped environment, which is exactly what
+    // `resolve_navigation_stack_root` requires of the two pointers.
+    let resolved =
+        unsafe { resolve_navigation_stack_root(jlong_to_ptr_mut(root_ptr), jlong_to_ptr(env_ptr)) };
     resolved as crate::jni::jlong
 }
 
@@ -607,8 +609,12 @@ unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropSplitNavig
     ptr: crate::jni::jlong,
 ) {
     use crate::jni::convert::jlong_to_ptr_mut;
-    let ptr: *mut WuiNavigationSplitDetail = unsafe { jlong_to_ptr_mut(ptr) };
-    let _ = unsafe { crate::IntoRust::into_rust(ptr) };
+    // SAFETY: the caller contract above makes `ptr` an owning handle that has not been
+    // dropped, so reclaiming it once frees it exactly once.
+    unsafe {
+        let ptr: *mut WuiNavigationSplitDetail = jlong_to_ptr_mut(ptr);
+        let _ = crate::IntoRust::into_rust(ptr);
+    }
 }
 
 /// Resolves the active detail navigation view for a selected split identifier.
