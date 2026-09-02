@@ -1,0 +1,15 @@
+[package]
+name = "waterui-watcher-set"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Removable event-watcher registry for WaterUI"
+keywords = ["watcher", "observer", "callback", "events", "waterui"]
+categories = ["data-structures", "no-std"]
+
+[lints]
+workspace = true

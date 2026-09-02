@@ -20,7 +20,8 @@ use futures::channel::oneshot;
 use num_traits::ToPrimitive as _;
 use waterui_str::Str;
 use waterui_url::Url;
-use waterui_webview::{BackendEvent, WatcherSet, WebViewError, WebViewEvent, bridge};
+use waterui_watcher_set::WatcherSet;
+use waterui_webview::{BackendEvent, WebViewError, WebViewEvent, bridge};
 use wgpu_external_frame::dma_buf::DmaBufFrame;
 
 use crate::abi::{WaterWpeBytes, WaterWpeFrame, WaterWpePage};

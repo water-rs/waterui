@@ -119,6 +119,7 @@ uuid = { version = "1.24.0", default-features = false, features = ["v4", "std"] 
 waterui-core = { version = "0.3.0", path = "core" }
 waterui-str = { version = "0.3.0", path = "utils/str" }
 waterui-url = { version = "0.3.0", path = "utils/url" }
+waterui-watcher-set = { version = "0.1.0", path = "utils/watcher-set" }
 waterui-text = { version = "0.3.0", path = "components/foundation/text" }
 waterui-media = { version = "0.3.0", path = "components/multimedia/media" }
 waterui-image = { version = "0.3.0", path = "components/visual/image" }
