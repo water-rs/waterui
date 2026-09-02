@@ -8,7 +8,8 @@
 
 use waterui_core::{AnyView, Environment, Metadata, Retain, view::Hook};
 use waterui_graphics::gpu_surface::GpuSurface;
-use waterui_webview::{WebView, WebViewController, web_surface_semantics};
+use waterui_web_surface::web_surface_semantics;
+use waterui_webview::{WebView, WebViewController};
 
 use crate::{WpeController, WpeWebViewHandle, gpu_view_with_input};
 

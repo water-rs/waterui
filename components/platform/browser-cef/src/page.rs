@@ -34,7 +34,9 @@ use waterui_chromium::{
 use waterui_core::{Computed, Signal};
 use waterui_url::Url;
 #[cfg(feature = "webview")]
-use waterui_webview::{BackendEvent, WatcherSet, WebViewError, WebViewEvent};
+use waterui_watcher_set::WatcherSet;
+#[cfg(feature = "webview")]
+use waterui_webview::{BackendEvent, WebViewError, WebViewEvent};
 
 #[cfg(feature = "chromium")]
 use crate::cdp::CefCdpError;
@@ -1165,7 +1167,7 @@ impl CefPageHandle {
     pub(crate) fn watch_webview(
         &self,
         watcher: impl Fn(BackendEvent) + 'static,
-    ) -> waterui_webview::WatcherGuard {
+    ) -> waterui_watcher_set::WatcherGuard {
         self.state.webview_watchers.insert(watcher)
     }
 

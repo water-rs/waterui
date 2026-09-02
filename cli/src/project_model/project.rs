@@ -1821,6 +1821,16 @@ mod webview_backend_tests {
             !chromium.contains_key("waterui-browser-wpe"),
             "Chromium example graph: {chromium:#?}"
         );
+        // A Chromium-only application shows no standard `WebView`, so
+        // `webview_enabled` must be false for it: the Apple scaffold reads this
+        // graph to decide whether to link the `WaterUICefWebView` framework, and
+        // the CEF crate's `chromium` feature used to drag `waterui-webview` in
+        // for nothing more than a watcher registry and an accessibility helper.
+        assert!(
+            !chromium.contains_key("waterui-webview"),
+            "a Chromium-only application must not link the standard WebView \
+             component: {chromium:#?}"
+        );
 
         let webview = smol::block_on(resolve_linked_runtime_packages(
             repository.join("examples/webview"),

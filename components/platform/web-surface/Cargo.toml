@@ -1,0 +1,18 @@
+[package]
+name = "waterui-web-surface"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Accessibility contract shared by every WaterUI web-surface realization"
+keywords = ["webview", "browser", "accessibility", "waterui", "gui"]
+categories = ["gui", "web-programming"]
+
+[dependencies]
+waterui-core.workspace = true
+
+[lints]
+workspace = true

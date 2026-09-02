@@ -1,12 +1,21 @@
-//! A removable watcher registry shared by every `WebView` backend.
+//! A removable watcher registry for `WaterUI` event sources.
 //!
-//! Each backend used to keep its own `Vec` of event callbacks with no way to
-//! remove one, so a watcher registered by a short-lived view stayed registered
-//! for the lifetime of the web view. This registry owns that bookkeeping once:
-//! registration hands back a guard, and dropping the guard unregisters.
+//! An event source that keeps its own `Vec` of callbacks has no way to remove
+//! one, so a watcher registered by a short-lived observer stays registered for
+//! the lifetime of the source — and whatever that watcher captured stays alive
+//! with it. This registry owns that bookkeeping once: registration hands back a
+//! guard, and dropping the guard unregisters.
+//!
+//! The registry is single-threaded, like the rest of `WaterUI`'s UI layer.
 
-use std::cell::RefCell;
-use std::rc::{Rc, Weak};
+#![no_std]
+
+extern crate alloc;
+
+use alloc::boxed::Box;
+use alloc::rc::{Rc, Weak};
+use alloc::vec::Vec;
+use core::cell::RefCell;
 
 type Watcher<T> = Rc<dyn Fn(T)>;
 
@@ -161,8 +170,10 @@ impl Drop for WatcherGuard {
 #[cfg(test)]
 mod tests {
     use super::WatcherSet;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use alloc::rc::Rc;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use core::cell::RefCell;
 
     #[test]
     fn watchers_receive_events_in_registration_order() {
