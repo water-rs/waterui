@@ -20,6 +20,7 @@
 #[cfg(feature = "accessibility")]
 mod accessibility;
 mod bindings;
+mod color;
 mod effects;
 mod frame;
 mod identity;
@@ -139,7 +140,7 @@ use waterui_form::picker::PickerConfig;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
-use waterui_graphics::color::{Color, ResolvedColor, Srgb};
+use waterui_graphics::color::{Color, ResolvedColor};
 
 use shaderloom::WgslModuleCache;
 use waterui_graphics::filter_view::{EffectContext, EffectInput, EffectOutput};

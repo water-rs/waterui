@@ -32,21 +32,6 @@ pub(crate) fn scene_has_content(scene: &vello::Scene) -> bool {
     !encoding.is_empty() || !encoding.resources.glyph_runs.is_empty()
 }
 
-pub(crate) fn color_to_wgpu(color: vello::peniko::Color) -> wgpu::Color {
-    let linear = ResolvedColor::from_srgb(Srgb::new(
-        color.components[0],
-        color.components[1],
-        color.components[2],
-    ))
-    .linear_with_headroom();
-    wgpu::Color {
-        r: f64::from(linear[0]),
-        g: f64::from(linear[1]),
-        b: f64::from(linear[2]),
-        a: f64::from(color.components[3]),
-    }
-}
-
 impl HydrolysisRenderer {
     /// Records the window's logical bounds and the root transform that maps
     /// them onto the target's physical pixel grid.

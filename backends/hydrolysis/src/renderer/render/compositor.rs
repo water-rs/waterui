@@ -1,4 +1,5 @@
 use super::*;
+use crate::renderer::color::TargetEncoding;
 use core::num::NonZeroU32;
 #[cfg(hydrolysis_macos_system_webview)]
 use objc2::rc::Retained;
@@ -1489,6 +1490,7 @@ impl HydrolysisRenderer {
         queue: &wgpu::Queue,
         target: &wgpu::TextureView,
         base_color: vello::peniko::Color,
+        encoding: TargetEncoding,
     ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("hydrolysis_surface_clear_encoder"),
@@ -1500,7 +1502,7 @@ impl HydrolysisRenderer {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(color_to_wgpu(base_color)),
+                    load: wgpu::LoadOp::Clear(encoding.clear_value(base_color)),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -1587,7 +1589,9 @@ impl HydrolysisRenderer {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(color_to_wgpu(target.base_color)),
+                    load: wgpu::LoadOp::Clear(
+                        TargetEncoding::of(target.format).clear_value(target.base_color),
+                    ),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -1622,8 +1626,15 @@ impl HydrolysisRenderer {
 
         self.flush_vello_scene_layer();
         self.frame_direct_gpu_surfaces = 0;
-        let fullscreen_uniform =
-            encode_compositor_uniform([[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]], true);
+        // The scene the compositor samples is always sRGB. Whether it should be
+        // decoded depends on what the attachment does next, which is the
+        // target's format and nothing else — hard-coding it here is what made
+        // every colour come out as `srgb_to_linear` of itself (#233).
+        let encoding = TargetEncoding::of(target.format);
+        let fullscreen_uniform = encode_compositor_uniform(
+            [[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]],
+            encoding.compositor_decodes_source(),
+        );
         let mut render_layers = core::mem::take(&mut self.compositor.render_layers);
         let transient_layer_count =
             if let Some(scene) = self.transient_scene.take().filter(scene_has_content) {
@@ -1633,7 +1644,13 @@ impl HydrolysisRenderer {
                 0
             };
         if render_layers.is_empty() {
-            self.clear_target_surface(target.device, target.queue, target.view, target.base_color);
+            self.clear_target_surface(
+                target.device,
+                target.queue,
+                target.view,
+                target.base_color,
+                encoding,
+            );
             return;
         }
         // The last condition is the one the layer could not answer for itself:
@@ -1691,6 +1708,7 @@ impl HydrolysisRenderer {
                     target.queue,
                     target.view,
                     target.base_color,
+                    encoding,
                 );
                 self.compositor.render_layers = render_layers;
                 return;
@@ -1879,7 +1897,13 @@ impl HydrolysisRenderer {
 
         // Phase 2 — one render pass, one submit, painter's order.
         if ready.is_empty() {
-            self.clear_target_surface(target.device, target.queue, target.view, target.base_color);
+            self.clear_target_surface(
+                target.device,
+                target.queue,
+                target.view,
+                target.base_color,
+                encoding,
+            );
         } else {
             self.composite_ready_layers(&target, &ready);
         }
