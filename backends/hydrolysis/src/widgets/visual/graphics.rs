@@ -4,7 +4,7 @@ use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{Environment, Native};
 use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_graphics::view_effect::ViewEffectErased;
-use waterui_graphics::{GpuSurface, ResolvedGradient, SceneView};
+use waterui_graphics::{GpuSurface, ResolvedGradient, SceneView, resolve_scene_proposal};
 use waterui_shape::{ResolvedMorphShape, ResolvedShape};
 
 impl HydroNativeView for Native<GpuSurface> {
@@ -23,17 +23,24 @@ impl HydroNativeView for Native<GpuSurface> {
 }
 
 impl HydroNativeView for Native<SceneView> {
-    fn intrinsic(_state: &mut HydroState, _view: &Self, _env: &Environment) -> LayoutSize {
-        LayoutSize::zero()
+    fn intrinsic(_state: &mut HydroState, view: &Self, _env: &Environment) -> LayoutSize {
+        view.as_inner()
+            .intrinsic_size()
+            .unwrap_or_else(LayoutSize::zero)
     }
 
     fn dimensions(
         _state: &mut HydroState,
-        _view: &Self,
+        view: &Self,
         _env: &Environment,
         proposal: ProposalSize,
     ) -> ViewDimensions {
-        graphics_dimensions_from_proposal(proposal)
+        // Scene content that is naturally a size answers with it wherever the
+        // container left an axis open; content that is not fills the proposal.
+        graphics_dimensions_from_proposal(resolve_scene_proposal(
+            view.as_inner().intrinsic_size(),
+            proposal,
+        ))
     }
 }
 

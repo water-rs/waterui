@@ -3,6 +3,7 @@
 //! child frames for the flush pass.
 
 use super::*;
+use waterui_graphics::{resolve_scene_proposal, scene_stretch_axis};
 
 impl RenderNode {
     /// The stretch axis this node exposes when it is a layout child.
@@ -94,7 +95,11 @@ impl RenderNode {
             RenderNode::Retain(node) => node.child.stretch(),
             RenderNode::Env(node) => node.child.stretch(),
             RenderNode::Dynamic(node) => node.child.stretch(),
-            RenderNode::SceneView(_) => StretchAxis::Both,
+            // Scene content that is naturally a size is content-sized and claims
+            // no leftover space; content that has no size of its own fills.
+            RenderNode::SceneView(node) => {
+                scene_stretch_axis(node.content.borrow().intrinsic_size())
+            }
             // A GpuSurface fills its proposal (`GpuView::stretch_axis` default);
             // a ViewEffect is a `StretchAxis::None` raw view; an AppliedFilter is
             // a layout-transparent wrapper delegating to its child.
@@ -156,10 +161,17 @@ impl RenderNode {
             RenderNode::Retain(node) => node.child.measure(state, env, proposal),
             RenderNode::Env(node) => node.child.measure(state, &node.env, proposal),
             RenderNode::Dynamic(node) => node.child.measure(state, env, proposal),
-            RenderNode::SceneView(_) => ViewDimensions::new(Size::new(
-                proposal.width.unwrap_or(0.0),
-                proposal.height.unwrap_or(0.0),
-            )),
+            // Scene content that is naturally a size (an SVG's viewBox, a
+            // formula's typeset box) answers with it on whichever axis the
+            // container left open; content that is not fills the proposal.
+            RenderNode::SceneView(node) => {
+                let resolved =
+                    resolve_scene_proposal(node.content.borrow().intrinsic_size(), proposal);
+                ViewDimensions::new(Size::new(
+                    resolved.width.unwrap_or(0.0),
+                    resolved.height.unwrap_or(0.0),
+                ))
+            }
             // A GpuSurface fills its proposal, like a self-drawn scene.
             RenderNode::GpuSurface(_) => ViewDimensions::new(Size::new(
                 proposal.width.unwrap_or(0.0),
