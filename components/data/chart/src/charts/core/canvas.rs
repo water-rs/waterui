@@ -1375,15 +1375,15 @@ pub(crate) fn radar_geometry(ctx: &DrawingContext<'_>, data: &RadarData) -> HitT
         if series.values.len() < axis_count {
             continue;
         }
-        for axis in 0..axis_count {
-            let ratio = (series.values[axis] / max_value).clamp(0.0, 1.0);
+        for (axis, &value) in series.values.iter().enumerate().take(axis_count) {
+            let ratio = (value / max_value).clamp(0.0, 1.0);
             let angle = -FRAC_PI_2 + usize_to_f32(axis) * TAU / usize_to_f32(axis_count);
             let anchor = Point::new(
                 (angle.cos() * radius).mul_add(ratio, center.x),
                 (angle.sin() * radius).mul_add(ratio, center.y),
             );
             let label = data.labels.as_slice().get(axis).cloned();
-            let datum = RadarDatum::new(axis, label, series.values[axis]);
+            let datum = RadarDatum::new(axis, label, value);
             targets.push_circle(
                 HitResult::new(series_index, axis, datum, anchor),
                 anchor,
@@ -2092,8 +2092,8 @@ pub(crate) fn draw_radar(
         }
 
         let mut poly = Path::new();
-        for axis in 0..axis_count {
-            let ratio = (series.values[axis] / max_value).clamp(0.0, 1.0);
+        for (axis, &value) in series.values.iter().enumerate().take(axis_count) {
+            let ratio = (value / max_value).clamp(0.0, 1.0);
             let angle = -FRAC_PI_2 + usize_to_f32(axis) * TAU / usize_to_f32(axis_count);
             let p = Point::new(
                 (angle.cos() * radius).mul_add(ratio, center.x),
