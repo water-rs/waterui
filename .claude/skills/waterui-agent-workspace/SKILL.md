@@ -99,6 +99,15 @@ fast-forwarded`. Releasing the slot then has to be done by hand: confirm with
 every submodule back on their integration branch, and delete the spent agent
 branches in the superproject *and* in each submodule.
 
+**Then rebase the topic branch onto `origin/dev` — GitHub's — before opening the
+pull request, and check that `git log origin/dev..HEAD` lists only your own
+commits.** `create_workspace.sh` branches from the *local canonical* `dev`, and
+that is routinely ahead of GitHub while anyone has a pull request in flight or a
+superseded commit sitting on it. Whatever it carries becomes part of your pull
+request: a diff touching files you never opened, and someone else's failing test
+attributed to your change. Once the topic branch is pushed, leave canonical `dev`
+at `origin/dev` so the next workspace does not inherit the same passengers.
+
 7. Never use `git worktree` for this repository.
 
 8. Never set `CARGO_TARGET_DIR` or Cargo `build.target-dir` for this repository. This workflow depends on per-workspace `target/` directories plus shared `sccache`.
