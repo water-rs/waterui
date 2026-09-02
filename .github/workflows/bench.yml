@@ -45,27 +45,112 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # Which bench legs the run below executes.
+  #
+  # The rule: the macOS leg runs when the code it measures changes.
+  #
+  # macOS is the only leg with a real GPU and therefore the only full-shape
+  # measurement, so it cannot simply be dropped from pull requests. It is also
+  # the org's scarcest runner — macOS concurrency is the CI bottleneck, and
+  # every pull request already holds three macOS jobs. So on a pull request the
+  # macOS leg is spent only when the diff touches something the two bench
+  # suites actually execute; every other pull request runs Linux and Windows
+  # only. `schedule` and `workflow_dispatch` are unaffected and always run the
+  # full matrix, which is what keeps the `bench-history` trend series complete.
+  #
+  # No checkout: for a `pull_request` event dorny/paths-filter reads the
+  # changed files from the API, so this job is a few seconds of API calls.
+  select-legs:
+    name: Select bench legs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # dorny/paths-filter lists the pull request's changed files.
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.legs.outputs.matrix }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            perf:
+              # The two bench suites this workflow runs (`water bench --path`).
+              - "examples/stress/**"
+              - "examples/list/**"
+              # The harness that measures them: the `#[waterui::bench]`
+              # expansion, the `PerfApp` frame pump and in-process budget
+              # evaluation, the `water bench` runner, and the report / env-var
+              # contract the runner and the harness share.
+              - "macros/**"
+              - "testing/**"
+              - "cli/src/bench/**"
+              - "cli/src/terminal/commands/bench.rs"
+              - "components/devtools/preview/protocol/**"
+              # What renders every measured frame. Both benches install
+              # `hydrolysis_m3::install` as their theme and are driven by the
+              # Hydrolysis GPU renderer through the shared backend contract.
+              - "backends/core/**"
+              - "backends/hydrolysis/**"
+              - "backends/hydrolysis_m3/**"
+              - "backends/dew/**"
+              # Foundations both scenes go through: the View contract and
+              # reactivity, layout / text / shape / controls, the colour and
+              # filter pipeline the stress scene's third pressure path drives,
+              # the `waterui` facade the examples import, and `waterui-str`,
+              # which backs every text node.
+              - "core/**"
+              - "components/foundation/**"
+              - "components/visual/graphics/**"
+              - "src/**"
+              - "utils/**"
+              # Build inputs that move the numbers without touching any source
+              # above: nami, filtrate, vello, wgpu and shaderloom are crates.io
+              # dependencies, so a bench-relevant bump appears only here.
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "rust-toolchain*"
+              # And this workflow itself.
+              - ".github/workflows/bench.yml"
+      - name: Build the bench matrix
+        id: legs
+        shell: bash
+        env:
+          # Every leg, with its measurement shape. macOS runners have a real
+          # (paravirtualized Metal) GPU and run the full default shape. The
+          # Linux and Windows runners rasterize in software (llvmpipe / WARP),
+          # where a heavy scene runs at seconds per frame — the full shape blew
+          # straight through nextest's terminate ceiling there. A reduced shape
+          # keeps those legs meaningful (the counter budgets are
+          # shape-independent, and the wall-clock series stays self-consistent
+          # per OS over time) while fitting the job budget.
+          ALL_LEGS: >-
+            [{"os": "ubuntu-latest", "bench-shape": "--warmups 2 --samples 24 --repetitions 3"},
+             {"os": "macos-latest", "bench-shape": ""},
+             {"os": "windows-latest", "bench-shape": "--warmups 2 --samples 24 --repetitions 3"}]
+          # Forced true off pull requests, so `schedule` and
+          # `workflow_dispatch` keep the full matrix.
+          RUN_MACOS: ${{ github.event_name != 'pull_request' || steps.filter.outputs.perf == 'true' }}
+        run: |
+          printf 'matrix=%s\n' \
+            "$(jq -c --argjson run_macos "$RUN_MACOS" \
+                 '{include: map(select(.os != "macos-latest" or $run_macos))}' \
+                 <<<"$ALL_LEGS")" >> "$GITHUB_OUTPUT"
+
   bench:
     name: Bench (${{ matrix.os }})
+    needs: select-legs
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      # macOS runners have a real (paravirtualized Metal) GPU and run the full
-      # default measurement shape. The Linux and Windows runners rasterize in
-      # software (llvmpipe / WARP), where a heavy scene runs at seconds per
-      # frame — the full shape blew straight through nextest's terminate
-      # ceiling there. A reduced shape keeps those legs meaningful (the
-      # counter budgets are shape-independent, and the wall-clock series stays
-      # self-consistent per OS over time) while fitting the job budget.
-      matrix:
-        include:
-          - os: ubuntu-latest
-            bench-shape: --warmups 2 --samples 24 --repetitions 3
-          - os: macos-latest
-            bench-shape: ""
-          - os: windows-latest
-            bench-shape: --warmups 2 --samples 24 --repetitions 3
+      # Built by `select-legs` above rather than written out here, so the macOS
+      # leg can be left out of a pull request that does not touch the code it
+      # measures. The `include` shape and the job name are unchanged, so the
+      # legs that do run keep their existing check names.
+      matrix: ${{ fromJSON(needs.select-legs.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
