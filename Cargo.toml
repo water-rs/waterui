@@ -128,6 +128,15 @@ waterui-form = { version = "0.3.0", path = "components/foundation/form" }
 waterui-controls = { version = "0.3.0", path = "components/foundation/controls"}
 waterui-graphics = { version = "0.3.0", path = "components/visual/graphics", default-features = false }
 waterui-canvas = { version = "0.1.0", path = "components/visual/canvas" }
+waterui-mermaid = { version = "0.1.0", path = "components/data/mermaid" }
+# Mermaid parsing, semantic model and diagram layout. Consumed from our fork
+# while `typed-layout-projection` is unreleased upstream: `merman-render`'s only
+# public exit from the layout stage is `layout_json`, whose `#[serde(skip)]`
+# fields drop geometry a self-drawing host needs — a sequence diagram's
+# loop/alt fragment boxes among them. The branch makes the typed projection
+# public and changes nothing else. See water-rs/waterui#217.
+merman-core = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c05844003a0e765a3cf78df6678d" }
+merman-render = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c05844003a0e765a3cf78df6678d", default-features = false }
 waterui-shape = { version = "0.1.0", path = "components/foundation/shape", default-features = false }
 waterui-svg = { version = "0.1.0", path = "components/visual/svg" }
 waterui-ffi = { version = "0.3.0", path = "ffi" }
