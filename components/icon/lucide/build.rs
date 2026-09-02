@@ -1,13 +1,18 @@
 //! Build script for waterui-icons-lucide
 //!
-//! Downloads icon metadata from jsdelivr CDN and generates Rust code
-//! with icon definitions.
+//! Generates Rust code with icon definitions from the icon data vendored in
+//! this crate's `data/` directory. A plain checkout never touches the network:
+//! the pinned data is tracked in the repository so the build is offline and
+//! deterministic, and a missing vendored file is a hard error.
 //!
 //! # Data Sources
 //!
 //! - `icon-nodes.json`: Icon definitions with SVG element data
 //!
 //! # Environment Variables
+//!
+//! This exists for re-vendoring a new upstream version and takes precedence
+//! over the vendored file when set.
 //!
 //! - `LUCIDE_ICON_URL`: Override URL or local file path for icon-nodes.json
 
@@ -17,7 +22,9 @@ use std::path::Path;
 use waterui_icons_codegen::icons::{
     FontFamily, IconEntry, IconModule, SvgConst, write_icon_module,
 };
-use waterui_icons_codegen::{is_http_url, load_cached_text, rust_const_name, rust_fn_name};
+use waterui_icons_codegen::{
+    is_http_url, load_cached_text, resolve_source, rust_const_name, rust_fn_name,
+};
 
 /// Lucide icons version
 const LUCIDE_VERSION: &str = "0.562.0";
@@ -41,14 +48,11 @@ fn main() {
         .join(format!("lucide-{LUCIDE_VERSION}-icon-nodes.json"));
     println!("cargo:rerun-if-changed={}", vendored.display());
 
-    // Default to vendored data for deterministic, offline builds.
-    // Override can be a local file path or a URL.
-    let default_source = if vendored.exists() {
-        vendored.display().to_string()
-    } else {
-        ICON_NODES_URL.to_string()
-    };
-    let source = env::var("LUCIDE_ICON_URL").unwrap_or(default_source);
+    // Vendored data is the only default, so the build is deterministic and
+    // needs no network. The override exists for re-vendoring a new version and
+    // can point to a local file path or a URL.
+    let source = resolve_source(&vendored, "LUCIDE_ICON_URL", ICON_NODES_URL)
+        .unwrap_or_else(|error| panic!("waterui-icons-lucide: {error}"));
 
     if !is_http_url(&source) {
         println!("cargo:rerun-if-changed={source}");
