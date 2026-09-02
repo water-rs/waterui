@@ -88,6 +88,17 @@ If the canonical superproject and the workspace both changed the same submodule 
 
 Run it from anywhere inside the agent workspace, not from the canonical repository.
 
+**Run it before you push the topic branch and open the pull request**, in the
+order `AGENTS.md` gives: finish, then push, then open the PR. It fast-forwards
+the local canonical `dev` onto the agent branch, which is only possible while
+canonical is *behind* that branch. Once the pull request has merged, `dev`
+contains the work as a merge commit and is therefore ahead of the branch, so the
+fast-forward can never succeed and the script stops with `superproject cannot be
+fast-forwarded`. Releasing the slot then has to be done by hand: confirm with
+`git log origin/dev..HEAD` that nothing is unmerged, put the superproject and
+every submodule back on their integration branch, and delete the spent agent
+branches in the superproject *and* in each submodule.
+
 7. Never use `git worktree` for this repository.
 
 8. Never set `CARGO_TARGET_DIR` or Cargo `build.target-dir` for this repository. This workflow depends on per-workspace `target/` directories plus shared `sccache`.

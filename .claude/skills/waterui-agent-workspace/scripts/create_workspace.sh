@@ -59,7 +59,6 @@ main() {
   require_command awk
   require_command shasum
 
-  ensure_nightly_cargo
   validate_slug "$slug"
   ensure_canonical_repo_context
   ensure_no_shared_target_dir
