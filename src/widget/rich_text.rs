@@ -1261,10 +1261,6 @@ mod tests {
     #[cfg(feature = "markdown-math")]
     #[test]
     fn inline_and_display_math_become_math_elements() {
-        let elements = parse_markdown("before $e^{i\\pi}+1=0$ after\n\n$$\\frac{a}{b}$$");
-
-        let mut inline = 0;
-        let mut block = 0;
         fn count(elements: &[RichTextElement], inline: &mut usize, block: &mut usize) {
             for element in elements {
                 match element {
@@ -1278,6 +1274,11 @@ mod tests {
                 }
             }
         }
+
+        let elements = parse_markdown("before $e^{i\\pi}+1=0$ after\n\n$$\\frac{a}{b}$$");
+
+        let mut inline = 0;
+        let mut block = 0;
         count(&elements, &mut inline, &mut block);
 
         assert_eq!(inline, 1, "expected one inline formula in {elements:?}");
