@@ -1,8 +1,9 @@
-//! JNI bridge for Android WebView integration.
+//! JNI bridge for Android `WebView` integration.
 //!
 //! This module provides:
-//! - A native WebView handle implementation (function pointers) for WaterUI's WebViewController
-//! - JNI callbacks invoked by Kotlin WebView wrappers (events, JS messaging, JS results)
+//! - A native `WebView` handle implementation (function pointers) for `WaterUI`'s
+//!   `WebViewController`
+//! - JNI callbacks invoked by Kotlin `WebView` wrappers (events, JS messaging, JS results)
 
 extern crate alloc;
 extern crate std;
@@ -76,7 +77,7 @@ impl AndroidWebViewFactory {
                 event_callback: None,
                 handlers: HashMap::new(),
             });
-            let handle_ptr = Box::into_raw(handle) as *mut ();
+            let handle_ptr = Box::into_raw(handle).cast::<()>();
 
             WuiWebViewHandle {
                 data: handle_ptr,
@@ -111,8 +112,15 @@ impl CustomWebViewController for AndroidWebViewFactory {
 }
 
 fn wui_str_to_string(s: WuiStr) -> String {
+    // SAFETY: every `WuiStr` reaching this module was produced by the matching
+    // `into_ffi`, and each one arrives once, as an owned argument.
     let s: waterui::Str = unsafe { s.into_rust() };
     s.as_str().to_string()
+}
+
+/// Hands a native callback entry point to Kotlin as the `long` it passes back.
+fn entry_point_to_jlong(entry_point: usize) -> jlong {
+    jlong::try_from(entry_point).expect("callback entry point address must fit a Java long")
 }
 
 fn java_string<'local>(env: &mut Env<'local>, s: &str) -> JString<'local> {
@@ -124,7 +132,9 @@ fn java_string<'local>(env: &mut Env<'local>, s: &str) -> JString<'local> {
 // =============================================================================
 
 unsafe extern "C" fn webview_go_back(data: *mut ()) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     handle.with_env(|env| {
         env.call_method(&handle.wrapper, jni_str!("goBack"), jni_sig!("()V"), &[])
             .expect("webview_go_back: failed to call WebViewWrapper.goBack()");
@@ -132,7 +142,9 @@ unsafe extern "C" fn webview_go_back(data: *mut ()) {
 }
 
 unsafe extern "C" fn webview_go_forward(data: *mut ()) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     handle.with_env(|env| {
         env.call_method(&handle.wrapper, jni_str!("goForward"), jni_sig!("()V"), &[])
             .expect("webview_go_forward: failed to call WebViewWrapper.goForward()");
@@ -140,7 +152,9 @@ unsafe extern "C" fn webview_go_forward(data: *mut ()) {
 }
 
 unsafe extern "C" fn webview_go_to(data: *mut (), url: WuiStr) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     let url = wui_str_to_string(url);
     handle.with_env(|env| {
         let jurl = java_string(env, &url);
@@ -155,7 +169,9 @@ unsafe extern "C" fn webview_go_to(data: *mut (), url: WuiStr) {
 }
 
 unsafe extern "C" fn webview_stop(data: *mut ()) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     handle.with_env(|env| {
         env.call_method(&handle.wrapper, jni_str!("stop"), jni_sig!("()V"), &[])
             .expect("webview_stop: failed to call WebViewWrapper.stop()");
@@ -163,7 +179,9 @@ unsafe extern "C" fn webview_stop(data: *mut ()) {
 }
 
 unsafe extern "C" fn webview_refresh(data: *mut ()) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     handle.with_env(|env| {
         env.call_method(&handle.wrapper, jni_str!("refresh"), jni_sig!("()V"), &[])
             .expect("webview_refresh: failed to call WebViewWrapper.refresh()");
@@ -171,6 +189,8 @@ unsafe extern "C" fn webview_refresh(data: *mut ()) {
 }
 
 unsafe extern "C" fn webview_can_go_back(data: *const ()) -> bool {
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
     let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     handle.with_env(|env| {
         env.call_method(&handle.wrapper, jni_str!("canGoBack"), jni_sig!("()Z"), &[])
@@ -181,6 +201,8 @@ unsafe extern "C" fn webview_can_go_back(data: *const ()) -> bool {
 }
 
 unsafe extern "C" fn webview_can_go_forward(data: *const ()) -> bool {
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
     let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     handle.with_env(|env| {
         env.call_method(
@@ -196,7 +218,9 @@ unsafe extern "C" fn webview_can_go_forward(data: *const ()) -> bool {
 }
 
 unsafe extern "C" fn webview_set_user_agent(data: *mut (), user_agent: WuiStr) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     let ua = wui_str_to_string(user_agent);
     handle.with_env(|env| {
         let jua = java_string(env, &ua);
@@ -211,7 +235,9 @@ unsafe extern "C" fn webview_set_user_agent(data: *mut (), user_agent: WuiStr) {
 }
 
 unsafe extern "C" fn webview_set_redirects_enabled(data: *mut (), enabled: *mut WuiComputed<bool>) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     handle.with_env(|env| {
         env.call_method(
             &handle.wrapper,
@@ -231,7 +257,9 @@ unsafe extern "C" fn webview_inject_script(
     script: WuiStr,
     time: WuiScriptInjectionTime,
 ) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     let key = wui_str_to_string(key);
     let script = wui_str_to_string(script);
     handle.with_env(|env| {
@@ -254,9 +282,12 @@ unsafe extern "C" fn webview_inject_script(
 }
 
 unsafe extern "C" fn webview_watch(data: *mut (), callback: WuiFn<WuiWebViewEvent>) {
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`; the controller calls one entry at a time, so this exclusive
+    // borrow is the only live reference to it.
     let handle = unsafe { &mut *data.cast::<AndroidWebViewHandle>() };
     handle.event_callback = Some(Rc::new(callback));
-    let handle_ptr = handle as *mut AndroidWebViewHandle as jlong;
+    let handle_ptr = core::ptr::from_mut(handle) as jlong;
 
     handle.with_env(|env| {
         let cb_class = env
@@ -283,10 +314,13 @@ unsafe extern "C" fn webview_add_handler(
     name: WuiStr,
     handler: WuiFn<WuiWebViewMessage>,
 ) {
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`; the controller calls one entry at a time, so this exclusive
+    // borrow is the only live reference to it.
     let handle = unsafe { &mut *data.cast::<AndroidWebViewHandle>() };
     let name = wui_str_to_string(name);
     handle.handlers.insert(name.clone(), Rc::new(handler));
-    let handle_ptr = handle as *mut AndroidWebViewHandle as jlong;
+    let handle_ptr = core::ptr::from_mut(handle) as jlong;
 
     handle.with_env(|env| {
         let jname = java_string(env, &name);
@@ -301,6 +335,9 @@ unsafe extern "C" fn webview_add_handler(
 }
 
 unsafe extern "C" fn webview_remove_handler(data: *mut (), name: WuiStr) {
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`; the controller calls one entry at a time, so this exclusive
+    // borrow is the only live reference to it.
     let handle = unsafe { &mut *data.cast::<AndroidWebViewHandle>() };
     let name = wui_str_to_string(name);
 
@@ -319,7 +356,9 @@ unsafe extern "C" fn webview_remove_handler(data: *mut (), name: WuiStr) {
 }
 
 unsafe extern "C" fn webview_set_bridge_origins(data: *mut (), patterns: WuiStr) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     let patterns = wui_str_to_string(patterns);
     handle.with_env(|env| {
         let jpatterns = java_string(env, &patterns);
@@ -334,7 +373,9 @@ unsafe extern "C" fn webview_set_bridge_origins(data: *mut (), patterns: WuiStr)
 }
 
 unsafe extern "C" fn webview_set_cookie(data: *mut (), cookie: WuiStr) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     let cookie = wui_str_to_string(cookie);
     handle.with_env(|env| {
         let jcookie = java_string(env, &cookie);
@@ -349,8 +390,10 @@ unsafe extern "C" fn webview_set_cookie(data: *mut (), cookie: WuiStr) {
 }
 
 unsafe extern "C" fn webview_get_cookies(data: *const (), callback: WuiStringCallback) {
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
     let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
-    let call_ptr = callback.call as usize as jlong;
+    let call_ptr = entry_point_to_jlong(callback.call as usize);
     handle.with_env(|env| {
         env.call_method(
             &handle.wrapper,
@@ -367,9 +410,11 @@ unsafe extern "C" fn webview_run_javascript(
     script: WuiStr,
     callback: WuiJsCallback,
 ) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     let script = wui_str_to_string(script);
-    let call_ptr = callback.call as usize as jlong;
+    let call_ptr = entry_point_to_jlong(callback.call as usize);
     handle.with_env(|env| {
         let jscript = java_string(env, &script);
         env.call_method(
@@ -398,9 +443,11 @@ unsafe extern "C" fn webview_call_async_javascript(
     body: WuiStr,
     callback: WuiJsCallback,
 ) {
-    let handle = unsafe { &*(data as *const AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
     let body = wui_str_to_string(body);
-    let call_ptr = callback.call as usize as jlong;
+    let call_ptr = entry_point_to_jlong(callback.call as usize);
     handle.with_env(|env| {
         let jbody = java_string(env, &body);
         env.call_method(
@@ -418,7 +465,9 @@ unsafe extern "C" fn webview_call_async_javascript(
 }
 
 unsafe extern "C" fn webview_drop(data: *mut ()) {
-    let mut handle = unsafe { Box::from_raw(data as *mut AndroidWebViewHandle) };
+    // SAFETY: `data` is the handle pointer `create_webview` boxed for this vtable, and
+    // the controller drops each handle once, after its last other entry point call.
+    let mut handle = unsafe { Box::from_raw(data.cast::<AndroidWebViewHandle>()) };
 
     handle.with_env(|env| {
         env.call_method(
@@ -437,11 +486,16 @@ unsafe extern "C" fn webview_drop(data: *mut ()) {
     handle.handlers.clear();
 }
 
-/// Installs an Android WebView controller that owns its Java VM capability.
+/// Installs an Android `WebView` controller that owns its Java VM capability.
+///
+/// # Panics
+///
+/// Panics when the JVM will not hand out its `JavaVM` capability or retain the
+/// Java factory, neither of which a running Android app can fail.
 ///
 /// # Safety
 ///
-/// `wui_env` must point to a live WaterUI environment owned by the caller.
+/// `wui_env` must point to a live `WaterUI` environment owned by the caller.
 pub unsafe fn install_android_webview_controller(
     env: &Env,
     wui_env: *mut crate::WuiEnv,
@@ -456,12 +510,16 @@ pub unsafe fn install_android_webview_controller(
             .new_global_ref(factory)
             .expect("WebView factory installation failed to retain Java factory"),
     });
+    // SAFETY: the caller contract above makes `wui_env` a live environment, borrowed
+    // only for this insertion.
     let env = unsafe { crate::borrow_ffi_mut(wui_env) };
     env.0.insert(controller);
 }
 
-pub(crate) fn webview_native_view<'local>(env: &mut Env<'local>, handle_ptr: jlong) -> jobject {
-    let handle = unsafe { &*(handle_ptr as *mut AndroidWebViewHandle) };
+pub(crate) fn webview_native_view(env: &mut Env<'_>, handle_ptr: jlong) -> jobject {
+    // SAFETY: Kotlin passes back the handle pointer `create_webview` gave it, which is
+    // live until the controller drops the web view.
+    let handle = unsafe { &*(handle_ptr as *const AndroidWebViewHandle) };
     env.call_method(
         &handle.wrapper,
         jni_str!("getWebView"),
@@ -491,12 +549,20 @@ extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeComp
     callback_fn: jlong,
     result: JString<'local>,
 ) {
-    let call: StringCallbackFn =
-        unsafe { core::mem::transmute::<usize, StringCallbackFn>(callback_fn as usize) };
+    // SAFETY: Kotlin passes back the two `long`s `webview_get_cookies` handed it, so
+    // `callback_fn` is that `WuiStringCallback`'s own `call` entry point.
+    let call: StringCallbackFn = unsafe {
+        core::mem::transmute::<usize, StringCallbackFn>(
+            usize::try_from(callback_fn)
+                .expect("cookie callback entry point must be a valid address"),
+        )
+    };
     super::with_env(&mut env, |env| {
         let text = result
             .try_to_string(env)
             .expect("WebViewWrapper.nativeCompleteCookies: result");
+        // SAFETY: `callback_data` is the payload registered with the entry point above,
+        // and the wrapper completes each request once.
         unsafe {
             call(
                 callback_data as *mut (),
@@ -517,14 +583,22 @@ extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeComp
     success: jboolean,
     result: JString<'local>,
 ) {
-    let call: JsCallbackFn =
-        unsafe { core::mem::transmute::<usize, JsCallbackFn>(callback_fn as usize) };
+    // SAFETY: Kotlin passes back the two `long`s `webview_run_javascript` or
+    // `webview_call_async_javascript` handed it, so `callback_fn` is that
+    // `WuiJsCallback`'s own `call` entry point.
+    let call: JsCallbackFn = unsafe {
+        core::mem::transmute::<usize, JsCallbackFn>(
+            usize::try_from(callback_fn).expect("JS callback entry point must be a valid address"),
+        )
+    };
 
     super::with_env(&mut env, |env| {
         let text = result
             .try_to_string(env)
             .expect("WebViewWrapper.nativeCompleteJsResult: result");
         let wui_str = waterui::Str::from(text).into_ffi();
+        // SAFETY: `callback_data` is the payload registered with the entry point above,
+        // and the wrapper completes each evaluation once.
         unsafe {
             call(callback_data as *mut (), success, wui_str);
         }
@@ -547,7 +621,10 @@ unsafe extern "C" fn reply_call(
     kind: WuiJsReplyKind,
     payload_b64: WuiStr,
 ) {
-    let ctx = unsafe { Box::from_raw(data as *mut ReplyCtx) };
+    // SAFETY: `data` is the `ReplyCtx` boxed for this one bridge call in
+    // `nativeOnBridgeMessage`, and a `WuiWebViewReply` is answered exactly once.
+    let ctx = unsafe { Box::from_raw(data.cast::<ReplyCtx>()) };
+    // SAFETY: `payload_b64` is an owned `WuiStr` the handler produced for this reply.
     let payload: waterui::Str = unsafe { payload_b64.into_rust() };
 
     let reply = if success {
@@ -606,6 +683,8 @@ extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeOnBr
             tracing::warn!("WaterUI bridge received a non-UTF-8 envelope; ignoring");
             return;
         };
+        // SAFETY: Kotlin passes back the handle pointer `webview_add_handler` gave it,
+        // which is live until the controller drops the web view.
         let handle = unsafe { &*(native_ptr as *const AndroidWebViewHandle) };
         let request = match bridge::Request::parse(&envelope) {
             Ok(request) => request,
@@ -652,12 +731,20 @@ extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeOnBr
             )
             .into_ffi(),
             reply: WuiWebViewReply {
-                data: Box::into_raw(reply_ctx) as *mut (),
+                data: Box::into_raw(reply_ctx).cast::<()>(),
                 call: reply_call,
             },
         };
         handler.call(msg);
     });
+}
+
+/// Transfers one required Java string field of an event into an owned `WuiStr`.
+fn take_java_string(env: &mut Env, value: &JString, field: &'static str) -> *mut WuiStr {
+    let value = value
+        .try_to_string(env)
+        .unwrap_or_else(|_| panic!("webview.native_on_event requires {field}"));
+    Box::into_raw(Box::new(waterui::Str::from(value).into_ffi()))
 }
 
 #[unsafe(no_mangle)]
@@ -675,10 +762,11 @@ extern "system" fn Java_dev_waterui_android_components_NativeWebViewEventCallbac
     can_go_back: jboolean,
     can_go_forward: jboolean,
 ) {
+    // SAFETY: Kotlin passes back the handle pointer `webview_watch` gave it, which is
+    // live until the controller drops the web view.
     let callback = unsafe { &*(native_ptr as *const AndroidWebViewHandle) }
         .event_callback
-        .as_ref()
-        .cloned()
+        .clone()
         .expect("webview.native_on_event missing registered Rust callback");
 
     let event_type = match event_type {
@@ -691,13 +779,6 @@ extern "system" fn Java_dev_waterui_android_components_NativeWebViewEventCallbac
         7 => WuiWebViewEventType::StateChanged,
         _ => panic!("webview.native_on_event received unknown event type {event_type}"),
     };
-
-    fn take_java_string(env: &mut Env, value: &JString, field: &'static str) -> *mut WuiStr {
-        let value = value
-            .try_to_string(env)
-            .unwrap_or_else(|_| panic!("webview.native_on_event requires {field}"));
-        Box::into_raw(Box::new(waterui::Str::from(value).into_ffi()))
-    }
 
     super::with_env(&mut env, |env| {
         let (url, url2, message) = match event_type {

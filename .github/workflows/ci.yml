@@ -224,6 +224,81 @@ jobs:
           check backends/android runtime/src/main/cpp/waterui.h
           exit "$status"
 
+  android-ffi:
+    name: Android FFI
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # `waterui-ffi` selects its ABI with mutually exclusive features, and
+    # `ffi/src/lib.rs` turns "both" into a `compile_error!`. Every other leg
+    # therefore builds the `c-api` half, and nothing at all compiled
+    # `ffi/src/jni/` or the `cfg(target_os = "android")` bodies it reaches — a
+    # compile error there used to arrive on a device rather than in CI.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+          components: clippy
+      # `--all-targets` reaches the crate's dev-dependency graph, part of which
+      # is built for the host: without this the Linux-only `cros-libva` build
+      # script fails on the missing `libva-dev`, long before anything Android
+      # is compiled.
+      - uses: ./.github/actions/setup-linux-deps
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          # The version the CLI's toolchain check installs and `water build`
+          # uses; keeping CI on it means CI compiles against the same sysroot a
+          # developer's Android build does.
+          ndk-version: r29
+          local-cache: true
+      # Its own key: this is the only leg that compiles the dependency graph
+      # for an Android target, so it shares no artifacts with the others and
+      # storing it under theirs would evict a tarball nothing else can use.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-android-ffi
+          # Only the integration branches write cache generations (see Features
+          # above for why).
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      # `ring` compiles C for the target, so the NDK's clang wrapper is
+      # required even though clippy itself never links. The wrapper is named
+      # after the API level, which the CLI already owns — read it from there
+      # instead of freezing a second copy of the number in this file.
+      - name: Point cargo at the NDK toolchain
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          api="$(sed -n 's/^pub(crate) const ANDROID_MIN_API_LEVEL: u32 = \([0-9][0-9]*\);$/\1/p' cli/src/android/mod.rs)"
+          if [ -z "$api" ]; then
+            echo "::error file=cli/src/android/mod.rs::could not read ANDROID_MIN_API_LEVEL"
+            exit 1
+          fi
+          bin="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # The wrapper is a shell script that execs `clang` beside it, so a
+          # half-restored NDK fails inside a `cc` build script six minutes
+          # later with nothing but "exit status 127". Prove the toolchain runs
+          # here instead, where the evidence is still on screen.
+          if ! "$bin/aarch64-linux-android$api-clang" --version; then
+            echo "::error::the NDK toolchain at $bin cannot compile for API $api"
+            ls -la "$bin" | head -60
+            exit 1
+          fi
+          {
+            echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+            echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android$api-clang"
+            echo "CC_aarch64_linux_android=$bin/aarch64-linux-android$api-clang"
+            echo "CXX_aarch64_linux_android=$bin/aarch64-linux-android$api-clang++"
+            echo "AR_aarch64_linux_android=$bin/llvm-ar"
+          } >> "$GITHUB_ENV"
+      - name: Clippy (aarch64-linux-android)
+        run: cargo clippy -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
+
   test:
     name: Test
     uses: ./.github/workflows/test.yml

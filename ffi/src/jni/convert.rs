@@ -9,7 +9,7 @@ extern crate std;
 use alloc::vec::Vec;
 use alloc::{boxed::Box, string::String};
 use jni::objects::{JCharArray, JObject, JString, JValue};
-use jni::sys::{jboolean, jdouble, jfloat, jint, jlong};
+use jni::sys::{jint, jlong};
 use jni::{Env as JNIEnv, jni_sig, jni_str};
 
 /// Copies a Java string through its UTF-16 representation without lossy replacement.
@@ -37,6 +37,8 @@ pub(crate) fn string_from_java<'local>(env: &mut JNIEnv<'local>, java: &JString<
 ///
 /// `array` must be the sole owning FFI array and must not be consumed again.
 unsafe fn consume_ffi_array<T>(array: &crate::array::WuiArray<T>) {
+    // SAFETY: the caller contract makes this the sole owning array, so moving it out
+    // of the borrow and consuming it releases the allocation exactly once.
     unsafe { core::ptr::read(array).consume() };
 }
 
@@ -59,7 +61,7 @@ pub trait JniPrimitive: Sized + 'static {
 }
 
 impl JniPrimitive for bool {
-    type Jni = jboolean;
+    type Jni = Self;
     fn to_jni(self) -> Self::Jni {
         self
     }
@@ -69,7 +71,7 @@ impl JniPrimitive for bool {
 }
 
 impl JniPrimitive for i32 {
-    type Jni = jint;
+    type Jni = Self;
     fn to_jni(self) -> Self::Jni {
         self
     }
@@ -79,7 +81,7 @@ impl JniPrimitive for i32 {
 }
 
 impl JniPrimitive for f32 {
-    type Jni = jfloat;
+    type Jni = Self;
     fn to_jni(self) -> Self::Jni {
         self
     }
@@ -89,7 +91,7 @@ impl JniPrimitive for f32 {
 }
 
 impl JniPrimitive for f64 {
-    type Jni = jdouble;
+    type Jni = Self;
     fn to_jni(self) -> Self::Jni {
         self
     }
@@ -107,7 +109,8 @@ impl JniPrimitive for f64 {
 /// # Safety
 /// The jlong must have been created from a valid pointer of type T.
 #[inline]
-pub unsafe fn jlong_to_ptr<T>(val: jlong) -> *const T {
+#[must_use]
+pub const unsafe fn jlong_to_ptr<T>(val: jlong) -> *const T {
     val as *const T
 }
 
@@ -116,7 +119,8 @@ pub unsafe fn jlong_to_ptr<T>(val: jlong) -> *const T {
 /// # Safety
 /// The jlong must have been created from a valid pointer of type T.
 #[inline]
-pub unsafe fn jlong_to_ptr_mut<T>(val: jlong) -> *mut T {
+#[must_use]
+pub const unsafe fn jlong_to_ptr_mut<T>(val: jlong) -> *mut T {
     val as *mut T
 }
 
@@ -125,8 +129,15 @@ pub unsafe fn jlong_to_ptr_mut<T>(val: jlong) -> *mut T {
 // ============================================================================
 
 /// Trait for FFI structs that can be converted to Java objects.
+///
+/// Conversion **consumes** the struct: implementations transfer the owned
+/// pointers, strings and arrays it carries into the Java objects they build, so
+/// each FFI struct must be converted exactly once and must not be read or
+/// dropped afterwards. The `forceAs*` entry points that produce these structs
+/// hand each one straight to [`struct_to_java`] and never look at it again,
+/// which is what makes the `unsafe` reads in the implementations below sound.
 pub trait ToJavaStruct {
-    /// Convert this FFI struct to a Java object.
+    /// Convert this FFI struct to a Java object, consuming the values it owns.
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local>;
 }
 
@@ -146,7 +157,7 @@ pub fn struct_to_java<'local, T: ToJavaStruct>(
 
 use crate::{WuiEnv, WuiMetadata};
 
-/// MetadataEnvStruct(contentPtr: Long, envPtr: Long)
+/// `MetadataEnvStruct(contentPtr: Long, envPtr: Long)`
 impl ToJavaStruct for WuiMetadata<*mut WuiEnv> {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -164,7 +175,7 @@ impl ToJavaStruct for WuiMetadata<*mut WuiEnv> {
     }
 }
 
-/// MetadataNavigationTransitionStruct(contentPtr: Long, id: Int)
+/// `MetadataNavigationTransitionStruct(contentPtr: Long, id: Int)`
 impl ToJavaStruct for WuiMetadata<crate::id::WuiId> {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -184,8 +195,9 @@ impl ToJavaStruct for WuiMetadata<crate::id::WuiId> {
     }
 }
 
-/// MetadataSecureStruct(contentPtr: Long)
-/// Note: WuiSecureMarker is just a marker type, no additional data needed
+/// `MetadataSecureStruct(contentPtr: Long)`
+///
+/// Note: `WuiSecureMarker` is just a marker type, no additional data needed
 impl ToJavaStruct for crate::WuiMetadataSecure {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -200,7 +212,7 @@ impl ToJavaStruct for crate::WuiMetadataSecure {
     }
 }
 
-/// MetadataLifecycleHookStruct(contentPtr: Long, lifecycleType: Int, handlerPtr: Long)
+/// `MetadataLifecycleHookStruct(contentPtr: Long, lifecycleType: Int, handlerPtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataLifecycleHook {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -221,13 +233,14 @@ impl ToJavaStruct for crate::WuiMetadataLifecycleHook {
     }
 }
 
-/// MetadataGestureStruct(contentPtr: Long, gestureType: Int, gestureData: GestureDataStruct, actionPtr: Long)
-/// Note: WuiGestureObserver has `gesture: WuiGesture` and `action: *mut WuiAction`
+/// `MetadataGestureStruct(contentPtr: Long, gestureType: Int, gestureData: GestureDataStruct, actionPtr: Long)`
+///
+/// Note: `WuiGestureObserver` has `gesture: WuiGesture` and `action: *mut WuiAction`
 fn gesture_parts(gesture: &crate::gesture::WuiGesture) -> (i32, i32, i32, f32, f32, f32, i64, i64) {
     match gesture {
         crate::gesture::WuiGesture::Tap { count } => (
             0i32,
-            *count as i32,
+            count.cast_signed(),
             0i32,
             0.0f32,
             0.0f32,
@@ -238,7 +251,7 @@ fn gesture_parts(gesture: &crate::gesture::WuiGesture) -> (i32, i32, i32, f32, f
         crate::gesture::WuiGesture::LongPress { duration } => (
             1i32,
             0i32,
-            *duration as i32,
+            duration.cast_signed(),
             0.0f32,
             0.0f32,
             0.0f32,
@@ -366,7 +379,7 @@ impl ToJavaStruct for crate::WuiMetadataGesture {
     }
 }
 
-/// MetadataOnEventStruct(contentPtr: Long, eventType: Int, handlerPtr: Long)
+/// `MetadataOnEventStruct(contentPtr: Long, eventType: Int, handlerPtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataOnEvent {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -387,7 +400,7 @@ impl ToJavaStruct for crate::WuiMetadataOnEvent {
     }
 }
 
-/// MetadataCursorStruct(contentPtr: Long, stylePtr: Long)
+/// `MetadataCursorStruct(contentPtr: Long, stylePtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataCursor {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -405,11 +418,13 @@ impl ToJavaStruct for crate::WuiMetadataCursor {
     }
 }
 
-/// MetadataAccessibilityIdentifierStruct(contentPtr: Long, identifier: String)
+/// `MetadataAccessibilityIdentifierStruct(contentPtr: Long, identifier: String)`
 impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityIdentifier {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        // SAFETY: conversion consumes this struct (see `ToJavaStruct`), so taking the
+        // owned `WuiStr` out of it and reclaiming the Rust string happens once.
         let identifier: waterui::Str =
-            unsafe { crate::IntoRust::into_rust(core::ptr::read(&self.identifier)) };
+            unsafe { crate::IntoRust::into_rust(core::ptr::read(&raw const self.identifier)) };
         let identifier = env
             .new_string(identifier.as_str())
             .expect("Failed to create identifier string");
@@ -513,7 +528,7 @@ impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityState {
     }
 }
 
-/// MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float)
+/// `MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float)`
 impl ToJavaStruct for crate::WuiMetadataShadow {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -534,17 +549,17 @@ impl ToJavaStruct for crate::WuiMetadataShadow {
     }
 }
 
-/// MetadataBorderStruct(contentPtr: Long, colorPtr: Long, width: Float, cornerRadius: Float, edges: Int)
+/// `MetadataBorderStruct(contentPtr: Long, colorPtr: Long, width: Float, cornerRadius: Float, edges: Int)`
 impl ToJavaStruct for crate::WuiMetadataBorder {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
             .find_class(jni_str!("dev/waterui/android/runtime/MetadataBorderStruct"))
             .expect("MetadataBorderStruct class not found");
         // Pack edges into a bitmask: top=1, bottom=2, leading=4, trailing=8
-        let edges_bits = (if self.value.edges.top { 1i32 } else { 0 })
-            | (if self.value.edges.bottom { 2i32 } else { 0 })
-            | (if self.value.edges.leading { 4i32 } else { 0 })
-            | (if self.value.edges.trailing { 8i32 } else { 0 });
+        let edges_bits = i32::from(self.value.edges.top)
+            | (i32::from(self.value.edges.bottom) << 1)
+            | (i32::from(self.value.edges.leading) << 2)
+            | (i32::from(self.value.edges.trailing) << 3);
         env.new_object(
             &class,
             jni_sig!("(JJFFI)V"),
@@ -560,7 +575,7 @@ impl ToJavaStruct for crate::WuiMetadataBorder {
     }
 }
 
-/// MetadataScaleStruct(contentPtr: Long, scaleXPtr: Long, scaleYPtr: Long, anchorX: Float, anchorY: Float)
+/// `MetadataScaleStruct(contentPtr: Long, scaleXPtr: Long, scaleYPtr: Long, anchorX: Float, anchorY: Float)`
 impl ToJavaStruct for crate::WuiMetadataScale {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -581,7 +596,7 @@ impl ToJavaStruct for crate::WuiMetadataScale {
     }
 }
 
-/// MetadataRotationStruct(contentPtr: Long, anglePtr: Long, anchorX: Float, anchorY: Float)
+/// `MetadataRotationStruct(contentPtr: Long, anglePtr: Long, anchorX: Float, anchorY: Float)`
 impl ToJavaStruct for crate::WuiMetadataRotation {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -603,7 +618,7 @@ impl ToJavaStruct for crate::WuiMetadataRotation {
     }
 }
 
-/// MetadataOffsetStruct(contentPtr: Long, offsetXPtr: Long, offsetYPtr: Long)
+/// `MetadataOffsetStruct(contentPtr: Long, offsetXPtr: Long, offsetYPtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataOffset {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -622,7 +637,7 @@ impl ToJavaStruct for crate::WuiMetadataOffset {
     }
 }
 
-/// MetadataOpacityStruct(contentPtr: Long, valuePtr: Long)
+/// `MetadataOpacityStruct(contentPtr: Long, valuePtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataOpacity {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -642,7 +657,7 @@ impl ToJavaStruct for crate::WuiMetadataOpacity {
     }
 }
 
-/// MetadataFocusedStruct(contentPtr: Long, bindingPtr: Long)
+/// `MetadataFocusedStruct(contentPtr: Long, bindingPtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataFocused {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -662,7 +677,7 @@ impl ToJavaStruct for crate::WuiMetadataFocused {
     }
 }
 
-/// MetadataIgnoreSafeAreaStruct(contentPtr: Long, top: Boolean, bottom: Boolean, leading: Boolean, trailing: Boolean)
+/// `MetadataIgnoreSafeAreaStruct(contentPtr: Long, top: Boolean, bottom: Boolean, leading: Boolean, trailing: Boolean)`
 impl ToJavaStruct for crate::WuiMetadataIgnoreSafeArea {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -685,7 +700,7 @@ impl ToJavaStruct for crate::WuiMetadataIgnoreSafeArea {
     }
 }
 
-/// MetadataRetainStruct(contentPtr: Long, retainPtr: Long)
+/// `MetadataRetainStruct(contentPtr: Long, retainPtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataRetain {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -704,7 +719,7 @@ impl ToJavaStruct for crate::WuiMetadataRetain {
     }
 }
 
-/// MetadataClipShapeStruct(contentPtr: Long, kind: ShapeKindStruct, commands: Array<PathCommandStruct>)
+/// `MetadataClipShapeStruct(contentPtr: Long, kind: ShapeKindStruct, commands: Array<PathCommandStruct>)`
 impl ToJavaStruct for crate::WuiMetadataClipShape {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         // Create PathCommandStruct array
@@ -747,12 +762,15 @@ impl ToJavaStruct for crate::WuiMetadataClipShape {
                 ],
             )
             .expect("Failed to create MetadataClipShapeStruct");
+        // SAFETY: conversion consumes this struct (see `ToJavaStruct`), and the array's
+        // elements have just been copied into the Java objects above, so releasing it
+        // here releases it once.
         unsafe { consume_ffi_array(&self.value.commands) };
         object
     }
 }
 
-/// MetadataContextMenuStruct(contentPtr: Long, itemsPtr: Long)
+/// `MetadataContextMenuStruct(contentPtr: Long, itemsPtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataContextMenu {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -772,7 +790,7 @@ impl ToJavaStruct for crate::WuiMetadataContextMenu {
     }
 }
 
-/// MetadataHittableStruct(contentPtr: Long, enabledPtr: Long)
+/// `MetadataHittableStruct(contentPtr: Long, enabledPtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataHittable {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -832,7 +850,7 @@ impl ToJavaStruct for crate::components::media::video::WuiAndroidVideoSurfaceHos
     }
 }
 
-/// Helper to create a PathCommandStruct Java object from a WuiPathCommand
+/// Helper to create a `PathCommandStruct` Java object from a `WuiPathCommand`
 fn create_path_command_struct<'local>(
     env: &mut JNIEnv<'local>,
     cmd: &crate::WuiPathCommand,
@@ -904,9 +922,11 @@ fn create_path_command_struct<'local>(
 // ToJavaStruct implementations for View types
 // ============================================================================
 
-/// WuiStr -> PlainStruct(text: String)
+/// `WuiStr -> PlainStruct(text: String)`
 impl ToJavaStruct for crate::WuiStr {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        // SAFETY: conversion consumes this struct (see `ToJavaStruct`), so reading the
+        // owned `WuiStr` out of it and reclaiming the Rust string happens once.
         let value: waterui::Str = unsafe { crate::IntoRust::into_rust(core::ptr::read(self)) };
         let text = env
             .new_string(value.as_str())
@@ -924,7 +944,7 @@ impl ToJavaStruct for crate::WuiStr {
     }
 }
 
-/// WuiResolvedColor -> ResolvedColorStruct(red, green, blue, opacity, headroom)
+/// `WuiResolvedColor -> ResolvedColorStruct(red, green, blue, opacity, headroom)`
 impl ToJavaStruct for crate::color::WuiResolvedColor {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -945,7 +965,7 @@ impl ToJavaStruct for crate::color::WuiResolvedColor {
     }
 }
 
-/// WuiResolvedGradientStop -> ResolvedGradientStopStruct(position, color)
+/// `WuiResolvedGradientStop -> ResolvedGradientStopStruct(position, color)`
 impl ToJavaStruct for crate::gradient::WuiResolvedGradientStop {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -970,7 +990,7 @@ impl ToJavaStruct for crate::gradient::WuiResolvedGradientStop {
     }
 }
 
-/// WuiResolvedGradient -> ResolvedGradientStruct(...)
+/// `WuiResolvedGradient -> ResolvedGradientStruct(...)`
 impl ToJavaStruct for crate::gradient::WuiResolvedGradient {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let stop_class = env
@@ -1014,12 +1034,15 @@ impl ToJavaStruct for crate::gradient::WuiResolvedGradient {
                 ],
             )
             .expect("Failed to create ResolvedGradientStruct");
+        // SAFETY: conversion consumes this struct (see `ToJavaStruct`), and the array's
+        // elements have just been copied into the Java objects above, so releasing it
+        // here releases it once.
         unsafe { consume_ffi_array(&self.stops) };
         object
     }
 }
 
-/// WuiShapeKind -> ShapeKindStruct(tag, topLeft, topRight, bottomRight, bottomLeft)
+/// `WuiShapeKind -> ShapeKindStruct(tag, topLeft, topRight, bottomRight, bottomLeft)`
 impl ToJavaStruct for crate::shape::WuiShapeKind {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1040,7 +1063,7 @@ impl ToJavaStruct for crate::shape::WuiShapeKind {
     }
 }
 
-/// WuiResolvedShape -> ResolvedShapeStruct(kind, commands, fill)
+/// `WuiResolvedShape -> ResolvedShapeStruct(kind, commands, fill)`
 impl ToJavaStruct for crate::shape::WuiResolvedShape {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let command_class = env
@@ -1071,12 +1094,15 @@ impl ToJavaStruct for crate::shape::WuiResolvedShape {
             JValue::Long(self.fill as jlong),
         ],)
         .expect("Failed to create ResolvedShapeStruct");
+        // SAFETY: conversion consumes this struct (see `ToJavaStruct`), and the array's
+        // elements have just been copied into the Java objects above, so releasing it
+        // here releases it once.
         unsafe { consume_ffi_array(&self.commands) };
         object
     }
 }
 
-/// WuiText -> TextStruct(contentPtr: Long, paragraphAlignmentPtr: Long, lineLimit: Int)
+/// `WuiText -> TextStruct(contentPtr: Long, paragraphAlignmentPtr: Long, lineLimit: Int)`
 impl ToJavaStruct for crate::components::text::WuiText {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1095,7 +1121,7 @@ impl ToJavaStruct for crate::components::text::WuiText {
     }
 }
 
-/// WuiButton -> ButtonStruct(labelPtr: Long, actionPtr: Long, style: Int, accessibilityLabelPtr: Long)
+/// `WuiButton -> ButtonStruct(labelPtr: Long, actionPtr: Long, style: Int, accessibilityLabelPtr: Long)`
 ///
 /// `label` is now a `WuiLabel` struct; we project its `view` pointer as the
 /// labelPtr and its `accessibility_label` pointer separately. Display mode is
@@ -1120,8 +1146,7 @@ impl ToJavaStruct for crate::components::button::WuiButton {
     }
 }
 
-/// WuiTextField -> TextFieldStruct(labelPtr, accessibilityLabelPtr, valuePtr,
-/// promptPtr, promptAlignmentPtr, keyboardType, selectionMenuItemsPtr, lineLimit)
+/// `WuiTextField -> TextFieldStruct(labelPtr, accessibilityLabelPtr, valuePtr, promptPtr, promptAlignmentPtr, keyboardType, selectionMenuItemsPtr, lineLimit)`
 impl ToJavaStruct for crate::components::form::WuiTextField {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1145,7 +1170,7 @@ impl ToJavaStruct for crate::components::form::WuiTextField {
     }
 }
 
-/// WuiSecureField -> SecureFieldStruct(labelPtr, accessibilityLabelPtr, valuePtr)
+/// `WuiSecureField -> SecureFieldStruct(labelPtr, accessibilityLabelPtr, valuePtr)`
 impl ToJavaStruct for crate::components::form::WuiSecureField {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1164,7 +1189,7 @@ impl ToJavaStruct for crate::components::form::WuiSecureField {
     }
 }
 
-/// WuiToggle -> ToggleStruct(labelPtr, accessibilityLabelPtr, bindingPtr, style)
+/// `WuiToggle -> ToggleStruct(labelPtr, accessibilityLabelPtr, bindingPtr, style)`
 impl ToJavaStruct for crate::components::form::WuiToggle {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1184,7 +1209,7 @@ impl ToJavaStruct for crate::components::form::WuiToggle {
     }
 }
 
-/// WuiSlider -> SliderStruct
+/// `WuiSlider -> SliderStruct`
 impl ToJavaStruct for crate::components::form::WuiSlider {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1207,7 +1232,7 @@ impl ToJavaStruct for crate::components::form::WuiSlider {
     }
 }
 
-/// WuiStepper -> StepperStruct
+/// `WuiStepper -> StepperStruct`
 impl ToJavaStruct for crate::components::form::WuiStepper {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1230,7 +1255,7 @@ impl ToJavaStruct for crate::components::form::WuiStepper {
     }
 }
 
-/// WuiColorPicker -> ColorPickerStruct
+/// `WuiColorPicker -> ColorPickerStruct`
 impl ToJavaStruct for crate::components::form::WuiColorPicker {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1251,7 +1276,7 @@ impl ToJavaStruct for crate::components::form::WuiColorPicker {
     }
 }
 
-/// WuiPicker -> PickerStruct(itemsPtr, selectionPtr, style)
+/// `WuiPicker -> PickerStruct(itemsPtr, selectionPtr, style)`
 impl ToJavaStruct for crate::components::form::WuiPicker {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1287,7 +1312,7 @@ impl ToJavaStruct for crate::components::form::WuiPickerItem {
     }
 }
 
-/// WuiDatePicker -> DatePickerStruct
+/// `WuiDatePicker -> DatePickerStruct`
 impl ToJavaStruct for crate::components::form::WuiDatePicker {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1302,11 +1327,11 @@ impl ToJavaStruct for crate::components::form::WuiDatePicker {
                 jni_sig!("(IIIIII)V"),
                 &[
                     JValue::Int(self.range.start.year),
-                    JValue::Int(self.range.start.month as i32),
-                    JValue::Int(self.range.start.day as i32),
-                    JValue::Int(self.range.start.hour as i32),
-                    JValue::Int(self.range.start.minute as i32),
-                    JValue::Int(self.range.start.second as i32),
+                    JValue::Int(i32::from(self.range.start.month)),
+                    JValue::Int(i32::from(self.range.start.day)),
+                    JValue::Int(i32::from(self.range.start.hour)),
+                    JValue::Int(i32::from(self.range.start.minute)),
+                    JValue::Int(i32::from(self.range.start.second)),
                 ],
             )
             .expect("Failed to create DateTimeStruct for range start");
@@ -1316,11 +1341,11 @@ impl ToJavaStruct for crate::components::form::WuiDatePicker {
                 jni_sig!("(IIIIII)V"),
                 &[
                     JValue::Int(self.range.end.year),
-                    JValue::Int(self.range.end.month as i32),
-                    JValue::Int(self.range.end.day as i32),
-                    JValue::Int(self.range.end.hour as i32),
-                    JValue::Int(self.range.end.minute as i32),
-                    JValue::Int(self.range.end.second as i32),
+                    JValue::Int(i32::from(self.range.end.month)),
+                    JValue::Int(i32::from(self.range.end.day)),
+                    JValue::Int(i32::from(self.range.end.hour)),
+                    JValue::Int(i32::from(self.range.end.minute)),
+                    JValue::Int(i32::from(self.range.end.second)),
                 ],
             )
             .expect("Failed to create DateTimeStruct for range end");
@@ -1352,8 +1377,8 @@ impl ToJavaStruct for crate::components::form::WuiMultiDatePicker {
                 jni_sig!("(III)V"),
                 &[
                     JValue::Int(self.range.start.year),
-                    JValue::Int(self.range.start.month as i32),
-                    JValue::Int(self.range.start.day as i32),
+                    JValue::Int(i32::from(self.range.start.month)),
+                    JValue::Int(i32::from(self.range.start.day)),
                 ],
             )
             .expect("Failed to create DateStruct for range start");
@@ -1363,8 +1388,8 @@ impl ToJavaStruct for crate::components::form::WuiMultiDatePicker {
                 jni_sig!("(III)V"),
                 &[
                     JValue::Int(self.range.end.year),
-                    JValue::Int(self.range.end.month as i32),
-                    JValue::Int(self.range.end.day as i32),
+                    JValue::Int(i32::from(self.range.end.month)),
+                    JValue::Int(i32::from(self.range.end.day)),
                 ],
             )
             .expect("Failed to create DateStruct for range end");
@@ -1380,7 +1405,7 @@ impl ToJavaStruct for crate::components::form::WuiMultiDatePicker {
     }
 }
 
-/// WuiScrollView -> ScrollStruct(axis, contentPtr, targetXPtr, targetYPtr, generationPtr)
+/// `WuiScrollView -> ScrollStruct(axis, contentPtr, targetXPtr, targetYPtr, generationPtr)`
 impl ToJavaStruct for crate::components::layout::WuiScrollView {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1401,7 +1426,7 @@ impl ToJavaStruct for crate::components::layout::WuiScrollView {
     }
 }
 
-/// WuiFixedContainer -> FixedContainerStruct(layoutPtr, childPointers: LongArray)
+/// `WuiFixedContainer -> FixedContainerStruct(layoutPtr, childPointers: LongArray)`
 impl ToJavaStruct for crate::components::layout::WuiFixedContainer {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         // Create the long array for child pointers
@@ -1427,12 +1452,15 @@ impl ToJavaStruct for crate::components::layout::WuiFixedContainer {
                 ],
             )
             .expect("Failed to create FixedContainerStruct");
+        // SAFETY: conversion consumes this struct (see `ToJavaStruct`), and the array's
+        // elements have just been copied into the Java objects above, so releasing it
+        // here releases it once.
         unsafe { consume_ffi_array(&self.contents) };
         object
     }
 }
 
-/// WuiContainer -> LayoutContainerStruct(layoutPtr, contentsPtr)
+/// `WuiContainer -> LayoutContainerStruct(layoutPtr, contentsPtr)`
 impl ToJavaStruct for crate::components::layout::WuiContainer {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1452,7 +1480,7 @@ impl ToJavaStruct for crate::components::layout::WuiContainer {
     }
 }
 
-/// WuiNavigationView -> NavigationViewStruct
+/// `WuiNavigationView -> NavigationViewStruct`
 impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let search = if self.bar.search.has_value {
@@ -1501,6 +1529,9 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
             JValue::Int(self.bar.display_mode as i32),
         ],)
             .expect("Failed to create BarStruct");
+        // SAFETY: conversion consumes this struct (see `ToJavaStruct`), and the array's
+        // elements have just been copied into the Java objects above, so releasing it
+        // here releases it once.
         unsafe { consume_ffi_array(&self.bar.toolbar) };
 
         let class = env
@@ -1525,7 +1556,7 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
     }
 }
 
-/// WuiNavigationSearch -> NavigationSearchStruct
+/// `WuiNavigationSearch -> NavigationSearchStruct`
 impl ToJavaStruct for crate::components::navigation::WuiNavigationSearch {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1545,7 +1576,7 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationSearch {
     }
 }
 
-/// WuiNavigationStack -> NavigationStackStruct(rootPtr, transition, transitionSourceId)
+/// `WuiNavigationStack -> NavigationStackStruct(rootPtr, transition, transitionSourceId)`
 impl ToJavaStruct for crate::components::navigation::WuiNavigationStack {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1566,7 +1597,7 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationStack {
     }
 }
 
-/// WuiNavigationSplitLayout -> SplitNavigationContainerStruct
+/// `WuiNavigationSplitLayout -> SplitNavigationContainerStruct`
 impl ToJavaStruct for crate::components::navigation::WuiNavigationSplitLayout {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1595,7 +1626,7 @@ impl ToJavaStruct for crate::components::navigation::WuiNavigationSplitLayout {
     }
 }
 
-/// WuiTabs -> TabsStruct
+/// `WuiTabs -> TabsStruct`
 impl ToJavaStruct for crate::components::navigation::WuiTabs {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         // Create array of TabStruct
@@ -1614,7 +1645,7 @@ impl ToJavaStruct for crate::components::navigation::WuiTabs {
                     &tab_class,
                     jni_sig!("(JJJJJJJ)V"),
                     &[
-                        JValue::Long(tab.id as jlong),
+                        JValue::Long(tab.id.cast_signed()),
                         JValue::Long(tab.label as jlong),
                         JValue::Long(tab.content as jlong),
                         JValue::Long(tab.badge as jlong),
@@ -1643,12 +1674,15 @@ impl ToJavaStruct for crate::components::navigation::WuiTabs {
                 ],
             )
             .expect("Failed to create TabsStruct");
+        // SAFETY: conversion consumes this struct (see `ToJavaStruct`), and the array's
+        // elements have just been copied into the Java objects above, so releasing it
+        // here releases it once.
         unsafe { consume_ffi_array(&self.tabs) };
         object
     }
 }
 
-/// WuiList -> ListStruct
+/// `WuiList -> ListStruct`
 impl ToJavaStruct for crate::components::list::WuiList {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1664,14 +1698,14 @@ impl ToJavaStruct for crate::components::list::WuiList {
                 JValue::Long(self.on_move as jlong),
                 JValue::Long(self.target_index as jlong),
                 JValue::Long(self.scroll_generation as jlong),
-                JValue::Bool(self.uses_sections.into()),
+                JValue::Bool(self.uses_sections),
             ],
         )
         .expect("Failed to create ListStruct")
     }
 }
 
-/// WuiListItem -> ListItemStruct
+/// `WuiListItem -> ListItemStruct`
 impl ToJavaStruct for crate::components::list::WuiListItem {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1684,7 +1718,7 @@ impl ToJavaStruct for crate::components::list::WuiListItem {
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.deletable as jlong),
                 JValue::Long(self.selected as jlong),
-                JValue::Bool(self.section.has_value.into()),
+                JValue::Bool(self.section.has_value),
                 JValue::Long(self.section.label as jlong),
                 JValue::Long(self.section.footer as jlong),
             ],
@@ -1693,7 +1727,7 @@ impl ToJavaStruct for crate::components::list::WuiListItem {
     }
 }
 
-/// WuiProgress -> ProgressStruct(labelPtr, valueLabelPtr, valuePtr, style, fourColor)
+/// `WuiProgress -> ProgressStruct(labelPtr, valueLabelPtr, valuePtr, style, fourColor)`
 impl ToJavaStruct for crate::components::progress::WuiProgress {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1707,17 +1741,19 @@ impl ToJavaStruct for crate::components::progress::WuiProgress {
                 JValue::Long(self.value_label as jlong),
                 JValue::Long(self.value as jlong),
                 JValue::Int(self.style as i32),
-                JValue::Bool(self.four_color.into()),
+                JValue::Bool(self.four_color),
             ],
         )
         .expect("Failed to create ProgressStruct")
     }
 }
 
-/// WuiGpuSurface -> GpuSurfaceStruct(rendererPtr, HDR preference, PiP host)
+/// `WuiGpuSurface -> GpuSurfaceStruct(rendererPtr, HDR preference, PiP host)`
 #[cfg(feature = "gpu")]
 impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        // SAFETY: `self` is the live surface struct being converted, and the query only
+        // reads it.
         let preference =
             unsafe { crate::components::gpu_surface::waterui_gpu_surface_hdr_preference(self) };
         let class = env
@@ -1731,14 +1767,14 @@ impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
                 JValue::Bool(preference.has_preference),
                 JValue::Bool(preference.prefers_hdr),
                 JValue::Bool(self.has_picture_in_picture_host_id),
-                JValue::Long(self.picture_in_picture_host_id as jlong),
+                JValue::Long(self.picture_in_picture_host_id.cast_signed()),
             ],
         )
         .expect("Failed to create GpuSurfaceStruct")
     }
 }
 
-/// *mut WuiWebView -> WebViewStruct(webviewPtr)
+/// `*mut WuiWebView -> WebViewStruct(webviewPtr)`
 impl ToJavaStruct for *mut crate::components::webview::WuiWebView {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1749,7 +1785,7 @@ impl ToJavaStruct for *mut crate::components::webview::WuiWebView {
     }
 }
 
-/// *mut WuiDynamic -> DynamicStruct(dynamicPtr)
+/// `*mut WuiDynamic -> DynamicStruct(dynamicPtr)`
 impl ToJavaStruct for *mut crate::components::dynamic::WuiDynamic {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1760,7 +1796,7 @@ impl ToJavaStruct for *mut crate::components::dynamic::WuiDynamic {
     }
 }
 
-/// WuiMenu -> MenuStruct(labelPtr, itemsPtr, accessibilityLabelPtr)
+/// `WuiMenu -> MenuStruct(labelPtr, itemsPtr, accessibilityLabelPtr)`
 impl ToJavaStruct for crate::WuiMenu {
     fn to_java_struct<'local>(&self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1784,8 +1820,12 @@ impl ToJavaStruct for crate::WuiMenuItem {
         let label_ptr = if self.label.is_null() {
             0
         } else {
+            // SAFETY: conversion consumes this struct (see `ToJavaStruct`), so its
+            // non-null owning label pointer is reclaimed exactly once.
             let label = unsafe { Box::from_raw(self.label) };
             if !label.paragraph_alignment.is_null() {
+                // SAFETY: the label just reclaimed owns this non-null pointer, and
+                // Android does not surface the paragraph alignment of a menu label.
                 unsafe { drop(Box::from_raw(label.paragraph_alignment)) };
             }
             label.content as jlong
@@ -1799,8 +1839,11 @@ impl ToJavaStruct for crate::WuiMenuItem {
         let (key_equivalent, command, shift, option, control) = if self.shortcut.is_null() {
             (JObject::null(), false, false, false, false)
         } else {
+            // SAFETY: conversion consumes this struct (see `ToJavaStruct`), so its
+            // non-null owning shortcut pointer is reclaimed exactly once.
             let shortcut = unsafe { *Box::from_raw(self.shortcut) };
             let modifiers = shortcut.modifiers;
+            // SAFETY: the shortcut just reclaimed owns this `WuiStr`, moved out here.
             let key: waterui::Str = unsafe { crate::IntoRust::into_rust(shortcut.key) };
             let key = env
                 .new_string(key.as_str())
