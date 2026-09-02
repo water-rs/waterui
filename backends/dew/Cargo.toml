@@ -12,7 +12,7 @@ keywords = ["ui", "backend", "waterui", "embedded", "gui"]
 categories = ["gui", "embedded"]
 
 [features]
-default = ["system-fonts", "progress", "host"]
+default = ["system-fonts", "progress", "host", "gestures"]
 # Host-side surfaces: the in-memory framebuffer (`BufferDisplay`), the
 # reference `HostBoard`, and PNG snapshot export. Firmware builds
 # (default-features = false) drop them along with the PNG encoder they pull
@@ -44,6 +44,16 @@ espidf = [
 # Desktop font enumeration; firmware targets disable this and register
 # bundled fonts into the parley FontContext instead.
 system-fonts = ["parley/system"]
+# Interaction metadata: `Metadata<GestureObserver>` (tap / long-press / drag /
+# pinch / rotate) and `Metadata<OnEvent>` (hover enter / move / exit). The
+# recognizer state machines come from `waterui-backend-core`, which pulls the
+# `waterui` facade the gesture event payloads are defined in — the same reason
+# `progress` is gated. A firmware build that drops this feature keeps a
+# pointer-driven UI (buttons, toggles, sliders, tabs all route through
+# `PointerRouter`); what it loses is the `.gesture(...)` / `.on_hover(...)`
+# modifier surface, and a view carrying that metadata fails fast in dispatch
+# rather than rendering as if the handler were wired.
+gestures = ["waterui-backend-core/gestures"]
 # The Progress widget's config type lives in the `waterui` facade crate,
 # which pulls the visual component stack (and thus a GPU graphics build).
 # Gating it keeps the lean firmware graph (default-features = false) free of
@@ -102,6 +112,11 @@ waterui-testing = { path = "../../testing" }
 # built from the library alone, stays GPU-free.
 waterui-canvas.workspace = true
 waterui-svg.workspace = true
+# The component issue #180 is actually about: an interactive chart wraps its
+# canvas in `Metadata<GestureObserver>` and `Metadata<OnEvent>`, and every one
+# of those wrappers used to abort dew's dispatch. Test-only, like the scene
+# crates above and for the same reason.
+waterui-chart.workspace = true
 fearless_simd = { version = "0.4", features = ["force_support_fallback"] }
 executor-core.workspace = true
 native-executor.workspace = true

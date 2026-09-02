@@ -86,6 +86,10 @@ pub fn install() {
 /// Drives every ready task on the render thread's cooperative executor,
 /// returning the number of tasks polled. Call once per frame after rendering
 /// so reactive watchers make progress.
+#[expect(
+    clippy::must_use_candidate,
+    reason = "draining the executor is the point of the call; the polled count is a diagnostic, and every loop that drives a frame legitimately ignores it"
+)]
 pub fn tick() -> usize {
     RENDER_EXECUTOR.with(|cell| {
         let borrow = cell.borrow();

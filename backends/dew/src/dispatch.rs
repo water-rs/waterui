@@ -25,6 +25,8 @@ use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::Dynamic;
+use waterui_core::event::OnEvent;
+use waterui_core::gesture::GestureObserver;
 use waterui_core::layout::{
     ProposalSize, Rect as LayoutRect, Size, StretchAxis, SubView, ViewDimensions,
 };
@@ -48,6 +50,17 @@ use crate::theme;
 use crate::views;
 
 const MAX_BODY_DEPTH: usize = 64;
+
+/// What a build without the `gestures` feature says when a view asks for
+/// pointer semantics it cannot provide.
+///
+/// The generic `Metadata` panic would name the type and stop there; naming the
+/// feature is the difference between "dew is broken" and "this firmware image
+/// was built without gesture recognition". Silently rendering the content
+/// unwrapped is not an option: the view would draw correctly and never
+/// respond, which is the failure mode hardest to diagnose on a device.
+#[cfg(not(feature = "gestures"))]
+const INTERACTION_FEATURE_REQUIRED: &str = "dew: interaction metadata (`GestureObserver` / `OnEvent`) needs the `waterui-dew/gestures` feature, which this build does not enable";
 
 /// Where a view draws: the accumulated transform and its local bounds.
 #[derive(Clone, Copy, Debug)]
@@ -177,6 +190,8 @@ pub struct DewRenderer {
     state: RefCell<DewState>,
     list: DisplayList,
     pointer: PointerRouter,
+    #[cfg(feature = "gestures")]
+    interaction: crate::interaction::InteractionRouter,
     accessibility: AccessibilityBuilder,
     accessibility_enabled: bool,
     root: Option<Box<dyn DewNode>>,
@@ -215,6 +230,8 @@ impl DewRenderer {
             state: RefCell::new(DewState::new(fonts)),
             list: DisplayList::new(),
             pointer: PointerRouter::default(),
+            #[cfg(feature = "gestures")]
+            interaction: crate::interaction::InteractionRouter::default(),
             accessibility: AccessibilityBuilder::default(),
             accessibility_enabled: true,
             root: None,
@@ -271,6 +288,8 @@ impl DewRenderer {
             .expect("Dew refresh requires an initialized retained root");
         self.list.clear();
         self.pointer.begin_frame();
+        #[cfg(feature = "gestures")]
+        self.interaction.begin_frame();
         if self.accessibility_enabled {
             self.accessibility
                 .begin_frame(Rect::new(0.0, 0.0, width, height));
@@ -287,6 +306,8 @@ impl DewRenderer {
         root.patch(self);
         root.render(self, RenderContext::root(width, height));
         self.pointer.finish_frame();
+        #[cfg(feature = "gestures")]
+        self.interaction.finish_frame();
         if self.accessibility_enabled {
             self.accessibility.finish_frame();
         }
@@ -316,6 +337,62 @@ impl DewRenderer {
 
     pub(crate) fn handle_pointer(&mut self, sample: crate::board::PointerSample) -> bool {
         self.pointer.dispatch(sample)
+    }
+
+    /// Registers a fresh gesture recognizer at `bounds`, returning the target
+    /// so the retained node can re-register the same recognizer next frame.
+    #[cfg(feature = "gestures")]
+    pub(crate) fn register_gesture_target(
+        &mut self,
+        bounds: Rect,
+        gesture: waterui_core::gesture::Gesture,
+        action: waterui_core::handler::BoxedAction<()>,
+    ) -> waterui_backend_core::gesture::GestureTarget {
+        self.interaction.register_gesture(bounds, gesture, action)
+    }
+
+    /// Re-registers a retained node's recognizer at its current placement.
+    #[cfg(feature = "gestures")]
+    pub(crate) fn register_existing_gesture_target(
+        &mut self,
+        target: waterui_backend_core::gesture::GestureTarget,
+    ) {
+        self.interaction.register_existing_gesture(target);
+    }
+
+    #[cfg(feature = "gestures")]
+    pub(crate) fn register_hover_target(
+        &mut self,
+        bounds: Rect,
+        state: std::rc::Rc<crate::interaction::HoverState>,
+    ) {
+        self.interaction.register_hover(bounds, state);
+    }
+
+    /// Routes one pointer sample to the gesture recognizers and hover targets.
+    ///
+    /// Separate from [`Self::handle_pointer`], which routes the same sample to
+    /// the control hit-test: a control's activation needs neither a clock nor
+    /// an environment, and a firmware build without the `gestures` feature
+    /// still has controls.
+    #[cfg(feature = "gestures")]
+    pub(crate) fn handle_interaction_pointer(
+        &mut self,
+        sample: crate::board::PointerSample,
+        now: waterui_backend_core::time::Instant,
+        env: &Environment,
+    ) -> bool {
+        self.interaction.dispatch(sample, now, env)
+    }
+
+    /// Advances time-driven gesture recognition (long-press hold deadlines).
+    #[cfg(feature = "gestures")]
+    pub(crate) fn tick_interaction(
+        &mut self,
+        now: waterui_backend_core::time::Instant,
+        env: &Environment,
+    ) -> bool {
+        self.interaction.tick(now, env)
     }
 
     pub(crate) const fn allocate_accessibility_id(&mut self) -> NodeId {
@@ -428,6 +505,30 @@ fn build_unmeasured_node(
             .downcast::<Metadata<ClipShape>>()
             .expect("dew clip metadata downcast must match its type id");
         return views::shape::build_clip(value, build_node(renderer, content, env, depth + 1));
+    }
+    if type_id == TypeId::of::<Metadata<GestureObserver>>() {
+        let Metadata { content, value } = *view
+            .downcast::<Metadata<GestureObserver>>()
+            .expect("dew gesture metadata downcast must match its type id");
+        #[cfg(feature = "gestures")]
+        return crate::interaction::build_gesture(renderer, content, value, env, depth + 1);
+        #[cfg(not(feature = "gestures"))]
+        {
+            let _ = (content, value);
+            panic!("{}", INTERACTION_FEATURE_REQUIRED);
+        }
+    }
+    if type_id == TypeId::of::<Metadata<OnEvent>>() {
+        let Metadata { content, value } = *view
+            .downcast::<Metadata<OnEvent>>()
+            .expect("dew event metadata downcast must match its type id");
+        #[cfg(feature = "gestures")]
+        return crate::interaction::build_hover(renderer, content, value, env, depth + 1);
+        #[cfg(not(feature = "gestures"))]
+        {
+            let _ = (content, value);
+            panic!("{}", INTERACTION_FEATURE_REQUIRED);
+        }
     }
     if type_id == TypeId::of::<Metadata<Retain>>() {
         let Metadata { content, value } = *view
