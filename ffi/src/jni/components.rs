@@ -130,7 +130,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gestureFromPtr<'local
     // only for the conversion below.
     let gesture = unsafe { &*jlong_to_ptr::<crate::gesture::WuiGesture>(gesture_ptr) };
     super::with_env(&mut env, |env| {
-        crate::jni::convert::struct_to_java(env, gesture).into_raw()
+        crate::jni::convert::gesture_to_java(env, gesture).into_raw()
     })
 }
 
