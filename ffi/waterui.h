@@ -35,6 +35,36 @@ typedef struct WuiArray {
 
 
 /**
+ * `Modifiers::SHIFT` — a shift key is held.
+ */
+#define WUI_SURFACE_MODIFIER_SHIFT 512
+
+/**
+ * `Modifiers::CONTROL` — a control key is held.
+ */
+#define WUI_SURFACE_MODIFIER_CONTROL 8
+
+/**
+ * `Modifiers::ALT` — an alt/option key is held.
+ */
+#define WUI_SURFACE_MODIFIER_ALT 1
+
+/**
+ * `Modifiers::META` — a meta/command/Windows key is held.
+ */
+#define WUI_SURFACE_MODIFIER_META 64
+
+/**
+ * `Modifiers::CAPS_LOCK` — caps lock is latched on.
+ */
+#define WUI_SURFACE_MODIFIER_CAPS_LOCK 4
+
+/**
+ * `Modifiers::NUM_LOCK` — num lock is latched on.
+ */
+#define WUI_SURFACE_MODIFIER_NUM_LOCK 128
+
+/**
  * FFI representation of `StretchAxis` enum.
  *
  * Specifies which axis (or axes) a view stretches to fill available space.
@@ -1188,6 +1218,101 @@ typedef enum WuiWebViewEventType {
    */
   WuiWebViewEventType_StateChanged = 7,
 } WuiWebViewEventType;
+
+/**
+ * Which event a [`WuiSurfaceInputEvent`] carries.
+ *
+ * The tag decides which of the struct's payload fields are read; the rest are
+ * ignored (their strings are still freed).
+ */
+typedef enum WuiSurfaceInputEventKind {
+  /**
+   * Keyboard focus entered or left the surface. Reads `focused`.
+   */
+  WuiSurfaceInputEventKind_Focus,
+  /**
+   * The modifier chord changed on its own. Reads `modifiers`.
+   */
+  WuiSurfaceInputEventKind_Modifiers,
+  /**
+   * The pointer moved. Reads `x`, `y`.
+   */
+  WuiSurfaceInputEventKind_PointerMove,
+  /**
+   * A pointer button changed state. Reads `pressed`, `button`, `x`, `y`.
+   */
+  WuiSurfaceInputEventKind_PointerButton,
+  /**
+   * A scroll gesture. Reads `x`, `y`, `delta_x`, `delta_y`, `scroll_unit`,
+   * `finished`.
+   */
+  WuiSurfaceInputEventKind_Scroll,
+  /**
+   * A key changed state. Reads `pressed`, `key`, `code`, `modifiers`,
+   * `repeat`.
+   */
+  WuiSurfaceInputEventKind_Key,
+  /**
+   * Committed text to insert at the caret. Reads `text`.
+   */
+  WuiSurfaceInputEventKind_TextInput,
+  /**
+   * An input-method composition session began. Reads nothing.
+   */
+  WuiSurfaceInputEventKind_CompositionStart,
+  /**
+   * The pre-edit text changed. Reads `text`, `caret`.
+   */
+  WuiSurfaceInputEventKind_CompositionUpdate,
+  /**
+   * The composition session ended and its text is inserted. Reads `text`.
+   */
+  WuiSurfaceInputEventKind_CompositionCommit,
+  /**
+   * The composition session was abandoned. Reads nothing.
+   */
+  WuiSurfaceInputEventKind_CompositionCancel,
+} WuiSurfaceInputEventKind;
+
+/**
+ * A pointer button, in the W3C UI Events vocabulary.
+ */
+typedef enum WuiSurfacePointerButton {
+  /**
+   * The primary button — the left button on a right-handed mouse, a tap.
+   */
+  WuiSurfacePointerButton_Primary,
+  /**
+   * The secondary button — the right button on a right-handed mouse.
+   */
+  WuiSurfacePointerButton_Secondary,
+  /**
+   * The middle button, usually the wheel pressed down.
+   */
+  WuiSurfacePointerButton_Middle,
+  /**
+   * The "back" side button.
+   */
+  WuiSurfacePointerButton_Back,
+  /**
+   * The "forward" side button.
+   */
+  WuiSurfacePointerButton_Forward,
+} WuiSurfacePointerButton;
+
+/**
+ * What one unit of a scroll delta means.
+ */
+typedef enum WuiScrollUnit {
+  /**
+   * Deltas count lines of text — a discrete mouse wheel.
+   */
+  WuiScrollUnit_Line,
+  /**
+   * Deltas are logical pixels — a trackpad or a precise wheel.
+   */
+  WuiScrollUnit_Pixel,
+} WuiScrollUnit;
 
 /**
  * 2D affine transform stored as a row-major 2x3 matrix.
@@ -6729,6 +6854,79 @@ typedef struct WuiGpuSurfaceInput {
 } WuiGpuSurfaceInput;
 
 /**
+ * One input event on its way to a GPU view.
+ *
+ * See the [module docs](self) for the flat-tagged shape and the string
+ * ownership rules.
+ */
+typedef struct WuiSurfaceInputEvent {
+  /**
+   * Which event this is, and therefore which fields below are read.
+   */
+  enum WuiSurfaceInputEventKind kind;
+  /**
+   * `Focus`: whether the surface gained (`true`) or lost focus.
+   */
+  bool focused;
+  /**
+   * `Modifiers`, `Key`: the modifier chord, as `WUI_SURFACE_MODIFIER_*` bits.
+   */
+  uint32_t modifiers;
+  /**
+   * `PointerMove`, `PointerButton`, `Scroll`: logical surface-local x.
+   */
+  double x;
+  /**
+   * `PointerMove`, `PointerButton`, `Scroll`: logical surface-local y.
+   */
+  double y;
+  /**
+   * `PointerButton`, `Key`: `true` for a press, `false` for a release.
+   */
+  bool pressed;
+  /**
+   * `PointerButton`: which button changed state.
+   */
+  enum WuiSurfacePointerButton button;
+  /**
+   * `Scroll`: horizontal delta, positive when the content should move left.
+   */
+  double delta_x;
+  /**
+   * `Scroll`: vertical delta, positive when the content should move up.
+   */
+  double delta_y;
+  /**
+   * `Scroll`: what one unit of the deltas means.
+   */
+  enum WuiScrollUnit scroll_unit;
+  /**
+   * `Scroll`: `true` on the event that ends a continuous gesture.
+   */
+  bool finished;
+  /**
+   * `Key`: the W3C `KeyboardEvent.key` name — `"a"`, `"Enter"`, `"ArrowUp"`.
+   */
+  struct WuiStr key;
+  /**
+   * `Key`: the W3C `KeyboardEvent.code` name — `"KeyA"`, `"Enter"`.
+   */
+  struct WuiStr code;
+  /**
+   * `TextInput`, `CompositionUpdate`, `CompositionCommit`: the text.
+   */
+  struct WuiStr text;
+  /**
+   * `Key`: `true` when the platform generated this press by auto-repeat.
+   */
+  bool repeat;
+  /**
+   * `CompositionUpdate`: caret byte offset within `text`, or `-1` for none.
+   */
+  int64_t caret;
+} WuiSurfaceInputEvent;
+
+/**
  * FFI representation of output size.
  */
 typedef enum WuiOutputSize_Tag {
@@ -11197,6 +11395,75 @@ void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
  */
 void waterui_gpu_surface_set_input(struct WuiGpuSurfaceState *state,
                                    struct WuiGpuSurfaceInput input);
+
+/**
+ * Whether this GPU view handles its own keyboard, IME, pointer and scroll input.
+ *
+ * Hosts ask once per registration and install a key/IME responder only for the
+ * surfaces that answer `true`; a view that merely draws keeps every event with
+ * the surrounding `WaterUI` widgets.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create).
+ */
+bool waterui_gpu_surface_wants_input_events(const struct WuiGpuSurfaceState *state);
+
+/**
+ * Delivers one input event to the GPU view.
+ *
+ * The event is translated to [`SurfaceInputEvent`] and handed to
+ * [`GpuView::input`](waterui_graphics::GpuView::input) before this returns.
+ * All three of the event's strings are consumed, whatever its kind.
+ *
+ * # Returns
+ *
+ * Whether the event reached the view. `false` means this surface does not take
+ * input, or its asynchronous renderer setup has not finished yet — in both
+ * cases the host should fall through to its own handling of the event.
+ *
+ * # Panics
+ *
+ * Panics when the event's `key`/`code` are not W3C UI Events names, when
+ * `modifiers` carries a bit outside `WUI_SURFACE_MODIFIER_*`, or when `caret`
+ * is neither `-1` nor a UTF-8 boundary of `text` — see
+ * [`WuiSurfaceInputEvent`]'s conversion.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create),
+ * and every [`WuiStr`] in `event` must be an owning handle from the matching
+ * FFI constructor.
+ */
+bool waterui_gpu_surface_send_input_event(struct WuiGpuSurfaceState *state,
+                                          struct WuiSurfaceInputEvent event);
+
+/**
+ * The GPU view's text caret, in logical surface-local coordinates.
+ *
+ * Native text-input clients place the input-method candidate window with it:
+ * `NSTextInputClient.firstRect(forCharacterRange:)` on macOS,
+ * `InputConnection`/`updateCursorAnchorInfo` on Android.
+ *
+ * # Returns
+ *
+ * Whether a caret was written to `out`. `false` leaves `out` untouched and
+ * means the view has no caret to place the panel against.
+ *
+ * # Panics
+ *
+ * Panics when `out` is null, or when the view reports a caret whose
+ * coordinates the `f32` layout ABI cannot represent.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create),
+ * and `out` must point to writable storage for one [`WuiRect`].
+ */
+bool waterui_gpu_surface_ime_caret(const struct WuiGpuSurfaceState *state, struct WuiRect *out);
 
 /**
  * # Safety
