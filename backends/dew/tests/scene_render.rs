@@ -26,9 +26,7 @@ use waterui::prelude::*;
 use waterui_canvas::Canvas;
 use waterui_core::AnyView;
 use waterui_core::layout::{Point, Rect as LayoutRect, Size};
-use waterui_dew::{
-    ClipRegion, DewRenderer, DewRuntime, DisplayList, DrawCommand, HostBoard, render_view_png,
-};
+use waterui_dew::{ClipRegion, DewRuntime, DisplayList, DrawCommand, HostBoard, render_view_png};
 use waterui_graphics::color::Srgb;
 use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
 use waterui_svg::Svg;
@@ -43,7 +41,7 @@ const EXPORT_DIR: &str = "/tmp/waterui_dew_scene2d";
 const INLINE_SVG: &str = include_str!("assets/scene.svg");
 
 fn render_scene<V: View>(build: impl Fn() -> V + 'static, width: u32, height: u32) -> DisplayList {
-    let mut renderer = DewRenderer::default();
+    let mut renderer = support::test_renderer();
     renderer.render_tree(
         AnyView::new(build()),
         &support::test_environment(),
