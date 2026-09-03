@@ -15,10 +15,14 @@ use core::fmt;
 
 #[cfg(target_arch = "wasm32")]
 use executor_core::spawn_local;
+use nami::SignalExt;
 use waterui_core::gesture::{GestureObserver, TapGesture};
+use waterui_core::resolve::Resolvable;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Metadata, View};
-use waterui_graphics::color::Color;
+use waterui_graphics::color::{
+    AccentColor, Color, CurrentColorScheme, MutedForegroundColor, SurfaceVariantColor,
+};
 use waterui_layout::{
     background::background,
     padding::{EdgeInsets, Padding},
@@ -29,8 +33,7 @@ use waterui_str::Str;
 
 use crate::{
     font::{Body, Font},
-    highlight::{DefaultHighlighter, Highlighter, Language},
-    styled::{Style, StyledStr},
+    highlight::{DefaultHighlighter, Language, highlight_text},
     text,
 };
 
@@ -206,14 +209,20 @@ impl View for Code {
         if let Some(hook) = env.get::<Hook<CodeConfig>>() {
             AnyView::new(hook.apply(env, config))
         } else {
-            AnyView::new(default_rendering(config))
+            AnyView::new(default_rendering(env, config))
         }
     }
 }
 
 /// What a fence looks like when nothing claims it: a header naming the
 /// language, a copy button, and the highlighted source.
-fn default_rendering(config: CodeConfig) -> impl View {
+///
+/// Every colour is a theme token, so the block is a surface-variant inset on
+/// whatever the application's surface is. The highlighter's palette is the
+/// one exception a token cannot express — syntect ships a light and a dark
+/// set — so it follows the installed colour scheme and re-highlights when
+/// that flips, without the block itself being rebuilt.
+fn default_rendering(env: &Environment, config: CodeConfig) -> impl View {
     let CodeConfig {
         info: _,
         language,
@@ -222,21 +231,18 @@ fn default_rendering(config: CodeConfig) -> impl View {
     } = config;
     let lang_name = language.to_string();
     let content_for_copy = content.to_string();
-    let mut highlighter = DefaultHighlighter::new();
-    let chunks = highlighter.highlight(language, &content);
 
-    let code_font = Font::from(Body).size(14.0);
-    let styled = chunks.into_iter().fold(StyledStr::empty(), |mut s, chunk| {
-        s.push(
-            chunk.text.to_string(),
-            Style::default()
-                .foreground(chunk.color)
-                .font(code_font.clone()),
-        );
-        s
-    });
+    let highlighted = CurrentColorScheme
+        .resolve(env)
+        .map(move |scheme| {
+            highlight_text(
+                language.clone(),
+                &content,
+                &mut DefaultHighlighter::new(scheme),
+            )
+        })
+        .computed();
 
-    // Code block with dark background, left-aligned content.
     let block = VStack::new(
         HorizontalAlignment::Leading,
         8.0,
@@ -244,22 +250,22 @@ fn default_rendering(config: CodeConfig) -> impl View {
             hstack((
                 text(lang_name)
                     .bold()
-                    .color(Color::srgb_f32(0.85, 0.86, 0.9)),
+                    .color(Color::new(MutedForegroundColor)),
                 spacer(),
                 copy_button(content_for_copy, on_copied),
             )),
-            text(styled),
+            text(highlighted).font(Font::from(Body).size(14.0)),
         ),
     );
     background(
         Padding::new(EdgeInsets::all(14.0), block),
-        Color::srgb_f32(0.15, 0.15, 0.18),
+        Color::new(SurfaceVariantColor),
     )
 }
 
 fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
     Metadata::new(
-        text("Copy").color(Color::srgb_f32(0.72, 0.74, 0.8)),
+        text("Copy").color(Color::new(AccentColor)),
         GestureObserver::new(TapGesture::new(), move |env: Environment| {
             copy_to_clipboard(&content);
             if let Some(on_copied) = &on_copied {
