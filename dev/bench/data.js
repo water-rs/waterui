@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788434072298,
+  "lastUpdate": 1788434076049,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -1671,6 +1671,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 17700,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4623c37038814dbc2d2314061a32b7a968b8980d",
+          "message": "Merge pull request #293 from water-rs/agent/kit-pin-waterkit-dev\n\nbuild(kit): pin waterkit at dev, where the tracked-and-ignored Info.plist is fixed",
+          "timestamp": "2026-09-03T09:58:00Z",
+          "url": "https://github.com/water-rs/waterui/commit/4623c37038814dbc2d2314061a32b7a968b8980d"
+        },
+        "date": 1788434075189,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 709635,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 564816,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 23744,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 16138,
             "unit": "us"
           }
         ]
