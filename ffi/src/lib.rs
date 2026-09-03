@@ -102,7 +102,7 @@ macro_rules! export {
                 let inspector = unsafe { $crate::__init() };
                 let mut env = waterui::configure_environment!(waterui::Environment::new());
                 waterui::inspector::install(&mut env, inspector);
-                $crate::__configure_browser_environment(&mut env);
+                $crate::__configure_native_realizations(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
 
@@ -160,21 +160,34 @@ macro_rules! export {
     };
 }
 
-/// Installs optional packaged browser runtimes selected by the generated FFI crate.
+/// Declares, in the environment a native backend is about to hand the app, the
+/// realizations that backend brings with it.
+///
+/// This runs before the application's own `app(env)`, which is what lets a
+/// Rust-side realization yield to a native one: `waterui_map_gpu::install`
+/// installs nothing when a `Hook<MapConfig>` is already present, and the Apple
+/// backend's `MapKit` bridge is announced here as exactly that hook. Packaged
+/// browser runtimes selected by the generated FFI crate are installed here too.
 ///
 /// Not `const`: the CEF arm installs a runtime. It compiled as `const` only
 /// because the CEF features were previously reached through cbindgen's macro
 /// expansion, which never type-checks the body.
 #[allow(
     clippy::missing_const_for_fn,
-    reason = "the body is empty only in the feature configuration being linted; enabling the capability makes it install a realization"
+    reason = "the body is empty only in the feature configuration being linted; enabling a capability makes it install a realization"
 )]
 #[doc(hidden)]
 #[inline]
-pub fn __configure_browser_environment(env: &mut waterui::Environment) {
+pub fn __configure_native_realizations(env: &mut waterui::Environment) {
+    #[cfg(all(feature = "map", target_vendor = "apple"))]
+    components::data::map::declare_native_realization(env);
     #[cfg(any(feature = "cef-runtime", feature = "cef-header"))]
     components::platform::browser_cef::configure_environment(env);
-    #[cfg(not(any(feature = "cef-runtime", feature = "cef-header")))]
+    #[cfg(not(any(
+        all(feature = "map", target_vendor = "apple"),
+        feature = "cef-runtime",
+        feature = "cef-header"
+    )))]
     let _ = env;
 }
 

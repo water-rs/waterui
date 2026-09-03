@@ -181,7 +181,6 @@ pub fn app(mut env: Environment) -> App {
     env.insert(MapGpuOptions::new(Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
-    #[cfg(not(target_vendor = "apple"))]
     waterui_map_gpu::install(&mut env);
     let state = MapExampleState::new();
     App::new(move || content(state.clone()), env)
