@@ -45,13 +45,13 @@ use alloc::format;
 use alloc::vec::Vec;
 
 use nami::SignalExt as _;
-use waterui::widget::code::CodeConfig;
 use waterui_canvas::Canvas;
 use waterui_core::layout::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView};
 use waterui_core::view::{Hook, ViewConfiguration as _};
 use waterui_core::{AnyView, Environment, View, resolve::Resolvable as _};
 use waterui_layout::container::FixedContainer;
 use waterui_str::Str;
+use waterui_text::code::CodeConfig;
 use waterui_text::text;
 
 mod draw;
@@ -105,7 +105,7 @@ pub fn mermaid(source: impl Into<Str>) -> Mermaid {
 /// already present — a platform bridge, another realization — wins, and this
 /// is a no-op.
 ///
-/// A fence tagged anything else keeps the ordinary [`Code`](waterui::widget::Code)
+/// A fence tagged anything else keeps the ordinary [`Code`](waterui_text::code::Code)
 /// rendering: `Hook::from` hands the closure an environment with this hook
 /// already removed, so [`ViewConfiguration::render`](waterui_core::view::ViewConfiguration::render)
 /// cannot recurse back into it.
