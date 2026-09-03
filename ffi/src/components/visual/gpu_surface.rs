@@ -774,7 +774,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         attached_config(state, "waterui_gpu_surface_render"),
         "waterui_gpu_surface_render",
     ) else {
-        return false;
+        // Nothing was drawn, so the frame this call was asked for is still
+        // pending: the host must come back for it once the surface can be
+        // acquired again. Reporting it done here would strand a view whose only
+        // clock is its own render loop.
+        return true;
     };
     let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some("GpuSurface Frame View"),
