@@ -42,12 +42,16 @@ fn sync_browser_viewport(page: &CefPageHandle, frame: &GpuFrame<'_>) -> f64 {
     scale
 }
 
-#[cfg(target_os = "macos")]
-fn request_browser_frame(page: &CefPageHandle, _frame: &mut GpuFrame<'_>) {
-    page.request_frame();
-}
-
-#[cfg(not(target_os = "macos"))]
+/// Asks Chromium for a frame, and asks the surface for the next one.
+///
+/// The browser is created with external begin frames, so it composites only
+/// when told to: this call is its clock, and the surface's own redraw loop is
+/// what ticks it. Every render therefore requests the next, and the loop runs at
+/// the display's rate for as long as the surface is attached — on every
+/// platform, because there is no other clock. macOS used to leave the redraw
+/// out and rely on a display link the Apple host ran beside the surface for
+/// exactly this purpose; that host now routes nothing CEF-specific, so the
+/// pacing lives here with everything else the presenter needs.
 fn request_browser_frame(page: &CefPageHandle, frame: &mut GpuFrame<'_>) {
     page.request_frame();
     frame.request_redraw();

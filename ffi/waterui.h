@@ -1106,54 +1106,6 @@ typedef enum WuiTabStyle {
 } WuiTabStyle;
 
 /**
- * Pointer buttons supported by CEF windowless rendering.
- */
-typedef enum WuiCefPointerButton {
-  /**
-   * Primary pointer button.
-   */
-  WuiCefPointerButton_Primary,
-  /**
-   * Middle pointer button.
-   */
-  WuiCefPointerButton_Middle,
-  /**
-   * Secondary pointer button.
-   */
-  WuiCefPointerButton_Secondary,
-} WuiCefPointerButton;
-
-/**
- * Editing operations forwarded to Chromium's focused frame.
- */
-typedef enum WuiCefEditCommand {
-  /**
-   * Undo.
-   */
-  WuiCefEditCommand_Undo,
-  /**
-   * Redo.
-   */
-  WuiCefEditCommand_Redo,
-  /**
-   * Cut.
-   */
-  WuiCefEditCommand_Cut,
-  /**
-   * Copy.
-   */
-  WuiCefEditCommand_Copy,
-  /**
-   * Paste.
-   */
-  WuiCefEditCommand_Paste,
-  /**
-   * Select all.
-   */
-  WuiCefEditCommand_SelectAll,
-} WuiCefEditCommand;
-
-/**
  * Which of the bridge's two channels a handler's reply crosses on.
  *
  * The page sees the difference — a value it can use, or a `Uint8Array` — so the
@@ -1687,9 +1639,10 @@ typedef struct WuiAppliedFilterState WuiAppliedFilterState;
 /**
  * Opaque CEF state the native backend owns for the surface's lifetime.
  *
- * Keeps the page handle every input and navigation entry point addresses, plus
- * the semantic view the page was created from, alive until
- * [`waterui_cef_surface_drop`].
+ * Keeps the semantic view the page was created from alive until
+ * [`waterui_cef_surface_drop`]: that view owns the subscriptions behind
+ * `can_go_back` / `can_go_forward`, the event signal and the URL binding, so
+ * dropping it early would leave a live page whose reactive state had gone dead.
  */
 typedef struct WuiCefSurfaceState WuiCefSurfaceState;
 
@@ -6372,52 +6325,20 @@ typedef struct WuiGpuSurface {
 } WuiGpuSurface;
 
 /**
- * GPU surface plus retained CEF input and semantic state.
+ * GPU surface plus the semantic view it draws.
  */
 typedef struct WuiCefSurface {
   /**
-   * GPU presenter consumed by `WaterUI`'s native GPU surface host.
+   * GPU presenter consumed by `WaterUI`'s native GPU surface host. It takes
+   * its own input: the host routes surface input events to it like to any
+   * other GPU view that asks for them.
    */
   struct WuiGpuSurface gpu_surface;
   /**
-   * Opaque input state retained until [`waterui_cef_surface_drop`].
+   * Opaque state retained until [`waterui_cef_surface_drop`].
    */
   struct WuiCefSurfaceState *state;
 } WuiCefSurface;
-
-/**
- * Modifier snapshot for CEF pointer and keyboard input.
- */
-typedef struct WuiCefInputModifiers {
-  /**
-   * Shift key.
-   */
-  bool shift;
-  /**
-   * Control key.
-   */
-  bool control;
-  /**
-   * Alt or Option key.
-   */
-  bool alt;
-  /**
-   * Command key.
-   */
-  bool command;
-  /**
-   * Primary pointer button.
-   */
-  bool primary_button;
-  /**
-   * Middle pointer button.
-   */
-  bool middle_button;
-  /**
-   * Secondary pointer button.
-   */
-  bool secondary_button;
-} WuiCefInputModifiers;
 
 /**
  * One parsed `waterui.invoke(...)` request.
@@ -10414,175 +10335,7 @@ struct WuiTypeId waterui_chromium_id(void);
 struct WuiCefSurface waterui_force_as_cef_webview(struct WuiAnyView *view);
 
 /**
- * Updates focus for a CEF surface.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_set_focus(const struct WuiCefSurfaceState *state, bool focused);
-
-/**
- * Requests one compositor frame for a visible CEF surface.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_request_frame(const struct WuiCefSurfaceState *state);
-
-/**
- * Updates the logical browser viewport and device scale.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- *
- * # Panics
- *
- * Panics when `scale` is not a positive, finite device-pixel ratio that `f32`
- * can represent, and when `width` or `height` is zero.
- */
-void waterui_cef_surface_set_viewport(const struct WuiCefSurfaceState *state,
-                                      uint32_t width,
-                                      uint32_t height,
-                                      double scale);
-
-/**
- * Navigates the CEF surface backward.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_go_back(const struct WuiCefSurfaceState *state);
-
-/**
- * Navigates the CEF surface forward.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_go_forward(const struct WuiCefSurfaceState *state);
-
-/**
- * Sends pointer movement in surface-local logical coordinates.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_pointer_move(const struct WuiCefSurfaceState *state,
-                                      double x,
-                                      double y,
-                                      struct WuiCefInputModifiers modifiers);
-
-/**
- * Sends one pointer button transition.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_pointer_button(const struct WuiCefSurfaceState *state,
-                                        bool pressed,
-                                        enum WuiCefPointerButton button,
-                                        double x,
-                                        double y,
-                                        struct WuiCefInputModifiers modifiers);
-
-/**
- * Sends a CEF wheel event.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_scroll(const struct WuiCefSurfaceState *state,
-                                double x,
-                                double y,
-                                double delta_x,
-                                double delta_y,
-                                struct WuiCefInputModifiers modifiers);
-
-/**
- * Sends one native key transition.
- *
- * `character` is a Unicode scalar value, or zero when the key has no text.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- *
- * # Panics
- *
- * Panics when `character` is non-zero but not a Unicode scalar value.
- */
-void waterui_cef_surface_key(const struct WuiCefSurfaceState *state,
-                             bool pressed,
-                             uint32_t native_keycode,
-                             uint32_t keyval,
-                             uint32_t character,
-                             struct WuiCefInputModifiers modifiers);
-
-/**
- * Commits text to the focused Chromium editor.
- *
- * # Safety
- *
- * `state` and `text` must be valid owning FFI values.
- */
-void waterui_cef_surface_commit_text(const struct WuiCefSurfaceState *state,
-                                     struct WuiStr text,
-                                     uint32_t replacement_start,
-                                     uint32_t replacement_end);
-
-/**
- * Updates active IME composition text and its UTF-16 selection.
- *
- * # Safety
- *
- * `state` and `text` must be valid owning FFI values.
- */
-void waterui_cef_surface_set_composition(const struct WuiCefSurfaceState *state,
-                                         struct WuiStr text,
-                                         uint32_t selection_start,
-                                         uint32_t selection_end,
-                                         uint32_t replacement_start,
-                                         uint32_t replacement_end);
-
-/**
- * Finishes active IME composition.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_finish_composition(const struct WuiCefSurfaceState *state,
-                                            bool keep_selection);
-
-/**
- * Cancels active IME composition.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_cancel_composition(const struct WuiCefSurfaceState *state);
-
-/**
- * Executes an editing command in Chromium's focused frame.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_edit(const struct WuiCefSurfaceState *state,
-                              enum WuiCefEditCommand command);
-
-/**
- * Drops retained CEF input and semantic state.
+ * Drops the semantic view retained behind a CEF surface.
  *
  * # Safety
  *
