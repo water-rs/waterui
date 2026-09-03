@@ -273,66 +273,67 @@ unsafe fn __init_impl() -> Option<waterui::inspector::InspectorRuntime> {
     inspector
 }
 
+/// The environment variable a launcher sets to name the level the application
+/// logs at.
+///
+/// `water run --logs <level>` writes it so the process it starts emits what the
+/// terminal then streams. The value is a `tracing` level such as `debug`.
+#[cfg(feature = "std")]
+const LOG_LEVEL_ENV: &str = "WATERUI_LOG";
+
+/// The `tracing` filter this process runs with.
+///
+/// `RUST_LOG` is a developer's complete directive and wins outright. Otherwise
+/// [`LOG_LEVEL_ENV`] names the level the launcher asked for, while the crates
+/// in `quiet` — the graphics stack, whose own chatter would drown the
+/// application's at any level above `error` — stay at `error`. With neither
+/// variable set, only errors are recorded.
+#[cfg(feature = "std")]
+fn env_filter(quiet: &str) -> tracing_subscriber::EnvFilter {
+    use tracing_subscriber::EnvFilter;
+
+    if let Ok(filter) = EnvFilter::try_from_default_env() {
+        return filter;
+    }
+    let level = std::env::var(LOG_LEVEL_ENV).unwrap_or_else(|_| String::from("error"));
+    EnvFilter::try_new(format!("{level},{quiet}"))
+        .unwrap_or_else(|error| panic!("{LOG_LEVEL_ENV}={level:?} is not a tracing level: {error}"))
+}
+
 /// Sends `tracing` records to the platform logger, and to the inspector when one
 /// is attached.
 ///
-/// The three platform arms differ only in which logger they attach, so the
-/// inspector layer is wired once here rather than in each of them.
+/// The three platform arms differ only in which logger they attach and which
+/// crates they quieten, so the filter and the inspector layer are wired once
+/// here rather than in each of them.
 #[cfg(feature = "std")]
 fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>) {
-    {
-        // Forwards tracing to platform's logging system
-        #[cfg(target_os = "android")]
-        {
-            use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-            let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-                .or_else(|_| {
-                    tracing_subscriber::EnvFilter::try_new(
-                        "error,wgpu_core=error,wgpu_hal=error,naga=error,jni=error",
-                    )
-                })
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+    #[cfg(target_os = "android")]
+    tracing_subscriber::registry()
+        .with(env_filter(
+            "wgpu_core=error,wgpu_hal=error,naga=error,jni=error",
+        ))
+        .with(tracing_android::layer("WaterUI").expect("Failed to create Android log layer"))
+        .with(inspector)
+        .init();
 
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(
-                    tracing_android::layer("WaterUI").expect("Failed to create Android log layer"),
-                )
-                .with(inspector)
-                .init();
-        }
+    #[cfg(target_vendor = "apple")]
+    tracing_subscriber::registry()
+        .with(env_filter(
+            "wgpu_core=error,wgpu_hal=error,naga=error,metal=error",
+        ))
+        .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
+        .with(inspector)
+        .init();
 
-        #[cfg(target_vendor = "apple")]
-        {
-            use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-            let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-                .or_else(|_| {
-                    tracing_subscriber::EnvFilter::try_new(
-                        "error,wgpu_core=error,wgpu_hal=error,naga=error,metal=error",
-                    )
-                })
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
-
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
-                .with(inspector)
-                .init();
-        }
-
-        #[cfg(not(any(target_os = "android", target_vendor = "apple")))]
-        {
-            use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-            tracing_subscriber::registry()
-                .with(tracing_subscriber::EnvFilter::from_default_env())
-                .with(tracing_subscriber::fmt::layer())
-                .with(inspector)
-                .init();
-        }
-    }
+    #[cfg(not(any(target_os = "android", target_vendor = "apple")))]
+    tracing_subscriber::registry()
+        .with(env_filter("wgpu_core=error,wgpu_hal=error,naga=error"))
+        .with(tracing_subscriber::fmt::layer())
+        .with(inspector)
+        .init();
 }
 
 /// Defines a trait for converting Rust types to FFI-compatible representations.

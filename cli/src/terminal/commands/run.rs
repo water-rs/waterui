@@ -203,7 +203,8 @@ pub struct Args {
     path: PathBuf,
 
     /// Minimum log level to display (error, warn, info, debug, verbose).
-    /// Streams device logs at or above this level.
+    /// Streams device logs at or above this level and has the application log
+    /// at it, so `debug` shows its `tracing::debug!` output.
     #[arg(long, value_enum)]
     logs: Option<CliLogLevel>,
 
