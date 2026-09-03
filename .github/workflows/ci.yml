@@ -132,10 +132,12 @@ jobs:
       # for supply-chain checks: the August 2026 `arrayref 0.3.10` compromise
       # (see the [bans] section in deny.toml) would have been *pulled in* by
       # that step while the committed lock stayed clean.
+      # Prebuilt, like cargo-deny below: `rustsec/audit-check` compiles
+      # cargo-audit from a fresh resolution on every run, which put a broken,
+      # newly published dependency of the *tool* on our critical path (#316).
+      - uses: taiki-e/install-action@cargo-audit
       - name: Security audit
-        uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo audit
       - uses: taiki-e/install-action@cargo-deny
       - name: License and ban check
         run: cargo deny check licenses bans
