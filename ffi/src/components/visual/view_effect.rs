@@ -562,7 +562,11 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
         output_config,
         "waterui_view_effect_render",
     ) else {
-        return false;
+        // Nothing was drawn, so the frame this call was asked for is still
+        // pending: the host must come back for it once the surface can be
+        // acquired again. Reporting it done here would strand a view whose only
+        // clock is its own render loop.
+        return true;
     };
 
     let input_texture = state
