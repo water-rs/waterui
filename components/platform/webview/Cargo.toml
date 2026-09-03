@@ -24,6 +24,11 @@ base64 = "0.22"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 
+[features]
+# The checks an engine's real-engine suite runs against the contracts this
+# crate states; assertions, so off by default and on in test binaries only.
+conformance = []
+
 [dev-dependencies]
 hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
 # `#[js_api]` expands to `::waterui::webview::…` paths, so testing it means
