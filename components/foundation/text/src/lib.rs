@@ -10,6 +10,8 @@
 
 extern crate alloc;
 
+#[cfg(feature = "highlight")]
+pub mod code;
 /// Font utilities and definitions.
 pub mod font;
 /// Syntax highlighting support.
@@ -19,5 +21,7 @@ pub mod styled;
 
 /// Core text component.
 pub mod text;
+#[cfg(feature = "highlight")]
+pub use code::{Code, CodeConfig, OnCopied, code};
 pub use styled::StyledStr;
 pub use text::{Formatter, IntoText, Text, TextConfig, text};
