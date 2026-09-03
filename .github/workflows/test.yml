@@ -60,23 +60,73 @@ jobs:
       - name: Format
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
-      # Two passes, split for the same structural reason as the two test
-      # passes below: workspace-wide under default features, then the root
-      # crate alone with every feature on.
+      # Workspace-wide under default features first: it is the cheapest of the
+      # lint passes and the one every crate's normal build shape goes through.
       - name: Clippy (workspace)
         if: runner.os == 'Linux'
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Clippy (all features)
+      # Then every crate's own optional features. This pass used to be
+      # `cargo clippy --all-targets --all-features`, with neither `-p` nor
+      # `--workspace`: the root manifest carries both `[workspace]` and
+      # `[package]`, so cargo narrowed it to the root `waterui` crate, and a
+      # backend's own non-default features were linted only where the root
+      # happened to enable them. Nothing in CI compiled dew's
+      # `embedded-simulator` / `espidf`, hydrolysis' `web` / `testing`, gtk's
+      # `webkitgtk`, or the browsers' engine features at all (#261).
+      #
+      # `--workspace --all-features` covers all of those. Four crates cannot
+      # join it, because `--all-features` asks for feature sets that are
+      # mutually exclusive by construction; each is excluded here and linted
+      # below in the shapes it actually has. Every one of the four is still
+      # linted under its default features by the workspace pass above, and the
+      # steps share this job's target dir, so each is an increment on a graph
+      # that is already built.
+      #
+      # A separate `-p waterui-browser-wpe --features real-engine` step used to
+      # follow; `--workspace --all-features` selects that crate with every
+      # feature on, so it is now a strict subset and has been removed.
+      - name: Clippy (all features, workspace)
         if: runner.os == 'Linux'
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      # The WPE real-engine tests sit behind a feature, because running them
-      # needs a staged WPE WebKit runtime that only `browser-wpe.yml` provisions
-      # — and that workflow only fires on the paths those tests cover. Neither
-      # pass above compiles them, so lint them here: compiling them costs
-      # nothing extra and keeps them from rotting between real-engine runs.
-      - name: Clippy (WPE real engine)
+        run: |
+          cargo clippy --workspace --all-targets --all-features \
+            --exclude waterui-core \
+            --exclude waterui-ffi \
+            --exclude hydrolysis \
+            --exclude waterui-browser-cef \
+            -- -D warnings
+      # `waterui-core`'s `nightly` feature turns on `feature(never_type)`, which
+      # is a hard E0554 on the stable channel this job pins. Everything else the
+      # crate has, it gets here.
+      - name: Clippy (waterui-core, every stable feature)
         if: runner.os == 'Linux'
-        run: cargo clippy -p waterui-browser-wpe --features real-engine --all-targets -- -D warnings
+        run: cargo clippy -p waterui-core --all-targets --features std,serde -- -D warnings
+      # `waterui-ffi` selects its ABI with mutually exclusive features and
+      # `ffi/src/lib.rs` turns `c-api` + `android-jni` into a `compile_error!`.
+      # This is the `c-api` half with every optional C surface a runtime build
+      # can carry; the `android-jni` half is the `Android FFI` job in ci.yml,
+      # and the compile-only `cef-header` shape is the macOS leg below.
+      - name: Clippy (waterui-ffi, C ABI surfaces)
+        if: runner.os == 'Linux'
+        run: cargo clippy -p waterui-ffi --all-targets --features map,chromium,webview-cef -- -D warnings
+      # `webview-system` bridges the macOS WKWebView into the winit window and
+      # `compile_error!`s anywhere else, so this is every hydrolysis feature but
+      # that one. The macOS leg compiles `webview-system` in its
+      # `real_engine_macos` step.
+      - name: Clippy (hydrolysis, every portable feature)
+        if: runner.os == 'Linux'
+        run: |
+          cargo clippy -p hydrolysis --all-targets \
+            --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      # `compile-only` swaps in CEF's `dox` stubs and stops the build script
+      # downloading the distribution that `cef-runtime` — and the `real_engine`
+      # test target — need, so the two can never be enabled together. This is
+      # the runtime shape, which nothing else lints: the macOS leg's
+      # `real-engine` pass has no `chromium`, and its `cef-header` pass is
+      # `compile-only`. `real-engine` stays off here because that test target is
+      # macOS-only; `--all-targets` skips it for want of its required feature.
+      - name: Clippy (waterui-browser-cef, CEF runtime)
+        if: runner.os == 'Linux'
+        run: cargo clippy -p waterui-browser-cef --all-targets --features chromium,webview -- -D warnings
       # Dew's firmware shape, which is a first-class configuration rather than
       # a degraded one. Neither pass above compiles dew's test targets without
       # default features, and the `Features` job's `--each-feature` sweep runs
@@ -97,14 +147,15 @@ jobs:
         run: cargo check -p skill_snippets --all-targets --features compile-gate-tests
       - uses: taiki-e/install-action@nextest
       # One full-workspace pass under default features. A workspace-wide
-      # `--all-features` pass is structurally impossible here — `waterui-ffi`
-      # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
-      # enabling `c-api` and `android-jni` together can never build. The old
-      # second pass that *looked* workspace-wide (`cargo nextest run
-      # --all-features`) never was:
-      # the root manifest has both `[workspace]` and `[package]`, so without
-      # `--workspace` cargo narrowed it to the root `waterui` crate — the only
-      # crate whose features are all mutually compatible.
+      # `--all-features` pass would need the same four `--exclude` flags the
+      # clippy passes above carry — `waterui-ffi` enforces "exactly one ABI"
+      # with a `compile_error!` (ffi/src/lib.rs), so enabling `c-api` and
+      # `android-jni` together can never build. The second pass below only
+      # *looks* workspace-wide: the root manifest has both `[workspace]` and
+      # `[package]`, so without `--workspace` cargo narrows it to the root
+      # `waterui` crate. Running the excluded crates' tests in their own
+      # feature shapes is a separate question from linting them and is not
+      # what this pass is for.
       - run: cargo nextest run --workspace --profile ci
       # The root crate's feature-gated re-export surface, with every feature
       # on. Root-crate-only scope is intentional (see above); most of the
@@ -132,14 +183,13 @@ jobs:
       # application bundle; the test stages one and the target does not compile
       # on the other platforms.
       #
-      # The same step lints the FFI crate's CEF C ABI, which nothing else
-      # compiles: the workspace pass runs default features and that module is
-      # gated behind `cef-runtime`/`cef-header`, while a workspace-wide
-      # `--all-features` pass is structurally impossible for `waterui-ffi` (see
-      # the ABI `compile_error!` note above). macOS is also the only leg that
-      # sees its `#[cfg(target_os = "macos")]` entry points at all. `cef-header`
-      # is the compile-only feature set, so this buys the lint without a CEF
-      # runtime download, on a workspace this job has already built.
+      # The same step lints the FFI crate's compile-only CEF C ABI, which no
+      # other leg reaches: the Linux all-features passes exclude `waterui-ffi`
+      # for its ABI `compile_error!` and lint the `cef-runtime` shape instead,
+      # and `cef-header` is the mutually exclusive `compile-only` one. macOS is
+      # also the only leg that sees its `#[cfg(target_os = "macos")]` entry
+      # points at all, and the compile-only feature set buys the lint without a
+      # CEF runtime download, on a workspace this job has already built.
       - name: Lint the CEF targets
         if: runner.os == 'macOS'
         run: |
