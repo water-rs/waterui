@@ -6,6 +6,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use shaderloom::WgslModuleCache;
@@ -41,7 +42,17 @@ impl Error for SharedContextError {}
 /// GPU resources shared by every clone of one [`GpuRuntime`].
 pub struct SharedGpuContext {
     /// The shared wgpu instance.
-    pub instance: wgpu::Instance,
+    ///
+    /// Never dropped: it lives as long as the process. Dropping a wgpu
+    /// `Instance` drops wgpu-hal's `libloading` handles for `libEGL` /
+    /// `libvulkan`, which `dlclose`s the driver they loaded. Mesa's software
+    /// drivers (llvmpipe, lavapipe — every GPU-less CI runner, container and
+    /// VM) and the LLVM inside them register `atexit` destructors, and once
+    /// the mapping is gone the process dies inside `exit()` after the last
+    /// context has been torn down cleanly. A driver has to outlive the process
+    /// by construction, so this is not a leak; the device is still drained and
+    /// destroyed in [`Drop`] exactly as before.
+    pub instance: ManuallyDrop<wgpu::Instance>,
     /// The selected GPU adapter.
     pub adapter: wgpu::Adapter,
     /// The shared GPU device.
@@ -290,7 +301,7 @@ impl SharedGpuContext {
             GpuSubmissionCompletionDriver::new(Arc::clone(&device), Arc::clone(&queue));
 
         Ok(Self {
-            instance,
+            instance: ManuallyDrop::new(instance),
             adapter,
             device,
             queue,
