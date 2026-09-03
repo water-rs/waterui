@@ -13289,6 +13289,7 @@ dependencies = [
  "android_clipboard",
  "arboard",
  "executor-core",
+ "hydrolysis-m3",
  "nami",
  "pulldown-cmark",
  "smallvec",
