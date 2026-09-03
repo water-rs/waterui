@@ -31,6 +31,8 @@ use std::{cell::Cell, fmt, rc::Rc};
 mod handle_layers;
 mod handler;
 pub use handler::*;
+#[cfg(feature = "conformance")]
+pub mod conformance;
 mod no_engine;
 mod proxy;
 pub use proxy::WebViewProxy;
