@@ -103,6 +103,15 @@ esp-idf-svc = { version = "0.52", optional = true }
 
 [dev-dependencies]
 waterui-testing = { path = "../../testing" }
+# The theme installation API (`Theme`, `ColorSettings`, `FontSettings`) and the
+# authoring prelude every test view tree is written in live in the facade
+# crate, and nothing below it exposes them. The library reaches the facade only
+# through the optional `progress` feature, so without this entry the test
+# targets compile in exactly one feature shape — the default one — and the
+# firmware shape's tests do not build at all. Tests are host-side and never
+# enter a flash image, so depending on the facade here costs the firmware graph
+# nothing.
+waterui = { path = "../..", default-features = false }
 # Scene content, for the tests that prove `Scene2D` drawings render on dew's
 # CPU rasterizer unchanged. Test-only on purpose: dew draws a scene through
 # the engine-neutral contract and never needs to know which component produced
@@ -123,6 +132,62 @@ native-executor.workspace = true
 # The performance simulation emits its report as serialized TOML rather than
 # hand-concatenated lines.
 toml = "1.1.3"
+
+# Every integration test declares the feature shape it needs, the way the
+# simulator example does. `host` buys the in-memory framebuffer (`HostBoard`,
+# `BufferDisplay`) and the PNG snapshot entry these tests inspect; `progress`
+# buys the Progress widget's config type, without which dew has no handler to
+# dispatch a progress bar to. A test that needs neither — `fallback_probe`, the
+# scalar-rasterizer probe — is left to auto-discovery and runs in every shape,
+# firmware included.
+[[test]]
+name = "accessibility"
+required-features = ["host"]
+
+[[test]]
+name = "dispatch_views"
+required-features = ["host"]
+
+[[test]]
+name = "form_render"
+required-features = ["host", "progress"]
+
+[[test]]
+name = "interaction_metadata"
+required-features = ["host", "gestures"]
+
+[[test]]
+name = "interaction_without_gestures"
+required-features = ["host", "system-fonts"]
+
+[[test]]
+name = "navigation_render"
+required-features = ["host"]
+
+[[test]]
+name = "scene_render"
+required-features = ["host"]
+
+[[test]]
+name = "shape_render"
+required-features = ["host"]
+
+[[test]]
+name = "smoke_frame"
+required-features = ["host"]
+
+[[test]]
+name = "tabs_render"
+required-features = ["host"]
+
+# The embedded simulation models a panel bus and a flash-bundled font, so it
+# wants no host surface at all — only the payment-progress bar its work and
+# memory budgets are calibrated around. It is the one integration test that
+# runs in the firmware shape (`--no-default-features --features progress`),
+# which is the point of it.
+[[test]]
+name = "vending_performance"
+required-features = ["progress"]
 
 [[example]]
 name = "watch_sim"
