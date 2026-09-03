@@ -18,6 +18,12 @@ use std::collections::BTreeSet;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
+/// The environment variable that carries the log level to the launched application.
+///
+/// `waterui_ffi` reads it when it installs `tracing`: the CLI names the level
+/// here and the runtime composes its own filter around it.
+const LOG_LEVEL_ENV: &str = "WATERUI_LOG";
+
 /// Minimum log level for streaming device logs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
@@ -60,6 +66,22 @@ impl LogLevel {
         match self {
             Self::Error | Self::Warn | Self::Info => "default",
             Self::Debug | Self::Verbose => "debug",
+        }
+    }
+
+    /// The `tracing` level the launched application logs at for this setting.
+    ///
+    /// Streaming is only half of `--logs`: the runtime records nothing above
+    /// `error` unless it is told a level, so the same choice travels to the
+    /// process and decides what it emits in the first place.
+    #[must_use]
+    pub const fn to_tracing_level(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Verbose => "trace",
         }
     }
 }
@@ -127,9 +149,16 @@ impl RunOptions {
         self.env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 
-    /// Set the minimum log level to stream.
-    pub const fn set_log_level(&mut self, level: LogLevel) {
+    /// Set the minimum log level to stream, and have the application log at it.
+    ///
+    /// The level reaches the process through [`LOG_LEVEL_ENV`] on every launch
+    /// path, since each of them forwards [`Self::env_vars`].
+    pub fn set_log_level(&mut self, level: LogLevel) {
         self.log_level = Some(level);
+        self.insert_env_var(
+            String::from(LOG_LEVEL_ENV),
+            String::from(level.to_tracing_level()),
+        );
     }
 
     /// Get the log level if set.
