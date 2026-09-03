@@ -1,6 +1,9 @@
 use waterui::Plugin as _;
 use waterui::theme::{FontSettings, Theme};
+use waterui_backend_core::frame_signals::FrameSignals;
+use waterui_backend_core::time::Instant;
 use waterui_core::Environment;
+use waterui_dew::{DewRenderer, FontSources};
 use waterui_text::font::{FontWeight, ResolvedFont};
 
 pub fn test_environment() -> Environment {
@@ -20,6 +23,26 @@ pub fn test_environment() -> Environment {
         )
         .install(&mut environment);
     environment
+}
+
+/// A bare renderer for the tests that inspect a display list directly instead
+/// of pumping a board.
+///
+/// It picks its faces the way `HostBoard` does: the system collection on a
+/// desktop build, and the repository's own test faces in the firmware shape,
+/// which has no `system-fonts` feature and therefore no `FontSources::System`.
+/// `DewRenderer::default()` exists only in the former, so calling it here is
+/// what kept these tests from compiling in any other shape.
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
+pub fn test_renderer() -> DewRenderer {
+    #[cfg(feature = "system-fonts")]
+    let fonts = FontSources::System;
+    #[cfg(not(feature = "system-fonts"))]
+    let fonts = FontSources::bundled(&[
+        include_bytes!("../../../../testing/fonts/Roboto-Regular.ttf"),
+        include_bytes!("../../../../testing/fonts/Roboto-Bold.ttf"),
+    ]);
+    DewRenderer::new(FrameSignals::new(Instant::now()), fonts)
 }
 
 // Only the performance simulation uses this; other integration tests include

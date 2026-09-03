@@ -8,7 +8,7 @@ use waterui::prelude::*;
 use waterui::prelude::{slider::slider, stepper::stepper};
 use waterui::reactive::binding;
 use waterui_core::AnyView;
-use waterui_dew::{DewRenderer, DrawCommand, render_view_png, theme};
+use waterui_dew::{DrawCommand, render_view_png, theme};
 
 mod support;
 
@@ -110,7 +110,7 @@ fn form_ui_renders_to_png() {
 /// fill, and progress fill, plus the viewport clip from the scroll view.
 #[test]
 fn form_scene_contains_expected_widget_commands() {
-    let mut renderer = DewRenderer::default();
+    let mut renderer = support::test_renderer();
     let list = renderer.render_tree(
         AnyView::new(build_screen()),
         &support::test_environment(),
