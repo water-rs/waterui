@@ -608,7 +608,11 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
         output_config,
         "waterui_applied_filter_render",
     ) else {
-        return false;
+        // Nothing was drawn, so the frame this call was asked for is still
+        // pending: the host must come back for it once the surface can be
+        // acquired again. Reporting it done here would strand a view whose only
+        // clock is its own render loop.
+        return true;
     };
 
     // Get input texture after setup so mutable borrows of `state` are finished.
