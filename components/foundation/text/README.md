@@ -161,9 +161,10 @@ let blue_text = styled.foreground(Color::blue());
 ```rust
 use waterui_text::highlight::{DefaultHighlighter, Language, highlight_text};
 use waterui_core::Str;
+use waterui_graphics::color::ColorScheme;
 
-// Create highlighter
-let mut highlighter = DefaultHighlighter::new();
+// Create highlighter with the palette for the surface it is read against
+let mut highlighter = DefaultHighlighter::new(ColorScheme::Light);
 
 // Highlight code
 let code = Str::from("fn main() { println!(\"Hello\"); }");
