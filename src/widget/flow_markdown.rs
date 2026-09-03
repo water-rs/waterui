@@ -20,17 +20,11 @@ use waterui_core::{
     dynamic::{Dynamic, DynamicHandler},
     id::Identifiable,
 };
-use waterui_graphics::color::Srgb;
 use waterui_layout::stack::{HorizontalAlignment, VStack};
 use waterui_str::Str;
-use waterui_text::{
-    highlight::Language,
-    styled::{Style, StyledStr},
-    text,
-};
+use waterui_text::styled::StyledStr;
 
 use crate::{
-    ViewExt,
     animation::Animation,
     widget::rich_text::{RichText, RichTextElement},
 };
@@ -1513,12 +1507,7 @@ fn build_flow_block_view(
 }
 
 fn push_rich_text_element_view(views: &mut Vec<AnyView>, element: RichTextElement) {
-    match element {
-        RichTextElement::Code { code, language } => {
-            views.push(AnyView::new(flow_code_view(&language, code.as_str())));
-        }
-        _ => views.push(AnyView::new(element)),
-    }
+    views.push(AnyView::new(element));
 }
 
 fn has_typewriter_policy_for_kind(kind: FlowElementKind, config: &FlowMarkdownConfig) -> bool {
@@ -1687,123 +1676,6 @@ fn truncate_styled(styled: &StyledStr, max_chars: usize) -> StyledStr {
     out
 }
 
-fn flow_code_view(language: &Language, code: &str) -> impl View {
-    let highlighted = highlight_code_with_tree_sitter(language, code);
-    VStack::new(
-        HorizontalAlignment::Leading,
-        6.0,
-        (text("Code").caption(), text(highlighted)),
-    )
-    .padding()
-    .background(Srgb::new_u8(23, 26, 30))
-}
-
-fn highlight_code_with_tree_sitter(language: &Language, code: &str) -> StyledStr {
-    let Some(ts_language) = language_to_tree_sitter(language) else {
-        return code_monospace_plain(code);
-    };
-
-    let mut parser = Parser::new();
-    if parser.set_language(&ts_language).is_err() {
-        return code_monospace_plain(code);
-    }
-
-    let Some(tree) = parser.parse(code, None) else {
-        return code_monospace_plain(code);
-    };
-
-    let mut tokens = Vec::new();
-    collect_leaf_tokens(tree.root_node(), &mut tokens);
-    tokens.sort_by_key(|(start, _, _)| *start);
-
-    let mut styled = StyledStr::empty();
-    let mut cursor = 0usize;
-    for (start, end, kind) in tokens {
-        if start > cursor
-            && let Some(fragment) = code.get(cursor..start)
-        {
-            styled.push(fragment.to_string(), code_base_style());
-        }
-        if end > start
-            && let Some(fragment) = code.get(start..end)
-        {
-            styled.push(fragment.to_string(), style_for_token_kind(&kind));
-            cursor = end;
-        }
-    }
-
-    if cursor < code.len()
-        && let Some(fragment) = code.get(cursor..)
-    {
-        styled.push(fragment.to_string(), code_base_style());
-    }
-
-    if styled.is_empty() {
-        code_monospace_plain(code)
-    } else {
-        styled
-    }
-}
-
-fn collect_leaf_tokens(node: tree_sitter::Node<'_>, out: &mut Vec<(usize, usize, String)>) {
-    if node.child_count() == 0 {
-        out.push((node.start_byte(), node.end_byte(), node.kind().to_string()));
-        return;
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_leaf_tokens(child, out);
-    }
-}
-
-fn code_monospace_plain(code: &str) -> StyledStr {
-    let mut styled = StyledStr::empty();
-    styled.push(code.to_string(), code_base_style());
-    styled
-}
-
-fn code_base_style() -> Style {
-    Style::default()
-        .font(waterui_text::font::Font::from(waterui_text::font::Body).family("monospace"))
-        .foreground(Srgb::new_u8(224, 232, 240))
-}
-
-fn style_for_token_kind(kind: &str) -> Style {
-    let base = code_base_style();
-    if kind.contains("comment") {
-        base.foreground(Srgb::new_u8(141, 153, 168))
-    } else if kind.contains("string") {
-        base.foreground(Srgb::new_u8(152, 195, 121))
-    } else if kind.contains("number") {
-        base.foreground(Srgb::new_u8(209, 154, 102))
-    } else if kind.contains("keyword")
-        || kind.contains("operator")
-        || kind.contains("modifier")
-        || kind.contains("type")
-    {
-        base.foreground(Srgb::new_u8(97, 175, 239))
-    } else {
-        base
-    }
-}
-
-fn language_to_tree_sitter(language: &Language) -> Option<tree_sitter::Language> {
-    match language {
-        Language::Rust => Some(tree_sitter_rust::LANGUAGE.into()),
-        Language::Javascript => Some(tree_sitter_javascript::LANGUAGE.into()),
-        Language::Typescript => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-        Language::Python => Some(tree_sitter_python::LANGUAGE.into()),
-        Language::Go => Some(tree_sitter_go::LANGUAGE.into()),
-        Language::Java => Some(tree_sitter_java::LANGUAGE.into()),
-        Language::Swift => Some(tree_sitter_swift::LANGUAGE.into()),
-        Language::Json => Some(tree_sitter_json::LANGUAGE.into()),
-        Language::Bash => Some(tree_sitter_bash::LANGUAGE.into()),
-        Language::Sql => Some(tree_sitter_sequel::LANGUAGE.into()),
-        _ => None,
-    }
-}
-
 fn is_incomplete_table(markdown: &str) -> bool {
     let lines: Vec<&str> = markdown
         .lines()
@@ -1922,6 +1794,8 @@ fn advance_point(mut point: Point, text: &str) -> Point {
 
 #[cfg(test)]
 mod tests {
+    use waterui_text::styled::Style;
+
     use super::*;
 
     #[test]
