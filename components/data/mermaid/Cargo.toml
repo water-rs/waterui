@@ -30,7 +30,9 @@ parley = { workspace = true, features = ["system"] }
 thiserror.workspace = true
 
 [dev-dependencies]
-waterui = { path = "../../.." }
+# The tests mount real Markdown, so they need the Markdown stack on top of the
+# `highlight` feature the library half selects.
+waterui = { path = "../../..", features = ["flow-markdown"] }
 waterui-testing = { path = "../../../testing" }
 hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
 
