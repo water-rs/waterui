@@ -24,6 +24,12 @@ jobs:
           fetch-depth: 0
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+      # `cargo publish` verifies each package by building it with its default
+      # features, so the native libraries the workspace links have to be here
+      # as they are in the test workflow: without them the Linux-only
+      # `cros-libva` build script, reached through `waterkit-codec`, fails the
+      # `waterui-image` verify build on the missing `libva-dev`.
+      - uses: ./.github/actions/setup-linux-deps
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release
@@ -60,6 +66,9 @@ jobs:
           fetch-depth: 0
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+      # The same native libraries as above: computing the next versions also
+      # builds the workspace's metadata against every crate's dependencies.
+      - uses: ./.github/actions/setup-linux-deps
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release-pr
