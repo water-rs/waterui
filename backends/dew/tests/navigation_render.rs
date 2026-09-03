@@ -17,9 +17,7 @@ use waterui::theme::{ColorSettings, Theme};
 use waterui_backend_core::input::TouchPhase;
 use waterui_controls::toggle::toggle;
 use waterui_core::Str;
-use waterui_dew::{
-    DewRenderer, DewRuntime, DisplayList, DrawCommand, HostBoard, PlacedCommand, PointerSample,
-};
+use waterui_dew::{DewRuntime, DisplayList, DrawCommand, HostBoard, PlacedCommand, PointerSample};
 use waterui_navigation::{
     NavigationLink, NavigationPath, NavigationSplitView, NavigationStack,
     NavigationTitleDisplayMode, NavigationToolbar, NavigationToolbarItem,
@@ -149,7 +147,7 @@ fn full_width_solid_fills(list: &DisplayList, width: f64) -> Vec<Rect> {
 /// is drawn as chrome above it.
 #[test]
 fn a_stack_draws_its_root_under_a_bar() {
-    let mut renderer = DewRenderer::default();
+    let mut renderer = support::test_renderer();
     let list = renderer.render_tree(
         AnyView::new(NavigationStack::new(NavigationView::new(
             "Settings",
@@ -380,7 +378,7 @@ fn a_stack_opens_on_the_route_its_path_already_holds() {
 #[test]
 fn a_bar_places_every_part_it_declares() {
     let query = binding(Str::from("Bed"));
-    let mut renderer = DewRenderer::default();
+    let mut renderer = support::test_renderer();
     let list = renderer.render_tree(
         AnyView::new(NavigationStack::new(
             NavigationView::new("Rooms", Color::srgb(0, 255, 255))

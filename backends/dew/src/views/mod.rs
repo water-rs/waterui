@@ -211,11 +211,20 @@ mod tests {
     use kurbo::Point;
     use nami::binding;
     use peniko::Brush;
+    use waterui_backend_core::time::Instant;
     use waterui_controls::slider::slider;
     use waterui_controls::toggle::Toggle;
     use waterui_core::AnyView;
     use waterui_core::plugin::Plugin;
     use waterui_graphics::color::{ResolvedColor, Srgb};
+
+    /// A renderer wired to the repository's own faces — see
+    /// [`crate::test_fonts`]. These cases hide every control label, so no
+    /// glyph is shaped; the collection exists so the handlers run against a
+    /// font path that a firmware build also has.
+    fn test_renderer() -> DewRenderer {
+        DewRenderer::new(FrameSignals::new(Instant::now()), crate::test_fonts())
+    }
 
     fn render_commands(
         view: impl waterui_core::View,
@@ -224,7 +233,7 @@ mod tests {
     ) -> Vec<crate::display_list::PlacedCommand> {
         let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
         waterui_testing::install_test_executor();
-        let mut renderer = DewRenderer::default();
+        let mut renderer = test_renderer();
         let list = renderer.render_tree(AnyView::new(view), &Environment::new(), width, height);
         let (background, commands) = list
             .commands()
@@ -339,7 +348,7 @@ mod tests {
             .colors(waterui::theme::ColorSettings::new().accent(accent.clone()))
             .install(&mut env);
 
-        let mut renderer = DewRenderer::default();
+        let mut renderer = test_renderer();
         let commands = renderer.render_tree(
             AnyView::new(Toggle::new("Ready", &binding(true)).hide_label()),
             &env,

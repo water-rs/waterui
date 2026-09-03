@@ -112,6 +112,33 @@ pub use stats::{ChipBudget, FrameWork, Provenance};
 
 use kurbo::Rect;
 
+/// The faces this crate's unit tests shape with: the host collection, exactly
+/// as `HostBoard` resolves it on a desktop build.
+#[cfg(all(test, feature = "system-fonts"))]
+pub(crate) const fn test_fonts() -> FontSources {
+    FontSources::System
+}
+
+/// The faces this crate's unit tests shape with: the repository's own test
+/// binaries, registered the way a firmware board registers flash-resident
+/// fonts.
+///
+/// This build has no `system-fonts` feature and therefore no
+/// `FontSources::System` — the same asymmetry [`Board::fonts`] is declared
+/// twice for. Bundling here is what keeps the shaping tests *running* in the
+/// configuration a device ships instead of being gated away with it. Regular
+/// and bold are both registered because the styled-span tests assert that a
+/// bold run separates from the surrounding body text.
+///
+/// [`Board::fonts`]: board::Board::fonts
+#[cfg(all(test, not(feature = "system-fonts")))]
+pub(crate) fn test_fonts() -> FontSources {
+    FontSources::bundled(&[
+        include_bytes!("../../../testing/fonts/Roboto-Regular.ttf"),
+        include_bytes!("../../../testing/fonts/Roboto-Bold.ttf"),
+    ])
+}
+
 /// Rasterizes the dirty parts of `list` band-by-band and flushes them to
 /// `display`, then presents the frame, accumulating the work performed into
 /// `work`.
