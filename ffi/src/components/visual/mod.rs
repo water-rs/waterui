@@ -10,6 +10,13 @@ pub mod gpu_surface_input;
 pub mod view_effect;
 pub mod view_renderer;
 
+/// Acquires the next texture of a configured surface, reconfiguring once when
+/// the swapchain is lost or outdated.
+///
+/// `None` means the frame was skipped because the surface is occluded: nothing
+/// was drawn, and the caller must report the frame as still pending so the host
+/// comes back for it — a view whose only clock is its own render loop has no
+/// other way to be woken.
 #[cfg(feature = "gpu")]
 fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
