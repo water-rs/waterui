@@ -163,6 +163,12 @@ pub(crate) struct EmbeddedGpuSurfaceRuntime {
     /// duration of async setup, and a target that disappeared for those frames
     /// would drop the focus it holds.
     wants_input_events: bool,
+    /// Whether the view fills every pixel it is handed opaquely, and may
+    /// therefore be rendered straight into the window's uncleared texture.
+    /// Sampled once at construction for the same reason as
+    /// `wants_input_events`: the surface is moved out for the duration of async
+    /// setup, and the layer-pushing path must still be able to ask.
+    is_opaque: bool,
     msaa_samples: NonZeroU32,
     prefers_hdr: Option<bool>,
     output_format: wgpu::TextureFormat,
@@ -638,6 +644,7 @@ impl EmbeddedGpuSurfaceRuntime {
     pub(crate) fn new(surface: GpuSurface, env: &Environment) -> Self {
         let msaa_samples = surface.msaa_sample_limit();
         let wants_input_events = surface.wants_input_events();
+        let is_opaque = surface.is_opaque();
         let prefers_hdr = surface.resolved_hdr_preference().or_else(|| {
             env.get::<DynamicRangePreference>()
                 .map(|preference| preference.0)
@@ -647,6 +654,7 @@ impl EmbeddedGpuSurfaceRuntime {
             env: Some(env.clone()),
             setup_complete: false,
             wants_input_events,
+            is_opaque,
             msaa_samples,
             prefers_hdr,
             output_format: wgpu::TextureFormat::Rgba8Unorm,
@@ -723,6 +731,16 @@ impl EmbeddedGpuSurfaceRuntime {
     /// Whether this surface's view handles its own input.
     pub(crate) const fn wants_input_events(&self) -> bool {
         self.wants_input_events
+    }
+
+    /// Whether this surface's view declares that it fills every pixel opaquely.
+    ///
+    /// Only such a view may be rendered straight into the window's target,
+    /// which arrives uncleared and still holding the previous frame; a view
+    /// that leaves any pixel alone is composited over the window's base colour
+    /// instead.
+    pub(crate) const fn is_opaque(&self) -> bool {
+        self.is_opaque
     }
 
     /// Delivers one backend-neutral input event to the view.
@@ -1082,6 +1100,25 @@ impl EmbeddedGpuSurfaceRuntime {
     }
 }
 
+/// The one texture format an embedded surface's view is set up for and renders
+/// into, whichever path carries it to the window.
+///
+/// An SDR surface takes the *target's own linear format* — `Bgra8Unorm` for a
+/// `Bgra8Unorm` or `Bgra8UnormSrgb` window, `Rgba8Unorm` for an `Rgba8Unorm`
+/// one — rather than a fixed `Rgba8Unorm`. That is what lets the direct path
+/// hand the view the window texture itself without the format under it
+/// changing: [`HydrolysisRenderer::render_scene_to_surface`] takes that path
+/// only when this format already equals the target's, and Hydrolysis
+/// normalizes every swapchain to its linear variant when the surface offers
+/// one (`normalize_surface_format`), so it does. A window that can only be
+/// configured sRGB keeps its surfaces composed; viewing such a swapchain
+/// texture through its linear variant instead would need that variant declared
+/// in `SurfaceConfiguration::view_formats`, which rests on
+/// `DownlevelFlags::VIEW_FORMATS` and is not universal.
+///
+/// HDR is unchanged: an HDR target under a view that wants HDR renders
+/// `Rgba16Float`, and one that asked for SDR renders the target's linear
+/// format and is therefore composited.
 fn select_embedded_surface_format(
     target_format: wgpu::TextureFormat,
     prefers_hdr_override: Option<bool>,
@@ -1094,7 +1131,10 @@ fn select_embedded_surface_format(
     if target_hdr && prefers_hdr {
         return wgpu::TextureFormat::Rgba16Float;
     }
-    wgpu::TextureFormat::Rgba8Unorm
+    if target_hdr {
+        return wgpu::TextureFormat::Rgba8Unorm;
+    }
+    target_format.remove_srgb_suffix()
 }
 
 fn point_to_clip(point: vello::kurbo::Point, width: u32, height: u32) -> [f32; 2] {
@@ -1122,6 +1162,74 @@ fn point_to_clip(point: vello::kurbo::Point, width: u32, height: u32) -> [f32; 2
 /// matches what the browser widgets already publish to their own viewports.
 fn layer_device_scale(transform: vello::kurbo::Affine) -> f64 {
     transform.determinant().abs().sqrt()
+}
+
+/// Where a layer's bounds land on the window's physical pixel grid, when its
+/// transform is one the direct-to-target path can honour at all.
+///
+/// Direct rendering replaces the window's whole pass with the view's own, so
+/// the view is handed the target's axis-aligned pixel rectangle and nothing
+/// else: there is no quad to map its output through the way
+/// [`encode_compositor_uniform`] maps a composited layer's. A rotation, a skew,
+/// a mirrored axis or a collapsed one all describe output this path cannot
+/// place, so they answer `None` and the surface composites instead.
+///
+/// A *pure scale* does survive, which is the whole point — the window root's
+/// transform is `Affine::scale(scale_factor)`, so on every HiDPI display a
+/// full-window surface arrives here scaled by 2 or 3 rather than as the
+/// identity. Translation is not rejected outright either; it simply has to come
+/// out matching the viewport, which the caller checks against the rect returned
+/// here.
+fn direct_target_rect(
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+) -> Option<vello::kurbo::Rect> {
+    let [x_scale, shear_y, shear_x, y_scale, ..] = transform.as_coeffs();
+    // Comparing the transform's linear part against a pure non-uniform scale is
+    // the "no rotation, no skew" test, taken at the same tolerance every other
+    // affine comparison in the renderer uses. The translation is dropped from
+    // both sides: where the surface lands is the caller's question, not this
+    // one's.
+    if !affine_near(
+        vello::kurbo::Affine::new([x_scale, shear_y, shear_x, y_scale, 0.0, 0.0]),
+        vello::kurbo::Affine::scale_non_uniform(x_scale, y_scale),
+    ) {
+        return None;
+    }
+    // A mirrored axis would flip the view's output, and a collapsed one leaves
+    // it no pixels at all; neither is something handing over the window texture
+    // can express.
+    if x_scale <= 0.0 || y_scale <= 0.0 {
+        return None;
+    }
+    Some(transform.transform_rect_bbox(bounds))
+}
+
+/// Whether a layer's transformed bounds cover `viewport` exactly, in physical
+/// pixels — the geometric half of the direct-to-target decision.
+pub(crate) fn covers_viewport_directly(
+    transform: vello::kurbo::Affine,
+    bounds: vello::kurbo::Rect,
+    viewport: vello::kurbo::Rect,
+) -> bool {
+    direct_target_rect(transform, bounds).is_some_and(|rect| rect_near(rect, viewport))
+}
+
+/// The whole-pixel size of a direct-to-target layer, taken from the same
+/// transformed bounds the decision was made on rather than assumed from the
+/// window.
+fn direct_target_size(transform: vello::kurbo::Affine, bounds: vello::kurbo::Rect) -> (u32, u32) {
+    let rect = direct_target_rect(transform, bounds)
+        .expect("hydrolysis direct GpuSurface layer must have a direct-renderable transform");
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the rect was accepted only after matching the window's own pixel viewport"
+    )]
+    (
+        rect.width().round().max(1.0) as u32,
+        rect.height().round().max(1.0) as u32,
+    )
 }
 
 fn edge_length_in_pixels(
@@ -1513,6 +1621,7 @@ impl HydrolysisRenderer {
         );
 
         self.flush_vello_scene_layer();
+        self.frame_direct_gpu_surfaces = 0;
         let fullscreen_uniform =
             encode_compositor_uniform([[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]], true);
         let mut render_layers = core::mem::take(&mut self.compositor.render_layers);
@@ -1527,31 +1636,50 @@ impl HydrolysisRenderer {
             self.clear_target_surface(target.device, target.queue, target.view, target.base_color);
             return;
         }
+        // The last condition is the one the layer could not answer for itself:
+        // the format a view is set up for is fixed for its lifetime (see
+        // [`select_embedded_surface_format`]), so it may only be handed the
+        // window's own texture when that texture already carries that format.
+        // Anything else would re-run `GpuView::setup` on every switch between
+        // this path and the composited one.
         if let [RenderLayer::GpuSurface(layer)] = render_layers.as_slice()
             && layer.direct_to_target
+            && let GpuSurfaceSource::Owned(runtime) = &layer.source
+            && runtime.borrow().output_format_for(target.format) == target.format
         {
             let texture = target
                 .texture
                 .expect("hydrolysis direct GpuSurface render requires target texture");
+            // The surface's pixel size comes from the same transformed bounds
+            // the direct decision was taken on, not from the window: the two
+            // agree by construction, and deriving it here is what makes that
+            // checkable.
+            let (width, height) = direct_target_size(layer.transform, layer.bounds);
+            assert!(
+                width == target.width && height == target.height,
+                "hydrolysis direct GpuSurface layer covers {width}x{height} device pixels but its \
+                 window target is {}x{}",
+                target.width,
+                target.height
+            );
             let direct_target = DirectGpuSurfaceTarget {
                 device: target.device,
                 queue: target.queue,
                 texture,
                 view: target.view.clone(),
                 format: target.format,
-                width: target.width,
-                height: target.height,
+                width,
+                height,
                 scale: layer_device_scale(layer.transform),
                 pointer: project_pointer_into_surface(
                     self.hit_test.pointer_position,
                     self.hit_test.pointer_press_origin,
                     layer.hit_rect,
-                    target.width,
-                    target.height,
+                    width,
+                    height,
                 ),
                 now: self.frame_instant(),
             };
-            let GpuSurfaceSource::Owned(runtime) = &layer.source;
             if !EmbeddedGpuSurfaceRuntime::ensure_setup(
                 runtime,
                 self.embedded_gpu_surface_setup(target.adapter, target.device, target.queue),
@@ -1567,6 +1695,7 @@ impl HydrolysisRenderer {
                 self.compositor.render_layers = render_layers;
                 return;
             }
+            self.frame_direct_gpu_surfaces = 1;
             let needs_redraw = runtime.borrow_mut().render_direct_to_target(direct_target);
             self.compositor.render_layers = render_layers;
             if needs_redraw {

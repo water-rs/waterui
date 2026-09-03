@@ -578,10 +578,22 @@ impl HydrolysisRenderer {
         }
 
         self.flush_vello_scene_layer();
+        let GpuSurfaceSource::Owned(runtime) = &source;
+        // Rendering straight into the window's target replaces the whole
+        // composite pass, so everything the composite would have done has to be
+        // unnecessary: nothing may be drawn under or over this surface, no
+        // scene layer may be masking or fading it, the view must fill every
+        // pixel it is handed (the target arrives uncleared, still holding the
+        // previous frame), and its transformed bounds must land exactly on the
+        // window's device-pixel viewport.
+        //
+        // That last test is deliberately *not* `transform == IDENTITY`. The
+        // window root is `Affine::scale(scale_factor)`, so an identity test is
+        // false on every HiDPI display and this path never ran on one.
         let direct_to_target = self.compositor.render_layers.is_empty()
             && self.compositor.active_scene_layers.is_empty()
-            && affine_near(transform, vello::kurbo::Affine::IDENTITY)
-            && rect_near(bounds, self.window_bounds);
+            && runtime.borrow().is_opaque()
+            && covers_viewport_directly(transform, bounds, self.window_viewport());
         self.compositor
             .render_layers
             .push(RenderLayer::GpuSurface(GpuSurfaceLayer {
