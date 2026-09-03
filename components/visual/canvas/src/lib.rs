@@ -1371,6 +1371,82 @@ mod tests {
     /// and this is how the two are compared where both are available. The PNGs
     /// are for looking at — the engines rasterize differently, so nothing about
     /// them is asserted pixel-wise.
+    /// A fill keeps its colour from the brush to the pixel.
+    ///
+    /// vello composites in sRGB and stores sRGB into a non-sRGB target, so a
+    /// fill read back out of `Rgba8Unorm` must be the colour it was given. The
+    /// failure this pins is silent and total: a vello that starts emitting
+    /// linear, or a conversion that decodes on the way in, shifts every colour
+    /// in the framework by `srgb_to_linear` — leaving white and black untouched
+    /// and everything between wrong, which reads as a faint colour cast rather
+    /// than as a bug. That is exactly the shape water-rs/waterui#233 took, and
+    /// establishing this contract is what cleared vello of causing it. Both
+    /// engines are checked because they rasterize differently and could drift.
+    #[test]
+    fn a_fill_keeps_its_colour_through_both_scene_engines() {
+        use waterui_graphics::shared_context::SceneEngine;
+        use waterui_graphics::{GpuRuntime, OffscreenRenderConfig, OffscreenSize};
+
+        fn to_linear(c: f64) -> f64 {
+            let c = c / 255.0;
+            let linear = if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            };
+            linear * 255.0
+        }
+
+        // M3 baseline light surfaceVariant, the token #233 rendered as #CCBED6.
+        let token = (0xE7_u8, 0xE0_u8, 0xEC_u8);
+        let fill = waterui_graphics::color::Srgb::from_hex("#E7E0EC");
+        let decoded = (
+            to_linear(f64::from(token.0)),
+            to_linear(f64::from(token.1)),
+            to_linear(f64::from(token.2)),
+        );
+
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("this test requires a working GPU runtime");
+        let size = OffscreenSize::try_from_pixels(64, 64).expect("test size must be valid");
+
+        for (engine, name) in [
+            (SceneEngine::Classic, "classic"),
+            (SceneEngine::Hybrid, "hybrid"),
+        ] {
+            let surface = SceneView::new(CanvasContent {
+                draw_fn: Box::new(move |ctx: &mut DrawingContext| {
+                    ctx.set_fill_style(fill);
+                    ctx.fill_rect(Rect::from_size(Size::new(64.0, 64.0)));
+                }),
+                invalidator: None,
+                pending_redraw: Rc::new(Cell::new(false)),
+                active_guards: Vec::new(),
+                text_engine: TextEngine::default(),
+            })
+            .into_gpu_surface();
+            let config = OffscreenRenderConfig::new(size)
+                .format(wgpu::TextureFormat::Rgba8Unorm)
+                .scene_engine(engine);
+            let mut env = waterui_core::Environment::new();
+            let output = pollster::block_on(surface.render_offscreen(&runtime, config, &mut env))
+                .expect("offscreen render should succeed");
+
+            let centre = ((32 * output.width + 32) * 4) as usize;
+            let pixel = (
+                output.rgba8[centre],
+                output.rgba8[centre + 1],
+                output.rgba8[centre + 2],
+            );
+            assert_eq!(
+                pixel, token,
+                "the {name} engine changed the fill's colour: drew {token:?}, read back \
+                 {pixel:?}. Decoding it to linear would give ({:.0}, {:.0}, {:.0}).",
+                decoded.0, decoded.1, decoded.2
+            );
+        }
+    }
+
     #[test]
     fn both_scene_engines_render_a_canvas() {
         use waterui_graphics::shared_context::SceneEngine;
