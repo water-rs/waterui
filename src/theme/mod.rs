@@ -101,7 +101,7 @@
 
 use core::{any::TypeId, marker::PhantomData};
 
-use nami::{Computed, SignalExt, impl_constant, signal::IntoSignal};
+use nami::{Computed, SignalExt, signal::IntoSignal};
 use waterui_core::{Environment, env::Store, plugin::Plugin};
 
 use crate::{
@@ -115,8 +115,9 @@ use crate::{
 
 /// The color scheme preference for the UI.
 ///
-/// This is used to switch between light and dark appearances. Native backends
-/// typically bind this to the system appearance setting.
+/// Defined beside the colour tokens in `waterui_graphics::color` so component
+/// crates can resolve it through [`CurrentColorScheme`] without depending on
+/// this crate; installed and read here.
 ///
 /// # Example
 ///
@@ -131,16 +132,7 @@ use crate::{
 /// let system_scheme = binding(ColorScheme::Light);
 /// Theme::new().color_scheme(system_scheme);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum ColorScheme {
-    /// Light appearance (light backgrounds, dark text).
-    #[default]
-    Light,
-    /// Dark appearance (dark backgrounds, light text).
-    Dark,
-}
-
-impl_constant!(ColorScheme);
+pub use waterui_graphics::color::{ColorScheme, CurrentColorScheme};
 
 // ============================================================================
 // ColorSettings - All color overrides
@@ -500,7 +492,7 @@ impl Plugin for Theme {
     fn install(self, env: &mut Environment) {
         // Install color scheme if specified
         if let Some(scheme) = self.color_scheme {
-            env.insert(ColorSchemeSignal(scheme));
+            install_color_scheme(env, scheme);
         }
 
         // Install color settings if specified
@@ -586,10 +578,6 @@ pub mod color {
 // Internal: Storage and Resolution
 // ============================================================================
 
-/// Storage for the color scheme signal.
-#[derive(Clone)]
-struct ColorSchemeSignal(Computed<ColorScheme>);
-
 /// Internal storage for a color signal in the environment.
 #[derive(Clone)]
 struct ColorSlotValue<T> {
@@ -636,8 +624,7 @@ pub fn current_color_scheme(env: &Environment) -> Computed<ColorScheme> {
 /// Returns the color-scheme signal installed by the active backend or theme.
 #[must_use]
 pub fn installed_color_scheme(env: &Environment) -> Option<Computed<ColorScheme>> {
-    env.get::<ColorSchemeSignal>()
-        .map(|signal| signal.0.clone())
+    env.query::<ColorScheme, Computed<ColorScheme>>().cloned()
 }
 
 /// Installs an explicit color signal for a specific slot.
@@ -733,7 +720,7 @@ pub fn install_font_signal<T: 'static>(env: &mut Environment, signal: Computed<R
 /// This is used by native backends to inject a reactive color scheme that
 /// tracks the system appearance setting.
 pub fn install_color_scheme(env: &mut Environment, signal: Computed<ColorScheme>) {
-    env.insert(ColorSchemeSignal(signal));
+    env.insert(Store::<ColorScheme, Computed<ColorScheme>>::new(signal));
 }
 
 // ============================================================================
