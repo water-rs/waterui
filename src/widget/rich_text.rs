@@ -2,6 +2,8 @@ use std::{mem, num::NonZeroUsize, str::FromStr};
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
 use waterui_core::{AnyView, Environment, View};
+#[cfg(feature = "snackbar")]
+use waterui_core::{State, extract::Extractor as _};
 use waterui_graphics::color::Blue;
 use waterui_layout::{
     Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions,
@@ -18,6 +20,8 @@ use waterui_text::{
     text,
 };
 
+#[cfg(feature = "snackbar")]
+use crate::snackbar::{Snackbar, SnackbarManager};
 use crate::{ViewExt, widget::Divider};
 
 /// Rich text widget for displaying formatted content.
@@ -192,10 +196,21 @@ impl View for RichTextElement {
                 language,
             } => {
                 let view = crate::widget::code(language, code);
-                AnyView::new(match info {
+                let view = match info {
                     Some(info) => view.info(info),
                     None => view,
-                })
+                };
+                // Copy feedback goes through the window's `SnackbarManager`, a
+                // semantic object the runtime owns. `Code` cannot name it — it
+                // lives in `waterui-text` — and this is the one place a fence
+                // is rendered from Markdown, so the snackbar coupling is here.
+                #[cfg(feature = "snackbar")]
+                let view = view.on_copied(|env| {
+                    let State(snackbar) = State::<SnackbarManager>::extract(env)
+                        .expect("the window's environment carries its SnackbarManager");
+                    snackbar.show(Snackbar::new("Copied to clipboard"));
+                });
+                AnyView::new(view)
             }
             Self::Quote { content } => AnyView::new(quote(content)),
             Self::Group { elements, inline } => {

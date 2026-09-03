@@ -1,27 +1,38 @@
+//! A fenced code block: a header naming the language, a copy button, and the
+//! highlighted source.
+//!
+//! `Code` is a text-presentation widget, so it lives beside [`Language`],
+//! [`DefaultHighlighter`] and [`StyledStr`] rather than in the root crate. That
+//! is what lets a component crate claim a fence — install a
+//! [`Hook<CodeConfig>`] — without depending on the aggregator.
+
+use alloc::{
+    rc::Rc,
+    string::{String, ToString},
+};
 use core::error::Error;
-#[cfg(feature = "snackbar")]
-use waterui_core::State;
+use core::fmt;
+
+#[cfg(target_arch = "wasm32")]
+use executor_core::spawn_local;
+use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{AnyView, Environment, Metadata, View};
 use waterui_graphics::color::Color;
 use waterui_layout::{
+    background::background,
+    padding::{EdgeInsets, Padding},
     spacer,
     stack::{HorizontalAlignment, VStack, hstack},
 };
 use waterui_str::Str;
-use waterui_text::{
+
+use crate::{
     font::{Body, Font},
     highlight::{DefaultHighlighter, Highlighter, Language},
     styled::{Style, StyledStr},
     text,
 };
-
-#[cfg(target_arch = "wasm32")]
-use executor_core::spawn_local;
-
-use crate::ViewExt;
-#[cfg(feature = "snackbar")]
-use crate::snackbar::{Snackbar, SnackbarManager};
 
 /// Copies text to the system clipboard.
 #[cfg(all(
@@ -72,12 +83,35 @@ fn copy_to_clipboard(text: &str) {
     .detach();
 }
 
+/// What runs after a block's text has landed on the clipboard.
+///
+/// `Code` owns the copy; what to tell the user about it is the caller's — a
+/// snackbar, a status line, nothing. The closure is erased here so
+/// [`Code::on_copied`] can take a plain generic and [`CodeConfig`] can carry
+/// it through a hook that declines the fence.
+#[derive(Clone)]
+pub struct OnCopied(Rc<dyn Fn(&Environment)>);
+
+impl OnCopied {
+    /// Runs the callback against the environment the copy happened in.
+    pub fn call(&self, env: &Environment) {
+        (self.0)(env);
+    }
+}
+
+impl fmt::Debug for OnCopied {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("OnCopied(..)")
+    }
+}
+
 /// View that renders syntax-highlighted code snippets.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone)]
 pub struct Code {
     info: Option<Str>,
     language: Language,
     content: Str,
+    on_copied: Option<OnCopied>,
 }
 
 impl Code {
@@ -91,6 +125,7 @@ impl Code {
             info: None,
             language: language.try_into().expect("Invalid language"),
             content: content.into(),
+            on_copied: None,
         }
     }
 
@@ -102,6 +137,16 @@ impl Code {
     #[must_use]
     pub fn info(mut self, info: impl Into<Str>) -> Self {
         self.info = Some(info.into());
+        self
+    }
+
+    /// Runs after the block's text has been copied to the clipboard.
+    ///
+    /// `Code` owns the copy; what to tell the user about it is the caller's —
+    /// a snackbar, a status line, nothing. Without one, copying is silent.
+    #[must_use]
+    pub fn on_copied(mut self, callback: impl Fn(&Environment) + 'static) -> Self {
+        self.on_copied = Some(OnCopied(Rc::new(callback)));
         self
     }
 }
@@ -120,6 +165,9 @@ pub struct CodeConfig {
     pub language: Language,
     /// The block's text, verbatim.
     pub content: Str,
+    /// The caller's feedback for a copy, if it asked for any. Carried so a hook
+    /// that declines the fence and renders the default keeps it.
+    pub on_copied: Option<OnCopied>,
 }
 
 impl ViewConfiguration for CodeConfig {
@@ -130,6 +178,7 @@ impl ViewConfiguration for CodeConfig {
             info: self.info,
             language: self.language,
             content: self.content,
+            on_copied: self.on_copied,
         }
     }
 }
@@ -142,6 +191,7 @@ impl ConfigurableView for Code {
             info: self.info,
             language: self.language,
             content: self.content,
+            on_copied: self.on_copied,
         }
     }
 }
@@ -168,6 +218,7 @@ fn default_rendering(config: CodeConfig) -> impl View {
         info: _,
         language,
         content,
+        on_copied,
     } = config;
     let lang_name = language.to_string();
     let content_for_copy = content.to_string();
@@ -185,42 +236,37 @@ fn default_rendering(config: CodeConfig) -> impl View {
         s
     });
 
-    // Code block with dark background, left-aligned content. Copy
-    // feedback is presented through the window's SnackbarManager (a
-    // semantic object owned by the runtime) instead of view-local state.
-    VStack::new(
+    // Code block with dark background, left-aligned content.
+    let block = VStack::new(
         HorizontalAlignment::Leading,
         8.0,
         (
             hstack((
                 text(lang_name)
                     .bold()
-                    .foreground(Color::srgb_f32(0.85, 0.86, 0.9)),
+                    .color(Color::srgb_f32(0.85, 0.86, 0.9)),
                 spacer(),
-                copy_button(content_for_copy),
+                copy_button(content_for_copy, on_copied),
             )),
             text(styled),
         ),
+    );
+    background(
+        Padding::new(EdgeInsets::all(14.0), block),
+        Color::srgb_f32(0.15, 0.15, 0.18),
     )
-    .padding()
-    .background(Color::srgb_f32(0.15, 0.15, 0.18))
 }
 
-#[cfg(feature = "snackbar")]
-fn copy_button(content: String) -> impl View {
-    text("Copy")
-        .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
-        .on_tap(move |State(snackbar): State<SnackbarManager>| {
+fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
+    Metadata::new(
+        text("Copy").color(Color::srgb_f32(0.72, 0.74, 0.8)),
+        GestureObserver::new(TapGesture::new(), move |env: Environment| {
             copy_to_clipboard(&content);
-            snackbar.show(Snackbar::new("Copied to clipboard"));
-        })
-}
-
-#[cfg(not(feature = "snackbar"))]
-fn copy_button(content: String) -> impl View {
-    text("Copy")
-        .foreground(Color::srgb_f32(0.72, 0.74, 0.8))
-        .on_tap(move || copy_to_clipboard(&content))
+            if let Some(on_copied) = &on_copied {
+                on_copied.call(&env);
+            }
+        }),
+    )
 }
 
 /// Convenience constructor for creating a [`Code`] view inline.

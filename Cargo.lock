@@ -12927,8 +12927,6 @@ dependencies = [
 name = "waterui-internal"
 version = "0.3.0"
 dependencies = [
- "android_clipboard",
- "arboard",
  "async-channel",
  "cpu-time",
  "executor-core",
@@ -12943,7 +12941,6 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-md",
- "wasm-bindgen-futures",
  "waterkit-haptic",
  "waterkit-screen",
  "waterui",
@@ -12969,7 +12966,6 @@ dependencies = [
  "waterui-video",
  "waterui-video-gpu",
  "waterui-webview",
- "web-sys",
 ]
 
 [[package]]
@@ -13290,19 +13286,26 @@ dependencies = [
 name = "waterui-text"
 version = "0.3.0"
 dependencies = [
+ "android_clipboard",
+ "arboard",
+ "executor-core",
  "nami",
  "pulldown-cmark",
  "smallvec",
  "syntect",
+ "tracing",
  "two-face",
+ "wasm-bindgen-futures",
  "waterui",
  "waterui-core",
  "waterui-graphics",
+ "waterui-layout",
  "waterui-locale",
  "waterui-macros",
  "waterui-str",
  "waterui-testing",
  "waterui-text",
+ "web-sys",
 ]
 
 [[package]]
