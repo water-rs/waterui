@@ -166,8 +166,19 @@ webview_handle! {
         ///
         /// Returns the result of the script execution, or an error message.
         ///
-        /// This is the raw path: the value comes back however the engine
-        /// marshals it. Everything typed — [`WebView::eval`](crate::WebView::eval),
+        /// This is the raw path, and its reply is the **JSON encoding of the
+        /// evaluated value**, on every engine: a string arrives quoted, a
+        /// number or boolean as its literal, an object or array as JSON, and
+        /// `undefined` — which JSON has no spelling for — as `null`. Unquoted,
+        /// a reply is ambiguous: a page at `first` and a page that returned
+        /// the string `"first"` would be the same bytes, and the caller would
+        /// have to guess which it got. An engine that describes a value it
+        /// cannot serialize, such as a function, answers `null` for it too.
+        /// `conformance::raw_evaluation_answers_json` (behind the `conformance`
+        /// feature) is the check every engine's real-engine suite runs against
+        /// this.
+        ///
+        /// Everything typed — [`WebView::eval`](crate::WebView::eval),
         /// [`WebView::exec`](crate::WebView::exec) and the mirrored-state
         /// push — goes through [`call_async_javascript`](Self::call_async_javascript)
         /// instead, because it needs the promise awaited.
