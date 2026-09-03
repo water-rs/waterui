@@ -256,6 +256,10 @@ impl<V: GpuView> GpuView for CefInputGpuView<V> {
         self.view.preferred_surface_hdr()
     }
 
+    fn is_opaque(&self) -> bool {
+        self.view.is_opaque()
+    }
+
     fn wants_input_events(&self) -> bool {
         true
     }

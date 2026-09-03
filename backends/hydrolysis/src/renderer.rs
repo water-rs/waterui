@@ -222,6 +222,13 @@ pub struct HydrolysisRenderer {
     popup_menu: PopupMenuState,
     render_depth: usize,
     window_bounds: vello::kurbo::Rect,
+    /// The transform the window's root content is flushed under: logical layout
+    /// units onto the target's physical pixel grid. Stored alongside
+    /// [`Self::window_bounds`] because the pair is what says where the viewport
+    /// is in device pixels, which is what
+    /// [`HydrolysisRenderer::push_gpu_surface_layer`] tests a full-window GPU
+    /// surface against.
+    window_root_transform: vello::kurbo::Affine,
     /// Frame triggers shared with reactive closures; see [`FrameSignals`].
     signals: FrameSignals,
     /// Wake target supplied when this renderer itself is hosted by a
@@ -239,6 +246,11 @@ pub struct HydrolysisRenderer {
     frame_instant: Instant,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
+    /// Whether this frame's window pass was handed straight to a GPU surface
+    /// instead of being composited. Recorded by
+    /// [`HydrolysisRenderer::render_scene_to_surface`] as it decides, so the
+    /// frame report says what happened rather than what was eligible.
+    frame_direct_gpu_surfaces: u32,
     frame_applied_filter_count: u32,
     frame_applied_filter_capture: Duration,
     frame_applied_filter_effect: Duration,
@@ -356,6 +368,7 @@ impl HydrolysisRenderer {
             popup_menu: PopupMenuState::default(),
             render_depth: 0,
             window_bounds: vello::kurbo::Rect::ZERO,
+            window_root_transform: vello::kurbo::Affine::IDENTITY,
             signals: FrameSignals::new(frame_instant),
             host_redraw_handle: None,
             shader_cache: Arc::new(WgslModuleCache::new()),
@@ -365,6 +378,7 @@ impl HydrolysisRenderer {
             frame_instant,
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
+            frame_direct_gpu_surfaces: 0,
             frame_applied_filter_count: 0,
             frame_applied_filter_capture: Duration::ZERO,
             frame_applied_filter_effect: Duration::ZERO,

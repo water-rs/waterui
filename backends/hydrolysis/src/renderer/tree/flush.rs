@@ -450,9 +450,14 @@ impl HydrolysisRenderer {
         let parent_render_layers = core::mem::take(&mut self.compositor.render_layers);
         let parent_active_layers = core::mem::take(&mut self.compositor.active_scene_layers);
         let parent_transient_scene = self.transient_scene.take();
-        let parent_window_bounds = core::mem::replace(
-            &mut self.window_bounds,
+        // The captured subtree is flushed under identity transforms into a
+        // pixel-sized texture, so its viewport is that texture and its root
+        // transform is the identity — not the window's.
+        let parent_window_bounds = self.window_bounds;
+        let parent_window_root_transform = self.window_root_transform;
+        self.set_window_viewport(
             vello::kurbo::Rect::new(0.0, 0.0, f64::from(target.width), f64::from(target.height)),
+            vello::kurbo::Affine::IDENTITY,
         );
 
         let local_ctx = ctx.with_identity_transforms(vello::kurbo::Rect::new(
@@ -486,6 +491,6 @@ impl HydrolysisRenderer {
         self.compositor.render_layers = parent_render_layers;
         self.compositor.active_scene_layers = parent_active_layers;
         self.transient_scene = parent_transient_scene;
-        self.window_bounds = parent_window_bounds;
+        self.set_window_viewport(parent_window_bounds, parent_window_root_transform);
     }
 }
