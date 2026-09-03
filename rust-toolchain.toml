@@ -1,0 +1,18 @@
+# The toolchain is a property of this repository, not of whoever checked it out.
+#
+# CI lints and tests on `dtolnay/rust-toolchain@stable`, and clippy's findings
+# differ between channels in both directions: `match_same_arms` and
+# `too_many_lines` fire on stable and are silent on nightly, while the
+# `Send`-solver `overflow evaluating the requirement` diagnostic fires on
+# nightly and is silent on stable. Without this file, a contributor whose
+# rustup default is nightly gets a green local run and a red CI.
+#
+# One task genuinely needs nightly: FFI header generation, because cbindgen
+# expands the macro-generated exports through `-Zunpretty=expanded`. It names
+# the channel explicitly, and an explicit `+toolchain` always wins over this
+# file:
+#
+#     cargo +nightly run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
