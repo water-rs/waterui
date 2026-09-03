@@ -257,7 +257,12 @@ jobs:
           # uses; keeping CI on it means CI compiles against the same sysroot a
           # developer's Android build does.
           ndk-version: r29
-          local-cache: true
+          # Downloaded fresh every run, on purpose. The repository cache sits at
+          # the 10 GiB eviction limit, so a 708 MiB NDK entry is evicted and
+          # re-created continuously, and a restore that races an eviction hands
+          # the probe below a tree with the clang wrappers but no clang (#284).
+          # A miss costs ~79 s against ~53 s for a hit, on a 9-12 minute job.
+          local-cache: false
       # Its own key: this is the only leg that compiles the dependency graph
       # for an Android target, so it shares no artifacts with the others and
       # storing it under theirs would evict a tarball nothing else can use.
