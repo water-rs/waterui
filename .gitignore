@@ -38,5 +38,6 @@ node_modules/
 *.jpg
 *.jpeg
 
-# Large data files (downloaded at build time)
-components/icon/**/data/
+# Icon set source data under `components/icon/*/data/` is deliberately
+# vendored and tracked so icon crates build offline and reproducibly.
+# Do not add an ignore rule for it.

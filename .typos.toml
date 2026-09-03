@@ -42,4 +42,8 @@ extend-exclude = [
     # languages, so English spelling rules do not apply: French "Seconde" is
     # correct and "correcting" it would break the translation.
     "**/i18n/*.toml",
+    # Vendored icon-set source data: machine-generated identifiers, hex
+    # codepoints and SVG path strings, not prose. `F1BA4` is a codepoint, not
+    # a misspelling of "BY". Tracked so the icon crates build offline (#243).
+    "components/icon/*/data/**",
 ]
