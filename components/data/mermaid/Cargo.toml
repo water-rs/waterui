@@ -11,13 +11,6 @@ keywords = ["mermaid", "diagram", "flowchart", "waterui"]
 categories = ["gui", "visualization"]
 
 [dependencies]
-# `install` claims a fenced code block, and `CodeConfig` — the configuration a
-# fence is hooked through — lives with the `Code` widget in the root crate.
-# Only the `highlight` feature that widget sits behind is selected; the GPU,
-# media and asset stacks a diagram never touches stay out.
-waterui = { path = "../../..", default-features = false, features = [
-    "highlight",
-] }
 waterui-core.workspace = true
 waterui-canvas.workspace = true
 waterui-graphics.workspace = true
@@ -45,3 +38,9 @@ hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+# The crate-level example is a doctest, and doctests are the one place
+# `cargo machete` does not look. `waterui` is what its `use waterui::prelude::*`
+# resolves against.
+ignored = ["waterui"]
