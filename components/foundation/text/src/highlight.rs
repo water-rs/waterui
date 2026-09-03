@@ -14,6 +14,8 @@ use syntect::{
 };
 #[cfg(feature = "highlight")]
 use two_face::syntax::extra_newlines;
+#[cfg(feature = "highlight")]
+use waterui_graphics::color::ColorScheme;
 use waterui_graphics::color::Srgb;
 
 use crate::styled::{Style, StyledStr};
@@ -164,11 +166,23 @@ impl Display for ParseLanguageError {
 
 impl Error for ParseLanguageError {}
 
+/// Lets [`code`](crate::code) take the fence's token as written — `"rust"`,
+/// `"c++"`, `"yml"` — through its `TryInto<Language>` argument.
+impl TryFrom<&str> for Language {
+    type Error = ParseLanguageError;
+
+    fn try_from(token: &str) -> Result<Self, Self::Error> {
+        token.parse()
+    }
+}
+
 /// Default syntax highlighter implementation using the syntect library.
 #[cfg(feature = "highlight")]
 pub struct DefaultHighlighter {
     syntax_set: SyntaxSet,
     theme: Theme,
+    /// The theme's own text colour, for chunks the grammar assigns no scope.
+    foreground: Srgb,
 }
 
 #[cfg(feature = "highlight")]
@@ -179,22 +193,33 @@ impl Debug for DefaultHighlighter {
 }
 
 #[cfg(feature = "highlight")]
-impl Default for DefaultHighlighter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(feature = "highlight")]
 impl DefaultHighlighter {
-    /// Creates a new highlighter backed by syntect with extended syntax support.
+    /// Creates a highlighter backed by syntect with extended syntax support,
+    /// using the palette that reads against a light or a dark surface.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bundled syntect theme declares no default foreground.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(scheme: ColorScheme) -> Self {
         // Use two-face's extended syntax set which includes Swift and many more languages
         let syntax_set = extra_newlines();
         let theme_set = ThemeSet::load_defaults();
-        let theme = theme_set.themes["base16-ocean.dark"].clone();
-        Self { syntax_set, theme }
+        let name = match scheme {
+            ColorScheme::Light => "base16-ocean.light",
+            ColorScheme::Dark => "base16-ocean.dark",
+        };
+        let theme = theme_set.themes[name].clone();
+        let foreground = theme
+            .settings
+            .foreground
+            .map(|color| Srgb::new_u8(color.r, color.g, color.b))
+            .expect("syntect theme declares no default foreground");
+        Self {
+            syntax_set,
+            theme,
+            foreground,
+        }
     }
 
     fn find_syntax(&self, language: &Language) -> &SyntaxReference {
@@ -218,7 +243,7 @@ impl Highlighter for DefaultHighlighter {
                 // Fallback: return the whole line with default color
                 chunks.push(HighlightChunk {
                     text: line,
-                    color: Srgb::new_u8(200, 200, 200),
+                    color: self.foreground,
                 });
                 continue;
             };
@@ -236,7 +261,7 @@ impl Highlighter for DefaultHighlighter {
             if text.contains('\n') {
                 chunks.push(HighlightChunk {
                     text: "\n",
-                    color: Srgb::new_u8(200, 200, 200),
+                    color: self.foreground,
                 });
             }
         }
@@ -286,10 +311,27 @@ mod tests {
 
     #[test]
     fn test_swift_highlighting() {
-        let mut highlighter = DefaultHighlighter::new();
+        let mut highlighter = DefaultHighlighter::new(ColorScheme::Dark);
         let code = "import SwiftUI\nstruct ContentView: View { }";
         let chunks = highlighter.highlight(Language::Swift, code);
         // Should have multiple chunks with different colors (not all plain text)
         assert!(chunks.len() > 1, "Swift code should be tokenized");
+    }
+
+    #[test]
+    fn palette_follows_the_colour_scheme() {
+        let code = "import SwiftUI\nstruct ContentView: View { }";
+        let colours = |scheme| {
+            DefaultHighlighter::new(scheme)
+                .highlight(Language::Swift, code)
+                .into_iter()
+                .map(|chunk| chunk.color)
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(
+            colours(ColorScheme::Light),
+            colours(ColorScheme::Dark),
+            "a light surface and a dark surface need different ink"
+        );
     }
 }
