@@ -26,7 +26,7 @@ waterui-graphics = { workspace = true, features = ["gpu"] }
 pollster.workspace = true
 # The theme itself draws into the scene directly; only the shape gallery test
 # authors a canvas.
-waterui-canvas.workspace = true
+waterui-canvas = { path = "../../components/visual/canvas" }
 waterui-testing = { path = "../../testing" }
 
 [package.metadata.waterui.assets]

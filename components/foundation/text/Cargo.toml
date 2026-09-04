@@ -72,7 +72,7 @@ markdown = ["dep:pulldown-cmark"]
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
 # The offscreen code-block tests render under the Material 3 widget theme, light and dark.
-hydrolysis-m3.workspace = true
+hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
 # This crate's own tests cover the Markdown parser, which is not in `default`.
 # A dev-dependency on itself turns the feature on for this crate's test targets
 # without turning it on for anything that depends on the crate.
