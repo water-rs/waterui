@@ -11950,13 +11950,11 @@ dependencies = [
  "dirs",
  "indexed_db_futures",
  "jni 0.22.4",
- "js-sys",
  "serde",
  "serde_json",
  "swift-bridge",
  "thiserror 2.0.20",
  "tracing",
- "wasm-bindgen",
  "waterkit-build",
  "windows 0.62.2",
 ]
