@@ -28,7 +28,7 @@ serde_json.workspace = true
 [dev-dependencies]
 bitflags.workspace = true
 hydrolysis-m3 = { path = "../backends/hydrolysis_m3" }
-waterui-canvas.workspace = true
+waterui-canvas = { path = "../components/visual/canvas" }
 
 [lints]
 workspace = true
