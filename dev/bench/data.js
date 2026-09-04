@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788434084054,
+  "lastUpdate": 1788520252284,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -855,6 +855,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 31960,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d85894817a4806b6e39ef9876d3510fdfb336d80",
+          "message": "Merge pull request #317 from water-rs/agent/ci-audit-prebuilt\n\nci: install cargo-audit prebuilt instead of compiling it on every run",
+          "timestamp": "2026-09-04T00:05:38Z",
+          "url": "https://github.com/water-rs/waterui/commit/d85894817a4806b6e39ef9876d3510fdfb336d80"
+        },
+        "date": 1788520250991,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 452093,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 447713,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 38165,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 33997,
             "unit": "us"
           }
         ]
