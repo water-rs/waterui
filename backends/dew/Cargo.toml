@@ -119,13 +119,13 @@ waterui = { path = "../..", default-features = false }
 # `waterui-graphics` for its `gpu` feature (`CanvasImage` decodes through it),
 # which is why they are confined to dev-dependencies — the firmware graph,
 # built from the library alone, stays GPU-free.
-waterui-canvas.workspace = true
+waterui-canvas = { path = "../../components/visual/canvas" }
 waterui-svg.workspace = true
 # The component issue #180 is actually about: an interactive chart wraps its
 # canvas in `Metadata<GestureObserver>` and `Metadata<OnEvent>`, and every one
 # of those wrappers used to abort dew's dispatch. Test-only, like the scene
 # crates above and for the same reason.
-waterui-chart.workspace = true
+waterui-chart = { path = "../../components/data/chart" }
 fearless_simd = { version = "0.4", features = ["force_support_fallback"] }
 executor-core.workspace = true
 native-executor.workspace = true
