@@ -132,14 +132,30 @@ where
 /// Number of trailing lines reported from each captured stream when a command fails.
 const MAX_REPORTED_OUTPUT_LINES: usize = 200;
 
+/// Whether a build tool marked this output line as a diagnostic.
+///
+/// Covers the compiler form `path:line:col: error: message` (swiftc, clang,
+/// rustc, `xcodebuild` relaying any of them) and the bare `error: message` of
+/// cargo, `swift build`, and linkers.
+fn is_diagnostic_line(line: &str) -> bool {
+    line.contains("error: ")
+}
+
 /// Render one captured stream for a command-failure report.
 ///
 /// Both streams are always reported: build tools do not agree on which one carries
 /// diagnostics, and `xcodebuild` in particular writes compiler and linker errors to
-/// stdout while stdout is also where its progress noise goes. Only the tail is shown,
-/// because that is where the failure is, and the number of elided lines is stated
-/// rather than silently dropped.
+/// stdout while stdout is also where its progress noise goes. The tail is shown in
+/// full, and the number of elided lines is stated rather than silently dropped.
+///
+/// The tail alone is not enough: `xcodebuild` keeps going after a compile error to
+/// finish the targets that do not depend on it, and a run-script phase dumps its
+/// whole environment on the way, so the diagnostic that explains the failure can sit
+/// well over a thousand lines before the end (#345). Every diagnostic line that falls
+/// outside the tail is therefore reported ahead of it.
 fn format_failure_stream(label: &str, bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
     let text = String::from_utf8_lossy(bytes);
     let trimmed = text.trim_end();
     if trimmed.is_empty() {
@@ -150,13 +166,31 @@ fn format_failure_stream(label: &str, bytes: &[u8]) -> String {
     let elided = lines.len().saturating_sub(MAX_REPORTED_OUTPUT_LINES);
     let body = lines[elided..].join("\n");
     if elided == 0 {
-        format!("\n{label}:\n{body}")
-    } else {
-        format!(
-            "\n{label} (last {MAX_REPORTED_OUTPUT_LINES} of {} lines):\n{body}",
-            lines.len()
-        )
+        return format!("\n{label}:\n{body}");
     }
+
+    let mut report = String::new();
+    let diagnostics: Vec<&str> = lines[..elided]
+        .iter()
+        .copied()
+        .filter(|line| is_diagnostic_line(line))
+        .collect();
+    if !diagnostics.is_empty() {
+        write!(
+            report,
+            "\n{label} diagnostics before the reported tail ({} lines):\n{}",
+            diagnostics.len(),
+            diagnostics.join("\n")
+        )
+        .expect("writing to a String cannot fail");
+    }
+    write!(
+        report,
+        "\n{label} (last {MAX_REPORTED_OUTPUT_LINES} of {} lines):\n{body}",
+        lines.len()
+    )
+    .expect("writing to a String cannot fail");
+    report
 }
 
 /// Parse whitespace-separated u32 values (e.g., process IDs).
@@ -181,7 +215,42 @@ pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Resu
 
 #[cfg(test)]
 mod tests {
-    use super::parse_whitespace_separated_u32s;
+    use super::{
+        MAX_REPORTED_OUTPUT_LINES, format_failure_stream, parse_whitespace_separated_u32s,
+    };
+
+    #[test]
+    fn failure_report_surfaces_diagnostics_elided_from_the_tail() {
+        let diagnostic =
+            "Sources/WuiMapView.swift:137:21: error: cannot find 'makeRegionWatcher' in scope";
+        let mut lines = vec!["CompileSwift normal arm64", diagnostic];
+        let noise = "    export SDKROOT=/Applications/Xcode.app";
+        lines.extend(std::iter::repeat_n(noise, MAX_REPORTED_OUTPUT_LINES * 3));
+        lines.push("** BUILD FAILED **");
+        let report = format_failure_stream("stdout", lines.join("\n").as_bytes());
+
+        assert!(
+            report.contains(diagnostic),
+            "the elided compiler error must be reported: {report}"
+        );
+        assert!(report.contains("stdout diagnostics before the reported tail (1 lines):"));
+        assert!(report.contains(&format!(
+            "stdout (last {MAX_REPORTED_OUTPUT_LINES} of {} lines):",
+            lines.len()
+        )));
+        assert!(report.ends_with("** BUILD FAILED **"));
+        assert_eq!(
+            report.matches(diagnostic).count(),
+            1,
+            "a diagnostic outside the tail is reported once"
+        );
+    }
+
+    #[test]
+    fn failure_report_shows_short_output_whole() {
+        let report = format_failure_stream("stderr", b"error: linking failed\n");
+        assert_eq!(report, "\nstderr:\nerror: linking failed");
+    }
 
     #[test]
     fn parses_pidof_output_with_multiple_pids() {
