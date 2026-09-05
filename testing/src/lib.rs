@@ -2,7 +2,8 @@
 //!
 //! `waterui-testing` runs inside ordinary `cargo test` targets. [`ui`] builds a
 //! test session; theme and render mode are orthogonal: [`UiBuilder::theme`]
-//! swaps the theme package (the plain Hydrolysis test theme by default) and
+//! swaps the theme package (Material 3, the theme a generated project installs,
+//! by default) and
 //! [`UiBuilder::mount`] / [`UiBuilder::mount_offscreen`] pick between the fast
 //! semantic runtime and the GPU-backed offscreen runtime.
 //!
@@ -96,7 +97,9 @@ mod snapshot;
 pub(crate) mod wait;
 
 pub use accesskit::Role as AccessKitRole;
-pub use app::{DragOptions, OffscreenApp, SemanticApp, ThemeInstaller, UiBuilder, ui};
+pub use app::{
+    DragOptions, OffscreenApp, SemanticApp, ThemeInstaller, UiBuilder, install_default_theme, ui,
+};
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 pub use driver::FrameTiming;
 pub use executor::drain_parked_local_work;

@@ -36,7 +36,8 @@ fn stepper_updates(ui: UiBuilder) {
 ## Design
 
 - **Theme and render mode are orthogonal.** `.theme(installer)` swaps the theme package
-  (plain Hydrolysis test theme by default); `mount()` is the fast semantic runtime,
+  (Material 3 by default, the theme a generated project installs); `mount()` is the fast
+  semantic runtime,
   `mount_offscreen()` the GPU-backed one. Any theme works in either mode.
 - **Interactions are assertions.** `tap`, `set_text`, `increment`, `focus`, drags and key
   presses return `()` and panic when the runtime reports the accessibility action
