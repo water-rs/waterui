@@ -11923,7 +11923,6 @@ name = "waterkit-audio"
 version = "0.1.1"
 dependencies = [
  "async-channel",
- "cpal 0.18.2",
  "futures",
  "jni 0.22.4",
  "js-sys",
@@ -11950,6 +11949,25 @@ dependencies = [
  "windows 0.62.2",
  "zbus",
  "zenwave",
+]
+
+[[package]]
+name = "waterkit-audio"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40e5732d470edd325b4ff9d77e74b36bcb87cac5262e836360c272ad755c645c"
+dependencies = [
+ "async-channel",
+ "cpal 0.18.2",
+ "futures",
+ "js-sys",
+ "num-traits",
+ "smallvec",
+ "thiserror 2.0.20",
+ "tracing",
+ "wasm-bindgen",
+ "waterkit-build 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "web-sys",
 ]
 
 [[package]]
@@ -12272,7 +12290,7 @@ dependencies = [
  "num-traits",
  "swift-bridge",
  "tracing",
- "waterkit-audio",
+ "waterkit-audio 0.1.1",
  "waterkit-build 0.1.1",
  "waterkit-codec 0.1.1",
  "waterkit-video-container",
@@ -12671,7 +12689,7 @@ dependencies = [
  "tracing-oslog",
  "tracing-panic",
  "tracing-subscriber",
- "waterkit-audio",
+ "waterkit-audio 0.1.1",
  "waterui",
  "waterui-browser-cef",
  "waterui-chromium",
@@ -13346,7 +13364,7 @@ dependencies = [
  "shaderloom",
  "tracing",
  "uuid",
- "waterkit-audio",
+ "waterkit-audio 0.1.1",
  "waterkit-codec 0.1.1",
  "waterkit-fs",
  "waterkit-video",
@@ -13364,6 +13382,8 @@ dependencies = [
 [[package]]
 name = "waterui-visualizer"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aa089c33f0cab1a5fa3868369e07878d916a789c86d94712639476da5eeafba"
 dependencies = [
  "async-channel",
  "blocking",
@@ -13374,11 +13394,9 @@ dependencies = [
  "num-traits",
  "shaderloom",
  "tracing",
- "waterkit-audio",
- "waterui",
+ "waterkit-audio 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterui-core",
  "waterui-graphics",
- "waterui-testing",
  "wgpu",
 ]
 
