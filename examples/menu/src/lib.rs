@@ -191,6 +191,34 @@ fn context_menu_section(context_action: &Binding<String>) -> impl View {
     .padding()
 }
 
+fn selection_menu_section(selection_action: &Binding<String>) -> impl View {
+    let draft = binding(Str::from("Select some of this text, then open the menu"));
+    vstack((
+        text("Selection Menu").sub_headline(),
+        text("Select text in the field and use its context menu")
+            .body()
+            .foreground(MutedForeground),
+        spacer().height(12.0),
+        field("Draft", &draft).selection_menu((
+            "Shout"
+                .action(|State(action): State<Binding<String>>| {
+                    action.set("Shouted the selection!".to_string())
+                })
+                .state(selection_action),
+            "Whisper"
+                .action(|State(action): State<Binding<String>>| {
+                    action.set("Whispered the selection!".to_string())
+                })
+                .state(selection_action),
+        )),
+        spacer().height(12.0),
+        text!("{selection_action}")
+            .font(font::Caption)
+            .foreground(MutedForeground),
+    ))
+    .padding()
+}
+
 fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
     vstack((
         text("Context Menu on Views").sub_headline(),
@@ -263,6 +291,7 @@ fn scene(toolbar_status: Binding<String>) -> impl View {
     let styled_action = Binding::container(String::from("No action yet"));
     let context_action = Binding::container(String::from("No action yet"));
     let view_action = Binding::container(String::from("No action yet"));
+    let selection_action = Binding::container(String::from("No action yet"));
 
     scroll(
         vstack((
@@ -278,7 +307,11 @@ fn scene(toolbar_status: Binding<String>) -> impl View {
             Divider,
             context_menu_section(&context_action),
             Divider,
-            context_menu_views_section(&view_action),
+            vstack((
+                context_menu_views_section(&view_action),
+                Divider,
+                selection_menu_section(&selection_action),
+            )),
             Divider,
             toolbar_scene_section(&toolbar_status),
             spacer().height(40.0),
