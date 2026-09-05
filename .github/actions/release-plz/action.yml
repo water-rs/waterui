@@ -1,0 +1,34 @@
+name: release-plz
+description: >-
+  Runs one release-plz command with the water-rs/release-plz build. The fork
+  rewinds submodules when it checks historical commits out to compare packages
+  with the registry (#313), which upstream release-plz-v0.3.161 does not;
+  everything else mirrors what MarcoIeni/release-plz-action@v0.5 does around
+  the binary.
+inputs:
+  command:
+    description: "`release-pr` or `release`."
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-semver-checks@0.50
+    # Built from the fork at a pinned commit and cached by that commit, so
+    # the compile is paid once per rev. Bump `rev` after rebasing the fork's
+    # `waterui/commit-too-old-before-packaging` branch onto a newer upstream tag.
+    - uses: taiki-e/cache-cargo-install-action@v3
+      with:
+        tool: release-plz
+        git: https://github.com/water-rs/release-plz
+        rev: cc554a52e97e0ee359e45c7801d770895247cf27
+        locked: true
+    - uses: release-plz/git-config@v0.1.2
+    - name: Run release-plz ${{ inputs.command }}
+      shell: bash
+      run: >-
+        release-plz ${{ inputs.command }}
+        --git-token "${GITHUB_TOKEN}"
+        --repo-url "https://github.com/${GITHUB_REPOSITORY}"
+        --forge github

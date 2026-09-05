@@ -30,7 +30,7 @@ jobs:
       # `cros-libva` build script, reached through `waterkit-codec`, fails the
       # `waterui-image` verify build on the missing `libva-dev`.
       - uses: ./.github/actions/setup-linux-deps
-      - uses: MarcoIeni/release-plz-action@v0.5
+      - uses: ./.github/actions/release-plz
         with:
           command: release
         env:
@@ -69,7 +69,7 @@ jobs:
       # The same native libraries as above: computing the next versions also
       # builds the workspace's metadata against every crate's dependencies.
       - uses: ./.github/actions/setup-linux-deps
-      - uses: MarcoIeni/release-plz-action@v0.5
+      - uses: ./.github/actions/release-plz
         with:
           command: release-pr
         env:
