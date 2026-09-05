@@ -80,7 +80,7 @@ jobs:
       # cargo's build profile. The ci profile matters here because it disables
       # fail-fast — without it a single failing test ends the run and hides the
       # state of every test after it (see #153, where one failure masked 632).
-      - run: cargo llvm-cov nextest --workspace --features waterui/all --lcov --output-path lcov.info
+      - run: cargo llvm-cov nextest --workspace --exclude '*-example' --features waterui/all --lcov --output-path lcov.info
         env:
           NEXTEST_PROFILE: ci
       - uses: codecov/codecov-action@v4
