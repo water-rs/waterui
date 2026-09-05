@@ -1636,6 +1636,47 @@ mod tests {
     }
 
     #[test]
+    fn ffi_lockfile_seed_follows_the_project_lockfile() {
+        let tempdir = tempdir().expect("temporary ffi seed dir");
+        let project_lock = tempdir.path().join("Cargo.lock");
+        let ffi_dir = tempdir.path().join("managed_backends/ffi");
+        std::fs::create_dir_all(&ffi_dir).expect("ffi dir");
+        let managed_lock = ffi_dir.join("Cargo.lock");
+        let seed = || {
+            smol::block_on(crate::templates::ffi::seed_lockfile(
+                &ffi_dir,
+                &project_lock,
+            ))
+            .expect("seeding the managed lockfile should succeed");
+        };
+        let managed = || std::fs::read_to_string(&managed_lock).expect("managed Cargo.lock");
+
+        // No project lockfile: nothing to pin, the managed crate resolves on its own.
+        seed();
+        assert!(!managed_lock.exists());
+
+        std::fs::write(&project_lock, "pins v1").expect("project lock");
+        seed();
+        assert_eq!(managed(), "pins v1");
+
+        // Cargo rewrote the managed lockfile (pruned the project's unused entries,
+        // added the FFI crate's own); an unchanged project lockfile leaves that alone.
+        std::fs::write(&managed_lock, "pins v1 + ffi entries").expect("managed lock");
+        seed();
+        assert_eq!(managed(), "pins v1 + ffi entries");
+
+        // The project re-resolved: the managed crate follows it.
+        std::fs::write(&project_lock, "pins v2").expect("project lock");
+        seed();
+        assert_eq!(managed(), "pins v2");
+
+        // A managed lockfile that went missing is re-seeded from the current pins.
+        std::fs::remove_file(&managed_lock).expect("remove managed lock");
+        seed();
+        assert_eq!(managed(), "pins v2");
+    }
+
+    #[test]
     fn preview_ffi_scaffold_emits_dylib_only_wrapper() {
         let tempdir = tempdir().expect("temporary preview ffi scaffold dir");
         let project_root = tempdir.path().join("playground");
@@ -3088,6 +3129,62 @@ pub mod ffi {
     ) -> io::Result<()> {
         generate_cargo_toml(base_dir, ctx, package_name).await?;
         scaffold_dir(TemplateNamespace::Ffi, &embedded::FFI, base_dir, ctx).await
+    }
+
+    /// The copy of the application's lockfile the managed crate was last
+    /// seeded from, kept beside the crate's own `Cargo.lock`.
+    pub const LOCKFILE_SEED: &str = "Cargo.lock.seed";
+
+    /// Seed the managed crate's `Cargo.lock` from the application's lockfile.
+    ///
+    /// The managed crate is its own Cargo workspace, so left alone it resolves
+    /// its dependency graph fresh from the registry the first time it is built,
+    /// and the application ships with versions nothing in the project pins or
+    /// tests (#312). Copying the project's lockfile in before Cargo resolves
+    /// keeps every version the project already pins; Cargo then only adds the
+    /// entries the managed crate needs on top (`waterui-ffi` and its own
+    /// dependencies) and prunes the ones it does not use.
+    ///
+    /// Cargo rewrites `Cargo.lock` on every resolution, so the seed cannot be
+    /// compared against it. A copy of the seed is kept as [`LOCKFILE_SEED`]
+    /// instead, and the crate is re-seeded only when the project's lockfile
+    /// differs from that copy, or when the crate has no `Cargo.lock` at all.
+    /// A project without a lockfile has nothing to pin yet and is left to
+    /// resolve on its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lockfiles cannot be read or written.
+    pub async fn seed_lockfile(base_dir: &Path, project_lockfile: &Path) -> io::Result<()> {
+        let seed = match fs::read(project_lockfile).await {
+            Ok(seed) => seed,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                tracing::debug!(
+                    lockfile = %project_lockfile.display(),
+                    "project has no lockfile; the managed FFI crate resolves on its own"
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+
+        let seed_copy = base_dir.join(LOCKFILE_SEED);
+        let managed_lockfile = base_dir.join("Cargo.lock");
+        let seeded_from = match fs::read(&seed_copy).await {
+            Ok(previous) => previous == seed,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        if seeded_from && managed_lockfile.exists() {
+            return Ok(());
+        }
+
+        tracing::debug!(
+            lockfile = %project_lockfile.display(),
+            "seeding the managed FFI crate's Cargo.lock from the project lockfile"
+        );
+        fs::write(&managed_lockfile, &seed).await?;
+        fs::write(&seed_copy, &seed).await
     }
 
     async fn generate_cargo_toml(
