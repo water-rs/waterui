@@ -1,5 +1,5 @@
 [package]
-name = "typography_rtl"
+name = "typography-rtl-example"
 version = "0.1.0"
 edition = "2024"
 authors.workspace = true

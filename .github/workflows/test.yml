@@ -9,7 +9,8 @@ env:
   CARGO_INCREMENTAL: 0
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
 
-# Three jobs instead of one serial leg per platform (#329). The cargo passes
+# Parallel jobs instead of one serial leg per platform (#329), with the
+# examples compiled once in their own job (#330). The cargo passes
 # below used to run one after another inside a single job per OS, which put
 # every clippy shape in front of the ubuntu tests and every macOS-only suite
 # behind the macOS workspace run; the macOS leg was the critical path of every
@@ -48,7 +49,7 @@ jobs:
       # Workspace-wide under default features first: it is the cheapest of the
       # lint passes and the one every crate's normal build shape goes through.
       - name: Clippy (workspace)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude '*-example' --all-targets -- -D warnings
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor
       # `--workspace`: the root manifest carries both `[workspace]` and
@@ -72,6 +73,7 @@ jobs:
       - name: Clippy (all features, workspace)
         run: |
           cargo clippy --workspace --all-targets --all-features \
+            --exclude '*-example' \
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude hydrolysis \
@@ -170,7 +172,7 @@ jobs:
       # `waterui` crate. Running the excluded crates' tests in their own
       # feature shapes is a separate question from linting them and is not
       # what this pass is for.
-      - run: cargo nextest run --workspace --profile ci
+      - run: cargo nextest run --workspace --exclude '*-example' --profile ci
       # The root crate's feature-gated re-export surface, with every feature
       # on. Root-crate-only scope is intentional (see above); most of the
       # build is shared with the workspace pass, so this increment is cheap.
@@ -178,7 +180,7 @@ jobs:
         run: cargo nextest run --all-features --profile ci
       # nextest cannot run doctests, and this workspace has plenty of them.
       - if: runner.os == 'Linux'
-        run: cargo test --doc --workspace
+        run: cargo test --doc --workspace --exclude '*-example'
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -223,7 +225,7 @@ jobs:
       # `cargo test` runs the binary on the real process main thread.
       - run: cargo test -p hydrolysis --features webview-system,winit --test real_engine_macos
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --doc --workspace
+      - run: cargo test --doc --workspace --exclude '*-example'
       # The web view bridge has broken three times in ways no Rust-side test
       # could see, so these drive a real Chromium. Unlike the WPE sibling in
       # `browser-wpe.yml`, which compiles an engine from source for hours, CEF
@@ -258,6 +260,54 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-snapshots-macos-suites
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The 36 example crates, once per platform (#330). They used to be workspace
+  # members in every pass above, so each example was compiled under every
+  # clippy shape and again for the tests; here they get the passes they
+  # actually need — lint, tests, doctests — and nothing else builds them.
+  # Linux lints them; macOS never did (its leg ran no clippy on the
+  # workspace), and that stays as it was.
+  examples:
+    name: examples (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # Examples carry GPU snapshot tests too, so the Linux leg needs the same
+      # Vulkan ICD loader the `test` job installs.
+      - name: Install native dependencies
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-examples-${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      - name: Clippy (examples)
+        if: runner.os == 'Linux'
+        run: cargo clippy -p '*-example' --all-targets -- -D warnings
+      - run: cargo nextest run -p '*-example' --profile ci
+      - run: cargo test --doc -p '*-example'
+      - name: Upload Test Snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots-examples-${{ matrix.os }}
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
