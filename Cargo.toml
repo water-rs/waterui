@@ -123,6 +123,7 @@ waterui-media = { version = "0.3.0", path = "components/multimedia/media" }
 waterui-image = "0.3.0"
 waterui-video = { version = "0.3.0", path = "components/multimedia/video" }
 waterui-video-gpu = { version = "0.3.0", path = "components/multimedia/video_gpu" }
+waterui-visualizer = "0.3.0"
 waterui-form = { version = "0.3.0", path = "components/foundation/form" }
 waterui-controls = { version = "0.3.0", path = "components/foundation/controls"}
 waterui-graphics = { version = "0.3.0", path = "components/visual/graphics", default-features = false }
