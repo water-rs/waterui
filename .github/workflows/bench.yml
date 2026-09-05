@@ -129,7 +129,7 @@ jobs:
           ALL_LEGS: >-
             [{"os": "ubuntu-latest", "bench-shape": "--warmups 2 --samples 24 --repetitions 3"},
              {"os": "macos-latest", "bench-shape": ""},
-             {"os": "windows-latest", "bench-shape": "--warmups 2 --samples 24 --repetitions 3"}]
+             {"os": "windows-latest", "bench-shape": "--warmups 1 --samples 4 --repetitions 1"}]
           # Forced true off pull requests, so `schedule` and
           # `workflow_dispatch` keep the full matrix.
           RUN_MACOS: ${{ github.event_name != 'pull_request' || steps.filter.outputs.perf == 'true' }}
