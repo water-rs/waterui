@@ -119,7 +119,7 @@ waterui = { path = "../..", default-features = false }
 # `waterui-graphics` for its `gpu` feature (`CanvasImage` decodes through it),
 # which is why they are confined to dev-dependencies — the firmware graph,
 # built from the library alone, stays GPU-free.
-waterui-canvas = { path = "../../components/visual/canvas" }
+waterui-canvas.workspace = true
 waterui-svg.workspace = true
 # The component issue #180 is actually about: an interactive chart wraps its
 # canvas in `Metadata<GestureObserver>` and `Metadata<OnEvent>`, and every one

@@ -12460,18 +12460,16 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7de6c5cbca41bf2d48a2b4a4c5028475b85a2231b2bce13b16b48274c3883c35"
 dependencies = [
  "image",
  "kurbo 0.13.1",
  "nami",
  "parley",
  "peniko",
- "pollster 1.0.1",
- "waterui",
  "waterui-core",
  "waterui-graphics",
- "waterui-testing",
- "wgpu",
 ]
 
 [[package]]
