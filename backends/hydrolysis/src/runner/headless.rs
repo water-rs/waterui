@@ -678,6 +678,12 @@ impl HeadlessRuntime {
         }
     }
 
+    /// The main window's renderer, for tests that assert on frame internals.
+    #[cfg(test)]
+    pub(crate) fn renderer(&self) -> &HydrolysisRenderer {
+        &self.runtime.renderer
+    }
+
     pub fn pump_at(&mut self, capture_snapshot: bool, at: Instant) -> HeadlessPumpResult {
         let frame_started_at = Instant::now();
         self.runtime.renderer.set_frame_instant(at);

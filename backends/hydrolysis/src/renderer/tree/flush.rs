@@ -466,11 +466,17 @@ impl HydrolysisRenderer {
             f64::from(target.width),
             f64::from(target.height),
         ));
+        // Filters inside this subtree are captured one level deeper and flushed
+        // here, so their outputs exist before the subtree itself is rendered.
+        let depth = self.subtree_captures.depth;
+        self.subtree_captures.depth = depth + 1;
         child.flush(self, local_ctx, env);
+        self.subtree_captures.depth = depth;
         assert!(
             self.compositor.active_scene_layers.is_empty(),
             "hydrolysis GPU subtree capture left an unclosed scene layer"
         );
+        self.flush_subtree_captures(depth + 1);
         self.render_scene_to_texture(HydrolysisRenderTarget {
             adapter: &adapter,
             device: &device,
