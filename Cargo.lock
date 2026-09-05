@@ -13241,20 +13241,18 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2496d28bbfd56cb00014579a886f8d47335e3eae299442c2570a0c985b0c24e5"
 dependencies = [
  "kurbo 0.13.1",
  "peniko",
- "pollster 1.0.1",
  "tracing",
  "usvg 0.46.0",
- "waterui",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
  "waterui-macros",
  "waterui-str",
- "waterui-testing",
- "wgpu",
 ]
 
 [[package]]

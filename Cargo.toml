@@ -139,7 +139,7 @@ waterui-mermaid = { version = "0.1.0", path = "components/data/mermaid" }
 merman-core = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c05844003a0e765a3cf78df6678d" }
 merman-render = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c05844003a0e765a3cf78df6678d", default-features = false }
 waterui-shape = { version = "0.1.0", path = "components/foundation/shape", default-features = false }
-waterui-svg = { version = "0.1.0", path = "components/visual/svg" }
+waterui-svg = "0.1.0"
 waterui-math = { version = "0.1.0", path = "components/visual/math" }
 waterui-ffi = { version = "0.3.0", path = "ffi" }
 waterui-layout = { version = "0.3.0", path = "components/foundation/layout" }
@@ -396,13 +396,16 @@ lto = "thin"
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
-# Extracted crates on crates.io (waterui-canvas first, #185) depend on the
-# registry `waterui-core` and `waterui-graphics`; the workspace must resolve
-# those to its own copies or the graph carries two of each and every `View`
-# is a different type on either side. Publishing ignores this table, so the
-# published crates keep their registry pins.
+# Extracted crates on crates.io (waterui-canvas #185, waterui-svg #186, …)
+# depend on the registry `waterui-core`, `waterui-graphics` and friends; the
+# workspace must resolve those to its own copies or the graph carries two of
+# each and every `View` is a different type on either side. Publishing
+# ignores this table, so the published crates keep their registry pins.
 waterui-core = { path = "core" }
 waterui-graphics = { path = "components/visual/graphics" }
+waterui-layout = { path = "components/foundation/layout" }
+waterui-macros = { path = "macros" }
+waterui-str = { path = "utils/str" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
