@@ -13036,6 +13036,8 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00fce135f300c13b17ef8e9b46b771c0b6e4afb90d72931a3c945b08f0135a3d"
 dependencies = [
  "blocking",
  "bytemuck",
@@ -13052,10 +13054,8 @@ dependencies = [
  "mvt-reader",
  "nami",
  "native-executor",
- "num-traits",
  "parley",
  "peniko",
- "pollster 1.0.1",
  "rayon",
  "serde",
  "serde_json",
