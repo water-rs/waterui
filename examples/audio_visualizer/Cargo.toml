@@ -10,5 +10,5 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-visualizer = { path = "../../components/multimedia/visualizer" }
+waterui-visualizer.workspace = true
 waterkit-permission.workspace = true
