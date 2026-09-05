@@ -128,7 +128,7 @@ waterui-video-gpu = { version = "0.3.0", path = "components/multimedia/video_gpu
 waterui-form = { version = "0.3.0", path = "components/foundation/form" }
 waterui-controls = { version = "0.3.0", path = "components/foundation/controls"}
 waterui-graphics = { version = "0.3.0", path = "components/visual/graphics", default-features = false }
-waterui-canvas = { version = "0.1.0", path = "components/visual/canvas" }
+waterui-canvas = "0.1.0"
 waterui-mermaid = { version = "0.1.0", path = "components/data/mermaid" }
 # Mermaid parsing, semantic model and diagram layout. Consumed from our fork
 # while `typed-layout-projection` is unreleased upstream: `merman-render`'s only
@@ -396,6 +396,13 @@ lto = "thin"
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
+# Extracted crates on crates.io (waterui-canvas first, #185) depend on the
+# registry `waterui-core` and `waterui-graphics`; the workspace must resolve
+# those to its own copies or the graph carries two of each and every `View`
+# is a different type on either side. Publishing ignores this table, so the
+# published crates keep their registry pins.
+waterui-core = { path = "core" }
+waterui-graphics = { path = "components/visual/graphics" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
