@@ -318,10 +318,11 @@ mod bench {
     }
 
     // Counter budgets derived from a full local run (observed: rebuilt 0/840,
-    // compositor layers 1, gpu-surface layers 0, clip pushes 1) with generous
-    // headroom; they guard structural regressions, which are hardware
-    // independent. Frame-time ceilings are left to CI via `water bench
-    // --max-p95-us`, which knows its own hardware.
+    // compositor layers 1, gpu-surface layers 0, clip pushes 145: the window's
+    // one plus one filter-atlas slot clip for each of the 144 filtered tiles)
+    // with generous headroom; they guard structural regressions,
+    // which are hardware independent. Frame-time ceilings are left to CI via
+    // `water bench --max-p95-us`, which knows its own hardware.
     #[waterui::bench(
         stress_scene,
         theme = hydrolysis_m3::install,
@@ -329,7 +330,7 @@ mod bench {
         max_rebuild_ratio = 0.05,
         max_scene_layers = 4,
         max_gpu_surface_layers = 2,
-        max_clip_layers = 8,
+        max_clip_layers = 160,
     )]
     fn stress_steady_redraw(perf: &mut PerfApp) {
         perf.measure("steady-redraw", |run| {
