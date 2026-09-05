@@ -24,6 +24,15 @@ env:
   # repository's 10GB Actions cache quota, so its main effect was evicting the
   # rust-cache tarballs that do work and putting every job back on a cold
   # build. Local development still uses sccache; this is CI-only.
+  #
+  # The 10 GB quota is the budget every rust-cache block in this repository is
+  # written against (#328). Only two jobs store a target directory: the macOS
+  # and Windows Test legs (`test-macos-latest`, `test-windows-latest`), the
+  # slowest cold builds on the scarcest runners. Every other job stores just
+  # `~/.cargo` under one per-OS key (`cargo-home-<OS>`), written by a single
+  # job per OS on the integration branches and read by the rest. The full set
+  # of per-job target tarballs measured ~27 GB against the cap, so each dev
+  # run evicted what the previous one wrote and every job restored nothing.
   # Incremental artifacts are per-machine rebuild state, useless to a fresh
   # runner, and they bloat the cache that is restored.
   CARGO_INCREMENTAL: 0
@@ -61,14 +70,9 @@ jobs:
       # only stores the ~0.2GB dependency caches, so the Test legs stay warm.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-coverage
-          # Only the integration branches write cache generations. A pull
-          # request reads them and saves nothing: every distinct fingerprint
-          # would otherwise mint a generation that is never reclaimed, and the
-          # stale ones evict the Test tarballs that decide whether a leg is
-          # warm (16 min) or cold (66 min).
-          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
+          save-if: false
           cache-on-failure: true
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
@@ -121,9 +125,10 @@ jobs:
       # the larger graph.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-ubuntu
-          cache-on-failure: true
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
           save-if: false
+          cache-on-failure: true
       # The audit and deny checks run against the COMMITTED Cargo.lock — the
       # dependency set the workspace actually builds. A `cargo generate-lockfile`
       # step used to precede them; it silently re-resolved everything to the
@@ -167,13 +172,9 @@ jobs:
       # The single writer of `ci-ubuntu` (see Hygiene above).
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-ubuntu
-          # Only the integration branches write cache generations. A pull
-          # request reads them and saves nothing: every distinct fingerprint
-          # would otherwise mint a generation that is never reclaimed, and the
-          # stale ones evict the Test tarballs that decide whether a leg is
-          # warm (16 min) or cold (66 min).
-          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
           cache-on-failure: true
       - uses: taiki-e/install-action@cargo-hack
       # `--feature-powerset` is deliberately absent. The workspace has ~33_800
@@ -206,8 +207,9 @@ jobs:
       # dependency caches keeps the quota pressure off the caches that do hit.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ffi-header-macos
+          shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
+          save-if: false
           cache-on-failure: true
       # `+nightly` is named rather than inherited: `rust-toolchain.toml` pins the
       # repository to stable and overrides what the action above sets, so an
@@ -270,10 +272,9 @@ jobs:
       # storing it under theirs would evict a tarball nothing else can use.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-android-ffi
-          # Only the integration branches write cache generations (see Features
-          # above for why).
-          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
           cache-on-failure: true
       # `ring` compiles C for the target, so the NDK's clang wrapper is
       # required even though clippy itself never links. The wrapper is named

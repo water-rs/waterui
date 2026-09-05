@@ -34,14 +34,15 @@ jobs:
           components: clippy, rustfmt
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
+      # The Linux `~/.cargo` tarball is written here and read by every other
+      # Linux job (see the cache budget note in ci.yml). Only the integration
+      # branches write it: a pull request reads and saves nothing, since every
+      # distinct fingerprint would otherwise mint a generation that is never
+      # reclaimed.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-lint
-          # Only the integration branches write cache generations. A pull
-          # request reads them and saves nothing: every distinct fingerprint
-          # would otherwise mint a generation that is never reclaimed, and the
-          # stale ones evict the Test tarballs that decide whether a leg is
-          # warm (16 min) or cold (66 min).
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Format
@@ -156,10 +157,15 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
+      # macOS keeps its target directory (one of the two target tarballs the
+      # cache budget in ci.yml affords); the Linux leg reads the shared Linux
+      # `~/.cargo` tarball and compiles from there. Linux runners are the
+      # plentiful ones, and its cold build is shorter than the Windows one.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-${{ matrix.os }}
-          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          shared-key: ${{ runner.os == 'macOS' && 'test-macos-latest' || format('cargo-home-{0}', runner.os) }}
+          cache-targets: ${{ runner.os == 'macOS' }}
+          save-if: ${{ runner.os == 'macOS' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       # One full-workspace pass under default features. A workspace-wide
@@ -209,9 +215,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      # Writes the macOS `~/.cargo` tarball for the macOS jobs that store no
+      # target directory (see the cache budget note in ci.yml).
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-macos-suites
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
@@ -294,8 +303,9 @@ jobs:
           gpu: "true"
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-examples-${{ matrix.os }}
-          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       - name: Clippy (examples)
