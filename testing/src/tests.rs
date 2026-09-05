@@ -263,6 +263,22 @@ fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
     assert_eq!(snapshot.rgba8.len(), 240 * 120 * 4);
 }
 
+/// A view that draws widget chrome mounts under the default theme: the scroll
+/// view's scrollbar and the button both read a widget theme from the
+/// environment, and `ui()` used to install none (#290).
+#[test]
+fn default_theme_renders_hydrolysis_widgets() {
+    let mut app = ui().viewport(240, 160).mount_offscreen(|| {
+        ScrollView::vertical(vstack((
+            waterui::component::button("Submit"),
+            text("Scrolled content").body(),
+        )))
+    });
+    assert_eq!(app.query().role(Role::BUTTON).all().len(), 1);
+    let snapshot = app.snapshot();
+    assert_eq!(snapshot.rgba8.len(), 240 * 160 * 4);
+}
+
 #[test]
 fn semantic_builder_does_not_require_theme_package() {
     let mut app = ui()
