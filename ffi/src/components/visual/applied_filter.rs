@@ -218,6 +218,7 @@ fn ensure_dimensions(state: &mut WuiAppliedFilterState, width: u32, height: u32)
     if input_resized || state.capture_texture.is_none() {
         state.capture_texture = Some(create_capture_texture(
             &state.runtime.context().device,
+            &state.runtime.context().queue,
             capture_format,
             width,
             height,
@@ -225,13 +226,24 @@ fn ensure_dimensions(state: &mut WuiAppliedFilterState, width: u32, height: u32)
     }
 }
 
+/// Creates the texture the native backend captures the filtered subtree into.
+///
+/// The host writes this texture from outside wgpu — Metal's `CARenderer` and
+/// the capture compositor on Apple — and wgpu only ever samples it. wgpu tracks
+/// memory initialisation per texture, and a texture it has never written is
+/// zero-cleared the first time it is bound for sampling, which would wipe the
+/// host's first capture and hand the filter a transparent input. Clearing it
+/// here, through wgpu, marks it initialised once and for all, so every later
+/// external write is read back as written. The clear is an empty render pass
+/// rather than `clear_texture`, which needs the `CLEAR_TEXTURE` device feature.
 fn create_capture_texture(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     format: wgpu::TextureFormat,
     width: u32,
     height: u32,
 ) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("AppliedFilter Capture Texture"),
         size: wgpu::Extent3d {
             width,
@@ -246,7 +258,29 @@ fn create_capture_texture(
             | wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
-    })
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("AppliedFilter Capture Texture Init"),
+    });
+    drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("AppliedFilter Capture Texture Init"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    }));
+    queue.submit([encoder.finish()]);
+    texture
 }
 
 fn resolve_output_size(
@@ -435,6 +469,7 @@ pub unsafe extern "C" fn waterui_applied_filter_attach(
     }
     let capture_texture = create_capture_texture(
         &state.runtime.context().device,
+        &state.runtime.context().queue,
         capture_format,
         input_width,
         input_height,
