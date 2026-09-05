@@ -131,9 +131,15 @@ jobs:
         uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
       - name: Verify DirectX Shader Compiler
         run: dxc --version
+      # Writes the Windows `~/.cargo` tarball (see the cache budget note in
+      # ci.yml); the target directory belongs to the test job above. This
+      # block used to save a 2.2 GB target tarball on every pull request
+      # fingerprint, ungated.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: lint-windows-latest
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       # Compile the CEF backend without its binary distribution (see the test
       # job for why it cannot be linked here).
