@@ -5,7 +5,6 @@ members = [
     "components/assets/*",
     "components/data/*",
     "components/devtools/*/*",
-    "components/effects/*",
     "components/foundation/*",
     "components/multimedia/*",
     "components/platform/*",
@@ -176,7 +175,7 @@ filtrate = "0.2.0"
 filtrate-core = "0.2.0"
 filtrate-derive = "0.1.0"
 waterui-barcode = "0.1.0"
-waterui-particle = { version = "0.1.0", path = "components/effects/particle" }
+waterui-particle = "0.1.0"
 waterui-chart = "0.1.0"
 waterui-map-gpu = "0.1.0"
 waterui-assets = { version = "0.1.0", path = "components/assets/runtime" }
