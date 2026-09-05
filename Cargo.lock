@@ -11927,20 +11927,13 @@ dependencies = [
  "jni 0.22.4",
  "js-sys",
  "mpris-server",
- "ndk",
  "ndk-context",
- "ndk-sys",
  "num-traits",
- "rodio",
  "smallvec",
  "smol",
  "swift-bridge",
- "symphonia-adapter-fdk-aac",
- "symphonia-codec-aac",
- "symphonia-core 0.6.1",
  "tempfile",
  "thiserror 2.0.20",
- "timestretch",
  "tracing",
  "url",
  "wasm-bindgen",
@@ -11960,14 +11953,31 @@ dependencies = [
  "async-channel",
  "cpal 0.18.2",
  "futures",
+ "jni 0.22.4",
  "js-sys",
+ "mpris-server",
+ "ndk",
+ "ndk-context",
+ "ndk-sys",
  "num-traits",
+ "rodio",
  "smallvec",
+ "smol",
+ "swift-bridge",
+ "symphonia-adapter-fdk-aac",
+ "symphonia-codec-aac",
+ "symphonia-core 0.6.1",
+ "tempfile",
  "thiserror 2.0.20",
+ "timestretch",
  "tracing",
+ "url",
  "wasm-bindgen",
  "waterkit-build 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "web-sys",
+ "windows 0.62.2",
+ "zbus",
+ "zenwave",
 ]
 
 [[package]]
@@ -12138,7 +12148,7 @@ dependencies = [
  "swift-bridge",
  "thiserror 2.0.20",
  "waterkit-build 0.1.1",
- "waterkit-fs",
+ "waterkit-fs 0.1.1",
 ]
 
 [[package]]
@@ -12155,6 +12165,27 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
  "waterkit-build 0.1.1",
+ "windows 0.62.2",
+]
+
+[[package]]
+name = "waterkit-fs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e685725a5fbdaf59c29abe5cbe756f77d817c29fa0513741cc403801efbdfb3"
+dependencies = [
+ "async-fs",
+ "dirs",
+ "indexed_db_futures",
+ "jni 0.22.4",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "swift-bridge",
+ "thiserror 2.0.20",
+ "tracing",
+ "wasm-bindgen",
+ "waterkit-build 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "windows 0.62.2",
 ]
 
@@ -12239,9 +12270,11 @@ dependencies = [
 [[package]]
 name = "waterkit-video"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "723d22d14ef79d4b295bc3390b46d3297a6e745e682f0d5b9f2e12c1390da215"
 dependencies = [
  "waterkit-video-container",
- "waterkit-video-core 0.1.1",
+ "waterkit-video-core 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterkit-video-player",
  "waterkit-video-streaming",
 ]
@@ -12249,6 +12282,8 @@ dependencies = [
 [[package]]
 name = "waterkit-video-container"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b7a1176add3bc985a7a725b5bcdfc7586656840e3f0baa923f093978ea3ad01"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -12257,7 +12292,7 @@ dependencies = [
  "quick-xml",
  "subtp",
  "transmux",
- "waterkit-video-core 0.1.1",
+ "waterkit-video-core 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -12279,6 +12314,8 @@ dependencies = [
 [[package]]
 name = "waterkit-video-player"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0e8de1f5af68158ad79bc861ec3573096e8ec379ecfbe6e5a8d8a965b84c576"
 dependencies = [
  "aes",
  "async-channel",
@@ -12290,17 +12327,19 @@ dependencies = [
  "num-traits",
  "swift-bridge",
  "tracing",
- "waterkit-audio 0.1.1",
- "waterkit-build 0.1.1",
- "waterkit-codec 0.1.1",
+ "waterkit-audio 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "waterkit-build 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "waterkit-codec 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterkit-video-container",
- "waterkit-video-core 0.1.1",
+ "waterkit-video-core 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterkit-video-streaming",
 ]
 
 [[package]]
 name = "waterkit-video-streaming"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45bebec4d54696e030f30cb43afeeaa56775195adb0837cbc7b3f21d8388e447"
 dependencies = [
  "async-fs",
  "base64 0.22.1",
@@ -12314,7 +12353,7 @@ dependencies = [
  "quick-m3u8",
  "url",
  "uuid",
- "waterkit-video-core 0.1.1",
+ "waterkit-video-core 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "windows 0.62.2",
  "zenwave",
 ]
@@ -13351,29 +13390,27 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f1e26e10d48b44eb903ff03f1b574c9e9db7cfb468bb58205c091e56722fd7b"
 dependencies = [
  "async-channel",
  "executor-core",
  "futures",
  "futures-timer",
- "hydrolysis-m3",
  "jni 0.22.4",
  "nami",
  "num-traits",
- "pollster 1.0.1",
  "shaderloom",
  "tracing",
  "uuid",
- "waterkit-audio 0.1.1",
- "waterkit-codec 0.1.1",
- "waterkit-fs",
+ "waterkit-audio 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "waterkit-codec 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "waterkit-fs 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterkit-video",
- "waterui",
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
- "waterui-testing",
  "waterui-text",
  "waterui-video",
  "wgpu",
