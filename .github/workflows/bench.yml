@@ -47,16 +47,17 @@ env:
 jobs:
   # Which bench legs the run below executes.
   #
-  # The rule: the macOS leg runs when the code it measures changes.
+  # The rule: a pull request is benched when the code the benches measure
+  # changes, and not otherwise.
   #
-  # macOS is the only leg with a real GPU and therefore the only full-shape
-  # measurement, so it cannot simply be dropped from pull requests. It is also
-  # the org's scarcest runner — macOS concurrency is the CI bottleneck, and
-  # every pull request already holds three macOS jobs. So on a pull request the
-  # macOS leg is spent only when the diff touches something the two bench
-  # suites actually execute; every other pull request runs Linux and Windows
-  # only. `schedule` and `workflow_dispatch` are unaffected and always run the
-  # full matrix, which is what keeps the `bench-history` trend series complete.
+  # The benches are not a merge gate; they are a trend series, and the
+  # `schedule` and `workflow_dispatch` runs always execute the full matrix,
+  # which is what keeps `bench-history` complete. On a pull request the legs
+  # compete with the gating jobs for the org's concurrent-job cap, and they
+  # are among the longest jobs a push starts (the Windows leg alone runs
+  # over an hour), so a pull request that touches nothing the two bench
+  # suites execute — a CLI fix, a workflow change, docs — runs none of them.
+  # One that does touch measured code runs all three.
   #
   # No checkout: for a `pull_request` event dorny/paths-filter reads the
   # changed files from the API, so this job is a few seconds of API calls.
@@ -132,24 +133,27 @@ jobs:
              {"os": "windows-latest", "bench-shape": "--warmups 2 --samples 24 --repetitions 3"}]
           # Forced true off pull requests, so `schedule` and
           # `workflow_dispatch` keep the full matrix.
-          RUN_MACOS: ${{ github.event_name != 'pull_request' || steps.filter.outputs.perf == 'true' }}
+          RUN_LEGS: ${{ github.event_name != 'pull_request' || steps.filter.outputs.perf == 'true' }}
         run: |
           printf 'matrix=%s\n' \
-            "$(jq -c --argjson run_macos "$RUN_MACOS" \
-                 '{include: map(select(.os != "macos-latest" or $run_macos))}' \
+            "$(jq -c --argjson run_legs "$RUN_LEGS" \
+                 '{include: (if $run_legs then . else [] end)}' \
                  <<<"$ALL_LEGS")" >> "$GITHUB_OUTPUT"
 
   bench:
     name: Bench (${{ matrix.os }})
     needs: select-legs
+    # An empty matrix is not a valid strategy, so a pull request that selects
+    # no legs skips the job here instead of failing to expand it.
+    if: needs.select-legs.outputs.matrix != '{"include":[]}'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      # Built by `select-legs` above rather than written out here, so the macOS
-      # leg can be left out of a pull request that does not touch the code it
-      # measures. The `include` shape and the job name are unchanged, so the
-      # legs that do run keep their existing check names.
+      # Built by `select-legs` above rather than written out here, so a pull
+      # request that does not touch the code the benches measure runs no leg.
+      # The `include` shape and the job name are unchanged, so the legs that
+      # do run keep their existing check names.
       matrix: ${{ fromJSON(needs.select-legs.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
