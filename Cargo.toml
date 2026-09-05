@@ -3,7 +3,6 @@
 members = [
     "core",
     "components/assets/*",
-    "components/codes/*",
     "components/data/*",
     "components/devtools/*/*",
     "components/effects/*",
@@ -176,7 +175,7 @@ waterui-backend-core = { version = "0.1.0", path = "backends/core", default-feat
 filtrate = "0.2.0"
 filtrate-core = "0.2.0"
 filtrate-derive = "0.1.0"
-waterui-barcode = { version = "0.1.0", path = "components/codes/barcode" }
+waterui-barcode = "0.1.0"
 waterui-particle = { version = "0.1.0", path = "components/effects/particle" }
 waterui-chart = "0.1.0"
 waterui-map-gpu = "0.1.0"
