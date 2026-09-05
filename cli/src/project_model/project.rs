@@ -14,12 +14,24 @@ enum OpenMode {
     PreviewBuild,
 }
 
-fn spawn_target_dir_resolution(
+/// What `cargo metadata` reports about the tree a project builds in.
+///
+/// Resolved once per [`Project`] and shared by everything that needs it, so
+/// one `cargo metadata` run serves the target directory and the lockfile.
+#[derive(Debug, Clone)]
+struct CargoLayout {
+    target_dir: PathBuf,
+    /// Root of the Cargo workspace the project belongs to — the project itself
+    /// when it is not a workspace member. This is where its `Cargo.lock` lives.
+    workspace_root: PathBuf,
+}
+
+fn spawn_cargo_layout_resolution(
     current_dir: &Path,
-) -> Shared<BoxFuture<'static, Result<PathBuf, String>>> {
+) -> Shared<BoxFuture<'static, Result<CargoLayout, String>>> {
     let current_dir = current_dir.to_path_buf();
     smol::spawn(async move {
-        get_target_dir(&current_dir)
+        resolve_cargo_layout(&current_dir)
             .await
             .map_err(|error| error.to_string())
     })
@@ -33,7 +45,7 @@ pub struct Project {
     root: PathBuf,
     manifest: Manifest,
     crate_name: CrateName,
-    target_dir_future: Shared<BoxFuture<'static, Result<PathBuf, String>>>,
+    cargo_layout: Shared<BoxFuture<'static, Result<CargoLayout, String>>>,
     linked_packages: Arc<async_lock::OnceCell<Result<BTreeMap<String, String>, String>>>,
     managed_backends_root: PathBuf,
 }
@@ -149,7 +161,24 @@ impl Project {
     ///
     /// Returns an error when Cargo metadata cannot resolve the target directory.
     pub async fn target_dir(&self) -> eyre::Result<PathBuf> {
-        self.target_dir_future
+        Ok(self.cargo_layout().await?.target_dir)
+    }
+
+    /// The lockfile the application builds against.
+    ///
+    /// The workspace `Cargo.lock` when the project is a workspace member,
+    /// otherwise the project's own. It need not exist yet: a project that has
+    /// never been resolved has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot resolve the workspace.
+    pub async fn lockfile_path(&self) -> eyre::Result<PathBuf> {
+        Ok(self.cargo_layout().await?.workspace_root.join("Cargo.lock"))
+    }
+
+    async fn cargo_layout(&self) -> eyre::Result<CargoLayout> {
+        self.cargo_layout
             .clone()
             .await
             .map_err(|error| eyre::eyre!(error))
@@ -382,11 +411,11 @@ impl Project {
     /// omits a package referenced by that graph.
     pub async fn links_runtime_package(&self, package_name: &str) -> eyre::Result<bool> {
         let project_root = self.root.clone();
-        let target_dir_future = self.target_dir_future.clone();
+        let cargo_layout = self.cargo_layout.clone();
         let packages = self
             .linked_packages
             .get_or_init(|| async move {
-                target_dir_future.await?;
+                cargo_layout.await?;
                 resolve_linked_runtime_packages(project_root)
                     .await
                     .map_err(|error| error.to_string())
@@ -714,6 +743,14 @@ impl Project {
 
         templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
             .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
+
+        let lockfile = self
+            .lockfile_path()
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        templates::ffi::seed_lockfile(&self.ffi_crate_path(), &lockfile)
+            .await
             .map_err(crate::backend::FailToInitBackend::Io)
     }
 
@@ -857,12 +894,12 @@ impl Project {
             path.join(manifest.backends.path())
         };
 
-        let target_dir_future = spawn_target_dir_resolution(&path);
+        let cargo_layout = spawn_cargo_layout_resolution(&path);
         Ok(Self {
             root: path,
             manifest,
             crate_name,
-            target_dir_future,
+            cargo_layout,
             linked_packages: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
         })
@@ -1190,12 +1227,12 @@ impl Project {
             path.join(manifest.backends.path())
         };
 
-        let target_dir_future = spawn_target_dir_resolution(&path);
+        let cargo_layout = spawn_cargo_layout_resolution(&path);
         let mut project = Self {
             root: path,
             manifest,
             crate_name,
-            target_dir_future,
+            cargo_layout,
             linked_packages: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
         };
@@ -1290,7 +1327,7 @@ impl Project {
     }
 }
 
-async fn get_target_dir(current_dir: &Path) -> Result<PathBuf, cargo_metadata::Error> {
+async fn resolve_cargo_layout(current_dir: &Path) -> Result<CargoLayout, cargo_metadata::Error> {
     let current_dir = current_dir.to_path_buf();
     let metadata = unblock(|| {
         cargo_metadata::MetadataCommand::new()
@@ -1300,9 +1337,10 @@ async fn get_target_dir(current_dir: &Path) -> Result<PathBuf, cargo_metadata::E
     })
     .await?;
 
-    let target_dir = metadata.target_directory.as_std_path();
-
-    Ok(target_dir.to_path_buf())
+    Ok(CargoLayout {
+        target_dir: metadata.target_directory.into_std_path_buf(),
+        workspace_root: metadata.workspace_root.into_std_path_buf(),
+    })
 }
 
 async fn resolve_linked_runtime_packages(
