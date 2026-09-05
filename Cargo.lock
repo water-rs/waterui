@@ -12475,18 +12475,17 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7aae50309ce5bdf87f85b4b855375126e78068d33588b483e1c631fe885b043e"
 dependencies = [
  "bytemuck",
- "hydrolysis-m3",
  "nami",
  "num-traits",
- "waterui",
  "waterui-canvas",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
  "waterui-shape",
- "waterui-testing",
  "waterui-text",
 ]
 
