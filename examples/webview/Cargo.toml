@@ -24,4 +24,4 @@ serde = { workspace = true, features = ["derive"] }
 
 # Linux has no system web engine to bridge outside GTK, so the app brings one.
 [target.'cfg(target_os = "linux")'.dependencies]
-waterui-browser-wpe = { workspace = true, optional = true }
+waterui-browser-wpe = { workspace = true, optional = true, features = ["webview"] }
