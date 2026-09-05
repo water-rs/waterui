@@ -101,6 +101,7 @@ impl HydrolysisRenderer {
         self.frame_applied_filter_count = 0;
         self.frame_applied_filter_capture = Duration::ZERO;
         self.frame_applied_filter_effect = Duration::ZERO;
+        self.subtree_captures.begin_frame();
         #[cfg(feature = "accessibility")]
         self.accessibility.reset_scene();
     }
@@ -115,6 +116,7 @@ impl HydrolysisRenderer {
         self.frame_applied_filter_count = 0;
         self.frame_applied_filter_capture = Duration::ZERO;
         self.frame_applied_filter_effect = Duration::ZERO;
+        self.subtree_captures.begin_frame();
         self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();

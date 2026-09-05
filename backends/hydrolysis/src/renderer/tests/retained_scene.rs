@@ -37,7 +37,7 @@ use waterui_layout::container::LazyContainer;
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::ZStackLayout;
 
-use super::test_environment;
+use super::{pumped_test_environment, test_environment};
 use crate::HeadlessRuntime;
 
 /// Aggregated frame-economy metrics over a run of parametric (post-trigger) frames.
@@ -782,4 +782,109 @@ fn collection_membership_enter_animates_then_settles() {
         "after the enter animation completes the collection must render \
          pixel-identical to a fresh build of the grown membership"
     );
+}
+
+/// Pump frames until every filter of `content` has been set up and run once,
+/// then return the frame that rendered them all. Filter setup is asynchronous
+/// (`AppliedFilterRuntime::ensure_setup` spawns it), so the first frames draw
+/// nothing for the filter.
+fn pump_until_filters_render(
+    runtime: &mut HeadlessRuntime,
+    expected_filters: u32,
+) -> crate::runner::HeadlessSnapshot {
+    let start = Instant::now();
+    for frame in 0..8_u32 {
+        let result = runtime.pump_at(true, start + Duration::from_millis(16 * u64::from(frame)));
+        if runtime.renderer().applied_filter_stats().0 == expected_filters {
+            return result
+                .snapshot
+                .expect("a frame that ran the filters must produce a snapshot");
+        }
+    }
+    panic!("{expected_filters} applied filter(s) never ran within eight frames");
+}
+
+fn pixel(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] {
+    let index = ((y * snapshot.width + x) * 4) as usize;
+    snapshot.rgba8[index..index + 4]
+        .try_into()
+        .expect("four channels per pixel")
+}
+
+fn assert_red(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) {
+    let [r, g, b, _] = pixel(snapshot, x, y);
+    assert!(
+        r > 160 && g < 90 && b < 90,
+        "pixel ({x}, {y}) must be the red box, got rgb({r}, {g}, {b})"
+    );
+}
+
+fn assert_blue(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) {
+    let [r, g, b, _] = pixel(snapshot, x, y);
+    assert!(
+        b > 160 && r < 90,
+        "pixel ({x}, {y}) must be the blue box, got rgb({r}, {g}, {b})"
+    );
+}
+
+/// Sibling filtered subtrees are captured through one shared atlas page — one
+/// compositor pass and one submit for the whole level — instead of a compositor
+/// pass per filter, and each filter still receives its own subtree's pixels: the
+/// slots must not overlap or swap.
+#[test]
+fn sibling_applied_filters_share_one_atlas_page() {
+    fn filtered_boxes() -> AnyView {
+        use waterui::prelude::*;
+        AnyView::new(hstack((
+            ().size(48.0, 48.0)
+                .background(Color::srgb_hex("#DC2626"))
+                .blur(2.0f32),
+            ().size(48.0, 48.0)
+                .background(Color::srgb_hex("#2563EB"))
+                .blur(2.0f32),
+        )))
+    }
+
+    let env = pumped_test_environment();
+    let builder = AnyViewBuilder::<AnyView>::new(filtered_boxes);
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 96, 48);
+    let snapshot = pump_until_filters_render(&mut runtime, 2);
+    assert_eq!(
+        runtime.renderer().applied_filter_capture_pages(),
+        1,
+        "two sibling filters must be captured through one atlas page"
+    );
+    assert_red(&snapshot, 24, 24);
+    assert_blue(&snapshot, 72, 24);
+}
+
+/// A filter inside a filtered subtree is captured one level deeper, and that
+/// level is rendered first, so the outer filter sees the inner filter's output
+/// rather than an empty slot.
+#[test]
+fn nested_applied_filters_capture_inner_before_outer() {
+    fn nested_boxes() -> AnyView {
+        use waterui::prelude::*;
+        AnyView::new(
+            ().size(32.0, 32.0)
+                .background(Color::srgb_hex("#DC2626"))
+                .blur(2.0f32)
+                .padding_with(EdgeInsets::all(32.0))
+                .background(Color::srgb_hex("#2563EB"))
+                .blur(2.0f32),
+        )
+    }
+
+    let env = pumped_test_environment();
+    let builder = AnyViewBuilder::<AnyView>::new(nested_boxes);
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 96, 96);
+    let snapshot = pump_until_filters_render(&mut runtime, 2);
+    assert_eq!(
+        runtime.renderer().applied_filter_capture_pages(),
+        2,
+        "a nested filter is captured on its own level's page"
+    );
+    assert_red(&snapshot, 48, 48);
+    assert_blue(&snapshot, 48, 12);
+    assert_blue(&snapshot, 12, 48);
 }
