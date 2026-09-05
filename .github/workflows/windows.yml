@@ -32,6 +32,12 @@ env:
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
 
 jobs:
+  # Two jobs, not one: the lint passes used to run after the whole test build
+  # in a single job, so clippy waited ~90 minutes behind nextest and the leg
+  # was the last thing standing on every run (#347). Each job compiles its own
+  # graph, but they run side by side, and the critical path is the test job
+  # alone. Coverage is unchanged — every command below is one of the original
+  # job's, split by kind, not dropped.
   test:
     name: windows-latest
     runs-on: windows-latest
@@ -43,8 +49,6 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
       - name: Install DirectX Shader Compiler
         uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
       - name: Verify DirectX Shader Compiler
@@ -63,10 +67,10 @@ jobs:
       # targets macOS, the iOS Simulator and Android, not Windows.
       #
       # waterui-browser-cef links cef_sandbox from a CEF binary distribution the
-      # runner does not stage. It is still compiled below, through the crate's
-      # own `compile-only` feature, which its build script honours ahead of
-      # `cef-runtime` for exactly this case — so Windows keeps compile coverage
-      # of the backend without provisioning the SDK.
+      # runner does not stage. It is still compiled in the lint job below,
+      # through the crate's own `compile-only` feature, which its build script
+      # honours ahead of `cef-runtime` for exactly this case — so Windows keeps
+      # compile coverage of the backend without provisioning the SDK.
       #
       # The two CEF example crates inherit that problem one level down. They
       # select `waterui-browser-cef` with `webview`/`chromium` but not
@@ -74,9 +78,9 @@ jobs:
       # while `runtime.rs` still declares the `waterui_cef_windows_sandbox_*`
       # externs under `cfg(windows)` — the crate compiles and then fails to
       # link. Every pass that links a test binary therefore excludes them, the
-      # same way it excludes the backend itself; the clippy pass below keeps
-      # them, because it checks without linking and the compile coverage is
-      # worth having.
+      # same way it excludes the backend itself; the clippy pass in the lint
+      # job keeps them, because it checks without linking and the compile
+      # coverage is worth having.
       #
       # One full-workspace pass under default features. A workspace-wide
       # `--all-features` pass is structurally impossible — `waterui-ffi`
@@ -93,15 +97,8 @@ jobs:
       # root `waterui` crate is the one crate whose features are all mutually
       # compatible.
       - run: cargo nextest run --features all --profile ci
-      # Compile the CEF backend without its binary distribution.
-      - run: cargo check -p waterui-browser-cef --features compile-only
       # nextest cannot run doctests, and this workspace has plenty of them.
       - run: cargo test --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example
-      # Windows-only code is invisible to every other leg: a `cfg(windows)` body
-      # is compiled nowhere else, so a lint that fires only there reaches
-      # nobody.
-      - name: Clippy
-        run: cargo clippy --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -110,3 +107,33 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+
+  lint:
+    name: windows-latest (lint)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # Build scripts run under `cargo check` too, so the shader compiler has
+      # to be present here as well as in the test job.
+      - name: Install DirectX Shader Compiler
+        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+      - name: Verify DirectX Shader Compiler
+        run: dxc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint-windows-latest
+          cache-on-failure: true
+      # Compile the CEF backend without its binary distribution (see the test
+      # job for why it cannot be linked here).
+      - run: cargo check -p waterui-browser-cef --features compile-only
+      # Windows-only code is invisible to every other leg: a `cfg(windows)` body
+      # is compiled nowhere else, so a lint that fires only there reaches
+      # nobody.
+      - name: Clippy
+        run: cargo clippy --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
