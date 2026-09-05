@@ -269,6 +269,8 @@ pub struct HydrolysisRenderer {
     /// [`HydrolysisRenderer::refresh_active_applied_filters`] on redraw-only
     /// frames; dead entries are pruned by strong count.
     node_applied_filters: Vec<Rc<RefCell<AppliedFilterRuntime>>>,
+    /// The per-frame atlas every filtered subtree is captured through.
+    subtree_captures: SubtreeCaptures,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
     navigation_captures: Vec<NavigationSceneCapture>,
@@ -386,6 +388,7 @@ impl HydrolysisRenderer {
             node_gpu_surfaces: Vec::new(),
             node_view_effects: Vec::new(),
             node_applied_filters: Vec::new(),
+            subtree_captures: SubtreeCaptures::default(),
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
             navigation_captures: Vec::new(),
