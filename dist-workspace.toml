@@ -17,3 +17,8 @@ formula = "water"
 publish-jobs = ["homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-pc-windows-msvc", "x86_64-pc-windows-msvc"]
+# release-plz owns `release.yml`, and `build-cli.yml` calls `dist build` per
+# target, so the CI file is ours rather than dist-generated. Without this,
+# `dist build` refuses to run until release.yml matches dist's own template
+# (#349).
+allow-dirty = ["ci"]
