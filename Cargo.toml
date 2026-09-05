@@ -179,7 +179,7 @@ filtrate-derive = "0.1.0"
 waterui-barcode = { version = "0.1.0", path = "components/codes/barcode" }
 waterui-particle = { version = "0.1.0", path = "components/effects/particle" }
 waterui-chart = "0.1.0"
-waterui-map-gpu = { version = "0.1.0", path = "components/data/map_gpu" }
+waterui-map-gpu = "0.1.0"
 waterui-assets = { version = "0.1.0", path = "components/assets/runtime" }
 waterui-assets-planner = { version = "0.1.0", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.1.0", path = "components/assets/macros" }
@@ -406,6 +406,8 @@ waterui-graphics = { path = "components/visual/graphics" }
 waterui-layout = { path = "components/foundation/layout" }
 waterui-shape = { path = "components/foundation/shape" }
 waterui-text = { path = "components/foundation/text" }
+waterui-map = { path = "components/data/map" }
+waterui-url = { path = "utils/url" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
