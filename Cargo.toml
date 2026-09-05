@@ -178,7 +178,7 @@ filtrate-core = "0.2.0"
 filtrate-derive = "0.1.0"
 waterui-barcode = { version = "0.1.0", path = "components/codes/barcode" }
 waterui-particle = { version = "0.1.0", path = "components/effects/particle" }
-waterui-chart = { version = "0.1.0", path = "components/data/chart" }
+waterui-chart = "0.1.0"
 waterui-map-gpu = { version = "0.1.0", path = "components/data/map_gpu" }
 waterui-assets = { version = "0.1.0", path = "components/assets/runtime" }
 waterui-assets-planner = { version = "0.1.0", path = "components/assets/planner" }
@@ -396,13 +396,16 @@ lto = "thin"
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
-# Extracted crates on crates.io (waterui-canvas first, #185) depend on the
+# Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
 # is a different type on either side. Publishing ignores this table, so the
 # published crates keep their registry pins.
 waterui-core = { path = "core" }
 waterui-graphics = { path = "components/visual/graphics" }
+waterui-layout = { path = "components/foundation/layout" }
+waterui-shape = { path = "components/foundation/shape" }
+waterui-text = { path = "components/foundation/text" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
