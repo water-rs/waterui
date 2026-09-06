@@ -117,8 +117,11 @@ jobs:
   # of the workspace runs under `--all-features` with the root and the dylib
   # excluded, plus the same four exclusions the Linux `all-features` job in
   # test.yml carries for crates whose feature sets are mutually exclusive by
-  # construction (#276). The two excluded crates with platform-specific code
-  # in their feature shapes run afterwards in the shapes they have.
+  # construction (#276), and `skill_snippets`, whose `dev` feature would turn
+  # `dynamic_linking` back on and whose `compile-gate-tests` transcriptions
+  # must never run (see the Linux job). The two excluded crates with
+  # platform-specific code in their feature shapes run afterwards in the
+  # shapes they have.
   all-features:
     name: windows-latest (all features)
     runs-on: windows-latest
@@ -150,7 +153,8 @@ jobs:
             --exclude waterui-core `
             --exclude waterui-ffi `
             --exclude hydrolysis `
-            --exclude waterui-browser-cef
+            --exclude waterui-browser-cef `
+            --exclude skill_snippets
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run -p waterui-core --features std,serde --profile ci
       - name: Test (hydrolysis, every portable feature)
