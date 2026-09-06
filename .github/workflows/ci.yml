@@ -59,6 +59,12 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: ./.github/actions/setup-linux-deps
+        # The instrumented run executes the same GPU-backed snapshot tests as
+        # Test / ubuntu-latest, so it needs the same software Vulkan ICD. Without
+        # it wgpu picks the EGL/llvmpipe GL adapter instead, which is not the
+        # backend those tests are baselined against.
+        with:
+          gpu: "true"
       # Its own key: an instrumented build shares no artifacts with the
       # ordinary ones, so storing it under the shared key would just overwrite
       # a useful tarball with one nothing else can restore. The target dir is
