@@ -4,6 +4,7 @@ use waterui_graphics::RedrawHandle;
 
 #[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
 use waterui_graphics::gpu_surface::preferred_surface_format;
+use waterui_graphics::shared_context::reclaim_device;
 
 /// Input button mapped from a platform pointer event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -434,9 +435,7 @@ impl OffscreenGpuContext {
     /// in sequence otherwise keeps every one of their allocations outstanding
     /// until the device itself is torn down.
     pub fn reclaim(&self) {
-        if let Err(error) = self.inner.device.poll(wgpu::PollType::Poll) {
-            tracing::warn!("GPU device did not reclaim dropped resources: {error}");
-        }
+        reclaim_device(&self.inner.device);
     }
 
     /// Requests a context on the adapter WaterUI would render an application on.
@@ -1131,7 +1130,7 @@ mod winit_impl {
     use super::{
         CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
         PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
-        TextInputState, TouchPhase,
+        TextInputState, TouchPhase, reclaim_device,
     };
 
     #[derive(Clone)]
@@ -1306,7 +1305,10 @@ mod winit_impl {
 
         fn present(&mut self, frame: SurfaceFrame) {
             match frame {
-                SurfaceFrame::Window { output, .. } => output.present(),
+                SurfaceFrame::Window { output, .. } => {
+                    output.present();
+                    reclaim_device(&self.gpu.device);
+                }
                 SurfaceFrame::Offscreen { .. } => {
                     panic!("hydrolysis winit surface received an offscreen frame")
                 }
