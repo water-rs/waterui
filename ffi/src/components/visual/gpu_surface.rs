@@ -40,7 +40,7 @@ use {
 use waterui_graphics::gpu_surface::{
     GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle,
 };
-use waterui_graphics::shared_context::{GpuRuntime, GpuSubmissionCompletionDriver};
+use waterui_graphics::shared_context::{GpuRuntime, GpuSubmissionCompletionDriver, reclaim_device};
 
 use crate::components::layouting::layout::{WuiProposalSize, WuiViewDimensions};
 use crate::{IntoFFI, IntoRust};
@@ -813,6 +813,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     let needs_redraw = frame.was_redraw_requested() || state.redraw_handle.take_dirty();
 
     output.present();
+    reclaim_device(&state.runtime.context().device);
 
     needs_redraw
 }

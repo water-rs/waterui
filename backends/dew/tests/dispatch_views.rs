@@ -242,5 +242,6 @@ fn export_composed_ui_for_visual_review() {
         320,
         160,
     );
-    std::fs::write("/tmp/waterui_dew_views.png", png).expect("export visual review PNG");
+    std::fs::write(support::export_path("dispatch_views", "composed"), png)
+        .expect("export visual review PNG");
 }

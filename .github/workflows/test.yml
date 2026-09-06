@@ -201,6 +201,19 @@ jobs:
   # `--all-features` asks those crates for feature sets that are mutually
   # exclusive by construction. Each is run below in the shapes it actually
   # has, sharing this job's target dir.
+  #
+  # `waterui-browser-wpe` is a fifth exclusion here that the clippy sweep does
+  # not need: its `real-engine` feature adds a test target that drives a
+  # staged WPE WebKit runtime (`WATERUI_WPE_RUNTIME`), which only
+  # `browser-wpe.yml` builds, so under `--all-features` that target runs here
+  # and fails at once for want of the runtime. Its `webview` shape is the
+  # default one, covered by the workspace pass in `test`.
+  #
+  # `skill_snippets` is a sixth, on every platform: its `compile-gate-tests`
+  # feature registers the skill's `#[waterui::test]` transcriptions as test
+  # targets that address elements which do not exist by design and must never
+  # run, and its `dev` feature turns on `waterui/dynamic_linking`. The lint
+  # job compiles that crate in the shape it is meant to be compiled in.
   all-features:
     name: ubuntu-latest (all features)
     runs-on: ubuntu-latest
@@ -232,7 +245,9 @@ jobs:
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude hydrolysis \
-            --exclude waterui-browser-cef
+            --exclude waterui-browser-cef \
+            --exclude waterui-browser-wpe \
+            --exclude skill_snippets
       # `nightly` is `feature(never_type)`, a hard E0554 on stable.
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run -p waterui-core --features std,serde --profile ci
@@ -291,10 +306,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
-      # Every crate's own optional features, with the same four exclusions as
-      # the Linux `all-features` job (see there). Of the excluded crates, the
-      # two whose feature shapes carry macOS-specific code run below; the FFI
-      # C surfaces, the CEF runtime shape and dew's firmware shape are
+      # Every crate's own optional features, with the same exclusions as the
+      # Linux `all-features` job (see there; `waterui-browser-wpe` is
+      # Linux-only, so it needs no exclusion here). Of the excluded crates,
+      # the two whose feature shapes carry macOS-specific code run below; the
+      # FFI C surfaces, the CEF runtime shape and dew's firmware shape are
       # host-independent and the Linux job covers them.
       - name: Test (all features, workspace)
         run: |
@@ -303,7 +319,8 @@ jobs:
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude hydrolysis \
-            --exclude waterui-browser-cef
+            --exclude waterui-browser-cef \
+            --exclude skill_snippets
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run -p waterui-core --features std,serde --profile ci
       - name: Test (hydrolysis, every portable feature)
