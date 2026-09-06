@@ -176,6 +176,7 @@ impl HydrolysisRenderer {
             tree.patch(self);
             tree.layout(self, env, size);
             tree.flush(self, ctx, env);
+            self.flush_subtree_captures(0);
             self.render_tree = Some(tree);
             return;
         }
@@ -183,6 +184,7 @@ impl HydrolysisRenderer {
         let mut node = RenderNode::build(content, env, self);
         node.layout(self, env, size);
         node.flush(self, ctx, env);
+        self.flush_subtree_captures(0);
         self.render_tree = Some(node);
     }
 
@@ -226,6 +228,9 @@ impl HydrolysisRenderer {
         tree.layout(self, env, size);
         let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
         tree.flush(self, ctx, env);
+        // Every filtered subtree captured during the flush is rendered and
+        // filtered now, before the scene that draws their outputs is.
+        self.flush_subtree_captures(0);
         // The overlay-mode text context menu re-encodes with the frame it floats
         // over; drawing it only on the one-time build path would leave it visible
         // for a single frame.
