@@ -30,7 +30,7 @@ use waterui_graphics::RedrawHandle;
 use waterui_graphics::filter_view::{
     AppliedFilter, EffectContext, EffectFrameClock, EffectInput, EffectOutput, WgslModuleCache,
 };
-use waterui_graphics::shared_context::GpuRuntime;
+use waterui_graphics::shared_context::{GpuRuntime, reclaim_device};
 
 use crate::{IntoFFI, WuiAnyView};
 
@@ -700,6 +700,7 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
 
     // Present
     output.present();
+    reclaim_device(&state.runtime.context().device);
 
     needs_redraw
 }
