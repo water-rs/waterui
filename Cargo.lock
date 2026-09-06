@@ -4360,8 +4360,7 @@ dependencies = [
 [[package]]
 name = "glifo"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "282a26c1e23de04bdab3e34a21b6f877a479b96737792516b9b8b8f69b6661be"
+source = "git+https://github.com/lexoliu/vello?rev=30322fbc330a0627f4b486c97e3c0fe8946606ba#30322fbc330a0627f4b486c97e3c0fe8946606ba"
 dependencies = [
  "bytemuck",
  "foldhash 0.2.0",
@@ -11690,8 +11689,7 @@ dependencies = [
 [[package]]
 name = "vello_common"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbb2141a2bca6e6d598e471fd4d1d7eed8e020aad6a28187edda07f091a325dd"
+source = "git+https://github.com/lexoliu/vello?rev=30322fbc330a0627f4b486c97e3c0fe8946606ba#30322fbc330a0627f4b486c97e3c0fe8946606ba"
 dependencies = [
  "bytemuck",
  "fearless_simd",
@@ -11730,8 +11728,7 @@ dependencies = [
 [[package]]
 name = "vello_hybrid"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dccbb4221070e7ef92486abef0002a651702f00a52d6be532249a0fa0eb3e9ba"
+source = "git+https://github.com/lexoliu/vello?rev=30322fbc330a0627f4b486c97e3c0fe8946606ba#30322fbc330a0627f4b486c97e3c0fe8946606ba"
 dependencies = [
  "bytemuck",
  "glifo 0.3.0",
@@ -11758,8 +11755,7 @@ dependencies = [
 [[package]]
 name = "vello_sparse_shaders"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86e5fd6b8d73d641ffe8522f05e2d5a7f23620005dfc1a7f49488790b9970267"
+source = "git+https://github.com/lexoliu/vello?rev=30322fbc330a0627f4b486c97e3c0fe8946606ba#30322fbc330a0627f4b486c97e3c0fe8946606ba"
 dependencies = [
  "wesl",
  "wesl-macros",

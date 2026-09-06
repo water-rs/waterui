@@ -2,6 +2,9 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::fmt;
 
+use nami::Signal;
+use nami::watcher::BoxWatcherGuard;
+
 use waterui_core::layout::{ProposalSize, Size, StretchAxis};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
@@ -17,6 +20,23 @@ pub struct SceneViewMergeToParent;
 
 /// Callback used by scene content to request another frame.
 pub type SceneInvalidator = Rc<dyn Fn()>;
+
+/// Asks for a frame whenever `signal` changes, for as long as the returned
+/// guard lives.
+///
+/// The one way scene content follows a signal it draws from. This is scene
+/// invalidation, not a subtree rebuild: the content instance and whatever it
+/// caches survive the change, and the next `build_scene` reads the new value.
+/// Keep the guard beside the invalidator and drop both when the invalidator
+/// is cleared, which is what stopping the frames means.
+#[must_use]
+pub fn invalidate_on_change<S: Signal>(
+    invalidator: &SceneInvalidator,
+    signal: &S,
+) -> BoxWatcherGuard {
+    let invalidator = Rc::clone(invalidator);
+    Box::new(signal.watch(move |_| invalidator()))
+}
 
 /// Object-safe scene producer for `SceneView`.
 pub trait SceneContent: 'static {
