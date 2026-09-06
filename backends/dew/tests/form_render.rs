@@ -90,7 +90,7 @@ fn build_screen() -> impl View {
 #[test]
 fn form_ui_renders_to_png() {
     let png = render_view_png(build_screen, support::test_environment(), WIDTH, HEIGHT);
-    std::fs::write("/tmp/dew_form_render.png", &png).expect("export form render PNG");
+    std::fs::write(support::export_path("form", "render"), &png).expect("export form render PNG");
 
     let pixmap = vello_cpu::Pixmap::from_png(std::io::Cursor::new(png.as_slice()))
         .expect("png decodes back");
