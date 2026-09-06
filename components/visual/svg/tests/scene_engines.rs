@@ -11,15 +11,16 @@
 use waterui_graphics::shared_context::SceneEngine;
 use waterui_graphics::{GpuRuntime, OffscreenRenderConfig, OffscreenSize, SceneView};
 use waterui_svg::SvgSceneContent;
-use waterui_testing::artifact_root;
+use waterui_testing::TestArtifacts;
 
 const STROKED_ICON: &str = include_str!("data/stroked_icon.svg");
 const PAINTED_ICON: &str = include_str!("data/painted_icon.svg");
 
 #[test]
 fn both_scene_engines_render_an_svg() {
-    let directory = artifact_root().join("waterui_scene_engines");
-    std::fs::create_dir_all(&directory).expect("output directory must be creatable");
+    let artifacts = TestArtifacts::new("svg");
+    std::fs::create_dir_all(artifacts.case_dir("scene_engines"))
+        .expect("output directory must be creatable");
     let runtime = pollster::block_on(GpuRuntime::new())
         .expect("scene engine comparison requires a working GPU runtime");
     let size = OffscreenSize::try_from_pixels(192, 192).expect("test size must be valid");
@@ -37,7 +38,9 @@ fn both_scene_engines_render_an_svg() {
             let output = pollster::block_on(surface.render_offscreen(&runtime, config, &mut env))
                 .expect("offscreen render should succeed");
             output
-                .save_png(directory.join(format!("svg_{icon_name}_{engine_name}.png")))
+                .save_png(
+                    artifacts.snapshot_path("scene_engines", format!("{icon_name}_{engine_name}")),
+                )
                 .expect("png should be written");
         }
     }

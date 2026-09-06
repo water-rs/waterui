@@ -178,6 +178,6 @@ fn export_shapes_for_visual_review() {
         320,
         180,
     );
-    std::fs::write(support::export_path("waterui_dew_shapes.png"), png)
+    std::fs::write(support::export_path("shapes", "review"), png)
         .expect("export visual review PNG");
 }
