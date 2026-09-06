@@ -34,8 +34,6 @@ use waterui_svg::Svg;
 
 mod support;
 
-const EXPORT_DIR: &str = "/tmp/waterui_dew_scene2d";
-
 /// A small document exercising fills, strokes and a group opacity — the three
 /// things an SVG asks of a scene, and the third of which needs a real
 /// compositing layer rather than a per-shape alpha.
@@ -69,8 +67,7 @@ fn only_scene(list: &DisplayList) -> (&DrawCommand, Rect) {
 }
 
 fn export(name: &str, png: &[u8]) {
-    std::fs::create_dir_all(EXPORT_DIR).expect("create the scene export directory");
-    std::fs::write(format!("{EXPORT_DIR}/{name}.png"), png).expect("write the review PNG");
+    std::fs::write(support::export_path("scene2d", name), png).expect("write the review PNG");
 }
 
 /// A box covering the canvas' own coordinate space.

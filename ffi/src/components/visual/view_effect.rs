@@ -32,7 +32,7 @@ use {
 };
 
 use waterui_graphics::RedrawHandle;
-use waterui_graphics::shared_context::GpuRuntime;
+use waterui_graphics::shared_context::{GpuRuntime, reclaim_device};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use waterui_graphics::view_effect::ViewEffectContext;
 use waterui_graphics::view_effect::{
@@ -615,6 +615,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
 
     // Present
     output.present();
+    reclaim_device(&state.runtime.context().device);
 
     needs_redraw
 }
