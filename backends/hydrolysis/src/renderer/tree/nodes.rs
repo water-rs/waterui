@@ -738,11 +738,16 @@ impl ViewEffectNode {
 }
 
 impl AppliedFilterNode {
-    /// Render the wrapped child node into the runtime's input texture, run the
-    /// filter into the output texture, and draw the resulting image — the node
+    /// Flush the wrapped child into the frame's capture atlas, queue the filter
+    /// to run from that slot, and draw the filter's output image — the node
     /// analogue of the dispatch path's
     /// [`HydrolysisRenderer::render_applied_filter_metadata`], reusing the
     /// runtime's texture-reuse logic verbatim, with no cursor-bound effect slot.
+    ///
+    /// The filter itself runs when the atlas level is flushed
+    /// ([`HydrolysisRenderer::flush_subtree_captures`]), which happens before
+    /// the scene that draws the output image is rendered, so one compositor
+    /// pass and one submit serve every filter of the level.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub(crate) fn flush(&self, renderer: &mut HydrolysisRenderer, ctx: RenderContext) {
         let (device, queue) = {
@@ -764,42 +769,23 @@ impl AppliedFilterNode {
         // filtered subtree freezes at stale pixels. The redraw-only refresh
         // path (which never re-flushes the tree) is the one place the cached
         // input is legitimately reused.
-        let (input_texture, input_view) = {
-            let mut runtime = self.runtime.borrow_mut();
-            let (texture, view) = runtime.input_texture(&device, width, height);
-            (texture.clone(), view.clone())
-        };
         let capture_started_at = Instant::now();
-        renderer.render_child_node_to_texture(
+        renderer.capture_child_into_atlas(
             &self.child,
             ctx,
             &self.env,
-            ChildTextureTarget {
-                texture: &input_texture,
-                view: &input_view,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                width,
-                height,
-            },
+            &self.runtime,
+            width,
+            height,
         );
         renderer.frame_applied_filter_capture += capture_started_at.elapsed();
 
-        let effect_started_at = Instant::now();
-        let (image, needs_redraw) = self.runtime.borrow_mut().render_output(
+        let image = self.runtime.borrow_mut().prepare_output(
             &device,
-            &queue,
             &mut renderer.vello_renderer,
             width,
             height,
         );
-        renderer.frame_applied_filter_effect += effect_started_at.elapsed();
-        renderer.frame_applied_filter_count = renderer
-            .frame_applied_filter_count
-            .checked_add(1)
-            .expect("hydrolysis applied filter counter overflow");
-        if needs_redraw {
-            renderer.request_redraw();
-        }
 
         let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
             * vello::kurbo::Affine::scale_non_uniform(

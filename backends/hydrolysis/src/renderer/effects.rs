@@ -133,9 +133,38 @@ impl AppliedFilterRuntime {
             "hydrolysis_applied_filter_input",
             width,
             height,
+            // `COPY_DST`: the tree flush captures the child into an atlas page
+            // and copies the slot into this texture.
             wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING,
+                | wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+        )
+    }
+
+    /// Allocate the output texture for a `width` × `height` input and return
+    /// the image handle that will show its contents, before the filter has run.
+    /// The atlas capture draws the image into the parent scene at flush time and
+    /// runs the filter when the capture level is flushed; the handle is stable
+    /// across both because the texture is.
+    pub(super) fn prepare_output(
+        &mut self,
+        device: &wgpu::Device,
+        vello_renderer: &mut vello::Renderer,
+        width: u32,
+        height: u32,
+    ) -> vello::peniko::ImageData {
+        let (output_width, output_height) = self.filter().output_size(width, height);
+        let output_texture = self
+            .output_texture(device, output_width, output_height)
+            .0
+            .clone();
+        register_or_override_output_image(
+            &mut self.output_image,
+            vello_renderer,
+            output_texture,
+            output_width,
+            output_height,
         )
     }
 
@@ -173,22 +202,6 @@ impl AppliedFilterRuntime {
         self.input_texture
             .as_ref()
             .map(|texture| (texture.width, texture.height))
-    }
-
-    pub(super) fn render_output(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        vello_renderer: &mut vello::Renderer,
-        width: u32,
-        height: u32,
-    ) -> (vello::peniko::ImageData, bool) {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("hydrolysis applied filter encoder"),
-        });
-        let output = self.encode_output(device, queue, vello_renderer, width, height, &mut encoder);
-        queue.submit([encoder.finish()]);
-        output
     }
 
     pub(super) fn encode_output(
@@ -648,6 +661,13 @@ impl HydrolysisRenderer {
         runtime: Rc<RefCell<AppliedFilterRuntime>>,
     ) {
         self.node_applied_filters.push(runtime);
+    }
+
+    /// Atlas pages rendered this frame; every filter of a nesting level shares
+    /// one page until it fills.
+    #[cfg(test)]
+    pub(crate) fn applied_filter_capture_pages(&self) -> u32 {
+        self.subtree_captures.frame_pages()
     }
 
     pub(crate) fn applied_filter_stats(&self) -> (u32, u64, u64) {
