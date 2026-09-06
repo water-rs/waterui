@@ -201,6 +201,13 @@ jobs:
   # `--all-features` asks those crates for feature sets that are mutually
   # exclusive by construction. Each is run below in the shapes it actually
   # has, sharing this job's target dir.
+  #
+  # `waterui-browser-wpe` is a fifth exclusion here that the clippy sweep does
+  # not need: its `real-engine` feature adds a test target that drives a
+  # staged WPE WebKit runtime (`WATERUI_WPE_RUNTIME`), which only
+  # `browser-wpe.yml` builds, so under `--all-features` that target runs here
+  # and fails at once for want of the runtime. Its `webview` shape is the
+  # default one, covered by the workspace pass in `test`.
   all-features:
     name: ubuntu-latest (all features)
     runs-on: ubuntu-latest
@@ -232,7 +239,8 @@ jobs:
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude hydrolysis \
-            --exclude waterui-browser-cef
+            --exclude waterui-browser-cef \
+            --exclude waterui-browser-wpe
       # `nightly` is `feature(never_type)`, a hard E0554 on stable.
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run -p waterui-core --features std,serde --profile ci
