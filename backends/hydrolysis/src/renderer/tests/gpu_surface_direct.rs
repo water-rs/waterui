@@ -20,6 +20,7 @@ use core::cell::RefCell;
 use core::time::Duration;
 use std::rc::Rc;
 use std::time::Instant;
+use waterui_testing::TestArtifacts;
 
 use waterui::Binding;
 use waterui_core::AnyView;
@@ -43,8 +44,13 @@ const FILL: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// Where this module's visual evidence is written.
-const IMAGE_DIR: &str = "/tmp/waterui_direct_to_target";
+/// Where this module's visual evidence is written: `waterui-testing`'s
+/// canonical `<root>/hydrolysis/direct_to_target/<stage>.png` layout, with the
+/// root from `WATERUI_TEST_ARTIFACTS_DIR` when CI sets it and the platform temp
+/// directory otherwise.
+fn image_dir() -> std::path::PathBuf {
+    TestArtifacts::new("hydrolysis").case_dir("direct_to_target")
+}
 
 /// What a probe recorded about its own lifetime: how often it was set up, how
 /// often it drew, and which format it was handed each time.
@@ -242,8 +248,9 @@ fn full_window_bindings() -> (Binding<f32>, Binding<f32>) {
 }
 
 fn write_png(name: &str, snapshot: &crate::runner::HeadlessSnapshot) -> std::path::PathBuf {
-    std::fs::create_dir_all(IMAGE_DIR).expect("the image directory must be creatable");
-    let path = std::path::Path::new(IMAGE_DIR).join(name);
+    let directory = image_dir();
+    std::fs::create_dir_all(&directory).expect("the image directory must be creatable");
+    let path = directory.join(name);
     let image = image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8.clone())
         .expect("snapshot dimensions must match the rgba buffer");
     image.save(&path).expect("snapshot png must be writable");
