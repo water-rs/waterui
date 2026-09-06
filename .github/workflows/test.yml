@@ -126,10 +126,11 @@ jobs:
       - name: Skill snippet compile gate
         run: cargo check -p skill_snippets --all-targets --features compile-gate-tests
 
-  # The workspace test run, per platform. On Linux it also carries the two
-  # short passes that share its build (all-features and doctests); on macOS
-  # those go to `macos-suites`, so that this job is the workspace run alone —
-  # the single longest step in CI — and everything else overlaps it.
+  # The workspace test run, per platform. On Linux it also carries the
+  # doctests, which share its build; on macOS those go to `macos-suites`, so
+  # that this job is the workspace run alone — the single longest step in CI —
+  # and everything else overlaps it. The all-features pass is `all-features`
+  # below on Linux and part of `macos-suites` on macOS.
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -168,22 +169,10 @@ jobs:
           save-if: ${{ runner.os == 'macOS' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
-      # One full-workspace pass under default features. A workspace-wide
-      # `--all-features` pass would need the same four `--exclude` flags the
-      # clippy passes above carry — `waterui-ffi` enforces "exactly one ABI"
-      # with a `compile_error!` (ffi/src/lib.rs), so enabling `c-api` and
-      # `android-jni` together can never build. The all-features pass below
-      # only *looks* workspace-wide: the root manifest has both `[workspace]`
-      # and `[package]`, so without `--workspace` cargo narrows it to the root
-      # `waterui` crate. Running the excluded crates' tests in their own
-      # feature shapes is a separate question from linting them and is not
-      # what this pass is for.
+      # One full-workspace pass under default features. Every crate's own
+      # optional features are the `all-features` job below (Linux) and the
+      # `macos-suites` all-features pass (macOS).
       - run: cargo nextest run --workspace --exclude '*-example' --profile ci
-      # The root crate's feature-gated re-export surface, with every feature
-      # on. Root-crate-only scope is intentional (see above); most of the
-      # build is shared with the workspace pass, so this increment is cheap.
-      - if: runner.os == 'Linux'
-        run: cargo nextest run --all-features --profile ci
       # nextest cannot run doctests, and this workspace has plenty of them.
       - if: runner.os == 'Linux'
         run: cargo test --doc --workspace --exclude '*-example'
@@ -196,10 +185,103 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Everything macOS runs besides the workspace test pass: the root crate's
-  # all-features tests, the doctests, and the suites that exist only on this
-  # platform. Together they are a fraction of the workspace run, so they
-  # overlap it here instead of queueing behind it.
+  # Every crate's own optional features, run. This pass used to be
+  # `cargo nextest run --all-features` inside the `test` job, with neither
+  # `-p` nor `--workspace`: the root manifest carries both `[workspace]` and
+  # `[package]`, so cargo narrowed it to the root `waterui` crate, and a
+  # backend crate's tests behind its own optional features — dew's
+  # `embedded-simulator`, hydrolysis' `inspector-signals` / `web`, the
+  # browsers' engine features — ran nowhere (#276, the test-side twin of
+  # #261). It is its own job for the same reason the clippy sweep is a
+  # separate step: a second feature variant of the dependency graph is a
+  # second codegen of most of the workspace, and it overlaps the workspace
+  # pass here instead of queueing behind it.
+  #
+  # Same four exclusions as the clippy sweep in `lint`, for the same reason:
+  # `--all-features` asks those crates for feature sets that are mutually
+  # exclusive by construction. Each is run below in the shapes it actually
+  # has, sharing this job's target dir.
+  #
+  # `waterui-browser-wpe` is a fifth exclusion here that the clippy sweep does
+  # not need: its `real-engine` feature adds a test target that drives a
+  # staged WPE WebKit runtime (`WATERUI_WPE_RUNTIME`), which only
+  # `browser-wpe.yml` builds, so under `--all-features` that target runs here
+  # and fails at once for want of the runtime. Its `webview` shape is the
+  # default one, covered by the workspace pass in `test`.
+  #
+  # `skill_snippets` is a sixth, on every platform: its `compile-gate-tests`
+  # feature registers the skill's `#[waterui::test]` transcriptions as test
+  # targets that address elements which do not exist by design and must never
+  # run, and its `dev` feature turns on `waterui/dynamic_linking`. The lint
+  # job compiles that crate in the shape it is meant to be compiled in.
+  all-features:
+    name: ubuntu-latest (all features)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      # GPU snapshot tests run under these features too, so this leg needs
+      # the Vulkan ICD loader the way `test` does.
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+      # Restore-only reader of the shared Linux `~/.cargo` tarball (see the
+      # cache budget note in ci.yml).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      - name: Test (all features, workspace)
+        run: |
+          cargo nextest run --workspace --all-features --profile ci \
+            --exclude '*-example' \
+            --exclude waterui-core \
+            --exclude waterui-ffi \
+            --exclude hydrolysis \
+            --exclude waterui-browser-cef \
+            --exclude waterui-browser-wpe \
+            --exclude skill_snippets
+      # `nightly` is `feature(never_type)`, a hard E0554 on stable.
+      - name: Test (waterui-core, every stable feature)
+        run: cargo nextest run -p waterui-core --features std,serde --profile ci
+      # The `c-api` half with every optional C surface a runtime build can
+      # carry; `android-jni` is the `Android FFI` job in ci.yml.
+      - name: Test (waterui-ffi, C ABI surfaces)
+        run: cargo nextest run -p waterui-ffi --features map,chromium,webview-cef --profile ci
+      # Every hydrolysis feature but `webview-system`, which only builds on
+      # macOS (`macos-suites` runs its `real_engine_macos` target).
+      - name: Test (hydrolysis, every portable feature)
+        run: |
+          cargo nextest run -p hydrolysis --profile ci \
+            --features accessibility,inspector-signals,testing,web,winit
+      # The CEF runtime shape; `compile-only` and `real-engine` exclude it.
+      - name: Test (waterui-browser-cef, CEF runtime)
+        run: cargo nextest run -p waterui-browser-cef --features chromium,webview --profile ci
+      # Dew's firmware shape, a first-class configuration whose test targets
+      # had stopped compiling entirely before the clippy pass covered them
+      # (#259); this is the run that goes with that lint.
+      - name: Test (dew firmware shape)
+        run: cargo nextest run -p waterui-dew --no-default-features --profile ci
+      - name: Upload Test Snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots-ubuntu-latest-all-features
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Everything macOS runs besides the workspace test pass: the all-features
+  # pass, the doctests, and the suites that exist only on this platform.
+  # Together they are a fraction of the workspace run, so they overlap it
+  # here instead of queueing behind it.
   macos-suites:
     name: macos-suites
     runs-on: macos-latest
@@ -224,9 +306,27 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
-      # The root crate's feature-gated re-export surface, with every feature
-      # on (see the `test` job for why the scope is the root crate).
-      - run: cargo nextest run --all-features --profile ci
+      # Every crate's own optional features, with the same exclusions as the
+      # Linux `all-features` job (see there; `waterui-browser-wpe` is
+      # Linux-only, so it needs no exclusion here). Of the excluded crates,
+      # the two whose feature shapes carry macOS-specific code run below; the
+      # FFI C surfaces, the CEF runtime shape and dew's firmware shape are
+      # host-independent and the Linux job covers them.
+      - name: Test (all features, workspace)
+        run: |
+          cargo nextest run --workspace --all-features --profile ci \
+            --exclude '*-example' \
+            --exclude waterui-core \
+            --exclude waterui-ffi \
+            --exclude hydrolysis \
+            --exclude waterui-browser-cef \
+            --exclude skill_snippets
+      - name: Test (waterui-core, every stable feature)
+        run: cargo nextest run -p waterui-core --features std,serde --profile ci
+      - name: Test (hydrolysis, every portable feature)
+        run: |
+          cargo nextest run -p hydrolysis --profile ci \
+            --features accessibility,inspector-signals,testing,web,winit
       # The macOS real-engine suite drives a genuine WKWebView through the
       # shared bridge contract — the macOS sibling of the WPE real-engine
       # workflow. It is `harness = false` (WKWebView is MainThreadOnly, and
