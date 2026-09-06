@@ -173,16 +173,14 @@ jobs:
       - name: Verify DirectX Shader Compiler
         if: runner.os == 'Windows'
         run: dxc --version
+      # No target tarball: the bench legs are off every gating path and their
+      # three generations did not fit the cache budget (see ci.yml). They read
+      # the per-OS `~/.cargo` tarball and compile from there.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: bench-${{ matrix.os }}
-          # Only the integration branches write cache generations, as in
-          # ci.yml and test.yml. Bench runs on dev only from the schedule and
-          # by hand, so that is where the three bench generations get written;
-          # a pull request reads them and saves nothing. PR runs used to write
-          # them on every fingerprint, and their 5 GB share of the 10 GB
-          # repository cap evicted the Test tarballs (#328).
-          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       - name: Build water CLI
