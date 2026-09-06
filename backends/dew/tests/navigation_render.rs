@@ -485,13 +485,13 @@ fn export_navigation_for_visual_review() {
         ))
     });
     std::fs::write(
-        "/tmp/waterui_dew_navigation_root.png",
+        support::export_path("waterui_dew_navigation_root.png"),
         runtime.board().framebuffer().to_png(),
     )
     .expect("export the root screen");
     tap_labeled(&mut runtime, "Schedule").expect("following the link renders a frame");
     std::fs::write(
-        "/tmp/waterui_dew_navigation_pushed.png",
+        support::export_path("waterui_dew_navigation_pushed.png"),
         runtime.board().framebuffer().to_png(),
     )
     .expect("export the pushed screen");
@@ -608,7 +608,7 @@ fn a_three_column_split_retains_both_destination_levels() {
     );
     runtime.pump().expect("all three columns render");
     std::fs::write(
-        "/tmp/waterui_dew_navigation_split.png",
+        support::export_path("waterui_dew_navigation_split.png"),
         runtime.board().framebuffer().to_png(),
     )
     .expect("export split visual review PNG");
