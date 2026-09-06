@@ -8,19 +8,18 @@
 //! The PNGs are written out to be looked at. The engines rasterize
 //! differently, so nothing about them is asserted pixel-wise.
 
-use std::path::Path;
-
 use waterui_graphics::shared_context::SceneEngine;
 use waterui_graphics::{GpuRuntime, OffscreenRenderConfig, OffscreenSize, SceneView};
 use waterui_svg::SvgSceneContent;
+use waterui_testing::artifact_root;
 
 const STROKED_ICON: &str = include_str!("data/stroked_icon.svg");
 const PAINTED_ICON: &str = include_str!("data/painted_icon.svg");
 
 #[test]
 fn both_scene_engines_render_an_svg() {
-    let directory = Path::new("/tmp/waterui_scene_engines");
-    std::fs::create_dir_all(directory).expect("output directory must be creatable");
+    let directory = artifact_root().join("waterui_scene_engines");
+    std::fs::create_dir_all(&directory).expect("output directory must be creatable");
     let runtime = pollster::block_on(GpuRuntime::new())
         .expect("scene engine comparison requires a working GPU runtime");
     let size = OffscreenSize::try_from_pixels(192, 192).expect("test size must be valid");

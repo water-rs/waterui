@@ -9,6 +9,8 @@ use kurbo::{Affine, Circle, Rect, RoundedRect, Stroke};
 use peniko::Color;
 use waterui_dew::{BandScheduler, BufferDisplay, DisplayList, FrameWork, Painter, render_frame};
 
+mod support;
+
 fn demo_scene() -> DisplayList {
     let mut list = DisplayList::new();
     // Background.
@@ -73,8 +75,11 @@ fn full_frame_renders_through_bands() {
     assert_eq!(display.pixel(100, 99), [70, 130, 240, 255]);
     assert_eq!(display.pixel(250, 180), [240, 180, 60, 255]);
 
-    std::fs::write("/tmp/waterui_dew_smoke.png", display.to_png())
-        .expect("failed to export smoke-frame PNG");
+    std::fs::write(
+        support::export_path("waterui_dew_smoke.png"),
+        display.to_png(),
+    )
+    .expect("failed to export smoke-frame PNG");
 }
 
 /// A partial update must only repaint the dirty region: pixels outside it
