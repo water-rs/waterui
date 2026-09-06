@@ -20,7 +20,7 @@ use core::cell::RefCell;
 use core::time::Duration;
 use std::rc::Rc;
 use std::time::Instant;
-use waterui_testing::artifact_root;
+use waterui_testing::TestArtifacts;
 
 use waterui::Binding;
 use waterui_core::AnyView;
@@ -44,11 +44,12 @@ const FILL: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// Where this module's visual evidence is written: the artifact root shared
-/// with CI (`WATERUI_TEST_ARTIFACTS_DIR`, uploaded with every run), or the
-/// platform temp directory when it is unset.
+/// Where this module's visual evidence is written: `waterui-testing`'s
+/// canonical `<root>/hydrolysis/direct_to_target/<stage>.png` layout, with the
+/// root from `WATERUI_TEST_ARTIFACTS_DIR` when CI sets it and the platform temp
+/// directory otherwise.
 fn image_dir() -> std::path::PathBuf {
-    artifact_root().join("waterui_direct_to_target")
+    TestArtifacts::new("hydrolysis").case_dir("direct_to_target")
 }
 
 /// What a probe recorded about its own lifetime: how often it was set up, how

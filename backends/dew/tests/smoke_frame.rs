@@ -76,7 +76,7 @@ fn full_frame_renders_through_bands() {
     assert_eq!(display.pixel(250, 180), [240, 180, 60, 255]);
 
     std::fs::write(
-        support::export_path("waterui_dew_smoke.png"),
+        support::export_path("smoke_frame", "frame"),
         display.to_png(),
     )
     .expect("failed to export smoke-frame PNG");

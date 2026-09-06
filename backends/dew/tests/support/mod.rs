@@ -8,6 +8,8 @@ use waterui_text::font::{FontWeight, ResolvedFont};
 
 use std::path::PathBuf;
 
+use waterui_testing::TestArtifacts;
+
 #[allow(dead_code, reason = "each integration test binary uses its own subset")]
 pub fn test_environment() -> Environment {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
@@ -53,16 +55,26 @@ pub fn test_renderer() -> DewRenderer {
 #[allow(dead_code, reason = "each integration test binary uses its own subset")]
 pub mod simulation;
 
-/// Where a test writes the PNG (or report) it exports for visual review.
+/// Where a test writes the PNG it exports for visual review.
 ///
-/// Everything lands under the artifact root `waterui-testing` shares with CI
-/// (`WATERUI_TEST_ARTIFACTS_DIR`, uploaded with every run), in a `dew`
-/// subdirectory, and under the platform temp directory when that variable is
-/// unset — so the exports work on every host rather than only where `/tmp`
-/// exists.
+/// Everything lands in `waterui-testing`'s canonical artifact layout
+/// (`<root>/dew/<case>/<stage>.png`, with the root taken from
+/// `WATERUI_TEST_ARTIFACTS_DIR` when CI sets it and the platform temp directory
+/// otherwise), so the images ride along with the uploaded CI artifacts and the
+/// test report can list them — on every host, not only where `/tmp` exists.
 #[allow(dead_code, reason = "each integration test binary uses its own subset")]
-pub fn export_path(file_name: &str) -> PathBuf {
-    let directory = waterui_testing::artifact_root().join("dew");
-    std::fs::create_dir_all(&directory).expect("the dew export directory must be creatable");
+pub fn export_path(case: &str, stage: &str) -> PathBuf {
+    let path = TestArtifacts::new("dew").snapshot_path(case, stage);
+    std::fs::create_dir_all(path.parent().expect("a snapshot path has a case directory"))
+        .expect("the dew export directory must be creatable");
+    path
+}
+
+/// Where a test writes a non-image report, beside its images in the same case
+/// directory.
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
+pub fn report_path(case: &str, file_name: &str) -> PathBuf {
+    let directory = TestArtifacts::new("dew").case_dir(case);
+    std::fs::create_dir_all(&directory).expect("the dew report directory must be creatable");
     directory.join(file_name)
 }
