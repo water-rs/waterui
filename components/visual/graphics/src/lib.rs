@@ -125,8 +125,8 @@ pub use image_generator::{
 };
 
 pub use scene_view::{
-    SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, resolve_scene_proposal,
-    scene_stretch_axis,
+    SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
+    resolve_scene_proposal, scene_stretch_axis,
 };
 pub use scene2d::{Glyph, GlyphRun, Scene2D, SceneRecording};
 #[cfg(feature = "vello-scene")]
