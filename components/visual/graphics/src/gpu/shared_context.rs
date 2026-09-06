@@ -474,6 +474,26 @@ pub fn drain_device_before_teardown(device: &wgpu::Device) {
     }
 }
 
+/// Releases the resources whose destruction the device deferred.
+///
+/// `wgpu` retires finished submissions from inside `Queue::submit`, but the
+/// bookkeeping of the objects those submissions dropped — the bind groups and
+/// texture views a scene renderer creates per frame — is released only from
+/// `Device::poll`. A frame loop that only ever submits and presents therefore
+/// keeps every frame's share of it forever: on a Pixel 9 Pro, 56 animated
+/// `GpuSurface`s grew the native heap by 87 MB per 150 s, and were flat with
+/// this call after each presented frame.
+///
+/// Non-blocking: `PollType::Poll` processes what has already completed and
+/// returns. Every frame owner that presents without registering the submission
+/// with the completion driver (which polls for it) calls this once per frame,
+/// after the present.
+pub fn reclaim_device(device: &wgpu::Device) {
+    if let Err(error) = device.poll(wgpu::PollType::Poll) {
+        tracing::warn!("GPU device did not reclaim deferred resources: {error}");
+    }
+}
+
 impl Drop for SharedGpuContext {
     fn drop(&mut self) {
         // Draining first leaves the completion thread nothing left to wait for,
