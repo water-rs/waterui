@@ -93,16 +93,6 @@ jobs:
       # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
       # enabling `c-api` and `android-jni` together can never build.
       - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example --profile ci
-      # The root crate's feature-gated re-export surface. `--features all` rather
-      # than `--all-features`: the latter turns on `dynamic_linking`, which pulls
-      # in `waterui-dylib`, and that crate exports 77k symbols against a PE
-      # export table limit of 65535 — it cannot link here, which is why the
-      # workspace pass above excludes it. This step had never once run.
-      # Root-crate-only scope is what cargo's default package selection does
-      # without `--workspace`, and here that narrowing is exactly right: the
-      # root `waterui` crate is the one crate whose features are all mutually
-      # compatible.
-      - run: cargo nextest run --features all --profile ci
       # nextest cannot run doctests, and this workspace has plenty of them.
       - run: cargo test --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example
       - name: Upload Test Snapshots
@@ -110,6 +100,46 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-snapshots-windows-latest
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The root crate's feature-gated re-export surface, in its own job so the
+  # test tarball above holds one feature variant of the dependency graph
+  # instead of two (#362): this job stores only `~/.cargo`, like macos-suites.
+  # `--features all` rather than `--all-features`: the latter turns on
+  # `dynamic_linking`, which pulls in `waterui-dylib`, and that crate exports
+  # 77k symbols against a PE export table limit of 65535 — it cannot link
+  # here, which is why the workspace pass excludes it. Root-crate-only scope
+  # is what cargo's default package selection does without `--workspace`, and
+  # here that narrowing is exactly right: the root `waterui` crate is the one
+  # crate whose features are all mutually compatible.
+  all-features:
+    name: windows-latest (all features)
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install DirectX Shader Compiler
+        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+      - name: Verify DirectX Shader Compiler
+        run: dxc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --features all --profile ci
+      - name: Upload Test Snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots-windows-latest-all-features
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
