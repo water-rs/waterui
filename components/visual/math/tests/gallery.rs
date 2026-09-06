@@ -86,7 +86,7 @@ const GALLERY: &[(&str, &str)] = &[
 
 fn output_directory() -> PathBuf {
     std::env::var("WATERUI_MATH_GALLERY_DIR").map_or_else(
-        |_| PathBuf::from("/tmp/waterui_math_gallery"),
+        |_| std::env::temp_dir().join("waterui_math_gallery"),
         PathBuf::from,
     )
 }
