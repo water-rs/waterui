@@ -872,7 +872,7 @@ fn run_budgeted_simulation() {
     let report = build_report(&sample, frames, band_height);
     let rendered = toml::to_string_pretty(&report).expect("the report must serialize");
     std::fs::write(
-        support::export_path("waterui_dew_vending_performance.toml"),
+        support::report_path("vending_performance", "report.toml"),
         &rendered,
     )
     .expect("the performance report must be writable");

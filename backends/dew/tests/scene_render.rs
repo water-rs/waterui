@@ -67,8 +67,7 @@ fn only_scene(list: &DisplayList) -> (&DrawCommand, Rect) {
 }
 
 fn export(name: &str, png: &[u8]) {
-    std::fs::write(support::export_path(&format!("{name}.png")), png)
-        .expect("write the review PNG");
+    std::fs::write(support::export_path("scene2d", name), png).expect("write the review PNG");
 }
 
 /// A box covering the canvas' own coordinate space.

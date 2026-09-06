@@ -157,7 +157,7 @@ fn export_tabs_for_visual_review() {
     );
     runtime.pump().expect("the first frame renders");
     std::fs::write(
-        support::export_path("waterui_dew_tabs.png"),
+        support::export_path("tabs", "tabs"),
         runtime.board().framebuffer().to_png(),
     )
     .expect("export visual review PNG");
@@ -192,7 +192,7 @@ fn sidebar_tabs_select_and_retain_pages() {
     );
     runtime.pump().expect("the sidebar's first frame renders");
     std::fs::write(
-        support::export_path("waterui_dew_tabs_sidebar.png"),
+        support::export_path("tabs", "sidebar"),
         runtime.board().framebuffer().to_png(),
     )
     .expect("export sidebar visual review PNG");
