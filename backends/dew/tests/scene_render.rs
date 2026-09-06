@@ -28,7 +28,7 @@ use waterui_core::AnyView;
 use waterui_core::layout::{Point, Rect as LayoutRect, Size};
 use waterui_dew::{ClipRegion, DewRuntime, DisplayList, DrawCommand, HostBoard, render_view_png};
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView, invalidate_on_change};
 use waterui_layout::scroll::ScrollView;
 use waterui_svg::Svg;
 
@@ -219,7 +219,7 @@ impl SceneContent for CountingContent {
     }
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
-        self.guard = invalidator.map(|invalidator| self.fill.watch(move |_| invalidator()));
+        self.guard = invalidator.map(|invalidator| invalidate_on_change(&invalidator, &self.fill));
     }
 }
 
