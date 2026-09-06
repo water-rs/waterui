@@ -10,7 +10,7 @@ use peniko::{Brush, Color as PenikoColor, FontData};
 use waterui_core::layout::Size;
 use waterui_core::{Computed, Environment, Signal, View};
 use waterui_graphics::color::{Color, ForegroundColor, ResolvedColor};
-use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView, invalidate_on_change};
 use waterui_layout::frame::Frame;
 use waterui_str::Str;
 
@@ -368,10 +368,9 @@ impl SceneContent for MathContent {
         // box it typeset last. Watching the signal schedules the frame that
         // re-typesets it; this is scene invalidation, not a subtree rebuild,
         // so the content instance and its resolved font survive the change.
-        self.source_guard = invalidator.as_ref().map(|invalidator| {
-            let invalidator = SceneInvalidator::clone(invalidator);
-            self.source.watch(move |_| invalidator())
-        });
+        self.source_guard = invalidator
+            .as_ref()
+            .map(|invalidator| invalidate_on_change(invalidator, &self.source));
         self.invalidator = invalidator;
     }
 }
