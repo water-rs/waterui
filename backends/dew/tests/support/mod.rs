@@ -6,6 +6,9 @@ use waterui_core::Environment;
 use waterui_dew::{DewRenderer, FontSources};
 use waterui_text::font::{FontWeight, ResolvedFont};
 
+use std::path::PathBuf;
+
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
 pub fn test_environment() -> Environment {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
     waterui_testing::install_test_executor();
@@ -49,3 +52,17 @@ pub fn test_renderer() -> DewRenderer {
 // `support` for `test_environment` alone.
 #[allow(dead_code, reason = "each integration test binary uses its own subset")]
 pub mod simulation;
+
+/// Where a test writes the PNG (or report) it exports for visual review.
+///
+/// Everything lands under the artifact root `waterui-testing` shares with CI
+/// (`WATERUI_TEST_ARTIFACTS_DIR`, uploaded with every run), in a `dew`
+/// subdirectory, and under the platform temp directory when that variable is
+/// unset — so the exports work on every host rather than only where `/tmp`
+/// exists.
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
+pub fn export_path(file_name: &str) -> PathBuf {
+    let directory = waterui_testing::artifact_root().join("dew");
+    std::fs::create_dir_all(&directory).expect("the dew export directory must be creatable");
+    directory.join(file_name)
+}
