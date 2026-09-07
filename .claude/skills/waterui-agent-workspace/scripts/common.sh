@@ -533,15 +533,21 @@ slot_is_free() {
   repo_and_submodules_are_clean "$slot"
 }
 
-# Brings a FREE slot up to date with canonical and claims it for `branch_name`:
-# fast-forwards the superproject's integration branch, then for each
-# submodule fast-forwards its own configured integration branch and hard-
-# aligns the checkout to the exact commit the superproject's tree now records
-# for it (in steady state this is the same commit the branch fast-forward
-# already landed on — every canonical commit that advances a submodule
-# pointer is paired with the submodule's own advance — so the checkout is a
-# consistency check as much as an alignment), and finally branches the
-# superproject and every submodule to `branch_name`.
+# Brings a FREE slot up to date with canonical and claims it for `branch_name`.
+#
+# Two passes. The first only inspects: the superproject and every submodule
+# must sit on their configured integration branch and be fast-forwardable
+# onto canonical. Nothing is touched until all of them pass, so a slot that
+# cannot be claimed is left exactly as it was found and stays FREE for the
+# next scan (a claim that mutated as it went used to strand slots with some
+# submodules already moved and the rest still on their old branch). The
+# second pass fast-forwards the superproject and then each submodule's
+# integration branch, staying on the branch the whole time — every canonical
+# commit that advances a submodule pointer is paired with the submodule's own
+# advance, so the branch tip must now equal the gitlink the superproject
+# records; anything else is a canonical inconsistency and fails loudly rather
+# than being papered over with a detached checkout. Finally the superproject
+# and every submodule are branched to `branch_name`.
 #
 # Runs entirely inside a captured subshell: any step's failure (typically a
 # fast-forward refused because the slot diverged from canonical) reaches the
@@ -560,8 +566,9 @@ _claim_free_slot_impl() {
   local target_branch
   local actual_branch
   local desired_commit
+  local actual_commit
 
-  merge_branch_ff_only "$slot" "$source_root" "$integration_branch" "superproject"
+  ensure_fast_forward_possible "$slot" "$source_root" "$integration_branch" "superproject"
 
   while IFS=$'\t' read -r name submodule_relpath; do
     [[ -n "${name:-}" ]] || continue
@@ -570,13 +577,25 @@ _claim_free_slot_impl() {
     target_branch="$(configured_submodule_branch "$source_root" "$name")"
     [[ -n "$target_branch" ]] || die "submodule ${submodule_relpath} has no configured integration branch in .gitmodules"
 
-    actual_branch="$(current_branch "$submodule_path")"
+    actual_branch="$(current_branch "$submodule_path")" || die "slot submodule ${submodule_relpath} is not on a branch"
     [[ "$actual_branch" == "$target_branch" ]] || die "slot submodule ${submodule_relpath} is on ${actual_branch}, expected ${target_branch}"
+
+    ensure_fast_forward_possible "$submodule_path" "$canonical_submodule" "$target_branch" "submodule ${submodule_relpath}"
+  done < <(submodule_records "$source_root")
+
+  merge_branch_ff_only "$slot" "$source_root" "$integration_branch" "superproject"
+
+  while IFS=$'\t' read -r name submodule_relpath; do
+    [[ -n "${name:-}" ]] || continue
+    submodule_path="${slot}/${submodule_relpath}"
+    canonical_submodule="${source_root}/${submodule_relpath}"
+    target_branch="$(configured_submodule_branch "$source_root" "$name")"
 
     merge_branch_ff_only "$submodule_path" "$canonical_submodule" "$target_branch" "submodule ${submodule_relpath}"
 
     desired_commit="$(submodule_gitlink_commit "$slot" "$submodule_relpath")"
-    run_quietly git -C "$submodule_path" checkout "$desired_commit" || die "failed to align submodule ${submodule_relpath} to ${desired_commit}"
+    actual_commit="$(git -C "$submodule_path" rev-parse HEAD)" || die "failed to resolve HEAD of submodule ${submodule_relpath}"
+    [[ "$actual_commit" == "$desired_commit" ]] || die "submodule ${submodule_relpath} branch ${target_branch} is at ${actual_commit} but the superproject records ${desired_commit}; canonical is inconsistent"
   done < <(submodule_records "$source_root")
 
   ensure_branch "$slot" "$branch_name"
