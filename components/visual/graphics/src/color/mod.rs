@@ -254,6 +254,34 @@ impl ResolvedColor {
         linear_srgb_to_oklch(self.red, self.green, self.blue)
     }
 
+    /// Converts this resolved color into the paint a scene is drawn with.
+    ///
+    /// Everything that records into a [`Scene2D`](crate::scene2d::Scene2D)
+    /// needs its colours as `peniko`'s, so this is the one place the
+    /// conversion lives rather than a private copy per drawing component.
+    /// Components are gamma-encoded 8-bit sRGB, which is what `peniko`'s
+    /// `AlphaColor<Srgb>` stores; a P3 or HDR colour is therefore clamped into
+    /// the sRGB gamut here, the same way it is on its way to any 8-bit target.
+    #[must_use]
+    pub fn to_peniko(&self) -> peniko::Color {
+        let srgb = self.to_srgb();
+        let channel = |value: f32| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to 0..=255 before the cast"
+            )]
+            let byte = (value * 255.0).clamp(0.0, 255.0).round() as u8;
+            byte
+        };
+        peniko::Color::from_rgba8(
+            channel(srgb.red),
+            channel(srgb.green),
+            channel(srgb.blue),
+            channel(self.opacity),
+        )
+    }
+
     /// Returns linear RGB components with HDR headroom applied.
     #[must_use]
     pub fn linear_with_headroom(&self) -> [f32; 3] {

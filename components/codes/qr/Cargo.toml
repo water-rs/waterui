@@ -1,0 +1,42 @@
+[package]
+name = "waterui-qr"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "QR code rendering for WaterUI, drawn as a scene rather than as an image"
+keywords = ["qrcode", "barcode", "waterui", "gui"]
+categories = ["gui"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-graphics.workspace = true
+waterui-layout.workspace = true
+waterui-str.workspace = true
+nami.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
+# The symbol encoder. Only its module matrix is used; the modules are drawn
+# through `Scene2D` here, so none of its renderers are reachable.
+qrcode.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The round-trip test renders the component offscreen, which is the only thing
+# in this crate that touches the GPU stack.
+waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+# Reads the rendered pixels back. A code that does not decode is not a code,
+# and no assertion about geometry says that.
+rqrr.workspace = true
+image = { version = "0.25", default-features = false }
+# The dark-theme round trip needs a dark palette installed over the default
+# test theme, which is the theme package's own job.
+hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+
+[lints]
+workspace = true

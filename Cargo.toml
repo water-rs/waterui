@@ -3,6 +3,7 @@
 members = [
     "core",
     "components/assets/*",
+    "components/codes/*",
     "components/data/*",
     "components/devtools/*/*",
     "components/foundation/*",
@@ -140,6 +141,7 @@ merman-render = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b49
 waterui-shape = { version = "0.1.0", path = "components/foundation/shape", default-features = false }
 waterui-svg = { version = "0.1.0", path = "components/visual/svg" }
 waterui-math = { version = "0.1.0", path = "components/visual/math" }
+waterui-qr = { version = "0.1.0", path = "components/codes/qr" }
 waterui-ffi = { version = "0.3.0", path = "ffi" }
 waterui-layout = { version = "0.3.0", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.3.0", path = "components/foundation/navigation" }
@@ -220,6 +222,15 @@ parley = { version = "0.11", default-features = false }
 # workspace renders one with `vello_svg`, so the parser is depended on directly
 # rather than through a Vello-only renderer.
 usvg = "0.46.0"
+# QR symbol encoder. Only the module matrix is taken from it — the component
+# draws the modules itself through `Scene2D` — so its image, SVG and PIC
+# renderers, and the `image` crate behind the first of them, stay out of the
+# graph via `default-features = false`.
+qrcode = { version = "0.14.1", default-features = false }
+# QR decoder. Test-only: the round-trip check reads the drawn pixels back and
+# asserts they decode to the payload, which is the only assertion that can tell
+# whether a code actually scans.
+rqrr = "0.11.0"
 kurbo = "0.13"
 peniko = "0.6"
 skrifa = "0.42.1"
