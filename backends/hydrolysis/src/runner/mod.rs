@@ -68,6 +68,9 @@ use fonts::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
 use window::*;
+// Frame and tree profiles are published to the inspector endpoint, which exists
+// only where `waterui::inspector` does.
+#[cfg(not(target_arch = "wasm32"))]
 mod inspector;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -84,8 +87,18 @@ use crate::renderer::{HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery};
 use crate::renderer::{HydrolysisTextContextMenuMode, PopupWindowManager};
 use crate::time::Instant;
 
-fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
+/// The global executor every runner installs before anything can spawn.
+fn init_global_executor() {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
+}
+
+/// Installs the global executor and prepares inspection.
+///
+/// A browser page has no transport for the inspector endpoint, so the wasm
+/// runner installs the executor alone.
+#[cfg(not(target_arch = "wasm32"))]
+fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
+    init_global_executor();
     waterui::inspector::maybe_init_from_env("hydrolysis")
 }
 
@@ -208,7 +221,8 @@ pub fn run(app: App) {
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub fn run(app: App) {
-    web_runner::run(app, init_main_thread_executors());
+    init_global_executor();
+    web_runner::run(app);
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]
