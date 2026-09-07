@@ -27,8 +27,9 @@
 //! - [`display`]: the flush boundary — where rasterized regions leave the
 //!   renderer toward a concrete screen (in-memory buffer on desktop,
 //!   RGB565 LCD stream on embedded targets)
-//! - [`theme`]: the built-in widget palette — named colors every handler
-//!   draws with until environment-driven theming lands
+//! - [`theme`]: the built-in appearance — named colors every handler draws
+//!   with, and the type scale [`DewRuntime`] installs for the font slots an
+//!   application's theme leaves unset
 //!
 //! # Deliberately unsupported: the GPU stack
 //!
@@ -50,7 +51,7 @@
 //! # Interaction beyond controls: the `gestures` feature
 //!
 //! Controls (buttons, toggles, sliders, tabs) hit-test through
-//! [`pointer::PointerRouter`] and are always available. The richer pointer
+//! dew's internal pointer router and are always available. The richer pointer
 //! semantics a view asks for with `.gesture(...)` / `.on_hover_*` —
 //! `Metadata<GestureObserver>` and `Metadata<OnEvent>`, which is what makes an
 //! interactive chart interactive — recognize through `waterui-backend-core`'s
