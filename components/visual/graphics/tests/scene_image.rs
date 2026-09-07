@@ -158,20 +158,8 @@ fn hybrid_scene_engine_draws_an_image_brush() {
     // colour under either filtering quality. Each source pixel has a colour of
     // its own and the three channels run in three directions, so a transposed,
     // mirrored, shifted or channel-swapped blit fails here.
-    // The final row and column are skipped: `vello_hybrid`'s bilinear image
-    // sampling clamps `Extend::Pad` to the last texel's leading corner
-    // (`clamp(t, 0.0, size - 1.0)` in `render.wesl`) and only then subtracts
-    // the half texel that turns a corner into a centre, so every sample from
-    // that corner onwards resolves to one fixed half-and-half blend of the last
-    // two texels instead of running on into the last one. Skipped rather than
-    // asserted, because asserting it would pin the defect in place; see
-    // water-rs/waterui#234.
-    let last_centre = IMAGE_SIDE - 1;
     for y in 0..IMAGE_SIDE {
         for x in 0..IMAGE_SIDE {
-            if x == last_centre || y == last_centre {
-                continue;
-            }
             let expected = source_pixel(x, y);
             let point = (x * SCALE + SCALE / 2, y * SCALE + SCALE / 2);
             let actual = pixel_at(&hybrid, point.0, point.1);
