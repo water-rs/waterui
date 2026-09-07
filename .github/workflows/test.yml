@@ -2,6 +2,15 @@ name: Test
 
 on:
   workflow_call:
+    inputs:
+      # `false` is the pull-request / integration-branch gate: format, the
+      # default-features clippy pass, the default-features test run on Linux,
+      # the examples on Linux, and the skill compile gate. `true` is the
+      # nightly matrix: every clippy shape, both platforms, the all-features
+      # runs, the macOS suites and the examples on macOS.
+      full:
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,7 +23,17 @@ env:
 # below used to run one after another inside a single job per OS, which put
 # every clippy shape in front of the ubuntu tests and every macOS-only suite
 # behind the macOS workspace run; the macOS leg was the critical path of every
-# CI run. Nothing checked here has changed — only what waits on what.
+# CI run.
+#
+# Two tiers (#379). Every all-features pass is a second `-C metadata` profile
+# of the whole workspace that no cache can hold next to the default one, so
+# it is a 35-40 minute cold build on every platform, every run, and it made
+# every pull request a 60-70 minute wait whatever it changed. Those passes,
+# the macOS platform and the macOS suites now run only when `full` is set,
+# which `nightly.yml` does once a day against `dev`; a pull request and a
+# push to `dev` run the default-features gate on Linux. Nothing is checked
+# less often than daily, and nothing a pull request can break in the default
+# shape waits behind a shape it did not touch.
 jobs:
   # Lint before testing: it is the cheapest failure to produce, and the one a
   # contributor is most likely to hit, so it should not wait behind the whole
@@ -72,6 +91,7 @@ jobs:
       # follow; `--workspace --all-features` selects that crate with every
       # feature on, so it is now a strict subset and has been removed.
       - name: Clippy (all features, workspace)
+        if: inputs.full
         run: |
           cargo clippy --workspace --all-targets --all-features \
             --exclude '*-example' \
@@ -84,6 +104,7 @@ jobs:
       # is a hard E0554 on the stable channel this job pins. Everything else the
       # crate has, it gets here.
       - name: Clippy (waterui-core, every stable feature)
+        if: inputs.full
         run: cargo clippy -p waterui-core --all-targets --features std,serde -- -D warnings
       # `waterui-ffi` selects its ABI with mutually exclusive features and
       # `ffi/src/lib.rs` turns `c-api` + `android-jni` into a `compile_error!`.
@@ -91,12 +112,14 @@ jobs:
       # can carry; the `android-jni` half is the `Android FFI` job in ci.yml,
       # and the compile-only `cef-header` shape is the `macos-suites` job below.
       - name: Clippy (waterui-ffi, C ABI surfaces)
+        if: inputs.full
         run: cargo clippy -p waterui-ffi --all-targets --features map,chromium,webview-cef -- -D warnings
       # `webview-system` bridges the macOS WKWebView into the winit window and
       # `compile_error!`s anywhere else, so this is every hydrolysis feature but
       # that one. `macos-suites` compiles `webview-system` in its
       # `real_engine_macos` step.
       - name: Clippy (hydrolysis, every portable feature)
+        if: inputs.full
         run: |
           cargo clippy -p hydrolysis --all-targets \
             --features accessibility,inspector-signals,testing,web,winit -- -D warnings
@@ -108,6 +131,7 @@ jobs:
       # `real-engine` stays off here because that test target is macOS-only;
       # `--all-targets` skips it for want of its required feature.
       - name: Clippy (waterui-browser-cef, CEF runtime)
+        if: inputs.full
         run: cargo clippy -p waterui-browser-cef --all-targets --features chromium,webview -- -D warnings
       # Dew's firmware shape, which is a first-class configuration rather than
       # a degraded one. Neither pass above compiles dew's test targets without
@@ -117,6 +141,7 @@ jobs:
       # compiling entirely (#259). `--all-targets` is the whole point: the
       # library alone has always been clean here.
       - name: Clippy (dew firmware shape)
+        if: inputs.full
         run: cargo clippy -p waterui-dew --all-targets --no-default-features -- -D warnings
       # The waterui skill's snippet compile gate: every rust fence in
       # .claude/skills/waterui is transcribed into .claude/skills/waterui/skill_snippets
@@ -140,10 +165,11 @@ jobs:
       # results, so a cross-platform break costs one round trip per platform.
       fail-fast: false
       matrix:
-        # Windows is kept in its own gating workflow because it needs platform-
-        # specific exclusions and compile-only CEF coverage. Both workflows run
-        # for the same integration-branch pushes and pull requests.
-        os: [ubuntu-latest, macos-latest]
+        # Windows is kept in its own workflow because it needs platform-
+        # specific exclusions and compile-only CEF coverage; `nightly.yml`
+        # calls it beside this one. macOS is a nightly platform too: the
+        # default-features gate a pull request runs is Linux only.
+        os: ${{ fromJSON(inputs.full && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -216,6 +242,7 @@ jobs:
   # job compiles that crate in the shape it is meant to be compiled in.
   all-features:
     name: ubuntu-latest (all features)
+    if: inputs.full
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -284,6 +311,7 @@ jobs:
   # here instead of queueing behind it.
   macos-suites:
     name: macos-suites
+    if: inputs.full
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
@@ -386,7 +414,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(inputs.full && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
