@@ -218,7 +218,19 @@ let highlighted = highlight_text(Language::Rust, &code, &mut highlighter);
 
 ## Features
 
-This crate has no optional features. All functionality is included by default.
+- `highlight` (default) — `DefaultHighlighter`, the bundled syntect/two-face
+  syntax highlighter, and the `Code` fenced-code widget built on it.
+- `markdown` — `StyledStr::from_markdown` and the `pulldown-cmark` grammar
+  behind it.
+- `font-collection` — `FontCollection`, the one `parley` font collection a host
+  installs into the `Environment` and every component that shapes or typesets
+  text itself reads back out. Turned on by those components, not by
+  applications: text drawn by the platform's own engine never reaches for it,
+  and a build that does not need it carries neither the type nor the font stack
+  behind it.
+- `system-fonts` — discovering the platform's fonts, which is how a host that
+  owns no font stack of its own obtains the collection it installs through
+  `install_system_font_collection`.
 
 ## Dependencies
 

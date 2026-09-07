@@ -22,6 +22,7 @@ use nami::Signal;
 use waterui::app::App;
 use waterui::window::{Window, WindowState};
 use waterui_core::Environment;
+use waterui_text::FontCollection;
 
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -256,9 +257,16 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::default(),
     ));
+    // The application's fonts, discovered once. Every window's renderer is
+    // seeded from this collection, and a self-drawn component that typesets
+    // text itself reads it out of the environment instead of enumerating the
+    // system's fonts for itself.
+    let fonts = FontCollection::new(super::native_resource_fonts());
+    fonts.clone().install(&mut env);
     let window_icon = load_staged_window_icon();
     let mut runner = WinitRunner {
         env,
+        fonts,
         window_icon,
         pending_windows: windows
             .into_iter()
@@ -284,6 +292,9 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
 
 struct WinitRunner {
     env: Environment,
+    /// The application's font collection, the same one the environment carries.
+    /// Every window's renderer is seeded from it.
+    fonts: FontCollection,
     /// Taskbar/window icon staged by the water CLI next to the asset bundle.
     /// X11 and Windows honor it; macOS uses the bundle's icns and Wayland
     /// resolves icons through the desktop entry instead.
@@ -432,7 +443,7 @@ impl WinitRunner {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.adapter(), surface.device())
         };
-        super::load_native_resource_fonts(&mut renderer);
+        super::seed_renderer(&mut renderer, &self.fonts);
         let mut runtime =
             RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);
         let _ = pump_window_semantics(&mut runtime, &self.env);
