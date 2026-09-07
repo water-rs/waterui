@@ -45,6 +45,8 @@ use waterui_core::Native;
 #[cfg(not(target_arch = "wasm32"))]
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::view::Hook;
+#[cfg(not(target_arch = "wasm32"))]
+use waterui_text::FontCollection;
 
 mod diagnostics;
 mod fonts;
@@ -179,6 +181,12 @@ pub fn run(app: App) {
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::default(),
     ));
+    // The application's fonts, discovered once. Every window's renderer is
+    // seeded from this collection, and a self-drawn component that typesets
+    // text itself reads it out of the environment instead of enumerating the
+    // system's fonts for itself.
+    let fonts = FontCollection::new(native_resource_fonts());
+    fonts.clone().install(&mut env);
     let mut pending_windows = VecDeque::from(windows);
     while let Some(window) = pending_windows.pop_front() {
         let frame = window.frame.get();
@@ -191,7 +199,7 @@ pub fn run(app: App) {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.adapter(), surface.device())
         };
-        load_native_resource_fonts(&mut renderer);
+        seed_renderer(&mut renderer, &fonts);
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env, &mut || local_executor.drain());
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));

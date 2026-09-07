@@ -4,8 +4,18 @@
 //! Noto Sans families). Classification and fallback installation are shared by the
 //! native loader (which scans `resources/fonts` directories) and the web
 //! loader in [`super::web_runner`] (which fetches fonts from a manifest).
+//!
+//! The result is built **once per application**, installed into the root
+//! environment as the shared [`FontCollection`], and every window's renderer is
+//! seeded from it by [`seed_renderer`]. Building it per window meant scanning
+//! the resource directories and enumerating the system's fonts again for each
+//! one, and a self-drawn component reading the environment would have had no
+//! single collection to read.
 
 use parley::fontique::{Collection, FallbackKey, FamilyId, FontInfo, GenericFamily, Script};
+use waterui_text::FontCollection;
+
+use crate::renderer::HydrolysisRenderer;
 
 /// Font-family buckets recognized from WaterUI's bundled resource fonts.
 #[derive(Default)]
@@ -94,7 +104,7 @@ impl ResourceFontFamilies {
 /// script should say so loudly rather than silently depending on the host's
 /// fallback set.
 #[cfg(any(test, feature = "testing"))]
-pub(crate) fn install_deterministic_test_fonts(renderer: &mut crate::renderer::HydrolysisRenderer) {
+pub(crate) fn deterministic_test_fonts() -> parley::FontContext {
     use parley::fontique::{Blob, CollectionOptions};
     use std::sync::Arc;
 
@@ -117,11 +127,13 @@ pub(crate) fn install_deterministic_test_fonts(renderer: &mut crate::renderer::H
         ),
     ];
 
-    let font_cx = renderer.state_mut().text_fonts_mut();
-    font_cx.collection = Collection::new(CollectionOptions {
-        system_fonts: false,
-        ..CollectionOptions::default()
-    });
+    let mut font_cx = parley::FontContext {
+        collection: Collection::new(CollectionOptions {
+            system_fonts: false,
+            ..CollectionOptions::default()
+        }),
+        source_cache: parley::fontique::SourceCache::default(),
+    };
     let mut resource_fonts = ResourceFontFamilies::default();
     for (name, bytes) in FONTS {
         let families = font_cx
@@ -130,12 +142,13 @@ pub(crate) fn install_deterministic_test_fonts(renderer: &mut crate::renderer::H
         resource_fonts.classify(name, &families);
     }
     resource_fonts.install(&mut font_cx.collection);
+    font_cx
 }
 
-/// Register every `.ttf`/`.otf` under the app's `resources/fonts` directories
-/// and install the recognized script fallbacks.
+/// The system's fonts plus every `.ttf`/`.otf` under the app's `resources/fonts`
+/// directories, with the recognized script fallbacks installed.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn load_native_resource_fonts(renderer: &mut crate::renderer::HydrolysisRenderer) {
+pub(super) fn native_resource_fonts() -> parley::FontContext {
     use parley::fontique::Blob;
     use std::sync::Arc;
 
@@ -161,7 +174,7 @@ pub(super) fn load_native_resource_fonts(renderer: &mut crate::renderer::Hydroly
         }
     }
 
-    let font_cx = renderer.state_mut().text_fonts_mut();
+    let mut font_cx = parley::FontContext::new();
     let mut resource_fonts = ResourceFontFamilies::default();
     for root in roots {
         if !root.exists() {
@@ -215,4 +228,15 @@ pub(super) fn load_native_resource_fonts(renderer: &mut crate::renderer::Hydroly
         }
     }
     resource_fonts.install(&mut font_cx.collection);
+    font_cx
+}
+
+/// Gives `renderer` the application's fonts to shape with.
+///
+/// Every window shapes against the one collection the runner installed, so a
+/// popup opened later measures text exactly as the window that opened it does.
+/// The renderer keeps its own copy because it shapes across worker threads and
+/// `parley`'s contexts are not `Sync`; the faces in it are the same ones.
+pub(super) fn seed_renderer(renderer: &mut HydrolysisRenderer, fonts: &FontCollection) {
+    *renderer.state_mut().text_fonts_mut() = fonts.use_fonts(|fonts| fonts.clone());
 }
