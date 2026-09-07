@@ -1,0 +1,161 @@
+name: Nightly
+
+# The full matrix (#379), once a day against `dev` and on demand. Every
+# check that a pull request used to pay for on every push and that a change
+# cannot break in the default-features shape lives here: every clippy shape,
+# macOS and Windows, the all-features runs, the macOS suites, the examples
+# on macOS, coverage and the `cargo hack --each-feature` sweep. `ci.yml` is
+# the per-change gate. A red nightly opens one tracking issue and keeps it
+# current instead of failing a run nobody is watching.
+
+on:
+  # Off-peak UTC, staggered against the bench (05:41) and dependency (Mon
+  # 09:00) schedules so the runs do not compete for the org's job cap.
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+  # codecov's OIDC upload.
+  id-token: write
+  # The failure report below opens or updates an issue.
+  issues: write
+
+# One nightly at a time, and a running one is never cancelled: its value is
+# the complete report.
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # rust-cache is the only cache layer (see the note in ci.yml).
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  test:
+    name: Test
+    uses: ./.github/workflows/test.yml
+    with:
+      full: true
+
+  windows:
+    name: Windows
+    uses: ./.github/workflows/windows.yml
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # A full instrumented rebuild shares nothing with the ordinary builds, so
+    # it belongs to the nightly matrix, not to any per-change gate.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: ./.github/actions/setup-linux-deps
+        # The instrumented run executes the same GPU-backed snapshot tests as
+        # Test / ubuntu-latest, so it needs the same software Vulkan ICD. Without
+        # it wgpu picks the EGL/llvmpipe GL adapter instead, which is not the
+        # backend those tests are baselined against.
+        with:
+          gpu: "true"
+      # Its own key: an instrumented build shares no artifacts with the
+      # ordinary ones, so storing it under the shared key would just overwrite
+      # a useful tarball with one nothing else can restore. The target dir is
+      # deliberately NOT cached: the instrumented tarball measures 3-5GB, and
+      # together with the two Test tarballs that oversubscribes the 10GB cache
+      # quota — every run would then evict one of the three and put a Test leg
+      # back on a 60-minute cold build. Coverage recompiles each run (~42min,
+      # which it already did when it was being evicted 4 runs out of 4) but
+      # only stores the ~0.2GB dependency caches, so the Test legs stay warm.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
+      - name: Prepare coverage target dir
+        run: |
+          mkdir -p target/llvm-cov-target
+          printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > target/llvm-cov-target/CACHEDIR.TAG
+      # NEXTEST_PROFILE rather than --profile: cargo-llvm-cov reads that flag as
+      # cargo's build profile. The ci profile matters here because it disables
+      # fail-fast — without it a single failing test ends the run and hides the
+      # state of every test after it (see #153, where one failure masked 632).
+      - run: cargo llvm-cov nextest --workspace --exclude '*-example' --features waterui/all --lcov --output-path lcov.info
+        env:
+          NEXTEST_PROFILE: ci
+      - uses: codecov/codecov-action@v4
+        with:
+          use_oidc: true
+          fail_ci_if_error: true
+
+  feature-checks:
+    name: Features
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-linux-deps
+      # The single writer of `ci-ubuntu` (see Hygiene above).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - uses: taiki-e/install-action@cargo-hack
+      # `--feature-powerset` is deliberately absent. The workspace has ~33_800
+      # feature combinations (waterui alone has 14 features = 16_384), so the
+      # sweep either ran for 105 minutes or was cancelled at ~27 minutes having
+      # proved nothing — it produced no signal in any recent run. `--each-feature`
+      # is linear and catches the failure that actually happens: a feature that
+      # does not build on its own.
+      - run: cargo hack check --each-feature --no-dev-deps
+
+  test-report:
+    name: Test Report
+    needs: [test, windows]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p artifacts
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: test-snapshots-*
+          path: artifacts/
+      - name: Generate Step Summary
+        run: python3 .github/scripts/generate_test_summary.py artifacts >> "$GITHUB_STEP_SUMMARY"
+
+  # One issue per broken nightly, updated in place while it stays red, so a
+  # failure that nobody was watching at 03:17 UTC is on the board by morning.
+  report:
+    name: Report failure
+    needs: [test, windows, coverage, feature-checks]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: JasonEtco/create-an-issue@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          filename: .github/NIGHTLY_FAILURE.md
+          update_existing: true
+          search_existing: open
