@@ -247,6 +247,7 @@ pub fn render_view_png<V: View>(
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
+    use crate::DrawCommand;
     use crate::display_list::DisplayList;
     use core::cell::Cell;
     use kurbo::Affine;
@@ -295,6 +296,59 @@ mod tests {
 
         assert!(!frame.dirty.is_empty());
         assert_eq!(body_calls.get(), 1, "refresh must not evaluate body again");
+    }
+
+    /// Every shaped glyph size in the frame the runtime last flushed.
+    fn shaped_font_sizes(list: &DisplayList) -> Vec<u32> {
+        list.commands()
+            .iter()
+            .filter_map(|placed| match placed.command() {
+                DrawCommand::GlyphRun { font_size, .. } => Some(font_size.to_bits()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A reactive body font must re-shape the retained text: the change has to
+    /// request a frame of its own, and the layout cached at the old size must
+    /// not be replayed at the new one.
+    #[test]
+    fn body_font_change_reshapes_retained_text() {
+        use waterui::Plugin as _;
+        use waterui::theme::{FontSettings, Theme};
+        use waterui_text::font::{FontWeight, ResolvedFont};
+
+        let font = binding(ResolvedFont::new(16.0, FontWeight::Normal));
+        let mut env = Environment::new();
+        Theme::new()
+            .fonts(FontSettings::new().body(font.clone()))
+            .install(&mut env);
+
+        let mut runtime = DewRuntime::new(HostBoard::new(200, 60), env, 16, || {
+            AnyView::new(text("Dew"))
+        });
+
+        runtime.pump().expect("initial frame must render");
+        assert_eq!(
+            shaped_font_sizes(&runtime.current),
+            vec![16.0_f32.to_bits()],
+            "the installed body font shapes the first frame"
+        );
+
+        font.set(ResolvedFont::new(28.0, FontWeight::Normal));
+        let frame = runtime
+            .pump()
+            .expect("a body font change must request a frame of its own");
+
+        assert_eq!(
+            shaped_font_sizes(&runtime.current),
+            vec![28.0_f32.to_bits()],
+            "the new body font must re-shape the retained text"
+        );
+        assert!(
+            !frame.dirty.is_empty(),
+            "re-shaped text must flush the region it changed"
+        );
     }
 
     /// Dew supplies its own type scale, so an application that installs no

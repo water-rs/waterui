@@ -18,10 +18,11 @@ use waterui_backend_core::frame_signals::FrameSignals;
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_core::Environment;
 use waterui_core::layout::Size;
+use waterui_text::font::ResolvedFont;
 use waterui_text::styled::StyledStr;
 
 use crate::dispatch::{DewRenderer, RenderContext, WatchedSignal};
-use crate::text::{DewState, TextLayoutCache, TextLayoutKey};
+use crate::text::{DewState, TextLayoutCache, TextLayoutKey, TextRevision};
 use crate::theme;
 
 pub mod button;
@@ -73,6 +74,9 @@ pub const fn to_f32(value: f64) -> f32 {
 pub struct LabelText {
     display_mode: LabelDisplayMode,
     content: WatchedSignal<Computed<StyledStr>>,
+    /// The theme body font the label shapes at, watched so a reactive type
+    /// scale re-shapes it and asks for a frame.
+    font: WatchedSignal<Computed<ResolvedFont>>,
     cache: RefCell<TextLayoutCache>,
 }
 
@@ -82,9 +86,18 @@ impl LabelText {
     pub fn new(label: &Label, env: &Environment, signals: FrameSignals) -> Self {
         Self {
             display_mode: label.display_mode_preference(),
-            content: WatchedSignal::new(label.semantic_text().resolve(env).content, signals),
+            content: WatchedSignal::new(
+                label.semantic_text().resolve(env).content,
+                signals.clone(),
+            ),
+            font: theme::watch_body_font(env, signals),
             cache: RefCell::new(TextLayoutCache::default()),
         }
+    }
+
+    /// Everything that re-shapes this label: its content and the theme font.
+    fn revision(&self) -> TextRevision {
+        TextRevision::new(self.content.revision(), self.font.revision())
     }
 
     /// Whether this label draws nothing.
@@ -108,7 +121,7 @@ impl LabelText {
         }
         let key = TextLayoutKey::new(None, theme::foreground(env));
         let mut cache = self.cache.borrow_mut();
-        let ((width, height), outcome) = cache.measure(self.content.revision(), key, None, || {
+        let ((width, height), outcome) = cache.measure(self.revision(), key, None, || {
             state
                 .borrow_mut()
                 .build_styled_layout(&self.content.get(), env, None, key.brush)
@@ -149,7 +162,7 @@ impl LabelText {
         }
         let max_width = (rect.width() > 0.0).then(|| to_f32(rect.width()));
         let key = TextLayoutKey { max_width, brush };
-        let revision = self.content.revision();
+        let revision = self.revision();
         let mut cache = self.cache.borrow_mut();
         let (list, state) = renderer.list_and_state();
         // Vertical centring needs the laid-out height, which is only known
