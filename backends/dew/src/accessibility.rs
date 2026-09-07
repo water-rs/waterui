@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use accesskit::{Action, ActionData, ActionRequest, Node, NodeId, Role, Tree, TreeId, TreeUpdate};
 use kurbo::Rect;
 use nami::{Binding, Computed, Signal};
+use waterui_core::Str;
 use waterui_core::id::Id;
 
 use crate::pointer::PointerTargetHandle;
@@ -45,6 +46,36 @@ pub(crate) enum ActionTarget {
     },
 }
 
+/// One `.a11y_label(..)` / `.a11y_id(..)` wrapper, open for the duration of the
+/// subtree it names.
+///
+/// Naming metadata is nearest-consumer, exactly as in hydrolysis: whichever
+/// node ends up *representing* the wrapped view owns the name, and nothing
+/// below may say it again — a button named "Play episode" must answer to that
+/// name once, not once per node its chrome happens to publish. Dew has no
+/// environment to carry that decision in (its retained nodes read the
+/// environment they captured at build time, and the metadata never reached
+/// it), so the scope lives on the render stack and `claimed` records whether
+/// the node that represents the view has already taken the name this frame.
+struct NamingScope {
+    value: Str,
+    claimed: bool,
+}
+
+impl NamingScope {
+    const fn new(value: Str) -> Self {
+        Self {
+            value,
+            claimed: false,
+        }
+    }
+
+    /// The name, if this scope is still unclaimed; claiming it in the process.
+    fn claim(&mut self) -> Option<&Str> {
+        (!core::mem::replace(&mut self.claimed, true)).then_some(&self.value)
+    }
+}
+
 pub(crate) struct AccessibilityBuilder {
     nodes: Vec<(NodeId, Node)>,
     roots: Vec<NodeId>,
@@ -55,6 +86,8 @@ pub(crate) struct AccessibilityBuilder {
     root_bounds: Rect,
     pending_update: Option<TreeUpdate>,
     suppression_depth: usize,
+    labels: Vec<NamingScope>,
+    identifiers: Vec<NamingScope>,
 }
 
 impl Default for AccessibilityBuilder {
@@ -69,6 +102,8 @@ impl Default for AccessibilityBuilder {
             root_bounds: Rect::ZERO,
             pending_update: None,
             suppression_depth: 0,
+            labels: Vec::new(),
+            identifiers: Vec::new(),
         }
     }
 }
@@ -90,6 +125,8 @@ impl AccessibilityBuilder {
         self.actions.clear();
         self.pending_update = None;
         self.suppression_depth = 0;
+        self.labels.clear();
+        self.identifiers.clear();
         self.root_bounds = root_bounds;
     }
 
@@ -103,6 +140,7 @@ impl AccessibilityBuilder {
         if self.suppression_depth > 0 || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
             return;
         }
+        self.apply_naming(&mut node);
         node.set_bounds(accesskit::Rect {
             x0: bounds.x0,
             y0: bounds.y0,
@@ -118,6 +156,50 @@ impl AccessibilityBuilder {
         if let Some(target) = target {
             self.actions.insert(id, target);
         }
+    }
+
+    /// Gives `node` the name the application asked for.
+    ///
+    /// The application's label replaces whatever default the node arrived with
+    /// — a control's own title, a scene's description of what it drew — because
+    /// the application is the one that knows what the view means; that is the
+    /// same precedence hydrolysis' `default_label` fallback expresses. Only the
+    /// innermost open scope can apply, and only to the first node that reaches
+    /// it: an outer scope shadowed by an inner one names nothing, exactly as an
+    /// environment insert shadows the key it overwrites.
+    ///
+    /// An automation identifier a node set for itself is an explicit backend
+    /// decision and stands; the scope's identifier fills in for nodes that have
+    /// none.
+    fn apply_naming(&mut self, node: &mut Node) {
+        if let Some(label) = self.labels.last_mut().and_then(NamingScope::claim) {
+            node.set_label(label.as_str());
+        }
+        if node.author_id().is_none()
+            && let Some(identifier) = self.identifiers.last_mut().and_then(NamingScope::claim)
+        {
+            node.set_author_id(identifier.as_str());
+        }
+    }
+
+    pub(crate) fn push_label(&mut self, label: Str) {
+        self.labels.push(NamingScope::new(label));
+    }
+
+    pub(crate) fn pop_label(&mut self) {
+        self.labels
+            .pop()
+            .expect("dew accessibility label scope underflow");
+    }
+
+    pub(crate) fn push_identifier(&mut self, identifier: Str) {
+        self.identifiers.push(NamingScope::new(identifier));
+    }
+
+    pub(crate) fn pop_identifier(&mut self) {
+        self.identifiers
+            .pop()
+            .expect("dew accessibility identifier scope underflow");
     }
 
     pub(crate) fn push_parent(&mut self, id: NodeId) {
@@ -156,6 +238,10 @@ impl AccessibilityBuilder {
         assert_eq!(
             self.suppression_depth, 0,
             "dew accessibility suppression stack must balance within a frame"
+        );
+        assert!(
+            self.labels.is_empty() && self.identifiers.is_empty(),
+            "dew accessibility naming scopes must balance within a frame"
         );
         let mut root = Node::new(Role::Window);
         root.set_label("WaterUI Window");
