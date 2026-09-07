@@ -102,6 +102,7 @@ macro_rules! export {
                 let inspector = unsafe { $crate::__init() };
                 let mut env = waterui::configure_environment!(waterui::Environment::new());
                 waterui::inspector::install(&mut env, inspector);
+                $crate::__install_font_collection(&mut env);
                 $crate::__configure_native_realizations(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
@@ -158,6 +159,22 @@ macro_rules! export {
             }
         };
     };
+}
+
+/// Installs the application's font collection, for the native backends.
+///
+/// Apple, Android and GTK draw text with the platform's own engine and own no
+/// `parley` collection, so a component that typesets text itself — a formula, a
+/// canvas, a vector map — has no host font stack to share. This gives them one,
+/// discovered once here rather than once per view.
+///
+/// It installs nothing when the application links no such component, because
+/// nothing in that build could read the collection and nothing in it carries
+/// the font stack behind one.
+#[doc(hidden)]
+#[inline]
+pub fn __install_font_collection(env: &mut waterui::Environment) {
+    waterui_text::install_system_font_collection(env);
 }
 
 /// Declares, in the environment a native backend is about to hand the app, the

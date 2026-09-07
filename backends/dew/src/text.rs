@@ -18,6 +18,7 @@ use nami::Signal;
 use skrifa::prelude::{FontRef, GlyphId, LocationRef, MetadataProvider, Size};
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
+use waterui_text::FontCollection;
 use waterui_text::font::{Font, FontWeight, ResolvedFont};
 use waterui_text::styled::{Style, StyledStr};
 
@@ -30,7 +31,11 @@ use crate::theme;
 ///
 /// One per renderer; rebuilding it is expensive (font enumeration).
 pub struct DewState {
-    font_cx: parley::FontContext,
+    /// The application's font collection, shared with the environment rather
+    /// than owned outright: a self-drawn component that typesets text itself —
+    /// a formula, a canvas — shapes against exactly these faces instead of
+    /// building a second collection of its own.
+    fonts: FontCollection,
     layout_cx: parley::LayoutContext<[u8; 4]>,
     /// Whether the collection holds any face at all. Shaping against an
     /// empty collection silently produces no glyphs, so it fails fast
@@ -350,10 +355,10 @@ impl DewState {
             }
         };
         Self {
-            font_cx: parley::FontContext {
+            fonts: FontCollection::new(parley::FontContext {
                 collection,
                 source_cache: parley::fontique::SourceCache::default(),
-            },
+            }),
             layout_cx: parley::LayoutContext::new(),
             has_fonts,
             work: FrameWork::ZERO,
@@ -374,6 +379,12 @@ impl DewState {
              FontSources::bundled(&[include_bytes!(\"YourFont.ttf\")]) from the \
              board (or register fonts on HostBoard::with_font in tests)."
         );
+    }
+
+    /// The application's font collection, for the host to install into the
+    /// environment so self-drawn components shape against the same faces.
+    pub(crate) fn fonts(&self) -> FontCollection {
+        self.fonts.clone()
     }
 
     /// Takes the work accumulated since the previous call.
@@ -407,11 +418,14 @@ impl DewState {
     ) -> parley::Layout<[u8; 4]> {
         self.assert_has_fonts();
         let font = Font::default().resolve(env).get();
-        let mut builder = self
-            .layout_cx
-            .ranged_builder(&mut self.font_cx, text, 1.0, true);
-        push_layout_defaults(&mut builder, &font, brush);
-        let mut layout = builder.build(text);
+        let Self {
+            fonts, layout_cx, ..
+        } = self;
+        let mut layout = fonts.use_fonts(|font_cx| {
+            let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
+            push_layout_defaults(&mut builder, &font, brush);
+            builder.build(text)
+        });
         layout.break_all_lines(max_width);
         layout.align(
             parley::Alignment::Start,
@@ -445,16 +459,19 @@ impl DewState {
         self.assert_has_fonts();
 
         let default_font = Font::default().resolve(env).get();
-        let mut builder = self
-            .layout_cx
-            .ranged_builder(&mut self.font_cx, &plain, 1.0, true);
-        push_layout_defaults(&mut builder, &default_font, default_brush);
+        let Self {
+            fonts, layout_cx, ..
+        } = self;
+        let mut layout = fonts.use_fonts(|font_cx| {
+            let mut builder = layout_cx.ranged_builder(font_cx, &plain, 1.0, true);
+            push_layout_defaults(&mut builder, &default_font, default_brush);
 
-        for (range, style) in spans {
-            push_span_style(&mut builder, style, env, range);
-        }
+            for (range, style) in spans {
+                push_span_style(&mut builder, style, env, range);
+            }
 
-        let mut layout = builder.build(&plain);
+            builder.build(&plain)
+        });
         layout.break_all_lines(max_width);
         layout.align(
             parley::Alignment::Start,
