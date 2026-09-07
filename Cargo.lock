@@ -13149,6 +13149,7 @@ dependencies = [
  "waterui-layout",
  "waterui-str",
  "waterui-testing",
+ "waterui-text",
  "wgpu",
 ]
 
@@ -13342,6 +13343,7 @@ dependencies = [
  "executor-core",
  "hydrolysis-m3",
  "nami",
+ "parley",
  "pulldown-cmark",
  "smallvec",
  "syntect",
