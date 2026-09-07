@@ -4360,7 +4360,7 @@ dependencies = [
 [[package]]
 name = "glifo"
 version = "0.3.0"
-source = "git+https://github.com/lexoliu/vello?rev=30322fbc330a0627f4b486c97e3c0fe8946606ba#30322fbc330a0627f4b486c97e3c0fe8946606ba"
+source = "git+https://github.com/lexoliu/vello?rev=d68d9e9825bcd1ffee762323881c13a2e7a3f639#d68d9e9825bcd1ffee762323881c13a2e7a3f639"
 dependencies = [
  "bytemuck",
  "foldhash 0.2.0",
@@ -11689,7 +11689,7 @@ dependencies = [
 [[package]]
 name = "vello_common"
 version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?rev=30322fbc330a0627f4b486c97e3c0fe8946606ba#30322fbc330a0627f4b486c97e3c0fe8946606ba"
+source = "git+https://github.com/lexoliu/vello?rev=d68d9e9825bcd1ffee762323881c13a2e7a3f639#d68d9e9825bcd1ffee762323881c13a2e7a3f639"
 dependencies = [
  "bytemuck",
  "fearless_simd",
@@ -11728,7 +11728,7 @@ dependencies = [
 [[package]]
 name = "vello_hybrid"
 version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?rev=30322fbc330a0627f4b486c97e3c0fe8946606ba#30322fbc330a0627f4b486c97e3c0fe8946606ba"
+source = "git+https://github.com/lexoliu/vello?rev=d68d9e9825bcd1ffee762323881c13a2e7a3f639#d68d9e9825bcd1ffee762323881c13a2e7a3f639"
 dependencies = [
  "bytemuck",
  "glifo 0.3.0",
@@ -11755,7 +11755,7 @@ dependencies = [
 [[package]]
 name = "vello_sparse_shaders"
 version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?rev=30322fbc330a0627f4b486c97e3c0fe8946606ba#30322fbc330a0627f4b486c97e3c0fe8946606ba"
+source = "git+https://github.com/lexoliu/vello?rev=d68d9e9825bcd1ffee762323881c13a2e7a3f639#d68d9e9825bcd1ffee762323881c13a2e7a3f639"
 dependencies = [
  "wesl",
  "wesl-macros",
