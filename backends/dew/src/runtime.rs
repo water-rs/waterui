@@ -69,16 +69,14 @@ impl<B: Board> DewRuntime<B> {
     ///
     /// `build_root` is invoked exactly once, on the first pump.
     ///
-    /// Dew's built-in type scale is installed into `env` for every font slot it
-    /// does not already carry, so an app that installs no theme still renders
-    /// text; see [`crate::theme::install_default_fonts`].
+    /// `env` needs no theme: [`DewRenderer::render_tree`] installs dew's
+    /// built-in type scale for every font slot it does not already carry.
     pub fn new(
         mut board: B,
-        mut env: Environment,
+        env: Environment,
         band_height: u32,
         build_root: impl Fn() -> AnyView + 'static,
     ) -> Self {
-        crate::theme::install_default_fonts(&mut env);
         let render_settings = board.render_settings();
         let fonts = board.fonts();
         let signals = waterui_backend_core::frame_signals::FrameSignals::new(board.now());
