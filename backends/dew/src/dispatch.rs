@@ -40,12 +40,12 @@ use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_navigation::{NavigationSplitLayout, NavigationStack, NavigationView, TabsLayout};
 use waterui_shape::{ClipShape, ResolvedShape};
-use waterui_text::{TextConfig, styled::StyledStr};
+use waterui_text::{TextConfig, font::ResolvedFont, styled::StyledStr};
 
 use crate::accessibility::{AccessibilityBuilder, ActionTarget};
 use crate::display_list::DisplayList;
 use crate::pointer::{PointerRouter, PointerTargetHandle};
-use crate::text::{DewState, TextLayoutCache, TextLayoutKey};
+use crate::text::{DewState, TextLayoutCache, TextLayoutKey, TextRevision};
 use crate::theme;
 use crate::views;
 
@@ -641,6 +641,7 @@ fn build_unmeasured_node(
         let config = text.into_inner();
         return Box::new(TextNode {
             content: WatchedSignal::new(config.content, renderer.signals()),
+            font: theme::watch_body_font(env, renderer.signals()),
             env: env.clone(),
             cache: RefCell::new(TextLayoutCache::default()),
             line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
@@ -653,6 +654,7 @@ fn build_unmeasured_node(
                 .downcast::<Str>()
                 .expect("dew Str downcast must match its type id"),
             cache: RefCell::new(TextLayoutCache::default()),
+            font: theme::watch_body_font(env, renderer.signals()),
             env: env.clone(),
             accessibility_id: renderer.allocate_accessibility_id(),
         });
@@ -957,6 +959,9 @@ fn render_color(renderer: &mut DewRenderer, ctx: RenderContext, color: ResolvedC
 
 struct TextNode {
     content: WatchedSignal<Computed<StyledStr>>,
+    /// The theme body font spans without their own font shape at; watched so a
+    /// reactive type scale invalidates the layout and asks for a frame.
+    font: WatchedSignal<Computed<ResolvedFont>>,
     env: Environment,
     cache: RefCell<TextLayoutCache>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
@@ -964,10 +969,17 @@ struct TextNode {
     accessibility_id: NodeId,
 }
 
+impl TextNode {
+    /// Everything that re-shapes this node: its content and the theme font.
+    fn revision(&self) -> TextRevision {
+        TextRevision::new(self.content.revision(), self.font.revision())
+    }
+}
+
 impl DewNode for TextNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
         let foreground = theme::foreground(&self.env);
-        let revision = self.content.revision();
+        let revision = self.revision();
         let mut cache = self.cache.borrow_mut();
         let ((width, height), outcome) = cache.measure(
             revision,
@@ -992,7 +1004,7 @@ impl DewNode for TextNode {
         // own foreground has to be painted in it, and a render that disagreed
         // with the measurement would re-shape the text a second time.
         let foreground = theme::foreground(&self.env);
-        let revision = self.content.revision();
+        let revision = self.revision();
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         let outcome = self.cache.borrow_mut().emit(
@@ -1028,6 +1040,9 @@ impl DewNode for TextNode {
 struct StrNode {
     value: Str,
     cache: RefCell<TextLayoutCache>,
+    /// The theme body font this leaf shapes at — the same slot `text("…")`
+    /// resolves, watched for the same reason.
+    font: WatchedSignal<Computed<ResolvedFont>>,
     env: Environment,
     accessibility_id: NodeId,
 }
@@ -1037,13 +1052,16 @@ impl DewNode for StrNode {
         let foreground = theme::foreground(&self.env);
         let mut cache = self.cache.borrow_mut();
         let ((width, height), outcome) = cache.measure(
-            0,
+            TextRevision::font_only(self.font.revision()),
             TextLayoutKey::new(proposal.width, foreground),
             None,
             || {
-                state
-                    .borrow_mut()
-                    .build_plain_layout(&self.value, proposal.width, foreground)
+                state.borrow_mut().build_plain_layout(
+                    &self.value,
+                    &self.env,
+                    proposal.width,
+                    foreground,
+                )
             },
         );
         let dimensions = ViewDimensions::new(Size::new(width, height));
@@ -1056,16 +1074,18 @@ impl DewNode for StrNode {
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         let outcome = self.cache.borrow_mut().emit(
-            0,
+            TextRevision::font_only(self.font.revision()),
             TextLayoutKey::new(max_width, foreground),
             None,
             transform,
             &mut renderer.list,
             || {
-                renderer
-                    .state
-                    .borrow_mut()
-                    .build_plain_layout(&self.value, max_width, foreground)
+                renderer.state.borrow_mut().build_plain_layout(
+                    &self.value,
+                    &self.env,
+                    max_width,
+                    foreground,
+                )
             },
         );
         renderer.state.borrow_mut().record_layout(outcome);
