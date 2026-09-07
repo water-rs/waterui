@@ -23,7 +23,7 @@ waterui-navigation.workspace = true
 waterui-text.workspace = true
 waterui-icon.workspace = true
 waterui-controls.workspace = true
-waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui-graphics = { workspace = true, features = ["gpu", "cpu-scene"] }
 waterui-shape.workspace = true
 waterui-form.workspace = true
 waterui-webview = { workspace = true, optional = true }

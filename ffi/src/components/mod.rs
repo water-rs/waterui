@@ -37,6 +37,7 @@ pub use platform::{dynamic, icon, webview};
 pub use typography::text;
 #[cfg(all(feature = "android-jni", feature = "gpu"))]
 pub(crate) use visual::gpu_runtime;
+pub use visual::picture;
 pub use visual::view_renderer;
 #[cfg(all(feature = "c-api", feature = "gpu"))]
 pub use visual::{applied_filter, view_effect};
