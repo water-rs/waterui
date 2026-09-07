@@ -248,6 +248,14 @@ impl DewRenderer {
         self.signals.clone()
     }
 
+    /// The application's font collection: the one this renderer shapes text
+    /// with, which the runtime installs into the environment so a self-drawn
+    /// component that typesets text itself uses the same faces.
+    #[must_use]
+    pub fn fonts(&self) -> waterui_text::FontCollection {
+        self.state.borrow().fonts()
+    }
+
     pub(crate) const fn set_accessibility_enabled(&mut self, enabled: bool) {
         self.accessibility_enabled = enabled;
     }

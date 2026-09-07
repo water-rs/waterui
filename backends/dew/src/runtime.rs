@@ -83,6 +83,11 @@ impl<B: Board> DewRuntime<B> {
         let (width, height) = board.display().size();
         let mut renderer = DewRenderer::new(signals, fonts);
         renderer.set_accessibility_enabled(board.supports_accessibility());
+        // The board's fonts, shared rather than duplicated: a self-drawn
+        // component that typesets text itself reads this collection out of the
+        // environment and shapes against the very faces the board supplied.
+        let mut env = env;
+        renderer.fonts().install(&mut env);
         Self {
             renderer,
             painter: Painter::new(render_settings),

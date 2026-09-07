@@ -224,10 +224,11 @@ pub struct HeadlessRuntime {
     /// window, and each popup it later vends. Requesting a device per window
     /// made a runtime that opens a popup pay for two.
     gpu: OffscreenGpuContext,
-    /// Popup windows get their own renderer, which must shape with the same
-    /// fonts as the main one — deterministic bundled fonts under a test host,
-    /// the app's resource fonts everywhere else.
-    install_fonts: fn(&mut HydrolysisRenderer),
+    /// The application's font collection, the same one the environment carries.
+    /// Popup windows get their own renderer, which is seeded from this so it
+    /// shapes with the same faces as the main one — deterministic bundled fonts
+    /// under a test host, the app's resource fonts everywhere else.
+    fonts: FontCollection,
     local_executor: HeadlessMainThreadExecutor,
     /// Declared last so it drops after the runtime state above: consumes any
     /// still-queued spawned work while this thread's locals are intact, so no
@@ -279,7 +280,7 @@ impl HeadlessRuntime {
             content,
             width,
             height,
-            load_native_resource_fonts,
+            native_resource_fonts,
         )
     }
 
@@ -314,7 +315,7 @@ impl HeadlessRuntime {
             content,
             width,
             height,
-            super::fonts::install_deterministic_test_fonts,
+            super::fonts::deterministic_test_fonts,
         )
     }
 
@@ -342,7 +343,7 @@ impl HeadlessRuntime {
             content,
             width,
             height,
-            super::fonts::install_deterministic_test_fonts,
+            super::fonts::deterministic_test_fonts,
         )
     }
 
@@ -352,7 +353,7 @@ impl HeadlessRuntime {
         content: AnyViewBuilder<AnyView>,
         width: u32,
         height: u32,
-        install_fonts: fn(&mut HydrolysisRenderer),
+        build_fonts: fn() -> parley::FontContext,
     ) -> Self {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
@@ -367,6 +368,12 @@ impl HeadlessRuntime {
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::default(),
         ));
+        // The application's fonts, built once. Every window's renderer is
+        // seeded from this collection, and a self-drawn component that typesets
+        // text itself reads it out of the environment instead of enumerating
+        // the system's fonts for itself.
+        let fonts = FontCollection::new(build_fonts());
+        fonts.clone().install(&mut env);
 
         // Headless binaries (preview, tests) have no platform runner to install
         // a tracing subscriber; honor `RUST_LOG` here so they stay debuggable.
@@ -405,7 +412,7 @@ impl HeadlessRuntime {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.adapter(), surface.device())
         };
-        install_fonts(&mut renderer);
+        super::seed_renderer(&mut renderer, &fonts);
 
         Self {
             env,
@@ -421,7 +428,7 @@ impl HeadlessRuntime {
             ),
             pending_window_queue,
             popup_windows: Vec::new(),
-            install_fonts,
+            fonts,
             _executor_teardown: DrainExecutorOnDrop(local_executor.clone()),
             _gpu_reclaim: ReclaimGpuOnDrop(gpu.clone()),
             gpu,
@@ -444,7 +451,7 @@ impl HeadlessRuntime {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.adapter(), surface.device())
         };
-        (self.install_fonts)(&mut renderer);
+        super::seed_renderer(&mut renderer, &self.fonts);
         RuntimeWindow::new(
             window,
             platform,

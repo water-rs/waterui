@@ -16,8 +16,15 @@ waterui-graphics.workspace = true
 waterui-layout.workspace = true
 waterui-str.workspace = true
 nami.workspace = true
-# `system` brings in the font collection the math family is looked up through.
-parley = { workspace = true, features = ["system"] }
+# The math family is looked up in the application's shared font collection,
+# which the host installs and this crate only reads: `parley` is here for the
+# `FontContext` that collection hands out, not to discover fonts.
+parley = { workspace = true, features = ["std"] }
+# `system-fonts` is what lets a host with no font stack of its own — the native
+# Apple, Android and GTK backends — install a collection at all. A formula is
+# typeset from real faces, so a build carrying this component must be able to
+# reach them.
+waterui-text = { workspace = true, features = ["system-fonts"] }
 kurbo.workspace = true
 peniko.workspace = true
 ttf-parser.workspace = true
