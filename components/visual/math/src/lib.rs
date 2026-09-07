@@ -31,7 +31,7 @@
 //! use waterui_math::{latex, mathml};
 //!
 //! let formula = latex::parse(r"\frac{a}{b}")?;
-//! let markup = mathml::to_mathml(&formula, MathStyle::Display)?;
+//! let markup = mathml::to_mathml(&formula, MathStyle::Display);
 //!
 //! assert!(markup.contains("<mfrac>"));
 //! assert!(markup.contains(r#"display="block""#));
