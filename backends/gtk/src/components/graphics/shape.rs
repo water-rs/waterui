@@ -12,6 +12,7 @@ use waterui_graphics::color::ResolvedColor;
 
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
+use crate::shape_geometry::{Corner, RoundedRect, ShapeGeometry, resolve};
 use crate::util::{resolved_color_to_srgba_f64, store_watcher_guard, subscribe_then_get};
 
 impl GtkComponent for Native<ResolvedShape> {
@@ -61,11 +62,9 @@ impl GtkComponent for Native<ResolvedShape> {
 
 /// Appends the shape's outline, resolved against the size it is drawn at.
 ///
-/// The path commands are in unit space, so a corner traced from them stretches
-/// with the rect: a rounded rectangle far wider than it is tall gets flat
-/// elliptical corners sweeping the whole edge. The kind carries what the
-/// commands cannot — a corner radius as a fraction of the *shorter* side — and
-/// only a custom path has nothing better than the commands to describe it.
+/// The geometry comes from [`crate::shape_geometry`], which is also what the
+/// clip widget resolves through, so a clipped fill and its clip agree. Only a
+/// custom path falls back to the unit-space commands.
 fn append_shape(
     cr: &gtk4::cairo::Context,
     kind: ShapeKind,
@@ -73,39 +72,9 @@ fn append_shape(
     width: f64,
     height: f64,
 ) {
-    let shorter = width.min(height);
-    let limit = shorter / 2.0;
-    let scaled = |radius: f32| (f64::from(radius) * shorter).clamp(0.0, limit);
-    match kind {
-        ShapeKind::Rect => cr.rectangle(0.0, 0.0, width, height),
-        // A circle is inscribed in the bounds: centred, its diameter the
-        // shorter side.
-        ShapeKind::Circle => append_ellipse(cr, width / 2.0, height / 2.0, limit, limit),
-        ShapeKind::Ellipse => {
-            append_ellipse(cr, width / 2.0, height / 2.0, width / 2.0, height / 2.0);
-        }
-        ShapeKind::RoundedRect { corner_radius } => {
-            let radius = scaled(corner_radius);
-            append_rounded_rect(cr, width, height, [radius; 4]);
-        }
-        ShapeKind::UnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-        } => append_rounded_rect(
-            cr,
-            width,
-            height,
-            [
-                scaled(top_left),
-                scaled(top_right),
-                scaled(bottom_right),
-                scaled(bottom_left),
-            ],
-        ),
-        ShapeKind::Capsule => append_rounded_rect(cr, width, height, [limit; 4]),
-        ShapeKind::CustomPath => {
+    match resolve(kind, width, height) {
+        ShapeGeometry::Rounded(rect) => append_rounded_rect(cr, &rect),
+        ShapeGeometry::CustomPath => {
             for command in commands {
                 apply_path_command(cr, *command, width, height);
             }
@@ -113,52 +82,85 @@ fn append_shape(
     }
 }
 
-/// Traces an axis-aligned ellipse, which cairo has no primitive for.
-fn append_ellipse(
-    cr: &gtk4::cairo::Context,
-    center_x: f64,
-    center_y: f64,
-    radius_x: f64,
-    radius_y: f64,
-) {
-    cr.save().expect("failed to save the cairo state");
-    cr.translate(center_x, center_y);
-    cr.scale(radius_x.max(f64::EPSILON), radius_y.max(f64::EPSILON));
-    cr.arc(0.0, 0.0, 1.0, 0.0, core::f64::consts::TAU);
-    cr.restore().expect("failed to restore the cairo state");
-}
-
-/// Traces a rounded rectangle from four circular corner radii, clockwise from
-/// the top left.
-fn append_rounded_rect(
-    cr: &gtk4::cairo::Context,
-    width: f64,
-    height: f64,
-    [top_left, top_right, bottom_right, bottom_left]: [f64; 4],
-) {
+/// Traces a rounded rectangle, clockwise from the top left.
+///
+/// A circle or an ellipse arrives here as a rect whose corner radii are half its
+/// own width and height, so the four arcs meet with no straight edge between
+/// them and the same routine draws every non-custom shape.
+fn append_rounded_rect(cr: &gtk4::cairo::Context, rect: &RoundedRect) {
     use core::f64::consts::{FRAC_PI_2, PI};
-    cr.move_to(top_left, 0.0);
-    cr.line_to(width - top_right, 0.0);
-    cr.arc(width - top_right, top_right, top_right, -FRAC_PI_2, 0.0);
-    cr.line_to(width, height - bottom_right);
-    cr.arc(
-        width - bottom_right,
-        height - bottom_right,
+
+    let RoundedRect {
+        x: left,
+        y: top,
+        width,
+        height,
+        corners: [top_left, top_right, bottom_right, bottom_left],
+    } = *rect;
+    let right = left + width;
+    let bottom = top + height;
+
+    cr.move_to(left + top_left.horizontal, top);
+    cr.line_to(right - top_right.horizontal, top);
+    append_corner_arc(
+        cr,
+        right - top_right.horizontal,
+        top + top_right.vertical,
+        top_right,
+        -FRAC_PI_2,
+        0.0,
+    );
+    cr.line_to(right, bottom - bottom_right.vertical);
+    append_corner_arc(
+        cr,
+        right - bottom_right.horizontal,
+        bottom - bottom_right.vertical,
         bottom_right,
         0.0,
         FRAC_PI_2,
     );
-    cr.line_to(bottom_left, height);
-    cr.arc(
-        bottom_left,
-        height - bottom_left,
+    cr.line_to(left + bottom_left.horizontal, bottom);
+    append_corner_arc(
+        cr,
+        left + bottom_left.horizontal,
+        bottom - bottom_left.vertical,
         bottom_left,
         FRAC_PI_2,
         PI,
     );
-    cr.line_to(0.0, top_left);
-    cr.arc(top_left, top_left, top_left, PI, PI + FRAC_PI_2);
+    cr.line_to(left, top + top_left.vertical);
+    append_corner_arc(
+        cr,
+        left + top_left.horizontal,
+        top + top_left.vertical,
+        top_left,
+        PI,
+        PI + FRAC_PI_2,
+    );
     cr.close_path();
+}
+
+/// Traces one corner as an elliptical arc, which cairo can only express by
+/// scaling a unit circle.
+fn append_corner_arc(
+    cr: &gtk4::cairo::Context,
+    center_x: f64,
+    center_y: f64,
+    corner: Corner,
+    start: f64,
+    end: f64,
+) {
+    if corner.horizontal <= 0.0 || corner.vertical <= 0.0 {
+        // A square corner: the two edges already meet at the centre point.
+        cr.line_to(center_x, center_y);
+        return;
+    }
+
+    cr.save().expect("failed to save the cairo state");
+    cr.translate(center_x, center_y);
+    cr.scale(corner.horizontal, corner.vertical);
+    cr.arc(0.0, 0.0, 1.0, start, end);
+    cr.restore().expect("failed to restore the cairo state");
 }
 
 /// Appends one resolved path command to the cairo context.
