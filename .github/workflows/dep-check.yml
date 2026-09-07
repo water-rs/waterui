@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Detect project type
         id: detect
@@ -40,8 +42,18 @@ jobs:
         if: steps.detect.outputs.type == 'rust'
         run: |
           cargo install cargo-outdated --locked
-          cargo outdated -R --exit-code 1 > outdated.txt 2>&1 || true
+          # Exit code 1 means "something is outdated"; anything else is a
+          # tooling failure and must fail the job instead of being filed as
+          # the outdated list.
+          set +e
+          cargo outdated -R --exit-code 1 > outdated.txt 2>&1
+          rc=$?
+          set -e
           cat outdated.txt
+          if [ "$rc" -gt 1 ]; then
+            echo "cargo outdated failed with exit code $rc" >&2
+            exit "$rc"
+          fi
 
       - name: Setup Node
         if: steps.detect.outputs.type == 'node'
