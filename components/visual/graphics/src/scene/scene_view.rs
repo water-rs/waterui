@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::rc::Rc;
+use alloc::string::String;
 use core::fmt;
 
 use nami::Signal;
@@ -65,6 +66,25 @@ pub trait SceneContent: 'static {
     /// It must be finite and positive on both axes; a drawing with no honest size
     /// answers `None` instead of a degenerate one.
     fn intrinsic_size(&self) -> Option<Size> {
+        None
+    }
+
+    /// What this drawing says, for a screen reader.
+    ///
+    /// A scene reaches the screen as anonymous fills and glyph runs, so the node
+    /// a backend emits for the leaf is the only place its content can be
+    /// announced at all, and the backend has nothing to read it from but this. A
+    /// formula answers with its `MathML`, a chart with what it plots; content
+    /// that is decoration, or that cannot say anything true about itself,
+    /// answers `None` — the default — and the node stays unnamed.
+    ///
+    /// This is the name the content *offers*, not the name it imposes: the
+    /// application's own `.a11y_label(…)` wins over it wherever both exist,
+    /// because the application knows what the drawing is for and the content
+    /// only knows what it drew. It is read on every emission rather than once,
+    /// so content whose drawing follows a signal answers with what it currently
+    /// draws.
+    fn accessibility_label(&self) -> Option<String> {
         None
     }
 }
@@ -180,6 +200,15 @@ impl SceneView {
     #[must_use]
     pub fn intrinsic_size(&self) -> Option<Size> {
         self.content.intrinsic_size()
+    }
+
+    /// What the wrapped content says about itself, for a screen reader.
+    ///
+    /// See [`SceneContent::accessibility_label`]; a backend emitting the leaf's
+    /// semantic node offers this as the node's default name.
+    #[must_use]
+    pub fn accessibility_label(&self) -> Option<String> {
+        self.content.accessibility_label()
     }
 
     /// Takes ownership of the wrapped scene content.
