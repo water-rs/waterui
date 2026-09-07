@@ -1771,6 +1771,25 @@ impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
     }
 }
 
+/// `WuiPicture -> PictureStruct(picturePtr, width, height)`
+impl ToJavaStruct for crate::components::picture::WuiPicture {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/PictureStruct"))
+            .expect("PictureStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JFF)V"),
+            &[
+                JValue::Long(self.picture as jlong),
+                JValue::Float(self.width),
+                JValue::Float(self.height),
+            ],
+        )
+        .expect("Failed to create PictureStruct")
+    }
+}
+
 /// `*mut WuiWebView -> WebViewStruct(webviewPtr)`
 impl ToJavaStruct for *mut crate::components::webview::WuiWebView {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
