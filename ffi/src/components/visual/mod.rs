@@ -6,6 +6,7 @@ pub mod gpu_runtime;
 pub mod gpu_surface;
 #[cfg(feature = "gpu")]
 pub mod gpu_surface_input;
+pub mod picture;
 #[cfg(all(feature = "c-api", feature = "gpu"))]
 pub mod view_effect;
 pub mod view_renderer;

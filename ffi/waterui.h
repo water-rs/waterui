@@ -1560,6 +1560,14 @@ typedef struct Computed_ResolvedFont Computed_ResolvedFont;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_RgbaBitmap Computed_RgbaBitmap;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_Size Computed_Size;
 
 /**
@@ -1776,6 +1784,11 @@ typedef struct WuiMoveAction WuiMoveAction;
 typedef struct WuiOnEventHandler WuiOnEventHandler;
 
 /**
+ * Opaque handle owning a `Picture`.
+ */
+typedef struct WuiPictureHandle WuiPictureHandle;
+
+/**
  *Opaque FFI handle owning a `SharedAction<()>`.
  */
 typedef struct WuiSharedAction WuiSharedAction;
@@ -1937,6 +1950,14 @@ typedef struct WuiWatcher_ResolvedColor WuiWatcher_ResolvedColor;
  * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
  */
 typedef struct WuiWatcher_ResolvedFont WuiWatcher_ResolvedFont;
+
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
+typedef struct WuiWatcher_RgbaBitmap WuiWatcher_RgbaBitmap;
 
 /**
  * FFI-owned wrapper around a native watcher callback.
@@ -6927,6 +6948,60 @@ typedef struct WuiSurfaceInputEvent {
 } WuiSurfaceInputEvent;
 
 /**
+ * FFI representation of a `Picture` view: the handle plus its size in points.
+ */
+typedef struct WuiPicture {
+  /**
+   * Owned handle; release it with `waterui_drop_picture`.
+   */
+  struct WuiPictureHandle *picture;
+  /**
+   * Width in points.
+   */
+  float width;
+  /**
+   * Height in points.
+   */
+  float height;
+} WuiPicture;
+
+/**
+ * Premultiplied RGBA8 pixels, `width * height * 4` bytes, owned by the
+ * receiver until `waterui_drop_bitmap`.
+ */
+typedef struct WuiBitmap {
+  /**
+   * Width in pixels.
+   */
+  uint32_t width;
+  /**
+   * Height in pixels.
+   */
+  uint32_t height;
+  /**
+   * The pixel bytes.
+   */
+  uint8_t *data;
+  /**
+   * Number of pixel bytes.
+   */
+  uintptr_t len;
+  /**
+   * Allocation size behind `data`; `waterui_drop_bitmap` needs it back.
+   */
+  uintptr_t capacity;
+} WuiBitmap;
+
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
+typedef struct Computed_RgbaBitmap WuiComputed_RgbaBitmap;
+
+/**
  * FFI representation of output size.
  */
 typedef enum WuiOutputSize_Tag {
@@ -11464,6 +11539,89 @@ bool waterui_gpu_surface_send_input_event(struct WuiGpuSurfaceState *state,
  * and `out` must point to writable storage for one [`WuiRect`].
  */
 bool waterui_gpu_surface_ime_caret(const struct WuiGpuSurfaceState *state, struct WuiRect *out);
+
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
+struct WuiPicture waterui_force_as_picture(struct WuiAnyView *view);
+
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
+struct WuiTypeId waterui_picture_id(void);
+
+/**
+ * Releases a bitmap handed out by a bitmap computed.
+ *
+ * # Safety
+ *
+ * `bitmap` must come from this library and must not be used afterwards.
+ */
+void waterui_drop_bitmap(struct WuiBitmap bitmap);
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiBitmap waterui_read_computed_bitmap(const WuiComputed_RgbaBitmap *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_bitmap(const WuiComputed_RgbaBitmap *computed,
+                                                      struct WuiWatcher_RgbaBitmap *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_bitmap(WuiComputed_RgbaBitmap *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_RgbaBitmap *waterui_new_watcher_bitmap(void *data,
+                                                         void (*call)(void*,
+                                                                      struct WuiBitmap,
+                                                                      struct WuiWatcherMetadata*),
+                                                         void (*drop)(void*));
+
+/**
+ * The picture rasterised at `scale` pixels per point, as a signal.
+ *
+ * It re-rasterises whenever the drawing changes. Drop it with
+ * `waterui_drop_computed_bitmap`, and ask again when the display scale
+ * changes.
+ *
+ * # Safety
+ *
+ * `picture` must be a live handle from `waterui_force_as_picture`.
+ */
+WuiComputed_RgbaBitmap *waterui_picture_bitmap(const struct WuiPictureHandle *picture, float scale);
+
+/**
+ * Releases a picture handle.
+ *
+ * # Safety
+ *
+ * `picture` must come from `waterui_force_as_picture` and must not be used
+ * afterwards.
+ */
+void waterui_drop_picture(struct WuiPictureHandle *picture);
 
 /**
  * # Safety
