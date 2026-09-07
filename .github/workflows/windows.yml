@@ -1,21 +1,14 @@
 name: Windows
 
 # The Windows test leg is split out of `test.yml` because it needs platform-
-# specific exclusions and compile-only coverage. It is still a required
-# per-change signal: the workflow runs on the same branches and pull requests
-# as the main CI workflow, and every verification command is gating.
+# specific exclusions and compile-only coverage. It is a nightly platform
+# (#379): `nightly.yml` calls it once a day against `dev`, beside the full
+# `test.yml` matrix, and every verification command in it is gating there.
+# It left the pull-request path because its three jobs were 43-65 minutes of
+# cold build on the scarcest runners for every change, whatever it touched.
 
 on:
-  # Integration branches only: a branch that also has a PR would otherwise run
-  # the whole workflow twice for one commit.
-  push:
-    branches: [main, dev]
-  pull_request:
-    branches: ["**"]
-  # Keep a daily default-branch run to catch hosted-runner and toolchain drift
-  # even when the repository itself has not changed.
-  schedule:
-    - cron: "23 7 * * *"
+  workflow_call:
   workflow_dispatch:
 
 permissions:
