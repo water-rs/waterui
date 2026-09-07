@@ -537,6 +537,13 @@ struct MeshGpuResources {
     clippy::too_many_lines,
     reason = "mesh pipeline construction is one ordered graph of layouts, buffers, bindings, and validation"
 )]
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "holds the `GpuContext` and the buffers it created across the error-scope await; on the WebGPU backend every wgpu handle is a JS object kept in `Rc<RefCell<_>>`, and the same future is `Send` on every other target"
+    )
+)]
 async fn create_mesh_resources(ctx: &GpuContext<'_>, label_prefix: &str) -> MeshGpuResources {
     let (vertex_shader, fragment_shader, bind_group_layout) = single_bind_group_render_stages(
         &MESH_GRADIENT,

@@ -194,6 +194,10 @@ fn process_exists(pid: u32) -> bool {
 }
 
 #[cfg(not(any(unix, windows)))]
+#[expect(
+    clippy::missing_const_for_fn,
+    reason = "this arm answers from a constant only because the target has no process table to ask; the `unix` and `windows` arms call into the OS, and `process_exists` has one signature on all three. Marking just this one `const` would propagate to `ProcessHandle::is_live` and make a public method `const` on some targets and not others."
+)]
 fn process_exists(_pid: u32) -> bool {
     // Without a cheap portable check, assume the process is alive and let the
     // connection attempt be the thing that fails.
