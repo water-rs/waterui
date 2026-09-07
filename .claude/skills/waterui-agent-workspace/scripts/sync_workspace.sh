@@ -116,6 +116,7 @@ main() {
   workspace_root="$(ensure_workspace_context)"
   workspace_contains_source_layout "$workspace_root"
   ensure_source_submodules_ready "$source_root"
+  ensure_canonical_submodule_lineage "$source_root"
   activate_all_submodules "$source_root"
   activate_all_submodules "$workspace_root"
   ensure_no_integration_lock "$source_root"
