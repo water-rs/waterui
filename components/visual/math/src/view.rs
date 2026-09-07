@@ -416,7 +416,7 @@ impl View for Math {
 
         let brush = color.map_or_else(
             || Brush::Solid(PenikoColor::BLACK),
-            |signal| Brush::Solid(to_peniko(&signal.get())),
+            |signal| Brush::Solid(signal.get().to_peniko()),
         );
 
         let content = MathContent::new(
@@ -457,25 +457,6 @@ fn accessibility_markup(source: &Str, style: MathStyle) -> String {
             String::from(source.as_str())
         }
     }
-}
-
-fn to_peniko(color: &ResolvedColor) -> PenikoColor {
-    let srgb = color.to_srgb();
-    let channel = |value: f32| {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "clamped to 0..=255 before the cast"
-        )]
-        let byte = (value * 255.0).clamp(0.0, 255.0).round() as u8;
-        byte
-    };
-    PenikoColor::from_rgba8(
-        channel(srgb.red),
-        channel(srgb.green),
-        channel(srgb.blue),
-        channel(color.opacity),
-    )
 }
 
 #[cfg(test)]
