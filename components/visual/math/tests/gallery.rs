@@ -27,6 +27,7 @@ use waterui_graphics::{
 };
 use waterui_math::ast::MathStyle;
 use waterui_math::view::{DEFAULT_MATH_FAMILY, MathContent};
+use waterui_text::FontCollection;
 
 /// Paints an opaque ground under the formula.
 ///
@@ -100,6 +101,12 @@ fn renders_the_formula_gallery_on_both_scene_engines() {
         .expect("the formula gallery requires a working GPU runtime");
     let size = OffscreenSize::try_from_pixels(560, 200).expect("gallery size must be valid");
 
+    // The one collection the gallery typesets against, standing in for the one
+    // a host installs. Discovering the system's fonts is the expensive part, so
+    // it happens here rather than per formula — which is the whole point of the
+    // collection being shared.
+    let fonts = FontCollection::system();
+
     let mut written = Vec::new();
     for (name, source) in GALLERY {
         for (engine, engine_name) in [
@@ -107,6 +114,7 @@ fn renders_the_formula_gallery_on_both_scene_engines() {
             (SceneEngine::Hybrid, "hybrid"),
         ] {
             let content = MathContent::new(
+                fonts.clone(),
                 waterui_str::Str::from(*source),
                 48.0,
                 MathStyle::Display,

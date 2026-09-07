@@ -73,7 +73,10 @@ waterui-navigation.workspace = true
 # Default features off: the shape crate's default is a wgpu-backed morph
 # renderer, and dew's graph is GPU-free by design.
 waterui-shape = { workspace = true, default-features = false }
-waterui-text.workspace = true
+# `font-collection` for the one `parley` collection this renderer shapes with
+# and installs into the environment. Not `system-fonts`: the faces come from
+# the board, and a firmware build has no system font source at all.
+waterui-text = { workspace = true, features = ["font-collection"] }
 nami.workspace = true
 # FrameWork and ChipBudget serialize into the performance report. The
 # workspace pins serde without default features, which suits a firmware graph.

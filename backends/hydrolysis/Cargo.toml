@@ -22,7 +22,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 nami.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
 shaderloom.workspace = true
-waterui-text.workspace = true
+# `font-collection` for the one `parley` collection this runner builds and
+# installs into the environment; the faces come from the resource loader and
+# the system source `parley/system` provides, so `system-fonts` is not needed.
+waterui-text = { workspace = true, features = ["font-collection"] }
 waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-map.workspace = true

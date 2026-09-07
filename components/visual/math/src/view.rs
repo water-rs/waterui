@@ -13,6 +13,7 @@ use waterui_graphics::color::{Color, ForegroundColor, ResolvedColor};
 use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView, invalidate_on_change};
 use waterui_layout::frame::Frame;
 use waterui_str::Str;
+use waterui_text::FontCollection;
 
 use crate::ast::{MathItem, MathStyle};
 use crate::font::MathFont;
@@ -203,6 +204,10 @@ pub fn resolve_font(fonts: &mut FontContext, family: &str) -> Result<FontData, M
 /// [`Math`] wraps this, and a backend that wants to draw a formula into a scene
 /// it already owns can use it directly rather than going through a view.
 pub struct MathContent {
+    /// The application's font collection, installed by the host and shared with
+    /// every other component that shapes or typesets text. The math family is
+    /// looked up in it; this content never builds one of its own.
+    fonts: FontCollection,
     source: Computed<Str>,
     style: MathStyle,
     font_size: f32,
@@ -216,7 +221,7 @@ pub struct MathContent {
     source_guard: Option<BoxWatcherGuard>,
 }
 
-/// The font collection and the last measurement, shared by drawing and layout.
+/// The resolved face and the last measurement, shared by drawing and layout.
 ///
 /// Measuring a formula *is* laying it out, and a container probes a child
 /// several times in one pass, so the answer is kept. A plain `RefCell` is the
@@ -224,7 +229,6 @@ pub struct MathContent {
 /// thread that draws.
 #[derive(Default)]
 struct MathCache {
-    fonts: Option<FontContext>,
     font: Option<FontData>,
     /// The formula last measured and the box it occupies.
     measured: Option<(Str, Size)>,
@@ -234,9 +238,13 @@ impl MathContent {
     /// Scene content drawing `source` at `font_size` in `style`.
     ///
     /// The family must carry an OpenType `MATH` table;
-    /// [`DEFAULT_MATH_FAMILY`] is the one this crate asks for by default.
+    /// [`DEFAULT_MATH_FAMILY`] is the one this crate asks for by default. It is
+    /// looked up in `fonts`, the collection the host installed for the whole
+    /// application — read it out of the environment with
+    /// [`FontCollection::from_env`] rather than building one here.
     #[must_use]
     pub fn new(
+        fonts: FontCollection,
         source: impl IntoComputed<Str>,
         font_size: f32,
         style: MathStyle,
@@ -244,6 +252,7 @@ impl MathContent {
         brush: Brush,
     ) -> Self {
         Self {
+            fonts,
             source: source.into_computed(),
             style,
             font_size,
@@ -263,9 +272,10 @@ impl MathContent {
     fn font(&self) -> Option<FontData> {
         let mut cache = self.cache.borrow_mut();
         if cache.font.is_none() {
-            let cache = &mut *cache;
-            let fonts = cache.fonts.get_or_insert_with(FontContext::new);
-            match resolve_font(fonts, self.family.as_str()) {
+            match self
+                .fonts
+                .use_fonts(|fonts| resolve_font(fonts, self.family.as_str()))
+            {
                 Ok(font) => cache.font = Some(font),
                 Err(error) => {
                     tracing::error!(%error, "math formula has no usable font");
@@ -294,8 +304,8 @@ impl SceneContent for MathContent {
             return false;
         }
 
-        // The font collection is discovered once and kept for the life of this
-        // surface, which is where per-surface resources belong.
+        // The face is resolved out of the application's collection once and
+        // kept for the life of this surface.
         let Some(font) = self.font() else {
             return false;
         };
@@ -388,6 +398,12 @@ impl SceneContent for MathContent {
 }
 
 impl View for Math {
+    /// # Panics
+    ///
+    /// Panics when the host installed no [`FontCollection`] in the environment.
+    /// A formula cannot be typeset without one, and building a second
+    /// collection here is the per-view font enumeration this component was
+    /// changed to stop doing.
     fn body(self, env: &Environment) -> impl View {
         let color = self
             .color
@@ -403,7 +419,14 @@ impl View for Math {
             |signal| Brush::Solid(to_peniko(&signal.get())),
         );
 
-        let content = MathContent::new(self.source, self.font_size, self.style, self.family, brush);
+        let content = MathContent::new(
+            FontCollection::from_env(env),
+            self.source,
+            self.font_size,
+            self.style,
+            self.family,
+            brush,
+        );
 
         // The formula's accessibility node is the leaf's own: `MathContent`
         // answers `SceneContent::accessibility_label` with the markup, which
@@ -462,10 +485,12 @@ mod tests {
 
     use nami::Binding;
     use peniko::{Brush, Color as PenikoColor};
+    use waterui_core::{Environment, View};
     use waterui_graphics::{SceneContent, SceneInvalidator};
     use waterui_str::Str;
+    use waterui_text::FontCollection;
 
-    use super::{DEFAULT_MATH_FAMILY, MathContent, accessibility_markup};
+    use super::{DEFAULT_MATH_FAMILY, Math, MathContent, accessibility_markup};
     use crate::ast::MathStyle;
     use crate::{latex, mathml};
 
@@ -479,12 +504,22 @@ mod tests {
 
     fn content(source: &Binding<Str>) -> MathContent {
         MathContent::new(
+            FontCollection::system(),
             source.clone(),
             18.0,
             MathStyle::Text,
             DEFAULT_MATH_FAMILY,
             Brush::Solid(PenikoColor::BLACK),
         )
+    }
+
+    /// A formula built where no host installed a collection says so, instead of
+    /// enumerating the system's fonts on its own — which is what it used to do,
+    /// once per view.
+    #[test]
+    #[should_panic(expected = "no font collection is installed in the environment")]
+    fn a_formula_without_a_font_collection_names_the_host() {
+        let _ = Math::new(Str::from_static("x")).body(&Environment::new());
     }
 
     /// The accessibility payload is the converter's markup, never a blank.
