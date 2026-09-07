@@ -68,12 +68,17 @@ impl<B: Board> DewRuntime<B> {
     /// into bands at most `band_height` rows tall.
     ///
     /// `build_root` is invoked exactly once, on the first pump.
+    ///
+    /// Dew's built-in type scale is installed into `env` for every font slot it
+    /// does not already carry, so an app that installs no theme still renders
+    /// text; see [`crate::theme::install_default_fonts`].
     pub fn new(
         mut board: B,
-        env: Environment,
+        mut env: Environment,
         band_height: u32,
         build_root: impl Fn() -> AnyView + 'static,
     ) -> Self {
+        crate::theme::install_default_fonts(&mut env);
         let render_settings = board.render_settings();
         let fonts = board.fonts();
         let signals = waterui_backend_core::frame_signals::FrameSignals::new(board.now());
@@ -250,6 +255,7 @@ mod tests {
     use std::rc::Rc;
     use waterui_backend_core::input::TouchPhase;
     use waterui_controls::toggle::Toggle;
+    use waterui_text::text;
 
     struct CountingToggle {
         body_calls: Rc<Cell<usize>>,
@@ -289,6 +295,19 @@ mod tests {
 
         assert!(!frame.dirty.is_empty());
         assert_eq!(body_calls.get(), 1, "refresh must not evaluate body again");
+    }
+
+    /// Dew supplies its own type scale, so an application that installs no
+    /// theme still renders text: the body font slot is resolved inside
+    /// `waterui-text`, which panics when the environment carries no token.
+    #[test]
+    fn text_renders_without_an_installed_theme() {
+        let mut runtime = DewRuntime::new(HostBoard::new(200, 40), Environment::new(), 16, || {
+            AnyView::new(text("Dew"))
+        });
+
+        let frame = runtime.pump().expect("initial frame must render");
+        assert!(!frame.dirty.is_empty(), "text must paint something");
     }
 
     #[test]
