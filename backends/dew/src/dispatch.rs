@@ -24,6 +24,7 @@ use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_controls::toggle::ToggleConfig;
+use waterui_core::accessibility::{AccessibilityIdentifier, AccessibilityLabel};
 use waterui_core::dynamic::Dynamic;
 use waterui_core::event::OnEvent;
 use waterui_core::gesture::GestureObserver;
@@ -31,7 +32,9 @@ use waterui_core::layout::{
     ProposalSize, Rect as LayoutRect, Size, StretchAxis, SubView, ViewDimensions,
 };
 use waterui_core::views::Views;
-use waterui_core::{AnyView, Environment, MainThreadBound, Metadata, Native, Retain, Str, View};
+use waterui_core::{
+    AnyView, Environment, IgnorableMetadata, MainThreadBound, Metadata, Native, Retain, Str, View,
+};
 use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_graphics::{SceneView, SceneViewMergeToParent};
 use waterui_layout::Divider;
@@ -453,6 +456,29 @@ impl DewRenderer {
         }
     }
 
+    /// Opens the accessibility naming scope of an `.a11y_label(..)` wrapper for
+    /// the subtree rendered inside it.
+    ///
+    /// Guarded by the caller, like every other accessibility emission in dew:
+    /// a board with no assistive interface publishes no tree, and the label
+    /// signal is then not read at all.
+    pub(crate) fn push_accessibility_label(&mut self, label: Str) {
+        self.accessibility.push_label(label);
+    }
+
+    pub(crate) fn pop_accessibility_label(&mut self) {
+        self.accessibility.pop_label();
+    }
+
+    /// Opens the automation-identifier scope of an `.a11y_id(..)` wrapper.
+    pub(crate) fn push_accessibility_identifier(&mut self, identifier: Str) {
+        self.accessibility.push_identifier(identifier);
+    }
+
+    pub(crate) fn pop_accessibility_identifier(&mut self) {
+        self.accessibility.pop_identifier();
+    }
+
     pub(crate) fn handle_accessibility_action(
         &mut self,
         request: &AccessibilityActionRequest,
@@ -544,6 +570,34 @@ fn build_unmeasured_node(
         return Box::new(RetainNode {
             _retain: value,
             child: build_node(renderer, content, env, depth + 1),
+        });
+    }
+    // Accessibility naming metadata (`.a11y_label()` / `.a11y_id()`) reaches the
+    // dispatcher as an ignorable wrapper whose `body` is its content, so falling
+    // through to the generic expansion below would render the content correctly
+    // and drop the name — an application could not name anything for a screen
+    // reader. The name is captured here, once, and re-read from the captured
+    // signal at each flush; the retained node opens it as a scope around the
+    // subtree it names (see `NamingNode`).
+    if type_id == TypeId::of::<IgnorableMetadata<AccessibilityLabel>>() {
+        let IgnorableMetadata { content, value } = *view
+            .downcast::<IgnorableMetadata<AccessibilityLabel>>()
+            .expect("dew accessibility label downcast must match its type id");
+        return Box::new(NamingNode {
+            naming: Naming::Label(WatchedSignal::new(
+                value.signal().clone(),
+                renderer.signals(),
+            )),
+            child: build_unmeasured_node(renderer, content, env, depth + 1),
+        });
+    }
+    if type_id == TypeId::of::<IgnorableMetadata<AccessibilityIdentifier>>() {
+        let IgnorableMetadata { content, value } = *view
+            .downcast::<IgnorableMetadata<AccessibilityIdentifier>>()
+            .expect("dew accessibility identifier downcast must match its type id");
+        return Box::new(NamingNode {
+            naming: Naming::Identifier(value.into_str()),
+            child: build_unmeasured_node(renderer, content, env, depth + 1),
         });
     }
     if type_id == TypeId::of::<Native<LazyContainer>>() {
@@ -835,6 +889,62 @@ impl DewNode for ContainerNode {
         self.children
             .iter_mut()
             .fold(false, |changed, child| child.patch(renderer) | changed)
+    }
+}
+
+/// What one naming wrapper says, held for the life of the node it wraps.
+///
+/// A label is a signal — `"3 unread messages"` follows the state it is derived
+/// from — so it is watched, and a change asks for a frame the way every other
+/// dew signal does. An identifier names the view for automation and is
+/// deliberately constant.
+enum Naming {
+    Label(WatchedSignal<Computed<Str>>),
+    Identifier(Str),
+}
+
+/// The retained node of an `.a11y_label(..)` / `.a11y_id(..)` wrapper.
+///
+/// Layout-transparent: it measures, stretches and patches as its child. Its
+/// only work is to hold the name open while the subtree it wraps publishes its
+/// accessibility nodes, so the node representing that subtree — a control, a
+/// text, a scene leaf, a container that publishes one — takes the name at the
+/// single funnel every dew node registers through.
+struct NamingNode {
+    naming: Naming,
+    child: Box<dyn DewNode>,
+}
+
+impl DewNode for NamingNode {
+    fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        self.child.measure(state, proposal)
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        if !renderer.accessibility_enabled() {
+            self.child.render(renderer, ctx);
+            return;
+        }
+        match &self.naming {
+            Naming::Label(label) => {
+                renderer.push_accessibility_label(label.get());
+                self.child.render(renderer, ctx);
+                renderer.pop_accessibility_label();
+            }
+            Naming::Identifier(identifier) => {
+                renderer.push_accessibility_identifier(identifier.clone());
+                self.child.render(renderer, ctx);
+                renderer.pop_accessibility_identifier();
+            }
+        }
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.child.stretch_axis()
+    }
+
+    fn patch(&mut self, renderer: &mut DewRenderer) -> bool {
+        self.child.patch(renderer)
     }
 }
 
