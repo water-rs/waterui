@@ -32,6 +32,8 @@ tracing.workspace = true
 # The gallery drives a headless surface, which is the only thing in this crate
 # that touches the GPU stack at all.
 waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
 pollster.workspace = true
 wgpu.workspace = true
 

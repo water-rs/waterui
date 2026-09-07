@@ -12683,6 +12683,7 @@ dependencies = [
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
+ "waterui-math",
  "waterui-navigation",
  "waterui-shape",
  "waterui-svg",
@@ -13142,10 +13143,12 @@ dependencies = [
  "toml 1.1.4+spec-1.1.0",
  "tracing",
  "ttf-parser",
+ "waterui",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
  "waterui-str",
+ "waterui-testing",
  "wgpu",
 ]
 

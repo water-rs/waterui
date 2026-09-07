@@ -128,10 +128,22 @@ impl DewNode for SceneNode {
         );
         list.pop_clip();
         if renderer.accessibility_enabled() {
+            // What the drawing says about itself — a formula's MathML, say.
+            // A scene reaches the panel as anonymous fills, so this node is the
+            // only place its content can be announced, and the content is the
+            // only thing that knows what it drew. Read every frame, so content
+            // that follows a signal republishes what it currently draws.
+            let label = self.content.accessibility_label();
             renderer.register_built_accessibility_node(
                 self.accessibility_id,
                 ctx.window_bounds(),
-                || (AccessibilityNode::new(Role::Image), None),
+                || {
+                    let mut node = AccessibilityNode::new(Role::Image);
+                    if let Some(label) = label {
+                        node.set_label(label);
+                    }
+                    (node, None)
+                },
             );
         }
     }

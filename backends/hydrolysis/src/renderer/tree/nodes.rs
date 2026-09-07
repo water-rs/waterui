@@ -872,11 +872,17 @@ impl TextNode {
 /// wrappers. These leaves draw their own pixels, so the node tree is the only place
 /// their semantic node can be emitted — mirroring `TextNode::emit_accessibility`
 /// for the text leaf. Suppressed when the subtree is accessibility-hidden.
+///
+/// `default_label` is what the drawing says about itself
+/// ([`SceneContent::accessibility_label`](waterui_graphics::SceneContent::accessibility_label)):
+/// a formula's `MathML`, say. It names the node only when the application named
+/// nothing, so `.a11y_label(…)` still wins.
 #[cfg(feature = "accessibility")]
 pub(super) fn emit_graphics_image_accessibility(
     renderer: &mut HydrolysisRenderer,
     ctx: RenderContext,
     env: &Environment,
+    default_label: Option<String>,
 ) {
     if env
         .get::<AccessibilityHidden>()
@@ -887,7 +893,7 @@ pub(super) fn emit_graphics_image_accessibility(
     let mut node = AccessibilityNode::new(
         renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Image),
     );
-    if let Some(label) = renderer.resolve_accessibility_label(env, None) {
+    if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
         node.set_label(label);
     }
     let _ = renderer.register_accessibility_node(
@@ -903,5 +909,6 @@ pub(super) fn emit_graphics_image_accessibility(
     _renderer: &mut HydrolysisRenderer,
     _ctx: RenderContext,
     _env: &Environment,
+    _default_label: Option<String>,
 ) {
 }

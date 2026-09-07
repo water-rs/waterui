@@ -121,6 +121,11 @@ waterui = { path = "../..", default-features = false }
 # built from the library alone, stays GPU-free.
 waterui-canvas.workspace = true
 waterui-svg.workspace = true
+# A formula is the scene content that has something to say about itself: it
+# answers `SceneContent::accessibility_label` with its MathML, which is what
+# proves dew's scene leaf publishes a content-supplied name rather than a bare
+# unnamed image. Test-only for the same reason as the two crates above.
+waterui-math.workspace = true
 # The component issue #180 is actually about: an interactive chart wraps its
 # canvas in `Metadata<GestureObserver>` and `Metadata<OnEvent>`, and every one
 # of those wrappers used to abort dew's dispatch. Test-only, like the scene
