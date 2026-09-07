@@ -656,9 +656,13 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
     let mut snapshot = None;
     let mut rebuilt = false;
     let profile;
-    // The scheduled mode is cleared while the scene is pumped, so record what
-    // this frame was asked to do before that happens.
+    // What the inspector is told about this frame, captured before the pump:
+    // the scheduled mode is cleared while the scene is pumped, and the elapsed
+    // total has to start before any of it runs. A browser page hosts no
+    // inspector endpoint, so neither is measured there.
+    #[cfg(not(target_arch = "wasm32"))]
     let frame_mode = runtime.mode;
+    #[cfg(not(target_arch = "wasm32"))]
     let frame_pump_started_at = Instant::now();
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
@@ -901,10 +905,13 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
         runtime.platform.request_redraw();
     }
 
-    super::inspector::publish_frame(env, frame_mode, &profile, frame_pump_started_at.elapsed());
-    #[cfg(feature = "accessibility")]
-    if let Some(update) = runtime.renderer.peek_accessibility_tree_update() {
-        super::inspector::publish_tree(env, update);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        super::inspector::publish_frame(env, frame_mode, &profile, frame_pump_started_at.elapsed());
+        #[cfg(feature = "accessibility")]
+        if let Some(update) = runtime.renderer.peek_accessibility_tree_update() {
+            super::inspector::publish_tree(env, update);
+        }
     }
 
     RenderWindowResult {

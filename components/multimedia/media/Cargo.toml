@@ -38,6 +38,9 @@ zenwave = { workspace = true, features = ["rustls"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 zenwave.workspace = true
+# The browser has no `std::fs`, so a local photo URL is read back through the
+# kit's IndexedDB-backed file system instead of `blocking::unblock`.
+waterkit-fs.workspace = true
 
 [features]
 default = ["std"]
