@@ -438,14 +438,3 @@ vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", rev = "d68d9e
 # `vello_hybrid`'s text API takes glyphs from `glifo`, which that repo also
 # carries by path; the same rev keeps one `Glyph` type in the graph.
 glifo = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
-
-# Arm's proprietary Vulkan driver (r54p2 on Pixel 9 Pro / Android 16)
-# rasterizes as if viewport heights were positive, ignoring the negative-height
-# viewport wgpu uses to flip Y, so every render pass comes out upside down.
-# This branch flips Y in the vertex shader on that driver instead; drop the
-# patch when upstream ships an equivalent workaround.
-wgpu = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
-wgpu-core = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
-wgpu-hal = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
-wgpu-types = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
-naga = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
