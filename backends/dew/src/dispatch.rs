@@ -257,6 +257,12 @@ impl DewRenderer {
     ///
     /// Runtime code calls this exactly once. Explicit callers may use it to
     /// render unrelated one-shot trees in tests and tools.
+    ///
+    /// Dew's built-in type scale is installed for every font slot the caller's
+    /// environment does not already carry, so an app that installs no theme
+    /// still renders text; see [`crate::theme::install_default_fonts`]. It
+    /// belongs here rather than at any one host's entry point because this is
+    /// the single funnel every dew view tree is dispatched through.
     pub fn render_tree(
         &mut self,
         view: AnyView,
@@ -268,7 +274,8 @@ impl DewRenderer {
         // rasterizer, so a `SceneView` must reach the dispatcher as a native
         // leaf instead of resolving to the GPU surface it would otherwise fall
         // back on — dew's graph has no GPU in it at all.
-        let env = env.extending(SceneViewMergeToParent);
+        let mut env = env.extending(SceneViewMergeToParent);
+        theme::install_default_fonts(&mut env);
         self.theme = Some(theme::ThemePalette::new(&env, self.signals()));
         self.root = Some(build_node(self, view, &env, 0));
         self.refresh_tree(width, height)
