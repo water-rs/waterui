@@ -412,6 +412,13 @@ waterui-map = { path = "components/data/map" }
 waterui-url = { path = "utils/url" }
 waterui-controls = { path = "components/foundation/controls" }
 waterui-video = { path = "components/multimedia/video" }
+# `waterui-canvas` 0.1.0 predates the `Path::arc_to` fix (#228): the standalone
+# repository forked from this one before it landed, so the published crate still
+# rounds a corner with the deflection angle, the wrong bisector, and the arc's
+# own `MoveTo` spliced into the contour. Every rounded outline and every routed
+# edge it draws comes apart (#418, #419). Pinned to the restored implementation
+# in water-rs/canvas#5; drop this once a release carrying it ships.
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "ed4cecc706f69f381555f3fe193134da6e0ff7fe" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
