@@ -18,7 +18,6 @@ use waterui_backend_core::frame_signals::FrameSignals;
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_core::Environment;
 use waterui_core::layout::Size;
-use waterui_text::font::ResolvedFont;
 use waterui_text::styled::StyledStr;
 
 use crate::dispatch::{DewRenderer, RenderContext, WatchedSignal};
@@ -74,9 +73,11 @@ pub const fn to_f32(value: f64) -> f32 {
 pub struct LabelText {
     display_mode: LabelDisplayMode,
     content: WatchedSignal<Computed<StyledStr>>,
-    /// The theme body font the label shapes at, watched so a reactive type
-    /// scale re-shapes it and asks for a frame.
-    font: WatchedSignal<Computed<ResolvedFont>>,
+    /// The font slots the label shapes with — the layout default plus each
+    /// span's own — watched so a reactive type scale re-shapes it and asks for
+    /// a frame. Behind a `RefCell` because the set is rebuilt from the
+    /// content, and measurement runs behind `&self`.
+    fonts: RefCell<theme::WatchedFonts>,
     cache: RefCell<TextLayoutCache>,
 }
 
@@ -84,20 +85,29 @@ impl LabelText {
     /// Retains `label`'s semantic text, subscribing to its reactive content.
     #[must_use]
     pub fn new(label: &Label, env: &Environment, signals: FrameSignals) -> Self {
+        let content =
+            WatchedSignal::new(label.semantic_text().resolve(env).content, signals.clone());
         Self {
             display_mode: label.display_mode_preference(),
-            content: WatchedSignal::new(
-                label.semantic_text().resolve(env).content,
-                signals.clone(),
-            ),
-            font: theme::watch_body_font(env, signals),
+            fonts: RefCell::new(theme::WatchedFonts::styled(
+                &content.get(),
+                content.revision(),
+                env,
+                signals,
+            )),
+            content,
             cache: RefCell::new(TextLayoutCache::default()),
         }
     }
 
-    /// Everything that re-shapes this label: its content and the theme font.
+    /// Everything that re-shapes this label: its content and the fonts that
+    /// content reads. New content may name different slots, so the watcher set
+    /// is brought up to date here, before its revision is read.
     fn revision(&self) -> TextRevision {
-        TextRevision::new(self.content.revision(), self.font.revision())
+        let content = self.content.revision();
+        let mut fonts = self.fonts.borrow_mut();
+        fonts.sync(content, || self.content.get());
+        TextRevision::new(content, fonts.revision())
     }
 
     /// Whether this label draws nothing.

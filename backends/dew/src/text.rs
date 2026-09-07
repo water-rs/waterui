@@ -98,8 +98,9 @@ struct RetainedText {
 /// Everything a node's shaped text depends on that is *not* a per-probe key.
 ///
 /// Both counters invalidate every entry the cache holds at once — new content
-/// and a new theme font each re-shape the node at every width it was probed
-/// at — so they belong on the cache's revision rather than in
+/// and a new font in any slot the text reads each re-shape the node at every
+/// width it was probed at — so they belong on the cache's revision rather than
+/// in
 /// [`TextLayoutKey`]: a key dimension would leave the sizes it invalidated
 /// behind in the table, growing it once per change on a backend whose peak
 /// heap is a budget.
@@ -112,7 +113,10 @@ pub(crate) struct TextRevision {
     ///
     /// [`WatchedSignal`]: crate::dispatch::WatchedSignal
     content: u64,
-    /// Revision of the theme font the node shapes with.
+    /// Shared revision of every font slot the node's text reads — the layout
+    /// default and each span's own — from [`WatchedFonts`].
+    ///
+    /// [`WatchedFonts`]: crate::theme::WatchedFonts
     font: u64,
 }
 
@@ -122,8 +126,8 @@ impl TextRevision {
         Self { content, font }
     }
 
-    /// The revision of a node whose text is a fixed string, so only the
-    /// theme font can move.
+    /// The revision of a node whose text is a fixed string, so only the font
+    /// slot it reads can move.
     pub(crate) const fn font_only(font: u64) -> Self {
         Self { content: 0, font }
     }

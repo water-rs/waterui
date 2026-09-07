@@ -40,7 +40,7 @@ use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_navigation::{NavigationSplitLayout, NavigationStack, NavigationView, TabsLayout};
 use waterui_shape::{ClipShape, ResolvedShape};
-use waterui_text::{TextConfig, font::ResolvedFont, styled::StyledStr};
+use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::accessibility::{AccessibilityBuilder, ActionTarget};
 use crate::display_list::DisplayList;
@@ -646,9 +646,15 @@ fn build_unmeasured_node(
             .downcast::<Native<TextConfig>>()
             .expect("dew TextConfig downcast must match its type id");
         let config = text.into_inner();
+        let content = WatchedSignal::new(config.content, renderer.signals());
         return Box::new(TextNode {
-            content: WatchedSignal::new(config.content, renderer.signals()),
-            font: theme::watch_body_font(env, renderer.signals()),
+            fonts: RefCell::new(theme::WatchedFonts::styled(
+                &content.get(),
+                content.revision(),
+                env,
+                renderer.signals(),
+            )),
+            content,
             env: env.clone(),
             cache: RefCell::new(TextLayoutCache::default()),
             line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
@@ -661,7 +667,7 @@ fn build_unmeasured_node(
                 .downcast::<Str>()
                 .expect("dew Str downcast must match its type id"),
             cache: RefCell::new(TextLayoutCache::default()),
-            font: theme::watch_body_font(env, renderer.signals()),
+            fonts: theme::WatchedFonts::plain(env, renderer.signals()),
             env: env.clone(),
             accessibility_id: renderer.allocate_accessibility_id(),
         });
@@ -966,9 +972,11 @@ fn render_color(renderer: &mut DewRenderer, ctx: RenderContext, color: ResolvedC
 
 struct TextNode {
     content: WatchedSignal<Computed<StyledStr>>,
-    /// The theme body font spans without their own font shape at; watched so a
-    /// reactive type scale invalidates the layout and asks for a frame.
-    font: WatchedSignal<Computed<ResolvedFont>>,
+    /// The font slots this text shapes with — the layout default plus each
+    /// span's own — watched so a reactive type scale invalidates the layout
+    /// and asks for a frame. Behind a `RefCell` because the set is rebuilt
+    /// from the content, and measurement runs behind `&self`.
+    fonts: RefCell<theme::WatchedFonts>,
     env: Environment,
     cache: RefCell<TextLayoutCache>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
@@ -977,9 +985,14 @@ struct TextNode {
 }
 
 impl TextNode {
-    /// Everything that re-shapes this node: its content and the theme font.
+    /// Everything that re-shapes this node: its content and the fonts that
+    /// content reads. New content may name different slots, so the watcher
+    /// set is brought up to date here, before its revision is read.
     fn revision(&self) -> TextRevision {
-        TextRevision::new(self.content.revision(), self.font.revision())
+        let content = self.content.revision();
+        let mut fonts = self.fonts.borrow_mut();
+        fonts.sync(content, || self.content.get());
+        TextRevision::new(content, fonts.revision())
     }
 }
 
@@ -1048,8 +1061,9 @@ struct StrNode {
     value: Str,
     cache: RefCell<TextLayoutCache>,
     /// The theme body font this leaf shapes at — the same slot `text("…")`
-    /// resolves, watched for the same reason.
-    font: WatchedSignal<Computed<ResolvedFont>>,
+    /// resolves, watched for the same reason. A fixed string names no other,
+    /// so this set never changes.
+    fonts: theme::WatchedFonts,
     env: Environment,
     accessibility_id: NodeId,
 }
@@ -1059,7 +1073,7 @@ impl DewNode for StrNode {
         let foreground = theme::foreground(&self.env);
         let mut cache = self.cache.borrow_mut();
         let ((width, height), outcome) = cache.measure(
-            TextRevision::font_only(self.font.revision()),
+            TextRevision::font_only(self.fonts.revision()),
             TextLayoutKey::new(proposal.width, foreground),
             None,
             || {
@@ -1081,7 +1095,7 @@ impl DewNode for StrNode {
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         let outcome = self.cache.borrow_mut().emit(
-            TextRevision::font_only(self.font.revision()),
+            TextRevision::font_only(self.fonts.revision()),
             TextLayoutKey::new(max_width, foreground),
             None,
             transform,
@@ -1122,7 +1136,17 @@ pub(crate) struct WatchedSignal<S: Signal> {
 
 impl<S: Signal> WatchedSignal<S> {
     pub(crate) fn new(signal: S, signals: FrameSignals) -> Self {
-        let revision = Rc::new(Cell::new(0u64));
+        Self::shared(signal, signals, Rc::new(Cell::new(0u64)))
+    }
+
+    /// Watches `signal` against a counter shared with other signals, so a
+    /// change to any of them moves one number.
+    ///
+    /// For a cache that depends on a *set* of signals whose membership itself
+    /// changes — the font slots a styled string's spans name, which are
+    /// rebuilt whenever the content does — one shared counter is what keeps
+    /// the cache's revision a single comparison.
+    pub(crate) fn shared(signal: S, signals: FrameSignals, revision: Rc<Cell<u64>>) -> Self {
         let guard = signal.watch({
             let revision = Rc::clone(&revision);
             move |_| {

@@ -349,6 +349,48 @@ mod tests {
         );
     }
 
+    /// A span's own slot must be watched too, not only the body font a bare
+    /// `text("…")` shapes at: `.font(Title)` reads the Title slot, and a
+    /// theme that drives that slot has to re-shape the span it styles.
+    #[test]
+    fn span_font_change_reshapes_retained_text() {
+        use waterui::Plugin as _;
+        use waterui::theme::{FontSettings, Theme};
+        use waterui_text::font::{FontWeight, ResolvedFont, Title};
+
+        let title = binding(ResolvedFont::new(22.0, FontWeight::Normal));
+        let mut env = Environment::new();
+        Theme::new()
+            .fonts(FontSettings::new().title(title.clone()))
+            .install(&mut env);
+
+        let mut runtime = DewRuntime::new(HostBoard::new(240, 80), env, 16, || {
+            AnyView::new(text("Dew").font(Title))
+        });
+
+        runtime.pump().expect("initial frame must render");
+        assert_eq!(
+            shaped_font_sizes(&runtime.current),
+            vec![22.0_f32.to_bits()],
+            "the installed title font shapes the span on the first frame"
+        );
+
+        title.set(ResolvedFont::new(34.0, FontWeight::Normal));
+        let frame = runtime
+            .pump()
+            .expect("a title font change must request a frame of its own");
+
+        assert_eq!(
+            shaped_font_sizes(&runtime.current),
+            vec![34.0_f32.to_bits()],
+            "the new title font must re-shape the span"
+        );
+        assert!(
+            !frame.dirty.is_empty(),
+            "re-shaped text must flush the region it changed"
+        );
+    }
+
     /// Dew supplies its own type scale, so an application that installs no
     /// theme still renders text: the body font slot is resolved inside
     /// `waterui-text`, which panics when the environment carries no token.
