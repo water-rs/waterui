@@ -8,7 +8,9 @@ use core::cell::Cell;
 use std::rc::Rc;
 
 use nami::binding;
+use waterui::Plugin as _;
 use waterui::prelude::{Color, text, vstack};
+use waterui::theme::{FontSettings, Theme};
 use waterui_backend_core::input::TouchPhase;
 use waterui_controls::button::button;
 use waterui_controls::slider::slider;
@@ -16,7 +18,8 @@ use waterui_controls::stepper::stepper;
 use waterui_controls::toggle::toggle;
 use waterui_core::interaction::Disabled;
 use waterui_core::{AnyView, Environment, Metadata, env::use_env};
-use waterui_dew::{DewRuntime, HostBoard, PointerSample, render_view_png};
+use waterui_dew::{DewRuntime, DrawCommand, HostBoard, PointerSample, render_view_png};
+use waterui_text::font::{FontWeight, ResolvedFont};
 
 mod support;
 
@@ -54,6 +57,68 @@ fn vstack_of_colors_splits_the_screen() {
     };
     assert_eq!(pixel(64, 20), [244, 67, 54, 255]);
     assert_eq!(pixel(64, 108), [33, 150, 243, 255]);
+}
+
+/// Every shaped glyph run in `list`, as (font size, laid-out width, laid-out
+/// height) — the layout-local geometry, so two runs of the same string shape
+/// to the same triple exactly when they were laid out the same way.
+fn shaped_runs(list: &waterui_dew::DisplayList) -> Vec<(f32, f64, f64)> {
+    list.commands()
+        .iter()
+        .filter_map(|placed| match placed.command() {
+            DrawCommand::GlyphRun {
+                font_size, bounds, ..
+            } => Some((*font_size, bounds.width(), bounds.height())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A bare `"literal"` leaf and `text("literal")` beside it must shape at the
+/// theme's body font — the same one — rather than the leaf carrying a font
+/// size of its own. Regression test for the leaf that shaped at a hardcoded
+/// 16px whatever the theme installed.
+#[test]
+fn bare_string_and_text_shape_at_the_theme_body_font() {
+    let mut env = support::test_environment();
+    Theme::new()
+        .fonts(FontSettings::new().body(ResolvedFont::new(20.0, FontWeight::Normal)))
+        .install(&mut env);
+
+    let mut renderer = support::test_renderer();
+    let list = renderer.render_tree(
+        AnyView::new(vstack(("Bare", text("Bare")))),
+        &env,
+        240.0,
+        120.0,
+    );
+
+    let runs = shaped_runs(&list);
+    assert_eq!(
+        runs.len(),
+        2,
+        "the bare leaf and the text view must each emit one run, got {runs:?}"
+    );
+    assert_eq!(
+        runs[0].0.to_bits(),
+        runs[1].0.to_bits(),
+        "both must shape at the same size, got {:?} and {:?}",
+        runs[0],
+        runs[1]
+    );
+    assert_eq!(
+        (runs[0].1.to_bits(), runs[0].2.to_bits()),
+        (runs[1].1.to_bits(), runs[1].2.to_bits()),
+        "both must lay out to the same size, got {:?} and {:?}",
+        runs[0],
+        runs[1]
+    );
+    assert_eq!(
+        runs[0].0.to_bits(),
+        20.0_f32.to_bits(),
+        "the installed 20pt body font must win over the 16pt default, got {:?}",
+        runs[0]
+    );
 }
 
 /// Text must produce a real shaped glyph run in the retained display list.

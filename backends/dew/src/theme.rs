@@ -9,7 +9,7 @@ use waterui_graphics::color::{
     MutedForegroundColor, ResolvedColor, Srgb, SurfaceColor, SurfaceVariantColor,
 };
 use waterui_text::font::{
-    Body, Caption, FontWeight, Footnote, Headline, ResolvedFont, Subheadline, Title,
+    Body, Caption, Font, FontWeight, Footnote, Headline, ResolvedFont, Subheadline, Title,
 };
 
 use crate::dispatch::WatchedSignal;
@@ -179,6 +179,21 @@ fn watch<T: 'static>(
     default: Color,
 ) -> WatchedSignal<Computed<ResolvedColor>> {
     WatchedSignal::new(slot::<T>(env, default), signals)
+}
+
+/// The body font a text node shapes with, watched for frame requests.
+///
+/// Fonts get the same treatment colours do: a change bumps a revision the
+/// layout cache keys on, and requests a frame so the re-shaped text reaches
+/// the panel without anything rebuilding the tree. Unlike the colour palette
+/// this is one signal per text node rather than one per renderer, because the
+/// slot is read from the node's own environment — a subtree is free to install
+/// its own type scale, exactly as it is free to install its own foreground.
+pub(crate) fn watch_body_font(
+    env: &Environment,
+    signals: FrameSignals,
+) -> WatchedSignal<Computed<ResolvedFont>> {
+    WatchedSignal::new(Font::default().resolve(env), signals)
 }
 
 pub(crate) fn foreground(env: &Environment) -> Color {
