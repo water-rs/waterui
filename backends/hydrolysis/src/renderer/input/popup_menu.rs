@@ -659,7 +659,7 @@ impl HydrolysisRenderer {
     /// does, so an application does not have to opt in to being inspectable.
     /// A release build appends nothing, and a secondary click on something with
     /// no menu of its own goes on doing nothing.
-    #[cfg(feature = "accessibility")]
+    #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
     pub(crate) fn append_inspect_element_item(
         &self,
         items: &mut Vec<PopupMenuNode>,
@@ -693,8 +693,9 @@ impl HydrolysisRenderer {
     }
 
     /// Inspecting an element means naming it in the accessibility tree, so a
-    /// build without that tree has no name to send.
-    #[cfg(not(feature = "accessibility"))]
+    /// build without that tree has no name to send — and a browser page has no
+    /// inspector endpoint to send it to.
+    #[cfg(any(not(feature = "accessibility"), target_arch = "wasm32"))]
     pub(crate) fn append_inspect_element_item(
         &self,
         _items: &mut Vec<PopupMenuNode>,
