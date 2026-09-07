@@ -34,7 +34,9 @@ pub use gpu::{
 pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
 #[cfg(feature = "gpu")]
 pub use image::{image_analysis, image_decode, image_generator};
-pub use scene::{scene_view, scene2d};
+#[cfg(feature = "cpu-scene")]
+pub use scene::scene2d_cpu;
+pub use scene::{picture, scene_view, scene2d};
 #[cfg(feature = "vello-scene")]
 pub use scene::{scene2d_hybrid, scene2d_vello};
 
@@ -124,6 +126,7 @@ pub use image_generator::{
     LinearGradientGenerator, NoiseGenerator, RadialGradientGenerator, StripeGenerator,
 };
 
+pub use picture::Picture;
 pub use scene_view::{
     SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
     resolve_scene_proposal, scene_stretch_axis,

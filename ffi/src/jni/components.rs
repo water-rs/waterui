@@ -1814,6 +1814,34 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHo
 // GpuSurface Functions
 // ============================================================================
 
+/// `WatcherJni.pictureBitmap(picturePtr, scale)`: the picture rasterised at
+/// `scale` pixels per point, as a bitmap computed the view observes.
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_pictureBitmap<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    picture_ptr: jlong,
+    scale: jfloat,
+) -> jlong {
+    use crate::IntoFFI;
+    use crate::components::picture::{WuiPictureHandle, bitmap_signal};
+    // SAFETY: Kotlin keeps the handle from `forceAsPicture` alive for the view.
+    let picture = unsafe { &(*(picture_ptr as *const WuiPictureHandle)).0 };
+    bitmap_signal(picture, scale).into_ffi() as jlong
+}
+
+/// `WatcherJni.dropPicture(picturePtr)`: releases a picture handle.
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropPicture<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    picture_ptr: jlong,
+) {
+    use crate::components::picture::WuiPictureHandle;
+    // SAFETY: ownership of the `forceAsPicture` handle returns here once.
+    drop(unsafe { Box::from_raw(picture_ptr as *mut WuiPictureHandle) });
+}
+
 #[cfg(all(target_os = "android", feature = "gpu"))]
 struct JniGpuSurfaceState {
     state: *mut crate::components::gpu_surface::WuiGpuSurfaceState,

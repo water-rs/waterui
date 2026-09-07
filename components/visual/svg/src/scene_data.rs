@@ -66,6 +66,3 @@ impl SvgSceneData {
         );
     }
 }
-
-/// Placeholder token used by reactive SVG templates for tint substitution.
-pub const SVG_COLOR_PLACEHOLDER: &str = "__WATERUI_SVG_COLOR__";
