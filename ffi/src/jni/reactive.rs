@@ -35,6 +35,8 @@ const WATCHER_METADATA_CLASS: &JNIStr = jni_str!("dev/waterui/android/reactive/W
 const WATCHER_METADATA_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(J)V");
 const RESOLVED_COLOR_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/ResolvedColorStruct");
 const RESOLVED_COLOR_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(FFFFF)V");
+const BITMAP_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/BitmapStruct");
+const BITMAP_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(IILjava/nio/ByteBuffer;J)V");
 const RESOLVED_FONT_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/ResolvedFontStruct");
 const RESOLVED_FONT_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(FILjava/lang/String;)V");
 const DATE_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/DateStruct");
@@ -590,6 +592,71 @@ jni_read_computed_int!(ColorScheme, waterui::theme::ColorScheme);
 jni_read_computed_int!(CursorStyle, waterui::cursor::CursorStyle);
 jni_read_computed_int!(HorizontalAlignment, waterui::layout::HorizontalAlignment);
 
+/// The constructor arguments of a `BitmapStruct`: the pixels as a direct
+/// `ByteBuffer` over the Rust allocation, and the handle that owns it, which
+/// Kotlin returns through `dropBitmap` once it has copied the pixels out.
+fn bitmap_struct_args<'local>(
+    env: &mut Env<'local>,
+    bitmap: crate::components::picture::WuiBitmap,
+) -> (jint, jint, JObject<'local>, jlong) {
+    let width = jint::try_from(bitmap.width).expect("a bitmap side fits an Android int");
+    let height = jint::try_from(bitmap.height).expect("a bitmap side fits an Android int");
+    let handle = Box::into_raw(Box::new(bitmap));
+    // SAFETY: `handle` owns the allocation the buffer views, and Kotlin keeps
+    // the buffer only until it copies the pixels and drops the handle.
+    let buffer = unsafe { env.new_direct_byte_buffer((*handle).data, (*handle).len) }
+        .expect("failed to wrap bitmap pixels in a direct ByteBuffer");
+    (width, height, buffer.into(), handle as jlong)
+}
+
+/// Read a bitmap computed value and return Java `BitmapStruct`.
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedBitmap<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    computed_ptr: jlong,
+) -> jobject {
+    use crate::IntoFFI;
+    use waterui::Signal;
+    use waterui_graphics::scene2d_cpu::RgbaBitmap;
+
+    // SAFETY: Kotlin passes back the computed pointer `pictureBitmap` handed it,
+    // which stays alive until `dropComputedBitmap` and is only ever read here.
+    let computed = unsafe { &*(computed_ptr as *const WuiComputed<RgbaBitmap>) };
+    let bitmap = computed.get().into_ffi();
+    super::with_env(&mut env, |env| {
+        let (width, height, buffer, handle) = bitmap_struct_args(env, bitmap);
+        env.new_object(
+            BITMAP_CLASS,
+            BITMAP_CTOR,
+            &[
+                JValue::Int(width),
+                JValue::Int(height),
+                JValue::Object(&buffer),
+                JValue::Long(handle),
+            ],
+        )
+        .expect("Failed to create BitmapStruct")
+        .into_raw()
+    })
+}
+
+/// Releases the Rust allocation behind a `BitmapStruct` once Kotlin has copied
+/// its pixels.
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropBitmap<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) {
+    use crate::components::picture::{WuiBitmap, waterui_drop_bitmap};
+    // SAFETY: `handle` is the box `bitmap_struct_args` leaked, returned once.
+    unsafe {
+        let bitmap = Box::from_raw(handle as *mut WuiBitmap);
+        waterui_drop_bitmap(*bitmap);
+    }
+}
+
 /// Read a `ResolvedColor` computed value and return Java `ResolvedColorStruct`.
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedColor<'local>(
@@ -1108,6 +1175,28 @@ unsafe extern "C" fn watcher_call_color(
 }
 
 /// Call function for `ResolvedColor` watcher.
+unsafe extern "C" fn watcher_call_bitmap(
+    data: *mut (),
+    value: crate::components::picture::WuiBitmap,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    with_watcher_env(data, |env, watcher_data| {
+        let (width, height, buffer, handle) = bitmap_struct_args(env, value);
+        let java_value = watcher_data.constructor(BITMAP_CLASS).new_object(
+            env,
+            &[
+                JValue::Int(width).as_jni(),
+                JValue::Int(height).as_jni(),
+                JValue::Object(&buffer).as_jni(),
+                JValue::Long(handle).as_jni(),
+            ],
+        );
+
+        let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
+        invoke_callback(env, &watcher_data.callback, &java_value, &metadata);
+    });
+}
+
 unsafe extern "C" fn watcher_call_resolved_color(
     data: *mut (),
     value: crate::color::WuiResolvedColor,
@@ -1468,6 +1557,7 @@ jni_create_watcher_typed!(
     watcher_call_resolved_color,
     &[(RESOLVED_COLOR_CLASS, RESOLVED_COLOR_CTOR)]
 );
+jni_create_watcher_typed!(Bitmap, watcher_call_bitmap, &[(BITMAP_CLASS, BITMAP_CTOR)]);
 jni_create_watcher_typed!(
     ResolvedFont,
     watcher_call_resolved_font,

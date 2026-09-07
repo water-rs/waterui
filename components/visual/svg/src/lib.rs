@@ -17,11 +17,14 @@ pub use usvg;
 
 /// Scene content that draws an SVG document, for composing an SVG into a scene
 /// that is not a whole view of its own.
-pub use scene_renderer::{ReactiveSvgSceneContent, SvgSceneContent};
+pub use scene_renderer::SvgSceneContent;
 
-use waterui_core::{AnyView, Computed, Environment, Signal, SignalExt, View};
-use waterui_graphics::SceneView;
+use alloc::string::String;
+use alloc::sync::Arc;
+
+use waterui_core::{AnyView, Computed, Environment, Signal, SignalExt, View, constant};
 use waterui_graphics::color::Color;
+use waterui_graphics::{Picture, SceneRecording};
 use waterui_layout::frame::Frame;
 use waterui_str::Str;
 
@@ -155,23 +158,30 @@ impl Svg {
         }
     }
 
-    /// Creates a `SceneView` renderer for this SVG with the given color.
-    fn to_scene_view(&self, color: &str) -> SceneView {
-        let svg_content = self.build_svg_content(color);
-        SceneView::new(scene_renderer::SvgSceneContent::new(&svg_content))
+    /// Records this SVG, drawn in `color`, at its intrinsic size.
+    fn record(&self, color: &str) -> (waterui_core::layout::Size, Arc<SceneRecording>) {
+        let scene_data = scene_data::SvgSceneData::parse(&self.build_svg_content(color));
+        let size = scene_data.intrinsic_size();
+        let recording = Picture::record(|scene| scene_data.draw(scene, size.width, size.height));
+        (size, recording)
     }
 
-    /// Creates a reactive `SceneView` renderer for this SVG.
-    fn to_reactive_scene_view<S>(&self, color_signal: S) -> impl View
+    /// A picture of this SVG drawn in a fixed `color`.
+    fn to_picture(&self, color: &str) -> Picture {
+        let (size, recording) = self.record(color);
+        Picture::new(size, constant(recording))
+    }
+
+    /// A picture of this SVG whose drawing follows `color_signal`: a new colour
+    /// records new commands into the same picture.
+    fn to_reactive_picture<S>(&self, color_signal: &S) -> Picture
     where
-        S: Signal<Output = alloc::string::String> + 'static,
+        S: Signal<Output = String> + 'static,
         S::Guard: 'static,
     {
-        let svg_template = self.build_svg_content(scene_data::SVG_COLOR_PLACEHOLDER);
-        SceneView::new(scene_renderer::ReactiveSvgSceneContent::new(
-            svg_template,
-            color_signal,
-        ))
+        let (size, _) = self.record("#000000");
+        let svg = self.clone();
+        Picture::new(size, color_signal.map(move |color| svg.record(&color).1))
     }
 
     /// Wraps a view in a frame carrying the SVG's intrinsic size.
@@ -204,17 +214,17 @@ impl Svg {
     }
 
     /// Creates a framed SVG scene view for the given color.
-    fn to_framed_scene_view(&self, color: &str) -> AnyView {
-        self.frame_view(self.to_scene_view(color))
+    fn to_framed_picture(&self, color: &str) -> AnyView {
+        self.frame_view(self.to_picture(color))
     }
 
     /// Creates a framed reactive SVG scene view.
-    fn to_reactive_framed_scene_view<S>(&self, color_signal: S) -> AnyView
+    fn to_reactive_framed_picture<S>(&self, color_signal: &S) -> AnyView
     where
-        S: Signal<Output = alloc::string::String> + 'static,
+        S: Signal<Output = String> + 'static,
         S::Guard: 'static,
     {
-        self.frame_view(self.to_reactive_scene_view(color_signal))
+        self.frame_view(self.to_reactive_picture(color_signal))
     }
 
     /// Format a `ResolvedColor` as an SVG-compatible color string.
@@ -247,7 +257,7 @@ impl View for Svg {
             let color_signal = tint
                 .resolve(env)
                 .map(|resolved| Self::resolved_color_to_svg_color(&resolved));
-            return self.to_reactive_framed_scene_view(color_signal);
+            return self.to_reactive_framed_picture(&color_signal);
         }
 
         if let Some(color_signal) = env
@@ -257,11 +267,11 @@ impl View for Svg {
             >()
             .cloned()
         {
-            return self.to_reactive_framed_scene_view(
-                color_signal.map(|resolved| Self::resolved_color_to_svg_color(&resolved)),
+            return self.to_reactive_framed_picture(
+                &color_signal.map(|resolved| Self::resolved_color_to_svg_color(&resolved)),
             );
         }
 
-        self.to_framed_scene_view("#000000")
+        self.to_framed_picture("#000000")
     }
 }
