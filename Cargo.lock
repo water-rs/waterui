@@ -13167,6 +13167,7 @@ dependencies = [
  "tracing",
  "waterkit-codec 0.1.1",
  "waterkit-dialog",
+ "waterkit-fs 0.1.1",
  "waterui",
  "waterui-controls",
  "waterui-core",

@@ -240,7 +240,7 @@ impl BrowserRunnerHandle {
     }
 }
 
-pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
+pub fn run(app: App) {
     wasm_bindgen_futures::spawn_local(async move {
         let schedule_frame_ref: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
         let browser_schedule = {
@@ -259,18 +259,12 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
             runnable_queue: runnable_queue.clone(),
             schedule_frame: browser_schedule.clone(),
         };
+        // Nothing probes the browser executor: the inspector endpoint is a TCP
+        // server the page cannot host, so no probe exists to hand it.
         let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
             local_executor,
-            inspector
-                .as_ref()
-                .map(waterui::inspector::InspectorRuntime::runtime_probe),
+            None,
         ));
-        // The reactive graph is thread-confined, so its observer is installed
-        // here, on the thread that owns the loop, and lives as long as it does.
-        #[cfg(feature = "inspector-signals")]
-        let _signal_scope = inspector
-            .as_ref()
-            .map(waterui::inspector::InspectorRuntime::observe_signals);
 
         let (windows, _menu_bar, env) = app.into_parts();
         let mut windows = windows.into_iter();
