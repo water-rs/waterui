@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788781120688,
+  "lastUpdate": 1788781123313,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -2007,6 +2007,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 12417,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d8255fe6c623cdc669e2bf1e07fa456e9cdf58ee",
+          "message": "Merge pull request #400 from water-rs/agent/dep-check-submodules-195\n\nfix(ci): check out submodules in the dependency check and fail on tooling errors",
+          "timestamp": "2026-09-07T10:11:08Z",
+          "url": "https://github.com/water-rs/waterui/commit/d8255fe6c623cdc669e2bf1e07fa456e9cdf58ee"
+        },
+        "date": 1788781122626,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 175627,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 137917,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 19889,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 15617,
             "unit": "us"
           }
         ]
