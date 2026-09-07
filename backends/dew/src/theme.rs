@@ -3,10 +3,13 @@
 use nami::{Computed, Signal};
 use peniko::Color;
 use waterui_backend_core::frame_signals::FrameSignals;
-use waterui_core::Environment;
+use waterui_core::{Environment, env::Store};
 use waterui_graphics::color::{
     AccentColor, AccentForegroundColor, BackgroundColor, BorderColor, ForegroundColor,
     MutedForegroundColor, ResolvedColor, Srgb, SurfaceColor, SurfaceVariantColor,
+};
+use waterui_text::font::{
+    Body, Caption, FontWeight, Footnote, Headline, ResolvedFont, Subheadline, Title,
 };
 
 use crate::dispatch::WatchedSignal;
@@ -38,6 +41,57 @@ pub const TRACK: Color = Color::from_rgb8(229, 229, 234);
 
 /// Movable control knobs: toggle and slider thumbs.
 pub const THUMB: Color = Color::WHITE;
+
+/// Body text: the size and weight `text("…")` shapes at.
+pub const BODY_FONT: ResolvedFont = ResolvedFont::new(16.0, FontWeight::Normal);
+
+/// Screen and section titles.
+pub const TITLE_FONT: ResolvedFont = ResolvedFont::new(22.0, FontWeight::Normal);
+
+/// The most prominent line on a screen.
+pub const HEADLINE_FONT: ResolvedFont = ResolvedFont::new(24.0, FontWeight::Normal);
+
+/// Body-sized text carrying a heading's emphasis.
+pub const SUBHEADLINE_FONT: ResolvedFont = ResolvedFont::new(16.0, FontWeight::Medium);
+
+/// Secondary annotations beside content.
+pub const CAPTION_FONT: ResolvedFont = ResolvedFont::new(12.0, FontWeight::Normal);
+
+/// The smallest supporting text.
+pub const FOOTNOTE_FONT: ResolvedFont = ResolvedFont::new(11.0, FontWeight::Medium);
+
+/// Installs dew's built-in type scale for every font slot the application's
+/// theme left unset.
+///
+/// Font slots are the one part of the palette dew cannot resolve at draw time:
+/// a colour an application never chose falls back to this module's constants
+/// where it is drawn, while a font is resolved inside `waterui-text`, which
+/// requires the token to be in the environment and panics when it is not. Supplying a default appearance is
+/// the backend's job rather than the view code's, so [`crate::DewRuntime`]
+/// applies this to the environment it renders under — a device app that
+/// installs no theme still renders `text("…")`, exactly as it renders a
+/// foreground colour it never chose.
+///
+/// The scale matches the one every other `WaterUI` backend defaults to, so the
+/// same view has the same proportions on a panel and on a desktop window. No
+/// family is named: firmware shapes with the faces its board bundles, and a
+/// desktop simulator with the system collection.
+pub fn install_default_fonts(env: &mut Environment) {
+    install_default::<Body>(env, BODY_FONT);
+    install_default::<Title>(env, TITLE_FONT);
+    install_default::<Headline>(env, HEADLINE_FONT);
+    install_default::<Subheadline>(env, SUBHEADLINE_FONT);
+    install_default::<Caption>(env, CAPTION_FONT);
+    install_default::<Footnote>(env, FOOTNOTE_FONT);
+}
+
+fn install_default<T: 'static>(env: &mut Environment, font: ResolvedFont) {
+    if env.query::<T, Computed<ResolvedFont>>().is_none() {
+        env.insert(Store::<T, Computed<ResolvedFont>>::new(Computed::constant(
+            font,
+        )));
+    }
+}
 
 /// Theme signals retained for the renderer lifetime. Every slot requests a
 /// frame when it changes, so controls repaint without rebuilding the tree.
