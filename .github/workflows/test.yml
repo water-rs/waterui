@@ -151,6 +151,53 @@ jobs:
       - name: Skill snippet compile gate
         run: cargo check -p skill_snippets --all-targets --features compile-gate-tests
 
+  # The web runner, compiled for the target it actually runs on.
+  #
+  # Every other leg builds `hydrolysis --features web` for the host, where the
+  # runner and everything else under `cfg(target_arch = "wasm32")` is compiled
+  # out — so the browser build rotted through three unrelated breakages before
+  # anyone pointed a compiler at it (#408). This is the cheapest statement that
+  # it still builds: a `cargo check` of the web runner plus the two crates whose
+  # wasm-only paths it reaches (`waterui-media` reads local photos through the
+  # kit file system there, and the kit dialog has a whole browser backend).
+  #
+  # It runs in both tiers rather than only in the nightly: a pull request
+  # touching any of those three can break it, and the check is a couple of
+  # minutes even cold, against the 90-120 minute legs beside it.
+  wasm:
+    name: wasm32
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Cargo caps lints for registry dependencies, so this holds the workspace
+      # crates — and only them — to the same "no new warnings" bar as the host
+      # lint pass. `cargo check` takes no trailing rustc arguments.
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      # Build scripts and proc macros still compile for the host even when
+      # every library target is wasm, and this graph reaches the ones that need
+      # native headers.
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - name: Check the web runner for wasm32
+        run: |
+          cargo check --target wasm32-unknown-unknown \
+            -p hydrolysis --features hydrolysis/web \
+            -p waterui-media \
+            -p waterkit-dialog
+
   # The workspace test run, per platform. On Linux it also carries the
   # doctests, which share its build; on macOS those go to `macos-suites`, so
   # that this job is the workspace run alone — the single longest step in CI —

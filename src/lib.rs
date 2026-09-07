@@ -9,7 +9,7 @@ pub mod component;
 mod interaction_support;
 pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 mod runtime;
-#[cfg(feature = "inspector")]
+#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
 pub use runtime::inspector;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
