@@ -66,11 +66,14 @@ pub const FOOTNOTE_FONT: ResolvedFont = ResolvedFont::new(11.0, FontWeight::Medi
 /// Font slots are the one part of the palette dew cannot resolve at draw time:
 /// a colour an application never chose falls back to this module's constants
 /// where it is drawn, while a font is resolved inside `waterui-text`, which
-/// requires the token to be in the environment and panics when it is not. Supplying a default appearance is
-/// the backend's job rather than the view code's, so [`crate::DewRuntime`]
-/// applies this to the environment it renders under — a device app that
-/// installs no theme still renders `text("…")`, exactly as it renders a
-/// foreground colour it never chose.
+/// requires the token to be in the environment and panics when it is not.
+/// Supplying a default appearance is the backend's job rather than the view
+/// code's, so [`DewRenderer::render_tree`] applies this to the environment
+/// every view tree is dispatched under — a device app that installs no theme
+/// still renders `text("…")`, exactly as it renders a foreground colour it
+/// never chose.
+///
+/// [`DewRenderer::render_tree`]: crate::DewRenderer::render_tree
 ///
 /// The scale matches the one every other `WaterUI` backend defaults to, so the
 /// same view has the same proportions on a panel and on a desktop window. No
