@@ -17,13 +17,13 @@ const GPU_SURFACE_COMPOSITOR_SHADER: CompiledShader =
     include!(concat!(env!("OUT_DIR"), "/gpu_surface_compositor.rs"));
 
 /// Builds a fresh `vello::Renderer` for the parallel-encode pool, matching the main
-/// renderer's options (GPU-only, area AA, multi-core init).
+/// renderer's options (GPU-only, [`LAYER_ANTIALIASING`], multi-core init).
 fn build_pooled_vello_renderer(device: &wgpu::Device) -> vello::Renderer {
     vello::Renderer::new(
         device,
         vello::RendererOptions {
             use_cpu: false,
-            antialiasing_support: vello::AaSupport::area_only(),
+            antialiasing_support: LAYER_ANTIALIASING_SUPPORT,
             num_init_threads: std::thread::available_parallelism().ok(),
             pipeline_cache: None,
         },
@@ -61,7 +61,7 @@ fn encode_vello_layers_parallel(
             base_color: vello::peniko::Color::TRANSPARENT,
             width,
             height,
-            antialiasing_method: vello::AaConfig::Area,
+            antialiasing_method: LAYER_ANTIALIASING,
         };
         renderer
             .render_to_texture(device, queue, scene, &leased.view, &params)
@@ -1432,7 +1432,7 @@ impl HydrolysisRenderer {
             base_color: vello::peniko::Color::TRANSPARENT,
             width,
             height,
-            antialiasing_method: vello::AaConfig::Area,
+            antialiasing_method: LAYER_ANTIALIASING,
         };
         self.vello_renderer
             .render_to_texture(device, queue, scene, &leased.view, &params)

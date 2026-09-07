@@ -947,6 +947,39 @@ fn gesture_wrapper_keeps_reactive_descendant_live() {
     );
 }
 
+/// Window size the tree-grid screen is rendered at, shared by the export
+/// snapshot and the determinism test so both observe the same layout.
+const TREE_GRID_WIDTH: u32 = 440;
+/// See [`TREE_GRID_WIDTH`].
+const TREE_GRID_HEIGHT: u32 = 920;
+
+/// The chart example's mode-button screen: a 3x3 `grid` of fixed-width buttons
+/// above a fixed-size coloured block. Shared by [`render_tree_grid_snapshot`]
+/// and [`tree_grid_frame_is_byte_identical_across_runtimes`] so the exported
+/// evidence and the determinism assertion describe the same scene.
+fn tree_grid_screen() -> AnyView {
+    use waterui::layout::grid::{grid, row};
+    use waterui::prelude::*;
+    fn cell(label: &str) -> impl View {
+        button(label.to_owned()).width(92.0)
+    }
+    let controls = grid(
+        3,
+        [
+            row((cell("Bar"), cell("Line"), cell("Pie"))),
+            row((cell("Scatter"), cell("Candle"), cell("Depth"))),
+            row((cell("Heatmap"), cell("Contour"), cell("Radar"))),
+        ],
+    )
+    .spacing(10.0);
+    AnyView::new(vstack((
+        controls,
+        spacer(),
+        ().size(200.0, 100.0).background(Color::srgb_hex("#2563EB")),
+        spacer(),
+    )))
+}
+
 /// Diagnostic: a 3-column `grid` of fixed-size colour cells must render all rows
 /// (the chart example's mode-button grid regressed to a single overlapping row on
 /// the tree path). The exported PNG must show three stacked rows of three cells.
@@ -960,32 +993,10 @@ fn render_tree_grid_snapshot() {
         image.save(path).expect("snapshot png must be writable");
     }
 
-    fn screen() -> AnyView {
-        use waterui::layout::grid::{grid, row};
-        use waterui::prelude::*;
-        fn cell(label: &str) -> impl View {
-            button(label.to_owned()).width(92.0)
-        }
-        let controls = grid(
-            3,
-            [
-                row((cell("Bar"), cell("Line"), cell("Pie"))),
-                row((cell("Scatter"), cell("Candle"), cell("Depth"))),
-                row((cell("Heatmap"), cell("Contour"), cell("Radar"))),
-            ],
-        )
-        .spacing(10.0);
-        AnyView::new(vstack((
-            controls,
-            spacer(),
-            ().size(200.0, 100.0).background(Color::srgb_hex("#2563EB")),
-            spacer(),
-        )))
-    }
-
-    let builder = AnyViewBuilder::<AnyView>::new(screen);
+    let builder = AnyViewBuilder::<AnyView>::new(tree_grid_screen);
     let env = test_environment();
-    let mut rt = crate::HeadlessRuntime::new_for_tests(env, builder, 440, 920);
+    let mut rt =
+        crate::HeadlessRuntime::new_for_tests(env, builder, TREE_GRID_WIDTH, TREE_GRID_HEIGHT);
 
     let snapshot = rt
         .pump_at(true, std::time::Instant::now())
@@ -998,6 +1009,78 @@ fn render_tree_grid_snapshot() {
         snapshot.rgba8,
     );
     eprintln!("wrote /tmp/waterui_tree_grid.png");
+}
+
+/// Identical source must rasterize to identical bytes. Rendering the tree-grid
+/// screen — the one #271 caught drifting by a single antialiased pixel inside a
+/// glyph — through eight independently built runtimes must produce eight
+/// byte-identical RGBA buffers. Each runtime builds its own view tree, renderer
+/// and retained scene; only the wgpu device is shared, because requesting one
+/// device per sample exhausts a runner whose only adapter is a software
+/// rasterizer. Every run is pumped at its own `Instant::now()` on purpose: this
+/// screen declares no animation, so the captured frame must not depend on the
+/// wall-clock phase it was captured at.
+#[test]
+fn tree_grid_frame_is_byte_identical_across_runtimes() {
+    use crate::platform::OffscreenGpuContext;
+    use waterui_core::handler::AnyViewBuilder;
+
+    /// Independently built runtimes rendering the same screen.
+    const RUNS: usize = 8;
+
+    let gpu = OffscreenGpuContext::new_for_tests_blocking();
+    let frames: Vec<_> = (0..RUNS)
+        .map(|run| {
+            let builder = AnyViewBuilder::<AnyView>::new(tree_grid_screen);
+            let env = test_environment();
+            let mut rt = crate::HeadlessRuntime::new_for_tests_on_context(
+                gpu.clone(),
+                env,
+                builder,
+                TREE_GRID_WIDTH,
+                TREE_GRID_HEIGHT,
+            );
+            rt.pump_at(true, std::time::Instant::now())
+                .snapshot
+                .unwrap_or_else(|| panic!("run {run} must capture a snapshot"))
+        })
+        .collect();
+
+    let (first, rest) = frames.split_first().expect("RUNS is non-zero");
+    for (run, frame) in rest
+        .iter()
+        .enumerate()
+        .map(|(index, frame)| (index + 1, frame))
+    {
+        assert_eq!(
+            (frame.width, frame.height),
+            (first.width, first.height),
+            "run {run} captured a differently sized frame"
+        );
+        if frame.rgba8 == first.rgba8 {
+            continue;
+        }
+        let differing = first
+            .rgba8
+            .iter()
+            .zip(&frame.rgba8)
+            .filter(|(a, b)| a != b)
+            .count();
+        let (index, (expected, found)) = first
+            .rgba8
+            .iter()
+            .zip(&frame.rgba8)
+            .enumerate()
+            .find(|(_, (a, b))| a != b)
+            .expect("the buffers differ, so a differing byte exists");
+        let pixel = u32::try_from(index / 4).expect("a frame index fits in u32");
+        let (x, y) = (pixel % first.width, pixel / first.width);
+        let channel = ["r", "g", "b", "a"][index % 4];
+        panic!(
+            "run {run} differs from run 0: {differing} differing bytes; first at \
+             pixel ({x}, {y}) channel {channel}: run 0 has {expected}, run {run} has {found}"
+        );
+    }
 }
 
 /// Lifecycle hooks are node-owned on the retained tree: `.on_appear` fires once
