@@ -45,7 +45,7 @@ use waterui_text::{TextConfig, styled::StyledStr};
 use crate::accessibility::{AccessibilityBuilder, ActionTarget};
 use crate::display_list::DisplayList;
 use crate::pointer::{PointerRouter, PointerTargetHandle};
-use crate::text::{DewState, TextLayoutCache, TextLayoutKey};
+use crate::text::{DewState, TextLayoutCache, TextLayoutKey, TextRevision};
 use crate::theme;
 use crate::views;
 
@@ -257,6 +257,12 @@ impl DewRenderer {
     ///
     /// Runtime code calls this exactly once. Explicit callers may use it to
     /// render unrelated one-shot trees in tests and tools.
+    ///
+    /// Dew's built-in type scale is installed for every font slot the caller's
+    /// environment does not already carry, so an app that installs no theme
+    /// still renders text; see [`crate::theme::install_default_fonts`]. It
+    /// belongs here rather than at any one host's entry point because this is
+    /// the single funnel every dew view tree is dispatched through.
     pub fn render_tree(
         &mut self,
         view: AnyView,
@@ -268,7 +274,8 @@ impl DewRenderer {
         // rasterizer, so a `SceneView` must reach the dispatcher as a native
         // leaf instead of resolving to the GPU surface it would otherwise fall
         // back on — dew's graph has no GPU in it at all.
-        let env = env.extending(SceneViewMergeToParent);
+        let mut env = env.extending(SceneViewMergeToParent);
+        theme::install_default_fonts(&mut env);
         self.theme = Some(theme::ThemePalette::new(&env, self.signals()));
         self.root = Some(build_node(self, view, &env, 0));
         self.refresh_tree(width, height)
@@ -639,8 +646,15 @@ fn build_unmeasured_node(
             .downcast::<Native<TextConfig>>()
             .expect("dew TextConfig downcast must match its type id");
         let config = text.into_inner();
+        let content = WatchedSignal::new(config.content, renderer.signals());
         return Box::new(TextNode {
-            content: WatchedSignal::new(config.content, renderer.signals()),
+            fonts: RefCell::new(theme::WatchedFonts::styled(
+                &content.get(),
+                content.revision(),
+                env,
+                renderer.signals(),
+            )),
+            content,
             env: env.clone(),
             cache: RefCell::new(TextLayoutCache::default()),
             line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
@@ -653,6 +667,7 @@ fn build_unmeasured_node(
                 .downcast::<Str>()
                 .expect("dew Str downcast must match its type id"),
             cache: RefCell::new(TextLayoutCache::default()),
+            fonts: theme::WatchedFonts::plain(env, renderer.signals()),
             env: env.clone(),
             accessibility_id: renderer.allocate_accessibility_id(),
         });
@@ -957,6 +972,11 @@ fn render_color(renderer: &mut DewRenderer, ctx: RenderContext, color: ResolvedC
 
 struct TextNode {
     content: WatchedSignal<Computed<StyledStr>>,
+    /// The font slots this text shapes with — the layout default plus each
+    /// span's own — watched so a reactive type scale invalidates the layout
+    /// and asks for a frame. Behind a `RefCell` because the set is rebuilt
+    /// from the content, and measurement runs behind `&self`.
+    fonts: RefCell<theme::WatchedFonts>,
     env: Environment,
     cache: RefCell<TextLayoutCache>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
@@ -964,10 +984,22 @@ struct TextNode {
     accessibility_id: NodeId,
 }
 
+impl TextNode {
+    /// Everything that re-shapes this node: its content and the fonts that
+    /// content reads. New content may name different slots, so the watcher
+    /// set is brought up to date here, before its revision is read.
+    fn revision(&self) -> TextRevision {
+        let content = self.content.revision();
+        let mut fonts = self.fonts.borrow_mut();
+        fonts.sync(content, || self.content.get());
+        TextRevision::new(content, fonts.revision())
+    }
+}
+
 impl DewNode for TextNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
         let foreground = theme::foreground(&self.env);
-        let revision = self.content.revision();
+        let revision = self.revision();
         let mut cache = self.cache.borrow_mut();
         let ((width, height), outcome) = cache.measure(
             revision,
@@ -992,7 +1024,7 @@ impl DewNode for TextNode {
         // own foreground has to be painted in it, and a render that disagreed
         // with the measurement would re-shape the text a second time.
         let foreground = theme::foreground(&self.env);
-        let revision = self.content.revision();
+        let revision = self.revision();
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         let outcome = self.cache.borrow_mut().emit(
@@ -1028,6 +1060,10 @@ impl DewNode for TextNode {
 struct StrNode {
     value: Str,
     cache: RefCell<TextLayoutCache>,
+    /// The theme body font this leaf shapes at — the same slot `text("…")`
+    /// resolves, watched for the same reason. A fixed string names no other,
+    /// so this set never changes.
+    fonts: theme::WatchedFonts,
     env: Environment,
     accessibility_id: NodeId,
 }
@@ -1037,13 +1073,16 @@ impl DewNode for StrNode {
         let foreground = theme::foreground(&self.env);
         let mut cache = self.cache.borrow_mut();
         let ((width, height), outcome) = cache.measure(
-            0,
+            TextRevision::font_only(self.fonts.revision()),
             TextLayoutKey::new(proposal.width, foreground),
             None,
             || {
-                state
-                    .borrow_mut()
-                    .build_plain_layout(&self.value, proposal.width, foreground)
+                state.borrow_mut().build_plain_layout(
+                    &self.value,
+                    &self.env,
+                    proposal.width,
+                    foreground,
+                )
             },
         );
         let dimensions = ViewDimensions::new(Size::new(width, height));
@@ -1056,16 +1095,18 @@ impl DewNode for StrNode {
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         let outcome = self.cache.borrow_mut().emit(
-            0,
+            TextRevision::font_only(self.fonts.revision()),
             TextLayoutKey::new(max_width, foreground),
             None,
             transform,
             &mut renderer.list,
             || {
-                renderer
-                    .state
-                    .borrow_mut()
-                    .build_plain_layout(&self.value, max_width, foreground)
+                renderer.state.borrow_mut().build_plain_layout(
+                    &self.value,
+                    &self.env,
+                    max_width,
+                    foreground,
+                )
             },
         );
         renderer.state.borrow_mut().record_layout(outcome);
@@ -1095,7 +1136,17 @@ pub(crate) struct WatchedSignal<S: Signal> {
 
 impl<S: Signal> WatchedSignal<S> {
     pub(crate) fn new(signal: S, signals: FrameSignals) -> Self {
-        let revision = Rc::new(Cell::new(0u64));
+        Self::shared(signal, signals, Rc::new(Cell::new(0u64)))
+    }
+
+    /// Watches `signal` against a counter shared with other signals, so a
+    /// change to any of them moves one number.
+    ///
+    /// For a cache that depends on a *set* of signals whose membership itself
+    /// changes — the font slots a styled string's spans name, which are
+    /// rebuilt whenever the content does — one shared counter is what keeps
+    /// the cache's revision a single comparison.
+    pub(crate) fn shared(signal: S, signals: FrameSignals, revision: Rc<Cell<u64>>) -> Self {
         let guard = signal.watch({
             let revision = Rc::clone(&revision);
             move |_| {

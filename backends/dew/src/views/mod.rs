@@ -21,7 +21,7 @@ use waterui_core::layout::Size;
 use waterui_text::styled::StyledStr;
 
 use crate::dispatch::{DewRenderer, RenderContext, WatchedSignal};
-use crate::text::{DewState, TextLayoutCache, TextLayoutKey};
+use crate::text::{DewState, TextLayoutCache, TextLayoutKey, TextRevision};
 use crate::theme;
 
 pub mod button;
@@ -73,6 +73,11 @@ pub const fn to_f32(value: f64) -> f32 {
 pub struct LabelText {
     display_mode: LabelDisplayMode,
     content: WatchedSignal<Computed<StyledStr>>,
+    /// The font slots the label shapes with — the layout default plus each
+    /// span's own — watched so a reactive type scale re-shapes it and asks for
+    /// a frame. Behind a `RefCell` because the set is rebuilt from the
+    /// content, and measurement runs behind `&self`.
+    fonts: RefCell<theme::WatchedFonts>,
     cache: RefCell<TextLayoutCache>,
 }
 
@@ -80,11 +85,29 @@ impl LabelText {
     /// Retains `label`'s semantic text, subscribing to its reactive content.
     #[must_use]
     pub fn new(label: &Label, env: &Environment, signals: FrameSignals) -> Self {
+        let content =
+            WatchedSignal::new(label.semantic_text().resolve(env).content, signals.clone());
         Self {
             display_mode: label.display_mode_preference(),
-            content: WatchedSignal::new(label.semantic_text().resolve(env).content, signals),
+            fonts: RefCell::new(theme::WatchedFonts::styled(
+                &content.get(),
+                content.revision(),
+                env,
+                signals,
+            )),
+            content,
             cache: RefCell::new(TextLayoutCache::default()),
         }
+    }
+
+    /// Everything that re-shapes this label: its content and the fonts that
+    /// content reads. New content may name different slots, so the watcher set
+    /// is brought up to date here, before its revision is read.
+    fn revision(&self) -> TextRevision {
+        let content = self.content.revision();
+        let mut fonts = self.fonts.borrow_mut();
+        fonts.sync(content, || self.content.get());
+        TextRevision::new(content, fonts.revision())
     }
 
     /// Whether this label draws nothing.
@@ -108,7 +131,7 @@ impl LabelText {
         }
         let key = TextLayoutKey::new(None, theme::foreground(env));
         let mut cache = self.cache.borrow_mut();
-        let ((width, height), outcome) = cache.measure(self.content.revision(), key, None, || {
+        let ((width, height), outcome) = cache.measure(self.revision(), key, None, || {
             state
                 .borrow_mut()
                 .build_styled_layout(&self.content.get(), env, None, key.brush)
@@ -149,7 +172,7 @@ impl LabelText {
         }
         let max_width = (rect.width() > 0.0).then(|| to_f32(rect.width()));
         let key = TextLayoutKey { max_width, brush };
-        let revision = self.content.revision();
+        let revision = self.revision();
         let mut cache = self.cache.borrow_mut();
         let (list, state) = renderer.list_and_state();
         // Vertical centring needs the laid-out height, which is only known
