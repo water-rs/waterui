@@ -9,7 +9,7 @@
 //! strings, so tags balance and content is escaped by construction — a formula
 //! containing `<` or `&` is ordinary, not an edge case.
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use quick_xml::Writer;
@@ -17,26 +17,33 @@ use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 
 use crate::ast::{MathItem, MathStyle};
 
-/// Why a tree could not be written as `MathML`.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum MathMlError {
-    /// The writer failed, or produced bytes that are not UTF-8.
-    #[error("could not write MathML: {message}")]
-    Write {
-        /// What went wrong.
-        message: String,
-    },
-}
+/// What the writer is told when it refuses a byte it cannot refuse.
+///
+/// The buffer is a [`Vec<u8>`], whose [`std::io::Write`] impl has no failure
+/// mode, so every `io::Result` threaded through this module is `Ok` by
+/// construction. Saying so once here is what keeps [`to_mathml`] total.
+const WRITE_CANNOT_FAIL: &str = "writing MathML into an in-memory buffer cannot fail";
 
 /// Renders `item` as a `MathML` `<math>` element.
 ///
 /// `style` sets the `display` attribute, which is the difference between a
 /// formula announced as set on its own line and one announced inline.
 ///
-/// # Errors
+/// This is total: a tree that parsed always has markup. The buffer is a
+/// [`Vec<u8>`] that never refuses a write, and every byte put into it comes
+/// either from `&str` content or from the escaper's ASCII entities, so the
+/// bytes are always UTF-8. A `Result` here would be an error no caller could
+/// act on, and the caller that had one discarded it and published an empty
+/// accessibility payload instead.
 ///
-/// Returns [`MathMlError`] if the underlying writer fails.
-pub fn to_mathml(item: &MathItem, style: MathStyle) -> Result<String, MathMlError> {
+/// # Panics
+///
+/// Panics if the buffer refuses a write or if the bytes it collected are not
+/// UTF-8 — neither of which the paragraph above leaves reachable. The
+/// assertion is what makes the function total; it is not a failure mode a
+/// caller can encounter or handle.
+#[must_use]
+pub fn to_mathml(item: &MathItem, style: MathStyle) -> String {
     let mut writer = Writer::new(Vec::new());
 
     let mut root = BytesStart::new("math");
@@ -49,42 +56,32 @@ pub fn to_mathml(item: &MathItem, style: MathStyle) -> Result<String, MathMlErro
             "inline"
         },
     ));
-    write(&mut writer, Event::Start(root))?;
-    element(&mut writer, item)?;
-    write(&mut writer, Event::End(BytesEnd::new("math")))?;
+    write(&mut writer, Event::Start(root));
+    element(&mut writer, item);
+    write(&mut writer, Event::End(BytesEnd::new("math")));
 
-    String::from_utf8(writer.into_inner()).map_err(|error| MathMlError::Write {
-        message: error.to_string(),
-    })
+    String::from_utf8(writer.into_inner()).expect("MathML is written from UTF-8 text")
 }
 
-fn write(writer: &mut Writer<Vec<u8>>, event: Event<'_>) -> Result<(), MathMlError> {
-    writer
-        .write_event(event)
-        .map_err(|error| MathMlError::Write {
-            message: error.to_string(),
-        })
+fn write(writer: &mut Writer<Vec<u8>>, event: Event<'_>) {
+    writer.write_event(event).expect(WRITE_CANNOT_FAIL);
 }
 
-fn leaf(writer: &mut Writer<Vec<u8>>, tag: &str, text: &str) -> Result<(), MathMlError> {
-    write(writer, Event::Start(BytesStart::new(tag)))?;
-    write(writer, Event::Text(BytesText::new(text)))?;
-    write(writer, Event::End(BytesEnd::new(tag)))
+fn leaf(writer: &mut Writer<Vec<u8>>, tag: &str, text: &str) {
+    write(writer, Event::Start(BytesStart::new(tag)));
+    write(writer, Event::Text(BytesText::new(text)));
+    write(writer, Event::End(BytesEnd::new(tag)));
 }
 
-fn wrap(
-    writer: &mut Writer<Vec<u8>>,
-    tag: &str,
-    children: &[&MathItem],
-) -> Result<(), MathMlError> {
-    write(writer, Event::Start(BytesStart::new(tag)))?;
+fn wrap(writer: &mut Writer<Vec<u8>>, tag: &str, children: &[&MathItem]) {
+    write(writer, Event::Start(BytesStart::new(tag)));
     for child in children {
-        element(writer, child)?;
+        element(writer, child);
     }
-    write(writer, Event::End(BytesEnd::new(tag)))
+    write(writer, Event::End(BytesEnd::new(tag)));
 }
 
-fn element(writer: &mut Writer<Vec<u8>>, item: &MathItem) -> Result<(), MathMlError> {
+fn element(writer: &mut Writer<Vec<u8>>, item: &MathItem) {
     match item {
         MathItem::Ident(text) => leaf(writer, "mi", text.as_str()),
         MathItem::Number(text) => leaf(writer, "mn", text.as_str()),
@@ -94,11 +91,11 @@ fn element(writer: &mut Writer<Vec<u8>>, item: &MathItem) -> Result<(), MathMlEr
             let mut space = BytesStart::new("mspace");
             let width = alloc::format!("{em}em");
             space.push_attribute(("width", width.as_str()));
-            write(writer, Event::Empty(space))
+            write(writer, Event::Empty(space));
         }
         MathItem::Row(items) => {
             let children: Vec<&MathItem> = items.iter().collect();
-            wrap(writer, "mrow", &children)
+            wrap(writer, "mrow", &children);
         }
         MathItem::Fraction {
             numerator,
@@ -115,15 +112,15 @@ fn element(writer: &mut Writer<Vec<u8>>, item: &MathItem) -> Result<(), MathMlEr
             (None, None) => element(writer, base),
         },
         MathItem::Fenced { open, body, close } => {
-            write(writer, Event::Start(BytesStart::new("mrow")))?;
+            write(writer, Event::Start(BytesStart::new("mrow")));
             if let Some(open) = open {
-                leaf(writer, "mo", open.glyph.as_str())?;
+                leaf(writer, "mo", open.glyph.as_str());
             }
-            element(writer, body)?;
+            element(writer, body);
             if let Some(close) = close {
-                leaf(writer, "mo", close.glyph.as_str())?;
+                leaf(writer, "mo", close.glyph.as_str());
             }
-            write(writer, Event::End(BytesEnd::new("mrow")))
+            write(writer, Event::End(BytesEnd::new("mrow")));
         }
     }
 }
@@ -135,7 +132,7 @@ mod tests {
 
     fn mathml(source: &str) -> String {
         let item = latex::parse(source).unwrap_or_else(|error| panic!("`{source}`: {error}"));
-        to_mathml(&item, MathStyle::Text).expect("MathML must be writable")
+        to_mathml(&item, MathStyle::Text)
     }
 
     #[test]
@@ -170,8 +167,8 @@ mod tests {
     #[test]
     fn display_mode_reaches_the_markup() {
         let item = latex::parse(r"\frac{a}{b}").expect("parses");
-        let block = to_mathml(&item, MathStyle::Display).expect("writes");
-        let inline = to_mathml(&item, MathStyle::Text).expect("writes");
+        let block = to_mathml(&item, MathStyle::Display);
+        let inline = to_mathml(&item, MathStyle::Text);
         assert!(block.contains("display=\"block\""), "got {block}");
         assert!(inline.contains("display=\"inline\""), "got {inline}");
     }

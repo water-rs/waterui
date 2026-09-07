@@ -49,6 +49,13 @@ The semantic tree is kept after layout, not consumed by it. `mathml::to_mathml`
 publishes it as MathML, which is what assistive technology reads — a formula
 drawn as anonymous filled paths has no content at all to a screen reader.
 
+That markup reaches the accessibility tree: the drawing answers
+`SceneContent::accessibility_label` with it, and the backend names the formula's
+node with it. The markup follows the source signal, so a formula bound to state
+stays current. `.a11y_label("Quadratic formula")` still wins wherever the
+application names the formula itself — the markup is what the node says when
+nobody named it.
+
 ## Fonts
 
 Only a face carrying an OpenType `MATH` table can set mathematics. The default
