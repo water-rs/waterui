@@ -45,7 +45,7 @@ use waterui_form::picker::multi_date::MultiDatePickerConfig;
 use waterui_form::secure::SecureFieldConfig;
 use waterui_graphics::gpu_surface::GpuSurface;
 use waterui_graphics::{
-    AppliedFilter, ResolvedGradient,
+    AppliedFilter, Picture, ResolvedGradient,
     color::{Color, ResolvedColor},
 };
 use waterui_icon::SystemIcon;
@@ -927,6 +927,7 @@ impl GtkRenderer {
         Self::register_native::<ResolvedColor>(dispatcher);
         Self::register_native::<ResolvedGradient>(dispatcher);
         Self::register_native::<ResolvedShape>(dispatcher);
+        Self::register_native::<Picture>(dispatcher);
 
         // Register Dynamic for reactive content
         Self::register::<Native<Dynamic>>(dispatcher);

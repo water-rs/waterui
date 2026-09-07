@@ -23,6 +23,8 @@ peniko.workspace = true
 
 [dev-dependencies]
 waterui = { path = "../../.." }
+# The engine-parity test exports the CPU rasteriser's output beside the GPU engines.
+waterui-graphics = { workspace = true, features = ["cpu-scene"] }
 waterui-testing = { path = "../../../testing" }
 pollster.workspace = true
 # The engine-parity test drives a headless surface itself, which is the only

@@ -26,6 +26,10 @@ vello-scene = [
     "dep:glifo",
     "dep:wgpu",
 ]
+# Rasterises a `SceneRecording` on the CPU through `vello_cpu`: what the FFI
+# backends need to show a `Picture` in a platform image view, and what Dew
+# paints with. Independent of `gpu`.
+cpu-scene = ["dep:vello_cpu"]
 gpu = [
     "vello-scene",
     "dep:keyboard-types",
@@ -57,6 +61,12 @@ vello = { workspace = true, optional = true }
 vello_hybrid = { workspace = true, optional = true }
 vello_common = { workspace = true, optional = true }
 glifo = { workspace = true, optional = true }
+vello_cpu = { workspace = true, optional = true, features = [
+    "std",
+    "text",
+    "u8_pipeline",
+    "f32_pipeline",
+] }
 kurbo.workspace = true
 keyboard-types = { workspace = true, optional = true }
 peniko.workspace = true

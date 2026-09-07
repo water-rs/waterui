@@ -31,7 +31,7 @@ executor-core.workspace = true
 cbindgen = { version = "0.29.4", optional = true }
 # JNI crate - optional, enabled by android-jni feature for Android builds
 jni = { version = "0.22.4", optional = true }
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["cpu-scene"] }
 # The geometry vocabulary of the `GpuSurface` input contract: surface-local
 # points on the way in, the IME caret rect on the way out.
 kurbo = { workspace = true, optional = true }
@@ -144,3 +144,7 @@ webview-cef = [
 ]
 [package.metadata.cargo-machete]
 ignored = ["waterui-svg"]
+
+[dev-dependencies]
+kurbo.workspace = true
+peniko.workspace = true
