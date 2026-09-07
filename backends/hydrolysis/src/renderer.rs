@@ -202,6 +202,48 @@ pub(crate) use input::{
     text_editing,
 };
 
+/// The antialiasing vello runs for every Hydrolysis layer.
+///
+/// Multisampling rather than vello's analytic `Area` coverage, because `Area`
+/// cannot produce the same bytes twice. `path_count.wgsl` hands each segment
+/// its slot inside a tile with an `atomicAdd`, so the order the `fine` stage
+/// walks a tile's segments in is whatever order the dispatch happened to claim
+/// those slots; `fine` then accumulates coverage as `area += a * dy`, and
+/// floating-point addition is not associative. An unchanged scene therefore
+/// rasterizes to coverages an ULP apart between two renders, which quantizes to
+/// pixels 1/255 apart (#271). The multisampled fine stage accumulates winding
+/// numbers and sample masks with integer `atomicAdd`s instead, and integer
+/// addition does not care what order it is applied in, so the same scene always
+/// composites to the same bytes.
+pub(crate) const LAYER_ANTIALIASING: vello::AaConfig = vello::AaConfig::Msaa16;
+
+/// The fine-stage variants a Hydrolysis `vello::Renderer` compiles: exactly the
+/// one [`LAYER_ANTIALIASING`] asks for, so pipeline creation does not pay for
+/// variants no layer will ever select.
+pub(crate) const LAYER_ANTIALIASING_SUPPORT: vello::AaSupport =
+    antialiasing_support_for(LAYER_ANTIALIASING);
+
+/// The single-method [`vello::AaSupport`] that lets a renderer serve `config`.
+const fn antialiasing_support_for(config: vello::AaConfig) -> vello::AaSupport {
+    match config {
+        vello::AaConfig::Area => vello::AaSupport {
+            area: true,
+            msaa8: false,
+            msaa16: false,
+        },
+        vello::AaConfig::Msaa8 => vello::AaSupport {
+            area: false,
+            msaa8: true,
+            msaa16: false,
+        },
+        vello::AaConfig::Msaa16 => vello::AaSupport {
+            area: false,
+            msaa8: false,
+            msaa16: true,
+        },
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ContentSizeLimits {
     pub(crate) minimum: LayoutSize,
@@ -337,7 +379,7 @@ impl HydrolysisRenderer {
             device,
             vello::RendererOptions {
                 use_cpu: false,
-                antialiasing_support: vello::AaSupport::area_only(),
+                antialiasing_support: LAYER_ANTIALIASING_SUPPORT,
                 // Hydrolysis is the high-end, multi-core renderer: let vello parallelize
                 // pipeline initialization across all available cores instead of pinning
                 // it to a single thread.
