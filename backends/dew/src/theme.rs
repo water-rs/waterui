@@ -1,5 +1,8 @@
 //! Dew's reactive widget palette.
 
+use core::cell::Cell;
+use std::rc::Rc;
+
 use nami::{Computed, Signal};
 use peniko::Color;
 use waterui_backend_core::frame_signals::FrameSignals;
@@ -9,8 +12,9 @@ use waterui_graphics::color::{
     MutedForegroundColor, ResolvedColor, Srgb, SurfaceColor, SurfaceVariantColor,
 };
 use waterui_text::font::{
-    Body, Caption, FontWeight, Footnote, Headline, ResolvedFont, Subheadline, Title,
+    Body, Caption, Font, FontWeight, Footnote, Headline, ResolvedFont, Subheadline, Title,
 };
+use waterui_text::styled::StyledStr;
 
 use crate::dispatch::WatchedSignal;
 
@@ -66,11 +70,14 @@ pub const FOOTNOTE_FONT: ResolvedFont = ResolvedFont::new(11.0, FontWeight::Medi
 /// Font slots are the one part of the palette dew cannot resolve at draw time:
 /// a colour an application never chose falls back to this module's constants
 /// where it is drawn, while a font is resolved inside `waterui-text`, which
-/// requires the token to be in the environment and panics when it is not. Supplying a default appearance is
-/// the backend's job rather than the view code's, so [`crate::DewRuntime`]
-/// applies this to the environment it renders under — a device app that
-/// installs no theme still renders `text("…")`, exactly as it renders a
-/// foreground colour it never chose.
+/// requires the token to be in the environment and panics when it is not.
+/// Supplying a default appearance is the backend's job rather than the view
+/// code's, so [`DewRenderer::render_tree`] applies this to the environment
+/// every view tree is dispatched under — a device app that installs no theme
+/// still renders `text("…")`, exactly as it renders a foreground colour it
+/// never chose.
+///
+/// [`DewRenderer::render_tree`]: crate::DewRenderer::render_tree
 ///
 /// The scale matches the one every other `WaterUI` backend defaults to, so the
 /// same view has the same proportions on a panel and on a desktop window. No
@@ -179,6 +186,108 @@ fn watch<T: 'static>(
     default: Color,
 ) -> WatchedSignal<Computed<ResolvedColor>> {
     WatchedSignal::new(slot::<T>(env, default), signals)
+}
+
+/// The font signals one text node actually shapes with, watched together.
+///
+/// Fonts get the same treatment colours do: a change bumps a revision the
+/// layout cache keys on, and requests a frame so the re-shaped text reaches
+/// the panel without anything rebuilding the tree. Two things differ from the
+/// colour palette, and both follow from what a font is here.
+///
+/// It is per text node rather than per renderer, because a slot is read from
+/// the node's own environment — a subtree is free to install its own type
+/// scale, exactly as it is free to install its own foreground.
+///
+/// And the *set* of slots is content-dependent: a styled string's spans name
+/// their own (`.title()`, `.caption()`, an explicit size), so the watchers are
+/// rebuilt whenever the content revision moves, which is precisely when a span
+/// could have started or stopped reading a slot. That keeps the cost
+/// proportional to the slots a node uses rather than to the size of the type
+/// scale. Every watcher shares one counter, so the layout cache still compares
+/// a single number.
+pub(crate) struct WatchedFonts {
+    env: Environment,
+    signals: FrameSignals,
+    revision: Rc<Cell<u64>>,
+    /// Content revision `watched` was built for.
+    content_revision: u64,
+    watched: Vec<WatchedSignal<Computed<ResolvedFont>>>,
+}
+
+impl WatchedFonts {
+    /// Watches the body slot alone — the whole type scale a bare
+    /// [`waterui_core::Str`] leaf can read, and a set that never changes.
+    pub(crate) fn plain(env: &Environment, signals: FrameSignals) -> Self {
+        let mut fonts = Self::empty(env, signals, 0);
+        fonts.watch(&Font::default());
+        fonts
+    }
+
+    /// Watches what `content` shapes with: the layout default plus the font
+    /// each span names.
+    pub(crate) fn styled(
+        content: &StyledStr,
+        content_revision: u64,
+        env: &Environment,
+        signals: FrameSignals,
+    ) -> Self {
+        let mut fonts = Self::empty(env, signals, content_revision);
+        fonts.rebuild(content);
+        fonts
+    }
+
+    /// Rebuilds the watcher set when the content revision has moved on: the
+    /// new string may name slots the old one did not.
+    ///
+    /// `content` is sampled only on an actual change, so the width probes a
+    /// layout pass makes cost nothing.
+    pub(crate) fn sync(&mut self, content_revision: u64, content: impl FnOnce() -> StyledStr) {
+        if self.content_revision != content_revision {
+            self.rebuild(&content());
+            self.content_revision = content_revision;
+        }
+    }
+
+    /// The revision every watched slot shares.
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision.get()
+    }
+
+    fn empty(env: &Environment, signals: FrameSignals, content_revision: u64) -> Self {
+        Self {
+            env: env.clone(),
+            signals,
+            revision: Rc::new(Cell::new(0)),
+            content_revision,
+            watched: Vec::new(),
+        }
+    }
+
+    fn rebuild(&mut self, content: &StyledStr) {
+        self.watched.clear();
+        self.watch(&Font::default());
+        for (_, style) in content.chunks() {
+            self.watch(&style.font);
+        }
+    }
+
+    fn watch(&mut self, font: &Font) {
+        self.watched.push(WatchedSignal::shared(
+            font.resolve(&self.env),
+            self.signals.clone(),
+            Rc::clone(&self.revision),
+        ));
+    }
+}
+
+impl core::fmt::Debug for WatchedFonts {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WatchedFonts")
+            .field("revision", &self.revision.get())
+            .field("watched", &self.watched.len())
+            .finish_non_exhaustive()
+    }
 }
 
 pub(crate) fn foreground(env: &Environment) -> Color {
