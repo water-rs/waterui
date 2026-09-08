@@ -155,7 +155,13 @@ impl GpuView for CefGpuView {
     }
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
-        self.page.pump();
+        // No pump here. Chromium's message loop belongs to
+        // `CefRuntime::start_message_pump`, which Chromium itself paces; running
+        // `do_message_loop_work` inside the render callback put whatever the
+        // browser had queued — parsing, script, compositing — on the main thread
+        // inside one frame's budget, which is what tripped the stall probe every
+        // few seconds on an idle page. Rendering presents the newest frame the
+        // sink has published and nothing else.
         request_browser_frame(&self.page, frame);
         let scale = sync_browser_viewport(&self.page, frame);
         let presenter = self
