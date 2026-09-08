@@ -255,7 +255,11 @@ lyon = "1.0"
 wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
 # Must match the `glow` version wgpu-hal links against, or GLES handles from
 # `wgpu::hal::gles` fail to unify with locally created ones.
-glow = "0.18"
+# Tracks whatever `wgpu-hal` links, not the newest release: the GTK backend
+# hands a `glow::NativeFramebuffer` straight to
+# `wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer`, so a different
+# major here makes that a different type and the backend stops compiling.
+glow = "0.17"
 tiny-skia = "0.12"
 zenwave = { version = "0.5.0", default-features = false, features = ["hyper-backend"] }
 futures-timer = "3"
