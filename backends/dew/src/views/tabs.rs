@@ -494,7 +494,20 @@ impl TabsNode {
             .fold(0.0_f64, f64::max);
         let desired_height = ITEM_PADDING_Y.mul_add(2.0, tallest).max(MIN_BAR_HEIGHT) + HAIRLINE;
         let bar_height = desired_height.min(bounds.height() / 2.0);
-        let bar = kurbo::Rect::new(bounds.x0, bounds.y1 - bar_height, bounds.x1, bounds.y1);
+        // Where the bar stops and the page starts is one edge, so it is decided
+        // once, on layout's `f32` grid — the same contract `navigation.rs`
+        // keeps for its own chrome. The bar is painted in kurbo's `f64` and the
+        // page is framed in `f32`, so an edge left at `f64` and narrowed only on
+        // the page's side describes two positions up to half an ULP apart: a
+        // hairline of page painted under the bar, or a hairline of window
+        // background between them. The bar's height comes from the tallest tab
+        // label, so whether it lands on the `f32` grid is a property of the font.
+        let bar = kurbo::Rect::new(
+            bounds.x0,
+            f64::from(to_f32(bounds.y1 - bar_height)),
+            bounds.x1,
+            bounds.y1,
+        );
         self.render_selected_page(
             renderer,
             ctx,
