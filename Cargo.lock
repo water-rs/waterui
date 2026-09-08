@@ -12459,6 +12459,7 @@ dependencies = [
  "dirs",
  "executor-core",
  "futures",
+ "futures-lite",
  "futures-timer",
  "keycode",
  "kurbo 0.13.1",

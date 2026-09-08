@@ -766,7 +766,6 @@ fn new_client(
 /// CEF implementation of one visible or headless Chromium page.
 #[derive(Clone)]
 pub struct CefPageHandle {
-    runtime: CefRuntime,
     browser: Browser,
     host: BrowserHost,
     _request_context: RequestContext,
@@ -784,7 +783,11 @@ impl core::fmt::Debug for CefPageHandle {
 }
 
 impl CefPageHandle {
-    fn create(runtime: CefRuntime, configuration: CefPageConfiguration, mode: CefPageMode) -> Self {
+    fn create(
+        runtime: &CefRuntime,
+        configuration: CefPageConfiguration,
+        mode: CefPageMode,
+    ) -> Self {
         let state = Rc::new(PageState::new(mode));
         let mut client = new_client(
             new_render_handler(Rc::clone(&state)),
@@ -793,7 +796,7 @@ impl CefPageHandle {
             new_request_handler(Rc::clone(&state)),
             new_display_handler(Rc::clone(&state)),
         );
-        let mut request_context = create_request_context(&runtime, &configuration);
+        let mut request_context = create_request_context(runtime, &configuration);
         let initial_url = configuration
             .url
             .as_ref()
@@ -827,7 +830,6 @@ impl CefPageHandle {
             }
         });
         let handle = Self {
-            runtime,
             browser,
             host,
             _request_context: request_context,
@@ -860,11 +862,6 @@ impl CefPageHandle {
         self.state.frame_sink.replace(Some(Rc::new(sink)));
         self.host.was_resized();
         self.host.invalidate(PaintElementType::VIEW);
-    }
-
-    /// Executes due work for the process-owned CEF external message pump.
-    pub fn pump(&self) {
-        let _ = self.runtime.pump();
     }
 
     /// Requests one compositor frame for this windowless browser.
@@ -1330,7 +1327,7 @@ impl CefController {
         configuration: CefPageConfiguration,
         mode: CefPageMode,
     ) -> CefPageHandle {
-        CefPageHandle::create(self.runtime.clone(), configuration, mode)
+        CefPageHandle::create(&self.runtime, configuration, mode)
     }
 }
 

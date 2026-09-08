@@ -4,10 +4,10 @@
 //! that the framework exports those entry points at the declared signatures.
 //! `libloading` keeps the framework mapped for as long as the `Library` lives.
 
+use async_channel::{Receiver, TryRecvError, unbounded};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
 use cef::args::Args;
@@ -22,6 +22,26 @@ use crate::app::new_app;
 #[cfg(any(feature = "chromium", feature = "webview"))]
 use crate::page::CefController;
 
+/// How long the pump may go without hearing from Chromium before running anyway.
+///
+/// Pacing otherwise comes from Chromium: it calls `OnScheduleMessagePumpWork`
+/// with the delay it wants — measured on an idle page, only ever 0 ms or 83 ms —
+/// and [`CefRuntime::start_message_pump`] wakes on that request even mid-sleep.
+///
+/// This interval is not a free parameter. `do_message_loop_work` is a
+/// variable-cost call on the UI thread, and how often it runs decides how much
+/// work each call has to drain, so both directions are worse. Measured on
+/// `examples/chromium` with the page idle after its first accelerated paint,
+/// counting main-thread polls that reached the frame-budget warning threshold:
+///
+/// | interval | over-budget polls | worst poll |
+/// |---|---|---|
+/// | 8 ms | 20.2 / min | 654 ms |
+/// | 33 ms | 5.8 / min | 10 ms |
+/// | 1 s | 7.7 / min | 15 ms |
+///
+/// Pumping more often multiplies the fixed cost of the call; pumping less often
+/// hands each call a bigger backlog. Change this only against a new measurement.
 const MAXIMUM_PUMP_INTERVAL: Duration = Duration::from_millis(1000 / 30);
 
 #[derive(Deserialize)]
@@ -456,7 +476,7 @@ fn bootstrap(paths: &CefRuntimePaths) -> Result<CefBootstrap, i32> {
         "loaded CEF runtime has no compatible API hash"
     );
 
-    let (schedule, pump_requests) = channel();
+    let (schedule, pump_requests) = unbounded();
     let mut app = new_app(schedule);
     let subprocess_exit = execute_process(Some(args.as_main_args()), Some(&mut app), sandbox_info);
     if subprocess_exit >= 0 {
@@ -635,7 +655,7 @@ impl CefRuntime {
             match self.inner.pump_requests.try_recv() {
                 Ok(deadline) => requested = Some(deadline.instant()),
                 Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
+                Err(TryRecvError::Closed) => {
                     panic!("CEF browser-process message pump disconnected")
                 }
             }
@@ -675,6 +695,7 @@ impl CefRuntime {
             return;
         }
         let runtime = Rc::downgrade(&self.inner);
+        let requests = self.inner.pump_requests.clone();
         executor_core::spawn_local(async move {
             loop {
                 let Some(inner) = runtime.upgrade() else {
@@ -683,7 +704,24 @@ impl CefRuntime {
                 // The strong reference must not be held across the await, or
                 // this task would keep CEF alive for the life of the process.
                 let deadline = Self { inner }.pump().instant();
-                futures_timer::Delay::new(deadline.saturating_duration_since(Instant::now())).await;
+                let sleep = async {
+                    futures_timer::Delay::new(deadline.saturating_duration_since(Instant::now()))
+                        .await;
+                    None
+                };
+                // Sleeping out the whole deadline would ignore a request that
+                // arrives during it, and Chromium asks for an immediate pump
+                // the moment it has work — which is every frame of an
+                // animating page. That is what capped a page at the idle
+                // ceiling and made the render callback pump to make up for it.
+                let requested =
+                    futures_lite::future::race(sleep, async { requests.recv().await.ok() }).await;
+                if let Some(requested) = requested {
+                    let Some(inner) = runtime.upgrade() else {
+                        return;
+                    };
+                    inner.next_pump.set(requested.instant());
+                }
             }
         })
         .detach();
