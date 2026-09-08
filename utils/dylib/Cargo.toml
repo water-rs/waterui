@@ -45,6 +45,7 @@ webview = ["waterui-internal/webview"]
 navigation-restoration = ["waterui-internal/navigation-restoration"]
 snackbar = ["waterui-internal/snackbar"]
 flow-markdown = ["waterui-internal/flow-markdown"]
+markdown-math = ["waterui-internal/markdown-math"]
 std = ["waterui-internal/std"]
 all = [
     "waterui-internal/all",
