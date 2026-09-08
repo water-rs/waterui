@@ -35,6 +35,9 @@ waterkit-screen = { workspace = true, optional = true }
 executor-core.workspace = true
 futures.workspace = true
 tracing.workspace = true
+# Grapheme clusters for the avatar monogram: a name's first "letter" is a
+# cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
+unicode-segmentation = "1.12"
 tracing-subscriber = { workspace = true, optional = true }
 async-channel.workspace = true
 minstant.workspace = true
