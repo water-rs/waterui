@@ -4499,18 +4499,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glow"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "263218b0ba2b0715c3370fb04674f5f8aa331594b521c94ff0a8e4a8472d1386"
-dependencies = [
- "js-sys",
- "slotmap",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "glutin_wgl_sys"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13081,7 +13069,7 @@ dependencies = [
  "executor-core",
  "gdk4",
  "glib",
- "glow 0.18.0",
+ "glow",
  "gtk4",
  "indexmap 2.14.0",
  "keycode",
@@ -14051,7 +14039,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "281c4db2ca90300db1f1f44a90332d09dc9f4e551314d2aa36f3d6f15ad307ed"
 dependencies = [
  "ash",
- "glow 0.17.0",
+ "glow",
  "libc",
  "libloading 0.9.0",
  "objc2 0.6.4",
@@ -14077,7 +14065,7 @@ dependencies = [
  "bytemuck",
  "cfg-if 1.0.4",
  "cfg_aliases 0.2.2",
- "glow 0.17.0",
+ "glow",
  "glutin_wgl_sys",
  "gpu-allocator",
  "gpu-descriptor",
