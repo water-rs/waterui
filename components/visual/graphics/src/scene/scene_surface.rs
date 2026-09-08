@@ -188,6 +188,15 @@ impl GpuView for SceneSurfaceRenderer {
         scene_stretch_axis(self.content.intrinsic_size())
     }
 
+    /// Whatever the scene says about itself.
+    ///
+    /// This is the only thing standing between a surface-rendered formula or
+    /// diagram and a screen reader announcing an unlabelled rectangle: the
+    /// pixels carry the meaning and nothing outside the content can read them.
+    fn accessibility_label(&self) -> Option<alloc::string::String> {
+        self.content.accessibility_label()
+    }
+
     fn render(&mut self, frame: &mut GpuFrame) {
         let renderer = alloc::sync::Arc::clone(
             self.renderer

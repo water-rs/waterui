@@ -42,8 +42,10 @@ use waterui_graphics::gpu_surface::{
 };
 use waterui_graphics::shared_context::{GpuRuntime, GpuSubmissionCompletionDriver, reclaim_device};
 
+use waterui_core::Str;
+
 use crate::components::layouting::layout::{WuiProposalSize, WuiViewDimensions};
-use crate::{IntoFFI, IntoRust};
+use crate::{IntoFFI, IntoRust, WuiStr};
 
 /// FFI representation of a `GpuSurface` view.
 ///
@@ -158,6 +160,52 @@ impl WuiGpuSurfaceState {
             .as_ref()
             .and_then(|semantic| semantic.gpu_surface.ime_caret())
     }
+
+    /// What the semantic GPU view says about itself, for a screen reader.
+    ///
+    /// `None` while the renderer's asynchronous setup is still running, and
+    /// whenever the view has nothing to say about its pixels.
+    fn accessibility_label(&self) -> Option<Str> {
+        self.semantic
+            .borrow()
+            .as_ref()
+            .and_then(|semantic| semantic.gpu_surface.accessibility_label())
+            .map(Str::from)
+    }
+}
+
+/// What this surface's content says about itself, for a screen reader.
+///
+/// A surface is an opaque rectangle to the platform's accessibility layer:
+/// whatever the formula, chart or diagram inside it means, nothing outside the
+/// content can read it back off the pixels. A host names the surface's element
+/// with this when the application named it nothing, so an explicit label from
+/// the application always wins.
+///
+/// Ask again after each frame. A view whose content follows a signal re-draws
+/// and re-describes itself at the same moment, and the answer is empty until
+/// asynchronous renderer setup finishes, which is before the first frame.
+///
+/// # Returns
+///
+/// An owning [`WuiStr`], empty when this surface has nothing to say — which a
+/// host treats the same way it treats a view that never had a label. There is
+/// deliberately no third state: "no label" and "the empty label" are the same
+/// instruction to a screen reader, so the ABI does not carry a distinction
+/// nothing acts on.
+///
+/// # Safety
+///
+/// `state` must be a valid pointer returned by
+/// [`waterui_gpu_surface_create`], on the thread that created it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_accessibility_label(
+    state: *const WuiGpuSurfaceState,
+) -> WuiStr {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
+    let state = unsafe { crate::borrow_ffi(state) };
+    state.accessibility_label().unwrap_or_default().into_ffi()
 }
 
 struct GpuSurfaceSemantic {

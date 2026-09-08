@@ -700,6 +700,23 @@ pub trait GpuView: 'static {
         None
     }
 
+    /// What this view says about itself, for a screen reader.
+    ///
+    /// A surface is a rectangle of pixels to the platform's accessibility
+    /// layer: nothing about the formula, chart or diagram inside it is
+    /// inspectable from outside, so a view that draws meaning has to state it
+    /// here or be announced as nothing at all. A backend offers this as the
+    /// leaf's name when the application supplied none of its own, so an
+    /// explicit `.a11y_label(...)` always wins.
+    ///
+    /// The value is read again after each frame, because a view whose content
+    /// is driven by a signal draws and re-describes itself at the same moment.
+    /// `None` means the view has nothing to say — the default, and right for a
+    /// purely decorative surface.
+    fn accessibility_label(&self) -> Option<String> {
+        None
+    }
+
     /// Measure the view for a layout proposal.
     ///
     /// GPU views default to filling the proposed size (stretch). Override for
@@ -1075,6 +1092,7 @@ trait GpuViewImpl: 'static {
     fn wants_input_events(&self) -> bool;
     fn input(&mut self, event: &SurfaceInputEvent);
     fn ime_caret(&self) -> Option<kurbo::Rect>;
+    fn accessibility_label(&self) -> Option<String>;
 }
 
 impl<T: GpuView> GpuViewImpl for T {
@@ -1120,6 +1138,10 @@ impl<T: GpuView> GpuViewImpl for T {
 
     fn ime_caret(&self) -> Option<kurbo::Rect> {
         GpuView::ime_caret(self)
+    }
+
+    fn accessibility_label(&self) -> Option<String> {
+        GpuView::accessibility_label(self)
     }
 }
 
@@ -1554,6 +1576,15 @@ impl GpuSurface {
     #[must_use]
     pub fn ime_caret(&self) -> Option<kurbo::Rect> {
         self.renderer.ime_caret()
+    }
+
+    /// What the GPU view says about itself, for a screen reader.
+    ///
+    /// See [`GpuView::accessibility_label`]. A backend naming this surface's
+    /// accessibility node offers this when the application named it nothing.
+    #[must_use]
+    pub fn accessibility_label(&self) -> Option<String> {
+        self.renderer.accessibility_label()
     }
 }
 

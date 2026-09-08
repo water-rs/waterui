@@ -292,6 +292,42 @@ mod tests {
         }
     }
 
+    /// Content that says what it draws, the way a formula or a chart does.
+    struct Spoken;
+
+    impl SceneContent for Spoken {
+        fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
+            false
+        }
+
+        fn accessibility_label(&self) -> Option<alloc::string::String> {
+            Some("x squared plus one".into())
+        }
+    }
+
+    /// The label has to survive the trip onto a GPU surface, because that is
+    /// the path every native backend takes: a `SceneView` that is not merged
+    /// into a backend's own scene becomes a `GpuSurface`, and a surface whose
+    /// renderer forgot the label is announced to a screen reader as an
+    /// unlabelled rectangle.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_surface_carries_the_label_its_content_gives() {
+        assert_eq!(
+            SceneView::new(Spoken)
+                .into_gpu_surface()
+                .accessibility_label(),
+            Some("x squared plus one".into())
+        );
+        assert_eq!(
+            SceneView::new(Sizeless)
+                .into_gpu_surface()
+                .accessibility_label(),
+            None,
+            "content with nothing to say must not invent a name for itself"
+        );
+    }
+
     #[test]
     fn content_defaults_to_no_intrinsic_size() {
         assert_eq!(Sizeless.intrinsic_size(), None);
