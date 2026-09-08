@@ -32,7 +32,7 @@ use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView, inval
 use waterui_layout::scroll::ScrollView;
 use waterui_math::ast::MathStyle;
 use waterui_math::view::Math;
-use waterui_math::{latex, mathml};
+use waterui_math::{latex, mathml, speech};
 use waterui_svg::Svg;
 
 mod support;
@@ -142,10 +142,10 @@ fn a_scene_publishes_an_accessibility_node() {
 /// A formula reaches the panel as anonymous filled paths, so this node is the
 /// only place its content can be announced at all. Dew published it unnamed:
 /// the tree said "image" and nothing else. The content's own
-/// `SceneContent::accessibility_label` — the formula's `MathML` — is what names
-/// it, the same answer hydrolysis offers for the same drawing, so a formula is
-/// readable on both self-drawn backends rather than on whichever one the test
-/// happened to run.
+/// `SceneContent::accessibility_label` — the formula spoken as a sentence — is
+/// what names it, the same answer hydrolysis offers for the same drawing, so a
+/// formula is readable on both self-drawn backends rather than on whichever one
+/// the test happened to run.
 #[test]
 fn scene_content_names_its_own_accessibility_node() {
     const FORMULA: &str = r"\frac{a}{b}";
@@ -158,13 +158,14 @@ fn scene_content_names_its_own_accessibility_node() {
     );
     runtime.pump().expect("the first frame renders");
 
-    // The expectation comes from the same public converter the view publishes
-    // through, so it tracks the converter instead of rotting into a stale
+    // The expectation comes from the same public converter and speech engine the
+    // view publishes through, so it tracks them instead of rotting into a stale
     // literal.
-    let expected = mathml::to_mathml(
+    let markup = mathml::to_mathml(
         &latex::parse(FORMULA).expect("the fixture formula parses"),
         MathStyle::Text,
     );
+    let expected = speech::speak(&markup).expect("the fixture formula speaks");
 
     let update = runtime
         .board()
@@ -178,7 +179,7 @@ fn scene_content_names_its_own_accessibility_node() {
         .collect();
     assert!(
         labels.contains(&Some(expected.as_str())),
-        "the formula's image node must carry its MathML, got {labels:?}"
+        "the formula's image node must carry its speech, got {labels:?}"
     );
 }
 

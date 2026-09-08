@@ -30,6 +30,13 @@ peniko.workspace = true
 ttf-parser.workspace = true
 pulldown-latex.workspace = true
 quick-xml.workspace = true
+# Speech. A formula drawn as filled paths has no content an assistive technology
+# can reach, and the MathML this crate publishes is markup rather than a
+# sentence — this is what turns one into the other, and the result is the name
+# the formula's accessibility node carries. Not optional: a component that
+# cannot be read out has no accessibility tree worth the name, and a crate this
+# one is not linked into pays nothing for it.
+mathcat.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 toml.workspace = true

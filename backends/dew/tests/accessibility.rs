@@ -13,7 +13,7 @@ use waterui_core::{AnyView, Str};
 use waterui_dew::{DewRuntime, HostBoard};
 use waterui_math::ast::MathStyle;
 use waterui_math::view::Math;
-use waterui_math::{latex, mathml};
+use waterui_math::{latex, mathml, speech};
 use waterui_navigation::{NavigationStack, NavigationView, Tab, Tabs};
 use waterui_text::text;
 
@@ -237,10 +237,10 @@ fn a_control_keeps_its_own_title_when_the_application_names_nothing() {
 /// A scene leaf takes the application's name over the description its content
 /// generated for itself.
 ///
-/// A formula answers `SceneContent::accessibility_label` with its `MathML`, which
-/// is the best a drawing can say about itself and still worse than a caption
-/// the application wrote. The two must not both be announced, so the override
-/// replaces it rather than adding to it.
+/// A formula answers `SceneContent::accessibility_label` with itself spoken as a
+/// sentence, which is the best a drawing can say about itself and still worse
+/// than a caption the application wrote. The two must not both be announced, so
+/// the override replaces it rather than adding to it.
 #[test]
 fn an_application_label_replaces_a_scene_leaf_default_description() {
     const FORMULA: &str = r"\frac{a}{b}";
@@ -253,10 +253,11 @@ fn an_application_label_replaces_a_scene_leaf_default_description() {
     );
     runtime.pump().expect("the formula frame renders");
 
-    let mathml = mathml::to_mathml(
+    let markup = mathml::to_mathml(
         &latex::parse(FORMULA).expect("the fixture formula parses"),
         MathStyle::Text,
     );
+    let said = speech::speak(&markup).expect("the fixture formula speaks");
     let update = runtime
         .board()
         .accessibility_tree()
@@ -271,7 +272,7 @@ fn an_application_label_replaces_a_scene_leaf_default_description() {
         update
             .nodes
             .iter()
-            .all(|(_, node)| node.label() != Some(mathml.as_str())),
+            .all(|(_, node)| node.label() != Some(said.as_str())),
         "the content's own description is replaced, not announced alongside"
     );
 }
