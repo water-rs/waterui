@@ -12360,6 +12360,7 @@ name = "waterui"
 version = "0.3.0"
 dependencies = [
  "hydrolysis-m3",
+ "image",
  "waterui-dylib",
  "waterui-internal",
  "waterui-testing",
@@ -12992,6 +12993,7 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-md",
+ "unicode-segmentation",
  "waterkit-haptic",
  "waterkit-screen",
  "waterui",
