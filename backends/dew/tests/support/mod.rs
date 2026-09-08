@@ -1,9 +1,11 @@
+use kurbo::Rect;
 use waterui::Plugin as _;
+use waterui::color::{ResolvedColor, Srgb};
 use waterui::theme::{FontSettings, Theme};
 use waterui_backend_core::frame_signals::FrameSignals;
 use waterui_backend_core::time::Instant;
 use waterui_core::Environment;
-use waterui_dew::{DewRenderer, FontSources};
+use waterui_dew::{DewRenderer, DisplayList, DrawCommand, FontSources, PlacedCommand};
 use waterui_text::font::{FontWeight, ResolvedFont};
 
 use std::path::PathBuf;
@@ -77,4 +79,68 @@ pub fn report_path(case: &str, file_name: &str) -> PathBuf {
     let directory = TestArtifacts::new("dew").case_dir(case);
     std::fs::create_dir_all(&directory).expect("the dew report directory must be creatable");
     directory.join(file_name)
+}
+
+/// The solid colour a command fills with, when it fills with one.
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
+pub const fn solid_color(command: &PlacedCommand) -> Option<peniko::Color> {
+    match command.command() {
+        DrawCommand::FillPath {
+            brush: peniko::Brush::Solid(color),
+            ..
+        } => Some(*color),
+        _ => None,
+    }
+}
+
+/// Bit-for-bit equality: a geometry assertion that tolerates a rounding
+/// difference cannot see the rounding differences these tests are about.
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
+pub const fn exact_f64(left: f64, right: f64) -> bool {
+    left.to_bits() == right.to_bits()
+}
+
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
+pub fn assert_exact_f64(left: f64, right: f64) {
+    assert_eq!(left.to_bits(), right.to_bits());
+}
+
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
+pub fn solid_fill_bounds(list: &DisplayList, color: peniko::Color) -> Vec<Rect> {
+    list.commands()
+        .iter()
+        .filter(|command| solid_color(command) == Some(color))
+        .map(PlacedCommand::bounds)
+        .collect()
+}
+
+/// The colour a `Color::srgb(...)` reaches the display list as.
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
+pub fn display_srgb(red: u8, green: u8, blue: u8) -> peniko::Color {
+    let resolved = ResolvedColor::from_srgb(Srgb::new_u8(red, green, blue));
+    let srgb = resolved.to_srgb_with_headroom();
+    peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.opacity])
+}
+
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
+pub fn only_solid_fill(list: &DisplayList, color: peniko::Color) -> Rect {
+    let bounds = solid_fill_bounds(list, color);
+    assert_eq!(bounds.len(), 1, "expected exactly one {color:?} fill");
+    bounds[0]
+}
+
+/// Every solid fill spanning the whole window, skipping the root background.
+#[allow(dead_code, reason = "each integration test binary uses its own subset")]
+pub fn full_width_solid_fills(list: &DisplayList, width: f64) -> Vec<Rect> {
+    list.commands()
+        .iter()
+        .skip(1)
+        .filter_map(|command| {
+            let bounds = command.bounds();
+            (solid_color(command).is_some()
+                && exact_f64(bounds.x0, 0.0)
+                && exact_f64(bounds.x1, width))
+            .then_some(bounds)
+        })
+        .collect()
 }
