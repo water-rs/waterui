@@ -150,7 +150,7 @@ fn parse_style(style: &str) -> FontStyle {
 }
 
 /// Lossless `f64` -> `f32` for the font sizes Mermaid deals in.
-trait FromF64Lossless {
+pub trait FromF64Lossless {
     fn from_f64_lossless(value: f64) -> Self;
 }
 
@@ -161,6 +161,25 @@ impl FromF64Lossless for f32 {
     )]
     fn from_f64_lossless(value: f64) -> Self {
         value as Self
+    }
+}
+
+/// The text style a diagram's labels are painted with.
+///
+/// A function of the diagram's font size alone, and deliberately not of a
+/// label's prominence. `merman` measured every label through [`policy`] at that
+/// size, and the box it reserved holds exactly the text that measurement
+/// described. A paint layer that shrank a title by an eighth and set it bold
+/// was reserving one metric and drawing another: the bold advance stayed inside
+/// the smaller box on this machine's faces and overflowed it by a quarter of a
+/// pixel on CI's, which is how `Ingest` came to be painted wider than the box
+/// reserved for it. Prominence is a colour, never a size.
+pub fn label_style(font_size: f32) -> TextStyle {
+    TextStyle {
+        font_family: None,
+        font_size: f64::from(font_size),
+        font_weight: None,
+        font_style: None,
     }
 }
 
