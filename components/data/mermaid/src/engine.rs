@@ -13,6 +13,7 @@ use merman_render::family::{self, LayoutProjection};
 use merman_render::model::{LayoutEdge, LayoutLabel, LayoutNode};
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_str::Str;
+use waterui_text::FontCollection;
 
 use crate::layout::{
     Cluster, DiagramLayout, Edge, EdgeMarker, EdgeStroke, Emphasis, Fragment, Label, Lifeline,
@@ -63,12 +64,16 @@ const DEFAULT_FONT_SIZE: f32 = 16.0;
 /// size regardless; this is the value Mermaid itself defaults to.
 const LAYOUT_CONTAINER: Size = Size::new(800.0, 600.0);
 
-/// Parses and lays out one diagram.
+/// Parses and lays out one diagram, measured against `fonts`.
+///
+/// The collection is the application's own — the one the host installed and
+/// every other component shapes with — so the boxes this reserves are the boxes
+/// the label views will be painted into.
 ///
 /// # Errors
 ///
 /// See [`MermaidError`].
-pub fn render(source: &str) -> Result<DiagramLayout, MermaidError> {
+pub fn render(source: &str, fonts: FontCollection) -> Result<DiagramLayout, MermaidError> {
     let container = LAYOUT_CONTAINER;
     let engine = Engine::new();
     let parsed = engine
@@ -81,7 +86,7 @@ pub fn render(source: &str) -> Result<DiagramLayout, MermaidError> {
     let semantic = parsed.model().clone();
 
     let session = RenderEnvironment::deterministic()
-        .with_text_measurement_policy(measure::policy())
+        .with_text_measurement_policy(measure::policy(fonts))
         .begin_session()
         .map_err(MermaidError::Session)?;
 
@@ -687,5 +692,112 @@ fn lifeline_span(lifelines: &[Lifeline], actors: &[String]) -> (f32, f32) {
         (left, right)
     } else {
         (0.0, 0.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_core::Environment;
+    use waterui_text::FontCollection;
+
+    use super::render;
+    use crate::measure;
+
+    const FLOWCHART: &str = "\
+flowchart TD
+    A[Start] --> B{Ready?}
+    B -->|yes| C([Go])
+    B -->|no| D[(Wait)]
+    subgraph Ingest
+        C --> E[Parse the incoming document]
+    end
+";
+
+    const SEQUENCE: &str = "\
+sequenceDiagram
+    participant Reader
+    participant Renderer
+    Reader->>Renderer: parse(source)
+    Renderer-->>Reader: layout
+";
+
+    /// A diagram's boxes and its glyphs come from one font collection, so every
+    /// box is big enough for the text that will be painted into it. This is the
+    /// whole reason the crate supplies a measurer instead of accepting
+    /// `merman`'s browser-compatibility profile, and it fails the moment the two
+    /// halves stop reading the same faces.
+    #[test]
+    fn every_reserved_box_holds_the_text_it_will_be_painted_with() {
+        let fonts = FontCollection::system();
+        for source in [FLOWCHART, SEQUENCE] {
+            let diagram = render(source, fonts.clone()).expect("the diagram lays out");
+            assert!(
+                diagram.labels().next().is_some(),
+                "the diagram must have labels for this to assert anything"
+            );
+            for label in diagram.labels() {
+                let painted = measure::measure(
+                    fonts.clone(),
+                    &label.text,
+                    &measure::label_style(diagram.font_size),
+                );
+                assert!(
+                    f64::from(label.frame.size().width) >= painted.width
+                        && f64::from(label.frame.size().height) >= painted.height,
+                    "the box reserved for `{}` is {:?}, too small for the {}x{} the same \
+                     collection shapes it to",
+                    label.text,
+                    label.frame.size(),
+                    painted.width,
+                    painted.height
+                );
+            }
+        }
+    }
+
+    /// Two diagrams in one application measure through one collection — the one
+    /// the host installed — rather than each enumerating the system's fonts for
+    /// itself. Identity is the assertion, because two collections holding the
+    /// same faces would pass every metric comparison.
+    #[test]
+    fn two_diagrams_in_one_app_share_one_collection() {
+        let mut env = Environment::new();
+        FontCollection::system().install(&mut env);
+
+        let first = FontCollection::from_env(&env);
+        let second = FontCollection::from_env(&env);
+        assert_eq!(
+            first.identity(),
+            second.identity(),
+            "every diagram must measure through the one collection the host installed"
+        );
+
+        let one = render(FLOWCHART, first).expect("the first diagram lays out");
+        let other = render(FLOWCHART, second).expect("the second diagram lays out");
+        assert_eq!(one.size, other.size);
+    }
+
+    /// The collection is consulted, not decoration: a diagram measured against a
+    /// collection with no faces at all does not lay out to the same geometry as
+    /// one measured against the system's. Without this, the test above would
+    /// pass against a measurer that ignored its collection entirely.
+    #[test]
+    fn the_installed_collection_is_what_measures() {
+        let faceless = FontCollection::new(parley::FontContext {
+            collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
+                system_fonts: false,
+                ..parley::fontique::CollectionOptions::default()
+            }),
+            source_cache: parley::fontique::SourceCache::default(),
+        });
+
+        let system = render(FLOWCHART, FontCollection::system()).expect("the diagram lays out");
+        let empty = render(FLOWCHART, faceless).expect("the diagram lays out");
+
+        assert_ne!(
+            system.size, empty.size,
+            "a diagram measured against no faces must not size like one measured \
+             against the system's"
+        );
     }
 }
