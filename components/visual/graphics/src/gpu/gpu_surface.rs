@@ -1300,6 +1300,13 @@ impl GpuSurface {
         clippy::future_not_send,
         reason = "offscreen GpuView setup is UI-local and borrows the main-thread Environment"
     )]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "`SharedSceneRenderer` owns wgpu handles, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The overriding renderer has to be the same `Arc` type the shared context hands back, so it cannot become an `Rc` on this target alone."
+        )
+    )]
     pub async fn render_offscreen_frames(
         mut self,
         runtime: &GpuRuntime,
@@ -1395,6 +1402,13 @@ impl GpuSurface {
     #[expect(
         clippy::future_not_send,
         reason = "offscreen GpuView setup is UI-local and borrows the main-thread Environment"
+    )]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "`SharedSceneRenderer` owns wgpu handles, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The overriding renderer has to be the same `Arc` type the shared context hands back, so it cannot become an `Rc` on this target alone."
+        )
     )]
     pub async fn render_offscreen_hdr_frames(
         mut self,
@@ -1666,6 +1680,13 @@ impl View for GpuSurface {
     }
 }
 
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "holds a `wgpu::Buffer` and the device across the buffer-map await; on the WebGPU backend those are JS objects whose map state lives in an `Rc<RefCell<_>>`, and the same future is `Send` on every other target"
+    )
+)]
 async fn readback_texture(
     runtime: &GpuRuntime,
     texture: &wgpu::Texture,
