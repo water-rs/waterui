@@ -415,6 +415,11 @@ lto = "thin"
 # those to its own copies or the graph carries two of each and every `View`
 # is a different type on either side. Publishing ignores this table, so the
 # published crates keep their registry pins.
+# `waterui-chart` on crates.io depends on the registry `waterui-canvas`, which
+# predates the `Path::arc_to` fix the workspace pins by git rev (#228). Without
+# this entry the graph carries both copies and every canvas `Path` is a
+# different type on either side.
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "ed4cecc706f69f381555f3fe193134da6e0ff7fe" }
 waterui-core = { path = "core" }
 waterui-graphics = { path = "components/visual/graphics" }
 waterui-layout = { path = "components/foundation/layout" }
