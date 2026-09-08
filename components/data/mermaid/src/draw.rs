@@ -110,16 +110,9 @@ fn connector(ctx: &mut DrawingContext, edge: &Edge, palette: &Palette, origin: P
         .iter()
         .map(|point| Point::new(point.x + origin.x, point.y + origin.y))
         .collect();
-    let [first, rest @ ..] = points.as_slice() else {
+    let Some(path) = edge_path(&points) else {
         return;
     };
-    if rest.is_empty() {
-        return;
-    }
-
-    let mut path = Path::new();
-    path.move_to(*first);
-    route(&mut path, &points);
 
     ctx.set_stroke_style(palette.edge);
     ctx.set_line_width(match edge.stroke {
@@ -141,6 +134,23 @@ fn connector(ctx: &mut DrawingContext, edge: &Edge, palette: &Palette, origin: P
         points[last - 1],
         palette,
     );
+}
+
+/// The stroked path of one edge's routed polyline.
+///
+/// `None` when there is nothing to stroke: a polyline needs two points before
+/// it is a line.
+fn edge_path(points: &[Point]) -> Option<Path> {
+    let [first, rest @ ..] = points else {
+        return None;
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    let mut path = Path::new();
+    path.move_to(*first);
+    route(&mut path, points);
+    Some(path)
 }
 
 /// Appends the routed polyline to `path`, rounding each interior corner.
@@ -234,5 +244,131 @@ fn marker(
             );
         }
         EdgeMarker::None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_core::layout::{Point, Rect, Size};
+
+    use waterui_text::FontCollection;
+
+    use super::{CORNER_RADIUS, edge_path};
+    use crate::engine::render;
+    use crate::layout::DiagramLayout;
+    use crate::shape;
+
+    /// A flowchart whose edges turn: `TD` stacks the nodes, and `D --> A` runs
+    /// back up past them, so every edge is a routed polyline with corners in it
+    /// rather than one straight segment.
+    const TURNING: &str = "\
+flowchart TD
+    A[Start] --> B{Ready?}
+    B -->|yes| C([Go])
+    B -->|no| D[(Wait)]
+    D --> A
+";
+
+    /// How far a piece of geometry may sit outside where it belongs before the
+    /// diagram is wrong rather than rounded.
+    const SLACK: f32 = 0.5;
+
+    fn diagram() -> DiagramLayout {
+        render(TURNING, FontCollection::system()).expect("the flowchart lays out")
+    }
+
+    /// The box every point of `points` lies in.
+    fn hull(points: &[Point]) -> Rect {
+        let (mut min, mut max) = (points[0], points[0]);
+        for point in points {
+            min = Point::new(min.x.min(point.x), min.y.min(point.y));
+            max = Point::new(max.x.max(point.x), max.y.max(point.y));
+        }
+        Rect::new(min, Size::new(max.x - min.x, max.y - min.y))
+    }
+
+    /// How far `inner` sticks out of `outer`, in the worst direction.
+    fn escape(inner: Rect, outer: Rect) -> f32 {
+        (outer.x() - inner.x())
+            .max(inner.max_x() - outer.max_x())
+            .max(outer.y() - inner.y())
+            .max(inner.max_y() - outer.max_y())
+            .max(0.0)
+    }
+
+    fn canvas(diagram: &DiagramLayout) -> Rect {
+        Rect::new(Point::zero(), diagram.size)
+    }
+
+    /// Nothing this crate paints for a node may leave the diagram's own bounds:
+    /// the scene is exactly `diagram.size` and anything outside it is clipped
+    /// away by the container.
+    #[core::prelude::v1::test]
+    fn every_node_outline_stays_on_the_canvas() {
+        let diagram = diagram();
+        let canvas = canvas(&diagram);
+        for node in &diagram.nodes {
+            let outline = shape::outline(node.shape, node.frame);
+            for path in outline.body.iter().chain(&outline.details) {
+                let bounds = path.bounding_box().expect("a node outline draws something");
+                assert!(
+                    escape(bounds, canvas) <= SLACK,
+                    "node `{}` draws {bounds:?}, outside the {canvas:?} canvas",
+                    node.id
+                );
+            }
+        }
+    }
+
+    /// The routed path of an edge is its polyline with the corners rounded, so
+    /// it can never travel further than the polyline itself does — a fillet
+    /// lives inside the corner it rounds.
+    ///
+    /// This is what a broken corner-rounding primitive breaks: the tangent
+    /// distance comes out inverted, the arc's centre lands on the wrong side,
+    /// and the path shoots off along the last segment's direction far past the
+    /// node it was heading for. `D --> A` here left the diagram entirely.
+    #[core::prelude::v1::test]
+    fn every_edge_path_follows_its_own_polyline() {
+        let diagram = diagram();
+        let canvas = canvas(&diagram);
+        for edge in &diagram.edges {
+            let path = edge_path(&edge.points).expect("a routed edge draws something");
+            let bounds = path.bounding_box().expect("a routed edge draws something");
+            let corridor = hull(&edge.points);
+            assert!(
+                escape(bounds, corridor) <= CORNER_RADIUS,
+                "edge `{}` draws {bounds:?}, off the {corridor:?} its points span",
+                edge.id
+            );
+            assert!(
+                escape(bounds, canvas) <= SLACK,
+                "edge `{}` draws {bounds:?}, outside the {canvas:?} canvas",
+                edge.id
+            );
+        }
+    }
+
+    /// An edge starts and ends on a node. Mermaid trims the polyline to the
+    /// node's border, so each end lands on the box of the node it belongs to —
+    /// a diamond's slanted face is inside its box, which is why this is stated
+    /// as the box rather than its outline.
+    #[core::prelude::v1::test]
+    fn every_edge_ends_on_a_node() {
+        let diagram = diagram();
+        for edge in &diagram.edges {
+            for (which, end) in [("start", edge.points.first()), ("end", edge.points.last())] {
+                let end = *end.expect("a routed edge has endpoints");
+                let touched = diagram
+                    .nodes
+                    .iter()
+                    .find(|node| escape(Rect::new(end, Size::new(0.0, 0.0)), node.frame) <= SLACK);
+                assert!(
+                    touched.is_some(),
+                    "the {which} of edge `{}` is at {end:?}, on no node",
+                    edge.id
+                );
+            }
+        }
     }
 }
