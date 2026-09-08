@@ -4962,7 +4962,7 @@ dependencies = [
  "waterui",
  "waterui-assets",
  "waterui-backend-core",
- "waterui-canvas",
+ "waterui-canvas 0.1.0 (git+https://github.com/water-rs/canvas?rev=ed4cecc706f69f381555f3fe193134da6e0ff7fe)",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
@@ -4992,7 +4992,7 @@ dependencies = [
  "vello",
  "waterui",
  "waterui-backend-core",
- "waterui-canvas",
+ "waterui-canvas 0.1.0 (git+https://github.com/water-rs/canvas?rev=ed4cecc706f69f381555f3fe193134da6e0ff7fe)",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
@@ -10103,7 +10103,7 @@ dependencies = [
  "waterkit-permission",
  "waterui",
  "waterui-barcode",
- "waterui-canvas",
+ "waterui-canvas 0.1.0 (git+https://github.com/water-rs/canvas?rev=ed4cecc706f69f381555f3fe193134da6e0ff7fe)",
  "waterui-chart",
  "waterui-graphics",
  "waterui-icons-lucide",
@@ -12658,6 +12658,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-canvas"
+version = "0.1.0"
+source = "git+https://github.com/water-rs/canvas?rev=ed4cecc706f69f381555f3fe193134da6e0ff7fe#ed4cecc706f69f381555f3fe193134da6e0ff7fe"
+dependencies = [
+ "image",
+ "kurbo 0.13.1",
+ "nami",
+ "parley",
+ "peniko",
+ "waterui-core",
+ "waterui-graphics",
+]
+
+[[package]]
 name = "waterui-chart"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12666,7 +12680,7 @@ dependencies = [
  "bytemuck",
  "nami",
  "num-traits",
- "waterui-canvas",
+ "waterui-canvas 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
@@ -12810,7 +12824,7 @@ dependencies = [
  "vello_cpu",
  "waterui",
  "waterui-backend-core",
- "waterui-canvas",
+ "waterui-canvas 0.1.0 (git+https://github.com/water-rs/canvas?rev=ed4cecc706f69f381555f3fe193134da6e0ff7fe)",
  "waterui-chart",
  "waterui-controls",
  "waterui-core",
@@ -13327,7 +13341,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "waterui",
- "waterui-canvas",
+ "waterui-canvas 0.1.0 (git+https://github.com/water-rs/canvas?rev=ed4cecc706f69f381555f3fe193134da6e0ff7fe)",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
@@ -13464,7 +13478,7 @@ dependencies = [
  "sysinfo",
  "vello",
  "waterui",
- "waterui-canvas",
+ "waterui-canvas 0.1.0 (git+https://github.com/water-rs/canvas?rev=ed4cecc706f69f381555f3fe193134da6e0ff7fe)",
  "waterui-core",
  "waterui-preview-protocol",
  "wgpu",
