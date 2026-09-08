@@ -414,6 +414,42 @@ merge_branch_ff_only() {
   run_quietly git -C "$destination_repo" merge --ff-only FETCH_HEAD || die "failed to fast-forward merge ${label} from ${source_repo}; update or rebase the workspace first"
 }
 
+# Canonical's own submodule branches must sit on the same lineage as the commits
+# the canonical superproject pins. They drift apart in one routine way: a
+# finished workspace fast-forwards a canonical submodule branch to the commit
+# its pull request carried, and that pull request is then rebuilt on a moved
+# integration branch because another one bumped the same submodule first. The
+# abandoned lineage is left on the branch, `git submodule update` does not
+# notice (it detaches at the pin without touching the branch), and every
+# workspace afterwards fails its `--ff-only` merge with an error that reads as
+# though the workspace were at fault. Check canonical before touching a slot,
+# and name the repair.
+ensure_canonical_submodule_lineage() {
+  local source_root="$1"
+  local name
+  local submodule_relpath
+  local canonical_submodule
+  local target_branch
+  local pinned_commit
+  local branch_commit
+
+  while IFS=$'\t' read -r name submodule_relpath; do
+    [[ -n "${name:-}" ]] || continue
+    canonical_submodule="${source_root}/${submodule_relpath}"
+    target_branch="$(configured_submodule_branch "$source_root" "$name")"
+    [[ -n "$target_branch" ]] || die "submodule ${submodule_relpath} has no configured integration branch in .gitmodules"
+
+    git -C "$canonical_submodule" show-ref --verify --quiet "refs/heads/${target_branch}" || die "canonical submodule ${submodule_relpath} has no ${target_branch} branch"
+    branch_commit="$(git -C "$canonical_submodule" rev-parse "refs/heads/${target_branch}")" || die "failed to resolve ${target_branch} in $canonical_submodule"
+    pinned_commit="$(submodule_gitlink_commit "$source_root" "$submodule_relpath")"
+
+    git -C "$canonical_submodule" merge-base --is-ancestor "$pinned_commit" "$branch_commit" >/dev/null 2>&1 && continue
+    git -C "$canonical_submodule" merge-base --is-ancestor "$branch_commit" "$pinned_commit" >/dev/null 2>&1 && continue
+
+    die "canonical submodule ${submodule_relpath} has drifted: its ${target_branch} is at ${branch_commit} while the superproject pins ${pinned_commit}, and neither contains the other. The workspace is fine; canonical is wrong. Repair with: git -C ${canonical_submodule} branch -f ${target_branch} ${pinned_commit}"
+  done < <(submodule_records "$source_root")
+}
+
 ensure_fast_forward_possible() {
   local destination_repo="$1"
   local source_repo="$2"

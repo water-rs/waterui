@@ -66,6 +66,7 @@ main() {
   source_root="$(canonical_dir "$SOURCE_REPO")"
   integration_branch="$(current_branch "$source_root")"
   ensure_source_submodules_ready "$source_root"
+  ensure_canonical_submodule_lineage "$source_root"
 
   # A workspace is built from committed state — `git clone` copies refs, and each
   # submodule is checked out at the gitlink recorded in HEAD — so whatever is
