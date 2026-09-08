@@ -11047,6 +11047,34 @@ struct WuiGpuSurface waterui_force_as_gpu_surface(struct WuiAnyView *view);
 struct WuiTypeId waterui_gpu_surface_id(void);
 
 /**
+ * What this surface's content says about itself, for a screen reader.
+ *
+ * A surface is an opaque rectangle to the platform's accessibility layer:
+ * whatever the formula, chart or diagram inside it means, nothing outside the
+ * content can read it back off the pixels. A host names the surface's element
+ * with this when the application named it nothing, so an explicit label from
+ * the application always wins.
+ *
+ * Ask again after each frame. A view whose content follows a signal re-draws
+ * and re-describes itself at the same moment, and the answer is empty until
+ * asynchronous renderer setup finishes, which is before the first frame.
+ *
+ * # Returns
+ *
+ * An owning [`WuiStr`], empty when this surface has nothing to say — which a
+ * host treats the same way it treats a view that never had a label. There is
+ * deliberately no third state: "no label" and "the empty label" are the same
+ * instruction to a screen reader, so the ABI does not carry a distinction
+ * nothing acts on.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_surface_create`], on the thread that created it.
+ */
+struct WuiStr waterui_gpu_surface_accessibility_label(const struct WuiGpuSurfaceState *state);
+
+/**
  * Returns the renderer-driven HDR preference for a `WuiGpuSurface`.
  *
  * This must be called before `waterui_gpu_surface_create` consumes the surface.
