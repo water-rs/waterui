@@ -460,6 +460,13 @@ impl OffscreenGpuContext {
         pollster::block_on(Self::new_for_tests())
     }
 
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "`OffscreenGpuContextInner` holds a wgpu adapter, device and queue, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The context is shared by reference count on every target and is `Send + Sync` on all of them but this one, so the storage type is `Arc` everywhere rather than `Rc` here and `Arc` elsewhere."
+        )
+    )]
     async fn new_with_adapter_selection(selection: AdapterSelection) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
@@ -634,7 +641,7 @@ async fn request_hydrolysis_adapter(
             .await
             .expect("hydrolysis adapter selection: failed to find web adapter");
         log_selected_adapter(context, &adapter);
-        return adapter;
+        adapter
     }
 
     #[cfg(not(all(target_arch = "wasm32", feature = "web")))]

@@ -890,10 +890,9 @@ fn map_modifiers_from_keyboard(event: &KeyboardEvent) -> Modifiers {
 
 /// The DOM `key` attribute already *is* the W3C UI Events logical key.
 fn map_w3c_key(event: &KeyboardEvent) -> keyboard_types::Key {
-    event
-        .key()
-        .parse()
-        .unwrap_or_else(|_| keyboard_types::Key::Named(keyboard_types::NamedKey::Unidentified))
+    event.key().parse().unwrap_or(keyboard_types::Key::Named(
+        keyboard_types::NamedKey::Unidentified,
+    ))
 }
 
 /// The DOM `code` attribute already *is* the W3C UI Events physical code.

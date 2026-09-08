@@ -262,6 +262,14 @@ impl fmt::Debug for SharedGpuContext {
 }
 
 impl SharedGpuContext {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            clippy::arc_with_non_send_sync,
+            reason = "wgpu's WebGPU backend is a thin wrapper over JS objects held in `Rc<RefCell<_>>`, so its adapter/device/queue handles and its request futures are neither `Send` nor `Sync` on this target alone. The context is shared by reference count on every target, so the storage type stays `Arc` rather than splitting into `Rc` here and `Arc` everywhere else."
+        )
+    )]
     async fn new() -> Result<Self, SharedContextError> {
         let (instance, adapter) = request_instance_and_adapter().await?;
         let scene_engine = SceneEngine::for_adapter(&adapter);
@@ -325,6 +333,13 @@ impl SharedGpuContext {
     }
 }
 
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "`wgpu::Instance::request_adapter` resolves through `navigator.gpu.requestAdapter()`, a JS promise the WebGPU backend keeps in an `Rc<RefCell<_>>`; the same future is `Send` on every other target"
+    )
+)]
 async fn request_adapter(
     instance: &wgpu::Instance,
 ) -> Result<wgpu::Adapter, wgpu::RequestAdapterError> {
@@ -350,6 +365,13 @@ async fn request_instance_and_adapter()
 }
 
 #[cfg(not(target_os = "android"))]
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "awaits `request_adapter` above, whose WebGPU implementation is a JS promise held in an `Rc<RefCell<_>>`, and holds the resulting `wgpu::Instance` across it; both are `Send` on every other target"
+    )
+)]
 async fn request_instance_and_adapter()
 -> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -432,6 +454,14 @@ impl GpuRuntime {
     /// # Errors
     ///
     /// Returns the adapter or device initialization error.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            clippy::arc_with_non_send_sync,
+            reason = "awaits `SharedGpuContext::new`, whose WebGPU adapter and device requests are JS promises, and stores the resulting JS-backed handles; the runtime is shared by reference count on every target, so the storage type stays `Arc` rather than splitting into `Rc` here and `Arc` everywhere else"
+        )
+    )]
     pub async fn new() -> Result<Self, SharedContextError> {
         Ok(Self {
             context: Arc::new(SharedGpuContext::new().await?),

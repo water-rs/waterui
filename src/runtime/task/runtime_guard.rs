@@ -22,8 +22,15 @@ const FALLBACK_REFRESH_RATE_HZ: f64 = 60.0;
 #[cfg(all(any(unix, windows), not(target_os = "espidf")))]
 type CpuClockSample = ThreadTime;
 
+/// Stands in for [`ThreadTime`] on targets with no per-thread CPU clock, so the
+/// sample a poll carries is a named "this platform cannot measure CPU time"
+/// rather than a bare `()`.
 #[cfg(not(all(any(unix, windows), not(target_os = "espidf"))))]
-type CpuClockSample = ();
+#[derive(Debug, Clone, Copy)]
+struct NoCpuClock;
+
+#[cfg(not(all(any(unix, windows), not(target_os = "espidf"))))]
+type CpuClockSample = NoCpuClock;
 
 #[cfg(all(any(unix, windows), not(target_os = "espidf")))]
 fn cpu_clock_now() -> CpuClockSample {
@@ -31,8 +38,8 @@ fn cpu_clock_now() -> CpuClockSample {
 }
 
 #[cfg(not(all(any(unix, windows), not(target_os = "espidf"))))]
-fn cpu_clock_now() -> CpuClockSample {
-    ()
+const fn cpu_clock_now() -> CpuClockSample {
+    NoCpuClock
 }
 
 #[cfg(all(any(unix, windows), not(target_os = "espidf")))]
@@ -41,7 +48,7 @@ fn cpu_clock_elapsed(start: CpuClockSample) -> Duration {
 }
 
 #[cfg(not(all(any(unix, windows), not(target_os = "espidf"))))]
-fn cpu_clock_elapsed(_start: CpuClockSample) -> Duration {
+const fn cpu_clock_elapsed(_start: CpuClockSample) -> Duration {
     Duration::ZERO
 }
 
