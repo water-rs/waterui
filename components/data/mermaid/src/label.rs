@@ -9,9 +9,11 @@
 
 use waterui_core::layout::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView};
 use waterui_core::{Environment, View};
+use waterui_graphics::color::{Color, ForegroundColor, MutedForegroundColor};
 use waterui_text::text;
 
 use crate::layout::{Emphasis, Label};
+use crate::measure::FromF64Lossless as _;
 
 /// Places one label centred in the box the diagram reserved for it.
 ///
@@ -73,16 +75,19 @@ impl LabelView {
 
 impl View for LabelView {
     fn body(self, _env: &Environment) -> impl View {
-        let view = text(self.label.text).size(match self.label.emphasis {
-            // A fragment keyword or subgraph title is drawn a step down from
-            // the body text, as Mermaid draws it.
-            Emphasis::Title | Emphasis::Muted => self.font_size * 0.875,
-            Emphasis::Normal => self.font_size,
-        });
-        match self.label.emphasis {
-            Emphasis::Title => view.bold(),
-            Emphasis::Normal | Emphasis::Muted => view,
-        }
+        // Drawn at the size it was measured at. See `measure::label_style` for
+        // why prominence may not touch that size: the box the diagram reserved
+        // holds the text that measurement described and nothing wider, so
+        // prominence is a colour here.
+        let style = crate::measure::label_style(self.font_size);
+        let colour = match self.label.emphasis {
+            // Secondary text, such as a fragment's guard condition.
+            Emphasis::Muted => Color::new(MutedForegroundColor),
+            Emphasis::Normal | Emphasis::Title => Color::new(ForegroundColor),
+        };
+        text(self.label.text)
+            .size(f32::from_f64_lossless(style.font_size))
+            .color(colour)
     }
 
     fn stretch_axis(&self) -> StretchAxis {

@@ -697,13 +697,10 @@ fn lifeline_span(lifelines: &[Lifeline], actors: &[String]) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
-    use merman_render::text::TextStyle;
-    use parley::FontWeight;
     use waterui_core::Environment;
     use waterui_text::FontCollection;
 
     use super::render;
-    use crate::layout::{Emphasis, Label};
     use crate::measure;
 
     const FLOWCHART: &str = "\
@@ -724,23 +721,6 @@ sequenceDiagram
     Renderer-->>Reader: layout
 ";
 
-    /// The style the label layer paints a label with, which is what the box a
-    /// diagram reserved has to hold.
-    fn painted_style(label: &Label, font_size: f32) -> TextStyle {
-        TextStyle {
-            font_family: None,
-            font_size: f64::from(match label.emphasis {
-                Emphasis::Title | Emphasis::Muted => font_size * 0.875,
-                Emphasis::Normal => font_size,
-            }),
-            font_weight: match label.emphasis {
-                Emphasis::Title => Some(FontWeight::BOLD.value().to_string()),
-                Emphasis::Normal | Emphasis::Muted => None,
-            },
-            font_style: None,
-        }
-    }
-
     /// A diagram's boxes and its glyphs come from one font collection, so every
     /// box is big enough for the text that will be painted into it. This is the
     /// whole reason the crate supplies a measurer instead of accepting
@@ -759,7 +739,7 @@ sequenceDiagram
                 let painted = measure::measure(
                     fonts.clone(),
                     &label.text,
-                    &painted_style(label, diagram.font_size),
+                    &measure::label_style(diagram.font_size),
                 );
                 assert!(
                     f64::from(label.frame.size().width) >= painted.width
