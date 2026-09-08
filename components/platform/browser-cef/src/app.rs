@@ -1,4 +1,4 @@
-use std::sync::mpsc::Sender;
+use async_channel::Sender;
 
 use cef::rc::Rc as _;
 use cef::{
@@ -47,7 +47,7 @@ fn new_browser_process_handler(schedule: Sender<PumpDeadline>) -> BrowserProcess
 
         impl BrowserProcessHandler {
             fn on_schedule_message_pump_work(&self, delay_ms: i64) {
-                let _ = self.schedule.send(PumpDeadline::after_millis(delay_ms));
+                let _ = self.schedule.try_send(PumpDeadline::after_millis(delay_ms));
             }
         }
     }
