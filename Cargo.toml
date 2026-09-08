@@ -91,10 +91,10 @@ executor-core = { version = "0.7.1", features = ["std"]}
 # off. (waterkit keeps it: its streaming code does `block_on`.)
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 futures-lite = "2.6"
-geo = { version = "0.32", default-features = false }
-getrandom = "0.2"
+geo = { version = "0.33", default-features = false }
+getrandom = "0.4"
 geo-types = "0.7"
-lru = "0.16"
+lru = "0.18"
 maplibre-expr = "0.3.2"
 mvt-reader = "2.4.0"
 # W3C UI Events key/code/modifier vocabulary, shared by the GPU-surface input
@@ -225,10 +225,10 @@ parley = { version = "0.11", default-features = false }
 # SVG documents are parsed here and drawn through `Scene2D`; nothing in the
 # workspace renders one with `vello_svg`, so the parser is depended on directly
 # rather than through a Vello-only renderer.
-usvg = "0.46.0"
+usvg = "0.48.1"
 kurbo = "0.13"
 peniko = "0.6"
-skrifa = "0.42.1"
+skrifa = "0.46.2"
 # The only crate in the Rust ecosystem that reads the OpenType `MATH` table.
 # `read-fonts`/`skrifa` do not expose it (googlefonts/fontations#1269 has been
 # open since 2024-11), and neither `rustybuzz` nor `harfrust` port HarfBuzz's
@@ -242,7 +242,7 @@ pulldown-latex = "0.8"
 # Writes the MathML an accessibility tree carries. XML is structured output, so
 # it goes through a writer that escapes and balances tags rather than through
 # `push_str`/`format!` chains.
-quick-xml = "0.41"
+quick-xml = "0.42"
 # Turns that MathML into the sentence a screen reader reads out — the ClearSpeak
 # / MathSpeak engine assistive-technology vendors ship. `include-zip` compiles
 # the speech rules into the binary as one bzip2 archive served from an in-memory
@@ -255,6 +255,10 @@ lyon = "1.0"
 wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
 # Must match the `glow` version wgpu-hal links against, or GLES handles from
 # `wgpu::hal::gles` fail to unify with locally created ones.
+# Tracks whatever `wgpu-hal` links, not the newest release: the GTK backend
+# hands a `glow::NativeFramebuffer` straight to
+# `wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer`, so a different
+# major here makes that a different type and the backend stops compiling.
 glow = "0.17"
 tiny-skia = "0.12"
 zenwave = { version = "0.5.0", default-features = false, features = ["hyper-backend"] }

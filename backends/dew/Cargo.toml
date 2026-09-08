@@ -61,7 +61,7 @@ gestures = ["waterui-backend-core/gestures"]
 progress = ["dep:waterui"]
 
 [dependencies]
-accesskit = "0.24"
+accesskit = "0.25"
 waterui-core.workspace = true
 waterui-backend-core.workspace = true
 waterui-controls.workspace = true

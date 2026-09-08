@@ -18,7 +18,7 @@ waterui-core.workspace = true
 waterui.workspace = true
 wgpu.workspace = true
 vello.workspace = true
-accesskit = "0.24"
+accesskit = "0.25"
 pollster.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 executor-core.workspace = true

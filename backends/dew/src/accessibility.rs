@@ -8,7 +8,9 @@
 
 use std::collections::BTreeMap;
 
-use accesskit::{Action, ActionData, ActionRequest, Node, NodeId, Role, Tree, TreeId, TreeUpdate};
+use accesskit::{
+    Action, ActionData, ActionRequest, Node, NodeId, Role, TreeId, TreeInfo, TreeUpdate,
+};
 use kurbo::Rect;
 use nami::{Binding, Computed, Signal};
 use waterui_core::Str;
@@ -260,7 +262,7 @@ impl AccessibilityBuilder {
         }
         self.pending_update = Some(TreeUpdate {
             nodes,
-            tree: Some(Tree::new(ROOT_ID)),
+            tree: Some(TreeInfo::new(ROOT_ID)),
             tree_id: TreeId::ROOT,
             focus: self.focus,
         });
