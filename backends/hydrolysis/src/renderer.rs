@@ -78,7 +78,7 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, Node as AccessibilityNode,
     NodeId as AccessibilityNodeId, Rect as AccessibilityRect, Role as AccessibilityNodeRole,
     TextDirection as AccessibilityTextDirection, Toggled as AccessibilityToggled,
-    Tree as AccessibilityTree, TreeId as AccessibilityTreeId,
+    TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
     TreeUpdate as AccessibilityTreeUpdate,
 };
 use executor_core::spawn_local;
