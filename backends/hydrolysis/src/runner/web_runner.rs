@@ -204,10 +204,18 @@ impl BrowserRunner {
     }
 }
 
+/// The `requestAnimationFrame` closure, which has to stay alive on the Rust
+/// side for as long as the browser may call back into it.
+type AnimationFrameCallback = Closure<dyn FnMut(f64)>;
+
+/// Holds the frame scheduler, which cannot be built until the runner it
+/// schedules exists, so the slot is filled once construction has finished.
+type ScheduleFrameSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
 struct BrowserRunnerHandle {
     runner: RefCell<BrowserRunner>,
     raf_pending: Cell<bool>,
-    raf_callback: RefCell<Option<Closure<dyn FnMut(f64)>>>,
+    raf_callback: RefCell<Option<AnimationFrameCallback>>,
 }
 
 impl BrowserRunnerHandle {
@@ -242,7 +250,7 @@ impl BrowserRunnerHandle {
 
 pub fn run(app: App) {
     wasm_bindgen_futures::spawn_local(async move {
-        let schedule_frame_ref: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+        let schedule_frame_ref: ScheduleFrameSlot = Rc::new(RefCell::new(None));
         let browser_schedule = {
             let schedule_frame_ref = schedule_frame_ref.clone();
             Rc::new(move || {

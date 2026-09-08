@@ -157,9 +157,12 @@ jobs:
   # runner and everything else under `cfg(target_arch = "wasm32")` is compiled
   # out — so the browser build rotted through three unrelated breakages before
   # anyone pointed a compiler at it (#408). This is the cheapest statement that
-  # it still builds: a `cargo check` of the web runner plus the two crates whose
+  # it still builds: a clippy pass over the web runner plus the two crates whose
   # wasm-only paths it reaches (`waterui-media` reads local photos through the
   # kit file system there, and the kit dialog has a whole browser backend).
+  #
+  # It lints rather than merely compiles, so `cfg(target_arch = "wasm32")` code
+  # is held to the same bar as every other target (#413).
   #
   # It runs in both tiers rather than only in the nightly: a pull request
   # touching any of those three can break it, and the check is a couple of
@@ -171,7 +174,8 @@ jobs:
     env:
       # Cargo caps lints for registry dependencies, so this holds the workspace
       # crates — and only them — to the same "no new warnings" bar as the host
-      # lint pass. `cargo check` takes no trailing rustc arguments.
+      # lint pass. It reaches further than the trailing `-- -D warnings` below,
+      # which only covers the packages named with `-p`.
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
@@ -191,12 +195,21 @@ jobs:
           cache-targets: false
           save-if: false
           cache-on-failure: true
-      - name: Check the web runner for wasm32
+      - name: Lint the web runner for wasm32
         run: |
-          cargo check --target wasm32-unknown-unknown \
+          cargo clippy --target wasm32-unknown-unknown \
             -p hydrolysis --features hydrolysis/web \
             -p waterui-media \
-            -p waterkit-dialog
+            -p waterkit-dialog \
+            -- -D warnings
+      # `kit` is its own Cargo workspace, excluded from the root one, so the
+      # step above builds `waterkit-dialog` as a plain path dependency: cargo
+      # only points clippy-driver at members of the workspace it was invoked
+      # from, and the dialog's browser backend would go unlinted there however
+      # the flags are spelled. Lint it from the workspace that owns it.
+      - name: Lint the kit dialog browser backend for wasm32
+        working-directory: kit
+        run: cargo clippy -p waterkit-dialog --target wasm32-unknown-unknown -- -D warnings
 
   # The workspace test run, per platform. On Linux it also carries the
   # doctests, which share its build; on macOS those go to `macos-suites`, so
