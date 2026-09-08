@@ -86,6 +86,47 @@ slow-timeout = { period = "120s", terminate-after = 15 }
 [test-groups.gpu-device]
 max-threads = 2
 
+# How many processes may compile Metal shaders at once on macOS.
+#
+# Every test process that mounts a `waterui-testing` host builds its own
+# `wgpu::Device`, and each device runs Vello's shader initialisation. On macOS
+# that is `newLibraryWithSource`, which goes through Metal's on-disk
+# shader-compiler cache — a single file shared by every process on the machine.
+# Metal does not survive many processes reading and writing it at once: a run of
+# the mermaid suite aborted with
+#
+#     SIGBUS, subtype "FS pagein error: 22 Invalid argument"
+#     thread "Vello shader initialisation worker thread"
+#       MTLCompilerFSCache::getElementImpl
+#       MTLLibraryBuilder::newLibraryWithSource
+#       wgpu_hal::metal::Device::load_shader
+#       vello::WgpuEngine::build_shaders_if_needed
+#
+# on a machine that also had three cargo builds running (#434). The faulting
+# page belongs to that cache file, not to anything WaterUI allocated: a reader
+# paged it in while another process rewrote it.
+#
+# The cap costs nothing, which is what makes it the right answer rather than a
+# trade. These tests all queue on one GPU, so parallelism past a handful buys no
+# wall clock — measured on the mermaid suite, twice each:
+#
+#     -j 32   3.415s  2.797s
+#     -j 8    2.265s  2.624s
+#     -j 4    2.496s  2.425s
+#
+# Scoped to the packages that mount a host, so the many fast non-GPU tests on
+# macOS keep full parallelism. The cap only ever binds on a developer machine —
+# GitHub's macOS runners have three or four cores, so nextest already runs at or
+# below four processes there — and a developer machine with a dozen cores is
+# exactly where the process storm happens.
+[test-groups.metal-shader-compile]
+max-threads = 4
+
+[[profile.default.overrides]]
+platform = 'cfg(target_os = "macos")'
+filter = 'package(hydrolysis) or package(hydrolysis-m3) or package(waterui-mermaid) or package(waterui) or package(waterui-testing)'
+test-group = 'metal-shader-compile'
+
 [[profile.ci.overrides]]
 platform = 'cfg(target_os = "windows")'
 filter = 'all()'
