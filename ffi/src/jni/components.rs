@@ -2314,6 +2314,35 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceImeCaret<'l
     })
 }
 
+/// What the GPU view says about itself, for a screen reader.
+///
+/// Empty until asynchronous renderer setup finishes, and for every view that
+/// draws nothing a reader needs told about; the Kotlin side treats empty as
+/// "this surface has no description of its own".
+#[cfg(all(target_os = "android", feature = "gpu"))]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAccessibilityLabel<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+) -> jni::sys::jstring {
+    super::with_env(&mut env, |env| {
+        let state_ptr = state_ptr as *const JniGpuSurfaceState;
+        // SAFETY: Kotlin passes back the live handle from `gpuSurfaceCreate`.
+        let wrapper = unsafe { &*state_ptr };
+        // SAFETY: `wrapper.state` is live for this call and only read.
+        let label = unsafe {
+            crate::components::gpu_surface::waterui_gpu_surface_accessibility_label(wrapper.state)
+        };
+        // SAFETY: the entry point builds the `WuiStr` from a Rust `Str`, so its
+        // bytes are UTF-8; the borrow ends before `label` is dropped below.
+        let text = unsafe { label.as_str() }.to_owned();
+        env.new_string(&text)
+            .expect("gpuSurfaceAccessibilityLabel: failed to create the Java string")
+            .into_raw()
+    })
+}
+
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDrop<'local>(
