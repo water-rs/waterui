@@ -19,8 +19,9 @@
 //!
 //! - **Layout is measured with `WaterUI`'s text engine.** `merman` sizes every
 //!   node and every label through a host-supplied measurer, and this crate
-//!   supplies one backed by the same `parley` engine and the same system fonts
-//!   that draw the labels. Without it, boxes would be sized from a browser
+//!   supplies one backed by the same `parley` engine and the very same
+//!   [`FontCollection`](waterui_text::FontCollection) the host installed for
+//!   every other component. Without it, boxes would be sized from a browser
 //!   compatibility profile and the glyphs inside them drawn from ours, and the
 //!   text would not fit.
 //! - **Geometry is drawn through `Scene2D`.** Node outlines, subgraph frames and
@@ -51,6 +52,7 @@ use waterui_core::view::{Hook, ViewConfiguration as _};
 use waterui_core::{AnyView, Environment, View, resolve::Resolvable as _};
 use waterui_layout::container::FixedContainer;
 use waterui_str::Str;
+use waterui_text::FontCollection;
 use waterui_text::code::CodeConfig;
 use waterui_text::text;
 
@@ -73,6 +75,14 @@ pub use theme::{DiagramPalette, Palette};
 ///
 /// See the [crate documentation](crate) for what the rendering pipeline does
 /// and does not do.
+///
+/// # Panics
+///
+/// Drawing a diagram panics when the host installed no
+/// [`FontCollection`](waterui_text::FontCollection) in the root environment.
+/// A diagram cannot be laid out without the faces its labels will be painted
+/// with, and building a second collection here is exactly the duplication the
+/// shared one exists to remove.
 #[derive(Debug, Clone)]
 pub struct Mermaid {
     source: Str,
@@ -123,7 +133,7 @@ pub fn install(env: &mut Environment) {
 
 impl View for Mermaid {
     fn body(self, env: &Environment) -> impl View {
-        match engine::render(&self.source) {
+        match engine::render(&self.source, FontCollection::from_env(env)) {
             Ok(diagram) => AnyView::new(drawn(&diagram, env)),
             Err(error) => AnyView::new(undrawable(&error)),
         }
@@ -206,5 +216,22 @@ impl Layout for Placement {
 
     fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         StretchAxis::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_core::{Environment, View as _};
+
+    use crate::Mermaid;
+
+    /// A missing collection is the host's bug, and it is reported as one. The
+    /// alternative — building a `FontContext` here — is the per-component font
+    /// enumeration the shared collection exists to remove, and it would measure
+    /// a diagram against faces the rest of the window never sees.
+    #[test]
+    #[should_panic(expected = "no font collection is installed in the environment")]
+    fn a_diagram_without_a_collection_names_the_host() {
+        let _ = Mermaid::new("flowchart TD\n    A[Start] --> B[Stop]").body(&Environment::new());
     }
 }
