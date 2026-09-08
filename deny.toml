@@ -17,6 +17,13 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSL-1.0",
+    # MathCAT's build script unpacks its speech-rule bundle with `zip`, which
+    # brings `libbz2-rs-sys`. The bzip2 licence is BSD-style and permissive —
+    # redistribution in source and binary form, keep the notice, do not
+    # misrepresent the origin — so it sits in the same class as `Zlib` and
+    # `0BSD` above. It reaches no shipped artifact either way: the crate is a
+    # build dependency and its code never enters an application binary.
+    "bzip2-1.0.6",
     "CC0-1.0",
     "CDLA-Permissive-2.0",
     "IJG",
