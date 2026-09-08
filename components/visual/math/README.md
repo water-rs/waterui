@@ -13,7 +13,8 @@ Math::new(r"\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}").display().font_size(28.0)
 ```
 LaTeX ──(pulldown-latex)──► MathItem tree ──► layout ──► Scene2D commands
                                   │                          │
-                                  └──► MathML ──► a11y        └──► any backend
+                                  └──► MathML ──(MathCAT)──►   └──► any backend
+                                          speech ──► a11y
 ```
 
 A formula is parsed into a semantic tree, laid out against the chosen face's
@@ -46,15 +47,44 @@ The gap between two adjacent atoms is a function of the class on each side, so
 ## Accessibility
 
 The semantic tree is kept after layout, not consumed by it. `mathml::to_mathml`
-publishes it as MathML, which is what assistive technology reads — a formula
-drawn as anonymous filled paths has no content at all to a screen reader.
+publishes it as MathML — a formula drawn as anonymous filled paths has no
+content at all to a screen reader.
 
-That markup reaches the accessibility tree: the drawing answers
-`SceneContent::accessibility_label` with it, and the backend names the formula's
-node with it. The markup follows the source signal, so a formula bound to state
-stays current. `.a11y_label("Quadratic formula")` still wins wherever the
-application names the formula itself — the markup is what the node says when
-nobody named it.
+MathML is the payload a platform's math accessibility API takes, but it is
+markup, not a sentence: read out, `<mfrac><mi>a</mi><mi>b</mi></mfrac>` is
+noise. `speech::speak` turns it into the sentence, through
+[MathCAT](https://nsoiffer.github.io/MathCAT/) — the ClearSpeak / MathSpeak
+engine assistive-technology vendors ship — and that sentence is what reaches
+the accessibility tree:
+
+```rust
+let formula = latex::parse(r"x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}")?;
+let spoken = speech::speak(&mathml::to_mathml(&formula, MathStyle::Display))?;
+```
+
+```text
+x is equal to; the fraction with numerator; negative b plus or minus;
+the square root of b squared minus 4 eigh c; and denominator 2 eigh
+```
+
+`eigh` is how the engine spells the letter `a` so a text-to-speech voice does
+not read it as the article.
+
+The drawing answers `SceneContent::accessibility_label` with that sentence, and
+the backend names the formula's node with it. It follows the source signal, so a
+formula bound to state stays current. `.a11y_label("Quadratic formula")` still
+wins wherever the application names the formula itself — the speech is what the
+node says when nobody named it. A formula that cannot be spoken leaves the node
+unnamed and logs the reason; there is deliberately no generic "math formula" to
+announce instead, because it tells a listener nothing and would hide the
+failure.
+
+MathCAT reads its speech rules from a `Rules` directory. This crate takes it
+with the `include-zip` feature, which compiles the whole rule set into the
+binary as one bzip2 archive served from an in-memory filesystem — nothing to
+install beside the application, and nothing for the asset pipeline to carry.
+That costs about 2.7 MiB of release artifact (0.93 MiB of rules, the rest code
+and tables), paid only by a build that links this crate.
 
 ## Fonts
 
