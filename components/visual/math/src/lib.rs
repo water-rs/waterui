@@ -9,7 +9,8 @@
 //! The semantic tree is kept rather than discarded after layout, because it is
 //! also the accessibility representation: a formula drawn as anonymous vector
 //! paths is unreadable to a screen reader, and the tree is what `MathML` is
-//! published from.
+//! published from. `MathML` is markup rather than a sentence, so [`speech`]
+//! turns it into the one the formula's accessibility node actually carries.
 //!
 //! # Displaying a formula
 //!
@@ -38,6 +39,23 @@
 //! # Ok::<(), Box<dyn core::error::Error>>(())
 //! ```
 //!
+//! # Hearing one
+//!
+//! The markup is what a platform's math accessibility API takes as its payload;
+//! it is not what a screen reader can read out. [`speech`] is where the sentence
+//! comes from, and it is the name the formula's node carries.
+//!
+//! ```
+//! use waterui_math::ast::MathStyle;
+//! use waterui_math::{latex, mathml, speech};
+//!
+//! let formula = latex::parse(r"\sqrt{x}")?;
+//! let spoken = speech::speak(&mathml::to_mathml(&formula, MathStyle::Text))?;
+//!
+//! assert!(spoken.contains("square root"));
+//! # Ok::<(), Box<dyn core::error::Error>>(())
+//! ```
+//!
 //! A construct the layout engine does not implement is refused by name rather
 //! than silently dropped, so a formula never renders as a quietly wrong one.
 //!
@@ -57,4 +75,5 @@ pub mod layout;
 pub mod mathml;
 pub mod scene;
 pub mod spacing;
+pub mod speech;
 pub mod view;
