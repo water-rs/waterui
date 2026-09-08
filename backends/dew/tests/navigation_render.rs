@@ -26,8 +26,7 @@ use waterui_navigation::{
 mod support;
 
 use support::{
-    assert_exact_f64, display_srgb, exact_f64, full_width_solid_fills, only_solid_fill,
-    solid_color,
+    assert_exact_f64, display_srgb, exact_f64, full_width_solid_fills, only_solid_fill, solid_color,
 };
 
 const WIDTH: u32 = 240;
