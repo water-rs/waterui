@@ -83,6 +83,7 @@ pub fn render(source: &str, fonts: FontCollection) -> Result<DiagramLayout, Merm
 
     let family = Str::from(parsed.metadata().diagram_type.clone());
     let font_size = configured_font_size(parsed.metadata());
+    let diagram_padding = configured_diagram_padding(parsed.metadata());
     let semantic = parsed.model().clone();
 
     let session = RenderEnvironment::deterministic()
@@ -101,7 +102,7 @@ pub fn render(source: &str, fonts: FontCollection) -> Result<DiagramLayout, Merm
             let merman_core::RenderSemanticModel::Flowchart(model) = &semantic else {
                 unreachable!("a flowchart layout is only produced from a flowchart model")
             };
-            flowchart(model, geometry, font_size)
+            flowchart(model, geometry, font_size, diagram_padding)
         }
         LayoutProjection::SequenceDiagram(geometry) => {
             let merman_core::RenderSemanticModel::Sequence(model) = &semantic else {
@@ -119,10 +120,12 @@ fn flowchart(
     model: &merman_core::diagrams::flowchart::FlowchartModel,
     geometry: &merman_render::model::FlowchartLayout,
     font_size: f32,
+    diagram_padding: f64,
 ) -> Result<DiagramLayout, MermaidError> {
     use merman_core::diagrams::flowchart::{FlowEdgeStroke, FlowEdgeVisibility};
 
-    let origin = Origin::of(geometry.bounds.as_ref());
+    let canvas = Canvas::of(geometry.bounds.as_ref(), diagram_padding);
+    let origin = canvas.origin;
 
     let mut nodes = Vec::with_capacity(geometry.nodes.len());
     for laid_out in &geometry.nodes {
@@ -199,7 +202,7 @@ fn flowchart(
         .collect();
 
     Ok(DiagramLayout {
-        size: bounds_size(geometry.bounds.as_ref()),
+        size: canvas.size,
         clusters,
         fragments: Vec::new(),
         nodes,
@@ -216,6 +219,23 @@ fn flowchart(
 /// `fontSize` is Mermaid's own documented configuration knob, and it is what
 /// `merman` derives the `TextStyle` it measures with from. Reading it here is
 /// what lets a label be drawn at the size its box was measured at.
+fn configured_diagram_padding(metadata: &merman_core::ParseMetadata) -> f64 {
+    /// Mermaid's default for `flowchart.diagramPadding`.
+    const DEFAULT: f64 = 8.0;
+    /// The inset a one-unit stroke on the boundary needs to stay inside.
+    const MINIMUM_PAINT_INSET: f64 = 1.0;
+
+    metadata
+        .effective_config
+        .as_value()
+        .get("flowchart")
+        .and_then(|flowchart| flowchart.get("diagramPadding"))
+        .and_then(serde_json::Value::as_f64)
+        .filter(|padding| padding.is_finite())
+        .unwrap_or(DEFAULT)
+        .max(MINIMUM_PAINT_INSET)
+}
+
 fn configured_font_size(metadata: &merman_core::ParseMetadata) -> f32 {
     metadata
         .effective_config
@@ -234,6 +254,37 @@ fn configured_font_size(metadata: &merman_core::ParseMetadata) -> f32 {
         .unwrap_or(DEFAULT_FONT_SIZE)
 }
 
+/// The canvas one diagram is drawn on.
+///
+/// The origin and the size are decided together because they answer the same
+/// question — where the diagram's coordinate space starts, and how much room it
+/// needs — and an inset applied to one but not the other silently crops the
+/// diagram.
+#[derive(Debug, Clone, Copy, Default)]
+struct Canvas {
+    origin: Origin,
+    size: Size,
+}
+
+impl Canvas {
+    /// The canvas holding `bounds` with `inset` units of room on every side.
+    fn of(bounds: Option<&merman_render::model::Bounds>, inset: f64) -> Self {
+        bounds.map_or_else(Self::default, |bounds| {
+            let origin = Origin {
+                x: bounds.min_x - inset,
+                y: bounds.min_y - inset,
+            };
+            Self {
+                origin,
+                size: size_of(
+                    bounds.max_x + inset - origin.x,
+                    bounds.max_y + inset - origin.y,
+                ),
+            }
+        })
+    }
+}
+
 /// Where a diagram's own coordinate space starts.
 ///
 /// Mermaid lays a diagram out wherever its algorithm happens to begin, not at
@@ -247,14 +298,6 @@ struct Origin {
 }
 
 impl Origin {
-    /// Reads the diagram's origin off its bounds.
-    fn of(bounds: Option<&merman_render::model::Bounds>) -> Self {
-        bounds.map_or(Self { x: 0.0, y: 0.0 }, |bounds| Self {
-            x: bounds.min_x,
-            y: bounds.min_y,
-        })
-    }
-
     #[expect(
         clippy::cast_possible_truncation,
         reason = "diagram coordinates are screen-scale magnitudes that f32 represents exactly enough to draw"
@@ -300,13 +343,6 @@ fn edge_label(edge: &LayoutEdge, text: Option<&str>, origin: Origin) -> Option<L
         frame: origin.label(frame),
         text: Str::from(text.to_string()),
         emphasis: Emphasis::Normal,
-    })
-}
-
-/// The diagram's natural size.
-fn bounds_size(bounds: Option<&merman_render::model::Bounds>) -> Size {
-    bounds.map_or_else(Size::default, |bounds| {
-        size_of(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y)
     })
 }
 
@@ -377,7 +413,11 @@ fn sequence(
     geometry: &merman_render::model::SequenceDiagramLayout,
     font_size: f32,
 ) -> Result<DiagramLayout, MermaidError> {
-    let origin = Origin::of(geometry.bounds.as_ref());
+    // A sequence diagram carries its own margin: `diagramMarginX` /
+    // `diagramMarginY` are already outside the outermost participant by the
+    // time bounds exist, which is why they start at `(-50, -10)`.
+    let canvas = Canvas::of(geometry.bounds.as_ref(), 0.0);
+    let origin = canvas.origin;
 
     let mut nodes = Vec::with_capacity(geometry.nodes.len());
     for laid_out in &geometry.nodes {
@@ -395,7 +435,7 @@ fn sequence(
     }
 
     Ok(DiagramLayout {
-        size: bounds_size(geometry.bounds.as_ref()),
+        size: canvas.size,
         clusters: participant_boxes(model, geometry, origin),
         fragments: fragments(model, geometry, origin, &lifelines),
         nodes,
@@ -700,7 +740,7 @@ mod tests {
     use waterui_core::Environment;
     use waterui_text::FontCollection;
 
-    use super::render;
+    use super::{Rect, Size, render};
     use crate::measure;
 
     const FLOWCHART: &str = "\
@@ -720,6 +760,56 @@ sequenceDiagram
     Reader->>Renderer: parse(source)
     Renderer-->>Reader: layout
 ";
+
+    /// A flowchart's canvas is bigger than the geometry on it.
+    ///
+    /// Dagre's bounds are the diagram's content, exactly: the first node's top
+    /// edge is at `min_y` and a diamond's left vertex is at `min_x`. Drawing
+    /// that content on a canvas of exactly those bounds puts half of every
+    /// outermost stroke outside the picture — the diamond in `FLOWCHART` came
+    /// out with its left vertex sliced off, and a subgraph frame lost its top
+    /// rule. The assertion is a strict inequality on every side, because
+    /// touching the edge is the defect.
+    #[test]
+    fn a_flowchart_keeps_room_around_its_outermost_geometry() {
+        let diagram = render(FLOWCHART, FontCollection::system()).expect("the diagram lays out");
+        let width = diagram.size.width;
+        let height = diagram.size.height;
+        assert!(
+            width > 0.0 && height > 0.0,
+            "the diagram must have a canvas for this to assert anything"
+        );
+
+        let mut checked = 0_usize;
+        let mut inside = |what: &str, frame: Rect| {
+            checked += 1;
+            let origin = frame.origin();
+            let size = frame.size();
+            assert!(
+                origin.x > 0.0
+                    && origin.y > 0.0
+                    && origin.x + size.width < width
+                    && origin.y + size.height < height,
+                "{what} {frame:?} touches the edge of the {width}x{height} canvas"
+            );
+        };
+
+        for cluster in &diagram.clusters {
+            inside("a subgraph frame", cluster.frame);
+        }
+        for node in &diagram.nodes {
+            inside("a node box", node.frame);
+        }
+        for edge in &diagram.edges {
+            for point in &edge.points {
+                inside("an edge point", Rect::new(*point, Size::default()));
+            }
+        }
+        assert!(
+            checked > 0,
+            "the diagram must have geometry for this to assert anything"
+        );
+    }
 
     /// A diagram's boxes and its glyphs come from one font collection, so every
     /// box is big enough for the text that will be painted into it. This is the
