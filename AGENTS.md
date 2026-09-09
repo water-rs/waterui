@@ -74,7 +74,15 @@ These are the target architecture and acceptance criteria for repository changes
 
 ## Engagement Rules
 
-DO NOT be over-engineer or write defensive code. If you encounter a problem, ask user for solution with your own idea, do not say "Let's have a simpler approach". You are expected to face the real problem and make code clean, reusable and elegant. Never take a workaround.
+**Prefer a coherent design over a small diff.** Avoiding overengineering means avoiding unnecessary complexity, not avoiding substantial refactoring.
+
+- When the existing structure or abstraction is the root cause, prefer replacing it with a sound design over accumulating local patches, special cases, or adapter layers. Update affected consumers and remove the superseded implementation rather than maintaining parallel paths.
+- Judge a solution by correctness, clarity, and long-term maintenance, not by lines changed. A broad refactor is preferable when it resolves the underlying problem more cleanly; a local fix is appropriate when the design itself is sound.
+- Prioritize the integrity of the overall design, including the abstractions and infrastructure it calls for. Avoid defensive programming: express invariants through clear contracts and types, and expose violations directly instead of layering speculative guards, retries, or fallbacks over them. Validate external inputs at real trust boundaries, but do not prematurely handle scenarios that have no plausible path to occurring.
+- Do not turn every concern or fix into another permanent regression test. Add durable tests selectively for meaningful, recurring failure risks; consider existing coverage, redundancy, maintenance burden, and cumulative suite runtime.
+- Keep clearly one-off diagnostic and validation tests temporary and out of the repository. Workflow configuration changes normally use `actionlint`, focused local checks, and actual Actions runs rather than a permanent CI self-test suite.
+- Preserve meaningful product coverage while keeping the suite effective. Prefer extending or consolidating existing tests when appropriate, rather than continually growing the suite with overlapping checks.
+- Keep the scope tied to the root problem, including the refactoring needed to solve it, rather than unrelated cleanup. Where architectural approval is required, propose the root redesign directly instead of substituting a patch.
 
 **A bug you find is a bug you fix, even when you did not introduce it.** Do not
 route around it, do not leave it for someone else, and do not merely mention it
@@ -89,9 +97,9 @@ pull request targeting `dev`. This explicitly covers:
 - defects in neighbouring code you had to read in order to do the task.
 
 Say plainly in the commit message, the issue, the PR, and to the user that the
-defect was pre-existing, so the diff stays understandable, then fix it. Keep the
-fix scoped to the defect itself — repairing a bug is not licence to refactor the
-area around it.
+defect was pre-existing, so the diff stays understandable, then fix it. Scope the
+fix to the underlying problem, including redesigning the affected structure when
+that is the better solution; exclude unrelated changes, not necessary refactoring.
 
 **Fix the root. Never adjust your own code to avoid a bug you just found.** The
 tempting move — the one that must not happen — is to leave the defect standing
