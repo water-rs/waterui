@@ -350,6 +350,10 @@ flow-markdown = ["waterui-internal/flow-markdown", "waterui-dylib?/flow-markdown
 markdown-math = ["waterui-internal/markdown-math", "waterui-dylib?/markdown-math"]
 std = ["waterui-internal/std", "waterui-dylib?/std"]
 dynamic_linking = ["dep:waterui-dylib"]
+canvas = ["waterui-internal/canvas", "waterui-dylib?/canvas"]
+chart = ["waterui-internal/chart", "waterui-dylib?/chart"]
+barcode = ["waterui-internal/barcode", "waterui-dylib?/barcode"]
+particle = ["waterui-internal/particle", "waterui-dylib?/particle"]
 # Every feature the framework offers an application. `dynamic_linking` is
 # deliberately absent: it is a build strategy — one shared copy of the framework
 # for the preview system — not a capability, and `waterui-dylib` exports more
@@ -357,6 +361,10 @@ dynamic_linking = ["dep:waterui-dylib"]
 # at all. `--all-features` therefore cannot be used on Windows; `--features all`
 # is what CI asks for instead.
 all = [
+    "canvas",
+    "chart",
+    "barcode",
+    "particle",
     "std",
     "gpu",
     "highlight",

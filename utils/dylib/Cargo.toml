@@ -47,6 +47,10 @@ snackbar = ["waterui-internal/snackbar"]
 flow-markdown = ["waterui-internal/flow-markdown"]
 markdown-math = ["waterui-internal/markdown-math"]
 std = ["waterui-internal/std"]
+canvas = ["waterui-internal/canvas"]
+chart = ["waterui-internal/chart"]
+barcode = ["waterui-internal/barcode"]
+particle = ["waterui-internal/particle"]
 all = [
     "waterui-internal/all",
     "navigation-restoration",
