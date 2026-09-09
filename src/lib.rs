@@ -130,6 +130,12 @@ pub use form::FormBuilder;
 pub use view::FilterViewExt;
 #[doc(inline)]
 pub use view::ViewExt;
+#[cfg(feature = "barcode")]
+pub use waterui_barcode as barcode;
+#[cfg(feature = "canvas")]
+pub use waterui_canvas as canvas;
+#[cfg(feature = "chart")]
+pub use waterui_chart as chart;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
 #[cfg(feature = "gpu")]
@@ -143,6 +149,8 @@ pub use waterui_graphics::{
     RadialGradientGenerator, StripeGenerator,
 };
 pub use waterui_icon as icon;
+#[cfg(feature = "particle")]
+pub use waterui_particle as particle;
 
 #[cfg(feature = "assets")]
 pub use waterui_assets as assets;
