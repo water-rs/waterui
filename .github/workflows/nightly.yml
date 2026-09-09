@@ -69,11 +69,11 @@ jobs:
       # ordinary ones, so storing it under the shared key would just overwrite
       # a useful tarball with one nothing else can restore. The target dir is
       # deliberately NOT cached: the instrumented tarball measures 3-5GB, and
-      # together with the two Test tarballs that oversubscribes the 10GB cache
-      # quota — every run would then evict one of the three and put a Test leg
-      # back on a 60-minute cold build. Coverage recompiles each run (~42min,
-      # which it already did when it was being evicted 4 runs out of 4) but
-      # only stores the ~0.2GB dependency caches, so the Test legs stay warm.
+      # caching it would compete with the fast lint gate for the 10GB cache
+      # quota. Daily instrumented artifacts must not evict the check artifacts
+      # reused by every dev push. Coverage recompiles each run, as before,
+      # while restoring only the shared Cargo dependency sources. The full
+      # instrumented suite and its upload are unchanged by that allocation.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cargo-home-${{ runner.os }}

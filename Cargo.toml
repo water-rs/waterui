@@ -404,6 +404,13 @@ debug = "line-tables-only"
 debug = false
 opt-level = 2
 
+[profile.ci-check]
+inherits = "dev"
+debug = false
+
+[profile.ci-check.package."*"]
+opt-level = 0
+
 [profile.release]
 lto = true
 codegen-units = 1

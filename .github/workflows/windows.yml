@@ -48,12 +48,13 @@ jobs:
         run: dxc --version
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-windows-latest
-          # Only the integration branches write cache generations, as in
-          # ci.yml and test.yml: a pull request reads them and saves nothing.
-          # Every PR fingerprint used to mint its own 5 GB generation here,
-          # and with the 10 GB repository cap that evicted the Test tarballs
-          # a dev run had just written (#328).
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          # Only the integration branches write the shared Cargo source cache.
+          # The Windows target archive no longer competes with the fast lint
+          # gate for the repository's 10 GB budget (#458). Tests still run in
+          # every supported shape below; only their cache allocation changes.
+          # Other Windows jobs restore the same source cache without saving.
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest

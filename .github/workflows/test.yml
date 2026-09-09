@@ -3,11 +3,11 @@ name: Test
 on:
   workflow_call:
     inputs:
-      # `false` is the pull-request / integration-branch gate: format, the
-      # default-features clippy pass, the default-features test run on Linux,
-      # the examples on Linux, and the skill compile gate. `true` is the
-      # nightly matrix: every clippy shape, both platforms, the all-features
-      # runs, the macOS suites and the examples on macOS.
+      # `false` is the fast gate: format and default-features workspace clippy.
+      # `true` is the nightly matrix: every test, example, doctest, platform,
+      # optional-feature lint pass and the skill compile gate. Dev pushes
+      # enter through dev.yml; pull requests keep the additional ABI and
+      # dependency checks in ci.yml. Both callers use the same fast lint.
       full:
         type: boolean
         default: false
@@ -31,9 +31,9 @@ env:
 # every pull request a 60-70 minute wait whatever it changed. Those passes,
 # the macOS platform and the macOS suites now run only when `full` is set,
 # which `nightly.yml` does once a day against `dev`; a pull request and a
-# push to `dev` run the default-features gate on Linux. Nothing is checked
-# less often than daily, and nothing a pull request can break in the default
-# shape waits behind a shape it did not touch.
+# push to `dev` run default-features clippy and format on Linux (#458).
+# The complete default-feature tests and examples also belong to nightly;
+# no test coverage is removed to shorten the per-change feedback loop.
 jobs:
   # Lint before testing: it is the cheapest failure to produce, and the one a
   # contributor is most likely to hit, so it should not wait behind the whole
@@ -43,7 +43,7 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: ${{ inputs.full && 90 || 10 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,23 +53,23 @@ jobs:
           components: clippy, rustfmt
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
-      # The Linux `~/.cargo` tarball is written here and read by every other
-      # Linux job (see the cache budget note in ci.yml). Only the integration
-      # branches write it: a pull request reads and saves nothing, since every
-      # distinct fingerprint would otherwise mint a generation that is never
-      # reclaimed.
+      # The fast gate owns the target-cache budget, including workspace check
+      # artifacts. Only integration-branch fast runs write it; pull requests
+      # and the full nightly lint restore without adding cache generations.
+      # The check-only Cargo profile avoids optimizing build dependencies for
+      # runtime speed when this job only needs their compiler output.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
+          shared-key: lint-${{ runner.os }}
+          cache-targets: true
+          cache-workspace-crates: true
+          save-if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
       - name: Format
         run: cargo fmt --all -- --check
       # Workspace-wide under default features first: it is the cheapest of the
       # lint passes and the one every crate's normal build shape goes through.
       - name: Clippy (workspace)
-        run: cargo clippy --workspace --exclude '*-example' --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --all-targets -- -D warnings
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor
       # `--workspace`: the root manifest carries both `[workspace]` and
@@ -149,6 +149,7 @@ jobs:
       # transcriptions to the compiler without registering runnable tests —
       # they address elements that do not exist by design and must never run.
       - name: Skill snippet compile gate
+        if: inputs.full
         run: cargo check -p skill_snippets --all-targets --features compile-gate-tests
 
   # The web runner, compiled for the target it actually runs on.
@@ -164,11 +165,12 @@ jobs:
   # It lints rather than merely compiles, so `cfg(target_arch = "wasm32")` code
   # is held to the same bar as every other target (#413).
   #
-  # It runs in both tiers rather than only in the nightly: a pull request
-  # touching any of those three can break it, and the check is a couple of
-  # minutes even cold, against the 90-120 minute legs beside it.
+  # This target-specific pass runs nightly alongside the other platform
+  # shapes (#458). The fast gate retains default-feature host clippy; the
+  # nightly still checks the actual wasm-only code and kit dialog backend.
   wasm:
     name: wasm32
+    if: inputs.full
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -218,6 +220,7 @@ jobs:
   # below on Linux and part of `macos-suites` on macOS.
   test:
     name: ${{ matrix.os }}
+    if: inputs.full
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
@@ -244,15 +247,15 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-      # macOS keeps its target directory (one of the two target tarballs the
-      # cache budget in ci.yml affords); the Linux leg reads the shared Linux
-      # `~/.cargo` tarball and compiles from there. Linux runners are the
-      # plentiful ones, and its cold build is shorter than the Windows one.
+      # The nightly test profiles restore only Cargo sources. Their multi-GB
+      # target archives previously occupied the cache budget while every dev
+      # push cold-compiled clippy. The frequent lint gate now owns that budget;
+      # these daily runs keep every test without evicting its check artifacts.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ runner.os == 'macOS' && 'test-macos-latest' || format('cargo-home-{0}', runner.os) }}
-          cache-targets: ${{ runner.os == 'macOS' }}
-          save-if: ${{ runner.os == 'macOS' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       # One full-workspace pass under default features. Every crate's own
@@ -469,6 +472,7 @@ jobs:
   # workspace), and that stays as it was.
   examples:
     name: examples (${{ matrix.os }})
+    if: inputs.full
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -493,7 +497,7 @@ jobs:
         with:
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
-          save-if: false
+          save-if: ${{ runner.os == 'Linux' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       - name: Clippy (examples)
