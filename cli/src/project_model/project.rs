@@ -97,7 +97,7 @@ impl Project {
         next.framework = Some(framework.clone());
         let mut updates =
             templates::framework_updates(&path, &previous, &next, &crate_name).await?;
-        framework.update_manifest(&mut cargo, previous.framework.as_ref())?;
+        framework.update_manifest(&mut cargo, &templates::project_patches(&path, &previous)?)?;
         water.remove("waterui_path");
         water["framework"] =
             toml_edit::Item::Table(toml_edit::ser::to_document(&framework)?.into_table());

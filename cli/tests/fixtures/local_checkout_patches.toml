@@ -1,0 +1,6 @@
+[workspace]
+members = []
+
+[patch.crates-io]
+waterui-core = { path = "core" }
+vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
