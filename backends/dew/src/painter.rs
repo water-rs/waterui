@@ -14,7 +14,7 @@
 //! painter as an opaque recording rather than as display-list commands.
 
 use kurbo::{Affine, Rect, Shape};
-use vello_cpu::{Pixmap, RenderContext, RenderMode, RenderSettings, Resources};
+use vello_cpu::{Pixmap, RasterizerSettings, RenderContext, RenderMode, RenderSettings, Resources};
 use waterui_graphics::scene2d_cpu::{CpuImageCache, replay_recording};
 
 use crate::compositor::DeviceRegion;
@@ -28,7 +28,7 @@ use crate::stats::FrameWork;
 #[derive(Debug)]
 pub struct Painter {
     resources: Resources,
-    settings: RenderSettings,
+    profile: RenderProfile,
     images: CpuImageCache,
     scratch: Vec<ScratchSlot>,
 }
@@ -47,6 +47,7 @@ struct ScratchSlot {
     height: u16,
     context: RenderContext,
     pixmap: Pixmap,
+    rasterizer: RasterizerSettings,
 }
 
 /// Distinct region sizes kept alive for reuse, least recently used evicted.
@@ -55,19 +56,35 @@ struct ScratchSlot {
 /// pathological size storm cannot hoard band-sized buffers.
 const SCRATCH_SLOTS: usize = 8;
 
+/// How a board rasterizes: what its render contexts are created with (SIMD
+/// level, worker threads) and the pipeline every region is rendered through.
+#[derive(Debug, Clone, Copy)]
+pub struct RenderProfile {
+    /// Settings each scratch render context is created with.
+    pub context: RenderSettings,
+    /// Settings each region is rasterized with.
+    pub rasterizer: RasterizerSettings,
+}
+
+impl Default for RenderProfile {
+    fn default() -> Self {
+        target_render_profile()
+    }
+}
+
 impl Default for Painter {
     fn default() -> Self {
-        Self::new(target_render_settings())
+        Self::new(target_render_profile())
     }
 }
 
 impl Painter {
-    /// Creates a painter with empty caches and explicit target settings.
+    /// Creates a painter with empty caches and an explicit render profile.
     #[must_use]
-    pub fn new(settings: RenderSettings) -> Self {
+    pub fn new(profile: RenderProfile) -> Self {
         Self {
             resources: Resources::new(),
-            settings,
+            profile,
             images: CpuImageCache::new(),
             scratch: Vec::new(),
         }
@@ -92,8 +109,9 @@ impl Painter {
             self.scratch.push(ScratchSlot {
                 width,
                 height,
-                context: RenderContext::new_with(width, height, self.settings),
+                context: RenderContext::new_with(width, height, self.profile.context),
                 pixmap: Pixmap::new(width, height),
+                rasterizer: self.profile.rasterizer,
             });
         }
         let slot = self
@@ -231,8 +249,16 @@ impl Painter {
             }
         }
         ctx.flush();
-        slot.context.render_to_pixmap(resources, &mut slot.pixmap);
+        slot.render(resources);
         &slot.pixmap
+    }
+}
+
+impl ScratchSlot {
+    /// Rasterizes the recorded scene into the slot's pixmap.
+    fn render(&mut self, resources: &mut Resources) {
+        self.context
+            .render_with(&mut self.pixmap, resources, self.rasterizer);
     }
 }
 
@@ -262,14 +288,17 @@ fn push_clip_layers(ctx: &mut RenderContext, clip: Option<&Clip>, shift: Affine)
 }
 
 /// Sets the context paint, converting and caching image brushes once.
-pub(crate) fn target_render_settings() -> RenderSettings {
-    RenderSettings {
-        render_mode: if cfg!(target_arch = "xtensa") {
-            RenderMode::OptimizeQuality
-        } else {
-            RenderMode::OptimizeSpeed
+pub(crate) fn target_render_profile() -> RenderProfile {
+    RenderProfile {
+        context: RenderSettings::default(),
+        rasterizer: RasterizerSettings {
+            render_mode: if cfg!(target_arch = "xtensa") {
+                RenderMode::OptimizeQuality
+            } else {
+                RenderMode::OptimizeSpeed
+            },
+            ..RasterizerSettings::default()
         },
-        ..Default::default()
     }
 }
 

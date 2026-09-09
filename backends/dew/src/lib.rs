@@ -106,6 +106,7 @@ pub use display::BufferDisplay;
 pub use display::{DisplayFlush, Rgb565Display, Rgb565Sink};
 pub use display_list::{Clip, ClipRegion, DisplayList, DrawCommand, PlacedCommand};
 pub use painter::Painter;
+pub use painter::RenderProfile;
 #[cfg(feature = "host")]
 pub use runtime::render_view_png;
 pub use runtime::{DewRuntime, Frame};

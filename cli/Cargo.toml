@@ -43,7 +43,7 @@ cargo_metadata = "0.23.1"
 # writes PNG plus the Windows ICO container. `default-formats` additionally
 # pulls `image`'s AVIF *encoder* (ravif -> rav1e), which nothing here calls.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "ico"] }
-cargo_toml = "1.0.0"
+cargo_toml = "1.0.1"
 color-eyre = { version = "0.6.5", features = ["issue-url"]}
 include_dir = "0.7.4"
 futures.workspace = true
@@ -64,7 +64,7 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 semver = "1.0"
 serialport = "4"
-which = "8.0.5"
+which = "8.0.6"
 notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
 
 # Terminal UI dependencies
@@ -91,7 +91,7 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 roxmltree = "0.21"            # Android SDK repository XML parsing
 fs_extra = "1.3"
 askama = "0.16"
-resvg = "0.47.0"
+resvg = "0.48.1"
 ttf-parser = "0.25"
 ignore = "0.4"
 remove_dir_all = "1.0"
@@ -120,7 +120,7 @@ nix = { version = "0.31", features = ["signal"] }
 # `.icns` encoding for hand-assembled app bundles. Only the macOS packaging path
 # builds one, and that path is itself `#[cfg(target_os = "macos")]`, so the
 # dependency does not belong in a Linux or Windows build of the CLI.
-icns = "0.3"
+icns = "0.4"
 
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
 zenwave = { workspace = true, features = ["rustls"] }
