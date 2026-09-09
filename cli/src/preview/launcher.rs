@@ -136,13 +136,17 @@ impl PreviewSession {
     /// # Errors
     /// Returns an error if the project cannot be opened, rebuilt, or fingerprinted.
     pub async fn build_dylib(&mut self, project_path: &std::path::Path) -> Result<BuiltDylib> {
-        build_preview_dylib(
+        // The build's state machine spans the opened project, the configured
+        // module build and every path they produce, and on Windows it crosses
+        // clippy's `large_futures` threshold (16 KiB). Pinning it on the heap
+        // keeps that off the stack of whoever awaits a preview build.
+        Box::pin(build_preview_dylib(
             project_path,
             self.platform,
             self.sccache_path.as_ref(),
             &self.runtime_fingerprint,
             &mut self.dylib_path,
-        )
+        ))
         .await
     }
 
