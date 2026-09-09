@@ -161,10 +161,6 @@ dependencies {
         implementation("dev.waterui.android:runtime")
     }
 
-    // The Kotlin half of rustls' platform verifier, at the version of the
-    // crate cargo resolved; settings.gradle.kts locates both.
-    implementation("rustls:rustls-platform-verifier:${gradle.extra["rustlsPlatformVerifierVersion"]}")
-
     implementation("androidx.core:core-ktx:1.19.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.13.0")
