@@ -6,6 +6,7 @@ use core::fmt;
 use kurbo::Affine;
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal};
+use waterui_core::Str;
 use waterui_core::layout::Size;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
@@ -27,12 +28,14 @@ use crate::scene2d::{Scene2D, SceneRecording};
 pub struct Picture {
     recording: Computed<Arc<SceneRecording>>,
     size: Size,
+    label: Option<Str>,
 }
 
 impl fmt::Debug for Picture {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Picture")
             .field("size", &self.size)
+            .field("label", &self.label)
             .finish_non_exhaustive()
     }
 }
@@ -58,7 +61,27 @@ impl Picture {
         Self {
             recording: recording.into_computed(),
             size,
+            label: None,
         }
+    }
+
+    /// Names the drawing for a screen reader.
+    ///
+    /// This is the name the picture *offers* — an SVG's `<title>`, an icon's
+    /// meaning — and it reaches the accessibility tree only where the
+    /// application has not named the view itself: an `.a11y_label(…)` on the
+    /// picture or on any ancestor still wins, because the application knows
+    /// what the drawing is for and the drawing only knows what it shows.
+    #[must_use]
+    pub fn labeled(mut self, label: impl Into<Str>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// The name the drawing offers a screen reader, if it has one.
+    #[must_use]
+    pub const fn label(&self) -> Option<&Str> {
+        self.label.as_ref()
     }
 
     /// Records `draw` into a fresh recording.
@@ -158,6 +181,13 @@ impl SceneContent for RecordedScene {
     fn intrinsic_size(&self) -> Option<Size> {
         Some(self.picture.size)
     }
+
+    fn accessibility_label(&self) -> Option<String> {
+        self.picture
+            .label
+            .as_ref()
+            .map(|label| label.as_str().to_owned())
+    }
 }
 
 #[cfg(test)]
@@ -196,6 +226,26 @@ mod tests {
         assert!(merged.downcast::<SceneView>().is_ok());
         let raw = AnyView::new(picture().body(&Environment::new()));
         assert!(raw.downcast::<Native<Picture>>().is_ok());
+    }
+
+    #[test]
+    fn a_labeled_picture_offers_its_name_and_an_unlabeled_one_stays_quiet() {
+        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK)));
+        assert_eq!(picture.label(), None);
+        let quiet = RecordedScene {
+            picture,
+            watcher: None,
+        };
+        assert_eq!(quiet.accessibility_label(), None);
+
+        let picture =
+            Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK))).labeled("Warning");
+        assert_eq!(picture.label().map(Str::as_str), Some("Warning"));
+        let named = RecordedScene {
+            picture,
+            watcher: None,
+        };
+        assert_eq!(named.accessibility_label().as_deref(), Some("Warning"));
     }
 
     #[test]

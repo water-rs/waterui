@@ -27,6 +27,11 @@ impl GtkComponent for Native<Picture> {
         let (request_width, request_height) =
             (size.width.round() as i32, size.height.round() as i32);
         widget.set_size_request(request_width, request_height);
+        // The name the drawing offers; an application's own `.a11y_label(…)`
+        // is applied to this same widget afterwards and so replaces it.
+        if let Some(label) = picture.label() {
+            widget.update_property(&[gtk4::accessible::Property::Label(label.as_str())]);
+        }
 
         let paint = Rc::new({
             let widget = widget.clone();

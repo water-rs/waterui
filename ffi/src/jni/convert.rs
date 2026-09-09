@@ -1771,19 +1771,26 @@ impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
     }
 }
 
-/// `WuiPicture -> PictureStruct(picturePtr, width, height)`
+/// `WuiPicture -> PictureStruct(picturePtr, width, height, label)`
 impl ToJavaStruct for crate::components::picture::WuiPicture {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        // SAFETY: this struct owns `label`, and taking it by value moves that
+        // `WuiStr` here, so the Rust string behind it is reclaimed exactly once.
+        let label: waterui::Str = unsafe { crate::IntoRust::into_rust(self.label) };
+        let label = env
+            .new_string(label.as_str())
+            .expect("Failed to create picture label string");
         let class = env
             .find_class(jni_str!("dev/waterui/android/runtime/PictureStruct"))
             .expect("PictureStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JFF)V"),
+            jni_sig!("(JFFLjava/lang/String;)V"),
             &[
                 JValue::Long(self.picture as jlong),
                 JValue::Float(self.width),
                 JValue::Float(self.height),
+                JValue::Object(&label),
             ],
         )
         .expect("Failed to create PictureStruct")
