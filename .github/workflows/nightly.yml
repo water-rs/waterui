@@ -126,7 +126,7 @@ jobs:
       # proved nothing — it produced no signal in any recent run. `--each-feature`
       # is linear and catches the failure that actually happens: a feature that
       # does not build on its own.
-      - run: cargo hack check --locked --each-feature --no-dev-deps
+      - run: cargo hack check --locked --each-feature
 
   test-report:
     name: Test Report

@@ -69,7 +69,7 @@ jobs:
       # Workspace-wide under default features first: it is the cheapest of the
       # lint passes and the one every crate's normal build shape goes through.
       - name: Clippy (workspace)
-        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' ${{ inputs.full && '--all-targets' || '--lib --bins' }} -- -D warnings
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor
       # `--workspace`: the root manifest carries both `[workspace]` and
