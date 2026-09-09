@@ -365,7 +365,10 @@ const fn resolve_platform(platform_override: Option<TargetPlatform>) -> TargetPl
 
 /// Run the run command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
-    let context = prepare_run_context(shell, &args).await?;
+    // The run context carries the opened project, the resolved device, backend
+    // and build options; on Windows that future crosses clippy's `large_futures`
+    // threshold (16 KiB), so it is pinned on the heap instead of the caller's stack.
+    let context = Box::pin(prepare_run_context(shell, &args)).await?;
     print_run_header(shell, &context);
     check_run_toolchain(shell, context.platform, context.backend).await?;
 
