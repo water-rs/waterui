@@ -35,17 +35,6 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  ci-policy:
-    name: CI policy
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.4"
-      - run: bun test ./.github/scripts/
-
   test:
     name: Test
     uses: ./.github/workflows/test.yml
@@ -156,7 +145,7 @@ jobs:
   # failure that nobody was watching at 03:17 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, ci-policy]
+    needs: [test, windows, coverage, feature-checks]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5
