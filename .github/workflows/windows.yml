@@ -48,12 +48,13 @@ jobs:
         run: dxc --version
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-windows-latest
-          # Only the integration branches write cache generations, as in
-          # ci.yml and test.yml: a pull request reads them and saves nothing.
-          # Every PR fingerprint used to mint its own 5 GB generation here,
-          # and with the 10 GB repository cap that evicted the Test tarballs
-          # a dev run had just written (#328).
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          # Only the integration branches write the shared Cargo source cache.
+          # The Windows target archive no longer competes with the fast lint
+          # gate for the repository's 10 GB budget (#458). Tests still run in
+          # every supported shape below; only their cache allocation changes.
+          # Other Windows jobs restore the same source cache without saving.
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
@@ -85,9 +86,9 @@ jobs:
       # `--all-features` pass is structurally impossible — `waterui-ffi`
       # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
       # enabling `c-api` and `android-jni` together can never build.
-      - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example --profile ci
+      - run: cargo nextest run --locked --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example --profile ci
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example
+      - run: cargo test --locked --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -136,10 +137,10 @@ jobs:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       - name: Test (root crate, every feature but dynamic_linking)
-        run: cargo nextest run --features all --profile ci
+        run: cargo nextest run --locked --features all --profile ci
       - name: Test (all features, workspace)
         run: |
-          cargo nextest run --workspace --all-features --profile ci `
+          cargo nextest run --locked --workspace --all-features --profile ci `
             --exclude waterui `
             --exclude waterui-dylib `
             --exclude '*-example' `
@@ -149,10 +150,10 @@ jobs:
             --exclude waterui-browser-cef `
             --exclude skill_snippets
       - name: Test (waterui-core, every stable feature)
-        run: cargo nextest run -p waterui-core --features std,serde --profile ci
+        run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
       - name: Test (hydrolysis, every portable feature)
         run: |
-          cargo nextest run -p hydrolysis --profile ci `
+          cargo nextest run --locked -p hydrolysis --profile ci `
             --features accessibility,inspector-signals,testing,web,winit
       - name: Upload Test Snapshots
         if: always()
@@ -192,9 +193,9 @@ jobs:
           cache-on-failure: true
       # Compile the CEF backend without its binary distribution (see the test
       # job for why it cannot be linked here).
-      - run: cargo check -p waterui-browser-cef --features compile-only
+      - run: cargo check --locked -p waterui-browser-cef --features compile-only
       # Windows-only code is invisible to every other leg: a `cfg(windows)` body
       # is compiled nowhere else, so a lint that fires only there reaches
       # nobody.
       - name: Clippy
-        run: cargo clippy --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings

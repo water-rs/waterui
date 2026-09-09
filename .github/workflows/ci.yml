@@ -6,7 +6,7 @@ permissions:
   # dorny/paths-filter lists a pull request's changed files.
   pull-requests: read
 
-# The per-change gate (#379): what a pull request or a push to `dev` runs.
+# The pull-request gate (#379); dev pushes use the lint-only dev.yml (#458).
 # It is deliberately the default-features shape on Linux plus the checks a
 # change can break, chosen per change by the `changes` job below. The full
 # matrix — every clippy shape, macOS and Windows, the all-features runs, the
@@ -17,7 +17,7 @@ on:
   # Integration branches only: a branch that also has a PR would otherwise run
   # the whole gate twice for one commit.
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
     branches: ["**"]
 
@@ -34,16 +34,16 @@ env:
   # build. Local development still uses sccache; this is CI-only.
   #
   # The 10 GB quota is the budget every rust-cache block in this repository is
-  # written against (#328). Only two jobs store a target directory: the macOS
-  # and Windows Test legs (`test-macos-latest`, `test-windows-latest`), the
-  # slowest cold builds on the scarcest runners, both written by the nightly
-  # run. Every other job stores just `~/.cargo` under one per-OS key
-  # (`cargo-home-<OS>`), written by a single job per OS on the integration
-  # branches and read by the rest. The full set of per-job target tarballs
-  # measured ~27 GB against the cap, so each dev run evicted what the previous
-  # one wrote and every job restored nothing. Incremental artifacts are
-  # per-machine rebuild state, useless to a fresh runner, and they bloat the
-  # cache that is restored.
+  # written against (#328). The fast lint job now owns the target-cache budget
+  # (#458), including workspace check artifacts. Only its integration-branch
+  # fast runs write that cache; the full nightly lint is a restore-only reader.
+  # Daily test profiles no longer save their multi-GB target archives, which
+  # previously occupied the budget while every dev push cold-compiled clippy.
+  # The other jobs share Cargo sources under per-OS cargo-home keys, with one
+  # writer per OS. No test or platform coverage is removed by this allocation.
+  # The former full set of target archives measured ~27 GB against the cap.
+  # Incremental artifacts are per-machine rebuild state, useless to a fresh
+  # runner, so they stay disabled rather than bloating the restored cache.
   CARGO_INCREMENTAL: 0
 
 jobs:
@@ -55,9 +55,9 @@ jobs:
   # filter cannot see what a workflow edit reaches.
   #
   # Two filter steps, because dorny/paths-filter applies one quantifier to
-  # every filter it evaluates: `ffi`/`deps`/`workflows` are "some changed
-  # file matches", while "docs only" is "every changed file matches", which
-  # the second step asks with `predicate-quantifier: every`. For a
+  # every filter it evaluates: `ffi`/`deps`/`workflows` match any pattern,
+  # while `code` matches a file outside every prose pattern. The second
+  # step combines negated patterns with `predicate-quantifier: every`. For a
   # `pull_request` event the action reads the changed files from the API; a
   # push compares against the commit before it on the same branch (`base` is
   # the pushed ref, and is ignored for pull requests), which needs the history
@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      code: ${{ steps.prose.outputs.docs_only != 'true' || steps.filter.outputs.workflows == 'true' }}
+      code: ${{ steps.prose.outputs.code == 'true' || steps.filter.outputs.workflows == 'true' }}
       ffi: ${{ steps.filter.outputs.ffi == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
     steps:
@@ -97,11 +97,11 @@ jobs:
           base: ${{ github.ref_name }}
           predicate-quantifier: every
           filters: |
-            docs_only:
-              - "**/*.md"
-              - "docs/**"
-              - "LICENSE*"
-              - ".github/ISSUE_TEMPLATE/**"
+            code:
+              - "!**/*.md"
+              - "!docs/**"
+              - "!LICENSE*"
+              - "!.github/ISSUE_TEMPLATE/**"
 
   typos:
     name: Typos
