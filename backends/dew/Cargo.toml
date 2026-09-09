@@ -135,6 +135,7 @@ waterui-math.workspace = true
 # of those wrappers used to abort dew's dispatch. Test-only, like the scene
 # crates above and for the same reason.
 waterui-chart.workspace = true
+# Tracks the version vello_cpu links, or `Level` is a different type on either side.
 fearless_simd = { version = "0.4", features = ["force_support_fallback"] }
 executor-core.workspace = true
 native-executor.workspace = true

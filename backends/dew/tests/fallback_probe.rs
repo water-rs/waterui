@@ -4,13 +4,18 @@
 
 use kurbo::{Affine, Rect, Shape};
 use peniko::Color;
-use vello_cpu::{Level, Pixmap, RenderContext, RenderMode, RenderSettings, Resources};
+use vello_cpu::{
+    Level, Pixmap, RasterizerSettings, RenderContext, RenderMode, RenderSettings, Resources,
+};
 
 fn render_banded(mode: RenderMode) {
     let settings = RenderSettings {
         level: Level::Fallback(fearless_simd::Fallback::new()),
         num_threads: 0,
+    };
+    let rasterizer = RasterizerSettings {
         render_mode: mode,
+        ..RasterizerSettings::default()
     };
     let mut resources = Resources::new();
     // Full screen plus the three stacked fills, rendered band-by-band with
@@ -29,7 +34,7 @@ fn render_banded(mode: RenderMode) {
         }
         ctx.flush();
         let mut pixmap = Pixmap::new(96, 16);
-        ctx.render_to_pixmap(&mut resources, &mut pixmap);
+        ctx.render_with(&mut pixmap, &mut resources, rasterizer);
         assert_eq!(pixmap.data()[8 * 96 + 48].a, 255, "band {band_y} rendered");
     }
 }
