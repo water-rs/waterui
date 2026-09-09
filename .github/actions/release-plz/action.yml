@@ -12,9 +12,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: taiki-e/install-action@v2
-      with:
-        tool: cargo-semver-checks@0.50
+    - uses: ./.github/actions/cargo-semver-checks
     # Built from the fork at a pinned commit and cached by that commit, so
     # the compile is paid once per rev. Bump `rev` after rebasing the fork's
     # `waterui/commit-too-old-before-packaging` branch onto a newer upstream tag.
