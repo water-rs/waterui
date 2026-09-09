@@ -883,14 +883,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "barcode-example"
-version = "0.1.0"
-dependencies = [
- "waterui",
- "waterui-barcode",
-]
-
-[[package]]
 name = "barcoders"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
