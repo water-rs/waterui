@@ -41,6 +41,10 @@ jobs:
     with:
       full: true
 
+  webview-js:
+    name: WebView JavaScript
+    uses: ./.github/workflows/webview-js.yml
+
   windows:
     name: Windows
     uses: ./.github/workflows/windows.yml
@@ -126,7 +130,7 @@ jobs:
 
   test-report:
     name: Test Report
-    needs: [test, windows]
+    needs: [test, windows, webview-js]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -145,7 +149,7 @@ jobs:
   # failure that nobody was watching at 03:17 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks]
+    needs: [test, windows, coverage, feature-checks, webview-js]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5

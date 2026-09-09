@@ -4,4 +4,4 @@ labels: ci
 ---
 The nightly full matrix failed: {{ env.RUN_URL }}
 
-Every job in that run is gating for `dev`: the per-change gate (`ci.yml`) only runs the default-features shape on Linux, so a failure here is either a shape a pull request cannot see (all-features, macOS, Windows, coverage, `cargo hack --each-feature`) or hosted-runner and toolchain drift. Read the failing job's log, fix the root cause on a topic branch, and close this issue when the next nightly is green.
+Every required check in that run gates nightly certification, including the WebView JavaScript bridge unit suite. The dev-push gate only runs format and compilation/lint checks; nightly also covers tests, all-features, macOS, Windows, coverage and `cargo hack --each-feature`. Read the failing job's log and uploaded test results, fix the root cause on a topic branch, and close this issue when the next nightly is green. A JavaScript suite failure must prevent certified nightly promotion even when every Rust check succeeds.
