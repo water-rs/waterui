@@ -302,7 +302,7 @@ pub struct MapConfig {
 
 // Use configurable! with StretchAxis::Both - this provides both NativeView and View impls
 configurable!(
-    #[doc = "A map view that displays a geographic region with optional annotations."]
+    /// A map view that displays a geographic region with optional annotations.
     Map,
     MapConfig,
     StretchAxis::Both

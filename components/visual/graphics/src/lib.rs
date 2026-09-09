@@ -1,4 +1,4 @@
-#![doc = "Graphics primitives for `WaterUI`."]
+//! Graphics primitives for `WaterUI`.
 // Proving `Send` across `wgpu`'s generic type graph is deeper than rustc's
 // default recursion limit of 128 on the workspace's nightly toolchain, which
 // reports `overflow evaluating the requirement ...: Send` — a hard error under
