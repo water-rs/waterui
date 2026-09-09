@@ -15,6 +15,7 @@ categories.workspace = true
 [package.metadata.waterui-scaffold]
 waterui-version = "0.3.0"
 waterui-core-version = "0.3.0"
+waterui-testing-version = "0.3.0"
 waterui-ffi-version = "0.3.0"
 hydrolysis-version = "0.1.0"
 hydrolysis-m3-version = "0.1.0"
@@ -105,6 +106,9 @@ url = "2.5"
 fs4 = "1.1.0"
 fontcull-klippa = "0.1.2"
 fontcull-write-fonts = "0.44.3"
+toml_edit = { version = "=0.25.13", features = ["serde"] }
+diffy = { version = "=0.5.0", default-features = false }
+cargo-lock = { version = "=10.1.0", default-features = false }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }

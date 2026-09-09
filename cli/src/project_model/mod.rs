@@ -2,6 +2,7 @@
 //! app scaffolding, and the on-disk `.water` directory layout.
 
 pub mod assets;
+pub mod framework;
 pub mod project;
 pub mod project_types;
 pub mod support_app;

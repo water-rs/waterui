@@ -10,6 +10,7 @@ use futures::StreamExt as _;
 use smol::{process::Command, unblock};
 use target_lexicon::{Environment, OperatingSystem, Triple};
 
+use crate::project::Project;
 use crate::utils::{command, run_command};
 
 /// Get the dynamic library extension for a target triple.
@@ -275,6 +276,7 @@ fn resolve_rust_standard_library_in(libdir: &Path, triple: &Triple) -> eyre::Res
 pub struct RustBuild {
     path: PathBuf,
     triple: Triple,
+    project: Option<Project>,
     /// Explicit Cargo target directory for cross-project artifact reuse.
     target_dir: Option<PathBuf>,
     /// Optional path to sccache for compilation caching.
@@ -420,6 +422,7 @@ impl RustBuild {
         Self {
             path: path.as_ref().to_path_buf(),
             triple,
+            project: None,
             target_dir: None,
             sccache_path: None,
             features: Vec::new(),
@@ -428,6 +431,11 @@ impl RustBuild {
             final_rustc_args: Vec::new(),
             envs: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_project(mut self, project: &Project) -> Self {
+        self.project = Some(project.clone());
+        self
     }
 
     /// Use an explicit Cargo target directory.
@@ -738,6 +746,21 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
         release: bool,
         cargo_target: CargoTarget<'_>,
     ) -> Result<std::process::Output, RustBuildError> {
+        let framework = self.project.as_ref().and_then(|project| {
+            project
+                .manifest()
+                .framework
+                .as_ref()
+                .map(|framework| (project, framework))
+        });
+        if let Some((project, framework)) = framework {
+            framework
+                .prepare_build(project, &self.path, &self.features)
+                .await
+                .map_err(|error| {
+                    RustBuildError::FailToBuildRustLibrary(std::io::Error::other(error.to_string()))
+                })?;
+        }
         let crate_type_override = if cargo_target.accepts_crate_type_override() {
             self.crate_type_override.as_deref()
         } else {
@@ -755,6 +778,9 @@ Automatic meson installation failed: {install_err}\n\n{combined}"
             .args(cargo_target.cargo_args())
             .args(["--target", self.triple.to_string().as_str()])
             .current_dir(&self.path);
+        if framework.is_some() {
+            cmd = cmd.arg("--locked");
+        }
 
         if let Some(target_dir) = &self.target_dir {
             cmd = cmd.arg("--target-dir").arg(target_dir);

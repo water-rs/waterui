@@ -211,6 +211,7 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
         .expect("inspector support bundle identifier must be valid"),
         package_type: PackageType::Playground,
         waterui_path: waterui_path.clone(),
+        channel: None,
         author: String::new(),
     };
 
