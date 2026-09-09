@@ -70,7 +70,7 @@ commit_submodule_pointer_updates_if_needed() {
     return 0
   fi
 
-  run_quietly git -C "$workspace_root" commit -m "$commit_message" || die "failed to commit rebased submodule pointers in workspace"
+  git -C "$workspace_root" commit -m "$commit_message" >/dev/null 2>&1 || die "failed to commit rebased submodule pointers in workspace"
 }
 
 sync_submodules() {
@@ -116,7 +116,6 @@ main() {
   workspace_root="$(ensure_workspace_context)"
   workspace_contains_source_layout "$workspace_root"
   ensure_source_submodules_ready "$source_root"
-  ensure_canonical_submodule_lineage "$source_root"
   activate_all_submodules "$source_root"
   activate_all_submodules "$workspace_root"
   ensure_no_integration_lock "$source_root"
