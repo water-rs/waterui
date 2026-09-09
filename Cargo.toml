@@ -49,6 +49,9 @@ description = "A modern UI framework for Rust"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
 
+[package.metadata.waterui]
+minimum-cli-version = "0.1.4"
+
 [lib]
 path = "facade.rs"
 

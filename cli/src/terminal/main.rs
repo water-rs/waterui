@@ -16,8 +16,8 @@ use futures::future::{self, Either};
 use tracing_subscriber::EnvFilter;
 
 use commands::{
-    backend, bench, build, clean, create, device, devices, doctor, gc, inspector, package, preview,
-    run,
+    backend, bench, build, channel, clean, create, device, devices, doctor, gc, inspector, package,
+    preview, run,
 };
 
 /// `WaterUI` command line interface.
@@ -40,6 +40,9 @@ struct Cli {
 enum Commands {
     /// Create a new `WaterUI` project.
     Create(create::Args),
+
+    /// Inspect or explicitly update the project's framework channel.
+    Channel(channel::Args),
 
     /// Manage project backends.
     Backend(backend::Args),
@@ -118,18 +121,19 @@ fn main() -> Result<()> {
             let command = async {
                 match cli.command {
                     Commands::Create(args) => create::run(&shell, args).await,
+                    Commands::Channel(args) => channel::run(&shell, args).await,
                     Commands::Backend(args) => backend::run(&shell, args).await,
-                    Commands::Run(args) => run::run(&shell, args).await,
+                    Commands::Run(args) => Box::pin(run::run(&shell, args)).await,
                     Commands::Bench(args) => bench::run(&shell, args).await,
                     Commands::Build(args) => build::run(&shell, args).await,
 
-                    Commands::Package(args) => package::run(&shell, args).await,
+                    Commands::Package(args) => Box::pin(package::run(&shell, args)).await,
                     Commands::Clean(args) => clean::run(&shell, args).await,
                     Commands::Doctor(args) => doctor::run(&shell, args).await,
                     Commands::Device(args) => device::run(&shell, args).await,
                     Commands::Devices(args) => devices::run(&shell, args).await,
                     Commands::Gc(args) => gc::run(&shell, args).await,
-                    Commands::Preview(args) => preview::run(&shell, args).await,
+                    Commands::Preview(args) => Box::pin(preview::run(&shell, args)).await,
                     Commands::Inspector(args) => inspector::run(&shell, args).await,
                 }
             };

@@ -223,18 +223,17 @@ async fn configure_preview_module_build(
     target: TargetPlatform,
     link_mode: PreviewLinkMode,
 ) -> Result<RustBuild> {
-    let support_target_dir = Project::open(&preview_support_path()?)
-        .await
-        .wrap_err("Failed to open preview support project for its target directory")?
-        .water_target_dir(RustLinkage::SharedRuntime)
-        .await?;
-    let rust_build = link_mode
-        .configure_build(RustBuild::new(preview_crate_path, target.triple()))
-        .with_target_dir(support_target_dir);
-
     let support_project = Project::open(&preview_support_path()?)
         .await
         .wrap_err("Failed to open the preview support project")?;
+    let support_target_dir = support_project
+        .water_target_dir(RustLinkage::SharedRuntime)
+        .await?;
+    let rust_build = link_mode
+        .configure_build(
+            RustBuild::new(preview_crate_path, target.triple()).with_project(&support_project),
+        )
+        .with_target_dir(support_target_dir);
     if matches!(platform, PreviewPlatform::Android) {
         Ok(rust_build.with_features(
             crate::android::platform::android_ffi_dependency_features(&support_project).await?,
@@ -1193,6 +1192,7 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
             .expect("preview support bundle identifier must be valid"),
         package_type: PackageType::Playground,
         waterui_path: waterui_path.clone(),
+        channel: None,
         author: String::new(),
     };
 

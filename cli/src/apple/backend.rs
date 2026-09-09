@@ -146,16 +146,7 @@ impl Backend for AppleBackend {
             let crate_name = project.crate_name().clone();
             // App name for Swift code must be a valid Swift identifier (no hyphens)
             // Convert "video-player-example" to "VideoPlayerExample"
-            let app_name = crate_name
-                .as_str()
-                .split('-')
-                .map(|s| {
-                    let mut chars = s.chars();
-                    chars.next().map_or_else(String::new, |first| {
-                        first.to_uppercase().chain(chars).collect()
-                    })
-                })
-                .collect::<String>();
+            let app_name = templates::apple_app_name(&crate_name);
             (crate_name.to_string(), app_name, crate_name)
         };
 

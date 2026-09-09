@@ -72,6 +72,7 @@ mod tests {
                         .expect("bundle identifier"),
                     package_type: PackageType::Playground,
                     waterui_path: None,
+                    channel: None,
                     author: "Lexo Liu".to_string(),
                 },
             )

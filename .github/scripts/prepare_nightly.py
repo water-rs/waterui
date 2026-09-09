@@ -48,6 +48,7 @@ def prepare():
         if path.is_file():
             lockfiles[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
     scaffold = tomllib.loads(Path("cli/Cargo.toml").read_text())["package"]["metadata"]["waterui-scaffold"]
+    framework = tomllib.loads(Path("Cargo.toml").read_text())
     manifest = {
         "schema_version": 1,
         "channel": "nightly",
@@ -59,6 +60,7 @@ def prepare():
         "submodules": submodules,
         "lockfiles": lockfiles,
         "scaffold": scaffold,
+        "minimum-cli-version": framework["package"]["metadata"]["waterui"]["minimum-cli-version"],
     }
     Path("framework.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return {"eligible": "true", "tag": tag, "revision": revision}
