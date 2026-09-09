@@ -47,6 +47,10 @@ waterui-graphics = { workspace = true, default-features = false }
 waterui-icon.workspace = true
 waterui-shape = { workspace = true, default-features = false }
 waterui-svg = { workspace = true, optional = true }
+waterui-canvas = { workspace = true, optional = true }
+waterui-chart = { workspace = true, optional = true }
+waterui-barcode = { workspace = true, optional = true }
+waterui-particle = { workspace = true, optional = true }
 waterui-math = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
@@ -153,7 +157,15 @@ flow-markdown = [
 # sign in prose stays a dollar sign, exactly as it does today.
 markdown-math = ["flow-markdown", "dep:waterui-math"]
 std = ["dep:waterkit-haptic"]
+canvas = ["dep:waterui-canvas"]
+chart = ["dep:waterui-chart"]
+barcode = ["dep:waterui-barcode"]
+particle = ["dep:waterui-particle"]
 all = [
+    "canvas",
+    "chart",
+    "barcode",
+    "particle",
     "std",
     "gpu",
     "highlight",
