@@ -6911,6 +6911,11 @@ typedef struct WuiPicture {
    * Height in points.
    */
   float height;
+  /**
+   * The name the drawing offers a screen reader; empty when it offers none.
+   * An application's own label on the view or an ancestor still wins.
+   */
+  struct WuiStr label;
 } WuiPicture;
 
 /**

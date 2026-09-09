@@ -17,7 +17,7 @@ use waterui_graphics::scene2d_cpu::{Rasterizer, RgbaBitmap};
 
 #[cfg(feature = "c-api")]
 use crate::reactive::WuiComputed;
-use crate::{IntoFFI, ffi_computed};
+use crate::{IntoFFI, WuiStr, ffi_computed};
 
 /// Opaque handle owning a `Picture`.
 pub struct WuiPictureHandle(pub(crate) Picture);
@@ -38,6 +38,9 @@ pub struct WuiPicture {
     pub width: f32,
     /// Height in points.
     pub height: f32,
+    /// The name the drawing offers a screen reader; empty when it offers none.
+    /// An application's own label on the view or an ancestor still wins.
+    pub label: WuiStr,
 }
 
 impl IntoFFI for Picture {
@@ -45,10 +48,12 @@ impl IntoFFI for Picture {
 
     fn into_ffi(self) -> Self::FFI {
         let size = self.size();
+        let label = self.label().cloned().unwrap_or_default();
         WuiPicture {
             picture: Box::into_raw(Box::new(WuiPictureHandle(self))),
             width: size.width,
             height: size.height,
+            label: label.into_ffi(),
         }
     }
 }

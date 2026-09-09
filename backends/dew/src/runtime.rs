@@ -77,7 +77,7 @@ impl<B: Board> DewRuntime<B> {
         band_height: u32,
         build_root: impl Fn() -> AnyView + 'static,
     ) -> Self {
-        let render_settings = board.render_settings();
+        let render_profile = board.render_profile();
         let fonts = board.fonts();
         let signals = waterui_backend_core::frame_signals::FrameSignals::new(board.now());
         let (width, height) = board.display().size();
@@ -90,7 +90,7 @@ impl<B: Board> DewRuntime<B> {
         renderer.fonts().install(&mut env);
         Self {
             renderer,
-            painter: Painter::new(render_settings),
+            painter: Painter::new(render_profile),
             scheduler: BandScheduler::new(width, height, band_height),
             board,
             env,

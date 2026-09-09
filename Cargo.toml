@@ -247,7 +247,7 @@ quick-xml = "0.42"
 # find at runtime; without it MathCAT looks for a `Rules` directory on disk.
 mathcat = { version = "0.7.5", features = ["include-zip"] }
 toml = "1.1.5"
-vello_cpu = { version = "0.0.9", default-features = false }
+vello_cpu = { version = "0.2.0", default-features = false }
 lyon = "1.0"
 wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
 # Must match the `glow` version wgpu-hal links against, or GLES handles from

@@ -12,7 +12,10 @@ use core::fmt;
 
 use kurbo::{Affine, BezPath, Rect, Shape, Stroke};
 use peniko::{BlendMode, Brush, Fill, ImageBrush, StyleRef};
-use vello_cpu::{Image, ImageSource, RenderContext, RenderMode, RenderSettings, Resources};
+use vello_cpu::{
+    Image, ImageSource, PixmapMut, RasterizerSettings, RenderContext, RenderMode, RenderSettings,
+    Resources,
+};
 
 use crate::scene2d::{GlyphRun, Scene2D, SceneRecording};
 
@@ -365,12 +368,15 @@ impl Rasterizer {
             clippy::cast_possible_truncation,
             reason = "`new` already proved both sides fit in a u16"
         )]
-        self.ctx.render_to_buffer(
+        let target = PixmapMut::new(self.width as u16, self.height as u16, &mut data)
+            .expect("`data` holds exactly width * height * 4 bytes");
+        self.ctx.render_with(
+            target,
             &mut self.resources,
-            &mut data,
-            self.width as u16,
-            self.height as u16,
-            RenderMode::OptimizeSpeed,
+            RasterizerSettings {
+                render_mode: RenderMode::OptimizeSpeed,
+                ..RasterizerSettings::default()
+            },
         );
         RgbaBitmap {
             width: self.width,
