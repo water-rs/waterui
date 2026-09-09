@@ -225,12 +225,46 @@ impl ResolvedFramework {
         }
         let patches = toml_edit::ser::to_document(&self.patches)?;
         for (source, dependencies) in patches.iter() {
+            // `[patch]` and `[patch.<source>]` are written as explicit tables:
+            // indexing into a missing key would vivify an inline value and
+            // hoist `patch = { … }` above `[package]`.
+            let patch = document
+                .entry("patch")
+                .or_insert_with(toml_edit::table)
+                .as_table_mut()
+                .ok_or_else(|| eyre!("[patch] is not a table"))?;
+            patch.set_implicit(true);
+            let table = patch
+                .entry(source)
+                .or_insert_with(toml_edit::table)
+                .as_table_like_mut()
+                .ok_or_else(|| eyre!("[patch.{source}] is not a table"))?;
             for (name, dependency) in dependencies
                 .as_table_like()
                 .expect("serialized patch dependencies are tables")
                 .iter()
             {
-                document["patch"][source][name] = dependency.clone();
+                table.insert(name, dependency.clone());
+            }
+        }
+        if let Some(patch) = document
+            .get_mut("patch")
+            .and_then(toml_edit::Item::as_table_mut)
+        {
+            let empty: Vec<String> = patch
+                .iter()
+                .filter(|(_, sources)| {
+                    sources
+                        .as_table_like()
+                        .is_some_and(toml_edit::TableLike::is_empty)
+                })
+                .map(|(source, _)| source.to_owned())
+                .collect();
+            for source in empty {
+                patch.remove(&source);
+            }
+            if patch.is_empty() {
+                document.remove("patch");
             }
         }
         Ok(())
@@ -1058,6 +1092,56 @@ mod tests {
         assert_eq!(
             updated["target"]["cfg(unix)"]["build-dependencies"]["waterui-core"]["version"]
                 .as_str(),
+            Some("=0.3.0")
+        );
+    }
+
+    #[test]
+    fn channel_update_writes_patches_as_tables_and_clears_stale_ones() {
+        let mut document: toml_edit::DocumentMut =
+            "[package]\nname = \"app\"\n\n[dependencies]\nwaterui = \"0.3.0\"\n"
+                .parse()
+                .unwrap();
+        let (dev, _) = snapshot(&Lockfile {
+            packages: vec![package("waterui", "0.3.0", None)],
+            version: cargo_lock::ResolveVersion::V4,
+            root: None,
+            metadata: BTreeMap::default(),
+            patch: cargo_lock::Patch::default(),
+        });
+        let mut dev = dev;
+        let vello: Dependency = toml::from_str::<toml::Value>(
+            r#"git = "https://github.com/lexoliu/vello"
+rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
+        )
+        .unwrap()
+        .try_into()
+        .unwrap();
+        dev.patches
+            .entry("crates-io".into())
+            .or_default()
+            .insert("vello".into(), vello);
+        dev.update_manifest(&mut document, None).unwrap();
+        let rendered = document.to_string();
+        assert!(rendered.starts_with("[package]"), "{rendered}");
+        assert!(rendered.contains("[patch.crates-io]\n"), "{rendered}");
+        assert!(!rendered.contains("\n[patch]\n"), "{rendered}");
+        assert_eq!(
+            document["patch"]["crates-io"]["vello"]["rev"].as_str(),
+            Some("d68d9e9825bcd1ffee762323881c13a2e7a3f639")
+        );
+        assert_eq!(
+            document["dependencies"]["waterui"]["rev"].as_str(),
+            Some("a".repeat(40).as_str())
+        );
+
+        ResolvedFramework::stable()
+            .update_manifest(&mut document, Some(&dev))
+            .unwrap();
+        let rendered = document.to_string();
+        assert!(!rendered.contains("patch"), "{rendered}");
+        assert_eq!(
+            document["dependencies"]["waterui"]["version"].as_str(),
             Some("=0.3.0")
         );
     }
