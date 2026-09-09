@@ -3,6 +3,19 @@
 # Surface anything pathologically slow rather than letting CI hang on it.
 slow-timeout = { period = "60s", terminate-after = 10 }
 
+# A test is "leaky" when its stdout/stderr pipe is still open after the
+# process has exited. Nothing on the test side of this workspace can do that:
+# the only child process any test infrastructure spawns is Hydrolysis'
+# Linux-only `busctl` query, which is reaped with `.output()` before the test
+# continues, and threads cannot outlive their process. So a leak report here
+# is nextest's own pipe reader losing the race for the window under load
+# (#456: one random pure-geometry test per `-j 32` run on a machine running
+# several cargo builds, clean 12/12 in isolation). The default 100 ms window is
+# widened to what a loaded developer machine or CI runner needs, and past that
+# window the report is a failure, not a passing test with a footnote, so a real
+# escaped handle can no longer hide behind "the usual noise".
+leak-timeout = { period = "500ms", result = "fail" }
+
 # `#[waterui::bench]` tests are long by design in full-measurement mode:
 # `water bench` drives hundreds of frames per repetition, and on a software
 # rasterizer (llvmpipe on CI's Linux runners) a heavy scene runs at seconds
