@@ -16,5 +16,5 @@ runs:
       with:
         tool: cargo-semver-checks
         git: https://github.com/water-rs/cargo-semver-checks
-        rev: 5090c036244d69cbc53ed5d90d5468a7559c3dd0
+        rev: 14c730d774ab26be35df7378295447ddcb6125db
         locked: true
