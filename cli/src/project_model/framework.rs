@@ -182,10 +182,14 @@ impl ResolvedFramework {
         self.patches.clone()
     }
 
+    /// Rewrite a project manifest's dependencies and `[patch]` tables for this
+    /// framework, clearing `previous_patches` first: the entries the manifest
+    /// carried for whatever it was built against before, a channel's or a
+    /// local checkout's.
     pub(crate) fn update_manifest(
         &self,
         document: &mut toml_edit::DocumentMut,
-        previous: Option<&Self>,
+        previous_patches: &PatchSet,
     ) -> Result<()> {
         for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
             if let Some(dependencies) = document
@@ -210,16 +214,14 @@ impl ResolvedFramework {
                 }
             }
         }
-        if let Some(previous) = previous {
-            for (source, dependencies) in &previous.patches {
-                if let Some(table) = document
-                    .get_mut("patch")
-                    .and_then(|patch| patch.get_mut(source))
-                    .and_then(toml_edit::Item::as_table_like_mut)
-                {
-                    for name in dependencies.keys() {
-                        table.remove(name);
-                    }
+        for (source, dependencies) in previous_patches {
+            if let Some(table) = document
+                .get_mut("patch")
+                .and_then(|patch| patch.get_mut(source))
+                .and_then(toml_edit::Item::as_table_like_mut)
+            {
+                for name in dependencies.keys() {
+                    table.remove(name);
                 }
             }
         }
@@ -1065,7 +1067,7 @@ mod tests {
         };
         let mut document = toml_edit::ser::to_document(&manifest).unwrap();
         ResolvedFramework::stable()
-            .update_manifest(&mut document, None)
+            .update_manifest(&mut document, &PatchSet::default())
             .unwrap();
         assert_eq!(
             document["dependencies"]["ui"]["package"].as_str(),
@@ -1121,7 +1123,8 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             .entry("crates-io".into())
             .or_default()
             .insert("vello".into(), vello);
-        dev.update_manifest(&mut document, None).unwrap();
+        dev.update_manifest(&mut document, &PatchSet::default())
+            .unwrap();
         let rendered = document.to_string();
         assert!(rendered.starts_with("[package]"), "{rendered}");
         assert!(rendered.contains("[patch.crates-io]\n"), "{rendered}");
@@ -1136,7 +1139,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         );
 
         ResolvedFramework::stable()
-            .update_manifest(&mut document, Some(&dev))
+            .update_manifest(&mut document, &dev.patches())
             .unwrap();
         let rendered = document.to_string();
         assert!(!rendered.contains("patch"), "{rendered}");
