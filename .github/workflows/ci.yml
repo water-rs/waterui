@@ -55,9 +55,9 @@ jobs:
   # filter cannot see what a workflow edit reaches.
   #
   # Two filter steps, because dorny/paths-filter applies one quantifier to
-  # every filter it evaluates: `ffi`/`deps`/`workflows` are "some changed
-  # file matches", while "docs only" is "every changed file matches", which
-  # the second step asks with `predicate-quantifier: every`. For a
+  # every filter it evaluates: `ffi`/`deps`/`workflows` match any pattern,
+  # while `code` matches a file outside every prose pattern. The second
+  # step combines negated patterns with `predicate-quantifier: every`. For a
   # `pull_request` event the action reads the changed files from the API; a
   # push compares against the commit before it on the same branch (`base` is
   # the pushed ref, and is ignored for pull requests), which needs the history
@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      code: ${{ steps.prose.outputs.docs_only != 'true' || steps.filter.outputs.workflows == 'true' }}
+      code: ${{ steps.prose.outputs.code == 'true' || steps.filter.outputs.workflows == 'true' }}
       ffi: ${{ steps.filter.outputs.ffi == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
     steps:
@@ -97,11 +97,11 @@ jobs:
           base: ${{ github.ref_name }}
           predicate-quantifier: every
           filters: |
-            docs_only:
-              - "**/*.md"
-              - "docs/**"
-              - "LICENSE*"
-              - ".github/ISSUE_TEMPLATE/**"
+            code:
+              - "!**/*.md"
+              - "!docs/**"
+              - "!LICENSE*"
+              - "!.github/ISSUE_TEMPLATE/**"
 
   typos:
     name: Typos
