@@ -1121,6 +1121,37 @@ mod tests {
     }
 
     #[test]
+    fn local_checkout_patches_are_rebased_onto_the_waterui_path() {
+        let tempdir = tempdir().expect("temporary checkout dir");
+        let checkout = tempdir.path().join("waterui");
+        std::fs::create_dir_all(&checkout).expect("checkout dir");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            include_str!("../../tests/fixtures/local_checkout_patches.toml"),
+        )
+        .expect("checkout manifest");
+        let project_root = tempdir.path().join("app");
+        std::fs::create_dir_all(&project_root).expect("project dir");
+
+        let patches =
+            super::local_framework_patches(&project_root, std::path::Path::new("../waterui"))
+                .expect("patches from the checkout");
+        let crates_io = &patches["crates-io"];
+        let cargo_toml::Dependency::Detailed(core) = &crates_io["waterui-core"] else {
+            panic!("a path patch stays a detailed dependency");
+        };
+        assert_eq!(core.path.as_deref(), Some("../waterui/core"));
+        let cargo_toml::Dependency::Detailed(vello) = &crates_io["vello"] else {
+            panic!("a git patch stays a detailed dependency");
+        };
+        assert_eq!(
+            vello.git.as_deref(),
+            Some("https://github.com/lexoliu/vello")
+        );
+        assert!(vello.path.is_none());
+    }
+
+    #[test]
     fn relative_waterui_path_produces_clean_relative_backend_path() {
         let ctx = ctx(
             Some(PathBuf::from("../..")),
@@ -2141,6 +2172,7 @@ pub async fn framework_updates(
         .framework
         .as_ref()
         .expect("channel updates have a resolved framework");
+    let previous_patches = project_patches(root, previous)?;
     for directory in rust.into_iter().flatten() {
         let path = directory.join("Cargo.toml");
         let mut manifest: toml_edit::DocumentMut = fs::read_to_string(&path)
@@ -2148,7 +2180,7 @@ pub async fn framework_updates(
             .parse()
             .map_err(io::Error::other)?;
         framework
-            .update_manifest(&mut manifest, previous.framework.as_ref())
+            .update_manifest(&mut manifest, &previous_patches)
             .map_err(|error| io::Error::other(error.to_string()))?;
         updates.push((path, manifest.to_string().into_bytes()));
     }
@@ -3258,6 +3290,52 @@ fn collect_workspace_patches(project_root: &Path) -> io::Result<cargo_toml::Patc
     Ok(patches)
 }
 
+/// The `[patch]` tables of the `WaterUI` checkout at `waterui_path`, rebased
+/// onto that path so they resolve from the project root that names it.
+///
+/// A project built against a checkout takes `waterui` by path, but any
+/// component it pulls from the registry — `waterui-image`, `waterui-chart` —
+/// still names the registry `waterui-core`, and Cargo only honours `[patch]`
+/// from the root of the workspace being built. Without the checkout's own
+/// table the graph carries two copies of every foundation crate and `View` is
+/// a different type on either side (#498). A relative `waterui_path` stays
+/// relative, so the project remains portable together with its checkout.
+pub fn local_framework_patches(
+    project_root: &Path,
+    waterui_path: &Path,
+) -> io::Result<cargo_toml::PatchSet> {
+    let manifest =
+        cargo_toml::Manifest::from_path(project_root.join(waterui_path).join("Cargo.toml"))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut patches = manifest.patch;
+    for deps in patches.values_mut() {
+        for dependency in deps.values_mut() {
+            if let cargo_toml::Dependency::Detailed(detail) = dependency
+                && let Some(path) = detail.path.take()
+            {
+                detail.path = Some(normalize_path_for_config(&waterui_path.join(path)));
+            }
+        }
+    }
+    Ok(patches)
+}
+
+/// The `[patch]` tables a project's root `Cargo.toml` carries for the mode its
+/// `Water.toml` selects: the framework revision's on a channel, the checkout's
+/// when built against a local `waterui_path`, none on the registry.
+pub fn project_patches(
+    project_root: &Path,
+    manifest: &crate::project::Manifest,
+) -> io::Result<cargo_toml::PatchSet> {
+    match (&manifest.framework, &manifest.waterui_path) {
+        (Some(framework), _) => Ok(framework.patches()),
+        (None, Some(waterui_path)) => {
+            local_framework_patches(project_root, Path::new(waterui_path))
+        }
+        (None, None) => Ok(cargo_toml::PatchSet::default()),
+    }
+}
+
 /// Finds the manifest Cargo would treat as the workspace root for a package at
 /// `project_root`: the nearest ancestor manifest with a `[workspace]` section,
 /// or the package's own manifest when it is standalone.
@@ -3575,7 +3653,17 @@ pub mod root {
             build_dependencies: BTreeMap::new(),
             target: native_target_section(waterui_dependency),
             workspace: GeneratedWorkspaceSection {},
-            patch: ctx.framework.patches(),
+            patch: match &ctx.waterui_path {
+                Some(waterui_path) => {
+                    let (project_root, waterui_path) =
+                        (base_dir.to_path_buf(), waterui_path.clone());
+                    smol::unblock(move || {
+                        super::local_framework_patches(&project_root, &waterui_path)
+                    })
+                    .await?
+                }
+                None => ctx.framework.patches(),
+            },
         };
 
         write_generated_cargo_toml(base_dir, super::render_generated_cargo_toml(&manifest)?).await
