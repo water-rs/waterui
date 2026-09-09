@@ -146,6 +146,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         })?;
 
     let mut build = RustBuild::new(&backend_path, platform.triple())
+        .with_project(project)
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(extra_features.iter().copied())
         .with_linkage(
