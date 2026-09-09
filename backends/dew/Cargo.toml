@@ -140,7 +140,7 @@ executor-core.workspace = true
 native-executor.workspace = true
 # The performance simulation emits its report as serialized TOML rather than
 # hand-concatenated lines.
-toml = "1.1.3"
+toml = "1.1.5"
 
 # Every integration test declares the feature shape it needs, the way the
 # simulator example does. `host` buys the in-memory framebuffer (`HostBoard`,

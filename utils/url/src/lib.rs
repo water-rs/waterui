@@ -62,7 +62,7 @@ use {
     executor_core::spawn_local,
     nami::Binding,
     nami_core::Signal,
-    zenwave::{Client, Method, redirect::FollowRedirect},
+    zenwave::{Client, Method},
 };
 
 // ============================================================================
@@ -970,12 +970,12 @@ pub async fn download_remote_bytes(url: &str) -> Result<Vec<u8>, RemoteDownloadE
 async fn download_remote_bytes_with_content_type(
     url: &str,
 ) -> Result<DownloadedRemoteBytes, RemoteDownloadError> {
-    let mut client = FollowRedirect::new(zenwave::raw_client());
+    let mut client = zenwave::client();
     let response = client
         .method(Method::GET, url)
         .map_err(|error| RemoteDownloadError::Http(Box::new(error)))?
         .await
-        .map_err(|error| RemoteDownloadError::Http(Box::new(error.into())))?;
+        .map_err(|error| RemoteDownloadError::Http(Box::new(error)))?;
 
     if !response.status().is_success() {
         return Err(RemoteDownloadError::UnsuccessfulStatus(
@@ -1689,7 +1689,7 @@ mod tests {
         let url = format!("http://{address}/download")
             .parse::<Url>()
             .expect("test URL must parse");
-        let fetched = futures::executor::block_on(fetch_remote_to_cache(
+        let fetched = futures_lite::future::block_on(fetch_remote_to_cache(
             url.as_str().to_owned(),
             url.extension().map(str::to_owned),
         ))
@@ -1747,7 +1747,7 @@ mod tests {
         let url = format!("http://{address}/{long_path}")
             .parse::<Url>()
             .expect("test URL must parse");
-        let fetched = futures::executor::block_on(fetch_remote_to_cache(
+        let fetched = futures_lite::future::block_on(fetch_remote_to_cache(
             url.as_str().to_owned(),
             url.extension().map(str::to_owned),
         ))

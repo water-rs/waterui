@@ -14,7 +14,7 @@ use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use smol::process::Command;
-use zenwave::{Client as _, Method, redirect::FollowRedirect};
+use zenwave::{Client as _, Method};
 
 /// A framework distribution channel, independent of the Rust toolchain.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -820,7 +820,7 @@ fn validate_revision(revision: &str) -> Result<()> {
 }
 
 async fn fetch(url: &str) -> Result<Vec<u8>> {
-    let mut client = FollowRedirect::new(zenwave::raw_client());
+    let mut client = zenwave::client();
     let response = client
         .method(Method::GET, url)?
         .header("User-Agent", env!("CARGO_PKG_NAME"))?

@@ -170,7 +170,7 @@ waterui-navigation = { path = "../../components/foundation/navigation" }
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 waterui = { path = "../..", default-features = false, features = ["flow-markdown", "gpu"] }
-base64 = "0.22"
+base64 = "0.23"
 executor-core = { workspace = true, features = ["async-executor"] }
 tiny_http = "0.12"
 

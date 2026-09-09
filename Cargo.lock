@@ -1185,9 +1185,9 @@ dependencies = [
 
 [[package]]
 name = "blocking"
-version = "1.6.2"
+version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e83f8d02be6967315521be875afa792a316e28d57b5a2d401897e2a7921b7f21"
+checksum = "a70e4329df6cb94385eed412ec92375c3cdd8a6e502493d1229b6414e4036dfa"
 dependencies = [
  "async-channel",
  "async-task",
@@ -1516,7 +1516,7 @@ checksum = "aa61aec073ec94791433ddf3df2323ff9d1711557c2a0eefb0f99cb4f8dca520"
 dependencies = [
  "semver",
  "serde",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]
@@ -2700,6 +2700,15 @@ name = "dirs"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
 dependencies = [
  "dirs-sys",
 ]
@@ -4955,7 +4964,7 @@ dependencies = [
  "accesskit",
  "accesskit_winit",
  "async-task",
- "base64 0.22.1",
+ "base64 0.23.1",
  "block2 0.6.2",
  "cfg_aliases 0.2.2",
  "cookie",
@@ -5052,6 +5061,28 @@ dependencies = [
  "smallvec",
  "tokio",
  "want",
+]
+
+[[package]]
+name = "hyper-util"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "futures-channel",
+ "http",
+ "http-body",
+ "hyper",
+ "ipnet",
+ "percent-encoding",
+ "pin-project-lite",
+ "system-configuration",
+ "tokio",
+ "tower-service",
+ "tracing",
+ "windows-registry",
 ]
 
 [[package]]
@@ -5825,6 +5856,12 @@ dependencies = [
  "core-foundation-sys 0.8.7",
  "mach2 0.4.3",
 ]
+
+[[package]]
+name = "ipnet"
+version = "2.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -6748,7 +6785,7 @@ checksum = "21a23e5a28e90434c787466125d2d2658d284f6f2779d6fbe6a6155f442be985"
 dependencies = [
  "bitflags 2.13.1",
  "cfg-if 1.0.4",
- "dirs",
+ "dirs 6.0.0",
  "env_logger",
  "error-chain",
  "fastrand",
@@ -7086,9 +7123,9 @@ dependencies = [
 
 [[package]]
 name = "mvt-reader"
-version = "2.4.0"
+version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b21d02c206b092ea347b673caf17f15fcc7eb45fff0668adfc484306ee6f2a1a"
+checksum = "d59a9ba839816c282311c473b43eb9a0f4516afe3c2c0cb7cda68050c50ddcba"
 dependencies = [
  "geo-types",
  "num-traits",
@@ -7161,9 +7198,9 @@ dependencies = [
 
 [[package]]
 name = "nami"
-version = "0.11.0"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "358d5812e714a56e95eefd43c659c42a5d1b0e720bb27b05703ec62bac42e57c"
+checksum = "b66f346970519dd65bc7c1dcf49696edcf43eb9916f3bb00f2b8841c44de6d35"
 dependencies = [
  "async-channel",
  "async-io",
@@ -7185,9 +7222,9 @@ checksum = "9a70d1da3e07e48053148d4e32d49274c9249ab710ec26e9f10570e175a647ec"
 
 [[package]]
 name = "nami-derive"
-version = "0.2.4"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be47b9c916ede3a11eb0cdc93376571827bdc7be5ac9d342bfe143d1b0790c11"
+checksum = "8b76f4c97f6726b9589ca160480b114b8ee6cf4bfbe839253f426c1b778fc5fe"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8953,9 +8990,9 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.13.5"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
+checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
 dependencies = [
  "bytes",
  "prost-derive",
@@ -8963,12 +9000,12 @@ dependencies = [
 
 [[package]]
 name = "prost-derive"
-version = "0.13.5"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
+checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -9716,6 +9753,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustls-platform-verifier"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26d1e2536ce4f35f4846aa13bff16bd0ff40157cdb14cc056c7b14ba41233ba0"
+dependencies = [
+ "core-foundation 0.10.1",
+ "core-foundation-sys 0.8.7",
+ "jni 0.22.4",
+ "log",
+ "once_cell",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-platform-verifier-android",
+ "rustls-webpki",
+ "security-framework",
+ "security-framework-sys",
+ "webpki-root-certs",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rustls-platform-verifier-android"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
+
+[[package]]
 name = "rustls-webpki"
 version = "0.103.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10285,9 +10349,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.15.2"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
 
 [[package]]
 name = "smithay-client-toolkit"
@@ -10919,6 +10983,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "system-configuration"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a13f3d0daba03132c0aa9767f98351b3488edc2c100cda2d2ec2b04f3d8d3c8b"
+dependencies = [
+ "bitflags 2.13.1",
+ "core-foundation 0.9.4",
+ "system-configuration-sys",
+]
+
+[[package]]
+name = "system-configuration-sys"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
+dependencies = [
+ "core-foundation-sys 0.8.7",
+ "libc",
+]
+
+[[package]]
 name = "system-deps"
 version = "7.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10927,7 +11012,7 @@ dependencies = [
  "cfg-expr",
  "heck 0.5.0",
  "pkg-config",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.5+spec-1.1.0",
  "version-compare",
 ]
 
@@ -11214,7 +11299,11 @@ version = "1.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
 dependencies = [
+ "libc",
+ "mio",
  "pin-project-lite",
+ "socket2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11246,9 +11335,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.1.4+spec-1.1.0"
+version = "1.1.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aace63f4bbcdfc2c965b059de67119c89c4017a70d633be6c104910f67056f5"
+checksum = "12c0ba9680044b4ce98d391a62094047eada0d64860b80166c39f4a6b5640785"
 dependencies = [
  "indexmap 2.14.0",
  "serde_core",
@@ -11532,7 +11621,7 @@ dependencies = [
  "serde_json",
  "target-triple",
  "termcolor",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]
@@ -11906,9 +11995,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.24.1"
+version = "1.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cefc03fd367c0c6d4305de1b312cf00248c4114f4a0418ce6a6af769e3b0bd9"
+checksum = "b5772d71c9be8a8a6ac2117d949c5b224c1b72241bb611d9a3012edcf8af7812"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -12223,6 +12312,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-streams"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "waterkit-audio"
 version = "0.1.1"
 dependencies = [
@@ -12245,7 +12347,7 @@ dependencies = [
  "web-sys",
  "windows 0.62.2",
  "zbus",
- "zenwave",
+ "zenwave 0.5.0",
 ]
 
 [[package]]
@@ -12281,7 +12383,7 @@ dependencies = [
  "web-sys",
  "windows 0.62.2",
  "zbus",
- "zenwave",
+ "zenwave 0.5.0",
 ]
 
 [[package]]
@@ -12460,7 +12562,7 @@ name = "waterkit-fs"
 version = "0.1.1"
 dependencies = [
  "async-fs",
- "dirs",
+ "dirs 6.0.0",
  "indexed_db_futures",
  "jni 0.22.4",
  "serde",
@@ -12479,7 +12581,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e685725a5fbdaf59c29abe5cbe756f77d817c29fa0513741cc403801efbdfb3"
 dependencies = [
  "async-fs",
- "dirs",
+ "dirs 6.0.0",
  "indexed_db_futures",
  "jni 0.22.4",
  "js-sys",
@@ -12659,7 +12761,7 @@ dependencies = [
  "uuid",
  "waterkit-video-core 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "windows 0.62.2",
- "zenwave",
+ "zenwave 0.5.0",
 ]
 
 [[package]]
@@ -12678,7 +12780,7 @@ name = "waterui-assets"
 version = "0.1.0"
 dependencies = [
  "blocking",
- "dirs",
+ "dirs 7.0.0",
  "hex",
  "memmap2",
  "sha2",
@@ -12711,7 +12813,7 @@ dependencies = [
  "syn 3.0.3",
  "tempfile",
  "thiserror 2.0.20",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.5+spec-1.1.0",
  "walkdir",
  "waterui-assets",
 ]
@@ -12758,12 +12860,12 @@ version = "0.1.0"
 dependencies = [
  "askama",
  "async-channel",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cc",
  "cef",
  "cef-dll-sys",
  "cookie",
- "dirs",
+ "dirs 7.0.0",
  "executor-core",
  "futures",
  "futures-lite",
@@ -12794,7 +12896,7 @@ dependencies = [
 name = "waterui-browser-wpe"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "cookie",
  "executor-core",
  "futures",
@@ -12886,7 +12988,7 @@ dependencies = [
  "ctrlc",
  "dialoguer",
  "diffy",
- "dirs",
+ "dirs 7.0.0",
  "dunce",
  "fontcull-klippa",
  "fontcull-skrifa",
@@ -12922,7 +13024,7 @@ dependencies = [
  "target-lexicon",
  "tempfile",
  "thiserror 2.0.20",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.5+spec-1.1.0",
  "toml_edit 0.25.13+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
@@ -12935,7 +13037,7 @@ dependencies = [
  "waterui-preview-protocol",
  "which 8.0.5",
  "whoami",
- "zenwave",
+ "zenwave 0.6.0",
  "zip 8.6.0",
 ]
 
@@ -12986,7 +13088,7 @@ dependencies = [
  "serde",
  "skrifa 0.46.2",
  "softbuffer",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.5+spec-1.1.0",
  "vello_cpu",
  "waterui",
  "waterui-backend-core",
@@ -13017,7 +13119,7 @@ name = "waterui-ffi"
 version = "0.3.0"
 dependencies = [
  "async-channel",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cbindgen",
  "cookie",
  "executor-core",
@@ -13189,7 +13291,7 @@ name = "waterui-icons-fontawesome7"
 version = "0.1.0"
 dependencies = [
  "arkiv",
- "dirs",
+ "dirs 7.0.0",
  "serde",
  "serde_json",
  "waterui-icon",
@@ -13368,7 +13470,7 @@ dependencies = [
  "num-traits",
  "serde",
  "sys-locale",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.5+spec-1.1.0",
  "tracing",
  "waterui",
  "waterui-core",
@@ -13388,7 +13490,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.5+spec-1.1.0",
  "trybuild",
  "waterui",
  "waterui-testing",
@@ -13442,7 +13544,7 @@ dependencies = [
  "waterui-map",
  "waterui-url",
  "wgpu",
- "zenwave",
+ "zenwave 0.5.0",
 ]
 
 [[package]]
@@ -13459,7 +13561,7 @@ dependencies = [
  "quick-xml 0.42.0",
  "serde",
  "thiserror 2.0.20",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.5+spec-1.1.0",
  "tracing",
  "ttf-parser",
  "waterui",
@@ -13480,6 +13582,7 @@ dependencies = [
  "executor-core",
  "filtrate-core",
  "futures",
+ "futures-lite",
  "hydrolysis-m3",
  "image",
  "tracing",
@@ -13496,7 +13599,7 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "waterui-video",
- "zenwave",
+ "zenwave 0.6.0",
 ]
 
 [[package]]
@@ -13583,7 +13686,7 @@ name = "waterui-preview-protocol"
 version = "0.1.0"
 dependencies = [
  "bincode 2.0.1",
- "dirs",
+ "dirs 7.0.0",
  "futures-lite",
  "hex",
  "serde",
@@ -13686,17 +13789,17 @@ dependencies = [
 name = "waterui-url"
 version = "0.3.0"
 dependencies = [
- "base64 0.22.1",
- "dirs",
+ "base64 0.23.1",
+ "dirs 7.0.0",
  "executor-core",
- "futures",
+ "futures-lite",
  "mime_guess",
  "nami",
  "nami-core",
  "sha2",
  "tracing",
  "waterui-str",
- "zenwave",
+ "zenwave 0.6.0",
 ]
 
 [[package]]
@@ -13768,7 +13871,7 @@ version = "0.1.0"
 name = "waterui-webview"
 version = "0.3.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "cookie",
  "executor-core",
  "hydrolysis-m3",
@@ -13936,6 +14039,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd9fbf173b4b38f2f8bbb0082a0d4cb21f263a70811f5fccb1663c421c66d9f9"
 dependencies = [
  "ebml-iterable",
+]
+
+[[package]]
+name = "webpki-root-certs"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
@@ -14515,6 +14627,17 @@ checksum = "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26"
 dependencies = [
  "windows-core 0.62.2",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "windows-registry"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
+dependencies = [
+ "windows-link 0.2.1",
+ "windows-result 0.4.1",
+ "windows-strings 0.5.1",
 ]
 
 [[package]]
@@ -15234,7 +15357,7 @@ dependencies = [
  "async-tungstenite",
  "base64 0.22.1",
  "block",
- "dirs",
+ "dirs 6.0.0",
  "dns-lookup",
  "executor-core",
  "futures-channel",
@@ -15262,9 +15385,58 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams",
+ "wasm-streams 0.4.2",
  "web-sys",
  "webpki-roots 1.0.9",
+]
+
+[[package]]
+name = "zenwave"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97a945af57aa7a922a7d43eca799d0a167b61027f7c7d47288b53ee054b83640"
+dependencies = [
+ "anyhow",
+ "async-fs",
+ "async-io",
+ "async-lock",
+ "async-native-tls",
+ "async-net",
+ "base64 0.22.1",
+ "cfg_aliases 0.2.2",
+ "dirs 6.0.0",
+ "dns-lookup",
+ "executor-core",
+ "futures-channel",
+ "futures-io",
+ "futures-rustls",
+ "futures-util",
+ "gloo-timers 0.3.0",
+ "http",
+ "http-body-util",
+ "http-kit",
+ "httpdate",
+ "hyper",
+ "hyper-util",
+ "jni 0.22.4",
+ "js-sys",
+ "native-tls",
+ "ndk-context",
+ "once_cell",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "time",
+ "tower-service",
+ "tracing",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-streams 0.5.0",
+ "web-sys",
 ]
 
 [[package]]
