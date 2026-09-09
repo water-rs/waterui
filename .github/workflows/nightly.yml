@@ -94,7 +94,7 @@ jobs:
       # cargo's build profile. The ci profile matters here because it disables
       # fail-fast — without it a single failing test ends the run and hides the
       # state of every test after it (see #153, where one failure masked 632).
-      - run: cargo llvm-cov nextest --workspace --exclude '*-example' --features waterui/all --lcov --output-path lcov.info
+      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --features waterui/all --lcov --output-path lcov.info
         env:
           NEXTEST_PROFILE: ci
       - uses: codecov/codecov-action@v4
@@ -126,7 +126,7 @@ jobs:
       # proved nothing — it produced no signal in any recent run. `--each-feature`
       # is linear and catches the failure that actually happens: a feature that
       # does not build on its own.
-      - run: cargo hack check --each-feature --no-dev-deps
+      - run: cargo hack check --locked --each-feature --no-dev-deps
 
   test-report:
     name: Test Report
@@ -145,11 +145,54 @@ jobs:
       - name: Generate Step Summary
         run: python3 .github/scripts/generate_test_summary.py artifacts >> "$GITHUB_STEP_SUMMARY"
 
+  promote:
+    name: Certify nightly
+    needs: [test, windows, coverage, feature-checks, webview-js, test-report]
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+      - name: Prepare the tested snapshot
+        id: snapshot
+        run: python3 .github/scripts/prepare_nightly.py
+      - name: Upload immutable snapshot assets
+        if: steps.snapshot.outputs.eligible == 'true'
+        uses: softprops/action-gh-release@v2.3.2
+        with:
+          tag_name: ${{ steps.snapshot.outputs.tag }}
+          target_commitish: ${{ steps.snapshot.outputs.revision }}
+          name: ${{ steps.snapshot.outputs.tag }}
+          draft: true
+          prerelease: true
+          make_latest: "false"
+          fail_on_unmatched_files: true
+          files: |
+            framework.json
+            Cargo.lock
+          body: |
+            Certified framework revision: ${{ steps.snapshot.outputs.revision }}
+            Full test run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            framework.json records the tested dependency lock and submodule revisions.
+      - name: Publish the complete certification
+        if: steps.snapshot.outputs.eligible == 'true'
+        env:
+          TAG: ${{ steps.snapshot.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false --prerelease --latest=false
+
   # One issue per broken nightly, updated in place while it stays red, so a
   # failure that nobody was watching at 03:17 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js]
+    needs: [test, windows, coverage, feature-checks, webview-js, promote]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5
