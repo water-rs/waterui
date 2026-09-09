@@ -132,7 +132,8 @@ jobs:
       # Only the license check below needs a native dependency (nasm, for a
       # build script) and it never runs a GUI/audio/video stack, so this job
       # does not need the full setup-linux-deps package list.
-      - run: sudo apt-get update && sudo apt-get install -y nasm
+      - uses: ./.github/actions/refresh-apt-index
+      - run: sudo apt-get install -y nasm
       # Restore-only: this job and Features share `ci-ubuntu`, and two jobs
       # saving the same key race for the reservation, so one of them always
       # loses and uploads nothing. Features owns the write because it builds

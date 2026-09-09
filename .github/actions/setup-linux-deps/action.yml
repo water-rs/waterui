@@ -21,6 +21,12 @@ inputs:
       CC/CXX values. Leave empty for jobs that use the runner default.
     required: false
     default: ""
+  extra-packages:
+    description: >
+      Further Ubuntu packages one job needs on top of the shared list, so the
+      job installs them through the same cached, verified path.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -32,9 +38,7 @@ runs:
     # list below, the baked index still names a .deb that has left the pool,
     # every fetch 404s, and `apt-fast` exits 0 anyway — leaving that step green
     # with nothing installed. Resolve against an index that matches the mirror.
-    - name: Refresh APT package index
-      shell: bash
-      run: sudo apt-get update
+    - uses: ./.github/actions/refresh-apt-index
 
     - name: Compute package list
       id: pkgs
@@ -56,6 +60,9 @@ runs:
         fi
         if [ -n "${{ inputs.gcc-version }}" ]; then
           packages="$packages gcc-${{ inputs.gcc-version }} g++-${{ inputs.gcc-version }}"
+        fi
+        if [ -n "${{ inputs.extra-packages }}" ]; then
+          packages="$packages ${{ inputs.extra-packages }}"
         fi
         echo "packages=$packages" >> "$GITHUB_OUTPUT"
 
