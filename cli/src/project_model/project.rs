@@ -715,6 +715,10 @@ pub enum FailToOpenProject {
     /// The selected framework could not be validated for this CLI.
     #[error("Framework compatibility check failed: {0}")]
     Framework(eyre::Report),
+    /// The project's `[patch]` tables could not be brought in line with the
+    /// local checkout's.
+    #[error("Failed to refresh the [patch] tables from the local checkout: {0}")]
+    LocalPatches(eyre::Report),
 
     /// Missing crate name in Cargo.toml.
     #[error("Invalid Cargo.toml: missing crate name")]
@@ -1289,6 +1293,37 @@ impl Project {
         Self::open_with_mode(path, OpenMode::PreviewBuild).await
     }
 
+    /// Make a local-checkout project's `[patch]` tables the checkout's.
+    ///
+    /// Cargo applies `[patch]` only from the workspace it builds, so a project
+    /// on a `waterui_path` carries a copy of the checkout's tables, and the
+    /// copy has to follow the checkout: a fork pin moves, an entry is added or
+    /// dropped, and a project scaffolded earlier would otherwise build a graph
+    /// the checkout no longer produces, silently. The manifest is rewritten
+    /// only when the tables differ, so an up-to-date project stays untouched.
+    async fn refresh_local_patches(project_root: &Path, waterui_path: &Path) -> eyre::Result<()> {
+        let project_root = project_root.to_path_buf();
+        let waterui_path = waterui_path.to_path_buf();
+        unblock(move || {
+            let cargo_path = project_root.join("Cargo.toml");
+            let text = std::fs::read_to_string(&cargo_path)?;
+            let current = CargoManifest::from_slice(text.as_bytes())?.patch;
+            let next = templates::local_framework_patches(&project_root, &waterui_path)?;
+            if current == next {
+                return Ok(());
+            }
+            let mut document: toml_edit::DocumentMut = text.parse()?;
+            crate::framework::rewrite_patch_tables(&mut document, &current, &next)?;
+            std::fs::write(&cargo_path, document.to_string())?;
+            info!(
+                path = %cargo_path.display(),
+                "Refreshed the [patch] tables from the local checkout"
+            );
+            Ok(())
+        })
+        .await
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn open_with_mode(
         path: impl AsRef<Path>,
@@ -1312,6 +1347,9 @@ impl Project {
             validate_local_cli(&path.join(local))
                 .await
                 .map_err(FailToOpenProject::Framework)?;
+            Self::refresh_local_patches(&path, Path::new(local))
+                .await
+                .map_err(FailToOpenProject::LocalPatches)?;
         }
         info!(
             path = %path.display(),
@@ -2291,6 +2329,62 @@ mod scaffold_tests {
         assert!(
             assets.join("README.md").is_file(),
             "a tracked file keeps the assets directory present in git"
+        );
+    }
+}
+
+#[cfg(test)]
+mod local_patch_tests {
+    use std::path::Path;
+
+    use super::Project;
+
+    /// A project on a `waterui_path` mirrors the checkout's `[patch]` tables
+    /// every time it opens: entries the checkout dropped disappear, moved ones
+    /// follow, and a project already in line is left byte-for-byte alone.
+    #[test]
+    fn a_local_checkout_project_follows_the_checkouts_patch_tables() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let checkout = directory.path().join("waterui");
+        std::fs::create_dir_all(&checkout).expect("checkout dir");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            include_str!("../../tests/fixtures/local_checkout_patches.toml"),
+        )
+        .expect("checkout manifest");
+        let app = directory.path().join("app");
+        std::fs::create_dir_all(&app).expect("project dir");
+        let cargo_path = app.join("Cargo.toml");
+        std::fs::write(
+            &cargo_path,
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nwaterui = { path = \"../waterui\" }\n\n[patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\nstale = { path = \"../elsewhere/stale\" }\n",
+        )
+        .expect("project manifest");
+
+        smol::block_on(Project::refresh_local_patches(
+            &app,
+            Path::new("../waterui"),
+        ))
+        .expect("tables refresh");
+        let refreshed = std::fs::read_to_string(&cargo_path).expect("refreshed manifest");
+        let manifest = cargo_toml::Manifest::from_str(&refreshed).expect("manifest parses");
+        let crates_io = &manifest.patch["crates-io"];
+        let cargo_toml::Dependency::Detailed(core) = &crates_io["waterui-core"] else {
+            panic!("the core patch is a path dependency");
+        };
+        assert_eq!(core.path.as_deref(), Some("../waterui/core"));
+        assert!(!crates_io.contains_key("stale"));
+        assert!(crates_io.contains_key("vello"));
+        assert!(refreshed.starts_with("[package]"));
+
+        smol::block_on(Project::refresh_local_patches(
+            &app,
+            Path::new("../waterui"),
+        ))
+        .expect("second refresh");
+        assert_eq!(
+            std::fs::read_to_string(&cargo_path).expect("manifest after the second refresh"),
+            refreshed
         );
     }
 }

@@ -132,6 +132,73 @@ struct Certification {
     scaffold: BTreeMap<String, String>,
 }
 
+/// Make `document`'s `[patch]` tables carry `patches` in place of `previous`:
+/// the entries of `previous` are removed, those of `patches` written, and
+/// sources left empty are dropped, so a manifest moving between a channel, a
+/// local checkout and the registry never keeps a stale override.
+pub(crate) fn rewrite_patch_tables(
+    document: &mut toml_edit::DocumentMut,
+    previous: &PatchSet,
+    patches: &PatchSet,
+) -> Result<()> {
+    for (source, dependencies) in previous {
+        if let Some(table) = document
+            .get_mut("patch")
+            .and_then(|patch| patch.get_mut(source))
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            for name in dependencies.keys() {
+                table.remove(name);
+            }
+        }
+    }
+    let patches = toml_edit::ser::to_document(patches)?;
+    for (source, dependencies) in patches.iter() {
+        // `[patch]` and `[patch.<source>]` are written as explicit tables:
+        // indexing into a missing key would vivify an inline value and
+        // hoist `patch = { … }` above `[package]`.
+        let patch = document
+            .entry("patch")
+            .or_insert_with(toml_edit::table)
+            .as_table_mut()
+            .ok_or_else(|| eyre!("[patch] is not a table"))?;
+        patch.set_implicit(true);
+        let table = patch
+            .entry(source)
+            .or_insert_with(toml_edit::table)
+            .as_table_like_mut()
+            .ok_or_else(|| eyre!("[patch.{source}] is not a table"))?;
+        for (name, dependency) in dependencies
+            .as_table_like()
+            .expect("serialized patch dependencies are tables")
+            .iter()
+        {
+            table.insert(name, dependency.clone());
+        }
+    }
+    if let Some(patch) = document
+        .get_mut("patch")
+        .and_then(toml_edit::Item::as_table_mut)
+    {
+        let empty: Vec<String> = patch
+            .iter()
+            .filter(|(_, sources)| {
+                sources
+                    .as_table_like()
+                    .is_some_and(toml_edit::TableLike::is_empty)
+            })
+            .map(|(source, _)| source.to_owned())
+            .collect();
+        for source in empty {
+            patch.remove(&source);
+        }
+        if patch.is_empty() {
+            document.remove("patch");
+        }
+    }
+    Ok(())
+}
+
 impl ResolvedFramework {
     /// Return the selected distribution channel.
     #[must_use]
@@ -214,62 +281,7 @@ impl ResolvedFramework {
                 }
             }
         }
-        for (source, dependencies) in previous_patches {
-            if let Some(table) = document
-                .get_mut("patch")
-                .and_then(|patch| patch.get_mut(source))
-                .and_then(toml_edit::Item::as_table_like_mut)
-            {
-                for name in dependencies.keys() {
-                    table.remove(name);
-                }
-            }
-        }
-        let patches = toml_edit::ser::to_document(&self.patches)?;
-        for (source, dependencies) in patches.iter() {
-            // `[patch]` and `[patch.<source>]` are written as explicit tables:
-            // indexing into a missing key would vivify an inline value and
-            // hoist `patch = { … }` above `[package]`.
-            let patch = document
-                .entry("patch")
-                .or_insert_with(toml_edit::table)
-                .as_table_mut()
-                .ok_or_else(|| eyre!("[patch] is not a table"))?;
-            patch.set_implicit(true);
-            let table = patch
-                .entry(source)
-                .or_insert_with(toml_edit::table)
-                .as_table_like_mut()
-                .ok_or_else(|| eyre!("[patch.{source}] is not a table"))?;
-            for (name, dependency) in dependencies
-                .as_table_like()
-                .expect("serialized patch dependencies are tables")
-                .iter()
-            {
-                table.insert(name, dependency.clone());
-            }
-        }
-        if let Some(patch) = document
-            .get_mut("patch")
-            .and_then(toml_edit::Item::as_table_mut)
-        {
-            let empty: Vec<String> = patch
-                .iter()
-                .filter(|(_, sources)| {
-                    sources
-                        .as_table_like()
-                        .is_some_and(toml_edit::TableLike::is_empty)
-                })
-                .map(|(source, _)| source.to_owned())
-                .collect();
-            for source in empty {
-                patch.remove(&source);
-            }
-            if patch.is_empty() {
-                document.remove("patch");
-            }
-        }
-        Ok(())
+        rewrite_patch_tables(document, previous_patches, &self.patches)
     }
 
     fn update_dependencies(&self, dependencies: &mut dyn toml_edit::TableLike) -> Result<()> {
