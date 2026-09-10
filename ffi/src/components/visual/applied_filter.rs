@@ -132,6 +132,9 @@ pub struct WuiAppliedFilterState {
     /// Vulkan imports of the Android capture buffers handed to this filter.
     #[cfg(target_os = "android")]
     hardware_buffer_imports: super::hardware_buffer::HardwareBufferImports,
+    /// Pipelines for drawing surfaces nested in the captured subtree back into it.
+    #[cfg(target_os = "android")]
+    capture_compositor: super::capture_composite::CaptureCompositor,
     /// Host-owned effect clock; media effects may bypass this API with explicit timing.
     frame_clock: EffectFrameClock,
 }
@@ -361,6 +364,8 @@ pub unsafe extern "C" fn waterui_applied_filter_create(
         resolved_output_height: 0,
         #[cfg(target_os = "android")]
         hardware_buffer_imports,
+        #[cfg(target_os = "android")]
+        capture_compositor: super::capture_composite::CaptureCompositor::default(),
         frame_clock: EffectFrameClock::new(),
     }))
 }
@@ -930,6 +935,93 @@ pub unsafe extern "C" fn waterui_applied_filter_set_capture_hardware_buffer(
     _buffer: *mut c_void,
 ) -> *mut super::gpu_surface::WuiGpuCaptureFence {
     panic!("waterui_applied_filter_set_capture_hardware_buffer: only supported on Android");
+}
+
+/// Draws a `GpuSurface` nested in the captured subtree into the capture (Android only).
+///
+/// HWUI records a `SurfaceView` as a cleared hole, so a GPU surface inside a
+/// filtered subtree is missing from the buffer the subtree was captured into.
+/// The backend calls this once per nested surface, between handing over the
+/// captured buffer and rendering the filter, with the rectangle the surface
+/// occupies inside the captured content in capture pixels. The surface renders
+/// one frame of its own and it is drawn into the capture at that rectangle.
+///
+/// Everything runs on one queue in call order, so the capture copy, the
+/// composites and the filter render need no fence between them.
+///
+/// # Safety
+///
+/// - `filter` must be a valid pointer from `waterui_applied_filter_create` with
+///   an attached target, and `waterui_applied_filter_prepare_capture` must have
+///   run for this frame's size.
+/// - `surface` must be a valid pointer from `waterui_gpu_surface_create` that
+///   has been attached at least once, so it has an established renderer format.
+/// - Both must be used from the thread that created them.
+///
+/// # Panics
+///
+/// Panics if the filter is detached, if the surface has never been attached, or
+/// if the placement is empty.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_composite_gpu_surface(
+    filter: *mut WuiAppliedFilterState,
+    surface: *mut super::gpu_surface::WuiGpuSurfaceState,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    scale: f64,
+) {
+    // SAFETY: the caller contract requires `filter` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
+    let filter = unsafe { crate::borrow_ffi_mut(filter) };
+    // SAFETY: the caller contract requires `surface` to be a valid handle for a
+    // different state, alive and not otherwise borrowed for this call.
+    let surface = unsafe { crate::borrow_ffi_mut(surface) };
+    let capture_texture = filter
+        .capture_texture
+        .take()
+        .expect("waterui_applied_filter_composite_gpu_surface: presentation target is detached");
+    super::capture_composite::composite_gpu_surface(
+        &mut filter.capture_compositor,
+        surface,
+        &capture_texture,
+        super::capture_composite::CompositePlacement {
+            x,
+            y,
+            width,
+            height,
+            scale,
+        },
+        "waterui_applied_filter_composite_gpu_surface",
+    );
+    filter.capture_texture = Some(capture_texture);
+}
+
+/// Draws a `GpuSurface` nested in the captured subtree into the capture (Android only).
+///
+/// # Safety
+///
+/// `filter` and `surface` must be valid state pointers from their matching
+/// constructors.
+///
+/// # Panics
+///
+/// Always panics: nested-surface compositing only exists on Android, because
+/// only there does the capture arrive with the surface missing from it.
+#[cfg(not(target_os = "android"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_composite_gpu_surface(
+    _filter: *mut WuiAppliedFilterState,
+    _surface: *mut super::gpu_surface::WuiGpuSurfaceState,
+    _x: i32,
+    _y: i32,
+    _width: u32,
+    _height: u32,
+    _scale: f64,
+) {
+    panic!("waterui_applied_filter_composite_gpu_surface: only supported on Android");
 }
 
 /// Get a pointer to the Metal texture backing the capture texture (Apple only).

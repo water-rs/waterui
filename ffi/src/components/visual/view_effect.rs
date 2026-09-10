@@ -199,6 +199,9 @@ pub struct WuiViewEffectState {
     /// Vulkan imports of the Android capture buffers handed to this effect.
     #[cfg(target_os = "android")]
     hardware_buffer_imports: super::hardware_buffer::HardwareBufferImports,
+    /// Pipelines for drawing surfaces nested in the captured subtree back into it.
+    #[cfg(target_os = "android")]
+    capture_compositor: super::capture_composite::CaptureCompositor,
 }
 
 impl core::fmt::Debug for WuiViewEffectState {
@@ -270,6 +273,8 @@ pub unsafe extern "C" fn waterui_view_effect_create(
         output_size,
         #[cfg(target_os = "android")]
         hardware_buffer_imports,
+        #[cfg(target_os = "android")]
+        capture_compositor: super::capture_composite::CaptureCompositor::default(),
     }))
 }
 
@@ -602,6 +607,92 @@ pub unsafe extern "C" fn waterui_view_effect_set_input_hardware_buffer(
     _buffer: *mut c_void,
 ) -> *mut super::gpu_surface::WuiGpuCaptureFence {
     panic!("waterui_view_effect_set_input_hardware_buffer: only supported on Android");
+}
+
+/// Draws a `GpuSurface` nested in the captured subtree into the input (Android only).
+///
+/// HWUI records a `SurfaceView` as a cleared hole, so a GPU surface inside an
+/// effect's subtree is missing from the buffer the subtree was captured into.
+/// The backend calls this once per nested surface, between handing over the
+/// captured buffer and rendering the effect, with the rectangle the surface
+/// occupies inside the captured content in capture pixels. The surface renders
+/// one frame of its own and it is drawn into the effect's input at that
+/// rectangle.
+///
+/// Everything runs on one queue in call order, so the capture copy, the
+/// composites and the effect render need no fence between them.
+///
+/// # Safety
+///
+/// - `effect` must be a valid pointer from `waterui_view_effect_create` that has
+///   already been handed one captured buffer, so its input texture exists.
+/// - `surface` must be a valid pointer from `waterui_gpu_surface_create` that
+///   has been attached at least once, so it has an established renderer format.
+/// - Both must be used from the thread that created them.
+///
+/// # Panics
+///
+/// Panics if the effect has no input texture yet, if the surface has never been
+/// attached, or if the placement is empty.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_effect_composite_gpu_surface(
+    effect: *mut WuiViewEffectState,
+    surface: *mut super::gpu_surface::WuiGpuSurfaceState,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    scale: f64,
+) {
+    // SAFETY: the caller contract requires `effect` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
+    let effect = unsafe { crate::borrow_ffi_mut(effect) };
+    // SAFETY: the caller contract requires `surface` to be a valid handle for a
+    // different state, alive and not otherwise borrowed for this call.
+    let surface = unsafe { crate::borrow_ffi_mut(surface) };
+    let input_texture = effect.imported_texture.take().expect(
+        "waterui_view_effect_composite_gpu_surface: no captured input has been handed over yet",
+    );
+    super::capture_composite::composite_gpu_surface(
+        &mut effect.capture_compositor,
+        surface,
+        &input_texture,
+        super::capture_composite::CompositePlacement {
+            x,
+            y,
+            width,
+            height,
+            scale,
+        },
+        "waterui_view_effect_composite_gpu_surface",
+    );
+    effect.imported_texture = Some(input_texture);
+}
+
+/// Draws a `GpuSurface` nested in the captured subtree into the input (Android only).
+///
+/// # Safety
+///
+/// `effect` and `surface` must be valid state pointers from their matching
+/// constructors.
+///
+/// # Panics
+///
+/// Always panics: nested-surface compositing only exists on Android, because
+/// only there does the capture arrive with the surface missing from it.
+#[cfg(not(target_os = "android"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_effect_composite_gpu_surface(
+    _effect: *mut WuiViewEffectState,
+    _surface: *mut super::gpu_surface::WuiGpuSurfaceState,
+    _x: i32,
+    _y: i32,
+    _width: u32,
+    _height: u32,
+    _scale: f64,
+) {
+    panic!("waterui_view_effect_composite_gpu_surface: only supported on Android");
 }
 
 /// Returns whether asynchronous effect setup has completed.

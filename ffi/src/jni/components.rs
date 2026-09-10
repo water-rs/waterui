@@ -2693,6 +2693,46 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSetCaptu
     })
 }
 
+/// `WatcherJni.appliedFilterCompositeGpuSurface(statePtr, surfaceStatePtr, x, y, width, height, scale)`.
+///
+/// Draws one `GpuSurface` nested in the captured subtree into the capture, at
+/// the rectangle it occupies inside the captured content in pixels. Called
+/// between `appliedFilterSetCaptureHardwareBuffer` and `appliedFilterRender`.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterCompositeGpuSurface<
+    'local,
+>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+    surface_state_ptr: jlong,
+    x: jint,
+    y: jint,
+    width: jint,
+    height: jint,
+    scale: jfloat,
+) {
+    // SAFETY: Kotlin passes back the live handle from `appliedFilterCreate`.
+    let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
+    // SAFETY: Kotlin passes back the live handle from `gpuSurfaceCreate` for a
+    // surface inside this filter's own subtree, so the two states are distinct.
+    let surface = unsafe { &mut *(surface_state_ptr as *mut JniGpuSurfaceState) };
+    // SAFETY: both states were created on this thread and are only borrowed for
+    // the call, and the placement is the surface's rectangle in capture pixels.
+    unsafe {
+        crate::components::applied_filter::waterui_applied_filter_composite_gpu_surface(
+            wrapper.state,
+            surface.state,
+            x,
+            y,
+            width.cast_unsigned(),
+            height.cast_unsigned(),
+            f64::from(scale),
+        );
+    }
+}
+
 /// `WatcherJni.appliedFilterRender(statePtr, width, height)`.
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
@@ -2922,6 +2962,44 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectSetInputHar
         };
         fence as jlong
     })
+}
+
+/// `WatcherJni.viewEffectCompositeGpuSurface(statePtr, surfaceStatePtr, x, y, width, height, scale)`.
+///
+/// Draws one `GpuSurface` nested in the captured subtree into the effect's
+/// input, at the rectangle it occupies inside the captured content in pixels.
+/// Called between `viewEffectSetInputHardwareBuffer` and `viewEffectRender`.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectCompositeGpuSurface<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+    surface_state_ptr: jlong,
+    x: jint,
+    y: jint,
+    width: jint,
+    height: jint,
+    scale: jfloat,
+) {
+    // SAFETY: Kotlin passes back the live handle from `viewEffectCreate`.
+    let wrapper = unsafe { &mut *(state_ptr as *mut JniViewEffectState) };
+    // SAFETY: Kotlin passes back the live handle from `gpuSurfaceCreate` for a
+    // surface inside this effect's own subtree, so the two states are distinct.
+    let surface = unsafe { &mut *(surface_state_ptr as *mut JniGpuSurfaceState) };
+    // SAFETY: both states were created on this thread and are only borrowed for
+    // the call, and the placement is the surface's rectangle in capture pixels.
+    unsafe {
+        crate::components::view_effect::waterui_view_effect_composite_gpu_surface(
+            wrapper.state,
+            surface.state,
+            x,
+            y,
+            width.cast_unsigned(),
+            height.cast_unsigned(),
+            f64::from(scale),
+        );
+    }
 }
 
 /// `WatcherJni.viewEffectRender(statePtr)`.

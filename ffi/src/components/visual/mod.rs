@@ -2,6 +2,8 @@
 // the JNI bindings, which are compiled with `android-jni` and without `c-api`.
 #[cfg(feature = "gpu")]
 pub mod applied_filter;
+#[cfg(all(target_os = "android", feature = "gpu"))]
+pub mod capture_composite;
 #[cfg(feature = "gpu")]
 pub mod capture_format;
 #[cfg(feature = "gpu")]

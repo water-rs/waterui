@@ -11030,6 +11030,27 @@ struct WuiGpuCaptureFence *waterui_applied_filter_set_capture_hardware_buffer(st
                                                                               void *_buffer);
 
 /**
+ * Draws a `GpuSurface` nested in the captured subtree into the capture (Android only).
+ *
+ * # Safety
+ *
+ * `filter` and `surface` must be valid state pointers from their matching
+ * constructors.
+ *
+ * # Panics
+ *
+ * Always panics: nested-surface compositing only exists on Android, because
+ * only there does the capture arrive with the surface missing from it.
+ */
+void waterui_applied_filter_composite_gpu_surface(struct WuiAppliedFilterState *_filter,
+                                                  struct WuiGpuSurfaceState *_surface,
+                                                  int32_t _x,
+                                                  int32_t _y,
+                                                  uint32_t _width,
+                                                  uint32_t _height,
+                                                  double _scale);
+
+/**
  * Get a pointer to the Metal texture backing the capture texture (Apple only).
  *
  * This exposes the underlying `MTLTexture` so native code can render directly
@@ -11640,6 +11661,27 @@ void waterui_view_effect_set_input_metal_texture(struct WuiViewEffectState *stat
  */
 struct WuiGpuCaptureFence *waterui_view_effect_set_input_hardware_buffer(struct WuiViewEffectState *_state,
                                                                          void *_buffer);
+
+/**
+ * Draws a `GpuSurface` nested in the captured subtree into the input (Android only).
+ *
+ * # Safety
+ *
+ * `effect` and `surface` must be valid state pointers from their matching
+ * constructors.
+ *
+ * # Panics
+ *
+ * Always panics: nested-surface compositing only exists on Android, because
+ * only there does the capture arrive with the surface missing from it.
+ */
+void waterui_view_effect_composite_gpu_surface(struct WuiViewEffectState *_effect,
+                                               struct WuiGpuSurfaceState *_surface,
+                                               int32_t _x,
+                                               int32_t _y,
+                                               uint32_t _width,
+                                               uint32_t _height,
+                                               double _scale);
 
 /**
  * Returns whether asynchronous effect setup has completed.
