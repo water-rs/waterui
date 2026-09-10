@@ -1,0 +1,21 @@
+name: Refresh the Ubuntu APT index
+description: >
+  Refreshes the package index for Ubuntu's own archive and nothing else. The
+  runner image also carries third-party sources (Google Chrome, Microsoft,
+  the GitHub CLI) that no job here installs from, and a plain `apt-get update`
+  fails the step whenever one of those mirrors serves a stale index — a
+  nightly lost every Linux leg to a Chrome "Hash Sum mismatch" (#487). Every
+  package this repository installs comes from the Ubuntu archive, so that is
+  the only index worth resolving against.
+
+runs:
+  using: composite
+  steps:
+    - name: Refresh the Ubuntu package index
+      shell: bash
+      # Ubuntu 24.04 declares its archive in deb822 form at this path; apt
+      # picks the parser from the `.sources` extension.
+      run: >
+        sudo apt-get update
+        -o Dir::Etc::SourceList=/etc/apt/sources.list.d/ubuntu.sources
+        -o Dir::Etc::SourceParts=/dev/null

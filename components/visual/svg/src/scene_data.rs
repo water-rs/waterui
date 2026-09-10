@@ -1,5 +1,7 @@
 //! Parsed SVG documents, ready to draw into a scene.
 
+use waterui_core::layout::Size;
+
 /// A parsed SVG document.
 #[derive(Debug)]
 pub struct SvgSceneData {
@@ -24,6 +26,17 @@ impl SvgSceneData {
         );
 
         Self { svg_tree }
+    }
+
+    /// The document's own size, from its `viewBox` / `width` / `height`.
+    ///
+    /// This is the size an SVG *is*: `parse` has already established it is finite
+    /// and positive, so an icon with no frame around it measures at the size its
+    /// author drew, and one given a single axis keeps this document's aspect ratio.
+    #[must_use]
+    pub fn intrinsic_size(&self) -> Size {
+        let size = self.svg_tree.size();
+        Size::new(size.width(), size.height())
     }
 
     /// The transform that fits this document into `width` × `height`.
@@ -53,6 +66,3 @@ impl SvgSceneData {
         );
     }
 }
-
-/// Placeholder token used by reactive SVG templates for tint substitution.
-pub const SVG_COLOR_PLACEHOLDER: &str = "__WATERUI_SVG_COLOR__";

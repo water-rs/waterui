@@ -129,6 +129,10 @@ pub async fn build_hydrolysis_with_envs_and_features(
         );
     }
 
+    // Stage assets and the Windows icon resource before the backend is built.
+    // The generated `build.rs` expects `app-icon.ico` to exist when targeting Windows.
+    copy_assets_and_fonts(project, &backend_path).await?;
+
     let llvm_envs = WindowsArm64LlvmToolchain
         .cargo_envs()
         .await
@@ -142,6 +146,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         })?;
 
     let mut build = RustBuild::new(&backend_path, platform.triple())
+        .with_project(project)
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(extra_features.iter().copied())
         .with_linkage(

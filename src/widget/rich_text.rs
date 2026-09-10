@@ -2,6 +2,8 @@ use std::{mem, num::NonZeroUsize, str::FromStr};
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
 use waterui_core::{AnyView, Environment, View};
+#[cfg(feature = "snackbar")]
+use waterui_core::{State, extract::Extractor as _};
 use waterui_graphics::color::Blue;
 use waterui_layout::{
     Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions,
@@ -18,6 +20,8 @@ use waterui_text::{
     text,
 };
 
+#[cfg(feature = "snackbar")]
+use crate::snackbar::{Snackbar, SnackbarManager};
 use crate::{ViewExt, widget::Divider};
 
 /// Rich text widget for displaying formatted content.
@@ -80,6 +84,17 @@ pub enum RichTextElement {
     Text(StyledStr),
     /// A horizontal divider.
     Divider,
+    /// A mathematical formula, as LaTeX source.
+    ///
+    /// Only produced when the `markdown-math` feature is on, because that is
+    /// what enables the parser extension that recognises `$…$`.
+    #[cfg(feature = "markdown-math")]
+    Math {
+        /// The LaTeX between the delimiters.
+        source: Str,
+        /// `$$…$$` is set on its own line in display style; `$…$` is inline.
+        block: bool,
+    },
     /// A hyperlink.
     Link {
         /// The link label.
@@ -116,6 +131,14 @@ pub enum RichTextElement {
     Code {
         /// The code content.
         code: Str,
+        /// The fence's info token as written, before it was resolved to a
+        /// [`Language`]; what a realization dispatches on.
+        ///
+        /// `None` for an indented block and for a fence with an empty info
+        /// string. A token no [`Language`] recognises — `mermaid`, say —
+        /// survives here even though `language` resolved to
+        /// [`Language::Plaintext`].
+        info: Option<Str>,
         /// Optional language specification.
         language: Language,
     },
@@ -155,6 +178,8 @@ impl View for RichTextElement {
                 AnyView::new(crate::component::link::link(text(label), url))
             }
             Self::Image { src, alt: _ } => AnyView::new(render_image(&src)),
+            #[cfg(feature = "markdown-math")]
+            Self::Math { source, block } => AnyView::new(render_math(source, block)),
             Self::Table {
                 headers,
                 rows,
@@ -165,7 +190,28 @@ impl View for RichTextElement {
                 ordered,
                 start,
             } => AnyView::new(render_list(items.as_slice(), ordered, start)),
-            Self::Code { code, language } => AnyView::new(crate::widget::code(language, code)),
+            Self::Code {
+                code,
+                info,
+                language,
+            } => {
+                let view = crate::widget::code(language, code);
+                let view = match info {
+                    Some(info) => view.info(info),
+                    None => view,
+                };
+                // Copy feedback goes through the window's `SnackbarManager`, a
+                // semantic object the runtime owns. `Code` cannot name it — it
+                // lives in `waterui-text` — and this is the one place a fence
+                // is rendered from Markdown, so the snackbar coupling is here.
+                #[cfg(feature = "snackbar")]
+                let view = view.on_copied(|env| {
+                    let State(snackbar) = State::<SnackbarManager>::extract(env)
+                        .expect("the window's environment carries its SnackbarManager");
+                    snackbar.show(Snackbar::new("Copied to clipboard"));
+                });
+                AnyView::new(view)
+            }
             Self::Quote { content } => AnyView::new(quote(content)),
             Self::Group { elements, inline } => {
                 if inline {
@@ -179,6 +225,33 @@ impl View for RichTextElement {
             Self::Divider => AnyView::new(Divider),
         }
     }
+}
+
+/// Recognising `$…$` is only correct when something can typeset the result.
+///
+/// Left on in a build with no math renderer, every dollar sign in prose would
+/// start a formula that nothing could draw — so the extension is enabled with
+/// the renderer and not otherwise.
+#[cfg(feature = "markdown-math")]
+const MATH_OPTIONS: Options = Options::ENABLE_MATH;
+
+/// The Markdown parser recognises no math without a renderer for it.
+#[cfg(not(feature = "markdown-math"))]
+const MATH_OPTIONS: Options = Options::empty();
+
+/// Typesets a formula parsed out of Markdown.
+///
+/// `$$…$$` is set in display style, which is what gives a summation its
+/// full-height limits and a fraction its wider spacing; `$…$` is set inline so
+/// it sits at the size of the surrounding prose.
+#[cfg(feature = "markdown-math")]
+fn render_math(source: Str, block: bool) -> AnyView {
+    let formula = waterui_math::view::Math::new(source);
+    AnyView::new(if block {
+        formula.display()
+    } else {
+        formula.inline()
+    })
 }
 
 fn render_image(src: &Str) -> AnyView {
@@ -493,7 +566,8 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS;
+        | Options::ENABLE_TASKLISTS
+        | MATH_OPTIONS;
     let parser = Parser::new_ext(markdown, options);
 
     let mut stack = vec![Container::Root(Vec::new())];
@@ -531,6 +605,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     flush_list_item_inline(&mut stack);
                     let language = language_from_kind(&kind);
                     stack.push(Container::CodeBlock {
+                        info: info_from_kind(&kind),
                         language,
                         code: String::new(),
                     });
@@ -653,10 +728,16 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     }
                 }
                 pulldown_cmark::TagEnd::CodeBlock => {
-                    if let Some(Container::CodeBlock { language, code }) = stack.pop() {
+                    if let Some(Container::CodeBlock {
+                        info,
+                        language,
+                        code,
+                    }) = stack.pop()
+                    {
                         push_to_parent(
                             &mut stack,
                             RichTextElement::Code {
+                                info,
                                 language,
                                 code: code.into(),
                             },
@@ -769,11 +850,41 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     push_to_parent(&mut stack, RichTextElement::Text(styled));
                 }
             }
-            Event::Html(text)
-            | Event::FootnoteReference(text)
-            | Event::InlineMath(text)
-            | Event::DisplayMath(text)
-            | Event::InlineHtml(text) => {
+            // `$…$` and `$$…$$`. These only arrive when the parser is built
+            // with `ENABLE_MATH`, which happens only under this feature, so
+            // without it a dollar sign stays ordinary text.
+            #[cfg(feature = "markdown-math")]
+            Event::InlineMath(source) => {
+                push_inline_element(
+                    &mut stack,
+                    RichTextElement::Math {
+                        source: Str::from(source.as_ref().to_string()),
+                        block: false,
+                    },
+                );
+            }
+            #[cfg(feature = "markdown-math")]
+            Event::DisplayMath(source) => {
+                push_inline_element(
+                    &mut stack,
+                    RichTextElement::Math {
+                        source: Str::from(source.as_ref().to_string()),
+                        block: true,
+                    },
+                );
+            }
+            // Without the feature the parser is built without `ENABLE_MATH`,
+            // so these cannot be produced. Saying so is better than a silent
+            // arm that would quietly render a formula as its own source if the
+            // options above ever changed.
+            #[cfg(not(feature = "markdown-math"))]
+            Event::InlineMath(_) | Event::DisplayMath(_) => {
+                unreachable!(
+                    "pulldown-cmark emitted a math event, but the parser is built without \
+                     ENABLE_MATH; enable the `markdown-math` feature to render formulas"
+                )
+            }
+            Event::Html(text) | Event::FootnoteReference(text) | Event::InlineHtml(text) => {
                 if let Some(mut sink) = current_inline_sink(&mut stack) {
                     sink.push_text(text.as_ref());
                 } else {
@@ -812,6 +923,22 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
     match stack.pop() {
         Some(Container::Root(elements)) => elements,
         _ => Vec::new(),
+    }
+}
+
+/// The fence's info token as the author wrote it.
+///
+/// `language_from_kind` throws this away whenever no [`Language`] answers to
+/// it, which is exactly the case a realization needs to see: a ` ```mermaid `
+/// fence and an untagged one both resolve to [`Language::Plaintext`] and are
+/// told apart only by this token.
+fn info_from_kind(kind: &CodeBlockKind) -> Option<Str> {
+    match kind {
+        CodeBlockKind::Fenced(info) => info
+            .split_whitespace()
+            .next()
+            .map(|token| Str::from(token.to_owned())),
+        CodeBlockKind::Indented => None,
     }
 }
 
@@ -1020,6 +1147,7 @@ enum Container {
         alt: MarkdownInlineBuilder,
     },
     CodeBlock {
+        info: Option<Str>,
         language: Language,
         code: String,
     },
@@ -1124,6 +1252,65 @@ impl Default for InlineGroup {
 mod tests {
     use super::*;
 
+    /// Collects a document's elements into a shape that is easy to assert on.
+    fn plain_text_of(elements: &[RichTextElement]) -> String {
+        elements.iter().map(element_to_plain_text).collect()
+    }
+
+    /// With the renderer present, `$…$` becomes a formula rather than prose.
+    #[cfg(feature = "markdown-math")]
+    #[test]
+    fn inline_and_display_math_become_math_elements() {
+        fn count(elements: &[RichTextElement], inline: &mut usize, block: &mut usize) {
+            for element in elements {
+                match element {
+                    RichTextElement::Math { block: true, .. } => *block += 1,
+                    RichTextElement::Math { block: false, .. } => *inline += 1,
+                    RichTextElement::Group { elements, .. }
+                    | RichTextElement::Quote { content: elements } => {
+                        count(elements, inline, block);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let elements = parse_markdown("before $e^{i\\pi}+1=0$ after\n\n$$\\frac{a}{b}$$");
+
+        let mut inline = 0;
+        let mut block = 0;
+        count(&elements, &mut inline, &mut block);
+
+        assert_eq!(inline, 1, "expected one inline formula in {elements:?}");
+        assert_eq!(block, 1, "expected one display formula in {elements:?}");
+    }
+
+    /// The formula's LaTeX must not also appear as prose. Rendering the source
+    /// alongside, or instead of, the formula is the defect this replaces.
+    #[cfg(feature = "markdown-math")]
+    #[test]
+    fn math_source_does_not_leak_into_the_text() {
+        let elements = parse_markdown("value $x^2$ end");
+        let prose = plain_text_of(&elements);
+        assert!(
+            !prose.contains("x^2"),
+            "the LaTeX source must not be rendered as text, got {prose:?}"
+        );
+    }
+
+    /// Without the renderer the parser has no math extension, so a dollar sign
+    /// is an ordinary character and nothing panics on prose that contains one.
+    #[cfg(not(feature = "markdown-math"))]
+    #[test]
+    fn a_dollar_sign_is_ordinary_text_without_the_math_feature() {
+        let elements = parse_markdown("it costs $5 and $10, or $x$ if you prefer");
+        let prose = plain_text_of(&elements);
+        assert!(
+            prose.contains("$5") && prose.contains("$10"),
+            "prices must survive as written, got {prose:?}"
+        );
+    }
+
     struct MockTableCell {
         size: Size,
     }
@@ -1190,6 +1377,46 @@ fn main() {
             .iter()
             .any(|el| matches!(el, RichTextElement::Code { .. }));
         assert!(has_code, "Expected a Code element in the parsed markdown");
+    }
+
+    /// The fence's info token, not the [`Language`] it resolved to.
+    ///
+    /// `mermaid` is the case that matters: no [`Language`] answers to it, so
+    /// the resolved language is [`Language::Plaintext`] — exactly what an
+    /// untagged fence resolves to. Only the preserved token tells the two
+    /// apart, and a realization has nothing else to dispatch on.
+    fn only_code_block(markdown: &str) -> (Option<Str>, Language) {
+        RichText::from_markdown(markdown)
+            .elements()
+            .iter()
+            .find_map(|el| match el {
+                RichTextElement::Code { info, language, .. } => {
+                    Some((info.clone(), language.clone()))
+                }
+                _ => None,
+            })
+            .expect("expected a code block")
+    }
+
+    #[test]
+    fn an_unrecognised_info_token_survives_as_written() {
+        let (info, language) = only_code_block("```mermaid\nflowchart TD\n  A --> B\n```\n");
+        assert_eq!(info.as_deref(), Some("mermaid"));
+        assert_eq!(language, Language::Plaintext);
+    }
+
+    #[test]
+    fn a_recognised_info_token_is_kept_alongside_its_language() {
+        let (info, language) = only_code_block("```rust\nfn main() {}\n```\n");
+        assert_eq!(info.as_deref(), Some("rust"));
+        assert_eq!(language, Language::Rust);
+    }
+
+    #[test]
+    fn an_indented_block_has_no_info_token() {
+        let (info, language) = only_code_block("    fn main() {}\n");
+        assert_eq!(info, None);
+        assert_eq!(language, Language::Plaintext);
     }
 
     #[test]

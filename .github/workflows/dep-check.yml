@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Detect project type
         id: detect
@@ -36,12 +38,31 @@ jobs:
         if: steps.detect.outputs.type == 'rust'
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-edit
+        if: steps.detect.outputs.type == 'rust'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-edit
+
       - name: Check Rust dependencies
         if: steps.detect.outputs.type == 'rust'
         run: |
-          cargo install cargo-outdated --locked
-          cargo outdated -R --exit-code 1 > outdated.txt 2>&1 || true
+          # `cargo upgrade --dry-run` resolves the workspace in place, so it
+          # follows workspace inheritance and the submodule path dependencies
+          # that `cargo outdated`'s temporary copy could not. It prints one
+          # table per crate with something to bump and nothing otherwise; the
+          # per-crate progress lines and its dry-run notes are not findings.
+          cargo upgrade --dry-run --incompatible 2>&1 | tee upgrade.log \
+            | grep -vE '^\s+Checking |^note: |^warning: aborting upgrade|^\s+(git|latest|local|pinned): ' \
+            > outdated.txt || true
           cat outdated.txt
+          # The command exits 0 in a dry run whether or not anything is outdated;
+          # a resolver failure surfaces as `error:` text, which must fail the job
+          # instead of being filed as the outdated list.
+          if grep -q '^error' upgrade.log; then
+            echo "cargo upgrade failed" >&2
+            exit 1
+          fi
 
       - name: Setup Node
         if: steps.detect.outputs.type == 'node'

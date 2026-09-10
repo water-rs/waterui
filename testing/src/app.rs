@@ -39,10 +39,26 @@ pub fn ui() -> UiBuilder {
     UiBuilder::new()
 }
 
+/// Installs the theme a test runs under when it names none.
+///
+/// This is the complete Hydrolysis theme: the backend's own test installer
+/// supplies the component bridges it realizes natively (the map), and
+/// Material 3 supplies everything a view can draw with — colour and font
+/// tokens, typography, and the widget theme that every Hydrolysis control
+/// reads its chrome from. Material 3 is what a generated project installs, so
+/// a test sees what the application's window shows, and a scroll view, a
+/// button or a toggle mounts under `ui()` without the test binary opting into
+/// a theme package first. Its tokens replace the backend installer's, which
+/// exist for renderer tests that run without a theme package.
+pub fn install_default_theme(env: &mut Environment) {
+    hydrolysis::testing::install_theme(env);
+    hydrolysis_m3::install_defaults(env);
+}
+
 /// Runtime test host and configuration.
 ///
 /// Theme and render mode are orthogonal: [`Self::theme`] swaps the installed
-/// theme package (defaulting to the plain Hydrolysis test theme), while
+/// theme package (defaulting to [`install_default_theme`]), while
 /// [`Self::mount`] / [`Self::mount_offscreen`] pick between the fast semantic
 /// runtime and the GPU-backed offscreen runtime. Any theme works in either
 /// mode.
@@ -79,7 +95,7 @@ impl UiBuilder {
             env: Environment::new(),
             width: 390,
             height: 844,
-            theme: Rc::new(hydrolysis::testing::install_theme),
+            theme: Rc::new(install_default_theme),
             perf_config: PerfConfig::default(),
         }
     }
@@ -101,7 +117,8 @@ impl UiBuilder {
         self
     }
 
-    /// Replaces the default Hydrolysis test theme with a theme package.
+    /// Replaces the default theme ([`install_default_theme`]) with a theme
+    /// package.
     #[must_use]
     pub fn theme<U: ThemeInstaller>(mut self, theme: U) -> Self {
         self.theme = Rc::new(move |env| theme.install(env));

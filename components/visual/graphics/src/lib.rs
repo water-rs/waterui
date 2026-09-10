@@ -1,4 +1,10 @@
 #![doc = "Graphics primitives for `WaterUI`."]
+// Proving `Send` across `wgpu`'s generic type graph is deeper than rustc's
+// default recursion limit of 128 on the workspace's nightly toolchain, which
+// reports `overflow evaluating the requirement ...: Send` — a hard error under
+// `-D warnings`. The bound genuinely holds; the solver just needs room to say
+// so. Harmless on stable, where the limit is never reached.
+#![recursion_limit = "256"]
 
 extern crate alloc;
 
@@ -28,7 +34,9 @@ pub use gpu::{
 pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
 #[cfg(feature = "gpu")]
 pub use image::{image_analysis, image_decode, image_generator};
-pub use scene::{scene_view, scene2d};
+#[cfg(feature = "cpu-scene")]
+pub use scene::scene2d_cpu;
+pub use scene::{picture, scene_view, scene2d};
 #[cfg(feature = "vello-scene")]
 pub use scene::{scene2d_hybrid, scene2d_vello};
 
@@ -118,10 +126,14 @@ pub use image_generator::{
     LinearGradientGenerator, NoiseGenerator, RadialGradientGenerator, StripeGenerator,
 };
 
-pub use scene_view::{SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent};
+pub use picture::Picture;
+pub use scene_view::{
+    SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
+    resolve_scene_proposal, scene_stretch_axis,
+};
 pub use scene2d::{Glyph, GlyphRun, Scene2D, SceneRecording};
 #[cfg(feature = "vello-scene")]
-pub use scene2d_hybrid::HybridScene2D;
+pub use scene2d_hybrid::{HybridImageAtlas, HybridRenderer, HybridScene2D, HybridUpload};
 #[cfg(feature = "vello-scene")]
 pub use scene2d_vello::VelloScene2D;
 

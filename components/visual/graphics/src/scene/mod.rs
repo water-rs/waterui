@@ -1,5 +1,10 @@
+/// A recorded drawing shown as a static image.
+pub mod picture;
 /// 2D scene model types.
 pub mod scene2d;
+/// CPU rasterisation of a recording through `vello_cpu`.
+#[cfg(feature = "cpu-scene")]
+pub mod scene2d_cpu;
 /// 2D scenes over the CPU/GPU split renderer.
 #[cfg(feature = "vello-scene")]
 pub mod scene2d_hybrid;

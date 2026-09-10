@@ -1,0 +1,34 @@
+# Inter-atom spacing.
+#
+# The gap between two adjacent atoms is a function of the class on each side.
+# This is what makes `a+b` and `a=b` space differently and `f(x)` close up, and
+# it is the table a layout that merely concatenates advance widths is missing.
+#
+# Source: TeXbook Chapter 18 (the `\mathsurround` spacing table), which MathML
+# Core Ch. 3 reproduces. Amounts are in math units, 18mu = 1em:
+#
+#   none   = 0mu
+#   thin   = 3mu
+#   medium = 4mu
+#   thick  = 5mu
+#
+# A trailing `*` means the gap is suppressed in script and scriptscript styles.
+# That is why a superscripted sum does not acquire the gaps its display form
+# has. A combination TeX marks impossible (a binary operator that cannot be
+# binary in that position) degrades to `none`, which is what TeX itself does
+# after reclassifying the atom.
+#
+# Rows are the class to the LEFT of the gap, columns the class to the RIGHT,
+# both in the order given by `order`.
+
+order = ["ord", "op", "bin", "rel", "open", "close", "punct", "inner"]
+
+[rows]
+ord   = ["none",    "thin",    "medium*", "thick*", "none",    "none",  "none",  "thin*"]
+op    = ["thin",    "thin",    "none",    "thick*", "none",    "none",  "none",  "thin*"]
+bin   = ["medium*", "medium*", "none",    "none",   "medium*", "none",  "none",  "medium*"]
+rel   = ["thick*",  "thick*",  "none",    "none",   "thick*",  "none",  "none",  "thick*"]
+open  = ["none",    "none",    "none",    "none",   "none",    "none",  "none",  "none"]
+close = ["none",    "thin",    "medium*", "thick*", "none",    "none",  "none",  "thin*"]
+punct = ["thin*",   "thin*",   "none",    "thin*",  "thin*",   "thin*", "thin*", "thin*"]
+inner = ["thin*",   "thin",    "medium*", "thick*", "thin*",   "none",  "thin*", "thin*"]

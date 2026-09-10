@@ -1,0 +1,25 @@
+[package]
+name = "waterui-ffi-generator"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Generates the checked-in `waterui.h` C header from the `waterui-ffi` crate"
+publish = false
+
+# Deliberately not a `[[bin]]` of `waterui-ffi`: building a bin inside that
+# crate compiles the whole framework dependency graph in the dev profile before
+# cbindgen has done anything, and cbindgen then checks the same graph again for
+# its `-Zunpretty=expanded` expansion. Out here the generator's own build costs
+# cbindgen alone, leaving exactly one compile of the framework — the expansion.
+[[bin]]
+name = "generate_header"
+path = "generate_header.rs"
+
+[dependencies]
+cbindgen = "0.29.4"
+
+[lints]
+workspace = true

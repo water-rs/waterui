@@ -62,6 +62,7 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
     }
 
     let mut build = RustBuild::new(&backend_path, TargetPlatform::Linux.triple())
+        .with_project(project)
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_linkage(
             options.linkage(),

@@ -317,7 +317,7 @@ into_ffi! {
 ffi_view!(RatingConfig, WuiRating, rating);
 
 // 3. Regenerate waterui.h
-// cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
+// cargo +nightly run --manifest-path ffi/generator/Cargo.toml
 
 // 4. Implement in Swift (backends/apple/Sources/WaterUI/Views/Rating.swift)
 // if viewId == waterui_rating_id() {
@@ -353,10 +353,13 @@ let text = waterui_text(computed)
 
 ## C Header Generation
 
-The crate includes a `generate_header` binary that uses `cbindgen` to produce `waterui.h`:
+The sibling `waterui-ffi-generator` crate (`ffi/generator`) provides the `generate_header`
+binary, which uses `cbindgen` to produce `waterui.h`. It lives outside this crate so that
+building it costs cbindgen alone instead of the whole framework graph, and it needs nightly
+because cbindgen expands the macro-generated exports through `-Zunpretty=expanded`:
 
 ```bash
-cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
+cargo +nightly run --manifest-path ffi/generator/Cargo.toml
 ```
 
 This generates the C header and automatically copies it to:
@@ -408,7 +411,8 @@ WaterUI distinguishes between two kinds of views:
 ## Features
 
 - **`std`** (default) - Enable standard library support
-- **`cbindgen`** - Required for the `generate_header` binary
+- **`header`** - Every optional C surface the checked-in `waterui.h` declares; what
+  `waterui-ffi-generator` expands this crate with
 
 ## API Overview
 
@@ -472,7 +476,7 @@ When adding a new view type to WaterUI:
 
 1. Define the Rust view struct in the appropriate component crate
 2. Add FFI bindings in `ffi/src/components/<module>.rs`
-3. Regenerate the C header: `cargo run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml`
+3. Regenerate the C header: `cargo +nightly run --manifest-path ffi/generator/Cargo.toml`
 4. Implement the native renderer in Swift (`backends/apple`) and Kotlin (`backends/android`)
 5. Update tests to verify FFI contract
 

@@ -48,7 +48,7 @@ where
 {
     async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut Environment) {
         let scoped_env = env.extending(SceneViewMergeToParent);
-        let mut renderer = HydrolysisRenderer::new(ctx.device);
+        let mut renderer = HydrolysisRenderer::new(ctx.adapter, ctx.device);
         renderer.set_host_redraw_handle(ctx.redraw_handle.clone());
         renderer.prepare_window_tree(AnyView::new(self.view.clone()), &scoped_env);
         renderer.setup_embedded_gpu_surfaces(ctx).await;

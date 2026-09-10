@@ -15,26 +15,30 @@ categories = ["gui", "web-programming"]
 default = ["cef-runtime"]
 cef-runtime = ["cef/sandbox", "cef-dll-sys/sandbox"]
 compile-only = ["cef/dox", "cef-dll-sys/dox"]
-# `waterui-webview` supplies the removable watcher registry the shared CDP
-# session uses; both browser-facing features need it.
 chromium = [
-    "dep:async-channel",
     "dep:base64",
     "dep:keycode",
     "dep:waterui-chromium",
-    "dep:waterui-webview",
+    "dep:waterui-watcher-set",
 ]
 real-engine = ["cef-runtime", "webview"]
-webview = ["dep:cookie", "dep:keycode", "dep:waterui-str", "dep:waterui-webview"]
+webview = [
+    "dep:cookie",
+    "dep:keycode",
+    "dep:waterui-str",
+    "dep:waterui-watcher-set",
+    "dep:waterui-webview",
+]
 
 [dependencies]
-async-channel = { version = "2.5", optional = true }
+async-channel = "2.5"
 base64 = { version = "0.22", optional = true }
 cef = { version = "=150.2.1", default-features = false }
 cef-dll-sys = { version = "=150.2.1", default-features = false }
 cookie = { version = "0.18.1", optional = true }
 dirs.workspace = true
 futures.workspace = true
+futures-lite.workspace = true
 futures-timer.workspace = true
 executor-core.workspace = true
 keycode = { version = "1.0", optional = true }
@@ -49,6 +53,7 @@ waterui-core.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
 waterui-str = { workspace = true, optional = true }
 waterui-url.workspace = true
+waterui-watcher-set = { workspace = true, optional = true }
 waterui-webview = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -78,7 +83,7 @@ harness = false
 required-features = ["real-engine"]
 
 [build-dependencies]
-cc = "1.2"
+cc = "1.4"
 
 [package.metadata.cargo-machete]
 ignored = ["cc", "cef-dll-sys"]

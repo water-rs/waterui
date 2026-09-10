@@ -10,6 +10,18 @@ use waterui::ViewExt as _;
 use waterui_controls::button::button;
 use waterui_core::layout::{HorizontalAlignment, Size};
 use waterui_core::{AnyView, SignalExt as _};
+use waterui_testing::TestArtifacts;
+
+/// Where this module's visual evidence is written: `waterui-testing`'s
+/// canonical `<root>/hydrolysis/<case>/<stage>.png` layout, with the root from
+/// `WATERUI_TEST_ARTIFACTS_DIR` when CI sets it (uploaded with every run) and
+/// the platform temp directory otherwise.
+fn export_path(case: &str, stage: &str) -> std::path::PathBuf {
+    let path = TestArtifacts::new("hydrolysis").snapshot_path(case, stage);
+    std::fs::create_dir_all(path.parent().expect("a snapshot path has a case directory"))
+        .expect("the export directory must be creatable");
+    path
+}
 use waterui_layout::stack::{VStackLayout, vstack};
 use waterui_text::styled::StyledStr;
 
@@ -167,7 +179,6 @@ fn capture_window_tree_renders_mixed_widgets() {
     let bounds = Rect::new(0.0, 0.0, 220.0, 200.0);
 
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(bounds);
     renderer.capture_window_tree(view, &env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(
         !renderer.scene_is_empty(),
@@ -187,7 +198,6 @@ fn flush_window_tree_reuses_retained_tree() {
         button("Tap").action(|| {}),
     )));
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(bounds);
     renderer.capture_window_tree(view, &env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     renderer.finish_rebuild_frame();
 
@@ -196,7 +206,7 @@ fn flush_window_tree_reuses_retained_tree() {
     // scene into the compositor's layer stack), so verify a Vello layer resulted.
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "a retained tree must be present to flush");
-    let (_, vello_layers, _) = renderer.render_layer_stats();
+    let vello_layers = renderer.render_layer_stats().vello_scene_layers;
     assert!(
         vello_layers > 0,
         "re-flushing the retained tree must produce a Vello scene layer"
@@ -511,7 +521,7 @@ fn render_tree_chart_switch_snapshot() {
     use waterui_core::dynamic::watch;
     use waterui_core::handler::AnyViewBuilder;
 
-    fn write_png(path: &str, width: u32, height: u32, rgba: Vec<u8>) {
+    fn write_png(path: &std::path::Path, width: u32, height: u32, rgba: Vec<u8>) {
         let image = image::RgbaImage::from_raw(width, height, rgba)
             .expect("snapshot dimensions must match the rgba buffer");
         image.save(path).expect("snapshot png must be writable");
@@ -541,7 +551,7 @@ fn render_tree_chart_switch_snapshot() {
         .snapshot
         .expect("first frame must capture a snapshot");
     write_png(
-        "/tmp/waterui_tree_switch_before.png",
+        &export_path("switch", "before"),
         before.width,
         before.height,
         before.rgba8,
@@ -553,7 +563,7 @@ fn render_tree_chart_switch_snapshot() {
         .snapshot
         .expect("switched frame must capture a snapshot");
     write_png(
-        "/tmp/waterui_tree_switch_after.png",
+        &export_path("switch", "after"),
         after.width,
         after.height,
         after.rgba8,
@@ -578,7 +588,7 @@ fn render_tree_scene_view_switch_snapshot() {
     use waterui_core::layout::{Point, Rect, Size as LayoutSize};
     use waterui_graphics::color::Srgb;
 
-    fn write_png(path: &str, width: u32, height: u32, rgba: Vec<u8>) {
+    fn write_png(path: &std::path::Path, width: u32, height: u32, rgba: Vec<u8>) {
         let image = image::RgbaImage::from_raw(width, height, rgba)
             .expect("snapshot dimensions must match the rgba buffer");
         image.save(path).expect("snapshot png must be writable");
@@ -617,7 +627,7 @@ fn render_tree_scene_view_switch_snapshot() {
         .snapshot
         .expect("first frame must capture a snapshot");
     write_png(
-        "/tmp/waterui_tree_sceneview_before.png",
+        &export_path("sceneview", "before"),
         before.width,
         before.height,
         before.rgba8,
@@ -629,7 +639,7 @@ fn render_tree_scene_view_switch_snapshot() {
         .snapshot
         .expect("switched frame must capture a snapshot");
     write_png(
-        "/tmp/waterui_tree_sceneview_after.png",
+        &export_path("sceneview", "after"),
         after.width,
         after.height,
         after.rgba8,
@@ -650,7 +660,7 @@ fn render_tree_scroll_snapshot() {
     use std::time::Instant;
     use waterui_core::handler::AnyViewBuilder;
 
-    fn write_png(path: &str, width: u32, height: u32, rgba: Vec<u8>) {
+    fn write_png(path: &std::path::Path, width: u32, height: u32, rgba: Vec<u8>) {
         let image = image::RgbaImage::from_raw(width, height, rgba)
             .expect("snapshot dimensions must match the rgba buffer");
         image.save(path).expect("snapshot png must be writable");
@@ -681,7 +691,7 @@ fn render_tree_scroll_snapshot() {
         .snapshot
         .expect("first frame must capture a snapshot");
     write_png(
-        "/tmp/waterui_tree_scroll_before.png",
+        &export_path("scroll", "before"),
         before.width,
         before.height,
         before.rgba8,
@@ -699,7 +709,7 @@ fn render_tree_scroll_snapshot() {
         .snapshot
         .expect("scrolled frame must capture a snapshot");
     write_png(
-        "/tmp/waterui_tree_scroll_after.png",
+        &export_path("scroll", "after"),
         after.width,
         after.height,
         after.rgba8,
@@ -775,7 +785,7 @@ fn render_tree_collection_snapshot() {
     use waterui_core::handler::AnyViewBuilder;
     use waterui_core::id::SelfId;
 
-    fn write_png(path: &str, width: u32, height: u32, rgba: Vec<u8>) {
+    fn write_png(path: &std::path::Path, width: u32, height: u32, rgba: Vec<u8>) {
         let image = image::RgbaImage::from_raw(width, height, rgba)
             .expect("snapshot dimensions must match the rgba buffer");
         image.save(path).expect("snapshot png must be writable");
@@ -801,7 +811,7 @@ fn render_tree_collection_snapshot() {
         .snapshot
         .expect("collection frame must capture a snapshot");
     write_png(
-        "/tmp/waterui_tree_collection.png",
+        &export_path("collection", "review"),
         snapshot.width,
         snapshot.height,
         snapshot.rgba8,
@@ -944,7 +954,7 @@ fn gesture_wrapper_keeps_reactive_descendant_live() {
 fn render_tree_grid_snapshot() {
     use waterui_core::handler::AnyViewBuilder;
 
-    fn write_png(path: &str, width: u32, height: u32, rgba: Vec<u8>) {
+    fn write_png(path: &std::path::Path, width: u32, height: u32, rgba: Vec<u8>) {
         let image = image::RgbaImage::from_raw(width, height, rgba)
             .expect("snapshot dimensions must match the rgba buffer");
         image.save(path).expect("snapshot png must be writable");
@@ -982,7 +992,7 @@ fn render_tree_grid_snapshot() {
         .snapshot
         .expect("grid frame must capture a snapshot");
     write_png(
-        "/tmp/waterui_tree_grid.png",
+        &export_path("grid", "review"),
         snapshot.width,
         snapshot.height,
         snapshot.rgba8,
@@ -1024,7 +1034,6 @@ fn lifecycle_hooks_fire_after_first_flush_and_on_drop() {
 
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(bounds);
     renderer.capture_window_tree(
         AnyView::new(()),
         &env,
@@ -1090,7 +1099,6 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
 
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(bounds);
     renderer.capture_window_tree(
         AnyView::new(()),
         &env,
@@ -1133,7 +1141,6 @@ fn applied_filter_renders_through_retained_tree() {
     let bounds = Rect::new(0.0, 0.0, 120.0, 120.0);
 
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(bounds);
     renderer.capture_window_tree(
         blurred_box(),
         &env,

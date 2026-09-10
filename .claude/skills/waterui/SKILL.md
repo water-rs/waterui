@@ -209,9 +209,16 @@ use waterui::task::{sleep, spawn_local};               // async utilities
 
 Components behind cargo features are also absent until you enable them. `waterui`'s
 defaults are `gpu`, `assets`, `media`, `inspector`, `snackbar`; `webview` and
-`flow-markdown` are opt-in in `Cargo.toml`. Charts, maps, barcodes and particles are not
-features but crates of their own — `waterui-chart`, `waterui-map`, `waterui-barcode`,
-`waterui-particle` — added as direct dependencies and imported as `waterui_chart::…`. Keep
+`flow-markdown` are opt-in in `Cargo.toml`. Canvas, charts, barcodes and particles have
+opt-in facade features `canvas`, `chart`, `barcode` and `particle`, exposing the
+independent crates as `waterui::canvas`, `waterui::chart`, `waterui::barcode` and
+`waterui::particle`. Direct dependencies such as `waterui-chart` remain valid and expose
+the same types as the facade, including with dynamic linking. Maps and Mermaid diagrams
+use direct dependencies on `waterui-map` and `waterui-mermaid`. Mermaid additionally
+needs one call at the root of the app: a
+```` ```mermaid ```` fence in Markdown stays plain code until the environment has
+`waterui_mermaid::install(&mut env)` (do it inside `use_env` at the root view, as
+`examples/markdown` does, so `water preview` gets it too). Keep
 the generated `dev = ["waterui/dynamic_linking"]` feature — it is what makes `water preview`
 and the fast dev loop link dynamically ([references/project.md](references/project.md)).
 

@@ -268,9 +268,12 @@ impl RenderNode {
                 renderer.pop_accessibility_owner();
             }
             RenderNode::SceneView(node) => {
+                // The drawing's own name, read every flush: content that follows
+                // a signal answers with what it currently draws.
+                let content_label = node.content.borrow().accessibility_label();
                 #[cfg(feature = "accessibility")]
                 renderer.push_accessibility_owner(&node.accessibility_identity);
-                emit_graphics_image_accessibility(renderer, ctx, env);
+                emit_graphics_image_accessibility(renderer, ctx, env, content_label);
                 #[cfg(feature = "accessibility")]
                 renderer.pop_accessibility_owner();
                 let mut scene = vello::Scene::new();
@@ -299,7 +302,7 @@ impl RenderNode {
             RenderNode::GpuSurface(node) => {
                 #[cfg(feature = "accessibility")]
                 renderer.push_accessibility_owner(&node.accessibility_identity);
-                emit_graphics_image_accessibility(renderer, ctx, env);
+                emit_graphics_image_accessibility(renderer, ctx, env, None);
                 #[cfg(feature = "accessibility")]
                 renderer.pop_accessibility_owner();
                 node.flush(renderer, ctx);
@@ -450,9 +453,14 @@ impl HydrolysisRenderer {
         let parent_render_layers = core::mem::take(&mut self.compositor.render_layers);
         let parent_active_layers = core::mem::take(&mut self.compositor.active_scene_layers);
         let parent_transient_scene = self.transient_scene.take();
-        let parent_window_bounds = core::mem::replace(
-            &mut self.window_bounds,
+        // The captured subtree is flushed under identity transforms into a
+        // pixel-sized texture, so its viewport is that texture and its root
+        // transform is the identity — not the window's.
+        let parent_window_bounds = self.window_bounds;
+        let parent_window_root_transform = self.window_root_transform;
+        self.set_window_viewport(
             vello::kurbo::Rect::new(0.0, 0.0, f64::from(target.width), f64::from(target.height)),
+            vello::kurbo::Affine::IDENTITY,
         );
 
         let local_ctx = ctx.with_identity_transforms(vello::kurbo::Rect::new(
@@ -461,11 +469,17 @@ impl HydrolysisRenderer {
             f64::from(target.width),
             f64::from(target.height),
         ));
+        // Filters inside this subtree are captured one level deeper and flushed
+        // here, so their outputs exist before the subtree itself is rendered.
+        let depth = self.subtree_captures.depth;
+        self.subtree_captures.depth = depth + 1;
         child.flush(self, local_ctx, env);
+        self.subtree_captures.depth = depth;
         assert!(
             self.compositor.active_scene_layers.is_empty(),
             "hydrolysis GPU subtree capture left an unclosed scene layer"
         );
+        self.flush_subtree_captures(depth + 1);
         self.render_scene_to_texture(HydrolysisRenderTarget {
             adapter: &adapter,
             device: &device,
@@ -486,6 +500,6 @@ impl HydrolysisRenderer {
         self.compositor.render_layers = parent_render_layers;
         self.compositor.active_scene_layers = parent_active_layers;
         self.transient_scene = parent_transient_scene;
-        self.window_bounds = parent_window_bounds;
+        self.set_window_viewport(parent_window_bounds, parent_window_root_transform);
     }
 }

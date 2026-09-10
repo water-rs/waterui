@@ -77,7 +77,7 @@ impl TestHost {
         );
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.device())
+            HydrolysisRenderer::new(surface.adapter(), surface.device())
         };
         let bounds = vello::kurbo::Rect::new(
             0.0,

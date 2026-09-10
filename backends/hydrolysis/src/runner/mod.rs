@@ -45,6 +45,8 @@ use waterui_core::Native;
 #[cfg(not(target_arch = "wasm32"))]
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::view::Hook;
+#[cfg(not(target_arch = "wasm32"))]
+use waterui_text::FontCollection;
 
 mod diagnostics;
 mod fonts;
@@ -66,6 +68,9 @@ use fonts::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
 use window::*;
+// Frame and tree profiles are published to the inspector endpoint, which exists
+// only where `waterui::inspector` does.
+#[cfg(not(target_arch = "wasm32"))]
 mod inspector;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -82,8 +87,18 @@ use crate::renderer::{HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery};
 use crate::renderer::{HydrolysisTextContextMenuMode, PopupWindowManager};
 use crate::time::Instant;
 
-fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
+/// The global executor every runner installs before anything can spawn.
+fn init_global_executor() {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
+}
+
+/// Installs the global executor and prepares inspection.
+///
+/// A browser page has no transport for the inspector endpoint, so the wasm
+/// runner installs the executor alone.
+#[cfg(not(target_arch = "wasm32"))]
+fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
+    init_global_executor();
     waterui::inspector::maybe_init_from_env("hydrolysis")
 }
 
@@ -179,6 +194,12 @@ pub fn run(app: App) {
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::default(),
     ));
+    // The application's fonts, discovered once. Every window's renderer is
+    // seeded from this collection, and a self-drawn component that typesets
+    // text itself reads it out of the environment instead of enumerating the
+    // system's fonts for itself.
+    let fonts = FontCollection::new(native_resource_fonts());
+    fonts.clone().install(&mut env);
     let mut pending_windows = VecDeque::from(windows);
     while let Some(window) = pending_windows.pop_front() {
         let frame = window.frame.get();
@@ -189,9 +210,9 @@ pub fn run(app: App) {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.device())
+            HydrolysisRenderer::new(surface.adapter(), surface.device())
         };
-        load_native_resource_fonts(&mut renderer);
+        seed_renderer(&mut renderer, &fonts);
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env, &mut || local_executor.drain());
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
@@ -200,7 +221,8 @@ pub fn run(app: App) {
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub fn run(app: App) {
-    web_runner::run(app, init_main_thread_executors());
+    init_global_executor();
+    web_runner::run(app);
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]

@@ -8,11 +8,12 @@
 use alloc::boxed::Box;
 
 use waterui_core::MainThreadBound;
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
 use crate::gpu::shared_context::SceneEngine;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuView};
-use crate::scene_view::SceneContent;
-use crate::scene2d_hybrid::HybridScene2D;
+use crate::scene_view::{SceneContent, resolve_scene_proposal, scene_stretch_axis};
+use crate::scene2d_hybrid::{HybridScene2D, HybridUpload};
 use crate::scene2d_vello::VelloScene2D;
 
 /// The scene this surface builds each frame, in whichever engine's form.
@@ -32,9 +33,11 @@ enum SceneBuffer {
 }
 
 pub struct SceneSurfaceRenderer {
-    // `SceneContent` is `!Send` (it carries an `Rc` invalidator). `measure` never
-    // touches it (it returns a fixed size), so confining it keeps the renderer
-    // `Send + Sync` for the `SubView` bound while setup/render stay on the main thread.
+    // `SceneContent` is `!Send` (it carries an `Rc` invalidator), and confining it
+    // keeps the renderer `Send + Sync` for the `SubView` bound. Layout is
+    // single-threaded by contract and runs on the thread that built this surface,
+    // so `measure` reads the content's intrinsic size straight through the binding
+    // alongside setup/render.
     content: MainThreadBound<Box<dyn SceneContent>>,
     // Which engine's scene this is settles in setup, once the device says which
     // one it rasterizes with.
@@ -171,6 +174,27 @@ impl GpuView for SceneSurfaceRenderer {
 
         self.blit_bind_group_layout = Some(bind_group_layout);
         core::future::ready(())
+    }
+
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let resolved = resolve_scene_proposal(self.content.intrinsic_size(), proposal);
+        ViewDimensions::new(Size::new(
+            resolved.width.unwrap_or(0.0),
+            resolved.height.unwrap_or(0.0),
+        ))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        scene_stretch_axis(self.content.intrinsic_size())
+    }
+
+    /// Whatever the scene says about itself.
+    ///
+    /// This is the only thing standing between a surface-rendered formula or
+    /// diagram and a screen reader announcing an unlabelled rectangle: the
+    /// pixels carry the meaning and nothing outside the content can read them.
+    fn accessibility_label(&self) -> Option<alloc::string::String> {
+        self.content.accessibility_label()
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
@@ -364,13 +388,16 @@ impl SceneSurfaceRenderer {
             multiview_mask: None,
         }));
 
-        // The content is built inside the renderer's lock because glyphs
-        // rasterize into an atlas the renderer owns: a run of text is recorded
-        // against those resources, not against the scene alone.
+        // The content is built inside the renderer's lock because glyphs and
+        // images live in atlases the renderer owns: a run of text or an image
+        // is recorded against those resources, not against the scene alone.
+        // Uploads go into the same encoder the frame is rendered with, so an
+        // image reaches the atlas before the pass that samples it.
         let content = &mut self.content;
         let needs_next_frame = renderer.with_hybrid(frame.device, frame.format, |hybrid| {
             let needs_next_frame = {
-                let mut scene2d = HybridScene2D::new(scene, &mut hybrid.resources);
+                let upload = HybridUpload::new(frame.device, frame.queue, &mut encoder);
+                let mut scene2d = HybridScene2D::new(scene, hybrid, upload);
                 content.build_scene(&mut scene2d, frame.width as f32, frame.height as f32)
             };
             hybrid

@@ -7,6 +7,7 @@ use std::rc::Rc;
 use executor_core::LocalExecutor;
 use executor_core::async_task::{self, AsyncTask, Runnable};
 
+mod gpu_surface_direct;
 mod gpu_surface_idle;
 mod gpu_surface_input;
 mod perf_full_rebuild;
@@ -52,7 +53,7 @@ fn test_renderer() -> HydrolysisRenderer {
     let mut platform =
         crate::platform::OffscreenWindow::new_for_tests(160, 160, wgpu::TextureFormat::Rgba8Unorm);
     let surface = platform.surface();
-    let mut renderer = HydrolysisRenderer::new(surface.device());
+    let mut renderer = HydrolysisRenderer::new(surface.adapter(), surface.device());
     renderer.set_frame_resources(surface.adapter(), surface.device(), surface.queue());
     renderer
 }
@@ -785,7 +786,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
         crate::platform::OffscreenWindow::new_for_tests(160, 160, wgpu::TextureFormat::Rgba8Unorm);
     let mut renderer = {
         let surface = platform.surface();
-        HydrolysisRenderer::new(surface.device())
+        HydrolysisRenderer::new(surface.adapter(), surface.device())
     };
     let env = test_environment();
     let bounds = vello::kurbo::Rect::new(0.0, 0.0, 160.0, 160.0);
@@ -872,7 +873,6 @@ fn capture_root_window<V: waterui_core::View>(
     env: &Environment,
     bounds: Rect,
 ) {
-    renderer.set_window_bounds(bounds);
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
@@ -2304,7 +2304,6 @@ fn bare_text_at_window_root_renders_into_scene() {
     let env = test_environment();
 
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(Rect::new(0.0, 0.0, 160.0, 160.0));
     renderer.capture_window_tree(
         AnyView::new(waterui_text::text("probe")),
         &env,
@@ -2325,7 +2324,6 @@ fn bare_str_at_window_root_renders_into_scene() {
     let env = test_environment();
 
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(Rect::new(0.0, 0.0, 160.0, 160.0));
     renderer.capture_window_tree(
         AnyView::new(Str::from("probe")),
         &env,
@@ -2399,7 +2397,6 @@ fn bare_str_renders_into_scene() {
 
     let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
     renderer.begin_rebuild_frame();
-    renderer.set_window_bounds(bounds);
     renderer.capture_window_tree(
         AnyView::new(Str::from("probe")),
         &env,

@@ -1,0 +1,61 @@
+[package]
+name = "waterui-math"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Mathematical formula rendering for WaterUI, laid out against the OpenType MATH table"
+keywords = ["math", "latex", "mathml", "opentype", "waterui"]
+categories = ["gui"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-graphics.workspace = true
+waterui-layout.workspace = true
+waterui-str.workspace = true
+nami.workspace = true
+# The math family is looked up in the application's shared font collection,
+# which the host installs and this crate only reads: `parley` is here for the
+# `FontContext` that collection hands out, not to discover fonts.
+parley = { workspace = true, features = ["std"] }
+# `system-fonts` is what lets a host with no font stack of its own — the native
+# Apple, Android and GTK backends — install a collection at all. A formula is
+# typeset from real faces, so a build carrying this component must be able to
+# reach them.
+waterui-text = { workspace = true, features = ["system-fonts"] }
+kurbo.workspace = true
+peniko.workspace = true
+ttf-parser.workspace = true
+pulldown-latex.workspace = true
+quick-xml.workspace = true
+# Speech. A formula drawn as filled paths has no content an assistive technology
+# can reach, and the MathML this crate publishes is markup rather than a
+# sentence — this is what turns one into the other, and the result is the name
+# the formula's accessibility node carries. Not optional: a component that
+# cannot be read out has no accessibility tree worth the name, and a crate this
+# one is not linked into pays nothing for it.
+mathcat.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The gallery drives a headless surface, which is the only thing in this crate
+# that touches the GPU stack at all.
+waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+pollster.workspace = true
+wgpu.workspace = true
+
+[lints]
+workspace = true
+
+# The formula font. Layout reads the OpenType `MATH` table, so a face without
+# one cannot lay out a formula at all; this is the default the component asks
+# for when the environment names no other math family.
+[[package.metadata.waterui.assets.font]]
+name = "STIX Two Math"

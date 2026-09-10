@@ -16,3 +16,6 @@ dev = ["waterui/dynamic_linking"]
 [dependencies]
 # `include_markdown!` and `RichText` live behind `flow-markdown`.
 waterui = { workspace = true, features = ["flow-markdown"] }
+# The realization that turns a ```mermaid fence into a diagram. `waterui` does
+# not depend on it — the example installs it, which is the point of the hook.
+waterui-mermaid.workspace = true

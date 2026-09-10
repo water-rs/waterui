@@ -35,6 +35,36 @@ typedef struct WuiArray {
 
 
 /**
+ * `Modifiers::SHIFT` — a shift key is held.
+ */
+#define WUI_SURFACE_MODIFIER_SHIFT 512
+
+/**
+ * `Modifiers::CONTROL` — a control key is held.
+ */
+#define WUI_SURFACE_MODIFIER_CONTROL 8
+
+/**
+ * `Modifiers::ALT` — an alt/option key is held.
+ */
+#define WUI_SURFACE_MODIFIER_ALT 1
+
+/**
+ * `Modifiers::META` — a meta/command/Windows key is held.
+ */
+#define WUI_SURFACE_MODIFIER_META 64
+
+/**
+ * `Modifiers::CAPS_LOCK` — caps lock is latched on.
+ */
+#define WUI_SURFACE_MODIFIER_CAPS_LOCK 4
+
+/**
+ * `Modifiers::NUM_LOCK` — num lock is latched on.
+ */
+#define WUI_SURFACE_MODIFIER_NUM_LOCK 128
+
+/**
  * FFI representation of `StretchAxis` enum.
  *
  * Specifies which axis (or axes) a view stretches to fill available space.
@@ -1076,24 +1106,6 @@ typedef enum WuiTabStyle {
 } WuiTabStyle;
 
 /**
- * Pointer buttons supported by CEF windowless rendering.
- */
-typedef enum WuiCefPointerButton {
-  /**
-   * Primary pointer button.
-   */
-  WuiCefPointerButton_Primary,
-  /**
-   * Middle pointer button.
-   */
-  WuiCefPointerButton_Middle,
-  /**
-   * Secondary pointer button.
-   */
-  WuiCefPointerButton_Secondary,
-} WuiCefPointerButton;
-
-/**
  * Editing operations forwarded to Chromium's focused frame.
  */
 typedef enum WuiCefEditCommand {
@@ -1188,6 +1200,132 @@ typedef enum WuiWebViewEventType {
    */
   WuiWebViewEventType_StateChanged = 7,
 } WuiWebViewEventType;
+
+/**
+ * The pixel layout an Android capture buffer must be allocated with.
+ *
+ * The backend allocates its `ImageReader` from this after attaching, so the
+ * buffer it hands back is copy-compatible with the capture texture the filter
+ * samples. The discriminants are the values the JNI binding returns as an
+ * `Int`, and are part of the Kotlin contract.
+ */
+enum WuiCaptureFormat
+#if __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * Four 8-bit unsigned channels: `AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM`,
+   * which is `android.graphics.PixelFormat.RGBA_8888`.
+   */
+  WuiCaptureFormat_Rgba8Unorm = 0,
+  /**
+   * Four 16-bit half-float channels:
+   * `AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT`, which is
+   * `android.graphics.PixelFormat.RGBA_FP16`.
+   */
+  WuiCaptureFormat_Rgba16Float = 1,
+};
+#if __STDC_VERSION__ >= 202311L
+typedef enum WuiCaptureFormat WuiCaptureFormat;
+#else
+typedef uint32_t WuiCaptureFormat;
+#endif // __STDC_VERSION__ >= 202311L
+
+/**
+ * Which event a [`WuiSurfaceInputEvent`] carries.
+ *
+ * The tag decides which of the struct's payload fields are read; the rest are
+ * ignored (their strings are still freed).
+ */
+typedef enum WuiSurfaceInputEventKind {
+  /**
+   * Keyboard focus entered or left the surface. Reads `focused`.
+   */
+  WuiSurfaceInputEventKind_Focus,
+  /**
+   * The modifier chord changed on its own. Reads `modifiers`.
+   */
+  WuiSurfaceInputEventKind_Modifiers,
+  /**
+   * The pointer moved. Reads `x`, `y`.
+   */
+  WuiSurfaceInputEventKind_PointerMove,
+  /**
+   * A pointer button changed state. Reads `pressed`, `button`, `x`, `y`.
+   */
+  WuiSurfaceInputEventKind_PointerButton,
+  /**
+   * A scroll gesture. Reads `x`, `y`, `delta_x`, `delta_y`, `scroll_unit`,
+   * `finished`.
+   */
+  WuiSurfaceInputEventKind_Scroll,
+  /**
+   * A key changed state. Reads `pressed`, `key`, `code`, `modifiers`,
+   * `repeat`.
+   */
+  WuiSurfaceInputEventKind_Key,
+  /**
+   * Committed text to insert at the caret. Reads `text`.
+   */
+  WuiSurfaceInputEventKind_TextInput,
+  /**
+   * An input-method composition session began. Reads nothing.
+   */
+  WuiSurfaceInputEventKind_CompositionStart,
+  /**
+   * The pre-edit text changed. Reads `text`, `caret`.
+   */
+  WuiSurfaceInputEventKind_CompositionUpdate,
+  /**
+   * The composition session ended and its text is inserted. Reads `text`.
+   */
+  WuiSurfaceInputEventKind_CompositionCommit,
+  /**
+   * The composition session was abandoned. Reads nothing.
+   */
+  WuiSurfaceInputEventKind_CompositionCancel,
+} WuiSurfaceInputEventKind;
+
+/**
+ * A pointer button, in the W3C UI Events vocabulary.
+ */
+typedef enum WuiSurfacePointerButton {
+  /**
+   * The primary button — the left button on a right-handed mouse, a tap.
+   */
+  WuiSurfacePointerButton_Primary,
+  /**
+   * The secondary button — the right button on a right-handed mouse.
+   */
+  WuiSurfacePointerButton_Secondary,
+  /**
+   * The middle button, usually the wheel pressed down.
+   */
+  WuiSurfacePointerButton_Middle,
+  /**
+   * The "back" side button.
+   */
+  WuiSurfacePointerButton_Back,
+  /**
+   * The "forward" side button.
+   */
+  WuiSurfacePointerButton_Forward,
+} WuiSurfacePointerButton;
+
+/**
+ * What one unit of a scroll delta means.
+ */
+typedef enum WuiScrollUnit {
+  /**
+   * Deltas count lines of text — a discrete mouse wheel.
+   */
+  WuiScrollUnit_Line,
+  /**
+   * Deltas are logical pixels — a trackpad or a precise wheel.
+   */
+  WuiScrollUnit_Pixel,
+} WuiScrollUnit;
 
 /**
  * 2D affine transform stored as a row-major 2x3 matrix.
@@ -1435,6 +1573,14 @@ typedef struct Computed_ResolvedFont Computed_ResolvedFont;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_RgbaBitmap Computed_RgbaBitmap;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_Size Computed_Size;
 
 /**
@@ -1651,6 +1797,11 @@ typedef struct WuiMoveAction WuiMoveAction;
 typedef struct WuiOnEventHandler WuiOnEventHandler;
 
 /**
+ * Opaque handle owning a `Picture`.
+ */
+typedef struct WuiPictureHandle WuiPictureHandle;
+
+/**
  *Opaque FFI handle owning a `SharedAction<()>`.
  */
 typedef struct WuiSharedAction WuiSharedAction;
@@ -1812,6 +1963,14 @@ typedef struct WuiWatcher_ResolvedColor WuiWatcher_ResolvedColor;
  * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
  */
 typedef struct WuiWatcher_ResolvedFont WuiWatcher_ResolvedFont;
+
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
+typedef struct WuiWatcher_RgbaBitmap WuiWatcher_RgbaBitmap;
 
 /**
  * FFI-owned wrapper around a native watcher callback.
@@ -6261,40 +6420,6 @@ typedef struct WuiCefSurface {
 } WuiCefSurface;
 
 /**
- * Modifier snapshot for CEF pointer and keyboard input.
- */
-typedef struct WuiCefInputModifiers {
-  /**
-   * Shift key.
-   */
-  bool shift;
-  /**
-   * Control key.
-   */
-  bool control;
-  /**
-   * Alt or Option key.
-   */
-  bool alt;
-  /**
-   * Command key.
-   */
-  bool command;
-  /**
-   * Primary pointer button.
-   */
-  bool primary_button;
-  /**
-   * Middle pointer button.
-   */
-  bool middle_button;
-  /**
-   * Secondary pointer button.
-   */
-  bool secondary_button;
-} WuiCefInputModifiers;
-
-/**
  * One parsed `waterui.invoke(...)` request.
  */
 typedef struct WuiBridgeRequest {
@@ -6727,6 +6852,138 @@ typedef struct WuiGpuSurfaceInput {
    */
   struct WuiGestureState gesture;
 } WuiGpuSurfaceInput;
+
+/**
+ * One input event on its way to a GPU view.
+ *
+ * See the [module docs](self) for the flat-tagged shape and the string
+ * ownership rules.
+ */
+typedef struct WuiSurfaceInputEvent {
+  /**
+   * Which event this is, and therefore which fields below are read.
+   */
+  enum WuiSurfaceInputEventKind kind;
+  /**
+   * `Focus`: whether the surface gained (`true`) or lost focus.
+   */
+  bool focused;
+  /**
+   * `Modifiers`, `Key`: the modifier chord, as `WUI_SURFACE_MODIFIER_*` bits.
+   */
+  uint32_t modifiers;
+  /**
+   * `PointerMove`, `PointerButton`, `Scroll`: logical surface-local x.
+   */
+  double x;
+  /**
+   * `PointerMove`, `PointerButton`, `Scroll`: logical surface-local y.
+   */
+  double y;
+  /**
+   * `PointerButton`, `Key`: `true` for a press, `false` for a release.
+   */
+  bool pressed;
+  /**
+   * `PointerButton`: which button changed state.
+   */
+  enum WuiSurfacePointerButton button;
+  /**
+   * `Scroll`: horizontal delta, positive when the content should move left.
+   */
+  double delta_x;
+  /**
+   * `Scroll`: vertical delta, positive when the content should move up.
+   */
+  double delta_y;
+  /**
+   * `Scroll`: what one unit of the deltas means.
+   */
+  enum WuiScrollUnit scroll_unit;
+  /**
+   * `Scroll`: `true` on the event that ends a continuous gesture.
+   */
+  bool finished;
+  /**
+   * `Key`: the W3C `KeyboardEvent.key` name — `"a"`, `"Enter"`, `"ArrowUp"`.
+   */
+  struct WuiStr key;
+  /**
+   * `Key`: the W3C `KeyboardEvent.code` name — `"KeyA"`, `"Enter"`.
+   */
+  struct WuiStr code;
+  /**
+   * `TextInput`, `CompositionUpdate`, `CompositionCommit`: the text.
+   */
+  struct WuiStr text;
+  /**
+   * `Key`: `true` when the platform generated this press by auto-repeat.
+   */
+  bool repeat;
+  /**
+   * `CompositionUpdate`: caret byte offset within `text`, or `-1` for none.
+   */
+  int64_t caret;
+} WuiSurfaceInputEvent;
+
+/**
+ * FFI representation of a `Picture` view: the handle plus its size in points.
+ */
+typedef struct WuiPicture {
+  /**
+   * Owned handle; release it with `waterui_drop_picture`.
+   */
+  struct WuiPictureHandle *picture;
+  /**
+   * Width in points.
+   */
+  float width;
+  /**
+   * Height in points.
+   */
+  float height;
+  /**
+   * The name the drawing offers a screen reader; empty when it offers none.
+   * An application's own label on the view or an ancestor still wins.
+   */
+  struct WuiStr label;
+} WuiPicture;
+
+/**
+ * Premultiplied RGBA8 pixels, `width * height * 4` bytes, owned by the
+ * receiver until `waterui_drop_bitmap`.
+ */
+typedef struct WuiBitmap {
+  /**
+   * Width in pixels.
+   */
+  uint32_t width;
+  /**
+   * Height in pixels.
+   */
+  uint32_t height;
+  /**
+   * The pixel bytes.
+   */
+  uint8_t *data;
+  /**
+   * Number of pixel bytes.
+   */
+  uintptr_t len;
+  /**
+   * Allocation size behind `data`; `waterui_drop_bitmap` needs it back.
+   */
+  uintptr_t capacity;
+} WuiBitmap;
+
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
+typedef struct Computed_RgbaBitmap WuiComputed_RgbaBitmap;
 
 /**
  * FFI representation of output size.
@@ -10216,41 +10473,6 @@ struct WuiTypeId waterui_chromium_id(void);
 struct WuiCefSurface waterui_force_as_cef_webview(struct WuiAnyView *view);
 
 /**
- * Updates focus for a CEF surface.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_set_focus(const struct WuiCefSurfaceState *state, bool focused);
-
-/**
- * Requests one compositor frame for a visible CEF surface.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_request_frame(const struct WuiCefSurfaceState *state);
-
-/**
- * Updates the logical browser viewport and device scale.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- *
- * # Panics
- *
- * Panics when `scale` is not a positive, finite device-pixel ratio that `f32`
- * can represent, and when `width` or `height` is zero.
- */
-void waterui_cef_surface_set_viewport(const struct WuiCefSurfaceState *state,
-                                      uint32_t width,
-                                      uint32_t height,
-                                      double scale);
-
-/**
  * Navigates the CEF surface backward.
  *
  * # Safety
@@ -10267,111 +10489,6 @@ void waterui_cef_surface_go_back(const struct WuiCefSurfaceState *state);
  * `state` must be a live state returned by a CEF force-as function.
  */
 void waterui_cef_surface_go_forward(const struct WuiCefSurfaceState *state);
-
-/**
- * Sends pointer movement in surface-local logical coordinates.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_pointer_move(const struct WuiCefSurfaceState *state,
-                                      double x,
-                                      double y,
-                                      struct WuiCefInputModifiers modifiers);
-
-/**
- * Sends one pointer button transition.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_pointer_button(const struct WuiCefSurfaceState *state,
-                                        bool pressed,
-                                        enum WuiCefPointerButton button,
-                                        double x,
-                                        double y,
-                                        struct WuiCefInputModifiers modifiers);
-
-/**
- * Sends a CEF wheel event.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_scroll(const struct WuiCefSurfaceState *state,
-                                double x,
-                                double y,
-                                double delta_x,
-                                double delta_y,
-                                struct WuiCefInputModifiers modifiers);
-
-/**
- * Sends one native key transition.
- *
- * `character` is a Unicode scalar value, or zero when the key has no text.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- *
- * # Panics
- *
- * Panics when `character` is non-zero but not a Unicode scalar value.
- */
-void waterui_cef_surface_key(const struct WuiCefSurfaceState *state,
-                             bool pressed,
-                             uint32_t native_keycode,
-                             uint32_t keyval,
-                             uint32_t character,
-                             struct WuiCefInputModifiers modifiers);
-
-/**
- * Commits text to the focused Chromium editor.
- *
- * # Safety
- *
- * `state` and `text` must be valid owning FFI values.
- */
-void waterui_cef_surface_commit_text(const struct WuiCefSurfaceState *state,
-                                     struct WuiStr text,
-                                     uint32_t replacement_start,
-                                     uint32_t replacement_end);
-
-/**
- * Updates active IME composition text and its UTF-16 selection.
- *
- * # Safety
- *
- * `state` and `text` must be valid owning FFI values.
- */
-void waterui_cef_surface_set_composition(const struct WuiCefSurfaceState *state,
-                                         struct WuiStr text,
-                                         uint32_t selection_start,
-                                         uint32_t selection_end,
-                                         uint32_t replacement_start,
-                                         uint32_t replacement_end);
-
-/**
- * Finishes active IME composition.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_finish_composition(const struct WuiCefSurfaceState *state,
-                                            bool keep_selection);
-
-/**
- * Cancels active IME composition.
- *
- * # Safety
- *
- * `state` must be a live state returned by a CEF force-as function.
- */
-void waterui_cef_surface_cancel_composition(const struct WuiCefSurfaceState *state);
 
 /**
  * Executes an editing command in Chromium's focused frame.
@@ -10884,6 +11001,56 @@ void waterui_applied_filter_prepare_capture(struct WuiAppliedFilterState *state,
                                             uint32_t height);
 
 /**
+ * The pixel layout this filter's capture buffers must be allocated with (Android only).
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_applied_filter_create` with an
+ * attached target.
+ *
+ * # Panics
+ *
+ * Always panics: `AHardwareBuffer` capture only exists on Android.
+ */
+WuiCaptureFormat waterui_applied_filter_capture_format(const struct WuiAppliedFilterState *_state);
+
+/**
+ * Copies a captured `AHardwareBuffer` into the capture texture (Android only).
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_applied_filter_create` with an
+ * attached target, and `buffer` a live `AHardwareBuffer`.
+ *
+ * # Panics
+ *
+ * Always panics: `AHardwareBuffer` capture only exists on Android.
+ */
+struct WuiGpuCaptureFence *waterui_applied_filter_set_capture_hardware_buffer(struct WuiAppliedFilterState *_state,
+                                                                              void *_buffer);
+
+/**
+ * Draws a `GpuSurface` nested in the captured subtree into the capture (Android only).
+ *
+ * # Safety
+ *
+ * `filter` and `surface` must be valid state pointers from their matching
+ * constructors.
+ *
+ * # Panics
+ *
+ * Always panics: nested-surface compositing only exists on Android, because
+ * only there does the capture arrive with the surface missing from it.
+ */
+void waterui_applied_filter_composite_gpu_surface(struct WuiAppliedFilterState *_filter,
+                                                  struct WuiGpuSurfaceState *_surface,
+                                                  int32_t _x,
+                                                  int32_t _y,
+                                                  uint32_t _width,
+                                                  uint32_t _height,
+                                                  double _scale);
+
+/**
  * Get a pointer to the Metal texture backing the capture texture (Apple only).
  *
  * This exposes the underlying `MTLTexture` so native code can render directly
@@ -10964,6 +11131,34 @@ struct WuiGpuSurface waterui_force_as_gpu_surface(struct WuiAnyView *view);
  * Returns the stable `TypeId` identifying this view type across the FFI.
  */
 struct WuiTypeId waterui_gpu_surface_id(void);
+
+/**
+ * What this surface's content says about itself, for a screen reader.
+ *
+ * A surface is an opaque rectangle to the platform's accessibility layer:
+ * whatever the formula, chart or diagram inside it means, nothing outside the
+ * content can read it back off the pixels. A host names the surface's element
+ * with this when the application named it nothing, so an explicit label from
+ * the application always wins.
+ *
+ * Ask again after each frame. A view whose content follows a signal re-draws
+ * and re-describes itself at the same moment, and the answer is empty until
+ * asynchronous renderer setup finishes, which is before the first frame.
+ *
+ * # Returns
+ *
+ * An owning [`WuiStr`], empty when this surface has nothing to say — which a
+ * host treats the same way it treats a view that never had a label. There is
+ * deliberately no third state: "no label" and "the empty label" are the same
+ * instruction to a screen reader, so the ABI does not carry a distinction
+ * nothing acts on.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_surface_create`], on the thread that created it.
+ */
+struct WuiStr waterui_gpu_surface_accessibility_label(const struct WuiGpuSurfaceState *state);
 
 /**
  * Returns the renderer-driven HDR preference for a `WuiGpuSurface`.
@@ -11159,8 +11354,11 @@ struct WuiGpuCaptureFence *waterui_gpu_surface_render_to_metal_texture(struct Wu
  *
  * # Safety
  *
- * `fence` must be a valid owning pointer returned by
- * [`waterui_gpu_surface_render_to_metal_texture`] and must be consumed once.
+ * `fence` must be a valid owning pointer returned by an external capture entry
+ * point — `waterui_gpu_surface_render_to_metal_texture` on Apple,
+ * `waterui_applied_filter_set_capture_hardware_buffer` or
+ * `waterui_view_effect_set_input_hardware_buffer` on Android — and must be
+ * consumed once.
  * `context`, `callback`, and `drop` must remain valid until completion; Rust
  * consumes the context and releases it through `drop`.
  */
@@ -11197,6 +11395,158 @@ void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
  */
 void waterui_gpu_surface_set_input(struct WuiGpuSurfaceState *state,
                                    struct WuiGpuSurfaceInput input);
+
+/**
+ * Whether this GPU view handles its own keyboard, IME, pointer and scroll input.
+ *
+ * Hosts ask once per registration and install a key/IME responder only for the
+ * surfaces that answer `true`; a view that merely draws keeps every event with
+ * the surrounding `WaterUI` widgets.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create).
+ */
+bool waterui_gpu_surface_wants_input_events(const struct WuiGpuSurfaceState *state);
+
+/**
+ * Delivers one input event to the GPU view.
+ *
+ * The event is translated to [`SurfaceInputEvent`] and handed to
+ * [`GpuView::input`](waterui_graphics::GpuView::input) before this returns.
+ * All three of the event's strings are consumed, whatever its kind.
+ *
+ * # Returns
+ *
+ * Whether the event reached the view. `false` means this surface does not take
+ * input, or its asynchronous renderer setup has not finished yet — in both
+ * cases the host should fall through to its own handling of the event.
+ *
+ * # Panics
+ *
+ * Panics when the event's `key`/`code` are not W3C UI Events names, when
+ * `modifiers` carries a bit outside `WUI_SURFACE_MODIFIER_*`, or when `caret`
+ * is neither `-1` nor a UTF-8 boundary of `text` — see
+ * [`WuiSurfaceInputEvent`]'s conversion.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create),
+ * and every [`WuiStr`] in `event` must be an owning handle from the matching
+ * FFI constructor.
+ */
+bool waterui_gpu_surface_send_input_event(struct WuiGpuSurfaceState *state,
+                                          struct WuiSurfaceInputEvent event);
+
+/**
+ * The GPU view's text caret, in logical surface-local coordinates.
+ *
+ * Native text-input clients place the input-method candidate window with it:
+ * `NSTextInputClient.firstRect(forCharacterRange:)` on macOS,
+ * `InputConnection`/`updateCursorAnchorInfo` on Android.
+ *
+ * # Returns
+ *
+ * Whether a caret was written to `out`. `false` leaves `out` untouched and
+ * means the view has no caret to place the panel against.
+ *
+ * # Panics
+ *
+ * Panics when `out` is null, or when the view reports a caret whose
+ * coordinates the `f32` layout ABI cannot represent.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create),
+ * and `out` must point to writable storage for one [`WuiRect`].
+ */
+bool waterui_gpu_surface_ime_caret(const struct WuiGpuSurfaceState *state, struct WuiRect *out);
+
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
+struct WuiPicture waterui_force_as_picture(struct WuiAnyView *view);
+
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
+struct WuiTypeId waterui_picture_id(void);
+
+/**
+ * Releases a bitmap handed out by a bitmap computed.
+ *
+ * # Safety
+ *
+ * `bitmap` must come from this library and must not be used afterwards.
+ */
+void waterui_drop_bitmap(struct WuiBitmap bitmap);
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+struct WuiBitmap waterui_read_computed_bitmap(const WuiComputed_RgbaBitmap *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_bitmap(const WuiComputed_RgbaBitmap *computed,
+                                                      struct WuiWatcher_RgbaBitmap *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_bitmap(WuiComputed_RgbaBitmap *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_RgbaBitmap *waterui_new_watcher_bitmap(void *data,
+                                                         void (*call)(void*,
+                                                                      struct WuiBitmap,
+                                                                      struct WuiWatcherMetadata*),
+                                                         void (*drop)(void*));
+
+/**
+ * The picture rasterised at `scale` pixels per point, as a signal.
+ *
+ * It re-rasterises whenever the drawing changes. Drop it with
+ * `waterui_drop_computed_bitmap`, and ask again when the display scale
+ * changes.
+ *
+ * # Safety
+ *
+ * `picture` must be a live handle from `waterui_force_as_picture`.
+ */
+WuiComputed_RgbaBitmap *waterui_picture_bitmap(const struct WuiPictureHandle *picture, float scale);
+
+/**
+ * Releases a picture handle.
+ *
+ * # Safety
+ *
+ * `picture` must come from `waterui_force_as_picture` and must not be used
+ * afterwards.
+ */
+void waterui_drop_picture(struct WuiPictureHandle *picture);
 
 /**
  * # Safety
@@ -11296,6 +11646,42 @@ void waterui_view_effect_set_input_metal_texture(struct WuiViewEffectState *stat
                                                  void *texture,
                                                  uint32_t width,
                                                  uint32_t height);
+
+/**
+ * Copies a captured `AHardwareBuffer` into the effect's input (Android only).
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_view_effect_create` with an
+ * attached target, and `buffer` a live `AHardwareBuffer`.
+ *
+ * # Panics
+ *
+ * Always panics: `AHardwareBuffer` capture only exists on Android.
+ */
+struct WuiGpuCaptureFence *waterui_view_effect_set_input_hardware_buffer(struct WuiViewEffectState *_state,
+                                                                         void *_buffer);
+
+/**
+ * Draws a `GpuSurface` nested in the captured subtree into the input (Android only).
+ *
+ * # Safety
+ *
+ * `effect` and `surface` must be valid state pointers from their matching
+ * constructors.
+ *
+ * # Panics
+ *
+ * Always panics: nested-surface compositing only exists on Android, because
+ * only there does the capture arrive with the surface missing from it.
+ */
+void waterui_view_effect_composite_gpu_surface(struct WuiViewEffectState *_effect,
+                                               struct WuiGpuSurfaceState *_surface,
+                                               int32_t _x,
+                                               int32_t _y,
+                                               uint32_t _width,
+                                               uint32_t _height,
+                                               double _scale);
 
 /**
  * Returns whether asynchronous effect setup has completed.

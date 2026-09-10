@@ -1,0 +1,237 @@
+//! Mermaid diagrams, drawn by `WaterUI`.
+//!
+//! ```rust
+//! use waterui::prelude::*;
+//! use waterui_mermaid::mermaid;
+//!
+//! # fn diagram() -> impl View {
+//! mermaid(
+//!     "flowchart TD\n  A[Start] --> B{Ready?}\n  B -->|yes| C[Go]\n  B -->|no| A",
+//! )
+//! # }
+//! ```
+//!
+//! # How a diagram gets on screen
+//!
+//! Mermaid source is parsed and laid out by [`merman`](https://github.com/Latias94/merman),
+//! which tracks upstream Mermaid's own grammar and geometry. Everything after
+//! that is this crate's:
+//!
+//! - **Layout is measured with `WaterUI`'s text engine.** `merman` sizes every
+//!   node and every label through a host-supplied measurer, and this crate
+//!   supplies one backed by the same `parley` engine and the very same
+//!   [`FontCollection`](waterui_text::FontCollection) the host installed for
+//!   every other component. Without it, boxes would be sized from a browser
+//!   compatibility profile and the glyphs inside them drawn from ours, and the
+//!   text would not fit.
+//! - **Geometry is drawn through `Scene2D`.** Node outlines, subgraph frames and
+//!   routed connectors are vector paths on the shared scene contract, so one
+//!   drawing path serves every backend.
+//! - **Text is not drawn into the scene.** Labels are real `text()` views placed
+//!   into the boxes layout reserved for them, which is what gives a diagram a
+//!   meaningful accessibility tree and the platform's own text rendering.
+//! - **Colours come from theme tokens.** A diagram follows a light/dark switch
+//!   and a custom accent because it reads the same tokens every other component
+//!   reads, never Mermaid's CSS themes.
+//!
+//! A diagram is drawn at its natural size. Scaling it to fit would break the
+//! agreement between a reserved box and the glyphs in it, so a diagram larger
+//! than its container is the container's to scroll.
+
+#![doc(html_logo_url = "https://raw.githubusercontent.com/water-rs/waterui/main/assets/logo.svg")]
+
+extern crate alloc;
+
+use alloc::format;
+use alloc::vec::Vec;
+
+use nami::SignalExt as _;
+use waterui_canvas::Canvas;
+use waterui_core::layout::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView};
+use waterui_core::view::{Hook, ViewConfiguration as _};
+use waterui_core::{AnyView, Environment, View, resolve::Resolvable as _};
+use waterui_layout::container::FixedContainer;
+use waterui_str::Str;
+use waterui_text::FontCollection;
+use waterui_text::code::CodeConfig;
+use waterui_text::text;
+
+mod draw;
+mod engine;
+mod label;
+mod layout;
+mod measure;
+mod shape;
+mod theme;
+
+pub use engine::MermaidError;
+pub use layout::{
+    Cluster, DiagramLayout, Edge, EdgeMarker, EdgeStroke, Emphasis, Fragment, Label, Lifeline,
+    Node, NodeShape, UnsupportedShape,
+};
+pub use theme::{DiagramPalette, Palette};
+
+/// A Mermaid diagram.
+///
+/// See the [crate documentation](crate) for what the rendering pipeline does
+/// and does not do.
+///
+/// # Panics
+///
+/// Drawing a diagram panics when the host installed no
+/// [`FontCollection`](waterui_text::FontCollection) in the root environment.
+/// A diagram cannot be laid out without the faces its labels will be painted
+/// with, and building a second collection here is exactly the duplication the
+/// shared one exists to remove.
+#[derive(Debug, Clone)]
+pub struct Mermaid {
+    source: Str,
+}
+
+impl Mermaid {
+    /// Creates a diagram from Mermaid source.
+    ///
+    /// The source carries its own diagram type in its first line, so a
+    /// `flowchart` and a `sequenceDiagram` are both just source here.
+    #[must_use]
+    pub fn new(source: impl Into<Str>) -> Self {
+        Self {
+            source: source.into(),
+        }
+    }
+}
+
+/// Convenience constructor for [`Mermaid`]. Equivalent to [`Mermaid::new`].
+#[must_use]
+pub fn mermaid(source: impl Into<Str>) -> Mermaid {
+    Mermaid::new(source)
+}
+
+/// Installs the realization that turns a `mermaid` fence into a diagram.
+///
+/// Call it from the application's `app(env)`, as with any component that lives
+/// in its own crate — the `waterui` crate does not depend on this one, so
+/// nothing installs this on an application's behalf. A `Hook<CodeConfig>`
+/// already present — a platform bridge, another realization — wins, and this
+/// is a no-op.
+///
+/// A fence tagged anything else keeps the ordinary [`Code`](waterui_text::code::Code)
+/// rendering: `Hook::from` hands the closure an environment with this hook
+/// already removed, so [`ViewConfiguration::render`](waterui_core::view::ViewConfiguration::render)
+/// cannot recurse back into it.
+pub fn install(env: &mut Environment) {
+    if env.get::<Hook<CodeConfig>>().is_some() {
+        return;
+    }
+    env.insert_hook::<CodeConfig, AnyView>(|_env, config| match config.info.as_deref() {
+        // `mmd` is Mermaid's own file extension, and the tag editors emit for a
+        // Mermaid block alongside the spelled-out one.
+        Some("mermaid" | "mmd") => AnyView::new(Mermaid::new(config.content)),
+        _ => AnyView::new(config.render()),
+    });
+}
+
+impl View for Mermaid {
+    fn body(self, env: &Environment) -> impl View {
+        match engine::render(&self.source, FontCollection::from_env(env)) {
+            Ok(diagram) => AnyView::new(drawn(&diagram, env)),
+            Err(error) => AnyView::new(undrawable(&error)),
+        }
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+}
+
+/// The scene and the labels of a diagram that laid out successfully.
+fn drawn(diagram: &DiagramLayout, env: &Environment) -> impl View + use<> {
+    let palette = DiagramPalette.resolve(env).computed();
+    let scene = {
+        let diagram = diagram.clone();
+        Canvas::with_signal(palette, move |ctx, palette| {
+            draw::diagram(ctx, &diagram, &palette, Point::zero());
+        })
+    };
+
+    let mut cells: Vec<AnyView> = Vec::with_capacity(diagram.nodes.len() + 1);
+    cells.push(AnyView::new(scene));
+    cells.extend(diagram.labels().map(|label| {
+        AnyView::new(FixedContainer::new(
+            label::Placement::new(label.frame),
+            (label::LabelView::new(label.clone(), diagram.font_size),),
+        ))
+    }));
+
+    FixedContainer::new(Placement::new(diagram), cells)
+}
+
+/// What is shown when a diagram cannot be drawn.
+///
+/// Mermaid itself renders a broken diagram as a visible error, and so does this:
+/// a fence that silently disappears is a worse outcome than one that says what
+/// is wrong with it.
+fn undrawable(error: &MermaidError) -> impl View + use<> {
+    text(Str::from(format!("Mermaid: {error}")))
+}
+
+/// Places a diagram's scene and its labels.
+///
+/// The scene fills the diagram's natural size, and each label sits in the box
+/// the diagram reserved for it. Both are positioned in the same coordinates the
+/// geometry was laid out in, so nothing has to be scaled or corrected.
+#[derive(Debug)]
+struct Placement {
+    size: Size,
+    labels: Vec<Rect>,
+}
+
+impl Placement {
+    fn new(diagram: &DiagramLayout) -> Self {
+        Self {
+            size: diagram.size,
+            labels: diagram.labels().map(|label| label.frame).collect(),
+        }
+    }
+}
+
+impl Layout for Placement {
+    fn size_that_fits(&self, _proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+        self.size
+    }
+
+    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+        let origin = bounds.origin();
+        let mut frames = Vec::with_capacity(children.len());
+        // The scene, covering the whole diagram.
+        frames.push(Rect::new(origin, self.size));
+        frames.extend(self.labels.iter().map(|frame| {
+            Rect::new(
+                Point::new(frame.x() + origin.x, frame.y() + origin.y),
+                *frame.size(),
+            )
+        }));
+        frames
+    }
+
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
+        StretchAxis::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_core::{Environment, View as _};
+
+    use crate::Mermaid;
+
+    /// A missing collection is the host's bug, and it is reported as one. The
+    /// alternative — building a `FontContext` here — is the per-component font
+    /// enumeration the shared collection exists to remove, and it would measure
+    /// a diagram against faces the rest of the window never sees.
+    #[test]
+    #[should_panic(expected = "no font collection is installed in the environment")]
+    fn a_diagram_without_a_collection_names_the_host() {
+        let _ = Mermaid::new("flowchart TD\n    A[Start] --> B[Stop]").body(&Environment::new());
+    }
+}

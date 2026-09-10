@@ -2,6 +2,15 @@ name: Test
 
 on:
   workflow_call:
+    inputs:
+      # `false` is the fast gate: format and default-features workspace clippy.
+      # `true` is the nightly matrix: every test, example, doctest, platform,
+      # optional-feature lint pass and the skill compile gate. Dev pushes
+      # enter through dev.yml; pull requests keep the additional ABI and
+      # dependency checks in ci.yml. Both callers use the same fast lint.
+      full:
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -9,9 +18,209 @@ env:
   CARGO_INCREMENTAL: 0
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
 
+# Parallel jobs instead of one serial leg per platform (#329), with the
+# examples compiled once in their own job (#330). The cargo passes
+# below used to run one after another inside a single job per OS, which put
+# every clippy shape in front of the ubuntu tests and every macOS-only suite
+# behind the macOS workspace run; the macOS leg was the critical path of every
+# CI run.
+#
+# Two tiers (#379). Every all-features pass is a second `-C metadata` profile
+# of the whole workspace that no cache can hold next to the default one, so
+# it is a 35-40 minute cold build on every platform, every run, and it made
+# every pull request a 60-70 minute wait whatever it changed. Those passes,
+# the macOS platform and the macOS suites now run only when `full` is set,
+# which `nightly.yml` does once a day against `dev`; a pull request and a
+# push to `dev` run default-features clippy and format on Linux (#458).
+# The complete default-feature tests and examples also belong to nightly;
+# no test coverage is removed to shorten the per-change feedback loop.
 jobs:
+  # Lint before testing: it is the cheapest failure to produce, and the one a
+  # contributor is most likely to hit, so it should not wait behind the whole
+  # test run — nor should the test run wait behind it. Linux only; the macOS
+  # CEF lint lives in `macos-suites`, because that target refuses to compile
+  # anywhere else.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.full && 90 || 10 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
+      # The fast gate owns the target-cache budget, including workspace check
+      # artifacts. Only integration-branch fast runs write it; pull requests
+      # and the full nightly lint restore without adding cache generations.
+      # The check-only Cargo profile avoids optimizing build dependencies for
+      # runtime speed when this job only needs their compiler output.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint-${{ runner.os }}
+          cache-targets: true
+          cache-workspace-crates: true
+          save-if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+      - name: Format
+        run: cargo fmt --all -- --check
+      # Workspace-wide under default features first: it is the cheapest of the
+      # lint passes and the one every crate's normal build shape goes through.
+      - name: Clippy (workspace)
+        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' ${{ inputs.full && '--all-targets' || '--lib --bins' }} -- -D warnings
+      # Then every crate's own optional features. This pass used to be
+      # `cargo clippy --all-targets --all-features`, with neither `-p` nor
+      # `--workspace`: the root manifest carries both `[workspace]` and
+      # `[package]`, so cargo narrowed it to the root `waterui` crate, and a
+      # backend's own non-default features were linted only where the root
+      # happened to enable them. Nothing in CI compiled dew's
+      # `embedded-simulator` / `espidf`, hydrolysis' `web` / `testing`, gtk's
+      # `webkitgtk`, or the browsers' engine features at all (#261).
+      #
+      # `--workspace --all-features` covers all of those. Four crates cannot
+      # join it, because `--all-features` asks for feature sets that are
+      # mutually exclusive by construction; each is excluded here and linted
+      # below in the shapes it actually has. Every one of the four is still
+      # linted under its default features by the workspace pass above, and the
+      # steps share this job's target dir, so each is an increment on a graph
+      # that is already built.
+      #
+      # A separate `-p waterui-browser-wpe --features real-engine` step used to
+      # follow; `--workspace --all-features` selects that crate with every
+      # feature on, so it is now a strict subset and has been removed.
+      - name: Clippy (all features, workspace)
+        if: inputs.full
+        run: |
+          cargo clippy --locked --workspace --all-targets --all-features \
+            --exclude '*-example' \
+            --exclude waterui-core \
+            --exclude waterui-ffi \
+            --exclude hydrolysis \
+            --exclude waterui-browser-cef \
+            -- -D warnings
+      # `waterui-core`'s `nightly` feature turns on `feature(never_type)`, which
+      # is a hard E0554 on the stable channel this job pins. Everything else the
+      # crate has, it gets here.
+      - name: Clippy (waterui-core, every stable feature)
+        if: inputs.full
+        run: cargo clippy --locked -p waterui-core --all-targets --features std,serde -- -D warnings
+      # `waterui-ffi` selects its ABI with mutually exclusive features and
+      # `ffi/src/lib.rs` turns `c-api` + `android-jni` into a `compile_error!`.
+      # This is the `c-api` half with every optional C surface a runtime build
+      # can carry; the `android-jni` half is the `Android FFI` job in ci.yml,
+      # and the compile-only `cef-header` shape is the `macos-suites` job below.
+      - name: Clippy (waterui-ffi, C ABI surfaces)
+        if: inputs.full
+        run: cargo clippy --locked -p waterui-ffi --all-targets --features map,chromium,webview-cef -- -D warnings
+      # `webview-system` bridges the macOS WKWebView into the winit window and
+      # `compile_error!`s anywhere else, so this is every hydrolysis feature but
+      # that one. `macos-suites` compiles `webview-system` in its
+      # `real_engine_macos` step.
+      - name: Clippy (hydrolysis, every portable feature)
+        if: inputs.full
+        run: |
+          cargo clippy --locked -p hydrolysis --all-targets \
+            --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      # `compile-only` swaps in CEF's `dox` stubs and stops the build script
+      # downloading the distribution that `cef-runtime` — and the `real_engine`
+      # test target — need, so the two can never be enabled together. This is
+      # the runtime shape, which nothing else lints: the macOS `real-engine`
+      # pass has no `chromium`, and its `cef-header` pass is `compile-only`.
+      # `real-engine` stays off here because that test target is macOS-only;
+      # `--all-targets` skips it for want of its required feature.
+      - name: Clippy (waterui-browser-cef, CEF runtime)
+        if: inputs.full
+        run: cargo clippy --locked -p waterui-browser-cef --all-targets --features chromium,webview -- -D warnings
+      # Dew's firmware shape, which is a first-class configuration rather than
+      # a degraded one. Neither pass above compiles dew's test targets without
+      # default features, and the `Features` job's `--each-feature` sweep runs
+      # `--no-dev-deps`, so the shape a device actually ships was the one
+      # configuration nothing checked — and its test targets had stopped
+      # compiling entirely (#259). `--all-targets` is the whole point: the
+      # library alone has always been clean here.
+      - name: Clippy (dew firmware shape)
+        if: inputs.full
+        run: cargo clippy --locked -p waterui-dew --all-targets --no-default-features -- -D warnings
+      # The waterui skill's snippet compile gate: every rust fence in
+      # .claude/skills/waterui is transcribed into .claude/skills/waterui/skill_snippets
+      # and must keep compiling. The non-default feature exposes the test/bench
+      # transcriptions to the compiler without registering runnable tests —
+      # they address elements that do not exist by design and must never run.
+      - name: Skill snippet compile gate
+        if: inputs.full
+        run: cargo check --locked -p skill_snippets --all-targets --features compile-gate-tests
+
+  # The web runner, compiled for the target it actually runs on.
+  #
+  # Every other leg builds `hydrolysis --features web` for the host, where the
+  # runner and everything else under `cfg(target_arch = "wasm32")` is compiled
+  # out — so the browser build rotted through three unrelated breakages before
+  # anyone pointed a compiler at it (#408). This is the cheapest statement that
+  # it still builds: a clippy pass over the web runner plus the two crates whose
+  # wasm-only paths it reaches (`waterui-media` reads local photos through the
+  # kit file system there, and the kit dialog has a whole browser backend).
+  #
+  # It lints rather than merely compiles, so `cfg(target_arch = "wasm32")` code
+  # is held to the same bar as every other target (#413).
+  #
+  # This target-specific pass runs nightly alongside the other platform
+  # shapes (#458). The fast gate retains default-feature host clippy; the
+  # nightly still checks the actual wasm-only code and kit dialog backend.
+  wasm:
+    name: wasm32
+    if: inputs.full
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Cargo caps lints for registry dependencies, so this holds the workspace
+      # crates — and only them — to the same "no new warnings" bar as the host
+      # lint pass. It reaches further than the trailing `-- -D warnings` below,
+      # which only covers the packages named with `-p`.
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      # Build scripts and proc macros still compile for the host even when
+      # every library target is wasm, and this graph reaches the ones that need
+      # native headers.
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - name: Lint the web runner for wasm32
+        run: |
+          cargo clippy --locked --target wasm32-unknown-unknown \
+            -p hydrolysis --features hydrolysis/web \
+            -p waterui-media \
+            -p waterkit-dialog \
+            -- -D warnings
+      # `kit` is its own Cargo workspace, excluded from the root one, so the
+      # step above builds `waterkit-dialog` as a plain path dependency: cargo
+      # only points clippy-driver at members of the workspace it was invoked
+      # from, and the dialog's browser backend would go unlinted there however
+      # the flags are spelled. Lint it from the workspace that owns it.
+      - name: Lint the kit dialog browser backend for wasm32
+        working-directory: kit
+        run: cargo clippy --locked -p waterkit-dialog --target wasm32-unknown-unknown -- -D warnings
+
+  # The workspace test run, per platform. On Linux it also carries the
+  # doctests, which share its build; on macOS those go to `macos-suites`, so
+  # that this job is the workspace run alone — the single longest step in CI —
+  # and everything else overlaps it. The all-features pass is `all-features`
+  # below on Linux and part of `macos-suites` on macOS.
   test:
     name: ${{ matrix.os }}
+    if: inputs.full
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
@@ -19,22 +228,16 @@ jobs:
       # results, so a cross-platform break costs one round trip per platform.
       fail-fast: false
       matrix:
-        # Windows is kept in its own gating workflow because it needs platform-
-        # specific exclusions and compile-only CEF coverage. Both workflows run
-        # for the same integration-branch pushes and pull requests.
-        os: [ubuntu-latest, macos-latest]
+        # Windows is kept in its own workflow because it needs platform-
+        # specific exclusions and compile-only CEF coverage; `nightly.yml`
+        # calls it beside this one. macOS is a nightly platform too: the
+        # default-features gate a pull request runs is Linux only.
+        os: ${{ fromJSON(inputs.full && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      # rustfmt and clippy run in the Linux leg below; clippy is additionally
-      # needed by the macOS-only CEF real-engine target at the end of this job,
-      # which cannot be linted on Linux the way its WPE sibling is, because CEF
-      # requires a macOS application bundle and the target refuses to compile
-      # anywhere else.
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
       # GPU snapshot tests run in this job, so this leg needs the Vulkan ICD
       # loader (mesa-vulkan-drivers/libvulkan1) on top of the base package
       # list — that's what lets llvmpipe/lavapipe stand in for a real GPU on
@@ -44,71 +247,185 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
+      # The nightly test profiles restore only Cargo sources. Their multi-GB
+      # target archives previously occupied the cache budget while every dev
+      # push cold-compiled clippy. The frequent lint gate now owns that budget;
+      # these daily runs keep every test without evicting its check artifacts.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-${{ matrix.os }}
-          # Only the integration branches write cache generations. A pull
-          # request reads them and saves nothing: every distinct fingerprint
-          # would otherwise mint a generation that is never reclaimed, and the
-          # stale ones evict the Test tarballs that decide whether a leg is
-          # warm (16 min) or cold (66 min).
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      # One full-workspace pass under default features. Every crate's own
+      # optional features are the `all-features` job below (Linux) and the
+      # `macos-suites` all-features pass (macOS).
+      - run: cargo nextest run --locked --workspace --exclude '*-example' --profile ci
+      # nextest cannot run doctests, and this workspace has plenty of them.
+      - if: runner.os == 'Linux'
+        run: cargo test --locked --doc --workspace --exclude '*-example'
+      - name: Upload Test Snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots-${{ matrix.os }}
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Every crate's own optional features, run. This pass used to be
+  # `cargo nextest run --locked --all-features` inside the `test` job, with neither
+  # `-p` nor `--workspace`: the root manifest carries both `[workspace]` and
+  # `[package]`, so cargo narrowed it to the root `waterui` crate, and a
+  # backend crate's tests behind its own optional features — dew's
+  # `embedded-simulator`, hydrolysis' `inspector-signals` / `web`, the
+  # browsers' engine features — ran nowhere (#276, the test-side twin of
+  # #261). It is its own job for the same reason the clippy sweep is a
+  # separate step: a second feature variant of the dependency graph is a
+  # second codegen of most of the workspace, and it overlaps the workspace
+  # pass here instead of queueing behind it.
+  #
+  # Same four exclusions as the clippy sweep in `lint`, for the same reason:
+  # `--all-features` asks those crates for feature sets that are mutually
+  # exclusive by construction. Each is run below in the shapes it actually
+  # has, sharing this job's target dir.
+  #
+  # `waterui-browser-wpe` is a fifth exclusion here that the clippy sweep does
+  # not need: its `real-engine` feature adds a test target that drives a
+  # staged WPE WebKit runtime (`WATERUI_WPE_RUNTIME`), which only
+  # `browser-wpe.yml` builds, so under `--all-features` that target runs here
+  # and fails at once for want of the runtime. Its `webview` shape is the
+  # default one, covered by the workspace pass in `test`.
+  #
+  # `skill_snippets` is a sixth, on every platform: its `compile-gate-tests`
+  # feature registers the skill's `#[waterui::test]` transcriptions as test
+  # targets that address elements which do not exist by design and must never
+  # run, and its `dev` feature turns on `waterui/dynamic_linking`. The lint
+  # job compiles that crate in the shape it is meant to be compiled in.
+  all-features:
+    name: ubuntu-latest (all features)
+    if: inputs.full
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      # GPU snapshot tests run under these features too, so this leg needs
+      # the Vulkan ICD loader the way `test` does.
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+      # Restore-only reader of the shared Linux `~/.cargo` tarball (see the
+      # cache budget note in ci.yml).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      - name: Test (all features, workspace)
+        run: |
+          cargo nextest run --locked --workspace --all-features --profile ci \
+            --exclude '*-example' \
+            --exclude waterui-core \
+            --exclude waterui-ffi \
+            --exclude hydrolysis \
+            --exclude waterui-browser-cef \
+            --exclude waterui-browser-wpe \
+            --exclude skill_snippets
+      # `nightly` is `feature(never_type)`, a hard E0554 on stable.
+      - name: Test (waterui-core, every stable feature)
+        run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
+      # The `c-api` half with every optional C surface a runtime build can
+      # carry; `android-jni` is the `Android FFI` job in ci.yml.
+      - name: Test (waterui-ffi, C ABI surfaces)
+        run: cargo nextest run --locked -p waterui-ffi --features map,chromium,webview-cef --profile ci
+      # Every hydrolysis feature but `webview-system`, which only builds on
+      # macOS (`macos-suites` runs its `real_engine_macos` target).
+      - name: Test (hydrolysis, every portable feature)
+        run: |
+          cargo nextest run --locked -p hydrolysis --profile ci \
+            --features accessibility,inspector-signals,testing,web,winit
+      # The CEF runtime shape; `compile-only` and `real-engine` exclude it.
+      - name: Test (waterui-browser-cef, CEF runtime)
+        run: cargo nextest run --locked -p waterui-browser-cef --features chromium,webview --profile ci
+      # Dew's firmware shape, a first-class configuration whose test targets
+      # had stopped compiling entirely before the clippy pass covered them
+      # (#259); this is the run that goes with that lint.
+      - name: Test (dew firmware shape)
+        run: cargo nextest run --locked -p waterui-dew --no-default-features --profile ci
+      - name: Upload Test Snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots-ubuntu-latest-all-features
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Everything macOS runs besides the workspace test pass: the all-features
+  # pass, the doctests, and the suites that exist only on this platform.
+  # Together they are a fraction of the workspace run, so they overlap it
+  # here instead of queueing behind it.
+  macos-suites:
+    name: macos-suites
+    if: inputs.full
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # clippy is needed by the macOS-only CEF real-engine target at the end
+      # of this job, which cannot be linted on Linux the way its WPE sibling
+      # is, because CEF requires a macOS application bundle and the target
+      # refuses to compile anywhere else.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # Writes the macOS `~/.cargo` tarball for the macOS jobs that store no
+      # target directory (see the cache budget note in ci.yml).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      # Lint before testing: it is the cheapest failure to produce, and the one
-      # a contributor is most likely to hit, so it should not wait behind the
-      # whole test run. Linux only — the macOS leg has its own CEF lint below.
-      - name: Format
-        if: runner.os == 'Linux'
-        run: cargo fmt --all -- --check
-      # Two passes, split for the same structural reason as the two test
-      # passes below: workspace-wide under default features, then the root
-      # crate alone with every feature on.
-      - name: Clippy (workspace)
-        if: runner.os == 'Linux'
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Clippy (all features)
-        if: runner.os == 'Linux'
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      # The WPE real-engine tests sit behind a feature, because running them
-      # needs a staged WPE WebKit runtime that only `browser-wpe.yml` provisions
-      # — and that workflow only fires on the paths those tests cover. Neither
-      # pass above compiles them, so lint them here: compiling them costs
-      # nothing extra and keeps them from rotting between real-engine runs.
-      - name: Clippy (WPE real engine)
-        if: runner.os == 'Linux'
-        run: cargo clippy -p waterui-browser-wpe --features real-engine --all-targets -- -D warnings
-      # The waterui skill's snippet compile gate: every rust fence in
-      # .claude/skills/waterui is transcribed into .claude/skills/waterui/skill_snippets
-      # and must keep compiling. The non-default feature exposes the test/bench
-      # transcriptions to the compiler without registering runnable tests —
-      # they address elements that do not exist by design and must never run.
-      - name: Skill snippet compile gate
-        if: runner.os == 'Linux'
-        run: cargo check -p skill_snippets --all-targets --features compile-gate-tests
       - uses: taiki-e/install-action@nextest
-      # One full-workspace pass under default features. A workspace-wide
-      # `--all-features` pass is structurally impossible here — `waterui-ffi`
-      # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
-      # enabling `c-api` and `android-jni` together can never build. The old
-      # second pass that *looked* workspace-wide (`cargo nextest run
-      # --all-features`) never was:
-      # the root manifest has both `[workspace]` and `[package]`, so without
-      # `--workspace` cargo narrowed it to the root `waterui` crate — the only
-      # crate whose features are all mutually compatible.
-      - run: cargo nextest run --workspace --profile ci
-      # The root crate's feature-gated re-export surface, with every feature
-      # on. Root-crate-only scope is intentional (see above); most of the
-      # build is shared with the workspace pass, so this increment is cheap.
-      - run: cargo nextest run --all-features --profile ci
+      # Every crate's own optional features, with the same exclusions as the
+      # Linux `all-features` job (see there; `waterui-browser-wpe` is
+      # Linux-only, so it needs no exclusion here). Of the excluded crates,
+      # the two whose feature shapes carry macOS-specific code run below; the
+      # FFI C surfaces, the CEF runtime shape and dew's firmware shape are
+      # host-independent and the Linux job covers them.
+      - name: Test (all features, workspace)
+        run: |
+          cargo nextest run --locked --workspace --all-features --profile ci \
+            --exclude '*-example' \
+            --exclude waterui-core \
+            --exclude waterui-ffi \
+            --exclude hydrolysis \
+            --exclude waterui-browser-cef \
+            --exclude skill_snippets
+      - name: Test (waterui-core, every stable feature)
+        run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
+      - name: Test (hydrolysis, every portable feature)
+        run: |
+          cargo nextest run --locked -p hydrolysis --profile ci \
+            --features accessibility,inspector-signals,testing,web,winit
       # The macOS real-engine suite drives a genuine WKWebView through the
       # shared bridge contract — the macOS sibling of the WPE real-engine
       # workflow. It is `harness = false` (WKWebView is MainThreadOnly, and
       # libtest runs tests on worker threads), so nextest cannot list it;
       # `cargo test` runs the binary on the real process main thread.
-      - if: runner.os == 'macOS'
-        run: cargo test -p hydrolysis --features webview-system,winit --test real_engine_macos
+      - run: cargo test --locked -p hydrolysis --features webview-system,winit --test real_engine_macos
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --doc --workspace
+      - run: cargo test --locked --doc --workspace --exclude '*-example'
       # The web view bridge has broken three times in ways no Rust-side test
       # could see, so these drive a real Chromium. Unlike the WPE sibling in
       # `browser-wpe.yml`, which compiles an engine from source for hours, CEF
@@ -122,30 +439,77 @@ jobs:
       # application bundle; the test stages one and the target does not compile
       # on the other platforms.
       #
-      # The same step lints the FFI crate's CEF C ABI, which nothing else
-      # compiles: the workspace pass runs default features and that module is
-      # gated behind `cef-runtime`/`cef-header`, while a workspace-wide
-      # `--all-features` pass is structurally impossible for `waterui-ffi` (see
-      # the ABI `compile_error!` note above). macOS is also the only leg that
-      # sees its `#[cfg(target_os = "macos")]` entry points at all. `cef-header`
-      # is the compile-only feature set, so this buys the lint without a CEF
-      # runtime download, on a workspace this job has already built.
+      # The same step lints the FFI crate's compile-only CEF C ABI, which no
+      # other leg reaches: the Linux all-features passes exclude `waterui-ffi`
+      # for its ABI `compile_error!` and lint the `cef-runtime` shape instead,
+      # and `cef-header` is the mutually exclusive `compile-only` one. macOS is
+      # also the only leg that sees its `#[cfg(target_os = "macos")]` entry
+      # points at all, and the compile-only feature set buys the lint without a
+      # CEF runtime download, on a workspace this job has already built.
       - name: Lint the CEF targets
-        if: runner.os == 'macOS'
         run: |
-          cargo clippy -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
-          cargo clippy -p waterui-ffi --features cef-header --all-targets -- -D warnings
+          cargo clippy --locked -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
+          cargo clippy --locked -p waterui-ffi --features cef-header --all-targets -- -D warnings
       # `cargo test` rather than nextest: CEF's browser process has to own the
       # main thread, libtest runs test bodies on spawned ones, so the target is
       # `harness = false` and nextest cannot enumerate it.
       - name: Run the CEF real-engine tests
-        if: runner.os == 'macOS'
-        run: cargo test -p waterui-browser-cef --features real-engine --test real_engine
+        run: cargo test --locked -p waterui-browser-cef --features real-engine --test real_engine
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-snapshots-${{ matrix.os }}
+          name: test-snapshots-macos-suites
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The 36 example crates, once per platform (#330). They used to be workspace
+  # members in every pass above, so each example was compiled under every
+  # clippy shape and again for the tests; here they get the passes they
+  # actually need — lint, tests, doctests — and nothing else builds them.
+  # Linux lints them; macOS never did (its leg ran no clippy on the
+  # workspace), and that stays as it was.
+  examples:
+    name: examples (${{ matrix.os }})
+    if: inputs.full
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.full && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # Examples carry GPU snapshot tests too, so the Linux leg needs the same
+      # Vulkan ICD loader the `test` job installs.
+      - name: Install native dependencies
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: ${{ runner.os == 'Linux' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      - name: Clippy (examples)
+        if: runner.os == 'Linux'
+        run: cargo clippy --locked -p '*-example' --all-targets -- -D warnings
+      - run: cargo nextest run --locked -p '*-example' --profile ci
+      - run: cargo test --locked --doc -p '*-example'
+      - name: Upload Test Snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots-examples-${{ matrix.os }}
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14

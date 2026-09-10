@@ -2,9 +2,43 @@
 
 pub mod icons;
 
-use std::{fs, path::Path};
+use std::{env, fs, path::Path};
 
 use heck::{ToShoutySnakeCase, ToSnakeCase};
+
+/// Resolves the build input source for an icon set crate.
+///
+/// The vendored file under the crate's `data/` directory is the only default.
+/// That data is checked into the repository so icon crates build offline and
+/// reproducibly; a build script must never reach for the network on a plain
+/// checkout. The `override_env` variable exists solely for re-vendoring a new
+/// upstream version, takes precedence when set, and may name either a local
+/// file path or an HTTP(S) URL.
+///
+/// # Errors
+///
+/// Returns an error naming the missing file, the upstream URL it is vendored
+/// from, and the override variable when the vendored file is absent and no
+/// override is set.
+pub fn resolve_source(
+    vendored: &Path,
+    override_env: &str,
+    upstream_url: &str,
+) -> Result<String, String> {
+    if let Ok(source) = env::var(override_env) {
+        return Ok(source);
+    }
+    if vendored.exists() {
+        return Ok(vendored.display().to_string());
+    }
+    Err(format!(
+        "vendored icon data is missing at {}. \
+         This file is tracked in the repository so the build is offline and deterministic, \
+         so a checkout without it is incomplete. \
+         Re-vendor it from {upstream_url}, or set {override_env} to a local file path or URL.",
+        vendored.display()
+    ))
+}
 
 /// Returns whether the source points at an HTTP(S) URL.
 #[must_use]

@@ -1,7 +1,9 @@
 //! Build script for waterui-icons-material-icon
 //!
-//! Downloads icon metadata and SVG paths from jsdelivr CDN and generates
-//! Rust code with icon definitions.
+//! Generates Rust code with icon definitions from the icon data vendored in
+//! this crate's `data/` directory. A plain checkout never touches the network:
+//! the pinned data is tracked in the repository so the build is offline and
+//! deterministic, and a missing vendored file is a hard error.
 //!
 //! # Data Sources
 //!
@@ -9,6 +11,9 @@
 //! - `mdi.js`: SVG path data from `@mdi/js`
 //!
 //! # Environment Variables
+//!
+//! These exist for re-vendoring a new upstream version and take precedence
+//! over the vendored files when set.
 //!
 //! - `MDI_META_URL`: Override URL or local file path for meta.json
 //! - `MDI_PATH_URL`: Override URL or local file path for mdi.js
@@ -21,7 +26,9 @@ use std::path::Path;
 use waterui_icons_codegen::icons::{
     FontFamily, GlyphConst, IconEntry, IconModule, SvgConst, write_icon_module,
 };
-use waterui_icons_codegen::{is_http_url, load_cached_text, rust_const_name, rust_fn_name};
+use waterui_icons_codegen::{
+    is_http_url, load_cached_text, resolve_source, rust_const_name, rust_fn_name,
+};
 
 /// Material Design Icons version
 const MDI_VERSION: &str = "7.4.47";
@@ -57,21 +64,13 @@ fn main() {
     println!("cargo:rerun-if-changed={}", vendored_meta.display());
     println!("cargo:rerun-if-changed={}", vendored_js.display());
 
-    // Default to vendored data for deterministic, offline builds.
-    // Overrides can point to a local file path or a URL.
-    let default_meta_source = if vendored_meta.exists() {
-        vendored_meta.display().to_string()
-    } else {
-        META_JSON_URL.to_string()
-    };
-    let default_path_source = if vendored_js.exists() {
-        vendored_js.display().to_string()
-    } else {
-        MDI_JS_URL.to_string()
-    };
-
-    let meta_source = env::var("MDI_META_URL").unwrap_or(default_meta_source);
-    let path_source = env::var("MDI_PATH_URL").unwrap_or(default_path_source);
+    // Vendored data is the only default, so the build is deterministic and
+    // needs no network. Overrides exist for re-vendoring a new version and can
+    // point to a local file path or a URL.
+    let meta_source = resolve_source(&vendored_meta, "MDI_META_URL", META_JSON_URL)
+        .unwrap_or_else(|error| panic!("waterui-icons-material-icon: {error}"));
+    let path_source = resolve_source(&vendored_js, "MDI_PATH_URL", MDI_JS_URL)
+        .unwrap_or_else(|error| panic!("waterui-icons-material-icon: {error}"));
 
     if !is_http_url(&meta_source) {
         println!("cargo:rerun-if-changed={meta_source}");

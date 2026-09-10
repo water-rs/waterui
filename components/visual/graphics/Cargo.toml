@@ -15,7 +15,21 @@ default = ["gpu"]
 # The `Scene2D` contract needs no rendering engine, so the two engine-backed
 # implementations of it are their own feature: a crate that only draws through
 # the contract, and lets a backend supply the scene, does not pull Vello.
-vello-scene = ["dep:vello", "dep:vello_hybrid", "dep:glifo"]
+#
+# `wgpu` is here because the hybrid engine keeps images in an atlas texture the
+# renderer owns: drawing one means uploading it to the device, so the engine
+# implementation names the device, the queue and the encoder that fills it.
+vello-scene = [
+    "dep:vello",
+    "dep:vello_hybrid",
+    "dep:vello_common",
+    "dep:glifo",
+    "dep:wgpu",
+]
+# Rasterises a `SceneRecording` on the CPU through `vello_cpu`: what the FFI
+# backends need to show a `Picture` in a platform image view, and what Dew
+# paints with. Independent of `gpu`.
+cpu-scene = ["dep:vello_cpu"]
 gpu = [
     "vello-scene",
     "dep:keyboard-types",
@@ -33,6 +47,8 @@ gpu = [
     "dep:mp4parse",
     "dep:shaderloom",
     "dep:naga",
+    "dep:ash",
+    "dep:wgpu-hal",
 ]
 
 [dependencies]
@@ -45,7 +61,14 @@ pastey.workspace = true
 wgpu = { workspace = true, optional = true }
 vello = { workspace = true, optional = true }
 vello_hybrid = { workspace = true, optional = true }
+vello_common = { workspace = true, optional = true }
 glifo = { workspace = true, optional = true }
+vello_cpu = { workspace = true, optional = true, features = [
+    "std",
+    "text",
+    "u8_pipeline",
+    "f32_pipeline",
+] }
 kurbo.workspace = true
 keyboard-types = { workspace = true, optional = true }
 peniko.workspace = true
@@ -62,6 +85,15 @@ rayon = { version = "1.12", optional = true }
 mp4parse = { version = "0.17", optional = true }
 shaderloom = { workspace = true, optional = true }
 num-traits = { version = "0.2", default-features = false }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Android view capture reads a captured subtree out of an `AHardwareBuffer`,
+# which needs `VK_ANDROID_external_memory_android_hardware_buffer` and
+# `VK_EXT_queue_family_foreign` enabled on the device. wgpu does not enable
+# either, so the device is opened through the HAL adapter instead of
+# `Adapter::request_device`, and that is spelled in `ash`/`wgpu-hal` terms.
+ash = { workspace = true, optional = true }
+wgpu-hal = { workspace = true, features = ["vulkan"], optional = true }
 
 [build-dependencies]
 naga = { version = "30.0.0", features = ["wgsl-in"], optional = true }

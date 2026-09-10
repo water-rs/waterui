@@ -6,9 +6,13 @@
 
 use std::error::Error;
 use std::fmt;
+use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use shaderloom::WgslModuleCache;
+
+use crate::scene2d_hybrid::HybridImageAtlas;
+pub use crate::scene2d_hybrid::HybridRenderer;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
@@ -38,7 +42,17 @@ impl Error for SharedContextError {}
 /// GPU resources shared by every clone of one [`GpuRuntime`].
 pub struct SharedGpuContext {
     /// The shared wgpu instance.
-    pub instance: wgpu::Instance,
+    ///
+    /// Never dropped: it lives as long as the process. Dropping a wgpu
+    /// `Instance` drops wgpu-hal's `libloading` handles for `libEGL` /
+    /// `libvulkan`, which `dlclose`s the driver they loaded. Mesa's software
+    /// drivers (llvmpipe, lavapipe — every GPU-less CI runner, container and
+    /// VM) and the LLVM inside them register `atexit` destructors, and once
+    /// the mapping is gone the process dies inside `exit()` after the last
+    /// context has been torn down cleanly. A driver has to outlive the process
+    /// by construction, so this is not a leak; the device is still drained and
+    /// destroyed in [`Drop`] exactly as before.
+    pub instance: ManuallyDrop<wgpu::Instance>,
     /// The selected GPU adapter.
     pub adapter: wgpu::Adapter,
     /// The shared GPU device.
@@ -125,23 +139,6 @@ pub struct SharedSceneRenderer {
     // another format needs a second one. There are never more than a couple, so
     // they are looked up by scanning rather than hashed.
     hybrid: Mutex<Vec<(wgpu::TextureFormat, HybridRenderer)>>,
-}
-
-/// The hybrid renderer and the resources it draws with.
-///
-/// They are created together and used together, so they are kept together.
-#[derive(Debug)]
-pub struct HybridRenderer {
-    /// The renderer itself.
-    pub renderer: vello_hybrid::Renderer,
-    /// Its atlas and buffer resources.
-    pub resources: vello_hybrid::Resources,
-}
-
-impl Default for SharedSceneRenderer {
-    fn default() -> Self {
-        Self::new(SceneEngine::Classic)
-    }
 }
 
 impl fmt::Debug for SharedSceneRenderer {
@@ -246,6 +243,7 @@ impl SharedSceneRenderer {
                     HybridRenderer {
                         renderer,
                         resources,
+                        images: HybridImageAtlas::default(),
                     },
                 ));
                 renderers.len() - 1
@@ -264,6 +262,14 @@ impl fmt::Debug for SharedGpuContext {
 }
 
 impl SharedGpuContext {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            clippy::arc_with_non_send_sync,
+            reason = "wgpu's WebGPU backend is a thin wrapper over JS objects held in `Rc<RefCell<_>>`, so its adapter/device/queue handles and its request futures are neither `Send` nor `Sync` on this target alone. The context is shared by reference count on every target, so the storage type stays `Arc` rather than splitting into `Rc` here and `Arc` everywhere else."
+        )
+    )]
     async fn new() -> Result<Self, SharedContextError> {
         let (instance, adapter) = request_instance_and_adapter().await?;
         let scene_engine = SceneEngine::for_adapter(&adapter);
@@ -278,15 +284,22 @@ impl SharedGpuContext {
         let adapter_features = adapter.features();
         let required_features = required_media_features(adapter_features);
         let required_limits = required_device_limits(&adapter.limits());
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("WaterUI GPU runtime device"),
+            required_features,
+            required_limits,
+            memory_hints: wgpu::MemoryHints::Performance,
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            trace: wgpu::Trace::default(),
+        };
+        // Android opens its device through the HAL so the external-memory
+        // extensions view capture imports `AHardwareBuffer`s with are enabled;
+        // that path talks to `vkCreateDevice` directly and has nothing to await.
+        #[cfg(target_os = "android")]
+        let (device, queue) = open_android_device(&adapter, &descriptor)?;
+        #[cfg(not(target_os = "android"))]
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("WaterUI GPU runtime device"),
-                required_features,
-                required_limits,
-                memory_hints: wgpu::MemoryHints::Performance,
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-                trace: wgpu::Trace::default(),
-            })
+            .request_device(&descriptor)
             .await
             .map_err(|error| SharedContextError::DeviceCreationFailed(error.to_string()))?;
 
@@ -303,7 +316,7 @@ impl SharedGpuContext {
             GpuSubmissionCompletionDriver::new(Arc::clone(&device), Arc::clone(&queue));
 
         Ok(Self {
-            instance,
+            instance: ManuallyDrop::new(instance),
             adapter,
             device,
             queue,
@@ -327,6 +340,13 @@ impl SharedGpuContext {
     }
 }
 
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "`wgpu::Instance::request_adapter` resolves through `navigator.gpu.requestAdapter()`, a JS promise the WebGPU backend keeps in an `Rc<RefCell<_>>`; the same future is `Send` on every other target"
+    )
+)]
 async fn request_adapter(
     instance: &wgpu::Instance,
 ) -> Result<wgpu::Adapter, wgpu::RequestAdapterError> {
@@ -337,6 +357,92 @@ async fn request_adapter(
             force_fallback_adapter: false,
         })
         .await
+}
+
+/// The Vulkan device extensions Android view capture is built on.
+///
+/// [`VK_ANDROID_external_memory_android_hardware_buffer`][ahb] is what turns the
+/// `AHardwareBuffer` a captured view subtree was rendered into by `HardwareRenderer`
+/// into a `VkImage` this device can read; [`VK_EXT_queue_family_foreign`][foreign] is
+/// what lets that image's ownership be acquired from — and released back to — the
+/// Android framework, which owns the buffer between frames.
+///
+/// [ahb]: https://registry.khronos.org/vulkan/specs/latest/man/html/VK_ANDROID_external_memory_android_hardware_buffer.html
+/// [foreign]: https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_queue_family_foreign.html
+#[cfg(target_os = "android")]
+const ANDROID_CAPTURE_DEVICE_EXTENSIONS: [&core::ffi::CStr; 2] = [
+    ash::android::external_memory_android_hardware_buffer::NAME,
+    ash::ext::queue_family_foreign::NAME,
+];
+
+/// Opens the Android GPU device with the view-capture extensions enabled.
+///
+/// `wgpu::Adapter::request_device` enables only the extensions wgpu itself needs,
+/// and there is no descriptor field for asking for more, so the device is built
+/// through the HAL adapter: `open_with_callback` hands the extension list to a
+/// callback before `vkCreateDevice` sees it, and the resulting `OpenDevice` is
+/// then adopted by wgpu with `create_device_from_hal`, which is what keeps the
+/// device a perfectly ordinary `wgpu::Device` for everything else.
+///
+/// Both extensions are mandatory on every Android device that reports Vulkan 1.1
+/// (Android CDD), so an adapter without them is a hard error naming the missing
+/// extension rather than a capture path that silently is not there.
+#[cfg(target_os = "android")]
+fn open_android_device(
+    adapter: &wgpu::Adapter,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
+) -> Result<(wgpu::Device, wgpu::Queue), SharedContextError> {
+    use wgpu_hal::api::Vulkan;
+
+    // SAFETY: the HAL adapter is only borrowed to open a device from it. Nothing
+    // here destroys it, and the guard is dropped before this function returns.
+    let hal_adapter = unsafe { adapter.as_hal::<Vulkan>() }.ok_or_else(|| {
+        SharedContextError::DeviceCreationFailed(
+            "WaterUI renders through Vulkan on Android, and this adapter is not a Vulkan adapter"
+                .to_owned(),
+        )
+    })?;
+
+    let capabilities = hal_adapter.physical_device_capabilities();
+    for extension in ANDROID_CAPTURE_DEVICE_EXTENSIONS {
+        if !capabilities.supports_extension(extension) {
+            return Err(SharedContextError::DeviceCreationFailed(format!(
+                "the Vulkan driver does not support {}, which WaterUI needs to read a captured \
+                 view subtree out of an AHardwareBuffer",
+                extension.to_string_lossy()
+            )));
+        }
+    }
+
+    // SAFETY: the callback only appends extensions this adapter was just proven to
+    // support, and removes nothing, which is `open_with_callback`'s contract. The
+    // device it returns is handed straight to `create_device_from_hal` below, so
+    // wgpu takes ownership of it exactly once.
+    let open_device = unsafe {
+        hal_adapter.open_with_callback(
+            descriptor.required_features,
+            &descriptor.required_limits,
+            &descriptor.memory_hints,
+            Some(Box::new(
+                |args: wgpu_hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
+                    for extension in ANDROID_CAPTURE_DEVICE_EXTENSIONS {
+                        // wgpu may already have asked for one of these for its own
+                        // reasons, and a repeated name is a `vkCreateDevice`
+                        // validation error rather than a no-op.
+                        if !args.extensions.contains(&extension) {
+                            args.extensions.push(extension);
+                        }
+                    }
+                },
+            )),
+        )
+    }
+    .map_err(|error| SharedContextError::DeviceCreationFailed(error.to_string()))?;
+
+    // SAFETY: `open_device` was opened from this very adapter, with the features and
+    // limits `descriptor` names, and has not been used for anything else.
+    unsafe { adapter.create_device_from_hal::<Vulkan>(open_device, descriptor) }
+        .map_err(|error| SharedContextError::DeviceCreationFailed(error.to_string()))
 }
 
 #[cfg(target_os = "android")]
@@ -352,6 +458,13 @@ async fn request_instance_and_adapter()
 }
 
 #[cfg(not(target_os = "android"))]
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "awaits `request_adapter` above, whose WebGPU implementation is a JS promise held in an `Rc<RefCell<_>>`, and holds the resulting `wgpu::Instance` across it; both are `Send` on every other target"
+    )
+)]
 async fn request_instance_and_adapter()
 -> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -434,6 +547,14 @@ impl GpuRuntime {
     /// # Errors
     ///
     /// Returns the adapter or device initialization error.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            clippy::arc_with_non_send_sync,
+            reason = "awaits `SharedGpuContext::new`, whose WebGPU adapter and device requests are JS promises, and stores the resulting JS-backed handles; the runtime is shared by reference count on every target, so the storage type stays `Arc` rather than splitting into `Rc` here and `Arc` everywhere else"
+        )
+    )]
     pub async fn new() -> Result<Self, SharedContextError> {
         Ok(Self {
             context: Arc::new(SharedGpuContext::new().await?),
@@ -473,6 +594,26 @@ pub fn drain_device_before_teardown(device: &wgpu::Device) {
     });
     if let Err(error) = drained {
         tracing::warn!("GPU device did not drain before teardown: {error}");
+    }
+}
+
+/// Releases the resources whose destruction the device deferred.
+///
+/// `wgpu` retires finished submissions from inside `Queue::submit`, but the
+/// bookkeeping of the objects those submissions dropped — the bind groups and
+/// texture views a scene renderer creates per frame — is released only from
+/// `Device::poll`. A frame loop that only ever submits and presents therefore
+/// keeps every frame's share of it forever: on a Pixel 9 Pro, 56 animated
+/// `GpuSurface`s grew the native heap by 87 MB per 150 s, and were flat with
+/// this call after each presented frame.
+///
+/// Non-blocking: `PollType::Poll` processes what has already completed and
+/// returns. Every frame owner that presents without registering the submission
+/// with the completion driver (which polls for it) calls this once per frame,
+/// after the present.
+pub fn reclaim_device(device: &wgpu::Device) {
+    if let Err(error) = device.poll(wgpu::PollType::Poll) {
+        tracing::warn!("GPU device did not reclaim deferred resources: {error}");
     }
 }
 

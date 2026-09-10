@@ -18,14 +18,13 @@ use std::collections::VecDeque;
 
 use crate::accessibility::{AccessibilityActionRequest, AccessibilityTreeUpdate};
 use peniko::Blob;
-use vello_cpu::RenderSettings;
 use waterui_backend_core::input::TouchPhase;
 use waterui_backend_core::time::Instant;
 
 #[cfg(feature = "host")]
 use crate::display::BufferDisplay;
 use crate::display::DisplayFlush;
-use crate::painter::target_render_settings;
+use crate::painter::{RenderProfile, target_render_profile};
 
 /// Where a board's text faces come from.
 ///
@@ -92,8 +91,8 @@ pub trait Board {
     fn now(&self) -> Instant;
 
     /// CPU rasterization profile for this board.
-    fn render_settings(&self) -> RenderSettings {
-        target_render_settings()
+    fn render_profile(&self) -> RenderProfile {
+        target_render_profile()
     }
 
     /// The fonts text on this board shapes with.

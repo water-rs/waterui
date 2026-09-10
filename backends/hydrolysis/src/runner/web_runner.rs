@@ -23,6 +23,7 @@ use wasm_bindgen_futures::JsFuture;
 use waterui::app::App;
 use waterui::window::WindowState;
 use waterui_core::Environment;
+use waterui_text::FontCollection;
 use web_sys::Response;
 
 use super::fonts::ResourceFontFamilies;
@@ -85,7 +86,11 @@ async fn fetch_text(path: &str) -> String {
     })
 }
 
-async fn load_web_fonts(renderer: &mut HydrolysisRenderer) {
+/// The fonts named by the page's manifest, fetched and registered.
+///
+/// Built once for the application: the runner installs the result as the shared
+/// [`FontCollection`] and seeds the window's renderer from it.
+async fn load_web_fonts() -> parley::FontContext {
     let manifest_text = fetch_text(WEB_FONT_MANIFEST_PATH).await;
     let manifest: WebFontManifest = serde_json::from_str(&manifest_text).unwrap_or_else(|error| {
         panic!("hydrolysis web font manifest parse failed for `{WEB_FONT_MANIFEST_PATH}`: {error}")
@@ -93,7 +98,7 @@ async fn load_web_fonts(renderer: &mut HydrolysisRenderer) {
 
     let mut default_family_ids = Vec::new();
     let mut resource_fonts = ResourceFontFamilies::default();
-    let font_cx = renderer.state_mut().text_fonts_mut();
+    let mut font_cx = parley::FontContext::new();
     for font in manifest.fonts {
         let font_path = format!("fonts/{}", font.file_name);
         let font_data = fetch_bytes(&font_path).await;
@@ -116,6 +121,7 @@ async fn load_web_fonts(renderer: &mut HydrolysisRenderer) {
         manifest.default_family
     );
     resource_fonts.install(&mut font_cx.collection);
+    font_cx
 }
 
 #[derive(Clone)]
@@ -198,10 +204,18 @@ impl BrowserRunner {
     }
 }
 
+/// The `requestAnimationFrame` closure, which has to stay alive on the Rust
+/// side for as long as the browser may call back into it.
+type AnimationFrameCallback = Closure<dyn FnMut(f64)>;
+
+/// Holds the frame scheduler, which cannot be built until the runner it
+/// schedules exists, so the slot is filled once construction has finished.
+type ScheduleFrameSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
 struct BrowserRunnerHandle {
     runner: RefCell<BrowserRunner>,
     raf_pending: Cell<bool>,
-    raf_callback: RefCell<Option<Closure<dyn FnMut(f64)>>>,
+    raf_callback: RefCell<Option<AnimationFrameCallback>>,
 }
 
 impl BrowserRunnerHandle {
@@ -234,9 +248,9 @@ impl BrowserRunnerHandle {
     }
 }
 
-pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
+pub fn run(app: App) {
     wasm_bindgen_futures::spawn_local(async move {
-        let schedule_frame_ref: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+        let schedule_frame_ref: ScheduleFrameSlot = Rc::new(RefCell::new(None));
         let browser_schedule = {
             let schedule_frame_ref = schedule_frame_ref.clone();
             Rc::new(move || {
@@ -253,18 +267,12 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
             runnable_queue: runnable_queue.clone(),
             schedule_frame: browser_schedule.clone(),
         };
+        // Nothing probes the browser executor: the inspector endpoint is a TCP
+        // server the page cannot host, so no probe exists to hand it.
         let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
             local_executor,
-            inspector
-                .as_ref()
-                .map(waterui::inspector::InspectorRuntime::runtime_probe),
+            None,
         ));
-        // The reactive graph is thread-confined, so its observer is installed
-        // here, on the thread that owns the loop, and lives as long as it does.
-        #[cfg(feature = "inspector-signals")]
-        let _signal_scope = inspector
-            .as_ref()
-            .map(waterui::inspector::InspectorRuntime::observe_signals);
 
         let (windows, _menu_bar, env) = app.into_parts();
         let mut windows = windows.into_iter();
@@ -288,9 +296,15 @@ pub fn run(app: App, inspector: Option<waterui::inspector::InspectorRuntime>) {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.device())
+            HydrolysisRenderer::new(surface.adapter(), surface.device())
         };
-        load_web_fonts(&mut renderer).await;
+        // The application's fonts, fetched once. The window's renderer is
+        // seeded from this collection, and a self-drawn component that typesets
+        // text itself reads it out of the environment instead of building a
+        // collection of its own.
+        let fonts = FontCollection::new(load_web_fonts().await);
+        fonts.clone().install(&mut env);
+        super::fonts::seed_renderer(&mut renderer, &fonts);
         let runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         let accessibility_actions = Rc::new(RefCell::new(VecDeque::new()));
         let accessibility_bridge =

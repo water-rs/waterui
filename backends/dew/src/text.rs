@@ -18,6 +18,7 @@ use nami::Signal;
 use skrifa::prelude::{FontRef, GlyphId, LocationRef, MetadataProvider, Size};
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
+use waterui_text::FontCollection;
 use waterui_text::font::{Font, FontWeight, ResolvedFont};
 use waterui_text::styled::{Style, StyledStr};
 
@@ -30,7 +31,11 @@ use crate::theme;
 ///
 /// One per renderer; rebuilding it is expensive (font enumeration).
 pub struct DewState {
-    font_cx: parley::FontContext,
+    /// The application's font collection, shared with the environment rather
+    /// than owned outright: a self-drawn component that typesets text itself —
+    /// a formula, a canvas — shapes against exactly these faces instead of
+    /// building a second collection of its own.
+    fonts: FontCollection,
     layout_cx: parley::LayoutContext<[u8; 4]>,
     /// Whether the collection holds any face at all. Shaping against an
     /// empty collection silently produces no glyphs, so it fails fast
@@ -57,7 +62,7 @@ pub(crate) enum CacheOutcome {
     Built,
 }
 
-/// Per-text-node layout cache keyed by signal revision and width proposal.
+/// Per-text-node layout cache keyed by [`TextRevision`] and width proposal.
 ///
 /// Dew confines layout to the main render thread, so the cache stays with the
 /// retained node instead of adding synchronization or global state.
@@ -76,7 +81,7 @@ pub(crate) enum CacheOutcome {
 ///   derived from it.
 #[derive(Debug, Default)]
 pub(crate) struct TextLayoutCache {
-    revision: u64,
+    revision: TextRevision,
     /// Laid-out size per proposal key, in probe order (a handful per node).
     sizes: Vec<(TextLayoutKey, (f32, f32))>,
     /// Full shaped state for the most recently emitted (or, before the first
@@ -95,12 +100,51 @@ struct RetainedText {
     runs: Option<Vec<RetainedGlyphRun>>,
 }
 
+/// Everything a node's shaped text depends on that is *not* a per-probe key.
+///
+/// Both counters invalidate every entry the cache holds at once — new content
+/// and a new font in any slot the text reads each re-shape the node at every
+/// width it was probed at — so they belong on the cache's revision rather than
+/// in
+/// [`TextLayoutKey`]: a key dimension would leave the sizes it invalidated
+/// behind in the table, growing it once per change on a backend whose peak
+/// heap is a budget.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TextRevision {
+    /// Revision of the content signal, from its [`WatchedSignal`].
+    ///
+    /// A bare [`waterui_core::Str`] leaf has no content signal and leaves this
+    /// at zero for its whole life.
+    ///
+    /// [`WatchedSignal`]: crate::dispatch::WatchedSignal
+    content: u64,
+    /// Shared revision of every font slot the node's text reads — the layout
+    /// default and each span's own — from [`WatchedFonts`].
+    ///
+    /// [`WatchedFonts`]: crate::theme::WatchedFonts
+    font: u64,
+}
+
+impl TextRevision {
+    /// The revision of a node whose text comes from a signal.
+    pub(crate) const fn new(content: u64, font: u64) -> Self {
+        Self { content, font }
+    }
+
+    /// The revision of a node whose text is a fixed string, so only the font
+    /// slot it reads can move.
+    pub(crate) const fn font_only(font: u64) -> Self {
+        Self { content: 0, font }
+    }
+}
+
 /// What a cached layout depends on.
 ///
 /// The width proposal changes the line breaking; the default brush is baked
 /// into the shaped runs, and controls vary it (a disabled button's label is
 /// painted in a muted colour), so a layout cached for one brush cannot be
-/// replayed for another.
+/// replayed for another. The font is not here — it moves every entry at once,
+/// so it rides on [`TextRevision`] instead.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TextLayoutKey {
     /// Width proposal the text was laid out against.
@@ -126,8 +170,8 @@ struct RetainedGlyphRun {
 }
 
 impl TextLayoutCache {
-    /// Discards everything when the text's content revision moved on.
-    fn sync_revision(&mut self, revision: u64) {
+    /// Discards everything when the content or the theme font moved on.
+    fn sync_revision(&mut self, revision: TextRevision) {
         if self.revision != revision {
             self.sizes.clear();
             self.retained = None;
@@ -144,7 +188,7 @@ impl TextLayoutCache {
     /// never painted).
     pub(crate) fn measure(
         &mut self,
-        revision: u64,
+        revision: TextRevision,
         key: TextLayoutKey,
         max_lines: Option<usize>,
         build: impl FnOnce() -> parley::Layout<[u8; 4]>,
@@ -177,7 +221,7 @@ impl TextLayoutCache {
     /// unchanged text costs no shaping and no outline lookups.
     pub(crate) fn emit(
         &mut self,
-        revision: u64,
+        revision: TextRevision,
         key: TextLayoutKey,
         max_lines: Option<usize>,
         transform: Affine,
@@ -311,10 +355,10 @@ impl DewState {
             }
         };
         Self {
-            font_cx: parley::FontContext {
+            fonts: FontCollection::new(parley::FontContext {
                 collection,
                 source_cache: parley::fontique::SourceCache::default(),
-            },
+            }),
             layout_cx: parley::LayoutContext::new(),
             has_fonts,
             work: FrameWork::ZERO,
@@ -337,6 +381,12 @@ impl DewState {
         );
     }
 
+    /// The application's font collection, for the host to install into the
+    /// environment so self-drawn components shape against the same faces.
+    pub(crate) fn fonts(&self) -> FontCollection {
+        self.fonts.clone()
+    }
+
     /// Takes the work accumulated since the previous call.
     pub(crate) const fn take_work(&mut self) -> FrameWork {
         core::mem::replace(&mut self.work, FrameWork::ZERO)
@@ -351,26 +401,31 @@ impl DewState {
     }
 }
 
-/// Font size for plain [`waterui_core::Str`] leaves in logical pixels,
-/// matching the [`waterui_text::font::Body`] preset default.
-const PLAIN_FONT_SIZE: f32 = 16.0;
-
 impl DewState {
-    /// Shapes a plain string with the default body style — the fast path
+    /// Shapes a plain string with the theme's body style — the fast path
     /// for bare [`waterui_core::Str`] leaves that carry no span styling.
+    ///
+    /// The body slot is resolved from `env` exactly as
+    /// [`DewState::build_styled_layout`] resolves the default style of styled
+    /// text, so a bare `"literal"` and `text("literal")` beside it shape
+    /// identically under whatever type scale the theme installed.
     pub(crate) fn build_plain_layout(
         &mut self,
         text: &str,
+        env: &Environment,
         max_width: Option<f32>,
         brush: peniko::Color,
     ) -> parley::Layout<[u8; 4]> {
         self.assert_has_fonts();
-        let mut builder = self
-            .layout_cx
-            .ranged_builder(&mut self.font_cx, text, 1.0, true);
-        builder.push_default(parley::StyleProperty::Brush(peniko_to_rgba8(brush)));
-        builder.push_default(parley::StyleProperty::FontSize(PLAIN_FONT_SIZE));
-        let mut layout = builder.build(text);
+        let font = Font::default().resolve(env).get();
+        let Self {
+            fonts, layout_cx, ..
+        } = self;
+        let mut layout = fonts.use_fonts(|font_cx| {
+            let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
+            push_layout_defaults(&mut builder, &font, brush);
+            builder.build(text)
+        });
         layout.break_all_lines(max_width);
         layout.align(
             parley::Alignment::Start,
@@ -404,23 +459,19 @@ impl DewState {
         self.assert_has_fonts();
 
         let default_font = Font::default().resolve(env).get();
-        let mut builder = self
-            .layout_cx
-            .ranged_builder(&mut self.font_cx, &plain, 1.0, true);
-        builder.push_default(parley::StyleProperty::Brush(peniko_to_rgba8(default_brush)));
-        builder.push_default(parley::StyleProperty::FontSize(default_font.size));
-        builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
-            default_font.weight,
-        )));
-        builder.push_default(parley::StyleProperty::FontFamily(font_family(
-            default_font.family.as_deref(),
-        )));
+        let Self {
+            fonts, layout_cx, ..
+        } = self;
+        let mut layout = fonts.use_fonts(|font_cx| {
+            let mut builder = layout_cx.ranged_builder(font_cx, &plain, 1.0, true);
+            push_layout_defaults(&mut builder, &default_font, default_brush);
 
-        for (range, style) in spans {
-            push_span_style(&mut builder, style, env, range);
-        }
+            for (range, style) in spans {
+                push_span_style(&mut builder, style, env, range);
+            }
 
-        let mut layout = builder.build(&plain);
+            builder.build(&plain)
+        });
         layout.break_all_lines(max_width);
         layout.align(
             parley::Alignment::Start,
@@ -440,6 +491,27 @@ impl DewState {
         let layout = self.build_styled_layout(styled, env, max_width, theme::foreground(env));
         (layout.width(), layout.height())
     }
+}
+
+/// Pushes the layout-wide defaults every dew text layout starts from: the
+/// brush spans without an explicit colour paint in, and the theme font they
+/// shape with.
+///
+/// Shared by the plain and styled paths so the two cannot drift apart — the
+/// divergence that let a bare string leaf keep its own font size.
+fn push_layout_defaults(
+    builder: &mut parley::RangedBuilder<'_, [u8; 4]>,
+    font: &ResolvedFont,
+    brush: peniko::Color,
+) {
+    builder.push_default(parley::StyleProperty::Brush(peniko_to_rgba8(brush)));
+    builder.push_default(parley::StyleProperty::FontSize(font.size));
+    builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
+        font.weight,
+    )));
+    builder.push_default(parley::StyleProperty::FontFamily(font_family(
+        font.family.as_deref(),
+    )));
 }
 
 /// Pushes one [`StyledStr`] chunk's resolved style as parley range styles.
@@ -667,15 +739,7 @@ mod tests {
     fn test_environment() -> Environment {
         let mut env = Environment::new();
         Theme::new()
-            .fonts(
-                FontSettings::new()
-                    .body(ResolvedFont::new(16.0, FontWeight::Normal))
-                    .title(ResolvedFont::new(24.0, FontWeight::Normal))
-                    .headline(ResolvedFont::new(22.0, FontWeight::Normal))
-                    .subheadline(ResolvedFont::new(20.0, FontWeight::Normal))
-                    .caption(ResolvedFont::new(12.0, FontWeight::Normal))
-                    .footnote(ResolvedFont::new(11.0, FontWeight::Normal)),
-            )
+            .fonts(FontSettings::default_scale())
             .install(&mut env);
         env
     }
@@ -693,21 +757,33 @@ mod tests {
     }
 
     /// `.title()` / `.sub_headline()` spans must shape at their preset font
-    /// sizes, visibly distinct from body text.
+    /// styles, visibly distinct from body text: under the default scale title
+    /// differs in size, subheadline in weight.
     #[test]
     fn styled_spans_produce_distinct_font_sizes() {
         let env = test_environment();
-        let mut state = DewState::default();
+        let mut state = DewState::new(crate::test_fonts());
         let mut styled = StyledStr::empty();
         styled.push("Heading", Style::new().font(Title));
         styled.push(" subhead", Style::new().font(Subheadline));
         styled.push(" body", Style::new());
 
         let layout = state.build_styled_layout(&styled, &env, None, theme::FOREGROUND);
-        let sizes = run_font_sizes(&layout);
+        let mut runs = Vec::new();
+        for line in layout.lines() {
+            for item in line.items() {
+                if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                    let run = glyph_run.run();
+                    runs.push((run.font_size(), run.font_attrs().weight.value()));
+                }
+            }
+        }
         assert!(
-            sizes.contains(&24.0) && sizes.contains(&20.0) && sizes.contains(&16.0),
-            "expected title (24), subheadline (20), and body (16) runs, got {sizes:?}"
+            runs.contains(&(22.0, 400.0))
+                && runs.contains(&(16.0, 500.0))
+                && runs.contains(&(16.0, 400.0)),
+            "expected title (22/normal), subheadline (16/medium), and body \
+             (16/normal) runs, got {runs:?}"
         );
 
         let (_, title_height) = state.measure_styled(&StyledStr::plain("Heading"), &env, None);
@@ -726,7 +802,7 @@ mod tests {
     #[test]
     fn bold_span_splits_into_its_own_run() {
         let env = test_environment();
-        let mut state = DewState::default();
+        let mut state = DewState::new(crate::test_fonts());
         let mut styled = StyledStr::empty();
         styled.push("normal ", Style::new());
         styled.push("bold", Style::new().bold());
@@ -752,7 +828,7 @@ mod tests {
         use waterui_graphics::color::Color;
 
         let env = test_environment();
-        let mut state = DewState::default();
+        let mut state = DewState::new(crate::test_fonts());
         let mut styled = StyledStr::empty();
         styled.push("red", Style::new().foreground(Color::srgb(255, 0, 0)));
 
@@ -780,30 +856,70 @@ mod tests {
         };
 
         cache.measure(
-            0,
+            TextRevision::new(0, 0),
             TextLayoutKey::new(Some(120.0), theme::FOREGROUND),
             None,
             build,
         );
         cache.measure(
-            0,
+            TextRevision::new(0, 0),
             TextLayoutKey::new(Some(120.0), theme::FOREGROUND),
             None,
             build,
         );
         cache.measure(
-            0,
+            TextRevision::new(0, 0),
             TextLayoutKey::new(Some(80.0), theme::FOREGROUND),
             None,
             build,
         );
         cache.measure(
-            1,
+            TextRevision::new(1, 0),
+            TextLayoutKey::new(Some(120.0), theme::FOREGROUND),
+            None,
+            build,
+        );
+        // A new theme font re-shapes the node exactly as new content does.
+        cache.measure(
+            TextRevision::new(1, 1),
             TextLayoutKey::new(Some(120.0), theme::FOREGROUND),
             None,
             build,
         );
 
-        assert_eq!(builds.get(), 3);
+        assert_eq!(builds.get(), 4);
+    }
+
+    /// A bare string leaf and `text("…")` shape at the same theme body font,
+    /// whatever the theme installed — the leaf carries no size of its own.
+    #[test]
+    fn plain_and_styled_layouts_agree_on_the_body_font() {
+        let mut env = Environment::new();
+        Theme::new()
+            .fonts(FontSettings::new().body(ResolvedFont::new(20.0, FontWeight::Normal)))
+            .install(&mut env);
+        let mut state = DewState::new(crate::test_fonts());
+
+        let plain = state.build_plain_layout("Bare", &env, None, theme::FOREGROUND);
+        let styled =
+            state.build_styled_layout(&StyledStr::plain("Bare"), &env, None, theme::FOREGROUND);
+
+        assert_eq!(run_font_sizes(&plain), vec![20.0]);
+        assert_eq!(run_font_sizes(&plain), run_font_sizes(&styled));
+        assert_eq!(
+            (plain.width().to_bits(), plain.height().to_bits()),
+            (styled.width().to_bits(), styled.height().to_bits()),
+            "the two paths must lay out to the same size"
+        );
+
+        let default_scale = test_environment();
+        let default_plain =
+            state.build_plain_layout("Bare", &default_scale, None, theme::FOREGROUND);
+        assert_eq!(run_font_sizes(&default_plain), vec![16.0]);
+        assert_ne!(
+            plain.width().to_bits(),
+            default_plain.width().to_bits(),
+            "a 20pt body must not measure the same as the 16pt default"
+        );
     }
 }

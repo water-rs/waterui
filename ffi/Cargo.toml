@@ -28,10 +28,12 @@ native-executor.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
 executor-core.workspace = true
-cbindgen = { version = "0.29.4", optional = true }
 # JNI crate - optional, enabled by android-jni feature for Android builds
 jni = { version = "0.22.4", optional = true }
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["cpu-scene"] }
+# The geometry vocabulary of the `GpuSurface` input contract: surface-local
+# points on the way in, the IME caret rect on the way out.
+kurbo = { workspace = true, optional = true }
 waterui-svg = { workspace = true, optional = true }
 waterui-icon.workspace = true
 waterui-webview.workspace = true
@@ -63,6 +65,10 @@ ndk-context = "0.1.1"
 jni = "0.22.4"
 ndk-sys = "0.6"
 wgpu-hal = { workspace = true, features = ["vulkan"], optional = true }
+# The Vulkan side of Android view capture: an `AHardwareBuffer` handed over from
+# Kotlin is imported as a raw `VkImage` on the very `ash::Device` wgpu-hal owns,
+# and copied into the wgpu capture texture from there.
+ash = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 tracing-oslog = "0.3"
@@ -71,11 +77,6 @@ objc2-metal = { version = "0.3", features = ["MTLDevice", "MTLPixelFormat", "MTL
 wgpu-hal = { workspace = true, features = ["metal"], optional = true }
 waterkit-audio = { workspace = true, default-features = false, features = ["apple-artwork"] }
 
-
-[[bin]]
-name = "generate_header"
-path = "generate_header.rs"
-required-features = ["cbindgen"]
 
 [lints]
 workspace = true
@@ -95,9 +96,11 @@ gpu = [
     "dep:waterui-svg",
     "dep:wgpu",
     "dep:wgpu-hal",
+    "dep:ash",
     "dep:waterui-video-gpu",
     "dep:objc2-metal",
     "dep:pollster",
+    "dep:kurbo",
 ]
 # C FFI for Apple/GTK backends (default)
 c-api = ["std"]
@@ -108,13 +111,11 @@ android-jni = ["dep:jni", "std"]
 # tile, styling, and image-decoding stack, which no app that never shows a map
 # should pay for. Apple bridges MapKit instead and only needs the marshalling.
 map = ["dep:waterui-map"]
-# The checked-in `waterui.h` is a superset of every optional surface, so header
-# generation turns them all on. Native backends compile the matching component
-# only when the app enabled that feature.
-cbindgen = ["dep:cbindgen", "header"]
-# Every optional C surface the checked-in `waterui.h` must declare. Header
-# generation and the header's macro expansion both read this one list, so a new
-# optional surface is added in exactly one place.
+# Every optional C surface the checked-in `waterui.h` must declare. That header
+# is a superset of every optional surface, so the generator in `ffi/generator`
+# expands this crate with exactly this feature on; native backends compile the
+# matching component only when the app enabled that feature. A new optional
+# surface is added in exactly one place.
 header = ["cef-header", "map"]
 cef-runtime = [
     "gpu",
@@ -140,3 +141,7 @@ webview-cef = [
 ]
 [package.metadata.cargo-machete]
 ignored = ["waterui-svg"]
+
+[dev-dependencies]
+kurbo.workspace = true
+peniko.workspace = true

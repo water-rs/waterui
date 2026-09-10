@@ -9,12 +9,13 @@ use std::{
 };
 
 use crate::build_info::{
-    ANDROID_BACKEND, APPLE_BACKEND, DEW_VERSION, GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION,
-    HYDROLYSIS_VERSION, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, WATERUI_BROWSER_CEF_VERSION,
-    WATERUI_CORE_VERSION, WATERUI_FFI_VERSION, WATERUI_VERSION,
+    DEW_VERSION, GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION, HYDROLYSIS_VERSION,
+    PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, WATERUI_BROWSER_CEF_VERSION, WATERUI_CORE_VERSION,
+    WATERUI_FFI_VERSION, WATERUI_VERSION,
 };
 use askama::Template;
 
+use crate::framework::ResolvedFramework;
 use crate::project::ResolvedWebViewBackend;
 
 use include_dir::{Dir, include_dir};
@@ -251,6 +252,8 @@ pub struct TemplateContext {
     pub use_remote_dev_backend: bool,
     /// Path to local `WaterUI` repository (for dev mode)
     pub waterui_path: Option<PathBuf>,
+    /// Persisted framework source and native backend revisions.
+    pub framework: ResolvedFramework,
     /// Browser engine and component selections for generated backend manifests.
     pub browser: BrowserTemplateContext,
     /// Path to the backend project being scaffolded.
@@ -296,6 +299,7 @@ impl TemplateContext {
                 .map(|path| path.join("backends/android")),
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
+            framework: ResolvedFramework::stable(),
             browser: BrowserTemplateContext::default(),
             backend_project_path: None,
             project_root_path: None,
@@ -326,6 +330,10 @@ impl TemplateContext {
             android_backend_path: None,
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+            framework: manifest
+                .framework
+                .clone()
+                .unwrap_or_else(ResolvedFramework::stable),
             browser: BrowserTemplateContext::default(),
             backend_project_path: None,
             project_root_path: None,
@@ -372,6 +380,7 @@ impl TemplateContext {
             android_backend_path,
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
+            framework: ResolvedFramework::stable(),
             browser: BrowserTemplateContext::default(),
             backend_project_path: None,
             project_root_path,
@@ -523,9 +532,11 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     }
 
     #[must_use]
-    #[allow(clippy::unused_self)]
     pub fn android_remote_backend_dependency(&self) -> String {
-        jitpack_dependency_coordinate(ANDROID_BACKEND.repository_url, ANDROID_BACKEND.commit)
+        jitpack_dependency_coordinate(
+            self.framework.scaffold_value("android-backend-url"),
+            self.framework.scaffold_value("android-backend-commit"),
+        )
     }
 
     #[must_use]
@@ -677,7 +688,8 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     fn swift_package_reference_entry(&self) -> String {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
         const INDENT: &str = "\t\t\t\t";
-        let repository_name = github_repository_name(APPLE_BACKEND.repository_url);
+        let repository_name =
+            github_repository_name(self.framework.scaffold_value("apple-backend-url"));
 
         self.compute_apple_backend_path().map_or_else(
             || {
@@ -696,7 +708,8 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     /// Generate the `XCode` package reference section for the project file.
     fn swift_package_reference_section(&self) -> String {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
-        let repository_name = github_repository_name(APPLE_BACKEND.repository_url);
+        let repository_name =
+            github_repository_name(self.framework.scaffold_value("apple-backend-url"));
 
         self.compute_apple_backend_path().map_or_else(
             || {
@@ -711,8 +724,8 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
                     \t\t\t}};\n\
                     \t\t}};\n\
                     /* End XCRemoteSwiftPackageReference section */",
-                    APPLE_BACKEND.repository_url,
-                    APPLE_BACKEND.commit,
+                    self.framework.scaffold_value("apple-backend-url"),
+                    self.framework.scaffold_value("apple-backend-commit"),
                 )
             },
             |backend_path| {
@@ -727,6 +740,19 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
             },
         )
     }
+}
+
+pub fn apple_app_name(crate_name: &CrateName) -> String {
+    crate_name
+        .as_str()
+        .split('-')
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -877,10 +903,8 @@ struct Esp32CargoTomlTemplate {
     package_name: String,
     app_crate_name: String,
     app_crate_path: String,
-    dew_path: Option<String>,
-    core_path: Option<String>,
-    dew_version: &'static str,
-    waterui_version: &'static str,
+    dew_dependency: String,
+    core_dependency: String,
     /// The `opt-level` value as a TOML literal: numeric levels are bare
     /// integers, while `"s"`/`"z"` must be quoted strings — cargo rejects a
     /// quoted `"2"`.
@@ -889,29 +913,34 @@ struct Esp32CargoTomlTemplate {
 
 impl Esp32CargoTomlTemplate {
     fn from_ctx(ctx: &TemplateContext) -> Self {
-        let dew_path = ctx.waterui_path.as_ref().map(|waterui_path| {
-            compute_native_backend_dependency_path(
-                ctx,
-                waterui_path,
-                NativeBackendDependencyPathKind::BackendsSubdir("dew"),
-            )
-        });
-        let core_path = ctx.waterui_path.as_ref().map(|waterui_path| {
-            compute_native_backend_dependency_path(
-                ctx,
-                waterui_path,
-                NativeBackendDependencyPathKind::WorkspaceSubdir("core"),
-            )
-        });
+        let dew_dependency = generated_dependency_from_spec(
+            ctx,
+            NativeBackendDependencySpec::new(
+                "waterui-dew",
+                DEW_VERSION,
+                &["espidf", "progress"],
+                Some(NativeBackendDependencyPathKind::BackendsSubdir("dew")),
+            ),
+        )
+        .with_default_features(false)
+        .inline_toml();
+        let core_dependency = generated_dependency_from_spec(
+            ctx,
+            NativeBackendDependencySpec::new(
+                "waterui-core",
+                WATERUI_CORE_VERSION,
+                &[],
+                Some(NativeBackendDependencyPathKind::WorkspaceSubdir("core")),
+            ),
+        )
+        .inline_toml();
 
         Self {
             package_name: ctx.crate_name.with_suffix("esp32").to_string(),
             app_crate_name: ctx.crate_name.to_string(),
             app_crate_path: ctx.project_root_relative_path(),
-            dew_path,
-            core_path,
-            dew_version: DEW_VERSION,
-            waterui_version: WATERUI_VERSION,
+            dew_dependency,
+            core_dependency,
             opt_level_literal: match ctx.esp32.opt_level.as_str() {
                 symbolic @ ("s" | "z") => format!("\"{symbolic}\""),
                 numeric => numeric
@@ -956,12 +985,14 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        ANDROID_BACKEND, APPLE_BACKEND, BrowserTemplateContext, Esp32TemplateEntry,
-        GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION,
-        ResolvedWebViewBackend, TemplateContext, TemplateNamespace, WATERUI_BROWSER_CEF_VERSION,
-        WATERUI_CORE_VERSION, embedded, jitpack_dependency_coordinate, normalize_path_for_config,
-        preview_ffi, render_scaffold_template,
+        BrowserTemplateContext, Esp32TemplateEntry, GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION,
+        PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, ResolvedWebViewBackend, TemplateContext,
+        TemplateNamespace, WATERUI_BROWSER_CEF_VERSION, WATERUI_CORE_VERSION, embedded,
+        jitpack_dependency_coordinate, normalize_path_for_config, preview_ffi,
+        render_scaffold_template,
     };
+    use crate::build_info::{ANDROID_BACKEND, APPLE_BACKEND};
+    use crate::framework::ResolvedFramework;
     use crate::project_types::{BundleIdentifier, CrateName};
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -982,6 +1013,7 @@ mod tests {
             android_backend_path: None,
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
+            framework: ResolvedFramework::stable(),
             browser: BrowserTemplateContext::default(),
             backend_project_path,
             project_root_path,
@@ -1086,6 +1118,37 @@ mod tests {
         assert!(main_rs.contains("include_bytes!(\"/tmp/fonts/Demo.ttf\")"));
         assert!(main_rs.contains("FONTS"));
         assert!(!render_esp32("src/main.rs.tpl", &c3).contains("include_bytes!"));
+    }
+
+    #[test]
+    fn local_checkout_patches_are_rebased_onto_the_waterui_path() {
+        let tempdir = tempdir().expect("temporary checkout dir");
+        let checkout = tempdir.path().join("waterui");
+        std::fs::create_dir_all(&checkout).expect("checkout dir");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            include_str!("../../tests/fixtures/local_checkout_patches.toml"),
+        )
+        .expect("checkout manifest");
+        let project_root = tempdir.path().join("app");
+        std::fs::create_dir_all(&project_root).expect("project dir");
+
+        let patches =
+            super::local_framework_patches(&project_root, std::path::Path::new("../waterui"))
+                .expect("patches from the checkout");
+        let crates_io = &patches["crates-io"];
+        let cargo_toml::Dependency::Detailed(core) = &crates_io["waterui-core"] else {
+            panic!("a path patch stays a detailed dependency");
+        };
+        assert_eq!(core.path.as_deref(), Some("../waterui/core"));
+        let cargo_toml::Dependency::Detailed(vello) = &crates_io["vello"] else {
+            panic!("a git patch stays a detailed dependency");
+        };
+        assert_eq!(
+            vello.git.as_deref(),
+            Some("https://github.com/lexoliu/vello")
+        );
+        assert!(vello.path.is_none());
     }
 
     #[test]
@@ -1413,7 +1476,11 @@ mod tests {
 
         let cargo_toml = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
             .expect("gtk4 Cargo.toml should be written");
-        assert!(cargo_toml.contains(&format!("version = \"{GTK_BACKEND_VERSION}\"")));
+        let manifest: toml::Value = toml::from_str(&cargo_toml).unwrap();
+        assert_eq!(
+            manifest["dependencies"]["waterui-gtk"]["version"].as_str(),
+            Some(format!("={GTK_BACKEND_VERSION}").as_str())
+        );
         assert!(!cargo_toml.contains("webview-default"));
     }
 
@@ -1470,28 +1537,28 @@ mod tests {
             &manifest["target"]["cfg(not(target_arch = \"wasm32\"))"]["dependencies"];
         assert_eq!(
             native_dependencies["waterui-preview"]["version"].as_str(),
-            Some(PREVIEW_VERSION),
+            Some(format!("={PREVIEW_VERSION}").as_str()),
         );
         assert_eq!(
             native_dependencies["waterui-preview-protocol"]["version"].as_str(),
-            Some(PREVIEW_PROTOCOL_VERSION),
+            Some(format!("={PREVIEW_PROTOCOL_VERSION}").as_str()),
         );
         // Each of these is a separately versioned package. Borrowing a sibling's
         // constant reads fine while the numbers happen to coincide and emits an
         // unresolvable requirement the moment one of them bumps on its own.
         assert_eq!(
             native_dependencies["waterui-core"]["version"].as_str(),
-            Some(WATERUI_CORE_VERSION),
+            Some(format!("={WATERUI_CORE_VERSION}").as_str()),
         );
         assert_eq!(
             native_dependencies["hydrolysis-m3"]["version"].as_str(),
-            Some(HYDROLYSIS_M3_VERSION),
+            Some(format!("={HYDROLYSIS_M3_VERSION}").as_str()),
         );
         // The subprocess helper dispatches into Chromium directly, so the
         // generated crate depends on the engine the application chose.
         assert_eq!(
             native_dependencies["waterui-browser-cef"]["version"].as_str(),
-            Some(WATERUI_BROWSER_CEF_VERSION),
+            Some(format!("={WATERUI_BROWSER_CEF_VERSION}").as_str()),
         );
         let features = native_dependencies["hydrolysis"]["features"]
             .as_array()
@@ -1525,11 +1592,14 @@ mod tests {
 
         let cargo_toml = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
             .expect("preview Cargo.toml should be written");
-        assert!(cargo_toml.contains(&format!("version = \"{PREVIEW_VERSION}\"")));
         assert!(cargo_toml.contains("default-features = false"));
         let manifest = cargo_toml
             .parse::<toml::Table>()
             .expect("preview Cargo.toml should parse");
+        assert_eq!(
+            manifest["dependencies"]["waterui-preview"]["version"].as_str(),
+            Some(format!("={PREVIEW_VERSION}").as_str())
+        );
         let dev_features = manifest["features"]["dev"]
             .as_array()
             .expect("preview dev feature should be an array")
@@ -1633,6 +1703,47 @@ mod tests {
         let helper = std::fs::read_to_string(ffi_dir.join("src/bin/waterui-cef-helper.rs"))
             .expect("CEF helper source should be written");
         assert!(helper.contains("waterui_cef_run_packaged_subprocess"));
+    }
+
+    #[test]
+    fn ffi_lockfile_seed_follows_the_project_lockfile() {
+        let tempdir = tempdir().expect("temporary ffi seed dir");
+        let project_lock = tempdir.path().join("Cargo.lock");
+        let ffi_dir = tempdir.path().join("managed_backends/ffi");
+        std::fs::create_dir_all(&ffi_dir).expect("ffi dir");
+        let managed_lock = ffi_dir.join("Cargo.lock");
+        let seed = || {
+            smol::block_on(crate::templates::ffi::seed_lockfile(
+                &ffi_dir,
+                &project_lock,
+            ))
+            .expect("seeding the managed lockfile should succeed");
+        };
+        let managed = || std::fs::read_to_string(&managed_lock).expect("managed Cargo.lock");
+
+        // No project lockfile: nothing to pin, the managed crate resolves on its own.
+        seed();
+        assert!(!managed_lock.exists());
+
+        std::fs::write(&project_lock, "pins v1").expect("project lock");
+        seed();
+        assert_eq!(managed(), "pins v1");
+
+        // Cargo rewrote the managed lockfile (pruned the project's unused entries,
+        // added the FFI crate's own); an unchanged project lockfile leaves that alone.
+        std::fs::write(&managed_lock, "pins v1 + ffi entries").expect("managed lock");
+        seed();
+        assert_eq!(managed(), "pins v1 + ffi entries");
+
+        // The project re-resolved: the managed crate follows it.
+        std::fs::write(&project_lock, "pins v2").expect("project lock");
+        seed();
+        assert_eq!(managed(), "pins v2");
+
+        // A managed lockfile that went missing is re-seeded from the current pins.
+        std::fs::remove_file(&managed_lock).expect("remove managed lock");
+        seed();
+        assert_eq!(managed(), "pins v2");
     }
 
     #[test]
@@ -1978,6 +2089,104 @@ fn render_dir_outputs(
     Ok(outputs)
 }
 
+pub async fn framework_updates(
+    root: &Path,
+    previous: &crate::project::Manifest,
+    next: &crate::project::Manifest,
+    crate_name: &CrateName,
+) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+    use crate::backend::Backend;
+    use crate::project::PackageType;
+    use std::collections::BTreeMap;
+
+    if previous.package.package_type == PackageType::Playground {
+        return Ok(Vec::new());
+    }
+    let base = root.join(previous.backends.path());
+    let native = [
+        previous.backends.apple().map(|backend| {
+            (
+                TemplateNamespace::Apple,
+                &embedded::APPLE,
+                base.join(backend.path()),
+                apple_app_name(crate_name),
+            )
+        }),
+        previous.backends.android().map(|backend| {
+            (
+                TemplateNamespace::Android,
+                &embedded::ANDROID,
+                base.join(backend.path()),
+                previous
+                    .package
+                    .name
+                    .chars()
+                    .filter(|character| character.is_alphanumeric())
+                    .collect(),
+            )
+        }),
+    ];
+    let mut updates = Vec::new();
+    for (namespace, templates, directory, app_name) in native.into_iter().flatten() {
+        let context = |manifest: &crate::project::Manifest| {
+            TemplateContext::for_project_manifest(manifest, crate_name.clone(), app_name.clone())
+                .with_backend_project_path(directory.clone())
+                .with_project_root_path(root.to_path_buf())
+        };
+        let before: BTreeMap<_, _> = render_dir_outputs(namespace, templates, &context(previous))?
+            .into_iter()
+            .collect();
+        for (path, after) in render_dir_outputs(namespace, templates, &context(next))? {
+            let before = &before[&path];
+            if before == &after {
+                continue;
+            }
+            let destination = directory.join(path);
+            let existing = fs::read_to_string(&destination).await?;
+            let before = std::str::from_utf8(before).map_err(io::Error::other)?;
+            let after = std::str::from_utf8(&after).map_err(io::Error::other)?;
+            let merged = diffy::merge(before, &existing, after).map_err(|_| {
+                io::Error::other(format!(
+                    "framework dependency changes conflict with custom edits in {}",
+                    destination.display()
+                ))
+            })?;
+            updates.push((destination, merged.into_bytes()));
+        }
+    }
+    let rust = [
+        previous
+            .backends
+            .gtk4()
+            .map(|backend| base.join(backend.path())),
+        previous
+            .backends
+            .hydrolysis()
+            .map(|backend| base.join(backend.path())),
+        previous
+            .backends
+            .esp32()
+            .map(|backend| base.join(backend.path())),
+    ];
+    let framework = next
+        .framework
+        .as_ref()
+        .expect("channel updates have a resolved framework");
+    let previous_patches = project_patches(root, previous)?;
+    for directory in rust.into_iter().flatten() {
+        let path = directory.join("Cargo.toml");
+        let mut manifest: toml_edit::DocumentMut = fs::read_to_string(&path)
+            .await?
+            .parse()
+            .map_err(io::Error::other)?;
+        framework
+            .update_manifest(&mut manifest, &previous_patches)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        updates.push((path, manifest.to_string().into_bytes()));
+    }
+    Ok(updates)
+}
+
 async fn write_file_if_changed(path: &Path, contents: &[u8]) -> io::Result<()> {
     match fs::read(path).await {
         Ok(existing) if existing == contents => return Ok(()),
@@ -2027,7 +2236,6 @@ struct SupportWorkspaceSection {}
 #[derive(serde::Serialize)]
 #[serde(untagged)]
 enum SupportDependencyValue {
-    Simple(String),
     Detailed(SupportDependencyDetail),
 }
 
@@ -2039,10 +2247,28 @@ struct SupportDependencyDetail {
     version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rev: Option<String>,
     #[serde(rename = "default-features", skip_serializing_if = "Option::is_none")]
     default_features: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     features: Vec<String>,
+}
+
+impl From<GeneratedDependencyDetail> for SupportDependencyDetail {
+    fn from(dependency: GeneratedDependencyDetail) -> Self {
+        Self {
+            package: None,
+            version: dependency.version,
+            path: dependency.path,
+            git: dependency.git,
+            rev: dependency.rev,
+            default_features: dependency.default_features,
+            features: dependency.features,
+        }
+    }
 }
 
 /// Build the `[profile.dev]` section every generated crate carries.
@@ -2096,13 +2322,14 @@ async fn write_support_cargo_toml(
     features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
     runtime_root: Option<&Path>,
+    framework: &ResolvedFramework,
 ) -> io::Result<()> {
     let patch = match runtime_root {
         Some(root) => {
             let root = root.to_path_buf();
             smol::unblock(move || collect_workspace_patches(&root)).await?
         }
-        None => cargo_toml::PatchSet::default(),
+        None => framework.patches(),
     };
     let manifest = SupportCargoManifest {
         package: SupportPackageSection {
@@ -2225,39 +2452,16 @@ fn render_native_backend_bin_cargo_toml(
     );
 
     for dependency in dependencies {
-        let features = dependency
-            .features
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect::<Vec<_>>();
-
-        if let Some(waterui_path) = &ctx.waterui_path
-            && let Some(path_kind) = dependency.path_kind
-        {
-            let dependency_path =
-                compute_native_backend_dependency_path(ctx, waterui_path, path_kind);
-            manifest.dependencies.insert(
-                dependency.crate_name.to_string(),
-                Dependency::Detailed(Box::new(DependencyDetail {
-                    path: Some(dependency_path),
-                    features,
-                    ..Default::default()
-                })),
-            );
-            continue;
-        }
-
         manifest.dependencies.insert(
             dependency.crate_name.to_string(),
-            Dependency::Detailed(Box::new(DependencyDetail {
-                version: Some(cargo_version_req(dependency.version)),
-                features,
-                ..Default::default()
-            })),
+            Dependency::Detailed(Box::new(
+                generated_dependency_from_spec(ctx, *dependency).into_cargo(),
+            )),
         );
     }
 
     manifest.workspace = Some(Workspace::default());
+    manifest.patch = ctx.framework.patches();
 
     toml::to_string_pretty(&manifest)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
@@ -2268,13 +2472,11 @@ fn dependency_path(path: &Path) -> SupportDependencyValue {
         package: None,
         version: None,
         path: Some(normalize_path_for_config(path)),
+        git: None,
+        rev: None,
         default_features: None,
         features: Vec::new(),
     })
-}
-
-fn dependency_version(version: &str) -> SupportDependencyValue {
-    SupportDependencyValue::Simple(version.to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -2358,6 +2560,10 @@ struct GeneratedDependencyDetail {
     version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rev: Option<String>,
     #[serde(rename = "default-features", skip_serializing_if = "Option::is_none")]
     default_features: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -2375,10 +2581,45 @@ impl GeneratedDependencyValue {
 }
 
 impl GeneratedDependencyDetail {
+    fn inline_toml(&self) -> String {
+        let mut table = toml_edit::ser::to_document(self)
+            .expect("generated dependency serializes")
+            .into_table()
+            .into_inline_table();
+        table.fmt();
+        table.to_string()
+    }
+
+    fn into_cargo(self) -> cargo_toml::DependencyDetail {
+        cargo_toml::DependencyDetail {
+            version: self.version.map(|version| cargo_version_req(&version)),
+            path: self.path,
+            git: self.git,
+            rev: self.rev,
+            default_features: self.default_features.unwrap_or(true),
+            features: self.features,
+            ..Default::default()
+        }
+    }
+
+    fn framework(ctx: &TemplateContext, name: &str) -> Self {
+        let dependency = ctx.framework.dependency(name);
+        Self {
+            version: dependency.version.map(|version| version.to_string()),
+            path: dependency.path,
+            git: dependency.git,
+            rev: dependency.rev,
+            default_features: None,
+            features: Vec::new(),
+        }
+    }
+
     fn path(path: &Path) -> Self {
         Self {
             version: None,
             path: Some(normalize_path_for_config(path)),
+            git: None,
+            rev: None,
             default_features: None,
             features: Vec::new(),
         }
@@ -2388,6 +2629,8 @@ impl GeneratedDependencyDetail {
         Self {
             version: Some(version.to_string()),
             path: None,
+            git: None,
+            rev: None,
             default_features: None,
             features: Vec::new(),
         }
@@ -2440,9 +2683,13 @@ fn generated_dependency_from_spec(
                 waterui_path,
                 path_kind,
             )),
+            git: None,
+            rev: None,
             default_features: None,
             features: Vec::new(),
         }
+    } else if spec.path_kind.is_some() {
+        GeneratedDependencyDetail::framework(ctx, spec.crate_name)
     } else {
         GeneratedDependencyDetail::version(spec.version)
     };
@@ -2675,7 +2922,7 @@ pub mod hydrolysis {
     /// runtime's own workspace does.
     fn collect_runtime_patches(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
         ctx.waterui_workspace_root().map_or_else(
-            || Ok(cargo_toml::PatchSet::default()),
+            || Ok(ctx.framework.patches()),
             |root| super::collect_workspace_patches(&root),
         )
     }
@@ -2735,7 +2982,7 @@ pub mod hydrolysis {
     ) -> io::Result<()> {
         let patch = match ctx.waterui_workspace_root() {
             Some(root) => smol::unblock(move || super::collect_workspace_patches(&root)).await?,
-            None => cargo_toml::PatchSet::default(),
+            None => ctx.framework.patches(),
         };
         let manifest = generated_manifest(ctx, package_name, patch);
         write_generated_cargo_toml(base_dir, super::render_generated_cargo_toml(&manifest)?).await
@@ -2748,6 +2995,8 @@ pub mod hydrolysis {
                 GeneratedDependencyValue::detailed(GeneratedDependencyDetail {
                     version: None,
                     path: Some(ctx.project_root_relative_path()),
+                    git: None,
+                    rev: None,
                     default_features: None,
                     features: Vec::new(),
                 }),
@@ -3041,6 +3290,52 @@ fn collect_workspace_patches(project_root: &Path) -> io::Result<cargo_toml::Patc
     Ok(patches)
 }
 
+/// The `[patch]` tables of the `WaterUI` checkout at `waterui_path`, rebased
+/// onto that path so they resolve from the project root that names it.
+///
+/// A project built against a checkout takes `waterui` by path, but any
+/// component it pulls from the registry — `waterui-image`, `waterui-chart` —
+/// still names the registry `waterui-core`, and Cargo only honours `[patch]`
+/// from the root of the workspace being built. Without the checkout's own
+/// table the graph carries two copies of every foundation crate and `View` is
+/// a different type on either side (#498). A relative `waterui_path` stays
+/// relative, so the project remains portable together with its checkout.
+pub fn local_framework_patches(
+    project_root: &Path,
+    waterui_path: &Path,
+) -> io::Result<cargo_toml::PatchSet> {
+    let manifest =
+        cargo_toml::Manifest::from_path(project_root.join(waterui_path).join("Cargo.toml"))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut patches = manifest.patch;
+    for deps in patches.values_mut() {
+        for dependency in deps.values_mut() {
+            if let cargo_toml::Dependency::Detailed(detail) = dependency
+                && let Some(path) = detail.path.take()
+            {
+                detail.path = Some(normalize_path_for_config(&waterui_path.join(path)));
+            }
+        }
+    }
+    Ok(patches)
+}
+
+/// The `[patch]` tables a project's root `Cargo.toml` carries for the mode its
+/// `Water.toml` selects: the framework revision's on a channel, the checkout's
+/// when built against a local `waterui_path`, none on the registry.
+pub fn project_patches(
+    project_root: &Path,
+    manifest: &crate::project::Manifest,
+) -> io::Result<cargo_toml::PatchSet> {
+    match (&manifest.framework, &manifest.waterui_path) {
+        (Some(framework), _) => Ok(framework.patches()),
+        (None, Some(waterui_path)) => {
+            local_framework_patches(project_root, Path::new(waterui_path))
+        }
+        (None, None) => Ok(cargo_toml::PatchSet::default()),
+    }
+}
+
 /// Finds the manifest Cargo would treat as the workspace root for a package at
 /// `project_root`: the nearest ancestor manifest with a `[workspace]` section,
 /// or the package's own manifest when it is standalone.
@@ -3070,10 +3365,10 @@ pub mod ffi {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product, Workspace};
 
     use super::{
-        NativeBackendDependencyPathKind, Path, TemplateContext, TemplateNamespace,
-        WATERUI_FFI_VERSION, WATERUI_VERSION, cargo_semver, cargo_version_req,
-        compute_native_backend_dependency_path, embedded, fs, generated_dev_profile, io,
-        scaffold_dir, write_file_if_changed,
+        NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, TemplateContext,
+        TemplateNamespace, WATERUI_FFI_VERSION, WATERUI_VERSION, cargo_semver, embedded, fs,
+        generated_dependency_from_spec, generated_dev_profile, io, scaffold_dir,
+        write_file_if_changed,
     };
 
     /// Write all FFI companion templates to the given directory.
@@ -3088,6 +3383,62 @@ pub mod ffi {
     ) -> io::Result<()> {
         generate_cargo_toml(base_dir, ctx, package_name).await?;
         scaffold_dir(TemplateNamespace::Ffi, &embedded::FFI, base_dir, ctx).await
+    }
+
+    /// The copy of the application's lockfile the managed crate was last
+    /// seeded from, kept beside the crate's own `Cargo.lock`.
+    pub const LOCKFILE_SEED: &str = "Cargo.lock.seed";
+
+    /// Seed the managed crate's `Cargo.lock` from the application's lockfile.
+    ///
+    /// The managed crate is its own Cargo workspace, so left alone it resolves
+    /// its dependency graph fresh from the registry the first time it is built,
+    /// and the application ships with versions nothing in the project pins or
+    /// tests (#312). Copying the project's lockfile in before Cargo resolves
+    /// keeps every version the project already pins; Cargo then only adds the
+    /// entries the managed crate needs on top (`waterui-ffi` and its own
+    /// dependencies) and prunes the ones it does not use.
+    ///
+    /// Cargo rewrites `Cargo.lock` on every resolution, so the seed cannot be
+    /// compared against it. A copy of the seed is kept as [`LOCKFILE_SEED`]
+    /// instead, and the crate is re-seeded only when the project's lockfile
+    /// differs from that copy, or when the crate has no `Cargo.lock` at all.
+    /// A project without a lockfile has nothing to pin yet and is left to
+    /// resolve on its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lockfiles cannot be read or written.
+    pub async fn seed_lockfile(base_dir: &Path, project_lockfile: &Path) -> io::Result<()> {
+        let seed = match fs::read(project_lockfile).await {
+            Ok(seed) => seed,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                tracing::debug!(
+                    lockfile = %project_lockfile.display(),
+                    "project has no lockfile; the managed FFI crate resolves on its own"
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+
+        let seed_copy = base_dir.join(LOCKFILE_SEED);
+        let managed_lockfile = base_dir.join("Cargo.lock");
+        let seeded_from = match fs::read(&seed_copy).await {
+            Ok(previous) => previous == seed,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        if seeded_from && managed_lockfile.exists() {
+            return Ok(());
+        }
+
+        tracing::debug!(
+            lockfile = %project_lockfile.display(),
+            "seeding the managed FFI crate's Cargo.lock from the project lockfile"
+        );
+        fs::write(&managed_lockfile, &seed).await?;
+        fs::write(&seed_copy, &seed).await
     }
 
     async fn generate_cargo_toml(
@@ -3130,53 +3481,29 @@ pub mod ffi {
             .features
             .insert("dev".to_string(), vec![format!("{}/dev", ctx.crate_name)]);
 
-        let waterui_dependency = ctx.waterui_path.as_ref().map_or_else(
-            || {
-                Dependency::Detailed(Box::new(DependencyDetail {
-                    version: Some(cargo_version_req(WATERUI_VERSION)),
-                    default_features: false,
-                    ..Default::default()
-                }))
-            },
-            |waterui_path| {
-                Dependency::Detailed(Box::new(DependencyDetail {
-                    path: Some(compute_native_backend_dependency_path(
-                        ctx,
-                        waterui_path,
-                        NativeBackendDependencyPathKind::WateruiRoot,
-                    )),
-                    default_features: false,
-                    ..Default::default()
-                }))
-            },
-        );
-        manifest
-            .dependencies
-            .insert("waterui".to_string(), waterui_dependency);
-
-        let ffi_dependency = ctx.waterui_path.as_ref().map_or_else(
-            || {
-                Dependency::Detailed(Box::new(DependencyDetail {
-                    version: Some(cargo_version_req(WATERUI_FFI_VERSION)),
-                    default_features: false,
-                    ..Default::default()
-                }))
-            },
-            |waterui_path| {
-                Dependency::Detailed(Box::new(DependencyDetail {
-                    path: Some(compute_native_backend_dependency_path(
-                        ctx,
-                        waterui_path,
-                        NativeBackendDependencyPathKind::WorkspaceSubdir("ffi"),
-                    )),
-                    default_features: false,
-                    ..Default::default()
-                }))
-            },
-        );
-        manifest
-            .dependencies
-            .insert("waterui-ffi".to_string(), ffi_dependency);
+        for (name, version, path) in [
+            (
+                "waterui",
+                WATERUI_VERSION,
+                NativeBackendDependencyPathKind::WateruiRoot,
+            ),
+            (
+                "waterui-ffi",
+                WATERUI_FFI_VERSION,
+                NativeBackendDependencyPathKind::WorkspaceSubdir("ffi"),
+            ),
+        ] {
+            let dependency = generated_dependency_from_spec(
+                ctx,
+                NativeBackendDependencySpec::new(name, version, &[], Some(path)),
+            )
+            .with_default_features(false)
+            .into_cargo();
+            manifest
+                .dependencies
+                .insert(name.to_owned(), Dependency::Detailed(Box::new(dependency)));
+        }
+        manifest.patch = ctx.framework.patches();
 
         // This crate roots the workspace that also holds preview modules. A preview
         // module is loaded into the support application and resolves its `WaterUI`
@@ -3242,8 +3569,6 @@ pub const PREVIEW_MODULES_DIR: &str = "modules";
 
 /// Root-level templates (Cargo.toml, lib.rs, .gitignore).
 pub mod root {
-    use crate::templates::WATERUI_VERSION;
-
     use super::{
         GeneratedCargoManifest, GeneratedDependencyDetail, GeneratedTargetSection,
         GeneratedWorkspaceSection, Path, TemplateContext, TemplateNamespace, embedded, fs, io,
@@ -3328,7 +3653,17 @@ pub mod root {
             build_dependencies: BTreeMap::new(),
             target: native_target_section(waterui_dependency),
             workspace: GeneratedWorkspaceSection {},
-            patch: cargo_toml::PatchSet::default(),
+            patch: match &ctx.waterui_path {
+                Some(waterui_path) => {
+                    let (project_root, waterui_path) =
+                        (base_dir.to_path_buf(), waterui_path.clone());
+                    smol::unblock(move || {
+                        super::local_framework_patches(&project_root, &waterui_path)
+                    })
+                    .await?
+                }
+                None => ctx.framework.patches(),
+            },
         };
 
         write_generated_cargo_toml(base_dir, super::render_generated_cargo_toml(&manifest)?).await
@@ -3338,7 +3673,7 @@ pub mod root {
         ctx.waterui_path
             .as_ref()
             .map_or_else(
-                || GeneratedDependencyDetail::version(WATERUI_VERSION),
+                || GeneratedDependencyDetail::framework(ctx, "waterui"),
                 |waterui_path| GeneratedDependencyDetail::path(waterui_path),
             )
             .with_default_features(false)
@@ -3365,11 +3700,9 @@ pub mod root {
 
 /// Preview app templates.
 pub mod preview {
-    use crate::templates::{PREVIEW_VERSION, WATERUI_VERSION};
-
     use super::{
         Path, SupportDependencyDetail, SupportDependencyValue, TemplateContext, TemplateNamespace,
-        dependency_path, dependency_version, embedded, io, scaffold_dir, write_support_cargo_toml,
+        dependency_path, embedded, io, scaffold_dir, write_support_cargo_toml,
     };
 
     /// Hash of embedded preview template files and the programmatically
@@ -3474,6 +3807,8 @@ pub mod preview {
                     package: None,
                     version: None,
                     path: Some(super::normalize_path_for_config(waterui_path)),
+                    git: None,
+                    rev: None,
                     default_features: Some(false),
                     features: Vec::new(),
                 }),
@@ -3491,17 +3826,17 @@ pub mod preview {
             // Registry dependencies
             dependencies.insert(
                 "waterui".to_string(),
-                SupportDependencyValue::Detailed(SupportDependencyDetail {
-                    package: None,
-                    version: Some(WATERUI_VERSION.to_string()),
-                    path: None,
-                    default_features: Some(false),
-                    features: Vec::new(),
-                }),
+                SupportDependencyValue::Detailed(
+                    super::GeneratedDependencyDetail::framework(ctx, "waterui")
+                        .with_default_features(false)
+                        .into(),
+                ),
             );
             dependencies.insert(
                 "waterui-preview".to_string(),
-                dependency_version(PREVIEW_VERSION),
+                SupportDependencyValue::Detailed(
+                    super::GeneratedDependencyDetail::framework(ctx, "waterui-preview").into(),
+                ),
             );
         }
         let (app_crate_name, app_path) = ctx.preview_app_dependency.as_ref().ok_or_else(|| {
@@ -3516,6 +3851,8 @@ pub mod preview {
                 package: Some(app_crate_name.to_string()),
                 version: None,
                 path: Some(super::normalize_path_for_config(app_path)),
+                git: None,
+                rev: None,
                 default_features: None,
                 features: vec!["dev".to_string()],
             }),
@@ -3543,6 +3880,7 @@ pub mod preview {
             features,
             dependencies,
             ctx.waterui_path.as_deref(),
+            &ctx.framework,
         )
         .await
     }
@@ -3790,6 +4128,7 @@ pub mod inspector {
             features,
             dependencies,
             ctx.waterui_path.as_deref(),
+            &ctx.framework,
         )
         .await
     }

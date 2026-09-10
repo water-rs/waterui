@@ -7,6 +7,9 @@ use futures::future::{BoxFuture, Shared};
 use tracing::info;
 
 use crate::build::RustLinkage;
+use crate::framework::{
+    FrameworkChannel, ResolvedFramework, validate_local_cli, validate_resolved_cli,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenMode {
@@ -14,12 +17,39 @@ enum OpenMode {
     PreviewBuild,
 }
 
-fn spawn_target_dir_resolution(
+/// What `cargo metadata` reports about the tree a project builds in.
+///
+/// Resolved once per [`Project`] and shared by everything that needs it, so
+/// one `cargo metadata` run serves the target directory and the lockfile.
+#[derive(Debug, Clone)]
+struct CargoLayout {
+    target_dir: PathBuf,
+    /// Root of the Cargo workspace the project belongs to — the project itself
+    /// when it is not a workspace member. This is where its `Cargo.lock` lives.
+    workspace_root: PathBuf,
+}
+
+enum CargoResolution {
+    Local,
+    Locked,
+    Update,
+}
+
+fn spawn_cargo_layout_resolution(
     current_dir: &Path,
-) -> Shared<BoxFuture<'static, Result<PathBuf, String>>> {
+    framework: Option<ResolvedFramework>,
+    local: bool,
+) -> Shared<BoxFuture<'static, Result<CargoLayout, String>>> {
     let current_dir = current_dir.to_path_buf();
+    let mode = if local {
+        CargoResolution::Local
+    } else if framework.is_some() {
+        CargoResolution::Locked
+    } else {
+        CargoResolution::Update
+    };
     smol::spawn(async move {
-        get_target_dir(&current_dir)
+        resolve_cargo_layout(&current_dir, framework, mode)
             .await
             .map_err(|error| error.to_string())
     })
@@ -33,12 +63,69 @@ pub struct Project {
     root: PathBuf,
     manifest: Manifest,
     crate_name: CrateName,
-    target_dir_future: Shared<BoxFuture<'static, Result<PathBuf, String>>>,
+    cargo_layout: Shared<BoxFuture<'static, Result<CargoLayout, String>>>,
     linked_packages: Arc<async_lock::OnceCell<Result<BTreeMap<String, String>, String>>>,
     managed_backends_root: PathBuf,
 }
 
 impl Project {
+    /// Select or update a framework channel and persist its exact dependency selection.
+    ///
+    /// # Errors
+    /// Returns an error when resolution, native-project merging, or dependency verification fails.
+    pub async fn select_channel(
+        path: impl AsRef<Path>,
+        channel: FrameworkChannel,
+    ) -> eyre::Result<Self> {
+        let path = smol::fs::canonicalize(path.as_ref()).await?;
+        let water_path = path.join("Water.toml");
+        let cargo_path = path.join("Cargo.toml");
+        let mut water: toml_edit::DocumentMut =
+            smol::fs::read_to_string(&water_path).await?.parse()?;
+        let previous: Manifest = toml::from_str(&water.to_string())?;
+        let mut cargo: toml_edit::DocumentMut =
+            smol::fs::read_to_string(&cargo_path).await?.parse()?;
+        let crate_name = CrateName::try_from(
+            cargo["package"]["name"]
+                .as_str()
+                .ok_or_else(|| eyre::eyre!("channel selection requires a project Cargo.toml"))?,
+        )
+        .map_err(|error| eyre::eyre!(error))?;
+        let (framework, lockfile) = ResolvedFramework::resolve(channel).await?;
+        let mut next = previous.clone();
+        next.waterui_path = None;
+        next.framework = Some(framework.clone());
+        let mut updates =
+            templates::framework_updates(&path, &previous, &next, &crate_name).await?;
+        framework.update_manifest(&mut cargo, &templates::project_patches(&path, &previous)?)?;
+        water.remove("waterui_path");
+        water["framework"] =
+            toml_edit::Item::Table(toml_edit::ser::to_document(&framework)?.into_table());
+        updates.push((water_path, water.to_string().into_bytes()));
+        updates.push((cargo_path, cargo.to_string().into_bytes()));
+        if let Some(lockfile) = lockfile {
+            updates.push((
+                path.join("Cargo.lock"),
+                framework.cargo_lock(&lockfile)?.to_string().into_bytes(),
+            ));
+            updates.push((path.join("Water.lock"), lockfile));
+        }
+        let mut updates: Vec<_> = updates
+            .into_iter()
+            .map(|(file, contents)| (file, Some(contents)))
+            .collect();
+        if channel == FrameworkChannel::Stable
+            && previous
+                .framework
+                .as_ref()
+                .is_some_and(|previous| previous.channel() != FrameworkChannel::Stable)
+        {
+            updates.push((path.join("Water.lock"), None));
+        }
+        apply_channel_selection(&path, framework, updates).await?;
+        Self::open_for_preview_build(path).await.map_err(Into::into)
+    }
+
     /// Run the `WaterUI` project on the specified device.
     ///
     /// This method handles building, packaging, and running the project.
@@ -149,7 +236,24 @@ impl Project {
     ///
     /// Returns an error when Cargo metadata cannot resolve the target directory.
     pub async fn target_dir(&self) -> eyre::Result<PathBuf> {
-        self.target_dir_future
+        Ok(self.cargo_layout().await?.target_dir)
+    }
+
+    /// The lockfile the application builds against.
+    ///
+    /// The workspace `Cargo.lock` when the project is a workspace member,
+    /// otherwise the project's own. It need not exist yet: a project that has
+    /// never been resolved has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot resolve the workspace.
+    pub async fn lockfile_path(&self) -> eyre::Result<PathBuf> {
+        Ok(self.cargo_layout().await?.workspace_root.join("Cargo.lock"))
+    }
+
+    async fn cargo_layout(&self) -> eyre::Result<CargoLayout> {
+        self.cargo_layout
             .clone()
             .await
             .map_err(|error| eyre::eyre!(error))
@@ -382,11 +486,11 @@ impl Project {
     /// omits a package referenced by that graph.
     pub async fn links_runtime_package(&self, package_name: &str) -> eyre::Result<bool> {
         let project_root = self.root.clone();
-        let target_dir_future = self.target_dir_future.clone();
+        let cargo_layout = self.cargo_layout.clone();
         let packages = self
             .linked_packages
             .get_or_init(|| async move {
-                target_dir_future.await?;
+                cargo_layout.await?;
                 resolve_linked_runtime_packages(project_root)
                     .await
                     .map_err(|error| error.to_string())
@@ -608,6 +712,14 @@ pub enum FailToOpenProject {
     #[error("Failed to get Cargo metadata: {0}")]
     TargetDirError(#[from] cargo_metadata::Error),
 
+    /// The selected framework could not be validated for this CLI.
+    #[error("Framework compatibility check failed: {0}")]
+    Framework(eyre::Report),
+    /// The project's `[patch]` tables could not be brought in line with the
+    /// local checkout's.
+    #[error("Failed to refresh the [patch] tables from the local checkout: {0}")]
+    LocalPatches(eyre::Report),
+
     /// Missing crate name in Cargo.toml.
     #[error("Invalid Cargo.toml: missing crate name")]
     MissingCrateName,
@@ -639,6 +751,9 @@ pub enum FailToOpenProject {
 /// Errors that can occur when creating a new `WaterUI` project.
 #[derive(Debug, thiserror::Error)]
 pub enum FailToCreateProject {
+    /// Failed to resolve a coherent framework distribution.
+    #[error("Failed to resolve framework: {0}")]
+    Framework(eyre::Report),
     /// The project directory already exists.
     #[error("Directory already exists: {0}")]
     DirectoryExists(PathBuf),
@@ -679,8 +794,49 @@ pub struct CreateOptions {
     pub package_type: PackageType,
     /// Path to local `WaterUI` repository for development.
     pub waterui_path: Option<PathBuf>,
+    /// Framework channel, mutually exclusive with a local source path.
+    pub channel: Option<FrameworkChannel>,
     /// Author name for Cargo.toml.
     pub author: String,
+}
+
+impl CreateOptions {
+    fn crate_name(&self) -> Result<CrateName, FailToCreateProject> {
+        let name = self
+            .name
+            .chars()
+            .map(|character| {
+                if character.is_alphanumeric() {
+                    character.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        CrateName::try_from(name).map_err(|error| {
+            FailToCreateProject::Scaffold(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                error,
+            ))
+        })
+    }
+
+    async fn resolve_framework(
+        &mut self,
+    ) -> eyre::Result<(Option<ResolvedFramework>, Option<Vec<u8>>)> {
+        if let Some(path) = &self.waterui_path {
+            if self.channel.is_some() {
+                eyre::bail!("a framework channel and a local source path are mutually exclusive");
+            }
+            let root = smol::fs::canonicalize(path).await?;
+            validate_local_cli(&root).await?;
+            self.waterui_path = Some(root);
+            return Ok((None, None));
+        }
+        let (framework, lockfile) =
+            ResolvedFramework::resolve(self.channel.unwrap_or_default()).await?;
+        Ok((Some(framework), lockfile))
+    }
 }
 
 impl Project {
@@ -713,6 +869,14 @@ impl Project {
                 .with_browser_engine(browser_engine);
 
         templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
+
+        let lockfile = self
+            .lockfile_path()
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        templates::ffi::seed_lockfile(&self.ffi_crate_path(), &lockfile)
             .await
             .map_err(crate::backend::FailToInitBackend::Io)
     }
@@ -771,7 +935,7 @@ impl Project {
     /// - `FailToCreateProject::SaveManifest`: If saving the manifest fails.
     pub async fn create(
         path: impl AsRef<Path>,
-        options: CreateOptions,
+        mut options: CreateOptions,
     ) -> Result<Self, FailToCreateProject> {
         let path = path.as_ref().to_path_buf();
 
@@ -780,34 +944,23 @@ impl Project {
             return Err(FailToCreateProject::DirectoryExists(path));
         }
 
+        // Derive crate name from display name
+        let crate_name = options.crate_name()?;
+        let (framework, lockfile) = options
+            .resolve_framework()
+            .await
+            .map_err(FailToCreateProject::Framework)?;
+
         // Create project directory
         smol::fs::create_dir_all(&path)
             .await
             .map_err(FailToCreateProject::CreateDir)?;
 
-        // Derive crate name from display name
-        let crate_name = CrateName::try_from(
-            options
-                .name
-                .chars()
-                .map(|c| {
-                    if c.is_alphanumeric() {
-                        c.to_ascii_lowercase()
-                    } else {
-                        '_'
-                    }
-                })
-                .collect::<String>(),
-        )
-        .map_err(|error| {
-            FailToCreateProject::Scaffold(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                error,
-            ))
-        })?;
-
         // Build template context for root files
-        let ctx = TemplateContext::for_create_options(&options, crate_name.clone());
+        let mut ctx = TemplateContext::for_create_options(&options, crate_name.clone());
+        if let Some(framework) = &framework {
+            ctx.framework = framework.clone();
+        }
 
         // The assets root is derived once and shared with both the scaffold and
         // the manifest, so the created directory and `Water.toml` cannot disagree.
@@ -817,17 +970,29 @@ impl Project {
         templates::root::scaffold(&path, &ctx, &assets_path)
             .await
             .map_err(FailToCreateProject::Scaffold)?;
+        if let Some(lockfile) = lockfile {
+            let contents = ctx
+                .framework
+                .cargo_lock(&lockfile)
+                .map_err(FailToCreateProject::Framework)?
+                .to_string();
+            smol::fs::write(path.join("Water.lock"), lockfile)
+                .await
+                .map_err(FailToCreateProject::Scaffold)?;
+            smol::fs::write(path.join("Cargo.lock"), contents)
+                .await
+                .map_err(FailToCreateProject::Scaffold)?;
+        }
 
         // Build manifest
-        let package_type = options.package_type;
         let mut backends = Backends::default();
-        if package_type == PackageType::App {
+        if options.package_type == PackageType::App {
             backends.set_path("backends");
         }
 
         let manifest = Manifest {
             package: Package {
-                package_type,
+                package_type: options.package_type,
                 name: options.name.clone(),
                 bundle_identifier: options.bundle_identifier.clone(),
                 assets_path,
@@ -838,6 +1003,7 @@ impl Project {
                 .waterui_path
                 .as_ref()
                 .map(|p| p.display().to_string()),
+            framework,
             permissions: BTreeMap::default(),
             app: None,
             theme: None,
@@ -857,12 +1023,22 @@ impl Project {
             path.join(manifest.backends.path())
         };
 
-        let target_dir_future = spawn_target_dir_resolution(&path);
+        let cargo_layout = if let Some(framework) = &manifest.framework {
+            let layout =
+                resolve_cargo_layout(&path, Some(framework.clone()), CargoResolution::Update)
+                    .await
+                    .map_err(FailToCreateProject::Framework)?;
+            futures::future::ready(Ok::<CargoLayout, String>(layout))
+                .boxed()
+                .shared()
+        } else {
+            spawn_cargo_layout_resolution(&path, None, true)
+        };
         Ok(Self {
             root: path,
             manifest,
             crate_name,
-            target_dir_future,
+            cargo_layout,
             linked_packages: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
         })
@@ -1117,6 +1293,37 @@ impl Project {
         Self::open_with_mode(path, OpenMode::PreviewBuild).await
     }
 
+    /// Make a local-checkout project's `[patch]` tables the checkout's.
+    ///
+    /// Cargo applies `[patch]` only from the workspace it builds, so a project
+    /// on a `waterui_path` carries a copy of the checkout's tables, and the
+    /// copy has to follow the checkout: a fork pin moves, an entry is added or
+    /// dropped, and a project scaffolded earlier would otherwise build a graph
+    /// the checkout no longer produces, silently. The manifest is rewritten
+    /// only when the tables differ, so an up-to-date project stays untouched.
+    async fn refresh_local_patches(project_root: &Path, waterui_path: &Path) -> eyre::Result<()> {
+        let project_root = project_root.to_path_buf();
+        let waterui_path = waterui_path.to_path_buf();
+        unblock(move || {
+            let cargo_path = project_root.join("Cargo.toml");
+            let text = std::fs::read_to_string(&cargo_path)?;
+            let current = CargoManifest::from_slice(text.as_bytes())?.patch;
+            let next = templates::local_framework_patches(&project_root, &waterui_path)?;
+            if current == next {
+                return Ok(());
+            }
+            let mut document: toml_edit::DocumentMut = text.parse()?;
+            crate::framework::rewrite_patch_tables(&mut document, &current, &next)?;
+            std::fs::write(&cargo_path, document.to_string())?;
+            info!(
+                path = %cargo_path.display(),
+                "Refreshed the [patch] tables from the local checkout"
+            );
+            Ok(())
+        })
+        .await
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn open_with_mode(
         path: impl AsRef<Path>,
@@ -1131,6 +1338,19 @@ impl Project {
         let manifest = Manifest::open(path.join("Water.toml"))
             .await
             .map_err(FailToOpenProject::Manifest)?;
+        if let Some(framework) = &manifest.framework {
+            framework
+                .validate_cli()
+                .map_err(FailToOpenProject::Framework)?;
+        }
+        if let Some(local) = &manifest.waterui_path {
+            validate_local_cli(&path.join(local))
+                .await
+                .map_err(FailToOpenProject::Framework)?;
+            Self::refresh_local_patches(&path, Path::new(local))
+                .await
+                .map_err(FailToOpenProject::LocalPatches)?;
+        }
         info!(
             path = %path.display(),
             open_mode = ?open_mode,
@@ -1174,6 +1394,16 @@ impl Project {
             return Err(FailToOpenProject::BackendsNotAllowedInPlayground);
         }
 
+        let cargo_layout = spawn_cargo_layout_resolution(
+            &path,
+            manifest.framework.clone(),
+            manifest.waterui_path.is_some(),
+        );
+        cargo_layout
+            .clone()
+            .await
+            .map_err(|error| FailToOpenProject::Framework(eyre::eyre!(error)))?;
+
         let managed_backends_root = if is_playground {
             let build_cache_start = std::time::Instant::now();
             let root = crate::water_dir::ensure_project_build_cache(&path)
@@ -1190,12 +1420,11 @@ impl Project {
             path.join(manifest.backends.path())
         };
 
-        let target_dir_future = spawn_target_dir_resolution(&path);
         let mut project = Self {
             root: path,
             manifest,
             crate_name,
-            target_dir_future,
+            cargo_layout,
             linked_packages: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
         };
@@ -1290,19 +1519,88 @@ impl Project {
     }
 }
 
-async fn get_target_dir(current_dir: &Path) -> Result<PathBuf, cargo_metadata::Error> {
-    let current_dir = current_dir.to_path_buf();
-    let metadata = unblock(|| {
-        cargo_metadata::MetadataCommand::new()
-            .no_deps()
-            .current_dir(current_dir)
-            .exec()
+async fn apply_channel_selection(
+    root: &Path,
+    framework: ResolvedFramework,
+    updates: Vec<(PathBuf, Option<Vec<u8>>)>,
+) -> eyre::Result<()> {
+    let mut previous = BTreeMap::new();
+    for file in updates
+        .iter()
+        .map(|(file, _)| file.clone())
+        .chain([root.join("Cargo.lock")])
+    {
+        let contents = match smol::fs::read(&file).await {
+            Ok(contents) => Some(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        previous.insert(file, contents);
+    }
+    let result = async {
+        for (file, contents) in &updates {
+            write_channel_file(file, contents.as_deref()).await?;
+        }
+        resolve_cargo_layout(root, Some(framework), CargoResolution::Update).await?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        for (file, contents) in previous {
+            write_channel_file(&file, contents.as_deref())
+                .await
+                .map_err(|restore| {
+                    eyre::eyre!("{error}; could not restore {}: {restore}", file.display())
+                })?;
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn write_channel_file(path: &Path, contents: Option<&[u8]>) -> std::io::Result<()> {
+    match contents {
+        Some(contents) => smol::fs::write(path, contents).await,
+        None => match smol::fs::remove_file(path).await {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        },
+    }
+}
+
+async fn resolve_cargo_layout(
+    current_dir: &Path,
+    framework: Option<ResolvedFramework>,
+    mode: CargoResolution,
+) -> eyre::Result<CargoLayout> {
+    let root = current_dir.to_path_buf();
+    let metadata = unblock(move || {
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command.current_dir(root);
+        match mode {
+            CargoResolution::Local => {
+                command.no_deps();
+            }
+            CargoResolution::Locked => {
+                command.other_options(vec!["--locked".to_string()]);
+            }
+            CargoResolution::Update => {}
+        }
+        command.exec()
     })
     .await?;
+    validate_resolved_cli(&metadata)?;
+    if let Some(framework) = framework
+        && framework.channel() != FrameworkChannel::Stable
+    {
+        let lockfile = smol::fs::read(current_dir.join("Water.lock")).await?;
+        framework.validate_dependencies(&metadata, &lockfile)?;
+    }
 
-    let target_dir = metadata.target_directory.as_std_path();
-
-    Ok(target_dir.to_path_buf())
+    Ok(CargoLayout {
+        target_dir: metadata.target_directory.into_std_path_buf(),
+        workspace_root: metadata.workspace_root.into_std_path_buf(),
+    })
 }
 
 async fn resolve_linked_runtime_packages(
@@ -1405,6 +1703,9 @@ pub struct Manifest {
     /// When set, all backends will use this path instead of the published versions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waterui_path: Option<String>,
+    /// Exact framework and backend selection, resolved only by explicit version operations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framework: Option<ResolvedFramework>,
     /// Permission configuration for playground projects.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub permissions: BTreeMap<PermissionKey, PermissionEntry>,
@@ -1501,6 +1802,7 @@ impl Manifest {
             package,
             backends: Backends::default(),
             waterui_path: None,
+            framework: None,
             permissions: BTreeMap::default(),
             app: None,
             theme: None,
@@ -1689,6 +1991,98 @@ pub enum PackageType {
 }
 
 #[cfg(test)]
+mod channel_tests {
+    use super::*;
+
+    #[test]
+    fn local_framework_requirement_is_checked_before_project_io() {
+        smol::block_on(async {
+            let directory = tempfile::tempdir().unwrap();
+            let framework_root = directory.path().join("framework");
+            let project_root = directory.path().join("consumer");
+            smol::fs::create_dir(&framework_root).await.unwrap();
+            let mut minimum: cargo_toml::SemVer = env!("CARGO_PKG_VERSION").parse().unwrap();
+            minimum.major += 1;
+            let mut metadata = toml::toml! {
+                [package.metadata.waterui]
+                minimum-cli-version = "0.1.4"
+            };
+            metadata["package"]["metadata"]["waterui"]["minimum-cli-version"] =
+                toml::Value::String(minimum.to_string());
+            smol::fs::write(
+                framework_root.join("Cargo.toml"),
+                toml::to_string(&metadata).unwrap(),
+            )
+            .await
+            .unwrap();
+            let bundle_identifier =
+                BundleIdentifier::try_from("dev.waterui.compatibility").unwrap();
+            let options = CreateOptions {
+                name: "Compatibility".into(),
+                bundle_identifier: bundle_identifier.clone(),
+                package_type: PackageType::Playground,
+                waterui_path: Some(framework_root),
+                channel: None,
+                author: String::new(),
+            };
+            let error = Project::create(&project_root, options)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&format!("requires waterui-cli >= {minimum}")));
+            assert!(error.contains("cargo install --path cli --locked"));
+            assert!(!project_root.exists());
+
+            smol::fs::create_dir(&project_root).await.unwrap();
+            let mut manifest = Manifest::new(Package {
+                name: "Compatibility".into(),
+                bundle_identifier,
+                package_type: PackageType::Playground,
+                assets_path: default_assets_path(),
+                accessory: false,
+            });
+            manifest.waterui_path = Some("../framework".into());
+            manifest.save(&project_root).await.unwrap();
+            let error = Project::open_for_preview_build(&project_root)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&format!("requires waterui-cli >= {minimum}")));
+            assert!(!project_root.join("Cargo.lock").exists());
+        });
+    }
+
+    #[test]
+    fn failed_channel_selection_preserves_project_files() {
+        smol::block_on(async {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            let originals = [
+                ("Cargo.toml", b"original manifest".as_slice()),
+                ("Cargo.lock", b"original dependency lock".as_slice()),
+                ("Water.toml", b"original project configuration".as_slice()),
+            ];
+            for (name, contents) in originals {
+                smol::fs::write(root.join(name), contents).await.unwrap();
+            }
+            let updates = ["Cargo.toml", "Cargo.lock", "Water.toml", "Water.lock"]
+                .into_iter()
+                .map(|name| (root.join(name), Some(b"invalid selected manifest".to_vec())))
+                .collect();
+            assert!(
+                apply_channel_selection(root, ResolvedFramework::stable(), updates)
+                    .await
+                    .is_err()
+            );
+            for (name, contents) in originals {
+                assert_eq!(smol::fs::read(root.join(name)).await.unwrap(), contents);
+            }
+            assert!(!root.join("Water.lock").exists());
+        });
+    }
+}
+
+#[cfg(test)]
 mod webview_backend_tests {
     use std::path::Path;
 
@@ -1821,6 +2215,16 @@ mod webview_backend_tests {
             !chromium.contains_key("waterui-browser-wpe"),
             "Chromium example graph: {chromium:#?}"
         );
+        // A Chromium-only application shows no standard `WebView`, so
+        // `webview_enabled` must be false for it: the Apple scaffold reads this
+        // graph to decide whether to link the `WaterUICefWebView` framework, and
+        // the CEF crate's `chromium` feature used to drag `waterui-webview` in
+        // for nothing more than a watcher registry and an accessibility helper.
+        assert!(
+            !chromium.contains_key("waterui-webview"),
+            "a Chromium-only application must not link the standard WebView \
+             component: {chromium:#?}"
+        );
 
         let webview = smol::block_on(resolve_linked_runtime_packages(
             repository.join("examples/webview"),
@@ -1905,6 +2309,7 @@ mod scaffold_tests {
                     .expect("bundle identifier"),
                 package_type: PackageType::Playground,
                 waterui_path: None,
+                channel: None,
                 author: "Lexo Liu".to_string(),
             },
         ))
@@ -1924,6 +2329,62 @@ mod scaffold_tests {
         assert!(
             assets.join("README.md").is_file(),
             "a tracked file keeps the assets directory present in git"
+        );
+    }
+}
+
+#[cfg(test)]
+mod local_patch_tests {
+    use std::path::Path;
+
+    use super::Project;
+
+    /// A project on a `waterui_path` mirrors the checkout's `[patch]` tables
+    /// every time it opens: entries the checkout dropped disappear, moved ones
+    /// follow, and a project already in line is left byte-for-byte alone.
+    #[test]
+    fn a_local_checkout_project_follows_the_checkouts_patch_tables() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let checkout = directory.path().join("waterui");
+        std::fs::create_dir_all(&checkout).expect("checkout dir");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            include_str!("../../tests/fixtures/local_checkout_patches.toml"),
+        )
+        .expect("checkout manifest");
+        let app = directory.path().join("app");
+        std::fs::create_dir_all(&app).expect("project dir");
+        let cargo_path = app.join("Cargo.toml");
+        std::fs::write(
+            &cargo_path,
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nwaterui = { path = \"../waterui\" }\n\n[patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\nstale = { path = \"../elsewhere/stale\" }\n",
+        )
+        .expect("project manifest");
+
+        smol::block_on(Project::refresh_local_patches(
+            &app,
+            Path::new("../waterui"),
+        ))
+        .expect("tables refresh");
+        let refreshed = std::fs::read_to_string(&cargo_path).expect("refreshed manifest");
+        let manifest = cargo_toml::Manifest::from_str(&refreshed).expect("manifest parses");
+        let crates_io = &manifest.patch["crates-io"];
+        let cargo_toml::Dependency::Detailed(core) = &crates_io["waterui-core"] else {
+            panic!("the core patch is a path dependency");
+        };
+        assert_eq!(core.path.as_deref(), Some("../waterui/core"));
+        assert!(!crates_io.contains_key("stale"));
+        assert!(crates_io.contains_key("vello"));
+        assert!(refreshed.starts_with("[package]"));
+
+        smol::block_on(Project::refresh_local_patches(
+            &app,
+            Path::new("../waterui"),
+        ))
+        .expect("second refresh");
+        assert_eq!(
+            std::fs::read_to_string(&cargo_path).expect("manifest after the second refresh"),
+            refreshed
         );
     }
 }

@@ -118,10 +118,11 @@ impl GtkApp {
     /// Panics if the GPU runtime cannot be created.
     #[must_use = "the returned value is the process exit status"]
     pub fn run<V: View + Clone + 'static>(self, view: V, env: Environment) -> i32 {
-        // `env` is only mutated when the system WebView bridge installs its
-        // controller into it.
-        #[cfg(feature = "webview-system")]
         let mut env = env;
+        // GTK draws text with Pango and owns no `parley` collection, so a
+        // component that typesets text itself gets the system's fonts here,
+        // once for the application rather than once per view.
+        waterui_text::install_system_font_collection(&mut env);
         #[cfg(feature = "webview-system")]
         ensure_webview_controller(&mut env);
         let env = env;
@@ -165,10 +166,11 @@ impl GtkApp {
     #[must_use = "the returned value is the process exit status"]
     pub fn run_app(self, waterui_app: App) -> i32 {
         let (windows, _menu_bar, env) = waterui_app.into_parts();
-        // `env` is only mutated when the system WebView bridge installs its
-        // controller into it.
-        #[cfg(feature = "webview-system")]
         let mut env = env;
+        // GTK draws text with Pango and owns no `parley` collection, so a
+        // component that typesets text itself gets the system's fonts here,
+        // once for the application rather than once per view.
+        waterui_text::install_system_font_collection(&mut env);
         let main_window = windows
             .into_iter()
             .next()

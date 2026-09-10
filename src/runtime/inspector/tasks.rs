@@ -67,25 +67,11 @@ struct Totals {
 
 impl TaskProbe {
     /// Creates a probe publishing to `hub` once per `window`.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            dead_code,
-            reason = "browser inspector initialization returns Unsupported"
-        )
-    )]
     pub(super) fn new(hub: Arc<EventHub>, window: Duration, stall_ratio: f64) -> Self {
         Self::with_clock(hub, window, stall_ratio, Arc::new(Instant::now))
     }
 
     /// Creates a probe reading time from `clock`.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            dead_code,
-            reason = "browser inspector initialization returns Unsupported"
-        )
-    )]
     fn with_clock(hub: Arc<EventHub>, window: Duration, stall_ratio: f64, clock: Clock) -> Self {
         let started = clock();
         Self {

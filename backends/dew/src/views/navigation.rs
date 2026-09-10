@@ -732,21 +732,33 @@ fn render_destination(
     });
     let bottom = entry.chrome.bottom_layout(renderer.state_cell());
 
-    let bar_height = bar.as_ref().map_or(0.0, |layout| layout.height);
-    let bottom_height = bottom.as_ref().map_or(0.0, |(height, _)| *height);
+    // Where the chrome stops and the content starts is one edge, so it is
+    // computed once — on layout's `f32` grid, the coarser of the two the
+    // backend works in. Painting the bar to its `f64` height and starting the
+    // content at that height narrowed to `f32` describes two edges up to half
+    // an ULP apart, which is a hairline of window background under the bar or a
+    // hairline of content painted beneath it, depending on which way the height
+    // rounds. Invisible while every bar measured to a round number; a title
+    // whose font puts the height off that grid shows it immediately.
+    let top_seam = f64::from(to_f32(
+        bounds.y0 + bar.as_ref().map_or(0.0, |layout| layout.height),
+    ));
+    let bottom_seam = f64::from(to_f32(
+        bounds.y1 - bottom.as_ref().map_or(0.0, |(height, _)| *height),
+    ));
     if let Some(layout) = &bar {
-        let rect = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + bar_height);
+        let rect = Rect::new(bounds.x0, bounds.y0, bounds.x1, top_seam);
         entry.chrome.render(renderer, ctx, rect, layout);
     }
-    if let Some((height, sizes)) = &bottom {
-        let rect = Rect::new(bounds.x0, bounds.y1 - height, bounds.x1, bounds.y1);
+    if let Some((_, sizes)) = &bottom {
+        let rect = Rect::new(bounds.x0, bottom_seam, bounds.x1, bounds.y1);
         entry.chrome.render_bottom(renderer, ctx, rect, sizes);
     }
     let content = LayoutRect::new(
-        Point::new(to_f32(bounds.x0), to_f32(bounds.y0 + bar_height)),
+        Point::new(to_f32(bounds.x0), to_f32(top_seam)),
         Size::new(
             to_f32(bounds.width()),
-            to_f32((bounds.height() - bar_height - bottom_height).max(0.0)),
+            to_f32((bottom_seam - top_seam).max(0.0)),
         ),
     );
     entry.content.render(renderer, ctx.child(content));

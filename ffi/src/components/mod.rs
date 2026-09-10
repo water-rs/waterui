@@ -37,11 +37,14 @@ pub use platform::{dynamic, icon, webview};
 pub use typography::text;
 #[cfg(all(feature = "android-jni", feature = "gpu"))]
 pub(crate) use visual::gpu_runtime;
-#[cfg(feature = "gpu")]
-pub use visual::gpu_surface;
+#[cfg(all(target_os = "android", feature = "gpu"))]
+pub use visual::hardware_buffer;
+pub use visual::picture;
 pub use visual::view_renderer;
-#[cfg(all(feature = "c-api", feature = "gpu"))]
-pub use visual::{applied_filter, view_effect};
+#[cfg(feature = "gpu")]
+pub use visual::{applied_filter, capture_format, view_effect};
+#[cfg(feature = "gpu")]
+pub use visual::{gpu_surface, gpu_surface_input};
 
 /// Returns the type ID for empty views as a 128-bit value.
 #[unsafe(no_mangle)]
