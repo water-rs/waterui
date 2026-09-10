@@ -66,10 +66,6 @@ name = "waterui-icon"
 git_tag_name = "icon-v{{ version }}"
 
 [[package]]
-name = "waterui-image"
-git_tag_name = "image-v{{ version }}"
-
-[[package]]
 name = "waterui-video"
 git_tag_name = "video-v{{ version }}"
 
