@@ -12,7 +12,7 @@ use waterui_graphics::color::{
     MutedForegroundColor, ResolvedColor, Srgb, SurfaceColor, SurfaceVariantColor,
 };
 use waterui_text::font::{
-    Body, Caption, Font, FontWeight, Footnote, Headline, ResolvedFont, Subheadline, Title,
+    Body, Caption, Font, FontSlot, Footnote, Headline, ResolvedFont, Subheadline, Title,
 };
 use waterui_text::styled::StyledStr;
 
@@ -46,26 +46,8 @@ pub const TRACK: Color = Color::from_rgb8(229, 229, 234);
 /// Movable control knobs: toggle and slider thumbs.
 pub const THUMB: Color = Color::WHITE;
 
-/// Body text: the size and weight `text("…")` shapes at.
-pub const BODY_FONT: ResolvedFont = ResolvedFont::new(16.0, FontWeight::Normal);
-
-/// Screen and section titles.
-pub const TITLE_FONT: ResolvedFont = ResolvedFont::new(22.0, FontWeight::Normal);
-
-/// The most prominent line on a screen.
-pub const HEADLINE_FONT: ResolvedFont = ResolvedFont::new(24.0, FontWeight::Normal);
-
-/// Body-sized text carrying a heading's emphasis.
-pub const SUBHEADLINE_FONT: ResolvedFont = ResolvedFont::new(16.0, FontWeight::Medium);
-
-/// Secondary annotations beside content.
-pub const CAPTION_FONT: ResolvedFont = ResolvedFont::new(12.0, FontWeight::Normal);
-
-/// The smallest supporting text.
-pub const FOOTNOTE_FONT: ResolvedFont = ResolvedFont::new(11.0, FontWeight::Medium);
-
-/// Installs dew's built-in type scale for every font slot the application's
-/// theme left unset.
+/// Installs the framework's default type scale for every font slot the
+/// application's theme left unset.
 ///
 /// Font slots are the one part of the palette dew cannot resolve at draw time:
 /// a colour an application never chose falls back to this module's constants
@@ -79,23 +61,23 @@ pub const FOOTNOTE_FONT: ResolvedFont = ResolvedFont::new(11.0, FontWeight::Medi
 ///
 /// [`DewRenderer::render_tree`]: crate::DewRenderer::render_tree
 ///
-/// The scale matches the one every other `WaterUI` backend defaults to, so the
-/// same view has the same proportions on a panel and on a desktop window. No
-/// family is named: firmware shapes with the faces its board bundles, and a
-/// desktop simulator with the system collection.
+/// The scale is the shared [`FontSlot::DEFAULT`] values every `WaterUI`
+/// backend installs, so the same view has the same proportions on a panel and
+/// on a desktop window. No family is named: firmware shapes with the faces
+/// its board bundles, and a desktop simulator with the system collection.
 pub fn install_default_fonts(env: &mut Environment) {
-    install_default::<Body>(env, BODY_FONT);
-    install_default::<Title>(env, TITLE_FONT);
-    install_default::<Headline>(env, HEADLINE_FONT);
-    install_default::<Subheadline>(env, SUBHEADLINE_FONT);
-    install_default::<Caption>(env, CAPTION_FONT);
-    install_default::<Footnote>(env, FOOTNOTE_FONT);
+    install_default::<Body>(env);
+    install_default::<Title>(env);
+    install_default::<Headline>(env);
+    install_default::<Subheadline>(env);
+    install_default::<Caption>(env);
+    install_default::<Footnote>(env);
 }
 
-fn install_default<T: 'static>(env: &mut Environment, font: ResolvedFont) {
+fn install_default<T: FontSlot + 'static>(env: &mut Environment) {
     if env.query::<T, Computed<ResolvedFont>>().is_none() {
         env.insert(Store::<T, Computed<ResolvedFont>>::new(Computed::constant(
-            font,
+            T::DEFAULT,
         )));
     }
 }

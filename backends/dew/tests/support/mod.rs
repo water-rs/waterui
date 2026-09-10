@@ -6,7 +6,6 @@ use waterui_backend_core::frame_signals::FrameSignals;
 use waterui_backend_core::time::Instant;
 use waterui_core::Environment;
 use waterui_dew::{DewRenderer, DisplayList, DrawCommand, FontSources, PlacedCommand};
-use waterui_text::font::{FontWeight, ResolvedFont};
 
 use std::path::PathBuf;
 
@@ -19,15 +18,7 @@ pub fn test_environment() -> Environment {
 
     let mut environment = Environment::new();
     Theme::new()
-        .fonts(
-            FontSettings::new()
-                .body(ResolvedFont::new(16.0, FontWeight::Normal))
-                .title(ResolvedFont::new(24.0, FontWeight::Normal))
-                .headline(ResolvedFont::new(22.0, FontWeight::Normal))
-                .subheadline(ResolvedFont::new(20.0, FontWeight::Normal))
-                .caption(ResolvedFont::new(12.0, FontWeight::Normal))
-                .footnote(ResolvedFont::new(11.0, FontWeight::Normal)),
-        )
+        .fonts(FontSettings::default_scale())
         .install(&mut environment);
     environment
 }
