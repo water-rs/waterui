@@ -224,6 +224,23 @@ pub struct WuiGpuCaptureFence {
     submission: wgpu::SubmissionIndex,
 }
 
+impl WuiGpuCaptureFence {
+    /// Wraps one queue submission as the token native waits on.
+    ///
+    /// Every external capture path ends here, whichever platform primitive it
+    /// started from, so `waterui_gpu_capture_fence_on_complete` is the one way a
+    /// backend learns that the GPU is finished with the memory it lent us.
+    pub(crate) const fn new(
+        completion_driver: GpuSubmissionCompletionDriver,
+        submission: wgpu::SubmissionIndex,
+    ) -> Self {
+        Self {
+            completion_driver,
+            submission,
+        }
+    }
+}
+
 /// Completion function invoked after an external GPU capture submission.
 pub type WuiGpuCaptureCompletionCallback = unsafe extern "C" fn(context: *mut c_void);
 
@@ -1016,10 +1033,10 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
         state.redraw_handle.request_redraw();
     }
     let submission = state.runtime.context().queue.submit([]);
-    Box::into_raw(Box::new(WuiGpuCaptureFence {
-        completion_driver: state.runtime.context().submission_completion_driver(),
+    Box::into_raw(Box::new(WuiGpuCaptureFence::new(
+        state.runtime.context().submission_completion_driver(),
         submission,
-    }))
+    )))
 }
 
 /// Schedules one external capture submission completion and consumes its fence.
@@ -1031,8 +1048,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
 ///
 /// # Safety
 ///
-/// `fence` must be a valid owning pointer returned by
-/// [`waterui_gpu_surface_render_to_metal_texture`] and must be consumed once.
+/// `fence` must be a valid owning pointer returned by an external capture entry
+/// point — `waterui_gpu_surface_render_to_metal_texture` on Apple,
+/// `waterui_applied_filter_set_capture_hardware_buffer` or
+/// `waterui_view_effect_set_input_hardware_buffer` on Android — and must be
+/// consumed once.
 /// `context`, `callback`, and `drop` must remain valid until completion; Rust
 /// consumes the context and releases it through `drop`.
 #[unsafe(no_mangle)]

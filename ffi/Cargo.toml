@@ -66,6 +66,10 @@ ndk-context = "0.1.1"
 jni = "0.22.4"
 ndk-sys = "0.6"
 wgpu-hal = { workspace = true, features = ["vulkan"], optional = true }
+# The Vulkan side of Android view capture: an `AHardwareBuffer` handed over from
+# Kotlin is imported as a raw `VkImage` on the very `ash::Device` wgpu-hal owns,
+# and copied into the wgpu capture texture from there.
+ash = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 tracing-oslog = "0.3"
@@ -98,6 +102,7 @@ gpu = [
     "dep:waterui-svg",
     "dep:wgpu",
     "dep:wgpu-hal",
+    "dep:ash",
     "dep:waterui-video-gpu",
     "dep:objc2-metal",
     "dep:pollster",

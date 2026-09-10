@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use alloc::boxed::Box;
 use alloc::vec;
-// Only the Apple Metal input-import path drives asynchronous effect setup.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+// Only the platform input-import paths drive asynchronous effect setup.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 use executor_core::spawn_local;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -33,7 +33,7 @@ use {
 
 use waterui_graphics::RedrawHandle;
 use waterui_graphics::shared_context::{GpuRuntime, reclaim_device};
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 use waterui_graphics::view_effect::ViewEffectContext;
 use waterui_graphics::view_effect::{
     OutputSize, ViewEffectErased, ViewEffectInput, ViewEffectOutput,
@@ -166,7 +166,7 @@ struct ViewEffectRendererWrapper {
 }
 
 // Generate waterui_view_effect_id() and waterui_force_as_view_effect()
-ffi_view!(ViewEffectErased, WuiViewEffect, view_effect, all(), any());
+ffi_view!(ViewEffectErased, WuiViewEffect, view_effect);
 
 /// Opaque state held by the native backend after initialization.
 pub struct WuiViewEffectState {
@@ -196,6 +196,9 @@ pub struct WuiViewEffectState {
     output_height: u32,
     /// Output size configuration
     output_size: OutputSize,
+    /// Vulkan imports of the Android capture buffers handed to this effect.
+    #[cfg(target_os = "android")]
+    hardware_buffer_imports: super::hardware_buffer::HardwareBufferImports,
 }
 
 impl core::fmt::Debug for WuiViewEffectState {
@@ -246,6 +249,9 @@ pub unsafe extern "C" fn waterui_view_effect_create(
     // SAFETY: the caller contract requires `env` to be a valid handle alive for this
     // call; it is only borrowed.
     let runtime = super::gpu_runtime::gpu_runtime(&unsafe { &*env }.0);
+    #[cfg(target_os = "android")]
+    let hardware_buffer_imports =
+        super::hardware_buffer::HardwareBufferImports::new(runtime.clone());
     let redraw_handle = effect_wrapper.erased.redraw_handle();
     Box::into_raw(Box::new(WuiViewEffectState {
         runtime,
@@ -262,6 +268,8 @@ pub unsafe extern "C" fn waterui_view_effect_create(
         output_width: 0,
         output_height: 0,
         output_size,
+        #[cfg(target_os = "android")]
+        hardware_buffer_imports,
     }))
 }
 
@@ -383,6 +391,11 @@ pub unsafe extern "C" fn waterui_view_effect_detach(state: *mut WuiViewEffectSta
         .output_surface
         .take()
         .expect("waterui_view_effect_detach: output surface is already detached");
+    // Before the input texture goes: the imported buffers are raw Vulkan objects
+    // wgpu does not defer the destruction of, so they are released here rather
+    // than left to outlive the target they were captured for.
+    #[cfg(target_os = "android")]
+    state.hardware_buffer_imports.clear();
     state.output_config = None;
     state.imported_texture = None;
     state.imported_format = None;
@@ -422,9 +435,10 @@ pub unsafe extern "C" fn waterui_view_effect_set_redraw_callback(
 
 /// Validates and applies new input dimensions, resizing owned textures.
 ///
-/// Only reachable from the Apple Metal input-import entry point; every other
-/// platform feeds `ViewEffect` through the Rust-side filter pipeline.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+/// Only reachable from the platform input-import entry points — the Apple Metal
+/// one and the Android hardware-buffer one; every other platform feeds
+/// `ViewEffect` through the Rust-side filter pipeline.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 fn ensure_dimensions(state: &mut WuiViewEffectState, width: u32, height: u32) {
     assert!(
         width > 0 && height > 0,
@@ -496,6 +510,98 @@ pub unsafe extern "C" fn waterui_view_effect_set_input_metal_texture(
         .imported_format
         .expect("ViewEffect Metal input import did not provide a texture format");
     start_view_effect_setup(state, input_format);
+}
+
+/// Copies a captured `AHardwareBuffer` into the effect's input (Android only).
+///
+/// The buffer is the one `HardwareRenderer` drew the effect's child subtree
+/// into. The effect keeps a wgpu texture of that buffer's size and layout —
+/// created once per size, and cleared so wgpu counts it as written — which the
+/// import is copied into on the GPU. The returned fence is what tells the
+/// backend the copy is finished, so it must be consumed by
+/// `waterui_gpu_capture_fence_on_complete` and the `Image` the buffer came from
+/// closed only from that completion.
+///
+/// # Safety
+///
+/// - `state` must be a valid pointer from `waterui_view_effect_create` with an
+///   attached target.
+/// - `buffer` must be a live `AHardwareBuffer` for the duration of this call.
+///
+/// # Panics
+///
+/// Panics if `state` is detached, or if the buffer's layout is one the effect
+/// pipeline cannot sample.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_effect_set_input_hardware_buffer(
+    state: *mut WuiViewEffectState,
+    buffer: *mut c_void,
+) -> *mut super::gpu_surface::WuiGpuCaptureFence {
+    use super::capture_format::{create_effect_input_texture, effect_input_texture_format};
+    use super::hardware_buffer::{copy_hardware_buffer_into_texture, describe_hardware_buffer};
+
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
+    let state = unsafe { crate::borrow_ffi_mut(state) };
+    let buffer = buffer.cast();
+    // SAFETY: the caller contract makes `buffer` a live `AHardwareBuffer` for this
+    // call, which is all `describe_hardware_buffer` needs.
+    let description = unsafe { describe_hardware_buffer(buffer) };
+    ensure_dimensions(state, description.width, description.height);
+
+    let input_format = effect_input_texture_format(description.format);
+    assert_setup_input_format(state, input_format);
+    let input_texture = match state.imported_texture.take() {
+        Some(texture)
+            if texture.width() == description.width
+                && texture.height() == description.height
+                && texture.format() == input_format =>
+        {
+            texture
+        }
+        _ => create_effect_input_texture(
+            &state.runtime.context().device,
+            &state.runtime.context().queue,
+            input_format,
+            description.width,
+            description.height,
+        ),
+    };
+
+    // SAFETY: as above, `buffer` is live for this call, which is when the import
+    // takes its own reference on it.
+    let fence = unsafe {
+        copy_hardware_buffer_into_texture(
+            &mut state.hardware_buffer_imports,
+            buffer,
+            &input_texture,
+            "waterui_view_effect_set_input_hardware_buffer",
+        )
+    };
+    state.imported_texture = Some(input_texture);
+    state.imported_format = Some(input_format);
+    start_view_effect_setup(state, input_format);
+    fence
+}
+
+/// Copies a captured `AHardwareBuffer` into the effect's input (Android only).
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_view_effect_create` with an
+/// attached target, and `buffer` a live `AHardwareBuffer`.
+///
+/// # Panics
+///
+/// Always panics: `AHardwareBuffer` capture only exists on Android.
+#[cfg(not(target_os = "android"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_effect_set_input_hardware_buffer(
+    _state: *mut WuiViewEffectState,
+    _buffer: *mut c_void,
+) -> *mut super::gpu_surface::WuiGpuCaptureFence {
+    panic!("waterui_view_effect_set_input_hardware_buffer: only supported on Android");
 }
 
 /// Returns whether asynchronous effect setup has completed.
@@ -622,9 +728,10 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
 
 /// Kicks off asynchronous effect setup for the given input format.
 ///
-/// Only reachable from the Apple Metal input-import entry point; every other
-/// platform feeds `ViewEffect` through the Rust-side filter pipeline.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+/// Only reachable from the platform input-import entry points — the Apple Metal
+/// one and the Android hardware-buffer one; every other platform feeds
+/// `ViewEffect` through the Rust-side filter pipeline.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 fn start_view_effect_setup(state: &WuiViewEffectState, input_format: wgpu::TextureFormat) {
     let output_format = state
         .output_config

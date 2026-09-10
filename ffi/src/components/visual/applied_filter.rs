@@ -98,13 +98,7 @@ impl IntoFFI for waterui_core::Metadata<AppliedFilter> {
 }
 
 // Generate waterui_metadata_applied_filter_id() and waterui_force_as_metadata_applied_filter()
-ffi_metadata!(
-    AppliedFilter,
-    WuiAppliedFilter,
-    applied_filter,
-    all(),
-    any()
-);
+ffi_metadata!(AppliedFilter, WuiAppliedFilter, applied_filter);
 
 /// Opaque state held by the native backend for one semantic applied filter.
 pub struct WuiAppliedFilterState {
@@ -135,6 +129,9 @@ pub struct WuiAppliedFilterState {
     /// Latest output dimensions resolved from snapped filter state.
     resolved_output_width: u32,
     resolved_output_height: u32,
+    /// Vulkan imports of the Android capture buffers handed to this filter.
+    #[cfg(target_os = "android")]
+    hardware_buffer_imports: super::hardware_buffer::HardwareBufferImports,
     /// Host-owned effect clock; media effects may bypass this API with explicit timing.
     frame_clock: EffectFrameClock,
 }
@@ -342,6 +339,9 @@ pub unsafe extern "C" fn waterui_applied_filter_create(
     // SAFETY: the caller contract requires `env` to be a valid handle alive for this
     // call; it is only borrowed.
     let runtime = super::gpu_runtime::gpu_runtime(&unsafe { &*env }.0);
+    #[cfg(target_os = "android")]
+    let hardware_buffer_imports =
+        super::hardware_buffer::HardwareBufferImports::new(runtime.clone());
     let redraw_handle = filter.redraw_handle();
     Box::into_raw(Box::new(WuiAppliedFilterState {
         runtime,
@@ -359,6 +359,8 @@ pub unsafe extern "C" fn waterui_applied_filter_create(
         output_height: 0,
         resolved_output_width: 0,
         resolved_output_height: 0,
+        #[cfg(target_os = "android")]
+        hardware_buffer_imports,
         frame_clock: EffectFrameClock::new(),
     }))
 }
@@ -506,6 +508,11 @@ pub unsafe extern "C" fn waterui_applied_filter_detach(state: *mut WuiAppliedFil
         .output_surface
         .take()
         .expect("waterui_applied_filter_detach: output surface is already detached");
+    // Before the capture texture goes: the imported buffers are raw Vulkan
+    // objects wgpu does not defer the destruction of, so they are released here
+    // rather than left to outlive the target they were captured for.
+    #[cfg(target_os = "android")]
+    state.hardware_buffer_imports.clear();
     state.output_config = None;
     state.capture_texture = None;
     state.capture_format = None;
@@ -812,6 +819,117 @@ pub unsafe extern "C" fn waterui_applied_filter_prepare_capture(
         .capture_format
         .expect("waterui_applied_filter_prepare_capture: presentation target is detached");
     assert_setup_input_format(state, capture_format);
+}
+
+/// The pixel layout this filter's capture buffers must be allocated with (Android only).
+///
+/// The Android backend reads this after attaching and allocates its
+/// `ImageReader` from it, so the `AHardwareBuffer` it captures the subtree into
+/// is copy-compatible with the capture texture the filter samples.
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_applied_filter_create` with an
+/// attached target.
+///
+/// # Panics
+///
+/// Panics if `state` is detached, or if its capture format has no
+/// `AHardwareBuffer` layout.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_capture_format(
+    state: *const WuiAppliedFilterState,
+) -> super::capture_format::WuiCaptureFormat {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
+    let state = unsafe { crate::borrow_ffi(state) };
+    let format = state
+        .capture_format
+        .expect("waterui_applied_filter_capture_format: presentation target is detached");
+    super::capture_format::capture_buffer_format(format)
+}
+
+/// The pixel layout this filter's capture buffers must be allocated with (Android only).
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_applied_filter_create` with an
+/// attached target.
+///
+/// # Panics
+///
+/// Always panics: `AHardwareBuffer` capture only exists on Android.
+#[cfg(not(target_os = "android"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_capture_format(
+    _state: *const WuiAppliedFilterState,
+) -> super::capture_format::WuiCaptureFormat {
+    panic!("waterui_applied_filter_capture_format: only supported on Android");
+}
+
+/// Copies a captured `AHardwareBuffer` into the capture texture (Android only).
+///
+/// The buffer is the one `HardwareRenderer` drew the filtered subtree into. It
+/// is imported once per distinct buffer and copied on the GPU; the returned
+/// fence is what tells the backend the copy is finished, so it must be consumed
+/// by `waterui_gpu_capture_fence_on_complete` and the `Image` the buffer came
+/// from closed only from that completion.
+///
+/// # Safety
+///
+/// - `state` must be a valid pointer from `waterui_applied_filter_create` with an
+///   attached target, and `waterui_applied_filter_prepare_capture` must have run
+///   for this frame's size.
+/// - `buffer` must be a live `AHardwareBuffer` for the duration of this call.
+///
+/// # Panics
+///
+/// Panics if `state` is detached, or if the buffer's size or layout does not
+/// match the capture texture.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_set_capture_hardware_buffer(
+    state: *mut WuiAppliedFilterState,
+    buffer: *mut c_void,
+) -> *mut super::gpu_surface::WuiGpuCaptureFence {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
+    let state = unsafe { crate::borrow_ffi_mut(state) };
+    let capture_texture = state.capture_texture.take().expect(
+        "waterui_applied_filter_set_capture_hardware_buffer: presentation target is detached",
+    );
+    // SAFETY: the caller contract makes `buffer` a live `AHardwareBuffer` for this
+    // call, which is when the import takes its own reference on it.
+    let fence = unsafe {
+        super::hardware_buffer::copy_hardware_buffer_into_texture(
+            &mut state.hardware_buffer_imports,
+            buffer.cast(),
+            &capture_texture,
+            "waterui_applied_filter_set_capture_hardware_buffer",
+        )
+    };
+    state.capture_texture = Some(capture_texture);
+    fence
+}
+
+/// Copies a captured `AHardwareBuffer` into the capture texture (Android only).
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from `waterui_applied_filter_create` with an
+/// attached target, and `buffer` a live `AHardwareBuffer`.
+///
+/// # Panics
+///
+/// Always panics: `AHardwareBuffer` capture only exists on Android.
+#[cfg(not(target_os = "android"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_set_capture_hardware_buffer(
+    _state: *mut WuiAppliedFilterState,
+    _buffer: *mut c_void,
+) -> *mut super::gpu_surface::WuiGpuCaptureFence {
+    panic!("waterui_applied_filter_set_capture_hardware_buffer: only supported on Android");
 }
 
 /// Get a pointer to the Metal texture backing the capture texture (Apple only).

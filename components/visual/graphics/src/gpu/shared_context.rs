@@ -284,15 +284,22 @@ impl SharedGpuContext {
         let adapter_features = adapter.features();
         let required_features = required_media_features(adapter_features);
         let required_limits = required_device_limits(&adapter.limits());
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("WaterUI GPU runtime device"),
+            required_features,
+            required_limits,
+            memory_hints: wgpu::MemoryHints::Performance,
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            trace: wgpu::Trace::default(),
+        };
+        // Android opens its device through the HAL so the external-memory
+        // extensions view capture imports `AHardwareBuffer`s with are enabled;
+        // that path talks to `vkCreateDevice` directly and has nothing to await.
+        #[cfg(target_os = "android")]
+        let (device, queue) = open_android_device(&adapter, &descriptor)?;
+        #[cfg(not(target_os = "android"))]
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("WaterUI GPU runtime device"),
-                required_features,
-                required_limits,
-                memory_hints: wgpu::MemoryHints::Performance,
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-                trace: wgpu::Trace::default(),
-            })
+            .request_device(&descriptor)
             .await
             .map_err(|error| SharedContextError::DeviceCreationFailed(error.to_string()))?;
 
@@ -350,6 +357,92 @@ async fn request_adapter(
             force_fallback_adapter: false,
         })
         .await
+}
+
+/// The Vulkan device extensions Android view capture is built on.
+///
+/// [`VK_ANDROID_external_memory_android_hardware_buffer`][ahb] is what turns the
+/// `AHardwareBuffer` a captured view subtree was rendered into by `HardwareRenderer`
+/// into a `VkImage` this device can read; [`VK_EXT_queue_family_foreign`][foreign] is
+/// what lets that image's ownership be acquired from — and released back to — the
+/// Android framework, which owns the buffer between frames.
+///
+/// [ahb]: https://registry.khronos.org/vulkan/specs/latest/man/html/VK_ANDROID_external_memory_android_hardware_buffer.html
+/// [foreign]: https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_queue_family_foreign.html
+#[cfg(target_os = "android")]
+const ANDROID_CAPTURE_DEVICE_EXTENSIONS: [&core::ffi::CStr; 2] = [
+    ash::android::external_memory_android_hardware_buffer::NAME,
+    ash::ext::queue_family_foreign::NAME,
+];
+
+/// Opens the Android GPU device with the view-capture extensions enabled.
+///
+/// `wgpu::Adapter::request_device` enables only the extensions wgpu itself needs,
+/// and there is no descriptor field for asking for more, so the device is built
+/// through the HAL adapter: `open_with_callback` hands the extension list to a
+/// callback before `vkCreateDevice` sees it, and the resulting `OpenDevice` is
+/// then adopted by wgpu with `create_device_from_hal`, which is what keeps the
+/// device a perfectly ordinary `wgpu::Device` for everything else.
+///
+/// Both extensions are mandatory on every Android device that reports Vulkan 1.1
+/// (Android CDD), so an adapter without them is a hard error naming the missing
+/// extension rather than a capture path that silently is not there.
+#[cfg(target_os = "android")]
+fn open_android_device(
+    adapter: &wgpu::Adapter,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
+) -> Result<(wgpu::Device, wgpu::Queue), SharedContextError> {
+    use wgpu_hal::api::Vulkan;
+
+    // SAFETY: the HAL adapter is only borrowed to open a device from it. Nothing
+    // here destroys it, and the guard is dropped before this function returns.
+    let hal_adapter = unsafe { adapter.as_hal::<Vulkan>() }.ok_or_else(|| {
+        SharedContextError::DeviceCreationFailed(
+            "WaterUI renders through Vulkan on Android, and this adapter is not a Vulkan adapter"
+                .to_owned(),
+        )
+    })?;
+
+    let capabilities = hal_adapter.physical_device_capabilities();
+    for extension in ANDROID_CAPTURE_DEVICE_EXTENSIONS {
+        if !capabilities.supports_extension(extension) {
+            return Err(SharedContextError::DeviceCreationFailed(format!(
+                "the Vulkan driver does not support {}, which WaterUI needs to read a captured \
+                 view subtree out of an AHardwareBuffer",
+                extension.to_string_lossy()
+            )));
+        }
+    }
+
+    // SAFETY: the callback only appends extensions this adapter was just proven to
+    // support, and removes nothing, which is `open_with_callback`'s contract. The
+    // device it returns is handed straight to `create_device_from_hal` below, so
+    // wgpu takes ownership of it exactly once.
+    let open_device = unsafe {
+        hal_adapter.open_with_callback(
+            descriptor.required_features,
+            &descriptor.required_limits,
+            &descriptor.memory_hints,
+            Some(Box::new(
+                |args: wgpu_hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
+                    for extension in ANDROID_CAPTURE_DEVICE_EXTENSIONS {
+                        // wgpu may already have asked for one of these for its own
+                        // reasons, and a repeated name is a `vkCreateDevice`
+                        // validation error rather than a no-op.
+                        if !args.extensions.contains(&extension) {
+                            args.extensions.push(extension);
+                        }
+                    }
+                },
+            )),
+        )
+    }
+    .map_err(|error| SharedContextError::DeviceCreationFailed(error.to_string()))?;
+
+    // SAFETY: `open_device` was opened from this very adapter, with the features and
+    // limits `descriptor` names, and has not been used for anything else.
+    unsafe { adapter.create_device_from_hal::<Vulkan>(open_device, descriptor) }
+        .map_err(|error| SharedContextError::DeviceCreationFailed(error.to_string()))
 }
 
 #[cfg(target_os = "android")]

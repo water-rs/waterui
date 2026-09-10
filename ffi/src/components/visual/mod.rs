@@ -1,13 +1,19 @@
-#[cfg(all(feature = "c-api", feature = "gpu"))]
+// Gated on `gpu` alone, like `gpu_surface`: Android drives both of these through
+// the JNI bindings, which are compiled with `android-jni` and without `c-api`.
+#[cfg(feature = "gpu")]
 pub mod applied_filter;
+#[cfg(feature = "gpu")]
+pub mod capture_format;
 #[cfg(feature = "gpu")]
 pub mod gpu_runtime;
 #[cfg(feature = "gpu")]
 pub mod gpu_surface;
 #[cfg(feature = "gpu")]
 pub mod gpu_surface_input;
+#[cfg(all(target_os = "android", feature = "gpu"))]
+pub mod hardware_buffer;
 pub mod picture;
-#[cfg(all(feature = "c-api", feature = "gpu"))]
+#[cfg(feature = "gpu")]
 pub mod view_effect;
 pub mod view_renderer;
 

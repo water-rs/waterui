@@ -12834,6 +12834,7 @@ dependencies = [
 name = "waterui-ffi"
 version = "0.3.0"
 dependencies = [
+ "ash",
  "async-channel",
  "base64 0.22.1",
  "cbindgen",
@@ -12911,6 +12912,7 @@ dependencies = [
 name = "waterui-graphics"
 version = "0.3.0"
 dependencies = [
+ "ash",
  "bytemuck",
  "divan",
  "encase",
@@ -12941,6 +12943,7 @@ dependencies = [
  "waterui-core",
  "waterui-testing",
  "wgpu",
+ "wgpu-hal",
 ]
 
 [[package]]
