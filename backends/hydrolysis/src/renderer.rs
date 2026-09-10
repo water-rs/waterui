@@ -20,6 +20,7 @@
 #[cfg(feature = "accessibility")]
 mod accessibility;
 mod bindings;
+mod color;
 mod effects;
 mod frame;
 mod identity;
@@ -77,7 +78,7 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, Node as AccessibilityNode,
     NodeId as AccessibilityNodeId, Rect as AccessibilityRect, Role as AccessibilityNodeRole,
     TextDirection as AccessibilityTextDirection, Toggled as AccessibilityToggled,
-    Tree as AccessibilityTree, TreeId as AccessibilityTreeId,
+    TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
     TreeUpdate as AccessibilityTreeUpdate,
 };
 use executor_core::spawn_local;
@@ -139,7 +140,7 @@ use waterui_form::picker::PickerConfig;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
-use waterui_graphics::color::{Color, ResolvedColor, Srgb};
+use waterui_graphics::color::{Color, ResolvedColor};
 
 use shaderloom::WgslModuleCache;
 use waterui_graphics::filter_view::{EffectContext, EffectInput, EffectOutput};
@@ -149,7 +150,8 @@ use waterui_graphics::view_effect::{
 };
 use waterui_graphics::{
     AppliedFilter, GpuContext, GpuFrame, GpuSurface, GradientType, PointerState, RedrawHandle,
-    ResolvedGradient, ResolvedGradientStop, SceneView, VelloScene2D,
+    ResolvedGradient, ResolvedGradientStop, SceneEngine, SceneView, SharedSceneRenderer,
+    VelloScene2D,
 };
 
 use waterui_icon::SystemIcon;
@@ -221,6 +223,13 @@ pub struct HydrolysisRenderer {
     popup_menu: PopupMenuState,
     render_depth: usize,
     window_bounds: vello::kurbo::Rect,
+    /// The transform the window's root content is flushed under: logical layout
+    /// units onto the target's physical pixel grid. Stored alongside
+    /// [`Self::window_bounds`] because the pair is what says where the viewport
+    /// is in device pixels, which is what
+    /// [`HydrolysisRenderer::push_gpu_surface_layer`] tests a full-window GPU
+    /// surface against.
+    window_root_transform: vello::kurbo::Affine,
     /// Frame triggers shared with reactive closures; see [`FrameSignals`].
     signals: FrameSignals,
     /// Wake target supplied when this renderer itself is hosted by a
@@ -232,12 +241,17 @@ pub struct HydrolysisRenderer {
     shader_cache: Arc<WgslModuleCache>,
     /// The scene renderer embedded GPU surfaces share, for the same reason: its
     /// pipelines belong to the device rather than to any one scene.
-    scene_renderer: Arc<waterui_graphics::SharedSceneRenderer>,
+    scene_renderer: Arc<SharedSceneRenderer>,
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
     frame_instant: Instant,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
+    /// Whether this frame's window pass was handed straight to a GPU surface
+    /// instead of being composited. Recorded by
+    /// [`HydrolysisRenderer::render_scene_to_surface`] as it decides, so the
+    /// frame report says what happened rather than what was eligible.
+    frame_direct_gpu_surfaces: u32,
     frame_applied_filter_count: u32,
     frame_applied_filter_capture: Duration,
     frame_applied_filter_effect: Duration,
@@ -255,6 +269,8 @@ pub struct HydrolysisRenderer {
     /// [`HydrolysisRenderer::refresh_active_applied_filters`] on redraw-only
     /// frames; dead entries are pruned by strong count.
     node_applied_filters: Vec<Rc<RefCell<AppliedFilterRuntime>>>,
+    /// The per-frame atlas every filtered subtree is captured through.
+    subtree_captures: SubtreeCaptures,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
     navigation_captures: Vec<NavigationSceneCapture>,
@@ -308,9 +324,16 @@ impl HydrolysisRenderer {
         core::mem::take(&mut self.subview_structural_change)
     }
 
+    /// A renderer for `device`, which `adapter` produced.
+    ///
+    /// The adapter is not a formality: the scene renderer that embedded GPU
+    /// surfaces share is built for the engine `adapter` can actually run, and
+    /// an adapter without indirect execution aborts inside wgpu rather than
+    /// degrading when asked to run the classic compute pipeline.
     #[must_use]
-    pub fn new(device: &wgpu::Device) -> Self {
+    pub fn new(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Self {
         Self::new_with_options(
+            adapter,
             device,
             vello::RendererOptions {
                 use_cpu: false,
@@ -324,8 +347,20 @@ impl HydrolysisRenderer {
         )
     }
 
+    /// As [`Self::new`], with the window renderer's Vello options spelled out.
     #[must_use]
-    pub fn new_with_options(device: &wgpu::Device, options: vello::RendererOptions) -> Self {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "`SharedSceneRenderer` and `WgslModuleCache` own wgpu handles, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The renderer is shared by reference count on every target and is `Send + Sync` on all of them but this one, so the storage type is `Arc` everywhere rather than `Rc` here and `Arc` elsewhere."
+        )
+    )]
+    pub fn new_with_options(
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        options: vello::RendererOptions,
+    ) -> Self {
         let vello_renderer =
             vello::Renderer::new(device, options).expect("failed to create hydrolysis renderer");
         let frame_instant = Instant::now();
@@ -343,21 +378,24 @@ impl HydrolysisRenderer {
             popup_menu: PopupMenuState::default(),
             render_depth: 0,
             window_bounds: vello::kurbo::Rect::ZERO,
+            window_root_transform: vello::kurbo::Affine::IDENTITY,
             signals: FrameSignals::new(frame_instant),
             host_redraw_handle: None,
             shader_cache: Arc::new(WgslModuleCache::new()),
-            scene_renderer: Arc::default(),
+            scene_renderer: Arc::new(SharedSceneRenderer::new(SceneEngine::for_adapter(adapter))),
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
             frame_instant,
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
+            frame_direct_gpu_surfaces: 0,
             frame_applied_filter_count: 0,
             frame_applied_filter_capture: Duration::ZERO,
             frame_applied_filter_effect: Duration::ZERO,
             node_gpu_surfaces: Vec::new(),
             node_view_effects: Vec::new(),
             node_applied_filters: Vec::new(),
+            subtree_captures: SubtreeCaptures::default(),
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
             navigation_captures: Vec::new(),

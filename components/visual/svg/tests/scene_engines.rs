@@ -8,19 +8,23 @@
 //! The PNGs are written out to be looked at. The engines rasterize
 //! differently, so nothing about them is asserted pixel-wise.
 
-use std::path::Path;
-
+use kurbo::Affine;
+use waterui_graphics::scene2d_cpu::rasterize_recording;
 use waterui_graphics::shared_context::SceneEngine;
-use waterui_graphics::{GpuRuntime, OffscreenRenderConfig, OffscreenSize, SceneView};
+use waterui_graphics::{
+    GpuRuntime, OffscreenRenderConfig, OffscreenSize, SceneContent, SceneRecording, SceneView,
+};
 use waterui_svg::SvgSceneContent;
+use waterui_testing::{Snapshot, TestArtifacts};
 
 const STROKED_ICON: &str = include_str!("data/stroked_icon.svg");
 const PAINTED_ICON: &str = include_str!("data/painted_icon.svg");
 
 #[test]
 fn both_scene_engines_render_an_svg() {
-    let directory = Path::new("/tmp/waterui_scene_engines");
-    std::fs::create_dir_all(directory).expect("output directory must be creatable");
+    let artifacts = TestArtifacts::new("svg");
+    std::fs::create_dir_all(artifacts.case_dir("scene_engines"))
+        .expect("output directory must be creatable");
     let runtime = pollster::block_on(GpuRuntime::new())
         .expect("scene engine comparison requires a working GPU runtime");
     let size = OffscreenSize::try_from_pixels(192, 192).expect("test size must be valid");
@@ -38,8 +42,25 @@ fn both_scene_engines_render_an_svg() {
             let output = pollster::block_on(surface.render_offscreen(&runtime, config, &mut env))
                 .expect("offscreen render should succeed");
             output
-                .save_png(directory.join(format!("svg_{icon_name}_{engine_name}.png")))
+                .save_png(
+                    artifacts.snapshot_path("scene_engines", format!("{icon_name}_{engine_name}")),
+                )
                 .expect("png should be written");
         }
+
+        // The CPU rasteriser is what a `Picture` goes through on the FFI
+        // backends, so it sits beside the two GPU engines for review. Its
+        // pixels are premultiplied, which only softens the anti-aliased edges
+        // of the exported PNG.
+        let mut recording = SceneRecording::new();
+        SvgSceneContent::new(content).build_scene(&mut recording, 192.0, 192.0);
+        let bitmap = rasterize_recording(&recording, 192, 192, Affine::IDENTITY);
+        Snapshot {
+            width: bitmap.width(),
+            height: bitmap.height(),
+            rgba8: bitmap.into_data(),
+        }
+        .save_png(artifacts.snapshot_path("scene_engines", format!("{icon_name}_cpu")))
+        .expect("png should be written");
     }
 }

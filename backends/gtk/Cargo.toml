@@ -12,6 +12,11 @@ keywords = ["ui", "gtk", "waterui", "gui", "backend"]
 categories = ["gui"]
 
 [dependencies]
+# Shape geometry is plain arithmetic with no GTK in it, so `shape_geometry`
+# compiles and is tested on every host even though the rest of this backend is
+# Linux only. Default features are off here: the GPU morph renderer is Linux-only
+# work, and the Linux entry below turns it back on.
+waterui-shape = { workspace = true, default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 waterui.workspace = true
@@ -23,7 +28,7 @@ waterui-navigation.workspace = true
 waterui-text.workspace = true
 waterui-icon.workspace = true
 waterui-controls.workspace = true
-waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui-graphics = { workspace = true, features = ["gpu", "cpu-scene"] }
 waterui-shape.workspace = true
 waterui-form.workspace = true
 waterui-webview = { workspace = true, optional = true }

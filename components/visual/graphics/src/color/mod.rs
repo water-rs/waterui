@@ -732,6 +732,38 @@ environment_color!(
     "Selection-foreground color key for environment queries."
 );
 
+/// The light or dark appearance the application is drawn in.
+///
+/// A backend installs the system appearance, or a theme installs a fixed or
+/// reactive preference, next to the colour tokens above. Components that
+/// choose between two palettes of their own — a syntax-highlighting theme,
+/// a map style — resolve [`CurrentColorScheme`] so the choice follows a
+/// switch instead of being made once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ColorScheme {
+    /// Light appearance (light backgrounds, dark text).
+    #[default]
+    Light,
+    /// Dark appearance (dark backgrounds, light text).
+    Dark,
+}
+
+impl_constant!(ColorScheme);
+
+/// Environment key that resolves to the installed [`ColorScheme`].
+#[derive(Debug, Clone, Copy)]
+pub struct CurrentColorScheme;
+
+impl Resolvable for CurrentColorScheme {
+    type Resolved = ColorScheme;
+
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        env.query::<ColorScheme, Computed<ColorScheme>>()
+            .cloned()
+            .expect("ColorScheme is not installed in the environment")
+    }
+}
+
 /// Implements `View` for a color type, allowing it to be used directly as a background.
 macro_rules! impl_color_view {
     ($($ty:ty),* $(,)?) => {

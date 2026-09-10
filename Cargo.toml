@@ -3,10 +3,8 @@
 members = [
     "core",
     "components/assets/*",
-    "components/codes/*",
     "components/data/*",
     "components/devtools/*/*",
-    "components/effects/*",
     "components/foundation/*",
     "components/multimedia/*",
     "components/platform/*",
@@ -15,6 +13,7 @@ members = [
     "src",
     "testing",
     "ffi",
+    "ffi/generator",
     "macros",
     "cli",
     "examples/*",
@@ -50,6 +49,9 @@ repository.workspace = true
 description = "A modern UI framework for Rust"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
+
+[package.metadata.waterui]
+minimum-cli-version = "0.1.4"
 
 [lib]
 path = "facade.rs"
@@ -93,10 +95,10 @@ executor-core = { version = "0.7.1", features = ["std"]}
 # off. (waterkit keeps it: its streaming code does `block_on`.)
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 futures-lite = "2.6"
-geo = { version = "0.32", default-features = false }
-getrandom = "0.2"
+geo = { version = "0.33", default-features = false }
+getrandom = "0.4"
 geo-types = "0.7"
-lru = "0.16"
+lru = "0.18"
 maplibre-expr = "0.3.2"
 mvt-reader = "2.4.0"
 # W3C UI Events key/code/modifier vocabulary, shared by the GPU-surface input
@@ -119,17 +121,29 @@ uuid = { version = "1.24.0", default-features = false, features = ["v4", "std"] 
 waterui-core = { version = "0.3.0", path = "core" }
 waterui-str = { version = "0.3.0", path = "utils/str" }
 waterui-url = { version = "0.3.0", path = "utils/url" }
+waterui-watcher-set = { version = "0.1.0", path = "utils/watcher-set" }
 waterui-text = { version = "0.3.0", path = "components/foundation/text" }
 waterui-media = { version = "0.3.0", path = "components/multimedia/media" }
-waterui-image = { version = "0.3.0", path = "components/visual/image" }
+waterui-image = "0.3.0"
 waterui-video = { version = "0.3.0", path = "components/multimedia/video" }
-waterui-video-gpu = { version = "0.3.0", path = "components/multimedia/video_gpu" }
+waterui-video-gpu = "0.3.0"
+waterui-visualizer = "0.3.0"
 waterui-form = { version = "0.3.0", path = "components/foundation/form" }
 waterui-controls = { version = "0.3.0", path = "components/foundation/controls"}
 waterui-graphics = { version = "0.3.0", path = "components/visual/graphics", default-features = false }
-waterui-canvas = { version = "0.1.0", path = "components/visual/canvas" }
+waterui-canvas = "0.1.1"
+waterui-mermaid = { version = "0.1.0", path = "components/data/mermaid" }
+# Mermaid parsing, semantic model and diagram layout. Consumed from our fork
+# while `typed-layout-projection` is unreleased upstream: `merman-render`'s only
+# public exit from the layout stage is `layout_json`, whose `#[serde(skip)]`
+# fields drop geometry a self-drawing host needs — a sequence diagram's
+# loop/alt fragment boxes among them. The branch makes the typed projection
+# public and changes nothing else. See water-rs/waterui#217.
+merman-core = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c05844003a0e765a3cf78df6678d" }
+merman-render = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c05844003a0e765a3cf78df6678d", default-features = false }
 waterui-shape = { version = "0.1.0", path = "components/foundation/shape", default-features = false }
 waterui-svg = { version = "0.1.0", path = "components/visual/svg" }
+waterui-math = { version = "0.1.0", path = "components/visual/math" }
 waterui-ffi = { version = "0.3.0", path = "ffi" }
 waterui-layout = { version = "0.3.0", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.3.0", path = "components/foundation/navigation" }
@@ -165,10 +179,10 @@ waterui-backend-core = { version = "0.1.0", path = "backends/core", default-feat
 filtrate = "0.2.0"
 filtrate-core = "0.2.0"
 filtrate-derive = "0.1.0"
-waterui-barcode = { version = "0.1.0", path = "components/codes/barcode" }
-waterui-particle = { version = "0.1.0", path = "components/effects/particle" }
-waterui-chart = { version = "0.1.0", path = "components/data/chart" }
-waterui-map-gpu = { version = "0.1.0", path = "components/data/map_gpu" }
+waterui-barcode = "0.1.0"
+waterui-particle = "0.1.0"
+waterui-chart = "0.1.0"
+waterui-map-gpu = "0.1.0"
 waterui-assets = { version = "0.1.0", path = "components/assets/runtime" }
 waterui-assets-planner = { version = "0.1.0", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.1.0", path = "components/assets/macros" }
@@ -182,7 +196,7 @@ waterui-dylib = { version = "0.3.0", path = "utils/dylib", default-features = fa
 hydrolysis = { version = "0.1.0", path = "backends/hydrolysis", default-features = false }
 waterui = { version = "0.3.0", path = "." }
 waterui-icons-codegen = { version = "0.1.0", path = "components/icon/codegen" }
-shaderloom = "0.1.0"
+shaderloom = "0.1.2"
 hydrolysis-m3 = { version = "0.1.0", path = "backends/hydrolysis_m3" }
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.3.0", path = "macros" }
@@ -200,19 +214,55 @@ vello_hybrid = { version = "0.2", default-features = false, features = ["std", "
 # release is a different major version, and a glyph from one is not a glyph from
 # the other.
 glifo = { version = "0.3.0", default-features = false, features = ["std"] }
+# The paint and pixel types `vello_hybrid` takes but does not re-export. An
+# image is drawn there by naming a handle into the renderer's atlas, and the
+# handle, the paint that samples it, and the premultiplied conversion that
+# fills it all live here.
+vello_common = { version = "0.2", default-features = false, features = ["std"] }
 parley = { version = "0.11", default-features = false }
 # SVG documents are parsed here and drawn through `Scene2D`; nothing in the
 # workspace renders one with `vello_svg`, so the parser is depended on directly
 # rather than through a Vello-only renderer.
-usvg = "0.46.0"
+usvg = "0.48.1"
 kurbo = "0.13"
 peniko = "0.6"
-skrifa = "0.42.1"
-vello_cpu = { version = "0.0.9", default-features = false }
+skrifa = "0.46.2"
+# The only crate in the Rust ecosystem that reads the OpenType `MATH` table.
+# `read-fonts`/`skrifa` do not expose it (googlefonts/fontations#1269 has been
+# open since 2024-11), and neither `rustybuzz` nor `harfrust` port HarfBuzz's
+# `hb-ot-math`. Math layout is computed from that table, so it is depended on
+# directly rather than reached through the text stack.
+ttf-parser = "0.25"
+# LaTeX front end. A pull parser over a public `Event` enum, so events are
+# consumed straight into the math AST; the alternative (`math-core`) only emits
+# a MathML string, which would have to be parsed back.
+pulldown-latex = "0.8"
+# Writes the MathML an accessibility tree carries. XML is structured output, so
+# it goes through a writer that escapes and balances tags rather than through
+# `push_str`/`format!` chains.
+quick-xml = "0.42"
+# Turns that MathML into the sentence a screen reader reads out — the ClearSpeak
+# / MathSpeak engine assistive-technology vendors ship. `include-zip` compiles
+# the speech rules into the binary as one bzip2 archive served from an in-memory
+# filesystem, so the rules are not files anything has to install, bundle, or
+# find at runtime; without it MathCAT looks for a `Rules` directory on disk.
+mathcat = { version = "0.7.5", features = ["include-zip"] }
+toml = "1.1.3"
+vello_cpu = { version = "0.2.0", default-features = false }
 lyon = "1.0"
 wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
+# The Vulkan bindings `wgpu-hal` itself links. Android view capture imports an
+# `AHardwareBuffer` as a raw `VkImage`, which means calling
+# `VK_ANDROID_external_memory_android_hardware_buffer` on the very `ash::Device`
+# `wgpu_hal::vulkan::Device::raw_device()` hands back, so the two must resolve to
+# one `ash`: a second major would make that a different `ash::Device` type.
+ash = "0.38"
 # Must match the `glow` version wgpu-hal links against, or GLES handles from
 # `wgpu::hal::gles` fail to unify with locally created ones.
+# Tracks whatever `wgpu-hal` links, not the newest release: the GTK backend
+# hands a `glow::NativeFramebuffer` straight to
+# `wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer`, so a different
+# major here makes that a different type and the backend stops compiling.
 glow = "0.17"
 tiny-skia = "0.12"
 zenwave = { version = "0.5.0", default-features = false, features = ["hyper-backend"] }
@@ -253,6 +303,9 @@ waterui-dylib = { workspace = true, optional = true }
 [dev-dependencies]
 waterui-testing = { path = "testing" }
 hydrolysis-m3 = { path = "backends/hydrolysis_m3" }
+# Writes the test portrait the avatar visual acceptance renders. PNG only:
+# the encoder is all these tests need.
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [features]
 default = [
@@ -294,8 +347,17 @@ navigation-restoration = [
     "waterui-dylib?/navigation-restoration",
 ]
 flow-markdown = ["waterui-internal/flow-markdown", "waterui-dylib?/flow-markdown"]
+# Mathematical formulas in Markdown. Deliberately outside `all`: it brings a
+# layout engine, an OpenType `MATH` table reader, a LaTeX parser and MathCAT's
+# speech rules — about 2.7 MiB — and a bundled math font for the asset pipeline,
+# and `all` is what every full-feature CI leg builds on every platform.
+markdown-math = ["waterui-internal/markdown-math", "waterui-dylib?/markdown-math"]
 std = ["waterui-internal/std", "waterui-dylib?/std"]
 dynamic_linking = ["dep:waterui-dylib"]
+canvas = ["waterui-internal/canvas", "waterui-dylib?/canvas"]
+chart = ["waterui-internal/chart", "waterui-dylib?/chart"]
+barcode = ["waterui-internal/barcode", "waterui-dylib?/barcode"]
+particle = ["waterui-internal/particle", "waterui-dylib?/particle"]
 # Every feature the framework offers an application. `dynamic_linking` is
 # deliberately absent: it is a build strategy — one shared copy of the framework
 # for the preview system — not a capability, and `waterui-dylib` exports more
@@ -303,6 +365,10 @@ dynamic_linking = ["dep:waterui-dylib"]
 # at all. `--all-features` therefore cannot be used on Windows; `--features all`
 # is what CI asks for instead.
 all = [
+    "canvas",
+    "chart",
+    "barcode",
+    "particle",
     "std",
     "gpu",
     "highlight",
@@ -350,6 +416,13 @@ debug = "line-tables-only"
 debug = false
 opt-level = 2
 
+[profile.ci-check]
+inherits = "dev"
+debug = false
+
+[profile.ci-check.package."*"]
+opt-level = 0
+
 [profile.release]
 lto = true
 codegen-units = 1
@@ -365,6 +438,20 @@ lto = "thin"
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
+# Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
+# registry `waterui-core` and `waterui-graphics`; the workspace must resolve
+# those to its own copies or the graph carries two of each and every `View`
+# is a different type on either side. Publishing ignores this table, so the
+# published crates keep their registry pins.
+waterui-core = { path = "core" }
+waterui-graphics = { path = "components/visual/graphics" }
+waterui-layout = { path = "components/foundation/layout" }
+waterui-shape = { path = "components/foundation/shape" }
+waterui-text = { path = "components/foundation/text" }
+waterui-map = { path = "components/data/map" }
+waterui-url = { path = "utils/url" }
+waterui-controls = { path = "components/foundation/controls" }
+waterui-video = { path = "components/multimedia/video" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
@@ -376,13 +463,21 @@ block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae8
 # linebender/vello#1817; drop this patch when a release containing it ships.
 vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
 
-# Arm's proprietary Vulkan driver (r54p2 on Pixel 9 Pro / Android 16)
-# rasterizes as if viewport heights were positive, ignoring the negative-height
-# viewport wgpu uses to flip Y, so every render pass comes out upside down.
-# This branch flips Y in the vertex shader on that driver instead; drop the
-# patch when upstream ships an equivalent workaround.
-wgpu = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
-wgpu-core = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
-wgpu-hal = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
-wgpu-types = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
-naga = { git = "https://github.com/lexoliu/wgpu", branch = "mali-negative-viewport" }
+# vello_hybrid 0.2.0 keeps only one physical layer in its image atlas off wasm,
+# and wgpu's GL backend then makes that texture `TEXTURE_2D` while the shader
+# samples a `texture_2d_array`, so every image brush renders black on a GL
+# adapter (#366). It also clamps `Extend::Pad` to the last texel's leading
+# corner and only then subtracts the half texel that turns a corner into a
+# centre, so a bilinear image brush never reaches its final source row or
+# column (#234). This rev is the 0.2.0 release plus a two-layer floor decided
+# by the adapter backend and a pad that clamps to the texel centres. The other
+# two sparse-strip crates come from the same rev because `vello_hybrid` names
+# them by path there, and a second copy of `vello_common` would make its paint
+# types different types. Drop when a release carrying both fixes ships —
+# linebender/vello#1859 (one 2D texture per atlas) covers the first.
+vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
+vello_common = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
+vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
+# `vello_hybrid`'s text API takes glyphs from `glifo`, which that repo also
+# carries by path; the same rev keeps one `Glyph` type in the graph.
+glifo = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }

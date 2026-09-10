@@ -27,8 +27,9 @@
 //! - [`display`]: the flush boundary — where rasterized regions leave the
 //!   renderer toward a concrete screen (in-memory buffer on desktop,
 //!   RGB565 LCD stream on embedded targets)
-//! - [`theme`]: the built-in widget palette — named colors every handler
-//!   draws with until environment-driven theming lands
+//! - [`theme`]: the built-in appearance — named colors every handler draws
+//!   with, and the type scale [`DewRuntime`] installs for the font slots an
+//!   application's theme leaves unset
 //!
 //! # Deliberately unsupported: the GPU stack
 //!
@@ -46,6 +47,20 @@
 //! primitive at all: a `SceneView` draws through the engine-neutral `Scene2D`
 //! contract, so dew installs `SceneViewMergeToParent` and draws it on the CPU
 //! rather than letting it fall back to a GPU surface.
+//!
+//! # Interaction beyond controls: the `gestures` feature
+//!
+//! Controls (buttons, toggles, sliders, tabs) hit-test through
+//! dew's internal pointer router and are always available. The richer pointer
+//! semantics a view asks for with `.gesture(...)` / `.on_hover_*` —
+//! `Metadata<GestureObserver>` and `Metadata<OnEvent>`, which is what makes an
+//! interactive chart interactive — recognize through `waterui-backend-core`'s
+//! shared state machines, and that pulls the `waterui` facade the gesture event
+//! payloads live in. They are therefore behind the default-on `gestures`
+//! feature, gated for the same reason `progress` is: a firmware graph built
+//! with `default-features = false` stays free of the facade. A build without
+//! the feature fails fast when such a view reaches dispatch, naming the
+//! feature, rather than drawing a view that silently never responds.
 
 pub mod accessibility;
 pub mod board;
@@ -70,6 +85,8 @@ pub mod espidf;
     all(feature = "espidf", target_os = "espidf")
 ))]
 pub(crate) mod frame_cadence;
+#[cfg(feature = "gestures")]
+mod interaction;
 pub mod painter;
 mod pointer;
 pub mod runtime;
@@ -89,12 +106,40 @@ pub use display::BufferDisplay;
 pub use display::{DisplayFlush, Rgb565Display, Rgb565Sink};
 pub use display_list::{Clip, ClipRegion, DisplayList, DrawCommand, PlacedCommand};
 pub use painter::Painter;
+pub use painter::RenderProfile;
 #[cfg(feature = "host")]
 pub use runtime::render_view_png;
 pub use runtime::{DewRuntime, Frame};
 pub use stats::{ChipBudget, FrameWork, Provenance};
 
 use kurbo::Rect;
+
+/// The faces this crate's unit tests shape with: the host collection, exactly
+/// as `HostBoard` resolves it on a desktop build.
+#[cfg(all(test, feature = "system-fonts"))]
+pub(crate) const fn test_fonts() -> FontSources {
+    FontSources::System
+}
+
+/// The faces this crate's unit tests shape with: the repository's own test
+/// binaries, registered the way a firmware board registers flash-resident
+/// fonts.
+///
+/// This build has no `system-fonts` feature and therefore no
+/// `FontSources::System` — the same asymmetry [`Board::fonts`] is declared
+/// twice for. Bundling here is what keeps the shaping tests *running* in the
+/// configuration a device ships instead of being gated away with it. Regular
+/// and bold are both registered because the styled-span tests assert that a
+/// bold run separates from the surrounding body text.
+///
+/// [`Board::fonts`]: board::Board::fonts
+#[cfg(all(test, not(feature = "system-fonts")))]
+pub(crate) fn test_fonts() -> FontSources {
+    FontSources::bundled(&[
+        include_bytes!("../../../testing/fonts/Roboto-Regular.ttf"),
+        include_bytes!("../../../testing/fonts/Roboto-Bold.ttf"),
+    ])
+}
 
 /// Rasterizes the dirty parts of `list` band-by-band and flushes them to
 /// `display`, then presents the frame, accumulating the work performed into

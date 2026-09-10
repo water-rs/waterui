@@ -49,4 +49,6 @@ jobs:
             echo "No unyanked waterui on crates.io; this release establishes the baseline."
           fi
       - if: steps.baseline.outputs.exists == 'true'
-        uses: obi1kenobi/cargo-semver-checks-action@v2
+        uses: ./.github/actions/cargo-semver-checks
+      - if: steps.baseline.outputs.exists == 'true'
+        run: cargo semver-checks check-release

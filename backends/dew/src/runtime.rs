@@ -68,21 +68,29 @@ impl<B: Board> DewRuntime<B> {
     /// into bands at most `band_height` rows tall.
     ///
     /// `build_root` is invoked exactly once, on the first pump.
+    ///
+    /// `env` needs no theme: [`DewRenderer::render_tree`] installs dew's
+    /// built-in type scale for every font slot it does not already carry.
     pub fn new(
         mut board: B,
         env: Environment,
         band_height: u32,
         build_root: impl Fn() -> AnyView + 'static,
     ) -> Self {
-        let render_settings = board.render_settings();
+        let render_profile = board.render_profile();
         let fonts = board.fonts();
         let signals = waterui_backend_core::frame_signals::FrameSignals::new(board.now());
         let (width, height) = board.display().size();
         let mut renderer = DewRenderer::new(signals, fonts);
         renderer.set_accessibility_enabled(board.supports_accessibility());
+        // The board's fonts, shared rather than duplicated: a self-drawn
+        // component that typesets text itself reads this collection out of the
+        // environment and shapes against the very faces the board supplied.
+        let mut env = env;
+        renderer.fonts().install(&mut env);
         Self {
             renderer,
-            painter: Painter::new(render_settings),
+            painter: Painter::new(render_profile),
             scheduler: BandScheduler::new(width, height, band_height),
             board,
             env,
@@ -108,8 +116,25 @@ impl<B: Board> DewRuntime<B> {
             while let Some(request) = self.board.poll_accessibility_action() {
                 input_changed |= self.renderer.handle_accessibility_action(&request);
             }
+            // One instant for the whole batch: the board reports positions,
+            // not timestamps, and a pump is a single cadence slot — dating the
+            // samples apart would be inventing precision the device never had.
+            #[cfg(feature = "gestures")]
+            let now = self.board.now();
             while let Some(sample) = self.board.poll_pointer() {
                 input_changed |= self.renderer.handle_pointer(sample);
+                #[cfg(feature = "gestures")]
+                {
+                    input_changed |= self
+                        .renderer
+                        .handle_interaction_pointer(sample, now, &self.env);
+                }
+            }
+            // A long press is recognized by time passing rather than by input
+            // arriving, so it needs the frame pump to carry the clock to it.
+            #[cfg(feature = "gestures")]
+            {
+                input_changed |= self.renderer.tick_interaction(now, &self.env);
             }
         }
         if input_changed {
@@ -225,6 +250,7 @@ pub fn render_view_png<V: View>(
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
+    use crate::DrawCommand;
     use crate::display_list::DisplayList;
     use core::cell::Cell;
     use kurbo::Affine;
@@ -233,6 +259,7 @@ mod tests {
     use std::rc::Rc;
     use waterui_backend_core::input::TouchPhase;
     use waterui_controls::toggle::Toggle;
+    use waterui_text::text;
 
     struct CountingToggle {
         body_calls: Rc<Cell<usize>>,
@@ -272,6 +299,114 @@ mod tests {
 
         assert!(!frame.dirty.is_empty());
         assert_eq!(body_calls.get(), 1, "refresh must not evaluate body again");
+    }
+
+    /// Every shaped glyph size in the frame the runtime last flushed.
+    fn shaped_font_sizes(list: &DisplayList) -> Vec<u32> {
+        list.commands()
+            .iter()
+            .filter_map(|placed| match placed.command() {
+                DrawCommand::GlyphRun { font_size, .. } => Some(font_size.to_bits()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A reactive body font must re-shape the retained text: the change has to
+    /// request a frame of its own, and the layout cached at the old size must
+    /// not be replayed at the new one.
+    #[test]
+    fn body_font_change_reshapes_retained_text() {
+        use waterui::Plugin as _;
+        use waterui::theme::{FontSettings, Theme};
+        use waterui_text::font::{FontWeight, ResolvedFont};
+
+        let font = binding(ResolvedFont::new(16.0, FontWeight::Normal));
+        let mut env = Environment::new();
+        Theme::new()
+            .fonts(FontSettings::new().body(font.clone()))
+            .install(&mut env);
+
+        let mut runtime = DewRuntime::new(HostBoard::new(200, 60), env, 16, || {
+            AnyView::new(text("Dew"))
+        });
+
+        runtime.pump().expect("initial frame must render");
+        assert_eq!(
+            shaped_font_sizes(&runtime.current),
+            vec![16.0_f32.to_bits()],
+            "the installed body font shapes the first frame"
+        );
+
+        font.set(ResolvedFont::new(28.0, FontWeight::Normal));
+        let frame = runtime
+            .pump()
+            .expect("a body font change must request a frame of its own");
+
+        assert_eq!(
+            shaped_font_sizes(&runtime.current),
+            vec![28.0_f32.to_bits()],
+            "the new body font must re-shape the retained text"
+        );
+        assert!(
+            !frame.dirty.is_empty(),
+            "re-shaped text must flush the region it changed"
+        );
+    }
+
+    /// A span's own slot must be watched too, not only the body font a bare
+    /// `text("…")` shapes at: `.font(Title)` reads the Title slot, and a
+    /// theme that drives that slot has to re-shape the span it styles.
+    #[test]
+    fn span_font_change_reshapes_retained_text() {
+        use waterui::Plugin as _;
+        use waterui::theme::{FontSettings, Theme};
+        use waterui_text::font::{FontWeight, ResolvedFont, Title};
+
+        let title = binding(ResolvedFont::new(22.0, FontWeight::Normal));
+        let mut env = Environment::new();
+        Theme::new()
+            .fonts(FontSettings::new().title(title.clone()))
+            .install(&mut env);
+
+        let mut runtime = DewRuntime::new(HostBoard::new(240, 80), env, 16, || {
+            AnyView::new(text("Dew").font(Title))
+        });
+
+        runtime.pump().expect("initial frame must render");
+        assert_eq!(
+            shaped_font_sizes(&runtime.current),
+            vec![22.0_f32.to_bits()],
+            "the installed title font shapes the span on the first frame"
+        );
+
+        title.set(ResolvedFont::new(34.0, FontWeight::Normal));
+        let frame = runtime
+            .pump()
+            .expect("a title font change must request a frame of its own");
+
+        assert_eq!(
+            shaped_font_sizes(&runtime.current),
+            vec![34.0_f32.to_bits()],
+            "the new title font must re-shape the span"
+        );
+        assert!(
+            !frame.dirty.is_empty(),
+            "re-shaped text must flush the region it changed"
+        );
+    }
+
+    /// Dew supplies its own type scale, so an application that installs no
+    /// theme still renders text: the body font slot is resolved inside
+    /// `waterui-text`, which panics when the environment carries no token.
+    #[test]
+    fn text_renders_without_an_installed_theme() {
+        let mut runtime = DewRuntime::new(HostBoard::new(200, 40), Environment::new(), 16, || {
+            AnyView::new(text("Dew"))
+        });
+
+        let frame = runtime.pump().expect("initial frame must render");
+        assert!(!frame.dirty.is_empty(), "text must paint something");
     }
 
     #[test]

@@ -5,9 +5,9 @@ use std::rc::Rc;
 
 use glib::object::ObjectExt;
 use glib::value::ToValue;
+use gtk4::Align;
 use gtk4::Widget;
 use gtk4::prelude::*;
-use gtk4::{Align, Overflow};
 use nami::Signal;
 use waterui::accessibility::{
     AccessibilityChecked, AccessibilityChildren, AccessibilityHidden, AccessibilityLabel,
@@ -45,7 +45,7 @@ use waterui_form::picker::multi_date::MultiDatePickerConfig;
 use waterui_form::secure::SecureFieldConfig;
 use waterui_graphics::gpu_surface::GpuSurface;
 use waterui_graphics::{
-    AppliedFilter, ResolvedGradient,
+    AppliedFilter, Picture, ResolvedGradient,
     color::{Color, ResolvedColor},
 };
 use waterui_icon::SystemIcon;
@@ -58,12 +58,13 @@ use waterui_navigation::{
     NavigationSplitLayout, NavigationStack, NavigationTransitionDestination,
     NavigationTransitionSource, NavigationView,
 };
-use waterui_shape::{ClipShape, PathCommand, ResolvedShape};
+use waterui_shape::{ClipShape, ResolvedShape};
 use waterui_text::TextConfig;
 #[cfg(feature = "webview-system")]
 use waterui_webview::WebView;
 
 use crate::component::GtkComponent;
+use crate::components::graphics::clip_shape_widget::WuiClipShape;
 use crate::components::menu::rebuild_menu_popover;
 use crate::util::{ScopedCss, store_watcher_guard, subscribe_then_get};
 
@@ -356,19 +357,6 @@ const CSS_CLASS_SHADOW: &str = "waterui-metadata-shadow";
 const CSS_CLASS_SCALE: &str = "waterui-metadata-scale";
 const CSS_CLASS_ROTATION: &str = "waterui-metadata-rotation";
 const CSS_CLASS_OFFSET: &str = "waterui-metadata-offset";
-const CSS_CLASS_CLIP_SHAPE: &str = "waterui-metadata-clip-shape";
-
-#[derive(Debug, Clone, Copy)]
-enum ClipShapeCss {
-    Rectangle,
-    Ellipse,
-    Rounded {
-        top_left: f32,
-        top_right: f32,
-        bottom_right: f32,
-        bottom_left: f32,
-    },
-}
 
 fn wrap_for_metadata(child: &Widget) -> gtk4::Box {
     let wrapper = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -449,140 +437,6 @@ fn apply_rotation_css(css: &ScopedCss, angle_degrees: f32, anchor: waterui::styl
 
 fn apply_offset_css(css: &ScopedCss, x: f32, y: f32) {
     css.set_declarations(&format!("transform: translate({x:.2}px, {y:.2}px);"));
-}
-
-fn apply_clip_shape_css(css: &ScopedCss, shape: ClipShapeCss) {
-    let body = match shape {
-        ClipShapeCss::Rectangle => "overflow: hidden;",
-        ClipShapeCss::Ellipse => "overflow: hidden; border-radius: 50%;",
-        ClipShapeCss::Rounded {
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-        } => {
-            let tl = top_left * 100.0;
-            let tr = top_right * 100.0;
-            let br = bottom_right * 100.0;
-            let bl = bottom_left * 100.0;
-            return css.set_declarations(&format!(
-                "overflow: hidden; border-radius: {tl:.3}% {tr:.3}% {br:.3}% {bl:.3}%;"
-            ));
-        }
-    };
-    css.set_declarations(body);
-}
-
-fn approx_eq(a: f32, b: f32) -> bool {
-    (a - b).abs() <= 1e-3
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "one cohesive widget-construction pass; splitting it would scatter GTK setup order"
-)]
-fn clip_shape_css(shape: &ClipShape) -> ClipShapeCss {
-    let commands = shape.commands();
-    match commands {
-        [
-            PathCommand::MoveTo { x: 0.0, y: 0.0 },
-            PathCommand::LineTo { x: 1.0, y: 0.0 },
-            PathCommand::LineTo { x: 1.0, y: 1.0 },
-            PathCommand::LineTo { x: 0.0, y: 1.0 },
-            PathCommand::Close,
-        ] => ClipShapeCss::Rectangle,
-        [
-            PathCommand::Arc {
-                cx,
-                cy,
-                rx,
-                ry,
-                start,
-                sweep,
-            },
-        ] if approx_eq(*cx, 0.5)
-            && approx_eq(*cy, 0.5)
-            && approx_eq(*rx, 0.5)
-            && approx_eq(*ry, 0.5)
-            && approx_eq(*start, 0.0)
-            && approx_eq(*sweep, std::f32::consts::TAU) =>
-        {
-            ClipShapeCss::Ellipse
-        }
-        [
-            PathCommand::MoveTo { x: tl, y: 0.0 },
-            PathCommand::LineTo { x: x2, y: 0.0 },
-            PathCommand::Arc {
-                cx: _,
-                cy: tr,
-                rx: top_right_radius_x,
-                ry: top_right_radius_y,
-                start: _,
-                sweep: _,
-            },
-            PathCommand::LineTo { x: 1.0, y: y4 },
-            PathCommand::Arc {
-                cx: _,
-                cy: _,
-                rx: bottom_right_radius_x,
-                ry: bottom_right_radius_y,
-                start: _,
-                sweep: _,
-            },
-            PathCommand::LineTo { x: bl, y: 1.0 },
-            PathCommand::Arc {
-                cx: _,
-                cy: _,
-                rx: bottom_left_radius_x,
-                ry: bottom_left_radius_y,
-                start: _,
-                sweep: _,
-            },
-            PathCommand::LineTo { x: 0.0, y: y8 },
-            PathCommand::Arc {
-                cx: _,
-                cy: _,
-                rx: top_left_radius_x,
-                ry: top_left_radius_y,
-                start: _,
-                sweep: _,
-            },
-            PathCommand::Close,
-        ] => {
-            let top_left = (*tl + *top_left_radius_x + *top_left_radius_y + *y8) / 4.0;
-            let top_right = ((1.0 - *x2) + *tr + *top_right_radius_x + *top_right_radius_y) / 4.0;
-            let bottom_right =
-                ((1.0 - *y4) + *bottom_right_radius_x + *bottom_right_radius_y) / 3.0;
-            let bottom_left = (*bl + *bottom_left_radius_x + *bottom_left_radius_y) / 3.0;
-            ClipShapeCss::Rounded {
-                top_left,
-                top_right,
-                bottom_right,
-                bottom_left,
-            }
-        }
-        [
-            PathCommand::MoveTo { x: 0.5, y: 0.0 },
-            PathCommand::Arc {
-                cx: 0.5,
-                cy: 0.5,
-                rx: 0.5,
-                ry: 0.5,
-                start: _,
-                sweep: _,
-            },
-            PathCommand::Arc {
-                cx: 0.5,
-                cy: 0.5,
-                rx: 0.5,
-                ry: 0.5,
-                start: _,
-                sweep: _,
-            },
-            PathCommand::Close,
-        ] => ClipShapeCss::Ellipse,
-        _ => panic!("unsupported ClipShape path for GTK backend"),
-    }
 }
 
 fn drag_content_provider(data: &DragData) -> gdk4::ContentProvider {
@@ -927,6 +781,7 @@ impl GtkRenderer {
         Self::register_native::<ResolvedColor>(dispatcher);
         Self::register_native::<ResolvedGradient>(dispatcher);
         Self::register_native::<ResolvedShape>(dispatcher);
+        Self::register_native::<Picture>(dispatcher);
 
         // Register Dynamic for reactive content
         Self::register::<Native<Dynamic>>(dispatcher);
@@ -1285,12 +1140,11 @@ impl GtkRenderer {
             dispatcher,
             |renderer, metadata, env| {
                 let content = renderer.render_any(metadata.content, env);
-                let wrapper = wrap_for_metadata(&content);
-                wrapper.set_overflow(Overflow::Hidden);
-                let scoped_css = attach_css_provider(&wrapper, CSS_CLASS_CLIP_SHAPE);
-                let css = clip_shape_css(&metadata.value);
-                apply_clip_shape_css(&scoped_css, css);
-                wrapper.upcast()
+                // The clip resolves the shape's `ShapeKind` against the
+                // allocated size at snapshot time. CSS cannot: a percentage
+                // `border-radius` resolves per axis, so it turns every round
+                // corner on a non-square surface into an elliptical one (#157).
+                WuiClipShape::new(metadata.value.kind(), &content).upcast()
             },
         );
 

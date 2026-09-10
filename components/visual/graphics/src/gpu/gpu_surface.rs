@@ -648,6 +648,26 @@ pub trait GpuView: 'static {
         None
     }
 
+    /// Whether every pixel this view is handed comes back fully opaque.
+    ///
+    /// A view returning `true` promises that [`GpuView::render`] writes the
+    /// whole of `frame.view` on every frame it is asked for — a clear that
+    /// covers the surface, or geometry that provably does — with alpha `1`
+    /// everywhere. Nothing that was in the texture beforehand may show
+    /// through, because a backend is then free to hand this view the window's
+    /// own swapchain texture, uncleared and holding the previous frame, and
+    /// skip both the offscreen intermediate and the composite that would have
+    /// cleared it to the window's base colour.
+    ///
+    /// The default is `false`: a view that leaves any pixel untouched, or
+    /// writes translucent colour anywhere, is composited over the window's
+    /// cleared base colour like any other layer. Declaring opacity a view does
+    /// not have shows the previous frame through the gaps, so leave this alone
+    /// unless the promise above is unconditional.
+    fn is_opaque(&self) -> bool {
+        false
+    }
+
     /// Whether this view handles its own keyboard, IME, pointer and scroll
     /// input.
     ///
@@ -677,6 +697,23 @@ pub trait GpuView: 'static {
     /// that accepts composed text should report its caret. `None` means the
     /// view has no caret to place the panel against.
     fn ime_caret(&self) -> Option<kurbo::Rect> {
+        None
+    }
+
+    /// What this view says about itself, for a screen reader.
+    ///
+    /// A surface is a rectangle of pixels to the platform's accessibility
+    /// layer: nothing about the formula, chart or diagram inside it is
+    /// inspectable from outside, so a view that draws meaning has to state it
+    /// here or be announced as nothing at all. A backend offers this as the
+    /// leaf's name when the application supplied none of its own, so an
+    /// explicit `.a11y_label(...)` always wins.
+    ///
+    /// The value is read again after each frame, because a view whose content
+    /// is driven by a signal draws and re-describes itself at the same moment.
+    /// `None` means the view has nothing to say — the default, and right for a
+    /// purely decorative surface.
+    fn accessibility_label(&self) -> Option<String> {
         None
     }
 
@@ -1051,9 +1088,11 @@ trait GpuViewImpl: 'static {
     fn stretch_axis(&self) -> StretchAxis;
     fn priority(&self) -> i32;
     fn preferred_surface_hdr(&self) -> Option<bool>;
+    fn is_opaque(&self) -> bool;
     fn wants_input_events(&self) -> bool;
     fn input(&mut self, event: &SurfaceInputEvent);
     fn ime_caret(&self) -> Option<kurbo::Rect>;
+    fn accessibility_label(&self) -> Option<String>;
 }
 
 impl<T: GpuView> GpuViewImpl for T {
@@ -1085,6 +1124,10 @@ impl<T: GpuView> GpuViewImpl for T {
         GpuView::preferred_surface_hdr(self)
     }
 
+    fn is_opaque(&self) -> bool {
+        GpuView::is_opaque(self)
+    }
+
     fn wants_input_events(&self) -> bool {
         GpuView::wants_input_events(self)
     }
@@ -1095,6 +1138,10 @@ impl<T: GpuView> GpuViewImpl for T {
 
     fn ime_caret(&self) -> Option<kurbo::Rect> {
         GpuView::ime_caret(self)
+    }
+
+    fn accessibility_label(&self) -> Option<String> {
+        GpuView::accessibility_label(self)
     }
 }
 
@@ -1275,6 +1322,13 @@ impl GpuSurface {
         clippy::future_not_send,
         reason = "offscreen GpuView setup is UI-local and borrows the main-thread Environment"
     )]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "`SharedSceneRenderer` owns wgpu handles, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The overriding renderer has to be the same `Arc` type the shared context hands back, so it cannot become an `Rc` on this target alone."
+        )
+    )]
     pub async fn render_offscreen_frames(
         mut self,
         runtime: &GpuRuntime,
@@ -1370,6 +1424,13 @@ impl GpuSurface {
     #[expect(
         clippy::future_not_send,
         reason = "offscreen GpuView setup is UI-local and borrows the main-thread Environment"
+    )]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "`SharedSceneRenderer` owns wgpu handles, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The overriding renderer has to be the same `Arc` type the shared context hands back, so it cannot become an `Rc` on this target alone."
+        )
     )]
     pub async fn render_offscreen_hdr_frames(
         mut self,
@@ -1480,6 +1541,17 @@ impl GpuSurface {
         self.renderer.priority()
     }
 
+    /// Whether the GPU view fills every pixel it is handed opaquely.
+    ///
+    /// See [`GpuView::is_opaque`]: a backend asks this to decide whether the
+    /// view may be given the window's own target texture, uncleared, instead
+    /// of an offscreen intermediate that is composited over the window's base
+    /// colour.
+    #[must_use]
+    pub fn is_opaque(&self) -> bool {
+        self.renderer.is_opaque()
+    }
+
     /// Whether the GPU view handles its own input.
     ///
     /// A backend holding this surface asks once per registration and, when it
@@ -1504,6 +1576,15 @@ impl GpuSurface {
     #[must_use]
     pub fn ime_caret(&self) -> Option<kurbo::Rect> {
         self.renderer.ime_caret()
+    }
+
+    /// What the GPU view says about itself, for a screen reader.
+    ///
+    /// See [`GpuView::accessibility_label`]. A backend naming this surface's
+    /// accessibility node offers this when the application named it nothing.
+    #[must_use]
+    pub fn accessibility_label(&self) -> Option<String> {
+        self.renderer.accessibility_label()
     }
 }
 
@@ -1630,6 +1711,13 @@ impl View for GpuSurface {
     }
 }
 
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "holds a `wgpu::Buffer` and the device across the buffer-map await; on the WebGPU backend those are JS objects whose map state lives in an `Rc<RefCell<_>>`, and the same future is `Send` on every other target"
+    )
+)]
 async fn readback_texture(
     runtime: &GpuRuntime,
     texture: &wgpu::Texture,

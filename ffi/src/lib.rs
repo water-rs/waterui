@@ -102,7 +102,8 @@ macro_rules! export {
                 let inspector = unsafe { $crate::__init() };
                 let mut env = waterui::configure_environment!(waterui::Environment::new());
                 waterui::inspector::install(&mut env, inspector);
-                $crate::__configure_browser_environment(&mut env);
+                $crate::__install_font_collection(&mut env);
+                $crate::__configure_native_realizations(&mut env);
                 $crate::IntoFFI::into_ffi(env)
             }
 
@@ -160,21 +161,50 @@ macro_rules! export {
     };
 }
 
-/// Installs optional packaged browser runtimes selected by the generated FFI crate.
+/// Installs the application's font collection, for the native backends.
+///
+/// Apple, Android and GTK draw text with the platform's own engine and own no
+/// `parley` collection, so a component that typesets text itself — a formula, a
+/// canvas, a vector map — has no host font stack to share. This gives them one,
+/// discovered once here rather than once per view.
+///
+/// It installs nothing when the application links no such component, because
+/// nothing in that build could read the collection and nothing in it carries
+/// the font stack behind one.
+#[doc(hidden)]
+#[inline]
+pub fn __install_font_collection(env: &mut waterui::Environment) {
+    waterui_text::install_system_font_collection(env);
+}
+
+/// Declares, in the environment a native backend is about to hand the app, the
+/// realizations that backend brings with it.
+///
+/// This runs before the application's own `app(env)`, which is what lets a
+/// Rust-side realization yield to a native one: `waterui_map_gpu::install`
+/// installs nothing when a `Hook<MapConfig>` is already present, and the Apple
+/// backend's `MapKit` bridge is announced here as exactly that hook. Packaged
+/// browser runtimes selected by the generated FFI crate are installed here too.
 ///
 /// Not `const`: the CEF arm installs a runtime. It compiled as `const` only
 /// because the CEF features were previously reached through cbindgen's macro
 /// expansion, which never type-checks the body.
 #[allow(
     clippy::missing_const_for_fn,
-    reason = "the body is empty only in the feature configuration being linted; enabling the capability makes it install a realization"
+    reason = "the body is empty only in the feature configuration being linted; enabling a capability makes it install a realization"
 )]
 #[doc(hidden)]
 #[inline]
-pub fn __configure_browser_environment(env: &mut waterui::Environment) {
+pub fn __configure_native_realizations(env: &mut waterui::Environment) {
+    #[cfg(all(feature = "map", target_vendor = "apple"))]
+    components::data::map::declare_native_realization(env);
     #[cfg(any(feature = "cef-runtime", feature = "cef-header"))]
     components::platform::browser_cef::configure_environment(env);
-    #[cfg(not(any(feature = "cef-runtime", feature = "cef-header")))]
+    #[cfg(not(any(
+        all(feature = "map", target_vendor = "apple"),
+        feature = "cef-runtime",
+        feature = "cef-header"
+    )))]
     let _ = env;
 }
 
@@ -189,7 +219,11 @@ pub fn __configure_browser_environment(env: &mut waterui::Environment) {
 #[cfg(all(target_os = "android", feature = "android-jni"))]
 #[inline]
 pub unsafe fn __jni_init(vm: *mut core::ffi::c_void) -> i32 {
-    unsafe { jni::init(vm as *mut jni::jni::sys::JavaVM) }
+    // SAFETY: this is `JNI_OnLoad`'s own contract, restated by the caller
+    // requirement above: `vm` is the live `JavaVM` the runtime just handed the
+    // library, so re-typing the erased pointer recovers exactly that, which is
+    // what `jni::init` requires.
+    unsafe { jni::init(vm.cast::<jni::jni::sys::JavaVM>()) }
 }
 
 #[cfg(all(target_os = "android", not(feature = "android-jni")))]
@@ -219,6 +253,9 @@ pub unsafe fn __init() -> Option<waterui::inspector::InspectorRuntime> {
 /// Must run on the platform main thread exactly once.
 unsafe fn __init_impl() -> Option<waterui::inspector::InspectorRuntime> {
     #[cfg(target_os = "android")]
+    // SAFETY: `register_android_main_thread` records the calling thread as the
+    // platform main thread, which is only correct when called once from that
+    // thread — precisely this function's own caller contract.
     unsafe {
         native_executor::android::register_android_main_thread()
             .expect("Failed to register Android main thread");
@@ -266,66 +303,67 @@ unsafe fn __init_impl() -> Option<waterui::inspector::InspectorRuntime> {
     inspector
 }
 
+/// The environment variable a launcher sets to name the level the application
+/// logs at.
+///
+/// `water run --logs <level>` writes it so the process it starts emits what the
+/// terminal then streams. The value is a `tracing` level such as `debug`.
+#[cfg(feature = "std")]
+const LOG_LEVEL_ENV: &str = "WATERUI_LOG";
+
+/// The `tracing` filter this process runs with.
+///
+/// `RUST_LOG` is a developer's complete directive and wins outright. Otherwise
+/// [`LOG_LEVEL_ENV`] names the level the launcher asked for, while the crates
+/// in `quiet` — the graphics stack, whose own chatter would drown the
+/// application's at any level above `error` — stay at `error`. With neither
+/// variable set, only errors are recorded.
+#[cfg(feature = "std")]
+fn env_filter(quiet: &str) -> tracing_subscriber::EnvFilter {
+    use tracing_subscriber::EnvFilter;
+
+    if let Ok(filter) = EnvFilter::try_from_default_env() {
+        return filter;
+    }
+    let level = std::env::var(LOG_LEVEL_ENV).unwrap_or_else(|_| String::from("error"));
+    EnvFilter::try_new(format!("{level},{quiet}"))
+        .unwrap_or_else(|error| panic!("{LOG_LEVEL_ENV}={level:?} is not a tracing level: {error}"))
+}
+
 /// Sends `tracing` records to the platform logger, and to the inspector when one
 /// is attached.
 ///
-/// The three platform arms differ only in which logger they attach, so the
-/// inspector layer is wired once here rather than in each of them.
+/// The three platform arms differ only in which logger they attach and which
+/// crates they quieten, so the filter and the inspector layer are wired once
+/// here rather than in each of them.
 #[cfg(feature = "std")]
 fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>) {
-    {
-        // Forwards tracing to platform's logging system
-        #[cfg(target_os = "android")]
-        {
-            use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-            let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-                .or_else(|_| {
-                    tracing_subscriber::EnvFilter::try_new(
-                        "error,wgpu_core=error,wgpu_hal=error,naga=error,jni=error",
-                    )
-                })
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+    #[cfg(target_os = "android")]
+    tracing_subscriber::registry()
+        .with(env_filter(
+            "wgpu_core=error,wgpu_hal=error,naga=error,jni=error",
+        ))
+        .with(tracing_android::layer("WaterUI").expect("Failed to create Android log layer"))
+        .with(inspector)
+        .init();
 
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(
-                    tracing_android::layer("WaterUI").expect("Failed to create Android log layer"),
-                )
-                .with(inspector)
-                .init();
-        }
+    #[cfg(target_vendor = "apple")]
+    tracing_subscriber::registry()
+        .with(env_filter(
+            "wgpu_core=error,wgpu_hal=error,naga=error,metal=error",
+        ))
+        .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
+        .with(inspector)
+        .init();
 
-        #[cfg(target_vendor = "apple")]
-        {
-            use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-            let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-                .or_else(|_| {
-                    tracing_subscriber::EnvFilter::try_new(
-                        "error,wgpu_core=error,wgpu_hal=error,naga=error,metal=error",
-                    )
-                })
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
-
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
-                .with(inspector)
-                .init();
-        }
-
-        #[cfg(not(any(target_os = "android", target_vendor = "apple")))]
-        {
-            use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-            tracing_subscriber::registry()
-                .with(tracing_subscriber::EnvFilter::from_default_env())
-                .with(tracing_subscriber::fmt::layer())
-                .with(inspector)
-                .init();
-        }
-    }
+    #[cfg(not(any(target_os = "android", target_vendor = "apple")))]
+    tracing_subscriber::registry()
+        .with(env_filter("wgpu_core=error,wgpu_hal=error,naga=error"))
+        .with(tracing_subscriber::fmt::layer())
+        .with(inspector)
+        .init();
 }
 
 /// Defines a trait for converting Rust types to FFI-compatible representations.
@@ -1516,11 +1554,17 @@ pub struct WuiRetain {
 
 #[cfg(feature = "android-jni")]
 impl WuiRetain {
-    pub(crate) fn opaque_ptr(&self) -> *mut () {
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the leading underscore spells `_opaque` in the committed C ABI \
+                  header, where it marks the field as opaque to renderers rather \
+                  than unused; renaming it would change waterui.h"
+    )]
+    pub(crate) const fn opaque_ptr(&self) -> *mut () {
         self._opaque
     }
 
-    pub(crate) fn from_ptr(ptr: *mut ()) -> Self {
+    pub(crate) const fn from_ptr(ptr: *mut ()) -> Self {
         Self { _opaque: ptr }
     }
 }

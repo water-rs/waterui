@@ -22,14 +22,14 @@ use std::time::{Duration, Instant as StdInstant};
 
 use nami::{Binding, binding};
 use peniko::Blob;
-use vello_cpu::{Level, RenderMode, RenderSettings};
+use vello_cpu::{Level, RasterizerSettings, RenderMode, RenderSettings};
 use waterui::prelude::*;
 use waterui_backend_core::input::TouchPhase;
 use waterui_backend_core::time::Instant;
 use waterui_core::AnyView;
 use waterui_dew::{
     Board, ChipBudget, DeviceRegion, DewRuntime, FontSources, FrameWork, PointerSample, Provenance,
-    Rgb565Display, Rgb565Sink,
+    RenderProfile, Rgb565Display, Rgb565Sink,
 };
 use waterui_layout::frame::Frame;
 
@@ -262,16 +262,21 @@ impl Board for SimulatedEmbeddedBoard {
         Instant::now()
     }
 
-    fn render_settings(&self) -> RenderSettings {
-        RenderSettings {
-            // No SIMD and no worker threads: an ESP32-class core has neither.
-            level: Level::fallback(),
-            num_threads: 0,
-            // The pipeline the target actually runs. `painter.rs` forces the
-            // f32 path on Xtensa because the Xtensa LLVM backend miscompiles
-            // vello_cpu's u8/u16 fine kernels, so simulating the faster u8
-            // path would measure code the chip will never execute.
-            render_mode: RenderMode::OptimizeQuality,
+    fn render_profile(&self) -> RenderProfile {
+        RenderProfile {
+            context: RenderSettings {
+                // No SIMD and no worker threads: an ESP32-class core has neither.
+                level: Level::fallback(),
+                num_threads: 0,
+            },
+            rasterizer: RasterizerSettings {
+                // The pipeline the target actually runs. `painter.rs` forces the
+                // f32 path on Xtensa because the Xtensa LLVM backend miscompiles
+                // vello_cpu's u8/u16 fine kernels, so simulating the faster u8
+                // path would measure code the chip will never execute.
+                render_mode: RenderMode::OptimizeQuality,
+                ..RasterizerSettings::default()
+            },
         }
     }
 
@@ -871,8 +876,11 @@ fn run_budgeted_simulation() {
 
     let report = build_report(&sample, frames, band_height);
     let rendered = toml::to_string_pretty(&report).expect("the report must serialize");
-    std::fs::write("/tmp/waterui_dew_vending_performance.toml", &rendered)
-        .expect("the performance report must be writable");
+    std::fs::write(
+        support::report_path("vending_performance", "report.toml"),
+        &rendered,
+    )
+    .expect("the performance report must be writable");
 
     let max_rgba_band = WIDTH as usize * band_height as usize * 4;
     assert!(

@@ -4,6 +4,7 @@ use waterui_graphics::RedrawHandle;
 
 #[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
 use waterui_graphics::gpu_surface::preferred_surface_format;
+use waterui_graphics::shared_context::reclaim_device;
 
 /// Input button mapped from a platform pointer event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -434,9 +435,7 @@ impl OffscreenGpuContext {
     /// in sequence otherwise keeps every one of their allocations outstanding
     /// until the device itself is torn down.
     pub fn reclaim(&self) {
-        if let Err(error) = self.inner.device.poll(wgpu::PollType::Poll) {
-            tracing::warn!("GPU device did not reclaim dropped resources: {error}");
-        }
+        reclaim_device(&self.inner.device);
     }
 
     /// Requests a context on the adapter WaterUI would render an application on.
@@ -461,6 +460,13 @@ impl OffscreenGpuContext {
         pollster::block_on(Self::new_for_tests())
     }
 
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "`OffscreenGpuContextInner` holds a wgpu adapter, device and queue, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The context is shared by reference count on every target and is `Send + Sync` on all of them but this one, so the storage type is `Arc` everywhere rather than `Rc` here and `Arc` elsewhere."
+        )
+    )]
     async fn new_with_adapter_selection(selection: AdapterSelection) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
@@ -635,7 +641,7 @@ async fn request_hydrolysis_adapter(
             .await
             .expect("hydrolysis adapter selection: failed to find web adapter");
         log_selected_adapter(context, &adapter);
-        return adapter;
+        adapter
     }
 
     #[cfg(not(all(target_arch = "wasm32", feature = "web")))]
@@ -1131,7 +1137,7 @@ mod winit_impl {
     use super::{
         CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
         PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
-        TextInputState, TouchPhase,
+        TextInputState, TouchPhase, reclaim_device,
     };
 
     #[derive(Clone)]
@@ -1306,7 +1312,10 @@ mod winit_impl {
 
         fn present(&mut self, frame: SurfaceFrame) {
             match frame {
-                SurfaceFrame::Window { output, .. } => output.present(),
+                SurfaceFrame::Window { output, .. } => {
+                    output.present();
+                    reclaim_device(&self.gpu.device);
+                }
                 SurfaceFrame::Offscreen { .. } => {
                     panic!("hydrolysis winit surface received an offscreen frame")
                 }

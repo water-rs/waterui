@@ -1,0 +1,78 @@
+# Built-in font registry.
+#
+# Fonts listed here can be requested by a crate with a name alone:
+#
+#     [[package.metadata.waterui.assets.font]]
+#     name = "Inter"
+#
+# Icon pack fonts (Font Awesome, Material Icons, Lucide, ...) do NOT belong
+# here. They declare their own faces in their own Cargo.toml with `remote_path`
+# and `required-feature`.
+#
+# `url` may point at an archive or at a single face. When it is an archive, only
+# the one face matching `name` is extracted and bundled, never the whole
+# distribution.
+
+# Popular text fonts
+
+[[font]]
+name = "Inter"
+url = "https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip"
+
+[[font]]
+name = "Roboto"
+url = "https://github.com/googlefonts/roboto/releases/download/v2.138/roboto-android.zip"
+
+[[font]]
+name = "Noto Sans CJK JP"
+url = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/06_NotoSansCJKjp.zip"
+
+[[font]]
+name = "Noto Sans CJK KR"
+url = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/07_NotoSansCJKkr.zip"
+
+[[font]]
+name = "Noto Sans CJK SC"
+url = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/08_NotoSansCJKsc.zip"
+
+[[font]]
+name = "Noto Sans CJK TC"
+url = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/09_NotoSansCJKtc.zip"
+
+[[font]]
+name = "Noto Sans Arabic"
+url = "https://github.com/notofonts/arabic/releases/download/NotoSansArabic-v2.013/NotoSansArabic-v2.013.zip"
+
+[[font]]
+name = "Noto Sans Hebrew"
+url = "https://github.com/notofonts/hebrew/releases/download/NotoSansHebrew-v3.001/NotoSansHebrew-v3.001.zip"
+
+# Monospace fonts
+
+[[font]]
+name = "JetBrainsMono"
+url = "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip"
+
+[[font]]
+name = "FiraCode"
+url = "https://github.com/tonsky/FiraCode/releases/download/6.2/Fira_Code_v6.2.zip"
+
+[[font]]
+name = "SourceCodePro"
+url = "https://github.com/adobe-fonts/source-code-pro/releases/download/2.042R-u%2F1.062R-i%2F1.026R-vf/OTF-source-code-pro-2.042R-u_1.062R-i.zip"
+
+# Math fonts.
+#
+# A math font is not a stylistic choice: formula layout is computed from the
+# OpenType `MATH` table — axis height, fraction and radical metrics, script
+# shifts, glyph variants and assemblies — so a face without that table cannot
+# lay out a formula at all.
+#
+# The upstream STIX releases carry no attachments, so this points at the
+# `zipfiles/` archive in the tagged tree. That archive also holds eight
+# `STIX Two Text` faces, none of which carry a `MATH` table; only the Math face
+# matches this entry's name.
+
+[[font]]
+name = "STIX Two Math"
+url = "https://raw.githubusercontent.com/stipub/stixfonts/v2.13b171/zipfiles/static_otf.zip"

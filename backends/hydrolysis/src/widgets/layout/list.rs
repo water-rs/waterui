@@ -7,7 +7,7 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, VisibleSubviewCache,
     WidgetRenderContext, local_interaction_state, materialize_list_item, measure_list_intrinsic,
-    measure_list_item_row_height, measure_view_intrinsic, transformed_rect,
+    measure_list_item_row_height, measure_transient_view_intrinsic, transformed_rect,
 };
 use crate::scroll::ScrollHandle;
 #[cfg(feature = "accessibility")]
@@ -994,7 +994,8 @@ pub(crate) fn render_list_parts(
         }
 
         let deletable = ctx.renderer_mut().read_signal(&item.deletable);
-        let content_size = measure_view_intrinsic(&item.content, ctx.state_mut(), &row_env);
+        let content_size =
+            measure_transient_view_intrinsic(&item.content, ctx.state_mut(), &row_env);
         let mut content_rect = list_content_rect(row_rect, list_metrics, content_size);
         let mut trailing_x = row_rect.x1 - 8.0;
 

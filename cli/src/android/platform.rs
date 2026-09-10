@@ -660,6 +660,7 @@ async fn configure_android_rust_build(
     // Android loads the JNI shared object and nothing else, so build only that crate
     // type instead of also archiving the whole dependency graph into a staticlib.
     let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
+        .with_project(project)
         .with_features(android_ffi_dependency_features(project).await?)
         .with_crate_type_override("cdylib")
         // Devices with 16 KB pages (Pixel 9 class and Play's 2025 requirement)

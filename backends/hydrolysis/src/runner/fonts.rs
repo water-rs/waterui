@@ -4,8 +4,18 @@
 //! Noto Sans families). Classification and fallback installation are shared by the
 //! native loader (which scans `resources/fonts` directories) and the web
 //! loader in [`super::web_runner`] (which fetches fonts from a manifest).
+//!
+//! The result is built **once per application**, installed into the root
+//! environment as the shared [`FontCollection`], and every window's renderer is
+//! seeded from it by [`seed_renderer`]. Building it per window meant scanning
+//! the resource directories and enumerating the system's fonts again for each
+//! one, and a self-drawn component reading the environment would have had no
+//! single collection to read.
 
 use parley::fontique::{Collection, FallbackKey, FamilyId, FontInfo, GenericFamily, Script};
+use waterui_text::FontCollection;
+
+use crate::renderer::HydrolysisRenderer;
 
 /// Font-family buckets recognized from WaterUI's bundled resource fonts.
 #[derive(Default)]
@@ -83,59 +93,83 @@ impl ResourceFontFamilies {
     }
 }
 
-/// Replaces the renderer's font collection with the bundled deterministic set.
-///
-/// Test text used to shape against whatever the host OS discovered, so a
-/// layout assertion tuned on one platform's metrics failed on another's fonts
-/// and every snapshot golden was platform-specific. The test hosts shape with
-/// exactly the Roboto files bundled with this crate instead — system discovery
-/// off, identical metrics on every runner. Characters outside Roboto's
-/// coverage shape as missing glyphs on purpose: a test that needs another
-/// script should say so loudly rather than silently depending on the host's
-/// fallback set.
+/// The faces a test host registers, and the ones it pins its generic families
+/// to. Everything the renderer measures in a test is shaped through one of
+/// these unless no bundled face maps the cluster.
 #[cfg(any(test, feature = "testing"))]
-pub(crate) fn install_deterministic_test_fonts(renderer: &mut crate::renderer::HydrolysisRenderer) {
+const TEST_FONTS: &[(&str, &[u8])] = &[
+    (
+        "Roboto-Regular.ttf",
+        include_bytes!("../../test-fonts/Roboto-Regular.ttf"),
+    ),
+    (
+        "Roboto-Medium.ttf",
+        include_bytes!("../../test-fonts/Roboto-Medium.ttf"),
+    ),
+    (
+        "Roboto-Bold.ttf",
+        include_bytes!("../../test-fonts/Roboto-Bold.ttf"),
+    ),
+    (
+        "Roboto-Italic.ttf",
+        include_bytes!("../../test-fonts/Roboto-Italic.ttf"),
+    ),
+];
+
+/// The collection a test host shapes with: the bundled Roboto for everything it
+/// covers, the platform's own faces for everything it does not.
+///
+/// Test text used to shape against whatever the host OS discovered first, so a
+/// layout assertion tuned on one platform's metrics failed on another's fonts.
+/// Pinning the generic families to exactly the Roboto files bundled with this
+/// crate is what fixed that, and it is why Latin and Cyrillic still measure
+/// identically on every runner: a family the collection registered itself is
+/// matched ahead of any system family of the same generic.
+///
+/// Turning system discovery off on top of that pinning did not help and cost
+/// the platform *fallback*, which is the only thing that can answer a cluster
+/// the pinned face has no glyph for. Every script outside Roboto's coverage —
+/// Han, Hangul, Arabic, Hebrew, Thai, Devanagari — therefore shaped to
+/// `.notdef` and drew as tofu, which is how the avatar gallery came to render
+/// `山田 太郎`'s monogram as two empty boxes while `Ольга Ладыженская`'s read
+/// correctly, and why no non-Latin text could be tested or reviewed by eye
+/// anywhere in the framework.
+///
+/// So discovery stays on and the pinning does the deterministic half of the
+/// job by itself. Only what Roboto cannot cover reaches the platform's
+/// fallback — the same path the shipping runner's own collection takes, which
+/// is what makes a script exercised here evidence about the renderer rather
+/// than about the test host.
+#[cfg(any(test, feature = "testing"))]
+pub(crate) fn deterministic_test_fonts() -> parley::FontContext {
     use parley::fontique::{Blob, CollectionOptions};
     use std::sync::Arc;
 
-    const FONTS: &[(&str, &[u8])] = &[
-        (
-            "Roboto-Regular.ttf",
-            include_bytes!("../../test-fonts/Roboto-Regular.ttf"),
-        ),
-        (
-            "Roboto-Medium.ttf",
-            include_bytes!("../../test-fonts/Roboto-Medium.ttf"),
-        ),
-        (
-            "Roboto-Bold.ttf",
-            include_bytes!("../../test-fonts/Roboto-Bold.ttf"),
-        ),
-        (
-            "Roboto-Italic.ttf",
-            include_bytes!("../../test-fonts/Roboto-Italic.ttf"),
-        ),
-    ];
-
-    let font_cx = renderer.state_mut().text_fonts_mut();
-    font_cx.collection = Collection::new(CollectionOptions {
-        system_fonts: false,
-        ..CollectionOptions::default()
-    });
+    let mut font_cx = parley::FontContext {
+        collection: Collection::new(CollectionOptions {
+            // On for fallback, not for selection: `ResourceFontFamilies::install`
+            // below pins the generic families to the bundled Roboto, so a
+            // system face is only ever reached for a cluster Roboto cannot map.
+            system_fonts: true,
+            ..CollectionOptions::default()
+        }),
+        source_cache: parley::fontique::SourceCache::default(),
+    };
     let mut resource_fonts = ResourceFontFamilies::default();
-    for (name, bytes) in FONTS {
+    for (name, bytes) in TEST_FONTS {
         let families = font_cx
             .collection
             .register_fonts(Blob::new(Arc::new(*bytes)), None);
         resource_fonts.classify(name, &families);
     }
     resource_fonts.install(&mut font_cx.collection);
+    font_cx
 }
 
-/// Register every `.ttf`/`.otf` under the app's `resources/fonts` directories
-/// and install the recognized script fallbacks.
+/// The system's fonts plus every `.ttf`/`.otf` under the app's `resources/fonts`
+/// directories, with the recognized script fallbacks installed.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn load_native_resource_fonts(renderer: &mut crate::renderer::HydrolysisRenderer) {
+pub(super) fn native_resource_fonts() -> parley::FontContext {
     use parley::fontique::Blob;
     use std::sync::Arc;
 
@@ -161,7 +195,7 @@ pub(super) fn load_native_resource_fonts(renderer: &mut crate::renderer::Hydroly
         }
     }
 
-    let font_cx = renderer.state_mut().text_fonts_mut();
+    let mut font_cx = parley::FontContext::new();
     let mut resource_fonts = ResourceFontFamilies::default();
     for root in roots {
         if !root.exists() {
@@ -215,4 +249,135 @@ pub(super) fn load_native_resource_fonts(renderer: &mut crate::renderer::Hydroly
         }
     }
     resource_fonts.install(&mut font_cx.collection);
+    font_cx
+}
+
+/// Gives `renderer` the application's fonts to shape with.
+///
+/// Every window shapes against the one collection the runner installed, so a
+/// popup opened later measures text exactly as the window that opened it does.
+/// The renderer keeps its own copy because it shapes across worker threads and
+/// `parley`'s contexts are not `Sync`; the faces in it are the same ones.
+pub(super) fn seed_renderer(renderer: &mut HydrolysisRenderer, fonts: &FontCollection) {
+    *renderer.state_mut().text_fonts_mut() = fonts.use_fonts(|fonts| fonts.clone());
+}
+
+#[cfg(test)]
+mod tests {
+    use parley::PositionedLayoutItem;
+    use waterui_core::Environment;
+    use waterui_core::layout::HorizontalAlignment;
+    use waterui_text::styled::StyledStr;
+
+    use super::{TEST_FONTS, deterministic_test_fonts};
+    use crate::renderer::{TextMeasureService, resolve_text_layout_input};
+
+    /// One sample per script a `WaterUI` application is expected to draw.
+    ///
+    /// The first two are what the bundled Roboto covers and what every layout
+    /// assertion in the suite is written against; the rest are the scripts that
+    /// can only be answered by the platform's fallback, and each of them drew
+    /// as a row of tofu boxes before this collection asked for one.
+    const SAMPLES: &[(&str, &str)] = &[
+        ("Latin", "Ada Lovelace"),
+        ("Cyrillic", "Ольга Ладыженская"),
+        ("Han", "山田 太郎"),
+        ("Hangul", "안녕하세요"),
+        ("Arabic", "مرحبا بالعالم"),
+        ("Hebrew", "שלום עולם"),
+        ("Thai", "สวัสดี"),
+        ("Devanagari", "नमस्ते"),
+    ];
+
+    /// A shaping service seeded exactly as a headless test host seeds it.
+    fn test_host_service() -> TextMeasureService {
+        let mut service = TextMeasureService::new();
+        *service.fonts_mut() = deterministic_test_fonts();
+        service
+    }
+
+    /// Shapes `text` through the renderer's own service and reports how many
+    /// glyphs came back, how many of them are `.notdef`, and whether every run
+    /// resolved to one of the bundled faces.
+    ///
+    /// `.notdef` is glyph 0 by definition, and glyph 0 is the box a reader sees.
+    /// Counting it is the same observation as reading the image, made where it
+    /// cannot be argued with.
+    fn shaped(service: &TextMeasureService, text: &'static str) -> (usize, usize, bool) {
+        let mut env = Environment::new();
+        crate::testing::install_theme(&mut env);
+        let input =
+            resolve_text_layout_input(&StyledStr::from(text), HorizontalAlignment::Leading, &env);
+        let layout = service.shape(&input, None);
+        let mut glyphs = 0;
+        let mut missing = 0;
+        let mut all_bundled = true;
+        for line in layout.lines() {
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(run) = item else {
+                    continue;
+                };
+                let face = run.run().font().data.data();
+                all_bundled &= TEST_FONTS.iter().any(|(_, bundled)| face == *bundled);
+                for glyph in run.glyphs() {
+                    glyphs += 1;
+                    missing += usize::from(glyph.id == 0);
+                }
+            }
+        }
+        (glyphs, missing, all_bundled)
+    }
+
+    /// The defect this collection was fixed for: a cluster the bundled face
+    /// cannot map must reach a face that can, on every script, not just the
+    /// ones Roboto happens to carry.
+    #[test]
+    fn no_script_shapes_to_a_missing_glyph() {
+        let service = test_host_service();
+        for (script, text) in SAMPLES {
+            let (glyphs, missing, _) = shaped(&service, text);
+            assert!(glyphs > 0, "{script} sample `{text}` produced no glyphs");
+            assert_eq!(
+                missing, 0,
+                "{missing} of {glyphs} glyphs in the {script} sample `{text}` are `.notdef`, \
+                 which is the tofu box: the collection found no face covering the script"
+            );
+        }
+    }
+
+    /// ...and the half that must not move while it does: pinning the generic
+    /// families to the bundled Roboto is what keeps a layout assertion tuned on
+    /// one runner true on the next, so the scripts Roboto covers have to keep
+    /// resolving to Roboto rather than to whatever the host installed.
+    #[test]
+    fn the_scripts_roboto_covers_still_shape_through_roboto() {
+        let service = test_host_service();
+        for (script, text) in &SAMPLES[..2] {
+            let (glyphs, _, all_bundled) = shaped(&service, text);
+            assert!(glyphs > 0, "{script} sample `{text}` produced no glyphs");
+            assert!(
+                all_bundled,
+                "the {script} sample `{text}` reached a system face; the bundled Roboto \
+                 covers it and must be matched first, or every metric in the suite \
+                 becomes host-dependent"
+            );
+        }
+    }
+
+    /// And the same statement from the other side: a script Roboto does not
+    /// carry must be answered by a face that is *not* bundled. Without this the
+    /// test above could pass on a collection that had quietly stopped
+    /// registering anything at all.
+    #[test]
+    fn a_script_roboto_lacks_is_answered_by_a_platform_face() {
+        let service = test_host_service();
+        for (script, text) in &SAMPLES[2..] {
+            let (_, _, all_bundled) = shaped(&service, text);
+            assert!(
+                !all_bundled,
+                "the {script} sample `{text}` claims to shape through the bundled Roboto, \
+                 which has no glyph for it"
+            );
+        }
+    }
 }

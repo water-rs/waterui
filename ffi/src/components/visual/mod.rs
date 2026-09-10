@@ -1,13 +1,31 @@
-#[cfg(all(feature = "c-api", feature = "gpu"))]
+// Gated on `gpu` alone, like `gpu_surface`: Android drives both of these through
+// the JNI bindings, which are compiled with `android-jni` and without `c-api`.
+#[cfg(feature = "gpu")]
 pub mod applied_filter;
+#[cfg(all(target_os = "android", feature = "gpu"))]
+pub mod capture_composite;
+#[cfg(feature = "gpu")]
+pub mod capture_format;
 #[cfg(feature = "gpu")]
 pub mod gpu_runtime;
 #[cfg(feature = "gpu")]
 pub mod gpu_surface;
-#[cfg(all(feature = "c-api", feature = "gpu"))]
+#[cfg(feature = "gpu")]
+pub mod gpu_surface_input;
+#[cfg(all(target_os = "android", feature = "gpu"))]
+pub mod hardware_buffer;
+pub mod picture;
+#[cfg(feature = "gpu")]
 pub mod view_effect;
 pub mod view_renderer;
 
+/// Acquires the next texture of a configured surface, reconfiguring once when
+/// the swapchain is lost or outdated.
+///
+/// `None` means the frame was skipped because the surface is occluded: nothing
+/// was drawn, and the caller must report the frame as still pending so the host
+/// comes back for it — a view whose only clock is its own render loop has no
+/// other way to be woken.
 #[cfg(feature = "gpu")]
 fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,

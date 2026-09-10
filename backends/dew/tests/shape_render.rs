@@ -13,7 +13,7 @@ use kurbo::{Affine, BezPath, Circle as KurboCircle, Rect, RoundedRect, Shape as 
 use peniko::Brush;
 use waterui::prelude::*;
 use waterui::shape::{Capsule, Circle, Path, RoundedRectangle, ShapeExt};
-use waterui_dew::{Clip, ClipRegion, DewRenderer, DisplayList, DrawCommand, render_view_png};
+use waterui_dew::{Clip, ClipRegion, DisplayList, DrawCommand, render_view_png};
 
 mod support;
 
@@ -26,7 +26,7 @@ fn display_srgb(red: u8, green: u8, blue: u8) -> peniko::Color {
 }
 
 fn render_scene<V: View>(build: impl Fn() -> V + 'static, width: u32, height: u32) -> DisplayList {
-    let mut renderer = DewRenderer::default();
+    let mut renderer = support::test_renderer();
     renderer.render_tree(
         AnyView::new(build()),
         &support::test_environment(),
@@ -178,5 +178,6 @@ fn export_shapes_for_visual_review() {
         320,
         180,
     );
-    std::fs::write("/tmp/waterui_dew_shapes.png", png).expect("export visual review PNG");
+    std::fs::write(support::export_path("shapes", "review"), png)
+        .expect("export visual review PNG");
 }

@@ -9,7 +9,6 @@ use std::rc::Rc;
 
 use kurbo::Rect;
 use nami::binding;
-use peniko::Brush;
 use waterui::Plugin as _;
 use waterui::color::{ResolvedColor, Srgb};
 use waterui::prelude::*;
@@ -17,9 +16,7 @@ use waterui::theme::{ColorSettings, Theme};
 use waterui_backend_core::input::TouchPhase;
 use waterui_controls::toggle::toggle;
 use waterui_core::Str;
-use waterui_dew::{
-    DewRenderer, DewRuntime, DisplayList, DrawCommand, HostBoard, PlacedCommand, PointerSample,
-};
+use waterui_dew::{DewRuntime, DisplayList, DrawCommand, HostBoard, PlacedCommand, PointerSample};
 use waterui_navigation::{
     NavigationLink, NavigationPath, NavigationSplitView, NavigationStack,
     NavigationTitleDisplayMode, NavigationToolbar, NavigationToolbarItem,
@@ -27,6 +24,10 @@ use waterui_navigation::{
 };
 
 mod support;
+
+use support::{
+    assert_exact_f64, display_srgb, exact_f64, full_width_solid_fills, only_solid_fill, solid_color,
+};
 
 const WIDTH: u32 = 240;
 const HEIGHT: u32 = 240;
@@ -77,46 +78,9 @@ fn run(build: impl Fn() -> NavigationStack<(), ()> + 'static) -> DewRuntime<Host
     runtime
 }
 
-const fn solid_color(command: &PlacedCommand) -> Option<peniko::Color> {
-    match command.command() {
-        DrawCommand::FillPath {
-            brush: Brush::Solid(color),
-            ..
-        } => Some(*color),
-        _ => None,
-    }
-}
-
-const fn exact_f64(left: f64, right: f64) -> bool {
-    left.to_bits() == right.to_bits()
-}
-
+/// Bit-for-bit equality on the `f32` half of the geometry.
 const fn exact_f32(left: f32, right: f32) -> bool {
     left.to_bits() == right.to_bits()
-}
-
-fn assert_exact_f64(left: f64, right: f64) {
-    assert_eq!(left.to_bits(), right.to_bits());
-}
-
-fn solid_fill_bounds(list: &DisplayList, color: peniko::Color) -> Vec<Rect> {
-    list.commands()
-        .iter()
-        .filter(|command| solid_color(command) == Some(color))
-        .map(PlacedCommand::bounds)
-        .collect()
-}
-
-fn display_srgb(red: u8, green: u8, blue: u8) -> peniko::Color {
-    let resolved = ResolvedColor::from_srgb(Srgb::new_u8(red, green, blue));
-    let srgb = resolved.to_srgb_with_headroom();
-    peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.opacity])
-}
-
-fn only_solid_fill(list: &DisplayList, color: peniko::Color) -> Rect {
-    let bounds = solid_fill_bounds(list, color);
-    assert_eq!(bounds.len(), 1, "expected exactly one {color:?} fill");
-    bounds[0]
 }
 
 fn assert_root_background(list: &DisplayList) {
@@ -124,32 +88,18 @@ fn assert_root_background(list: &DisplayList) {
         .commands()
         .first()
         .expect("every Dew frame begins with its root background");
-    assert!(solid_color(first).is_some());
+    assert!(support::solid_color(first).is_some());
     assert_eq!(
         first.bounds(),
         Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT))
     );
 }
 
-fn full_width_solid_fills(list: &DisplayList, width: f64) -> Vec<Rect> {
-    list.commands()
-        .iter()
-        .skip(1)
-        .filter_map(|command| {
-            let bounds = command.bounds();
-            (solid_color(command).is_some()
-                && exact_f64(bounds.x0, 0.0)
-                && exact_f64(bounds.x1, width))
-            .then_some(bounds)
-        })
-        .collect()
-}
-
 /// A stack renders its root destination's content under the bar, and the bar
 /// is drawn as chrome above it.
 #[test]
 fn a_stack_draws_its_root_under_a_bar() {
-    let mut renderer = DewRenderer::default();
+    let mut renderer = support::test_renderer();
     let list = renderer.render_tree(
         AnyView::new(NavigationStack::new(NavigationView::new(
             "Settings",
@@ -380,7 +330,7 @@ fn a_stack_opens_on_the_route_its_path_already_holds() {
 #[test]
 fn a_bar_places_every_part_it_declares() {
     let query = binding(Str::from("Bed"));
-    let mut renderer = DewRenderer::default();
+    let mut renderer = support::test_renderer();
     let list = renderer.render_tree(
         AnyView::new(NavigationStack::new(
             NavigationView::new("Rooms", Color::srgb(0, 255, 255))
@@ -455,7 +405,7 @@ fn a_bar_places_every_part_it_declares() {
         .commands()
         .iter()
         .find(|placed| {
-            matches!(placed.command(), DrawCommand::GlyphRun { font_size, .. } if exact_f32(*font_size, 24.0))
+            matches!(placed.command(), DrawCommand::GlyphRun { font_size, .. } if exact_f32(*font_size, 22.0))
         })
         .unwrap_or_else(|| panic!("the large title uses the configured title font: {title_sizes:?}"));
     assert_eq!(top_bar.intersect(title.bounds()), title.bounds());
@@ -487,13 +437,13 @@ fn export_navigation_for_visual_review() {
         ))
     });
     std::fs::write(
-        "/tmp/waterui_dew_navigation_root.png",
+        support::export_path("navigation", "root"),
         runtime.board().framebuffer().to_png(),
     )
     .expect("export the root screen");
     tap_labeled(&mut runtime, "Schedule").expect("following the link renders a frame");
     std::fs::write(
-        "/tmp/waterui_dew_navigation_pushed.png",
+        support::export_path("navigation", "pushed"),
         runtime.board().framebuffer().to_png(),
     )
     .expect("export the pushed screen");
@@ -610,7 +560,7 @@ fn a_three_column_split_retains_both_destination_levels() {
     );
     runtime.pump().expect("all three columns render");
     std::fs::write(
-        "/tmp/waterui_dew_navigation_split.png",
+        support::export_path("navigation", "split"),
         runtime.board().framebuffer().to_png(),
     )
     .expect("export split visual review PNG");

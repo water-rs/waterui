@@ -1,21 +1,14 @@
 name: Windows
 
 # The Windows test leg is split out of `test.yml` because it needs platform-
-# specific exclusions and compile-only coverage. It is still a required
-# per-change signal: the workflow runs on the same branches and pull requests
-# as the main CI workflow, and every verification command is gating.
+# specific exclusions and compile-only coverage. It is a nightly platform
+# (#379): `nightly.yml` calls it once a day against `dev`, beside the full
+# `test.yml` matrix, and every verification command in it is gating there.
+# It left the pull-request path because its three jobs were 43-65 minutes of
+# cold build on the scarcest runners for every change, whatever it touched.
 
 on:
-  # Integration branches only: a branch that also has a PR would otherwise run
-  # the whole workflow twice for one commit.
-  push:
-    branches: [main, dev]
-  pull_request:
-    branches: ["**"]
-  # Keep a daily default-branch run to catch hosted-runner and toolchain drift
-  # even when the repository itself has not changed.
-  schedule:
-    - cron: "23 7 * * *"
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -32,6 +25,12 @@ env:
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
 
 jobs:
+  # Two jobs, not one: the lint passes used to run after the whole test build
+  # in a single job, so clippy waited ~90 minutes behind nextest and the leg
+  # was the last thing standing on every run (#347). Each job compiles its own
+  # graph, but they run side by side, and the critical path is the test job
+  # alone. Coverage is unchanged — every command below is one of the original
+  # job's, split by kind, not dropped.
   test:
     name: windows-latest
     runs-on: windows-latest
@@ -43,15 +42,20 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
       - name: Install DirectX Shader Compiler
         uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
       - name: Verify DirectX Shader Compiler
         run: dxc --version
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-windows-latest
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          # Only the integration branches write the shared Cargo source cache.
+          # The Windows target archive no longer competes with the fast lint
+          # gate for the repository's 10 GB budget (#458). Tests still run in
+          # every supported shape below; only their cache allocation changes.
+          # Other Windows jobs restore the same source cache without saving.
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       # Four crates cannot be tested here, for reasons that are not bugs:
@@ -63,10 +67,10 @@ jobs:
       # targets macOS, the iOS Simulator and Android, not Windows.
       #
       # waterui-browser-cef links cef_sandbox from a CEF binary distribution the
-      # runner does not stage. It is still compiled below, through the crate's
-      # own `compile-only` feature, which its build script honours ahead of
-      # `cef-runtime` for exactly this case — so Windows keeps compile coverage
-      # of the backend without provisioning the SDK.
+      # runner does not stage. It is still compiled in the lint job below,
+      # through the crate's own `compile-only` feature, which its build script
+      # honours ahead of `cef-runtime` for exactly this case — so Windows keeps
+      # compile coverage of the backend without provisioning the SDK.
       #
       # The two CEF example crates inherit that problem one level down. They
       # select `waterui-browser-cef` with `webview`/`chromium` but not
@@ -74,34 +78,17 @@ jobs:
       # while `runtime.rs` still declares the `waterui_cef_windows_sandbox_*`
       # externs under `cfg(windows)` — the crate compiles and then fails to
       # link. Every pass that links a test binary therefore excludes them, the
-      # same way it excludes the backend itself; the clippy pass below keeps
-      # them, because it checks without linking and the compile coverage is
-      # worth having.
+      # same way it excludes the backend itself; the clippy pass in the lint
+      # job keeps them, because it checks without linking and the compile
+      # coverage is worth having.
       #
       # One full-workspace pass under default features. A workspace-wide
       # `--all-features` pass is structurally impossible — `waterui-ffi`
       # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
       # enabling `c-api` and `android-jni` together can never build.
-      - run: cargo nextest run --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example --profile ci
-      # The root crate's feature-gated re-export surface. `--features all` rather
-      # than `--all-features`: the latter turns on `dynamic_linking`, which pulls
-      # in `waterui-dylib`, and that crate exports 77k symbols against a PE
-      # export table limit of 65535 — it cannot link here, which is why the
-      # workspace pass above excludes it. This step had never once run.
-      # Root-crate-only scope is what cargo's default package selection does
-      # without `--workspace`, and here that narrowing is exactly right: the
-      # root `waterui` crate is the one crate whose features are all mutually
-      # compatible.
-      - run: cargo nextest run --features all --profile ci
-      # Compile the CEF backend without its binary distribution.
-      - run: cargo check -p waterui-browser-cef --features compile-only
+      - run: cargo nextest run --locked --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example --profile ci
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example
-      # Windows-only code is invisible to every other leg: a `cfg(windows)` body
-      # is compiled nowhere else, so a lint that fires only there reaches
-      # nobody.
-      - name: Clippy
-        run: cargo clippy --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
+      - run: cargo test --locked --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -110,3 +97,105 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
+
+  # Every crate's own optional features, in its own job so the test tarball
+  # above holds one feature variant of the dependency graph instead of two
+  # (#362): this job stores only `~/.cargo`, like macos-suites.
+  #
+  # Two passes, because the root crate cannot join a workspace-wide
+  # `--all-features` here: that turns on `dynamic_linking`, which pulls in
+  # `waterui-dylib`, and that crate exports 77k symbols against a PE export
+  # table limit of 65535 — it cannot link on Windows, which is why the
+  # workspace pass in `test` excludes it. So the root `waterui` crate runs on
+  # its own under `--features all` (every feature but that one), and the rest
+  # of the workspace runs under `--all-features` with the root and the dylib
+  # excluded, plus the same four exclusions the Linux `all-features` job in
+  # test.yml carries for crates whose feature sets are mutually exclusive by
+  # construction (#276), and `skill_snippets`, whose `dev` feature would turn
+  # `dynamic_linking` back on and whose `compile-gate-tests` transcriptions
+  # must never run (see the Linux job). The two excluded crates with
+  # platform-specific code in their feature shapes run afterwards in the
+  # shapes they have.
+  all-features:
+    name: windows-latest (all features)
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install DirectX Shader Compiler
+        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+      - name: Verify DirectX Shader Compiler
+        run: dxc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      - name: Test (root crate, every feature but dynamic_linking)
+        run: cargo nextest run --locked --features all --profile ci
+      - name: Test (all features, workspace)
+        run: |
+          cargo nextest run --locked --workspace --all-features --profile ci `
+            --exclude waterui `
+            --exclude waterui-dylib `
+            --exclude '*-example' `
+            --exclude waterui-core `
+            --exclude waterui-ffi `
+            --exclude hydrolysis `
+            --exclude waterui-browser-cef `
+            --exclude skill_snippets
+      - name: Test (waterui-core, every stable feature)
+        run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
+      - name: Test (hydrolysis, every portable feature)
+        run: |
+          cargo nextest run --locked -p hydrolysis --profile ci `
+            --features accessibility,inspector-signals,testing,web,winit
+      - name: Upload Test Snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots-windows-latest-all-features
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  lint:
+    name: windows-latest (lint)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # Build scripts run under `cargo check` too, so the shader compiler has
+      # to be present here as well as in the test job.
+      - name: Install DirectX Shader Compiler
+        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+      - name: Verify DirectX Shader Compiler
+        run: dxc --version
+      # Writes the Windows `~/.cargo` tarball (see the cache budget note in
+      # ci.yml); the target directory belongs to the test job above. This
+      # block used to save a 2.2 GB target tarball on every pull request
+      # fingerprint, ungated.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      # Compile the CEF backend without its binary distribution (see the test
+      # job for why it cannot be linked here).
+      - run: cargo check --locked -p waterui-browser-cef --features compile-only
+      # Windows-only code is invisible to every other leg: a `cfg(windows)` body
+      # is compiled nowhere else, so a lint that fires only there reaches
+      # nobody.
+      - name: Clippy
+        run: cargo clippy --locked --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings

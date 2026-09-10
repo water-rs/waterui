@@ -24,18 +24,14 @@
 //! ```
 
 use std::io;
-#[cfg(not(target_arch = "wasm32"))]
 use std::net::TcpListener;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 use std::time::Duration;
 
 use waterui_core::Environment;
-#[cfg(not(target_arch = "wasm32"))]
 use waterui_inspector_protocol::discovery::Advertisement;
-#[cfg(not(target_arch = "wasm32"))]
 use waterui_inspector_protocol::{ChannelSet, TargetInfo};
 
 use crate::task::RuntimeProbe;
@@ -43,7 +39,6 @@ use crate::task::RuntimeProbe;
 mod hub;
 mod logs;
 mod recorder;
-#[cfg(not(target_arch = "wasm32"))]
 mod server;
 /// The reactive-graph bridge only exists when `nami` is built with graph
 /// observability; without it there is no observer trait to implement.
@@ -63,7 +58,6 @@ pub use logs::InspectorLayer;
 pub use recorder::{FrameRecorder, TreeRecorder};
 
 /// How long a connecting peer has to complete the handshake.
-#[cfg(not(target_arch = "wasm32"))]
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -223,28 +217,23 @@ where
 pub struct InspectorRuntime {
     hub: Arc<EventHub>,
     task_probe: Arc<tasks::TaskProbe>,
-    #[cfg(not(target_arch = "wasm32"))]
     listening: std::sync::OnceLock<ListeningEndpoint>,
-    #[cfg(not(target_arch = "wasm32"))]
     pending: std::sync::Mutex<Option<PendingEndpoint>>,
 }
 
 /// What a bound endpoint owns once it is listening.
-#[cfg(not(target_arch = "wasm32"))]
 struct ListeningEndpoint {
     endpoint: InspectorEndpointInfo,
     advertisement: Advertisement,
 }
 
 /// Everything needed to bind, held until somebody asks.
-#[cfg(not(target_arch = "wasm32"))]
 struct PendingEndpoint {
     config: InspectorServerConfig,
     backend: &'static str,
     receiver: async_channel::Receiver<hub::Dispatch>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Drop for InspectorRuntime {
     fn drop(&mut self) {
         // A file naming an endpoint that no longer exists sends the next reader
@@ -275,14 +264,7 @@ impl InspectorRuntime {
     /// Where this endpoint is listening, if it has been asked to.
     #[must_use]
     pub fn bound_endpoint(&self) -> Option<&InspectorEndpointInfo> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            None
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.listening.get().map(|listening| &listening.endpoint)
-        }
+        self.listening.get().map(|listening| &listening.endpoint)
     }
 
     /// Where this endpoint is listening, binding the socket if it is not yet.
@@ -292,17 +274,7 @@ impl InspectorRuntime {
     /// Returns an I/O error when the socket cannot be bound or a thread cannot
     /// be spawned.
     pub fn endpoint(&self) -> io::Result<&InspectorEndpointInfo> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "the TCP inspector endpoint is unavailable in browsers",
-            ))
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.ensure_listening().map(|listening| &listening.endpoint)
-        }
+        self.ensure_listening().map(|listening| &listening.endpoint)
     }
 
     /// The probe that reports main-thread occupancy.
@@ -528,7 +500,6 @@ pub fn install(environment: &mut Environment, inspector: Option<InspectorRuntime
 /// application rather than only from one started in a terminal.
 ///
 /// `WATERUI_CLI` overrides the search.
-#[cfg(not(target_arch = "wasm32"))]
 fn water_cli_path() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
 
@@ -564,7 +535,6 @@ fn water_cli_path() -> Option<std::path::PathBuf> {
 ///
 /// Advertised in the handshake so an inspector can grey out what it will never
 /// receive instead of waiting forever for it.
-#[cfg(not(target_arch = "wasm32"))]
 fn available_channels() -> ChannelSet {
     let mut available =
         ChannelSet::FRAMES | ChannelSet::TREE | ChannelSet::TASKS | ChannelSet::LOGS;
@@ -630,21 +600,9 @@ pub fn init_with_config(
     config: InspectorServerConfig,
     backend: &'static str,
 ) -> io::Result<InspectorRuntime> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = config;
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "the TCP inspector endpoint is unavailable in browsers",
-        ));
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let runtime = InspectorRuntime::prepared(config, backend);
-        runtime.ensure_listening()?;
-        Ok(runtime)
-    }
+    let runtime = InspectorRuntime::prepared(config, backend);
+    runtime.ensure_listening()?;
+    Ok(runtime)
 }
 
 /// Builds a runtime whose socket is not bound yet.
@@ -660,7 +618,6 @@ pub fn prepare_with_config(
     InspectorRuntime::prepared(config, backend)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl InspectorRuntime {
     fn prepared(config: InspectorServerConfig, backend: &'static str) -> Self {
         let (hub, receiver) = EventHub::new();
@@ -765,7 +722,6 @@ impl InspectorRuntime {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<()> {
     thread::Builder::new()
         .name(name.to_string())

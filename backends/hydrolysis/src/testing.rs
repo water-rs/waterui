@@ -3,7 +3,6 @@
 use waterui::{
     Environment, Plugin,
     color::{ResolvedColor, Srgb},
-    text::font::{FontWeight, ResolvedFont},
     theme::{ColorScheme, ColorSettings, FontSettings, Theme},
 };
 use waterui_core::{AnyView, Native};
@@ -51,14 +50,6 @@ pub fn install_theme(env: &mut Environment) {
                 .selection_container(color(0x25_63_EB))
                 .selection_foreground(color(0xFF_FF_FF)),
         )
-        .fonts(
-            FontSettings::new()
-                .body(ResolvedFont::new(16.0, FontWeight::Normal))
-                .title(ResolvedFont::new(22.0, FontWeight::Normal))
-                .headline(ResolvedFont::new(24.0, FontWeight::Normal))
-                .subheadline(ResolvedFont::new(16.0, FontWeight::Medium))
-                .caption(ResolvedFont::new(12.0, FontWeight::Normal))
-                .footnote(ResolvedFont::new(11.0, FontWeight::Medium)),
-        )
+        .fonts(FontSettings::default_scale())
         .install(env);
 }

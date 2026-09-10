@@ -4,3 +4,7 @@ waterui_path = "../.."
 type = "playground"
 name = "Image Example"
 bundle_identifier = "dev.waterui.examples.image"
+
+[permissions.internet]
+enable = true
+description = "Loads the demo photos from picsum.photos"

@@ -8,7 +8,7 @@ use waterui::prelude::*;
 use waterui::prelude::{slider::slider, stepper::stepper};
 use waterui::reactive::binding;
 use waterui_core::AnyView;
-use waterui_dew::{DewRenderer, DrawCommand, render_view_png, theme};
+use waterui_dew::{DrawCommand, render_view_png, theme};
 
 mod support;
 
@@ -90,7 +90,7 @@ fn build_screen() -> impl View {
 #[test]
 fn form_ui_renders_to_png() {
     let png = render_view_png(build_screen, support::test_environment(), WIDTH, HEIGHT);
-    std::fs::write("/tmp/dew_form_render.png", &png).expect("export form render PNG");
+    std::fs::write(support::export_path("form", "render"), &png).expect("export form render PNG");
 
     let pixmap = vello_cpu::Pixmap::from_png(std::io::Cursor::new(png.as_slice()))
         .expect("png decodes back");
@@ -110,7 +110,7 @@ fn form_ui_renders_to_png() {
 /// fill, and progress fill, plus the viewport clip from the scroll view.
 #[test]
 fn form_scene_contains_expected_widget_commands() {
-    let mut renderer = DewRenderer::default();
+    let mut renderer = support::test_renderer();
     let list = renderer.render_tree(
         AnyView::new(build_screen()),
         &support::test_environment(),
@@ -124,24 +124,24 @@ fn form_scene_contains_expected_widget_commands() {
         .filter(|placed| {
             matches!(
                 placed.command(),
-                DrawCommand::GlyphRun { font_size, .. } if (font_size - 24.0).abs() < f32::EPSILON
+                DrawCommand::GlyphRun { font_size, .. } if (font_size - 22.0).abs() < f32::EPSILON
             )
         })
         .count();
-    assert!(title_runs >= 1, "the .title() text must shape at 24px");
+    assert!(title_runs >= 1, "the .title() text must shape at 22px");
 
     let subheadline_runs = commands
         .iter()
         .filter(|placed| {
             matches!(
                 placed.command(),
-                DrawCommand::GlyphRun { font_size, .. } if (font_size - 20.0).abs() < f32::EPSILON
+                DrawCommand::GlyphRun { font_size, .. } if (font_size - 16.0).abs() < f32::EPSILON
             )
         })
         .count();
     assert!(
         subheadline_runs >= 2,
-        "both .sub_headline() sections must shape at 20px"
+        "both .sub_headline() sections must shape at 16px"
     );
 
     let accent_fills = commands

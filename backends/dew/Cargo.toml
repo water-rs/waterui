@@ -12,7 +12,7 @@ keywords = ["ui", "backend", "waterui", "embedded", "gui"]
 categories = ["gui", "embedded"]
 
 [features]
-default = ["system-fonts", "progress", "host"]
+default = ["system-fonts", "progress", "host", "gestures"]
 # Host-side surfaces: the in-memory framebuffer (`BufferDisplay`), the
 # reference `HostBoard`, and PNG snapshot export. Firmware builds
 # (default-features = false) drop them along with the PNG encoder they pull
@@ -44,6 +44,16 @@ espidf = [
 # Desktop font enumeration; firmware targets disable this and register
 # bundled fonts into the parley FontContext instead.
 system-fonts = ["parley/system"]
+# Interaction metadata: `Metadata<GestureObserver>` (tap / long-press / drag /
+# pinch / rotate) and `Metadata<OnEvent>` (hover enter / move / exit). The
+# recognizer state machines come from `waterui-backend-core`, which pulls the
+# `waterui` facade the gesture event payloads are defined in — the same reason
+# `progress` is gated. A firmware build that drops this feature keeps a
+# pointer-driven UI (buttons, toggles, sliders, tabs all route through
+# `PointerRouter`); what it loses is the `.gesture(...)` / `.on_hover(...)`
+# modifier surface, and a view carrying that metadata fails fast in dispatch
+# rather than rendering as if the handler were wired.
+gestures = ["waterui-backend-core/gestures"]
 # The Progress widget's config type lives in the `waterui` facade crate,
 # which pulls the visual component stack (and thus a GPU graphics build).
 # Gating it keeps the lean firmware graph (default-features = false) free of
@@ -51,11 +61,11 @@ system-fonts = ["parley/system"]
 progress = ["dep:waterui"]
 
 [dependencies]
-accesskit = "0.24"
+accesskit = "0.25"
 waterui-core.workspace = true
 waterui-backend-core.workspace = true
 waterui-controls.workspace = true
-waterui-graphics.workspace = true
+waterui-graphics = { workspace = true, features = ["cpu-scene"] }
 waterui-layout.workspace = true
 # Navigation is `no_std` and pulls no renderer of its own, so it stays in the
 # lean firmware graph: a device with two screens needs a way between them.
@@ -63,7 +73,10 @@ waterui-navigation.workspace = true
 # Default features off: the shape crate's default is a wgpu-backed morph
 # renderer, and dew's graph is GPU-free by design.
 waterui-shape = { workspace = true, default-features = false }
-waterui-text.workspace = true
+# `font-collection` for the one `parley` collection this renderer shapes with
+# and installs into the environment. Not `system-fonts`: the faces come from
+# the board, and a firmware build has no system font source at all.
+waterui-text = { workspace = true, features = ["font-collection"] }
 nami.workspace = true
 # FrameWork and ChipBudget serialize into the performance report. The
 # workspace pins serde without default features, which suits a firmware graph.
@@ -93,6 +106,15 @@ esp-idf-svc = { version = "0.52", optional = true }
 
 [dev-dependencies]
 waterui-testing = { path = "../../testing" }
+# The theme installation API (`Theme`, `ColorSettings`, `FontSettings`) and the
+# authoring prelude every test view tree is written in live in the facade
+# crate, and nothing below it exposes them. The library reaches the facade only
+# through the optional `progress` feature, so without this entry the test
+# targets compile in exactly one feature shape — the default one — and the
+# firmware shape's tests do not build at all. Tests are host-side and never
+# enter a flash image, so depending on the facade here costs the firmware graph
+# nothing.
+waterui = { path = "../..", default-features = false }
 # Scene content, for the tests that prove `Scene2D` drawings render on dew's
 # CPU rasterizer unchanged. Test-only on purpose: dew draws a scene through
 # the engine-neutral contract and never needs to know which component produced
@@ -102,12 +124,80 @@ waterui-testing = { path = "../../testing" }
 # built from the library alone, stays GPU-free.
 waterui-canvas.workspace = true
 waterui-svg.workspace = true
+# A formula is the scene content that has something to say about itself: it
+# answers `SceneContent::accessibility_label` with itself spoken as a sentence,
+# which is what proves dew's scene leaf publishes a content-supplied name rather
+# than a bare unnamed image. Test-only for the same reason as the two crates
+# above.
+waterui-math.workspace = true
+# The component issue #180 is actually about: an interactive chart wraps its
+# canvas in `Metadata<GestureObserver>` and `Metadata<OnEvent>`, and every one
+# of those wrappers used to abort dew's dispatch. Test-only, like the scene
+# crates above and for the same reason.
+waterui-chart.workspace = true
+# Tracks the version vello_cpu links, or `Level` is a different type on either side.
 fearless_simd = { version = "0.4", features = ["force_support_fallback"] }
 executor-core.workspace = true
 native-executor.workspace = true
 # The performance simulation emits its report as serialized TOML rather than
 # hand-concatenated lines.
 toml = "1.1.3"
+
+# Every integration test declares the feature shape it needs, the way the
+# simulator example does. `host` buys the in-memory framebuffer (`HostBoard`,
+# `BufferDisplay`) and the PNG snapshot entry these tests inspect; `progress`
+# buys the Progress widget's config type, without which dew has no handler to
+# dispatch a progress bar to. A test that needs neither — `fallback_probe`, the
+# scalar-rasterizer probe — is left to auto-discovery and runs in every shape,
+# firmware included.
+[[test]]
+name = "accessibility"
+required-features = ["host"]
+
+[[test]]
+name = "dispatch_views"
+required-features = ["host"]
+
+[[test]]
+name = "form_render"
+required-features = ["host", "progress"]
+
+[[test]]
+name = "interaction_metadata"
+required-features = ["host", "gestures"]
+
+[[test]]
+name = "interaction_without_gestures"
+required-features = ["host", "system-fonts"]
+
+[[test]]
+name = "navigation_render"
+required-features = ["host"]
+
+[[test]]
+name = "scene_render"
+required-features = ["host"]
+
+[[test]]
+name = "shape_render"
+required-features = ["host"]
+
+[[test]]
+name = "smoke_frame"
+required-features = ["host"]
+
+[[test]]
+name = "tabs_render"
+required-features = ["host"]
+
+# The embedded simulation models a panel bus and a flash-bundled font, so it
+# wants no host surface at all — only the payment-progress bar its work and
+# memory budgets are calibrated around. It is the one integration test that
+# runs in the firmware shape (`--no-default-features --features progress`),
+# which is the point of it.
+[[test]]
+name = "vending_performance"
+required-features = ["progress"]
 
 [[example]]
 name = "watch_sim"

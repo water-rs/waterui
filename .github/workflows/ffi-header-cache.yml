@@ -1,0 +1,45 @@
+name: FFI Header Cache
+
+# The only writer of the `ffi-header-<os>` cache. The pull-request gate in
+# `ci.yml` restores it read-only, so a PR never pays for the expansion it did
+# not change and never competes to save it. Running the full check here as well
+# means `dev` is also told immediately when a merge left the header stale.
+on:
+  push:
+    branches: [dev]
+    paths:
+      - ffi/**
+      - backends/apple
+      - backends/android
+      - Cargo.lock
+      - '**/Cargo.toml'
+      - .github/actions/ffi-header/**
+      - .github/workflows/ffi-header-cache.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ffi-header-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  warm:
+    name: FFI Header Cache
+    # The header is platform-dependent: the Apple exports (Metal, CEF) only
+    # appear when cbindgen expands on an Apple target, so the cache has to be
+    # warmed on the same host that generates it.
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/ffi-header
+        with:
+          save: 'true'

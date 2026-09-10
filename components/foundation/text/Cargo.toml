@@ -21,26 +21,80 @@ syntect = { version = "5", default-features = false, features = ["default-themes
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"], optional = true }
 pulldown-cmark = { version = "0.13", optional = true }
 smallvec.workspace = true
+# The font database behind `collection::FontCollection`, the one collection a
+# host installs and every self-drawing text component shares. Optional, and off
+# by default: an application whose text is drawn by the platform's own engine
+# never reaches for a `parley` collection and must not carry the font stack
+# behind it. `libm` rather than `std` because the collection is equally the one
+# an embedded renderer installs; a build that also enables `parley/std` gets
+# std's implementations regardless.
+parley = { workspace = true, optional = true, features = ["libm"] }
+# `Code`, the fenced-code widget, composes its block out of the layout
+# primitives and reports clipboard failures through `tracing`. Both sit behind
+# `highlight`, the feature the widget itself is behind.
+waterui-layout = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_clipboard = { version = "0.1.0", optional = true }
+
+# The system clipboard (arboard, via X11 on Linux) does not exist on bare
+# embedded; espidf uses a no-op clipboard in src/code.rs.
+#
+# `code.rs` only ever puts *text* on the pasteboard, so arboard's default
+# `image-data` feature — an image codec plus CoreGraphics on Apple and
+# `Win32_Graphics_Gdi` on Windows — is not built.
+[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32"), not(target_os = "espidf")))'.dependencies]
+arboard = { version = "3.6.1", default-features = false, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = { version = "0.4", optional = true }
+web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"], optional = true }
+executor-core = { workspace = true, optional = true }
 
 [features]
 default = ["highlight"]
 # `DefaultHighlighter`, the bundled syntect/two-face syntax highlighter, and
-# with it the syntax and theme definitions those two crates carry. `Language`,
-# the `Highlighter` trait and `HighlightChunk` stay unconditional, so an
+# with it the syntax and theme definitions those two crates carry, plus `Code`,
+# the fenced-code widget built on it, with the layout primitives it composes
+# and the platform clipboard its copy button writes to. `Language`, the
+# `Highlighter` trait and `HighlightChunk` stay unconditional, so an
 # application that installs its own highlighter — or renders code plain — can
 # drop the bundled one without losing the vocabulary the rest of the API speaks.
-highlight = ["dep:syntect", "dep:two-face"]
+highlight = [
+    "dep:syntect",
+    "dep:two-face",
+    "dep:waterui-layout",
+    "dep:tracing",
+    "dep:arboard",
+    "dep:android_clipboard",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+    "dep:executor-core",
+]
 # Markdown parsing: `StyledStr::from_markdown` and the `pulldown-cmark` types
 # its inline builder is driven by.
 markdown = ["dep:pulldown-cmark"]
+# `collection::FontCollection`: the one `parley` font collection a host installs
+# into the environment and every component that shapes or typesets text itself
+# reads back out. Turned on by those components (`waterui-math` and friends),
+# not by applications.
+font-collection = ["dep:parley"]
+# Discovering the platform's fonts, which is how a host that owns no font stack
+# of its own — the native Apple, Android and GTK backends — obtains the
+# collection it installs. A renderer that registers its own faces (hydrolysis,
+# dew) installs those instead and leaves this off.
+system-fonts = ["font-collection", "parley/system"]
 
 [dev-dependencies]
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
+# The offscreen code-block tests render under the Material 3 widget theme, light and dark.
+hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
 # This crate's own tests cover the Markdown parser, which is not in `default`.
 # A dev-dependency on itself turns the feature on for this crate's test targets
 # without turning it on for anything that depends on the crate.
-waterui-text = { path = ".", features = ["markdown"] }
+waterui-text = { path = ".", features = ["markdown", "system-fonts"] }
 
 [lints]
 workspace = true

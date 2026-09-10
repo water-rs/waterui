@@ -22,7 +22,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 nami.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
 shaderloom.workspace = true
-waterui-text.workspace = true
+# `font-collection` for the one `parley` collection this runner builds and
+# installs into the environment; the faces come from the resource loader and
+# the system source `parley/system` provides, so `system-fonts` is not needed.
+waterui-text = { workspace = true, features = ["font-collection"] }
 waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-map.workspace = true
@@ -41,15 +44,15 @@ rayon = "1.12"
 pollster.workspace = true
 executor-core.workspace = true
 rustc-hash.workspace = true
-unicode-segmentation = "1.12"
+unicode-segmentation = "1.13"
 async-task = "4.7"
 native-executor.workspace = true
 winit = { version = "0.30", optional = true }
 keyboard-types.workspace = true
 ui-events-winit = { workspace = true, optional = true }
-accesskit = { version = "0.24", optional = true }
+accesskit = { version = "0.25", optional = true }
 waterui-inspector-protocol.workspace = true
-accesskit_winit = { version = "0.33.2", optional = true }
+accesskit_winit = { version = "0.34.0", optional = true }
 
 [build-dependencies]
 cfg_aliases = "0.2.2"

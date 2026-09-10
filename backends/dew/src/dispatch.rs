@@ -24,12 +24,17 @@ use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_controls::toggle::ToggleConfig;
+use waterui_core::accessibility::{AccessibilityIdentifier, AccessibilityLabel};
 use waterui_core::dynamic::Dynamic;
+use waterui_core::event::OnEvent;
+use waterui_core::gesture::GestureObserver;
 use waterui_core::layout::{
     ProposalSize, Rect as LayoutRect, Size, StretchAxis, SubView, ViewDimensions,
 };
 use waterui_core::views::Views;
-use waterui_core::{AnyView, Environment, MainThreadBound, Metadata, Native, Retain, Str, View};
+use waterui_core::{
+    AnyView, Environment, IgnorableMetadata, MainThreadBound, Metadata, Native, Retain, Str, View,
+};
 use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_graphics::{SceneView, SceneViewMergeToParent};
 use waterui_layout::Divider;
@@ -43,11 +48,22 @@ use waterui_text::{TextConfig, styled::StyledStr};
 use crate::accessibility::{AccessibilityBuilder, ActionTarget};
 use crate::display_list::DisplayList;
 use crate::pointer::{PointerRouter, PointerTargetHandle};
-use crate::text::{DewState, TextLayoutCache, TextLayoutKey};
+use crate::text::{DewState, TextLayoutCache, TextLayoutKey, TextRevision};
 use crate::theme;
 use crate::views;
 
 const MAX_BODY_DEPTH: usize = 64;
+
+/// What a build without the `gestures` feature says when a view asks for
+/// pointer semantics it cannot provide.
+///
+/// The generic `Metadata` panic would name the type and stop there; naming the
+/// feature is the difference between "dew is broken" and "this firmware image
+/// was built without gesture recognition". Silently rendering the content
+/// unwrapped is not an option: the view would draw correctly and never
+/// respond, which is the failure mode hardest to diagnose on a device.
+#[cfg(not(feature = "gestures"))]
+const INTERACTION_FEATURE_REQUIRED: &str = "dew: interaction metadata (`GestureObserver` / `OnEvent`) needs the `waterui-dew/gestures` feature, which this build does not enable";
 
 /// Where a view draws: the accumulated transform and its local bounds.
 #[derive(Clone, Copy, Debug)]
@@ -177,6 +193,8 @@ pub struct DewRenderer {
     state: RefCell<DewState>,
     list: DisplayList,
     pointer: PointerRouter,
+    #[cfg(feature = "gestures")]
+    interaction: crate::interaction::InteractionRouter,
     accessibility: AccessibilityBuilder,
     accessibility_enabled: bool,
     root: Option<Box<dyn DewNode>>,
@@ -215,6 +233,8 @@ impl DewRenderer {
             state: RefCell::new(DewState::new(fonts)),
             list: DisplayList::new(),
             pointer: PointerRouter::default(),
+            #[cfg(feature = "gestures")]
+            interaction: crate::interaction::InteractionRouter::default(),
             accessibility: AccessibilityBuilder::default(),
             accessibility_enabled: true,
             root: None,
@@ -226,6 +246,14 @@ impl DewRenderer {
     #[must_use]
     pub fn signals(&self) -> FrameSignals {
         self.signals.clone()
+    }
+
+    /// The application's font collection: the one this renderer shapes text
+    /// with, which the runtime installs into the environment so a self-drawn
+    /// component that typesets text itself uses the same faces.
+    #[must_use]
+    pub fn fonts(&self) -> waterui_text::FontCollection {
+        self.state.borrow().fonts()
     }
 
     pub(crate) const fn set_accessibility_enabled(&mut self, enabled: bool) {
@@ -240,6 +268,12 @@ impl DewRenderer {
     ///
     /// Runtime code calls this exactly once. Explicit callers may use it to
     /// render unrelated one-shot trees in tests and tools.
+    ///
+    /// Dew's built-in type scale is installed for every font slot the caller's
+    /// environment does not already carry, so an app that installs no theme
+    /// still renders text; see [`crate::theme::install_default_fonts`]. It
+    /// belongs here rather than at any one host's entry point because this is
+    /// the single funnel every dew view tree is dispatched through.
     pub fn render_tree(
         &mut self,
         view: AnyView,
@@ -251,7 +285,8 @@ impl DewRenderer {
         // rasterizer, so a `SceneView` must reach the dispatcher as a native
         // leaf instead of resolving to the GPU surface it would otherwise fall
         // back on — dew's graph has no GPU in it at all.
-        let env = env.extending(SceneViewMergeToParent);
+        let mut env = env.extending(SceneViewMergeToParent);
+        theme::install_default_fonts(&mut env);
         self.theme = Some(theme::ThemePalette::new(&env, self.signals()));
         self.root = Some(build_node(self, view, &env, 0));
         self.refresh_tree(width, height)
@@ -271,6 +306,8 @@ impl DewRenderer {
             .expect("Dew refresh requires an initialized retained root");
         self.list.clear();
         self.pointer.begin_frame();
+        #[cfg(feature = "gestures")]
+        self.interaction.begin_frame();
         if self.accessibility_enabled {
             self.accessibility
                 .begin_frame(Rect::new(0.0, 0.0, width, height));
@@ -287,6 +324,8 @@ impl DewRenderer {
         root.patch(self);
         root.render(self, RenderContext::root(width, height));
         self.pointer.finish_frame();
+        #[cfg(feature = "gestures")]
+        self.interaction.finish_frame();
         if self.accessibility_enabled {
             self.accessibility.finish_frame();
         }
@@ -316,6 +355,62 @@ impl DewRenderer {
 
     pub(crate) fn handle_pointer(&mut self, sample: crate::board::PointerSample) -> bool {
         self.pointer.dispatch(sample)
+    }
+
+    /// Registers a fresh gesture recognizer at `bounds`, returning the target
+    /// so the retained node can re-register the same recognizer next frame.
+    #[cfg(feature = "gestures")]
+    pub(crate) fn register_gesture_target(
+        &mut self,
+        bounds: Rect,
+        gesture: waterui_core::gesture::Gesture,
+        action: waterui_core::handler::BoxedAction<()>,
+    ) -> waterui_backend_core::gesture::GestureTarget {
+        self.interaction.register_gesture(bounds, gesture, action)
+    }
+
+    /// Re-registers a retained node's recognizer at its current placement.
+    #[cfg(feature = "gestures")]
+    pub(crate) fn register_existing_gesture_target(
+        &mut self,
+        target: waterui_backend_core::gesture::GestureTarget,
+    ) {
+        self.interaction.register_existing_gesture(target);
+    }
+
+    #[cfg(feature = "gestures")]
+    pub(crate) fn register_hover_target(
+        &mut self,
+        bounds: Rect,
+        state: std::rc::Rc<crate::interaction::HoverState>,
+    ) {
+        self.interaction.register_hover(bounds, state);
+    }
+
+    /// Routes one pointer sample to the gesture recognizers and hover targets.
+    ///
+    /// Separate from [`Self::handle_pointer`], which routes the same sample to
+    /// the control hit-test: a control's activation needs neither a clock nor
+    /// an environment, and a firmware build without the `gestures` feature
+    /// still has controls.
+    #[cfg(feature = "gestures")]
+    pub(crate) fn handle_interaction_pointer(
+        &mut self,
+        sample: crate::board::PointerSample,
+        now: waterui_backend_core::time::Instant,
+        env: &Environment,
+    ) -> bool {
+        self.interaction.dispatch(sample, now, env)
+    }
+
+    /// Advances time-driven gesture recognition (long-press hold deadlines).
+    #[cfg(feature = "gestures")]
+    pub(crate) fn tick_interaction(
+        &mut self,
+        now: waterui_backend_core::time::Instant,
+        env: &Environment,
+    ) -> bool {
+        self.interaction.tick(now, env)
     }
 
     pub(crate) const fn allocate_accessibility_id(&mut self) -> NodeId {
@@ -367,6 +462,29 @@ impl DewRenderer {
         if self.accessibility_enabled {
             self.accessibility.pop_suppression();
         }
+    }
+
+    /// Opens the accessibility naming scope of an `.a11y_label(..)` wrapper for
+    /// the subtree rendered inside it.
+    ///
+    /// Guarded by the caller, like every other accessibility emission in dew:
+    /// a board with no assistive interface publishes no tree, and the label
+    /// signal is then not read at all.
+    pub(crate) fn push_accessibility_label(&mut self, label: Str) {
+        self.accessibility.push_label(label);
+    }
+
+    pub(crate) fn pop_accessibility_label(&mut self) {
+        self.accessibility.pop_label();
+    }
+
+    /// Opens the automation-identifier scope of an `.a11y_id(..)` wrapper.
+    pub(crate) fn push_accessibility_identifier(&mut self, identifier: Str) {
+        self.accessibility.push_identifier(identifier);
+    }
+
+    pub(crate) fn pop_accessibility_identifier(&mut self) {
+        self.accessibility.pop_identifier();
     }
 
     pub(crate) fn handle_accessibility_action(
@@ -429,6 +547,30 @@ fn build_unmeasured_node(
             .expect("dew clip metadata downcast must match its type id");
         return views::shape::build_clip(value, build_node(renderer, content, env, depth + 1));
     }
+    if type_id == TypeId::of::<Metadata<GestureObserver>>() {
+        let Metadata { content, value } = *view
+            .downcast::<Metadata<GestureObserver>>()
+            .expect("dew gesture metadata downcast must match its type id");
+        #[cfg(feature = "gestures")]
+        return crate::interaction::build_gesture(renderer, content, value, env, depth + 1);
+        #[cfg(not(feature = "gestures"))]
+        {
+            let _ = (content, value);
+            panic!("{}", INTERACTION_FEATURE_REQUIRED);
+        }
+    }
+    if type_id == TypeId::of::<Metadata<OnEvent>>() {
+        let Metadata { content, value } = *view
+            .downcast::<Metadata<OnEvent>>()
+            .expect("dew event metadata downcast must match its type id");
+        #[cfg(feature = "gestures")]
+        return crate::interaction::build_hover(renderer, content, value, env, depth + 1);
+        #[cfg(not(feature = "gestures"))]
+        {
+            let _ = (content, value);
+            panic!("{}", INTERACTION_FEATURE_REQUIRED);
+        }
+    }
     if type_id == TypeId::of::<Metadata<Retain>>() {
         let Metadata { content, value } = *view
             .downcast::<Metadata<Retain>>()
@@ -436,6 +578,34 @@ fn build_unmeasured_node(
         return Box::new(RetainNode {
             _retain: value,
             child: build_node(renderer, content, env, depth + 1),
+        });
+    }
+    // Accessibility naming metadata (`.a11y_label()` / `.a11y_id()`) reaches the
+    // dispatcher as an ignorable wrapper whose `body` is its content, so falling
+    // through to the generic expansion below would render the content correctly
+    // and drop the name — an application could not name anything for a screen
+    // reader. The name is captured here, once, and re-read from the captured
+    // signal at each flush; the retained node opens it as a scope around the
+    // subtree it names (see `NamingNode`).
+    if type_id == TypeId::of::<IgnorableMetadata<AccessibilityLabel>>() {
+        let IgnorableMetadata { content, value } = *view
+            .downcast::<IgnorableMetadata<AccessibilityLabel>>()
+            .expect("dew accessibility label downcast must match its type id");
+        return Box::new(NamingNode {
+            naming: Naming::Label(WatchedSignal::new(
+                value.signal().clone(),
+                renderer.signals(),
+            )),
+            child: build_unmeasured_node(renderer, content, env, depth + 1),
+        });
+    }
+    if type_id == TypeId::of::<IgnorableMetadata<AccessibilityIdentifier>>() {
+        let IgnorableMetadata { content, value } = *view
+            .downcast::<IgnorableMetadata<AccessibilityIdentifier>>()
+            .expect("dew accessibility identifier downcast must match its type id");
+        return Box::new(NamingNode {
+            naming: Naming::Identifier(value.into_str()),
+            child: build_unmeasured_node(renderer, content, env, depth + 1),
         });
     }
     if type_id == TypeId::of::<Native<LazyContainer>>() {
@@ -538,8 +708,15 @@ fn build_unmeasured_node(
             .downcast::<Native<TextConfig>>()
             .expect("dew TextConfig downcast must match its type id");
         let config = text.into_inner();
+        let content = WatchedSignal::new(config.content, renderer.signals());
         return Box::new(TextNode {
-            content: WatchedSignal::new(config.content, renderer.signals()),
+            fonts: RefCell::new(theme::WatchedFonts::styled(
+                &content.get(),
+                content.revision(),
+                env,
+                renderer.signals(),
+            )),
+            content,
             env: env.clone(),
             cache: RefCell::new(TextLayoutCache::default()),
             line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
@@ -552,6 +729,7 @@ fn build_unmeasured_node(
                 .downcast::<Str>()
                 .expect("dew Str downcast must match its type id"),
             cache: RefCell::new(TextLayoutCache::default()),
+            fonts: theme::WatchedFonts::plain(env, renderer.signals()),
             env: env.clone(),
             accessibility_id: renderer.allocate_accessibility_id(),
         });
@@ -722,6 +900,62 @@ impl DewNode for ContainerNode {
     }
 }
 
+/// What one naming wrapper says, held for the life of the node it wraps.
+///
+/// A label is a signal — `"3 unread messages"` follows the state it is derived
+/// from — so it is watched, and a change asks for a frame the way every other
+/// dew signal does. An identifier names the view for automation and is
+/// deliberately constant.
+enum Naming {
+    Label(WatchedSignal<Computed<Str>>),
+    Identifier(Str),
+}
+
+/// The retained node of an `.a11y_label(..)` / `.a11y_id(..)` wrapper.
+///
+/// Layout-transparent: it measures, stretches and patches as its child. Its
+/// only work is to hold the name open while the subtree it wraps publishes its
+/// accessibility nodes, so the node representing that subtree — a control, a
+/// text, a scene leaf, a container that publishes one — takes the name at the
+/// single funnel every dew node registers through.
+struct NamingNode {
+    naming: Naming,
+    child: Box<dyn DewNode>,
+}
+
+impl DewNode for NamingNode {
+    fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
+        self.child.measure(state, proposal)
+    }
+
+    fn render(&mut self, renderer: &mut DewRenderer, ctx: RenderContext) {
+        if !renderer.accessibility_enabled() {
+            self.child.render(renderer, ctx);
+            return;
+        }
+        match &self.naming {
+            Naming::Label(label) => {
+                renderer.push_accessibility_label(label.get());
+                self.child.render(renderer, ctx);
+                renderer.pop_accessibility_label();
+            }
+            Naming::Identifier(identifier) => {
+                renderer.push_accessibility_identifier(identifier.clone());
+                self.child.render(renderer, ctx);
+                renderer.pop_accessibility_identifier();
+            }
+        }
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.child.stretch_axis()
+    }
+
+    fn patch(&mut self, renderer: &mut DewRenderer) -> bool {
+        self.child.patch(renderer)
+    }
+}
+
 struct RetainNode {
     _retain: Retain,
     child: Box<dyn DewNode>,
@@ -856,6 +1090,11 @@ fn render_color(renderer: &mut DewRenderer, ctx: RenderContext, color: ResolvedC
 
 struct TextNode {
     content: WatchedSignal<Computed<StyledStr>>,
+    /// The font slots this text shapes with — the layout default plus each
+    /// span's own — watched so a reactive type scale invalidates the layout
+    /// and asks for a frame. Behind a `RefCell` because the set is rebuilt
+    /// from the content, and measurement runs behind `&self`.
+    fonts: RefCell<theme::WatchedFonts>,
     env: Environment,
     cache: RefCell<TextLayoutCache>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
@@ -863,10 +1102,22 @@ struct TextNode {
     accessibility_id: NodeId,
 }
 
+impl TextNode {
+    /// Everything that re-shapes this node: its content and the fonts that
+    /// content reads. New content may name different slots, so the watcher
+    /// set is brought up to date here, before its revision is read.
+    fn revision(&self) -> TextRevision {
+        let content = self.content.revision();
+        let mut fonts = self.fonts.borrow_mut();
+        fonts.sync(content, || self.content.get());
+        TextRevision::new(content, fonts.revision())
+    }
+}
+
 impl DewNode for TextNode {
     fn measure(&self, state: &RefCell<DewState>, proposal: ProposalSize) -> ViewDimensions {
         let foreground = theme::foreground(&self.env);
-        let revision = self.content.revision();
+        let revision = self.revision();
         let mut cache = self.cache.borrow_mut();
         let ((width, height), outcome) = cache.measure(
             revision,
@@ -891,7 +1142,7 @@ impl DewNode for TextNode {
         // own foreground has to be painted in it, and a render that disagreed
         // with the measurement would re-shape the text a second time.
         let foreground = theme::foreground(&self.env);
-        let revision = self.content.revision();
+        let revision = self.revision();
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         let outcome = self.cache.borrow_mut().emit(
@@ -927,6 +1178,10 @@ impl DewNode for TextNode {
 struct StrNode {
     value: Str,
     cache: RefCell<TextLayoutCache>,
+    /// The theme body font this leaf shapes at — the same slot `text("…")`
+    /// resolves, watched for the same reason. A fixed string names no other,
+    /// so this set never changes.
+    fonts: theme::WatchedFonts,
     env: Environment,
     accessibility_id: NodeId,
 }
@@ -936,13 +1191,16 @@ impl DewNode for StrNode {
         let foreground = theme::foreground(&self.env);
         let mut cache = self.cache.borrow_mut();
         let ((width, height), outcome) = cache.measure(
-            0,
+            TextRevision::font_only(self.fonts.revision()),
             TextLayoutKey::new(proposal.width, foreground),
             None,
             || {
-                state
-                    .borrow_mut()
-                    .build_plain_layout(&self.value, proposal.width, foreground)
+                state.borrow_mut().build_plain_layout(
+                    &self.value,
+                    &self.env,
+                    proposal.width,
+                    foreground,
+                )
             },
         );
         let dimensions = ViewDimensions::new(Size::new(width, height));
@@ -955,16 +1213,18 @@ impl DewNode for StrNode {
         let max_width = max_width_from_bounds(ctx.bounds);
         let transform = ctx.transform * Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
         let outcome = self.cache.borrow_mut().emit(
-            0,
+            TextRevision::font_only(self.fonts.revision()),
             TextLayoutKey::new(max_width, foreground),
             None,
             transform,
             &mut renderer.list,
             || {
-                renderer
-                    .state
-                    .borrow_mut()
-                    .build_plain_layout(&self.value, max_width, foreground)
+                renderer.state.borrow_mut().build_plain_layout(
+                    &self.value,
+                    &self.env,
+                    max_width,
+                    foreground,
+                )
             },
         );
         renderer.state.borrow_mut().record_layout(outcome);
@@ -994,7 +1254,17 @@ pub(crate) struct WatchedSignal<S: Signal> {
 
 impl<S: Signal> WatchedSignal<S> {
     pub(crate) fn new(signal: S, signals: FrameSignals) -> Self {
-        let revision = Rc::new(Cell::new(0u64));
+        Self::shared(signal, signals, Rc::new(Cell::new(0u64)))
+    }
+
+    /// Watches `signal` against a counter shared with other signals, so a
+    /// change to any of them moves one number.
+    ///
+    /// For a cache that depends on a *set* of signals whose membership itself
+    /// changes — the font slots a styled string's spans name, which are
+    /// rebuilt whenever the content does — one shared counter is what keeps
+    /// the cache's revision a single comparison.
+    pub(crate) fn shared(signal: S, signals: FrameSignals, revision: Rc<Cell<u64>>) -> Self {
         let guard = signal.watch({
             let revision = Rc::clone(&revision);
             move |_| {

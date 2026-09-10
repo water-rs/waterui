@@ -188,6 +188,7 @@ pub async fn build_rust_lib(
     let target_underscore = target.replace('-', "_");
     let host_library = AppleHostLibrary::for_linkage(options.linkage());
     let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
+        .with_project(project)
         .with_features(
             apple_ffi_build_features(project, browser_runtime_plan, options.linkage()).await?,
         )

@@ -6,8 +6,24 @@
 use crate::reactive::{WuiBinding, WuiComputed};
 use crate::{IntoFFI, WuiStr};
 use alloc::vec::Vec;
+#[cfg(target_vendor = "apple")]
+use waterui_core::{Environment, view::ViewConfiguration as _};
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapStyle, Region};
 use waterui_str::Str;
+
+/// Announces the Apple backend's `MapKit` bridge as this app's map realization.
+///
+/// A `Hook<MapConfig>` in the environment is the signal `waterui_map_gpu::install`
+/// reads to yield: a map realization is already spoken for. `MapKit` needs no
+/// transformation of the configuration, so the hook renders it into the raw view
+/// unchanged and that view reaches the backend through [`waterui_force_as_map`]
+/// exactly as before.
+/// Nothing is declared on platforms without a platform map, where the GPU map is
+/// the realization the application installs itself.
+#[cfg(target_vendor = "apple")]
+pub(crate) fn declare_native_realization(env: &mut Environment) {
+    env.insert_hook::<MapConfig, _>(|_env, config| config.render());
+}
 
 // =============================================================================
 // Coordinate FFI

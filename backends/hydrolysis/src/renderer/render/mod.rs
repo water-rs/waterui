@@ -5,6 +5,7 @@ mod measurement;
 mod measurement_cache;
 mod render_context;
 mod state;
+mod subtree_capture;
 mod subview;
 mod text_service;
 mod view_helpers;
@@ -16,7 +17,7 @@ pub(crate) use compositor::NativeViewLayer;
 pub(crate) use compositor::take_gpu_surface_redraw_request;
 pub(crate) use compositor::{
     ActiveSceneLayer, Compositor, EmbeddedGpuSurfaceRuntime, GpuSurfaceLayer, GpuSurfaceSource,
-    LayerShape, RenderLayer,
+    LayerShape, RenderLayer, covers_viewport_directly,
 };
 pub(crate) use measurement::*;
 pub(crate) use measurement_cache::MeasurementCaches;
@@ -24,6 +25,7 @@ pub use render_context::RenderContext;
 pub(crate) use render_context::WidgetRenderContext;
 pub(crate) use render_context::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
 pub use state::HydroState;
+pub(crate) use subtree_capture::SubtreeCaptures;
 pub(crate) use subview::HydroSubview;
 pub(crate) use text_service::{
     ResolvedTextLayoutInput, TextMeasureService, resolve_text_layout_input,

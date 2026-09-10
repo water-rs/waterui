@@ -26,16 +26,16 @@ use waterui::prelude::*;
 use waterui_canvas::Canvas;
 use waterui_core::AnyView;
 use waterui_core::layout::{Point, Rect as LayoutRect, Size};
-use waterui_dew::{
-    ClipRegion, DewRenderer, DewRuntime, DisplayList, DrawCommand, HostBoard, render_view_png,
-};
+use waterui_dew::{ClipRegion, DewRuntime, DisplayList, DrawCommand, HostBoard, render_view_png};
 use waterui_graphics::color::Srgb;
-use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView, invalidate_on_change};
+use waterui_layout::scroll::ScrollView;
+use waterui_math::ast::MathStyle;
+use waterui_math::view::Math;
+use waterui_math::{latex, mathml, speech};
 use waterui_svg::Svg;
 
 mod support;
-
-const EXPORT_DIR: &str = "/tmp/waterui_dew_scene2d";
 
 /// A small document exercising fills, strokes and a group opacity — the three
 /// things an SVG asks of a scene, and the third of which needs a real
@@ -43,7 +43,7 @@ const EXPORT_DIR: &str = "/tmp/waterui_dew_scene2d";
 const INLINE_SVG: &str = include_str!("assets/scene.svg");
 
 fn render_scene<V: View>(build: impl Fn() -> V + 'static, width: u32, height: u32) -> DisplayList {
-    let mut renderer = DewRenderer::default();
+    let mut renderer = support::test_renderer();
     renderer.render_tree(
         AnyView::new(build()),
         &support::test_environment(),
@@ -70,8 +70,7 @@ fn only_scene(list: &DisplayList) -> (&DrawCommand, Rect) {
 }
 
 fn export(name: &str, png: &[u8]) {
-    std::fs::create_dir_all(EXPORT_DIR).expect("create the scene export directory");
-    std::fs::write(format!("{EXPORT_DIR}/{name}.png"), png).expect("write the review PNG");
+    std::fs::write(support::export_path("scene2d", name), png).expect("write the review PNG");
 }
 
 /// A box covering the canvas' own coordinate space.
@@ -135,6 +134,52 @@ fn a_scene_publishes_an_accessibility_node() {
             .iter()
             .any(|(_, node)| node.role() == Role::Image),
         "a scene view is published as an image node"
+    );
+}
+
+/// Scene content that knows what it drew names its own node.
+///
+/// A formula reaches the panel as anonymous filled paths, so this node is the
+/// only place its content can be announced at all. Dew published it unnamed:
+/// the tree said "image" and nothing else. The content's own
+/// `SceneContent::accessibility_label` — the formula spoken as a sentence — is
+/// what names it, the same answer hydrolysis offers for the same drawing, so a
+/// formula is readable on both self-drawn backends rather than on whichever one
+/// the test happened to run.
+#[test]
+fn scene_content_names_its_own_accessibility_node() {
+    const FORMULA: &str = r"\frac{a}{b}";
+
+    let mut runtime = DewRuntime::new(
+        HostBoard::new(160, 160),
+        support::test_environment(),
+        16,
+        || AnyView::new(Math::new(FORMULA)),
+    );
+    runtime.pump().expect("the first frame renders");
+
+    // The expectation comes from the same public converter and speech engine the
+    // view publishes through, so it tracks them instead of rotting into a stale
+    // literal.
+    let markup = mathml::to_mathml(
+        &latex::parse(FORMULA).expect("the fixture formula parses"),
+        MathStyle::Text,
+    );
+    let expected = speech::speak(&markup).expect("the fixture formula speaks");
+
+    let update = runtime
+        .board()
+        .accessibility_tree()
+        .expect("dew publishes an accessibility tree");
+    let labels: Vec<Option<&str>> = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == Role::Image)
+        .map(|(_, node)| node.label())
+        .collect();
+    assert!(
+        labels.contains(&Some(expected.as_str())),
+        "the formula's image node must carry its speech, got {labels:?}"
     );
 }
 
@@ -220,7 +265,7 @@ impl SceneContent for CountingContent {
     }
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
-        self.guard = invalidator.map(|invalidator| self.fill.watch(move |_| invalidator()));
+        self.guard = invalidator.map(|invalidator| invalidate_on_change(&invalidator, &self.fill));
     }
 }
 
@@ -325,4 +370,63 @@ fn animated_content_keeps_asking_for_frames() {
         );
     }
     assert_eq!(builds.get(), 4, "every frame redraws the animated content");
+}
+
+/// Scene content that *is* 100 x 200 logical points — an SVG's `viewBox`, an
+/// image's pixel size, a formula's typeset box.
+struct NaturallySizedContent;
+
+impl SceneContent for NaturallySizedContent {
+    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
+        let path = Rect::new(0.0, 0.0, f64::from(width), f64::from(height)).to_path(0.1);
+        let brush: peniko::Brush = peniko::Color::new([0.0, 0.4, 1.0, 1.0]).into();
+        scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, &brush, None, &path);
+        false
+    }
+
+    fn intrinsic_size(&self) -> Option<Size> {
+        Some(Size::new(100.0, 200.0))
+    }
+}
+
+/// The one scene command in a list that also carries a scroll view's chrome.
+fn find_scene(list: &DisplayList) -> (&DrawCommand, Rect) {
+    let placed = list
+        .commands()
+        .iter()
+        .find(|placed| matches!(placed.command(), DrawCommand::Scene { .. }))
+        .expect("the list must carry exactly one scene command");
+    (placed.command(), placed.bounds())
+}
+
+/// Dew resolves an unconstrained scroll axis from the content's natural size,
+/// exactly as hydrolysis does — the two self-drawn backends must not disagree
+/// about how big a drawing is (water-rs/waterui#253).
+#[test]
+fn an_unconstrained_scroll_axis_resolves_to_the_natural_size() {
+    let list = render_scene(
+        || ScrollView::vertical(SceneView::new(NaturallySizedContent)),
+        100,
+        120,
+    );
+    let (command, _) = find_scene(&list);
+    let DrawCommand::Scene { bounds: local, .. } = command else {
+        unreachable!("find_scene asserted the variant")
+    };
+    // The viewport names the width (100, the natural width), and leaves the
+    // scroll axis open; the drawing is laid out at the 200 points it is, rather
+    // than collapsing to zero and being clamped up to the 120-point viewport.
+    assert_eq!(*local, Rect::new(0.0, 0.0, 100.0, 200.0));
+}
+
+/// Content with no natural size still fills the viewport on the scroll axis,
+/// which is what a background or a shader wants.
+#[test]
+fn a_sizeless_scene_still_fills_an_unconstrained_scroll_axis() {
+    let list = render_scene(|| ScrollView::vertical(swatch()), 100, 120);
+    let (command, _) = find_scene(&list);
+    let DrawCommand::Scene { bounds: local, .. } = command else {
+        unreachable!("find_scene asserted the variant")
+    };
+    assert_eq!(*local, Rect::new(0.0, 0.0, 100.0, 120.0));
 }

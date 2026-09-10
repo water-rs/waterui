@@ -1,0 +1,20 @@
+name: cargo-semver-checks
+description: >-
+  Installs the water-rs/cargo-semver-checks build. The fork writes the
+  scanned workspace's `[patch]` tables into the placeholder crate it documents
+  a local project through (#505); upstream v0.50.0 does not, so with an
+  extracted crate depending on the registry `waterui-core` the placeholder
+  resolves two cores and never gets as far as comparing APIs. release-plz runs
+  the same binary, so both callers install it from here.
+runs:
+  using: composite
+  steps:
+    # Built from the fork at a pinned commit and cached by that commit, so the
+    # compile is paid once per rev. Bump `rev` after rebasing the fork's
+    # `waterui/placeholder-inherits-patch` branch onto a newer upstream tag.
+    - uses: taiki-e/cache-cargo-install-action@v3
+      with:
+        tool: cargo-semver-checks
+        git: https://github.com/water-rs/cargo-semver-checks
+        rev: 14c730d774ab26be35df7378295447ddcb6125db
+        locked: true

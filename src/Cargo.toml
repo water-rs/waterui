@@ -35,6 +35,9 @@ waterkit-screen = { workspace = true, optional = true }
 executor-core.workspace = true
 futures.workspace = true
 tracing.workspace = true
+# Grapheme clusters for the avatar monogram: a name's first "letter" is a
+# cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
+unicode-segmentation = "1.13"
 tracing-subscriber = { workspace = true, optional = true }
 async-channel.workspace = true
 minstant.workspace = true
@@ -44,6 +47,11 @@ waterui-graphics = { workspace = true, default-features = false }
 waterui-icon.workspace = true
 waterui-shape = { workspace = true, default-features = false }
 waterui-svg = { workspace = true, optional = true }
+waterui-canvas = { workspace = true, optional = true }
+waterui-chart = { workspace = true, optional = true }
+waterui-barcode = { workspace = true, optional = true }
+waterui-particle = { workspace = true, optional = true }
+waterui-math = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
 waterui-inspector-protocol = { workspace = true, optional = true }
@@ -54,30 +62,11 @@ waterkit-haptic = { workspace = true, optional = true }
 waterui-video-gpu = { workspace = true, optional = true }
 
 pastey.workspace = true
+# The document parser `FlowMarkdown` re-parses incrementally as a stream
+# arrives. Only the Markdown grammar: fenced code is highlighted by the `Code`
+# widget through syntect, not by a per-language tree-sitter grammar.
 tree-sitter = { version = "0.26", optional = true }
 tree-sitter-md = { version = "0.5.3", optional = true }
-tree-sitter-rust = { version = "0.24", optional = true }
-tree-sitter-javascript = { version = "0.25", optional = true }
-tree-sitter-typescript = { version = "0.23", optional = true }
-tree-sitter-python = { version = "0.25", optional = true }
-tree-sitter-go = { version = "0.25", optional = true }
-tree-sitter-java = { version = "0.23", optional = true }
-tree-sitter-swift = { version = "0.7", optional = true }
-tree-sitter-json = { version = "0.24", optional = true }
-tree-sitter-bash = { version = "0.25", optional = true }
-tree-sitter-sequel = { version = "0.3.11", optional = true }
-
-[target.'cfg(target_os = "android")'.dependencies]
-android_clipboard = "0.1.0"
-
-# The system clipboard (arboard, via X11 on Linux) does not exist on bare
-# embedded; espidf uses a no-op clipboard in widget/code.rs.
-#
-# `widget/code.rs` only ever puts *text* on the pasteboard, so arboard's
-# default `image-data` feature — an image codec plus CoreGraphics on Apple and
-# `Win32_Graphics_Gdi` on Windows — is not built.
-[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32"), not(target_os = "espidf")))'.dependencies]
-arboard = { version = "3.6.1", default-features = false }
 
 # Opening a URL in a system handler (robius-open) has no meaning on bare
 # embedded; espidf uses a no-op in component/link.rs.
@@ -88,10 +77,6 @@ robius-open.workspace = true
 # newlib; the runtime guard uses a zero-cost fallback there.
 [target.'cfg(all(any(unix, windows), not(target_os = "espidf")))'.dependencies]
 cpu-time.workspace = true
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
 
 [features]
 default = [
@@ -150,9 +135,9 @@ webview = ["dep:waterui-webview"]
 navigation-restoration = ["waterui-navigation/serde"]
 # Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
 # with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which
-# re-highlights fenced code with tree-sitter grammars. Off by default — a
-# CommonMark parser and a dozen grammars are a lot of binary for an application
-# that shows no Markdown.
+# re-parses the document incrementally with the tree-sitter Markdown grammar.
+# Off by default — a CommonMark parser and a document grammar are a lot of
+# binary for an application that shows no Markdown.
 flow-markdown = [
     "dep:pulldown-cmark",
     "waterui-text/markdown",
@@ -160,19 +145,27 @@ flow-markdown = [
     "highlight",
     "dep:tree-sitter",
     "dep:tree-sitter-md",
-    "dep:tree-sitter-rust",
-    "dep:tree-sitter-javascript",
-    "dep:tree-sitter-typescript",
-    "dep:tree-sitter-python",
-    "dep:tree-sitter-go",
-    "dep:tree-sitter-java",
-    "dep:tree-sitter-swift",
-    "dep:tree-sitter-json",
-    "dep:tree-sitter-bash",
-    "dep:tree-sitter-sequel",
 ]
+# Mathematical formulas in Markdown: `$…$` and `$$…$$` are parsed and typeset
+# through `waterui-math`. Off by default, and deliberately so — it brings a
+# layout engine, an OpenType `MATH` table reader, a LaTeX parser and MathCAT's
+# speech rules (about 2.7 MiB of release artifact), and the component declares a
+# math font for the asset pipeline to bundle. An application that shows no
+# formulas should pay none of that.
+#
+# With this off the Markdown parser is built without `ENABLE_MATH`, so a dollar
+# sign in prose stays a dollar sign, exactly as it does today.
+markdown-math = ["flow-markdown", "dep:waterui-math"]
 std = ["dep:waterkit-haptic"]
+canvas = ["dep:waterui-canvas"]
+chart = ["dep:waterui-chart"]
+barcode = ["dep:waterui-barcode"]
+particle = ["dep:waterui-particle"]
 all = [
+    "canvas",
+    "chart",
+    "barcode",
+    "particle",
     "std",
     "gpu",
     "highlight",
@@ -182,6 +175,7 @@ all = [
     "media",
     "webview",
     "flow-markdown",
+    "markdown-math",
     "video-gpu",
     "navigation-restoration",
     "snackbar",

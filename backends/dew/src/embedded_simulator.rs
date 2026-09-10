@@ -171,9 +171,22 @@ impl ApplicationHandler for SimulatorApp {
                     return;
                 };
                 self.cursor = Some(position);
-                if self.mouse_pressed && self.active_touch.is_none() {
+                // Reported whether or not a button is held. Pressed, it drives
+                // drag recognition; unpressed, it is the panel's only source of
+                // hover, which `.on_hover_*` handlers (an interactive chart's
+                // among them) have nothing else to work from.
+                if self.active_touch.is_none() {
                     self.enqueue_pointer(TouchPhase::Moved, position);
                 }
+            }
+            WindowEvent::CursorLeft { .. } if self.active_touch.is_none() => {
+                let Some(position) = self.cursor.take() else {
+                    return;
+                };
+                // The pointer is gone rather than somewhere else, so hovered
+                // targets exit instead of waiting for a move that never comes.
+                self.enqueue_pointer(TouchPhase::Cancelled, position);
+                self.mouse_pressed = false;
             }
             WindowEvent::MouseInput {
                 state,

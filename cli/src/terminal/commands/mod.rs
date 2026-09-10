@@ -15,10 +15,7 @@ fn sccache_allowed() -> bool {
         }
     }
     // Respect explicit wrapper from caller (e.g. passthrough wrapper in constrained envs).
-    if std::env::var_os("RUSTC_WRAPPER").is_some() {
-        return false;
-    }
-    true
+    std::env::var_os("RUSTC_WRAPPER").is_none()
 }
 
 /// Locate `sccache` for compilation caching, noting on the shell when it is
@@ -49,6 +46,7 @@ async fn detect_sccache_path(shell: &Shell) -> Option<PathBuf> {
 pub mod backend;
 pub mod bench;
 pub mod build;
+pub mod channel;
 pub mod clean;
 pub mod create;
 pub mod device;
