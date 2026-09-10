@@ -124,24 +124,24 @@ fn form_scene_contains_expected_widget_commands() {
         .filter(|placed| {
             matches!(
                 placed.command(),
-                DrawCommand::GlyphRun { font_size, .. } if (font_size - 24.0).abs() < f32::EPSILON
+                DrawCommand::GlyphRun { font_size, .. } if (font_size - 22.0).abs() < f32::EPSILON
             )
         })
         .count();
-    assert!(title_runs >= 1, "the .title() text must shape at 24px");
+    assert!(title_runs >= 1, "the .title() text must shape at 22px");
 
     let subheadline_runs = commands
         .iter()
         .filter(|placed| {
             matches!(
                 placed.command(),
-                DrawCommand::GlyphRun { font_size, .. } if (font_size - 20.0).abs() < f32::EPSILON
+                DrawCommand::GlyphRun { font_size, .. } if (font_size - 16.0).abs() < f32::EPSILON
             )
         })
         .count();
     assert!(
         subheadline_runs >= 2,
-        "both .sub_headline() sections must shape at 20px"
+        "both .sub_headline() sections must shape at 16px"
     );
 
     let accent_fills = commands

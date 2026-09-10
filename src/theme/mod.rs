@@ -106,7 +106,7 @@ use waterui_core::{Environment, env::Store, plugin::Plugin};
 
 use crate::{
     color::ResolvedColor,
-    text::font::{Body, Caption, Footnote, Headline, ResolvedFont, Subheadline, Title},
+    text::font::{Body, Caption, FontSlot, Footnote, Headline, ResolvedFont, Subheadline, Title},
 };
 
 // ============================================================================
@@ -347,6 +347,23 @@ impl FontSettings {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Creates the full default type scale, with every slot set to its
+    /// [`FontSlot::DEFAULT`].
+    ///
+    /// This is the scale every backend installs when the application theme
+    /// leaves a font slot unset; use [`FontSettings::new`] to start from an
+    /// empty override set instead.
+    #[must_use]
+    pub fn default_scale() -> Self {
+        Self::new()
+            .body(<Body as FontSlot>::DEFAULT)
+            .title(<Title as FontSlot>::DEFAULT)
+            .headline(<Headline as FontSlot>::DEFAULT)
+            .subheadline(<Subheadline as FontSlot>::DEFAULT)
+            .caption(<Caption as FontSlot>::DEFAULT)
+            .footnote(<Footnote as FontSlot>::DEFAULT)
     }
 
     /// Sets the body font.

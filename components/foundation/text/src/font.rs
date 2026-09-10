@@ -215,11 +215,30 @@ impl Font {
     }
 }
 
+/// A semantic font slot in the theme's type scale.
+///
+/// Implemented by each font slot type (`Body`, `Title`, `Headline`,
+/// `Subheadline`, `Caption`, `Footnote`). The slot's [`FontSlot::DEFAULT`]
+/// constants are the framework-wide default type scale every backend installs
+/// when the application theme leaves the slot unset.
+pub trait FontSlot {
+    /// The default font for this slot.
+    ///
+    /// Together these constants form the framework-wide default type scale
+    /// every backend installs when the application theme leaves the slot
+    /// unset.
+    const DEFAULT: ResolvedFont;
+}
+
 macro_rules! impl_font {
-    ($name:ident, $doc:expr) => {
+    ($name:ident, $doc:expr, $size:expr, $weight:expr) => {
         #[doc = $doc]
         #[derive(Debug, Clone, Copy)]
         pub struct $name;
+
+        impl FontSlot for $name {
+            const DEFAULT: ResolvedFont = ResolvedFont::new($size, $weight);
+        }
 
         impl Resolvable for $name {
             type Resolved = ResolvedFont;
@@ -242,9 +261,14 @@ macro_rules! impl_font {
         impl_constant!($name);
     };
 }
-impl_font!(Body, "Body font style.");
-impl_font!(Title, "Title font style.");
-impl_font!(Headline, "Headline font style.");
-impl_font!(Subheadline, "Subheadline font style.");
-impl_font!(Caption, "Caption font style.");
-impl_font!(Footnote, "Footnote font style.");
+impl_font!(Body, "Body font style.", 16.0, FontWeight::Normal);
+impl_font!(Title, "Title font style.", 22.0, FontWeight::Normal);
+impl_font!(Headline, "Headline font style.", 24.0, FontWeight::Normal);
+impl_font!(
+    Subheadline,
+    "Subheadline font style.",
+    16.0,
+    FontWeight::Medium
+);
+impl_font!(Caption, "Caption font style.", 12.0, FontWeight::Normal);
+impl_font!(Footnote, "Footnote font style.", 11.0, FontWeight::Medium);

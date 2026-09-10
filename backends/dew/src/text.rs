@@ -739,15 +739,7 @@ mod tests {
     fn test_environment() -> Environment {
         let mut env = Environment::new();
         Theme::new()
-            .fonts(
-                FontSettings::new()
-                    .body(ResolvedFont::new(16.0, FontWeight::Normal))
-                    .title(ResolvedFont::new(24.0, FontWeight::Normal))
-                    .headline(ResolvedFont::new(22.0, FontWeight::Normal))
-                    .subheadline(ResolvedFont::new(20.0, FontWeight::Normal))
-                    .caption(ResolvedFont::new(12.0, FontWeight::Normal))
-                    .footnote(ResolvedFont::new(11.0, FontWeight::Normal)),
-            )
+            .fonts(FontSettings::default_scale())
             .install(&mut env);
         env
     }
@@ -765,7 +757,8 @@ mod tests {
     }
 
     /// `.title()` / `.sub_headline()` spans must shape at their preset font
-    /// sizes, visibly distinct from body text.
+    /// styles, visibly distinct from body text: under the default scale title
+    /// differs in size, subheadline in weight.
     #[test]
     fn styled_spans_produce_distinct_font_sizes() {
         let env = test_environment();
@@ -776,10 +769,21 @@ mod tests {
         styled.push(" body", Style::new());
 
         let layout = state.build_styled_layout(&styled, &env, None, theme::FOREGROUND);
-        let sizes = run_font_sizes(&layout);
+        let mut runs = Vec::new();
+        for line in layout.lines() {
+            for item in line.items() {
+                if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                    let run = glyph_run.run();
+                    runs.push((run.font_size(), run.font_attrs().weight.value()));
+                }
+            }
+        }
         assert!(
-            sizes.contains(&24.0) && sizes.contains(&20.0) && sizes.contains(&16.0),
-            "expected title (24), subheadline (20), and body (16) runs, got {sizes:?}"
+            runs.contains(&(22.0, 400.0))
+                && runs.contains(&(16.0, 500.0))
+                && runs.contains(&(16.0, 400.0)),
+            "expected title (22/normal), subheadline (16/medium), and body \
+             (16/normal) runs, got {runs:?}"
         );
 
         let (_, title_height) = state.measure_styled(&StyledStr::plain("Heading"), &env, None);

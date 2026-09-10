@@ -405,7 +405,7 @@ fn a_bar_places_every_part_it_declares() {
         .commands()
         .iter()
         .find(|placed| {
-            matches!(placed.command(), DrawCommand::GlyphRun { font_size, .. } if exact_f32(*font_size, 24.0))
+            matches!(placed.command(), DrawCommand::GlyphRun { font_size, .. } if exact_f32(*font_size, 22.0))
         })
         .unwrap_or_else(|| panic!("the large title uses the configured title font: {title_sizes:?}"));
     assert_eq!(top_bar.intersect(title.bounds()), title.bounds());
