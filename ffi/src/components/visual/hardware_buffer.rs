@@ -504,15 +504,17 @@ pub unsafe fn copy_hardware_buffer_into_texture(
         unsafe { guard.raw_handle() }
     };
 
-    let mut encoder = gpu
+    // wgpu refuses to mix its own commands with raw HAL recording in one encoder,
+    // so the frame is two: the first carries wgpu's barrier into `COPY_DST`, from
+    // whatever state it is tracking, and records that new state so the layout the
+    // raw commands leave the image in is the layout wgpu expects next time; the
+    // second is recorded through the HAL alone. One submit keeps them in order.
+    let mut transition = gpu
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("WaterUI Android Capture Copy"),
+            label: Some("WaterUI Android Capture Transition"),
         });
-    // wgpu's own barrier into `COPY_DST`, from whatever state it is tracking. It
-    // records the new state too, so the layout the raw commands below leave the
-    // image in is the layout wgpu expects to find it in next time.
-    encoder.transition_resources(
+    transition.transition_resources(
         core::iter::empty(),
         core::iter::once(wgpu::TextureTransition {
             texture: destination,
@@ -520,6 +522,11 @@ pub unsafe fn copy_hardware_buffer_into_texture(
             state: wgpu::TextureUses::COPY_DST,
         }),
     );
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("WaterUI Android Capture Copy"),
+        });
     // SAFETY: the callback only records into the encoder's active command buffer
     // and never ends it, which is `as_hal_mut`'s contract, and the wgpu encoder is
     // untouched for the duration of the callback.
@@ -542,7 +549,7 @@ pub unsafe fn copy_hardware_buffer_into_texture(
         });
     }
 
-    let submission = gpu.queue.submit([encoder.finish()]);
+    let submission = gpu.queue.submit([transition.finish(), encoder.finish()]);
     Box::into_raw(Box::new(WuiGpuCaptureFence::new(
         gpu.submission_completion_driver(),
         submission,
