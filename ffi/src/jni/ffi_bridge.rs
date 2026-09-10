@@ -154,25 +154,6 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_spacerId<'local>(
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterId<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-) -> jobject {
-    let type_id = WuiTypeId::of::<waterui_core::Metadata<waterui_graphics::AppliedFilter>>();
-    super::with_env(&mut env, |env| type_id_to_java(env, type_id).into_raw())
-}
-
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectId<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-) -> jobject {
-    let type_id =
-        WuiTypeId::of::<waterui_core::Native<waterui_graphics::view_effect::ViewEffectErased>>();
-    super::with_env(&mut env, |env| type_id_to_java(env, type_id).into_raw())
-}
-
-#[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webViewId<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
