@@ -1202,6 +1202,37 @@ typedef enum WuiWebViewEventType {
 } WuiWebViewEventType;
 
 /**
+ * The pixel layout an Android capture buffer must be allocated with.
+ *
+ * The backend allocates its `ImageReader` from this after attaching, so the
+ * buffer it hands back is copy-compatible with the capture texture the filter
+ * samples. The discriminants are the values the JNI binding returns as an
+ * `Int`, and are part of the Kotlin contract.
+ */
+enum WuiCaptureFormat
+#if __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // __STDC_VERSION__ >= 202311L
+ {
+  /**
+   * Four 8-bit unsigned channels: `AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM`,
+   * which is `android.graphics.PixelFormat.RGBA_8888`.
+   */
+  WuiCaptureFormat_Rgba8Unorm = 0,
+  /**
+   * Four 16-bit half-float channels:
+   * `AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT`, which is
+   * `android.graphics.PixelFormat.RGBA_FP16`.
+   */
+  WuiCaptureFormat_Rgba16Float = 1,
+};
+#if __STDC_VERSION__ >= 202311L
+typedef enum WuiCaptureFormat WuiCaptureFormat;
+#else
+typedef uint32_t WuiCaptureFormat;
+#endif // __STDC_VERSION__ >= 202311L
+
+/**
  * Which event a [`WuiSurfaceInputEvent`] carries.
  *
  * The tag decides which of the struct's payload fields are read; the rest are
@@ -10970,6 +11001,56 @@ void waterui_applied_filter_prepare_capture(struct WuiAppliedFilterState *state,
                                             uint32_t height);
 
 /**
+ * The pixel layout this filter's capture buffers must be allocated with (Android only).
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_applied_filter_create` with an
+ * attached target.
+ *
+ * # Panics
+ *
+ * Always panics: `AHardwareBuffer` capture only exists on Android.
+ */
+WuiCaptureFormat waterui_applied_filter_capture_format(const struct WuiAppliedFilterState *_state);
+
+/**
+ * Copies a captured `AHardwareBuffer` into the capture texture (Android only).
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_applied_filter_create` with an
+ * attached target, and `buffer` a live `AHardwareBuffer`.
+ *
+ * # Panics
+ *
+ * Always panics: `AHardwareBuffer` capture only exists on Android.
+ */
+struct WuiGpuCaptureFence *waterui_applied_filter_set_capture_hardware_buffer(struct WuiAppliedFilterState *_state,
+                                                                              void *_buffer);
+
+/**
+ * Draws a `GpuSurface` nested in the captured subtree into the capture (Android only).
+ *
+ * # Safety
+ *
+ * `filter` and `surface` must be valid state pointers from their matching
+ * constructors.
+ *
+ * # Panics
+ *
+ * Always panics: nested-surface compositing only exists on Android, because
+ * only there does the capture arrive with the surface missing from it.
+ */
+void waterui_applied_filter_composite_gpu_surface(struct WuiAppliedFilterState *_filter,
+                                                  struct WuiGpuSurfaceState *_surface,
+                                                  int32_t _x,
+                                                  int32_t _y,
+                                                  uint32_t _width,
+                                                  uint32_t _height,
+                                                  double _scale);
+
+/**
  * Get a pointer to the Metal texture backing the capture texture (Apple only).
  *
  * This exposes the underlying `MTLTexture` so native code can render directly
@@ -11273,8 +11354,11 @@ struct WuiGpuCaptureFence *waterui_gpu_surface_render_to_metal_texture(struct Wu
  *
  * # Safety
  *
- * `fence` must be a valid owning pointer returned by
- * [`waterui_gpu_surface_render_to_metal_texture`] and must be consumed once.
+ * `fence` must be a valid owning pointer returned by an external capture entry
+ * point — `waterui_gpu_surface_render_to_metal_texture` on Apple,
+ * `waterui_applied_filter_set_capture_hardware_buffer` or
+ * `waterui_view_effect_set_input_hardware_buffer` on Android — and must be
+ * consumed once.
  * `context`, `callback`, and `drop` must remain valid until completion; Rust
  * consumes the context and releases it through `drop`.
  */
@@ -11562,6 +11646,42 @@ void waterui_view_effect_set_input_metal_texture(struct WuiViewEffectState *stat
                                                  void *texture,
                                                  uint32_t width,
                                                  uint32_t height);
+
+/**
+ * Copies a captured `AHardwareBuffer` into the effect's input (Android only).
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from `waterui_view_effect_create` with an
+ * attached target, and `buffer` a live `AHardwareBuffer`.
+ *
+ * # Panics
+ *
+ * Always panics: `AHardwareBuffer` capture only exists on Android.
+ */
+struct WuiGpuCaptureFence *waterui_view_effect_set_input_hardware_buffer(struct WuiViewEffectState *_state,
+                                                                         void *_buffer);
+
+/**
+ * Draws a `GpuSurface` nested in the captured subtree into the input (Android only).
+ *
+ * # Safety
+ *
+ * `effect` and `surface` must be valid state pointers from their matching
+ * constructors.
+ *
+ * # Panics
+ *
+ * Always panics: nested-surface compositing only exists on Android, because
+ * only there does the capture arrive with the surface missing from it.
+ */
+void waterui_view_effect_composite_gpu_surface(struct WuiViewEffectState *_effect,
+                                               struct WuiGpuSurfaceState *_surface,
+                                               int32_t _x,
+                                               int32_t _y,
+                                               uint32_t _width,
+                                               uint32_t _height,
+                                               double _scale);
 
 /**
  * Returns whether asynchronous effect setup has completed.
