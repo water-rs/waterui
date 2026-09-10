@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788951733243,
+  "lastUpdate": 1789037814808,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -1107,6 +1107,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 34181,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4abe06f084ea363d4b7969802bbb83ecf9a8b643",
+          "message": "Merge pull request #527 from water-rs/agent/ffi-header-job-526\n\nci(ffi): build the header generator outside the framework graph and cache its expansion",
+          "timestamp": "2026-09-10T06:05:37Z",
+          "url": "https://github.com/water-rs/waterui/commit/4abe06f084ea363d4b7969802bbb83ecf9a8b643"
+        },
+        "date": 1789037813592,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 173662,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 171396,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 40229,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 35518,
             "unit": "us"
           }
         ]
