@@ -230,6 +230,15 @@ impl WuiGpuCaptureFence {
     /// Every external capture path ends here, whichever platform primitive it
     /// started from, so `waterui_gpu_capture_fence_on_complete` is the one way a
     /// backend learns that the GPU is finished with the memory it lent us.
+    // Only the platforms with an external capture path produce a fence: Metal
+    // on Apple, `AHardwareBuffer` on Android. Elsewhere the type is consumed by
+    // `waterui_gpu_capture_fence_on_complete` alone, so a constructor would be
+    // dead code.
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        all(target_os = "android", feature = "gpu")
+    ))]
     pub(crate) const fn new(
         completion_driver: GpuSubmissionCompletionDriver,
         submission: wgpu::SubmissionIndex,
