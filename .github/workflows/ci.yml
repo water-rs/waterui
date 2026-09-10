@@ -188,40 +188,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      # The only job that needs nightly: cbindgen expands the FFI macros through
-      # `cargo rustc -- -Zunpretty=expanded`, and the exported functions are
-      # macro-generated, so the expansion cannot be skipped.
-      - uses: dtolnay/rust-toolchain@nightly
-      # Dependency caches only: the full target tarball measured 0.8GB and, in
-      # a quota squeezed by the two Test tarballs, was evicted before every
-      # single restore — this job has never once hit it. Storing just the
-      # dependency caches keeps the quota pressure off the caches that do hit.
-      - uses: Swatinem/rust-cache@v2
+      # The toolchain pin, the cache and the verification all live in the
+      # action, which `ffi-header-cache.yml` runs on pushes to `dev` with
+      # `save: 'true'`. That warmer is the only writer; this job reads.
+      #
+      # The cache hits here where the old one never did: the generator is its
+      # own crate whose build costs cbindgen alone, the one framework compile
+      # left is cbindgen's check-profile expansion — rmeta, a fraction of the
+      # 0.8 GB dev-profile tarball this job measured when it last tried a target
+      # cache — and the nightly it runs on is a fixed date instead of a channel
+      # that moved out from under the key every day.
+      - uses: ./.github/actions/ffi-header
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
-      # `+nightly` is named rather than inherited: `rust-toolchain.toml` pins the
-      # repository to stable and overrides what the action above sets, so an
-      # ambient `cargo run` here would generate the header with the wrong
-      # channel and cbindgen would lose the macro expansion.
-      - name: Regenerate the header
-        run: cargo +nightly run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
-      - name: Verify the committed header matches
-        run: |
-          set -euo pipefail
-          status=0
-          check() {
-            if ! git -C "$1" diff --exit-code -- "$2"; then
-              echo "::error file=$2::$2 is stale; on macOS run 'cargo +nightly run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml' and commit the result"
-              status=1
-            fi
-          }
-          check . ffi/waterui.h
-          check backends/apple Sources/CWaterUI/include/waterui.h
-          check backends/android runtime/src/main/cpp/waterui.h
-          exit "$status"
+          save: 'false'
 
   android-ffi:
     name: Android FFI

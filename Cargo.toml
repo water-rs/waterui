@@ -13,6 +13,7 @@ members = [
     "src",
     "testing",
     "ffi",
+    "ffi/generator",
     "macros",
     "cli",
     "examples/*",

@@ -12,7 +12,7 @@
 # the channel explicitly, and an explicit `+toolchain` always wins over this
 # file:
 #
-#     cargo +nightly run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
+#     cargo +nightly run --manifest-path ffi/generator/Cargo.toml
 [toolchain]
 channel = "stable"
 components = ["clippy", "rustfmt"]
