@@ -99,6 +99,15 @@ pub struct WuiGpuSurfaceState {
     config: Option<wgpu::SurfaceConfiguration>,
     /// The format selected when asynchronous renderer setup starts.
     renderer_format: Cell<Option<wgpu::TextureFormat>>,
+    /// Where this surface's frame is drawn when an enclosing capture wants it.
+    ///
+    /// Android's HWUI records a `SurfaceView` as a cleared hole, so a surface
+    /// inside a filtered or effected subtree is missing from that subtree's
+    /// captured buffer and is drawn into it from here instead. Kept across
+    /// frames and reallocated only when the size or the renderer's format
+    /// changes.
+    #[cfg(target_os = "android")]
+    composite_texture: Option<wgpu::Texture>,
     /// Becomes true only after the local setup future has completed.
     setup_ready: Rc<Cell<bool>>,
     /// Maximum MSAA sample count requested by the public `GpuSurface` API.
@@ -222,6 +231,32 @@ struct GpuSurfaceSemantic {
 pub struct WuiGpuCaptureFence {
     completion_driver: GpuSubmissionCompletionDriver,
     submission: wgpu::SubmissionIndex,
+}
+
+impl WuiGpuCaptureFence {
+    /// Wraps one queue submission as the token native waits on.
+    ///
+    /// Every external capture path ends here, whichever platform primitive it
+    /// started from, so `waterui_gpu_capture_fence_on_complete` is the one way a
+    /// backend learns that the GPU is finished with the memory it lent us.
+    // Only the platforms with an external capture path produce a fence: Metal
+    // on Apple, `AHardwareBuffer` on Android. Elsewhere the type is consumed by
+    // `waterui_gpu_capture_fence_on_complete` alone, so a constructor would be
+    // dead code.
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        all(target_os = "android", feature = "gpu")
+    ))]
+    pub(crate) const fn new(
+        completion_driver: GpuSubmissionCompletionDriver,
+        submission: wgpu::SubmissionIndex,
+    ) -> Self {
+        Self {
+            completion_driver,
+            submission,
+        }
+    }
 }
 
 /// Completion function invoked after an external GPU capture submission.
@@ -551,6 +586,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_create(
         runtime,
         wgpu_surface: None,
         renderer_format: Cell::new(None),
+        #[cfg(target_os = "android")]
+        composite_texture: None,
         setup_ready: Rc::new(Cell::new(false)),
         msaa_max_samples,
         config: None,
@@ -991,14 +1028,54 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
         format: Some(target_format),
         ..Default::default()
     });
-    let (elapsed, delta) = advance_frame_timing(state);
-
-    let mut frame = GpuFrame::new(
-        &state.runtime.context().device,
-        &state.runtime.context().queue,
+    render_into_texture(
+        state,
         &wgpu_texture,
         view,
         target_format,
+        width,
+        height,
+        scale,
+    );
+    let submission = state.runtime.context().queue.submit([]);
+    Box::into_raw(Box::new(WuiGpuCaptureFence::new(
+        state.runtime.context().submission_completion_driver(),
+        submission,
+    )))
+}
+
+/// Renders one frame of the semantic GPU view into a texture it does not own.
+///
+/// Every path that captures a surface into foreign memory ends here: Apple's
+/// imported `MTLTexture` and Android's compositing of a surface nested inside a
+/// captured subtree both hand in a texture of the renderer's established format
+/// and take whatever the renderer draws into it. The redraw bookkeeping is a
+/// presented frame's, so a renderer that asks for another frame from inside its
+/// own draw is woken the same way whether it was presenting or being captured.
+///
+/// Nothing is submitted here: the renderer submits its own work, and the caller
+/// decides what the frame is ordered against.
+///
+/// # Panics
+///
+/// Panics if the renderer's asynchronous setup has not completed.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+pub(super) fn render_into_texture(
+    state: &mut WuiGpuSurfaceState,
+    texture: &wgpu::Texture,
+    view: wgpu::TextureView,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+    scale: f64,
+) {
+    let (elapsed, delta) = advance_frame_timing(state);
+    let mut frame = GpuFrame::new(
+        &state.runtime.context().device,
+        &state.runtime.context().queue,
+        texture,
+        view,
+        format,
         width,
         height,
         scale,
@@ -1015,11 +1092,82 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
     if frame.was_redraw_requested() || state.redraw_handle.take_dirty() {
         state.redraw_handle.request_redraw();
     }
-    let submission = state.runtime.context().queue.submit([]);
-    Box::into_raw(Box::new(WuiGpuCaptureFence {
-        completion_driver: state.runtime.context().submission_completion_driver(),
-        submission,
-    }))
+}
+
+/// The GPU runtime this surface renders on, for a caller that needs its own
+/// handle on the device and queue while the surface state is borrowed.
+#[cfg(target_os = "android")]
+pub(super) fn composite_runtime(state: &WuiGpuSurfaceState) -> GpuRuntime {
+    state.runtime.clone()
+}
+
+/// Renders this surface's next frame into the texture a capture reads it from.
+///
+/// The returned texture holds one frame of the semantic GPU view at
+/// `width`x`height` in the renderer's established format, ready to be drawn
+/// into the enclosing capture's texture. It belongs to this state and is reused
+/// for every frame of the same size.
+///
+/// # Panics
+///
+/// Panics if the renderer has no established format yet — a surface that has
+/// never been attached has drawn nothing and cannot be composited — or if its
+/// asynchronous setup has not completed.
+#[cfg(target_os = "android")]
+pub(super) fn render_composite_source(
+    state: &mut WuiGpuSurfaceState,
+    width: u32,
+    height: u32,
+    scale: f64,
+) -> &wgpu::Texture {
+    assert!(
+        width > 0 && height > 0,
+        "GpuSurface composite source must be non-zero, got {width}x{height}"
+    );
+    let format = state
+        .renderer_format
+        .get()
+        .expect("GpuSurface cannot be composited into a capture before it has been attached once");
+    let matches_request = state.composite_texture.as_ref().is_some_and(|texture| {
+        texture.width() == width && texture.height() == height && texture.format() == format
+    });
+    if !matches_request {
+        state.composite_texture = Some(state.runtime.context().device.create_texture(
+            &wgpu::TextureDescriptor {
+                label: Some("GpuSurface Composite Source"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+        ));
+    }
+
+    // Lent out for the render so the renderer's own `&mut` borrow of the state
+    // and the texture do not overlap, then returned to its slot.
+    let texture = state
+        .composite_texture
+        .take()
+        .expect("GpuSurface composite source was just ensured");
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("GpuSurface Composite Source View"),
+        format: Some(format),
+        ..Default::default()
+    });
+    render_into_texture(state, &texture, view, format, width, height, scale);
+    state.composite_texture = Some(texture);
+    state
+        .composite_texture
+        .as_ref()
+        .expect("GpuSurface composite source was just returned")
 }
 
 /// Schedules one external capture submission completion and consumes its fence.
@@ -1031,8 +1179,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
 ///
 /// # Safety
 ///
-/// `fence` must be a valid owning pointer returned by
-/// [`waterui_gpu_surface_render_to_metal_texture`] and must be consumed once.
+/// `fence` must be a valid owning pointer returned by an external capture entry
+/// point — `waterui_gpu_surface_render_to_metal_texture` on Apple,
+/// `waterui_applied_filter_set_capture_hardware_buffer` or
+/// `waterui_view_effect_set_input_hardware_buffer` on Android — and must be
+/// consumed once.
 /// `context`, `callback`, and `drop` must remain valid until completion; Rust
 /// consumes the context and releases it through `drop`.
 #[unsafe(no_mangle)]

@@ -7055,9 +7055,9 @@ dependencies = [
 
 [[package]]
 name = "mvt-reader"
-version = "2.5.0"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d59a9ba839816c282311c473b43eb9a0f4516afe3c2c0cb7cda68050c50ddcba"
+checksum = "b21d02c206b092ea347b673caf17f15fcc7eb45fff0668adfc484306ee6f2a1a"
 dependencies = [
  "geo-types",
  "num-traits",
@@ -8910,9 +8910,9 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.14.4"
+version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
 dependencies = [
  "bytes",
  "prost-derive",
@@ -8920,12 +8920,12 @@ dependencies = [
 
 [[package]]
 name = "prost-derive"
-version = "0.14.4"
+version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -11829,9 +11829,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.26.0"
+version = "1.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5772d71c9be8a8a6ac2117d949c5b224c1b72241bb611d9a3012edcf8af7812"
+checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -12936,9 +12936,9 @@ dependencies = [
 name = "waterui-ffi"
 version = "0.3.0"
 dependencies = [
+ "ash",
  "async-channel",
  "base64 0.23.1",
- "cbindgen",
  "cookie",
  "executor-core",
  "jiff",
@@ -12983,6 +12983,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-ffi-generator"
+version = "0.1.0"
+dependencies = [
+ "cbindgen",
+]
+
+[[package]]
 name = "waterui-form"
 version = "0.3.0"
 dependencies = [
@@ -13013,6 +13020,7 @@ dependencies = [
 name = "waterui-graphics"
 version = "0.3.0"
 dependencies = [
+ "ash",
  "bytemuck",
  "divan",
  "encase",
@@ -13043,6 +13051,7 @@ dependencies = [
  "waterui-core",
  "waterui-testing",
  "wgpu",
+ "wgpu-hal",
 ]
 
 [[package]]

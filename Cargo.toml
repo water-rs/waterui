@@ -13,6 +13,7 @@ members = [
     "src",
     "testing",
     "ffi",
+    "ffi/generator",
     "macros",
     "cli",
     "examples/*",
@@ -250,6 +251,12 @@ toml = "1.1.5"
 vello_cpu = { version = "0.2.0", default-features = false }
 lyon = "1.0"
 wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
+# The Vulkan bindings `wgpu-hal` itself links. Android view capture imports an
+# `AHardwareBuffer` as a raw `VkImage`, which means calling
+# `VK_ANDROID_external_memory_android_hardware_buffer` on the very `ash::Device`
+# `wgpu_hal::vulkan::Device::raw_device()` hands back, so the two must resolve to
+# one `ash`: a second major would make that a different `ash::Device` type.
+ash = "0.38"
 # Must match the `glow` version wgpu-hal links against, or GLES handles from
 # `wgpu::hal::gles` fail to unify with locally created ones.
 # Tracks whatever `wgpu-hal` links, not the newest release: the GTK backend

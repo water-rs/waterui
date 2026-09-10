@@ -1903,3 +1903,63 @@ impl ToJavaStruct for crate::WuiMenuItem {
         .expect("Failed to create MenuItemStruct")
     }
 }
+
+/// `AppliedFilterStruct(contentPtr: Long, filterPtr: Long)`
+///
+/// `filterPtr` is the semantic filter, consumed once by
+/// `WatcherJni.appliedFilterCreate`.
+#[cfg(feature = "gpu")]
+impl ToJavaStruct for crate::components::applied_filter::WuiAppliedFilter {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/AppliedFilterStruct"))
+            .expect("AppliedFilterStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.filter as jlong),
+            ],
+        )
+        .expect("Failed to create AppliedFilterStruct")
+    }
+}
+
+/// `ViewEffectStruct(contentPtr: Long, effectPtr: Long, outputSizeKind: Int,
+/// outputWidth: Int, outputHeight: Int, outputScale: Float)`
+///
+/// The output size is a Rust enum with per-variant payloads, so it crosses
+/// flattened: `outputSizeKind` selects which of the remaining fields carry
+/// meaning — 0 matches the input and reads none of them, 1 is a fixed size and
+/// reads width and height, 2 is a scale factor and reads `outputScale`. Kotlin
+/// hands all four straight back to `WatcherJni.viewEffectCreate`.
+#[cfg(feature = "gpu")]
+impl ToJavaStruct for crate::components::view_effect::WuiViewEffect {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        use crate::components::view_effect::WuiOutputSize;
+        let (kind, width, height, scale) = match self.output_size {
+            WuiOutputSize::MatchInput => (0, 0, 0, 1.0),
+            WuiOutputSize::Fixed { width, height } => {
+                (1, width.cast_signed(), height.cast_signed(), 1.0)
+            }
+            WuiOutputSize::Scale { factor } => (2, 0, 0, factor),
+        };
+        let class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/ViewEffectStruct"))
+            .expect("ViewEffectStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJIIIF)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.effect as jlong),
+                JValue::Int(kind),
+                JValue::Int(width),
+                JValue::Int(height),
+                JValue::Float(scale),
+            ],
+        )
+        .expect("Failed to create ViewEffectStruct")
+    }
+}
