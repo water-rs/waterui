@@ -1,6 +1,14 @@
 //! Regenerates `ffi/waterui.h` from the `waterui-ffi` crate via cbindgen and
 //! propagates the header to the native backend submodules.
-use std::{env, fs, path::PathBuf};
+//!
+//! The generator lives in its own crate so that building it does not build the
+//! framework: its only dependency is cbindgen, and the single compile of the
+//! `waterui-ffi` graph left is the check-profile expansion cbindgen drives
+//! itself. Both the cbindgen configuration and the feature list stay where they
+//! were — `ffi/cbindgen.toml` and the `header` feature of `ffi/Cargo.toml` —
+//! and are read from the sibling crate directory.
+
+use std::{env, fs, path::Path, path::PathBuf};
 
 use cbindgen::{Builder, Config};
 
@@ -12,7 +20,7 @@ fn main() {
     // expansion produces nothing cacheable; every real build keeps its wrapper.
     // SAFETY: called at the start of `main`, before any other thread exists.
     unsafe { env::set_var("RUSTC_WRAPPER", "") };
-    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let crate_dir = ffi_crate_dir();
     let mut config =
         Config::from_file(crate_dir.join("cbindgen.toml")).expect("failed to load cbindgen.toml");
     config
@@ -34,10 +42,21 @@ fn main() {
     propagate_to_backends(&header_path);
 }
 
-fn propagate_to_backends(header_path: &std::path::Path) {
+/// Directory of the `waterui-ffi` crate this generator binds, which is the
+/// parent of this crate's own directory.
+fn ffi_crate_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("failed to determine the FFI crate directory from the generator manifest path")
+        .to_path_buf()
+}
+
+/// Copies the freshly generated header over the native backends' checked-in
+/// copies, which CI compares against this one.
+fn propagate_to_backends(header_path: &Path) {
     let workspace_root = header_path
         .parent()
-        .and_then(|p| p.parent())
+        .and_then(Path::parent)
         .expect("failed to determine workspace root from FFI header path");
 
     let destinations = [

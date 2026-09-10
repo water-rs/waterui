@@ -263,8 +263,9 @@ cargo test --doc --workspace
 # Also run it locally after touching components/platform/webview/src/js/
 bun test components/platform/webview/tests/js/
 
-# Generate FFI C header (after modifying ffi/ APIs), never write C header by hand
-cargo +nightly run --bin generate_header --features cbindgen --manifest-path ffi/Cargo.toml
+# Generate FFI C header (after modifying ffi/ APIs), never write C header by hand.
+# The generator is its own crate so building it costs cbindgen, not the framework.
+cargo +nightly run --manifest-path ffi/generator/Cargo.toml
 
 # Build Apple backend
 cd backends/apple && swift build

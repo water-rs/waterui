@@ -1,0 +1,61 @@
+name: ffi-header
+description: >-
+  Regenerates `ffi/waterui.h` with cbindgen and checks the three committed
+  copies against it. Both callers — the pull-request gate and the dev-push
+  cache warmer — go through here so they share one toolchain pin and one cache
+  key; only the warmer passes `save: 'true'`.
+
+inputs:
+  save:
+    description: >-
+      Whether this run writes the cache it restores. `'true'` on pushes to
+      `dev`, so pull requests read a warm cache without ever competing to
+      write it.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    # The one place the header toolchain is named. cbindgen expands the
+    # macro-generated exports through `cargo rustc -- -Zunpretty=expanded`, so
+    # this is the only nightly in the repository — and it is a fixed date
+    # rather than the channel, because rust-cache keys on the rustc version and
+    # a moving `nightly` invalidates the cache below every single day.
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly-2026-09-09
+    # The expansion is a check-profile build of the `waterui-ffi` graph, whose
+    # rmeta artifacts are a fraction of the 0.8 GB dev-profile tarball this job
+    # used to measure. It gets its own key because it is the only nightly
+    # consumer in the repository: sharing the stable jobs' `cargo-home` key
+    # restored nothing, since the rustc version is part of what rust-cache
+    # hashes.
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ffi-header-${{ runner.os }}
+        cache-targets: true
+        save-if: ${{ inputs.save }}
+        cache-on-failure: true
+    # `+nightly-2026-09-09` is named rather than inherited: `rust-toolchain.toml`
+    # pins the repository to stable and overrides what the action above sets, so
+    # an ambient `cargo run` here would generate the header with the wrong
+    # channel and cbindgen would lose the macro expansion.
+    - name: Regenerate the header
+      shell: bash
+      run: cargo +nightly-2026-09-09 run --manifest-path ffi/generator/Cargo.toml
+    - name: Verify the committed header matches
+      shell: bash
+      run: |
+        set -euo pipefail
+        status=0
+        check() {
+          if ! git -C "$1" diff --exit-code -- "$2"; then
+            echo "::error file=$2::$2 is stale; on macOS run 'cargo +nightly run --manifest-path ffi/generator/Cargo.toml' and commit the result"
+            status=1
+          fi
+        }
+        check . ffi/waterui.h
+        check backends/apple Sources/CWaterUI/include/waterui.h
+        check backends/android runtime/src/main/cpp/waterui.h
+        exit "$status"

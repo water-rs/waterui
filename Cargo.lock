@@ -12837,7 +12837,6 @@ dependencies = [
  "ash",
  "async-channel",
  "base64 0.22.1",
- "cbindgen",
  "cookie",
  "executor-core",
  "jiff",
@@ -12879,6 +12878,13 @@ dependencies = [
  "waterui-webview",
  "wgpu",
  "wgpu-hal",
+]
+
+[[package]]
+name = "waterui-ffi-generator"
+version = "0.1.0"
+dependencies = [
+ "cbindgen",
 ]
 
 [[package]]
