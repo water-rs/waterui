@@ -58,10 +58,6 @@ name = "waterui-locale"
 git_tag_name = "locale-v{{ version }}"
 
 [[package]]
-name = "waterui-svg"
-git_tag_name = "svg-v{{ version }}"
-
-[[package]]
 name = "waterui-icon"
 git_tag_name = "icon-v{{ version }}"
 
