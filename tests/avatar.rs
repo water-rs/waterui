@@ -35,12 +35,12 @@ use waterui_testing::{OffscreenApp, Role, UiBuilder};
 fn write_test_portrait(dir: &Path) -> PathBuf {
     const WIDTH: u32 = 320;
     const HEIGHT: u32 = 200;
-    const DISC_RADIUS: f32 = 60.0;
+    const DISC_RADIUS: f64 = 60.0;
     let path = dir.join("portrait.png");
     let mut pixels = image::RgbaImage::new(WIDTH, HEIGHT);
-    let (centre_x, centre_y) = (WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0);
+    let (centre_x, centre_y) = (f64::from(WIDTH) / 2.0, f64::from(HEIGHT) / 2.0);
     for (x, y, pixel) in pixels.enumerate_pixels_mut() {
-        let (dx, dy) = (x as f32 + 0.5 - centre_x, y as f32 + 0.5 - centre_y);
+        let (dx, dy) = (f64::from(x) + 0.5 - centre_x, f64::from(y) + 0.5 - centre_y);
         *pixel = if dx.hypot(dy) <= DISC_RADIUS {
             image::Rgba([255, 255, 255, 255])
         } else {
