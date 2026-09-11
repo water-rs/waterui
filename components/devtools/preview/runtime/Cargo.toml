@@ -19,7 +19,7 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 async-channel = "2.5"
 indexmap = "2"
-blocking = "1.6"
+blocking = "1.7"
 async-fs = "2.2.0"
 async-process = "2.5.0"
 serde_json = "1.0"

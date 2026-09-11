@@ -16,7 +16,7 @@ waterui-url = { workspace = true, features = ["std"] }
 waterui-media.workspace = true
 waterui-video.workspace = true
 tracing.workspace = true
-blocking = "1.6.2"
+blocking = "1.7.0"
 
 # Caching
 sha2 = "0.11"

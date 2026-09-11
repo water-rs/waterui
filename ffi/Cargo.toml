@@ -37,13 +37,13 @@ kurbo = { workspace = true, optional = true }
 waterui-svg = { workspace = true, optional = true }
 waterui-icon.workspace = true
 waterui-webview.workspace = true
-cookie = "0.18.1"
+cookie = "0.18.2"
 waterui-map = { workspace = true, optional = true }
 waterui-str.workspace = true
 waterui-locale.workspace = true
 wgpu = { workspace = true, optional = true }
 async-channel = "2.5"
-base64 = "0.22.1"
+base64 = "0.23.1"
 pastey.workspace = true
 tracing.workspace = true
 tracing-panic.workspace = true

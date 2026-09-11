@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use smol::fs;
 use walkdir::WalkDir;
-use zenwave::{Client as _, Method, redirect::FollowRedirect};
+use zenwave::{Client as _, Method};
 
 use crate::platform::TargetPlatform;
 use crate::project::{BrowserRuntimePlan, ResolvedWebViewBackend};
@@ -359,7 +359,7 @@ async fn remove_staged(layout: &RuntimeLayout) -> eyre::Result<()> {
 }
 
 async fn download_manifest(url: &str) -> eyre::Result<ArtifactManifest> {
-    let mut client = FollowRedirect::new(zenwave::raw_client());
+    let mut client = zenwave::client();
     let response = client.method(Method::GET, url)?.await?;
     if !response.status().is_success() {
         bail!(
@@ -431,7 +431,7 @@ async fn cache_artifact(artifact: &RuntimeArtifact) -> eyre::Result<PathBuf> {
     }
 
     let partial = archive.with_extension("zip.partial");
-    let mut client = FollowRedirect::new(zenwave::raw_client());
+    let mut client = zenwave::client();
     client
         .method(Method::GET, &artifact.url)?
         .download_to_path(&partial)

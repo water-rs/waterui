@@ -25,7 +25,7 @@ filtrate-core.workspace = true
 executor-core.workspace = true
 tracing.workspace = true
 futures.workspace = true
-blocking = "1.6.2"
+blocking = "1.7.0"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { workspace = true, features = ["native-tls"] }
@@ -47,6 +47,7 @@ default = ["std"]
 std = ["waterui-core/std", "dep:waterkit-dialog"]
 
 [dev-dependencies]
+futures-lite.workspace = true
 hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
 waterui = { path = "../../..", features = ["video-gpu"] }
 waterui-testing = { path = "../../../testing" }

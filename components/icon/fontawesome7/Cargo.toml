@@ -30,7 +30,7 @@ ignored = ["serde", "serde_json", "arkiv", "dirs", "waterui-icons-codegen"]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 arkiv = { version = "0.7", features = ["download"] }
-dirs = "6"
+dirs = "7"
 waterui-icons-codegen.workspace = true
 
 [lints]

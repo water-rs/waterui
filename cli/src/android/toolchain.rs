@@ -257,12 +257,12 @@ fn parse_latest_cmdline_tools_archive(repository_xml: &str) -> Option<String> {
 }
 
 async fn latest_cmdline_tools_archive_url() -> eyre::Result<String> {
-    use zenwave::{Client, Method, redirect::FollowRedirect};
+    use zenwave::{Client, Method};
 
     const REPOSITORY_URL: &str = "https://dl.google.com/android/repository/repository2-3.xml";
     const REPOSITORY_PREFIX: &str = "https://dl.google.com/android/repository/";
 
-    let mut client = FollowRedirect::new(zenwave::raw_client());
+    let mut client = zenwave::client();
     let response = client.method(Method::GET, REPOSITORY_URL)?.await?;
     if !response.status().is_success() {
         return Err(eyre::eyre!(
