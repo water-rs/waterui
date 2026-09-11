@@ -14,7 +14,7 @@ categories.workspace = true
 [dependencies]
 waterui-str.workspace = true
 nami-core.workspace = true
-base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+base64 = { version = "0.23", default-features = false, features = ["alloc"] }
 nami = { workspace = true, optional = true }
 executor-core = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
@@ -46,6 +46,6 @@ zenwave = { workspace = true, features = ["rustls"], optional = true }
 zenwave = { workspace = true, optional = true }
 
 [dev-dependencies]
-futures.workspace = true
+futures-lite.workspace = true
 [lints]
 workspace = true

@@ -29,7 +29,7 @@ use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{AnyView, Computed, Environment, Metadata, Retain, Signal, View};
 use waterui_image::{Image, ReactiveImage, ReactiveImageHandle, reactive_image};
-use zenwave::{Client, Method, redirect::FollowRedirect};
+use zenwave::{Client, Method};
 
 /// A photo component that displays an image from a URL.
 ///
@@ -320,7 +320,7 @@ async fn fetch_and_decode_streaming(
         return Ok(());
     }
 
-    let mut client = FollowRedirect::new(zenwave::raw_client());
+    let mut client = zenwave::client();
     let response = client
         .method(Method::GET, &url)
         .map_err(|e| e.to_string())?
@@ -454,7 +454,7 @@ mod tests {
         reason = "platform-gated pushes make a `vec![]` initializer impractical (it would leave `mut` unused where neither gated case applies)"
     )]
     fn streaming_decode_real_images_smoke() {
-        futures::executor::block_on(async {
+        futures_lite::future::block_on(async {
             let mut cases = Vec::new();
             cases.push((
                 "jpeg",
@@ -496,8 +496,8 @@ mod tests {
     #[test]
     #[ignore = "requires network access and platform HDR AVIF decode support"]
     fn hdr_avif_decode_real_image_smoke() {
-        futures::executor::block_on(async {
-            use zenwave::{Client, Method, redirect::FollowRedirect};
+        futures_lite::future::block_on(async {
+            use zenwave::{Client, Method};
 
             let candidates = [
                 "https://raw.githubusercontent.com/link-u/avif-sample-images/master/fox.profile0.10bpc.yuv420.avif",
@@ -508,7 +508,7 @@ mod tests {
 
             let mut selected = None;
             for url in candidates {
-                let mut client = FollowRedirect::new(zenwave::raw_client());
+                let mut client = zenwave::client();
                 let response = client
                     .method(Method::GET, url)
                     .expect("HDR AVIF sample request should build")
@@ -553,10 +553,10 @@ mod tests {
     #[test]
     #[ignore = "requires network access and Apple HEIC platform decode support"]
     fn heic_h265_decode_real_image_smoke() {
-        futures::executor::block_on(async {
-            use zenwave::{Client, Method, redirect::FollowRedirect};
+        futures_lite::future::block_on(async {
+            use zenwave::{Client, Method};
 
-            let mut client = FollowRedirect::new(zenwave::raw_client());
+            let mut client = zenwave::client();
             let response = client
                 .method(
                     Method::GET,
@@ -585,10 +585,10 @@ mod tests {
     #[test]
     #[ignore = "requires network access and AV1/AVIF decode support"]
     fn av1_decode_fallback_probe_smoke() {
-        futures::executor::block_on(async {
-            use zenwave::{Client, Method, redirect::FollowRedirect};
+        futures_lite::future::block_on(async {
+            use zenwave::{Client, Method};
 
-            let mut client = FollowRedirect::new(zenwave::raw_client());
+            let mut client = zenwave::client();
             let response = client
                 .method(
                     Method::GET,

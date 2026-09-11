@@ -32,10 +32,10 @@ webview = [
 
 [dependencies]
 async-channel = "2.5"
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23", optional = true }
 cef = { version = "=150.2.1", default-features = false }
 cef-dll-sys = { version = "=150.2.1", default-features = false }
-cookie = { version = "0.18.1", optional = true }
+cookie = { version = "0.18.2", optional = true }
 dirs.workspace = true
 futures.workspace = true
 futures-lite.workspace = true
@@ -72,7 +72,7 @@ wgpu-external-frame.workspace = true
 
 [dev-dependencies]
 askama = "0.16"
-base64 = "0.22"
+base64 = "0.23"
 executor-core = { workspace = true, features = ["async-executor"] }
 tiny_http = "0.12"
 tracing-subscriber.workspace = true
