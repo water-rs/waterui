@@ -11273,41 +11273,36 @@ struct WuiViewDimensions waterui_gpu_surface_measure(const struct WuiGpuSurfaceS
 int32_t waterui_gpu_surface_priority(const struct WuiGpuSurfaceState *state);
 
 /**
- * Replaces the native presentation surface while preserving the semantic
- * `GpuView` and its persistent renderer resources.
- *
- * Android calls this when `SurfaceView` receives a replacement `Surface`.
+ * Attaches a native presentation surface (non-Apple only).
  *
  * # Safety
  *
- * - `state` must be a valid pointer returned by [`waterui_gpu_surface_create`].
- * - `layer` must remain valid until [`waterui_gpu_surface_detach`] is called.
- * - The state must currently be detached.
+ * `state` must come from [`waterui_gpu_surface_create`].
  *
  * # Panics
  *
- * Panics if `state` already has a native surface attached, or if `width` or
- * `height` is zero.
+ * Always panics: Apple hosts own their presentation memory and start the
+ * renderer with [`waterui_gpu_surface_prepare_metal_texture`].
  */
-void waterui_gpu_surface_attach(struct WuiGpuSurfaceState *state,
-                                void *layer,
-                                uint32_t width,
-                                uint32_t height,
-                                bool prefers_hdr);
+void waterui_gpu_surface_attach(struct WuiGpuSurfaceState *_state,
+                                void *_layer,
+                                uint32_t _width,
+                                uint32_t _height,
+                                bool _prefers_hdr);
 
 /**
- * Detaches the current native presentation surface without destroying the
- * semantic `GpuView` or its persistent renderer resources.
+ * Detaches the native presentation surface (non-Apple only).
  *
  * # Safety
  *
- * `state` must be valid and currently have an attached native surface.
+ * `state` must come from [`waterui_gpu_surface_create`].
  *
  * # Panics
  *
- * Panics if `state` does not currently have a native surface attached.
+ * Always panics: an Apple host releases its own textures and has no swapchain
+ * to detach.
  */
-void waterui_gpu_surface_detach(struct WuiGpuSurfaceState *state);
+void waterui_gpu_surface_detach(struct WuiGpuSurfaceState *_state);
 
 /**
  * Installs the native wake target for renderer-driven redraw requests.
@@ -11339,36 +11334,21 @@ void waterui_gpu_surface_set_redraw_callback(struct WuiGpuSurfaceState *state,
 bool waterui_gpu_surface_is_ready(const struct WuiGpuSurfaceState *state);
 
 /**
- * Render a single frame.
- *
- * This function should be called when the surface is dirty (size/input/state changed)
- * and backend should schedule another frame when `needs_redraw` is true.
- *
- * # Arguments
- *
- * * `state` - Pointer to the persistent state from `waterui_gpu_surface_create`
- * * `width` - Current surface width in physical pixels (from layout)
- * * `height` - Current surface height in physical pixels (from layout)
- * * `scale` - Physical pixels per logical unit for this frame (2.0 on a
- *   Retina display). It is passed per frame rather than at attach time
- *   because it changes when the window moves between displays.
- *
- * # Returns
- *
- * Whether another frame should be scheduled immediately.
+ * Renders one frame into the attached swapchain (non-Apple only).
  *
  * # Safety
  *
- * `state` must be valid and have an attached native surface.
+ * `state` must come from [`waterui_gpu_surface_create`].
  *
  * # Panics
  *
- * Panics if `width` or `height` is zero, or if `scale` is not positive and finite.
+ * Always panics: Apple hosts render with
+ * [`waterui_gpu_surface_render_to_metal_texture`].
  */
-bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *state,
-                                uint32_t width,
-                                uint32_t height,
-                                double scale);
+bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *_state,
+                                uint32_t _width,
+                                uint32_t _height,
+                                double _scale);
 
 /**
  * Starts asynchronous renderer setup for an external Metal render target.
