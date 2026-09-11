@@ -265,7 +265,7 @@ ash = "0.38"
 # major here makes that a different type and the backend stops compiling.
 glow = "0.17"
 tiny-skia = "0.12"
-zenwave = { version = "0.6.0", default-features = false, features = ["hyper-backend"] }
+zenwave = { version = "0.6.1", default-features = false, features = ["hyper-backend"] }
 futures-timer = "3"
 pastey = "0.2.3"
 tracing-panic = "0.1.2"

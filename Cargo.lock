@@ -12855,7 +12855,7 @@ dependencies = [
  "waterui-preview-protocol",
  "which 8.0.6",
  "whoami",
- "zenwave 0.6.0",
+ "zenwave 0.6.1",
  "zip 8.6.0",
 ]
 
@@ -13426,7 +13426,7 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "waterui-video",
- "zenwave 0.6.0",
+ "zenwave 0.6.1",
 ]
 
 [[package]]
@@ -13626,7 +13626,7 @@ dependencies = [
  "sha2",
  "tracing",
  "waterui-str",
- "zenwave 0.6.0",
+ "zenwave 0.6.1",
 ]
 
 [[package]]
@@ -15219,9 +15219,9 @@ dependencies = [
 
 [[package]]
 name = "zenwave"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97a945af57aa7a922a7d43eca799d0a167b61027f7c7d47288b53ee054b83640"
+checksum = "dcebfb9dc75f253b47fa02ca3116d90c9fde75487e21586133a5d017c645081e"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -15245,10 +15245,8 @@ dependencies = [
  "httpdate",
  "hyper",
  "hyper-util",
- "jni 0.22.4",
  "js-sys",
  "native-tls",
- "ndk-context",
  "once_cell",
  "rustls",
  "rustls-pki-types",
