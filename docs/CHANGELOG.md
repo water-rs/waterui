@@ -7,6 +7,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/water-rs/waterui/compare/v0.3.0...v0.4.0) - 2026-09-11
+
+### Added
+
+- *(ffi)* capture Android view subtrees into the filter pipeline through AHardwareBuffer
+- *(nightly)* certify immutable tested framework revisions
+- *(waterui)* expose standalone components through the facade
+- *(graphics)* rasterise static scenes into a native Picture view
+- give GpuView a backend-neutral input event vocabulary
+- render Scene2D content on dew's CPU rasterizer
+- *(ci)* commit the waterui skill's snippet compile gate
+
+### Fixed
+
+- *(release)* drop the waterui-image override from release-plz.toml
+- *(ci)* keep the fast gate on production targets
+- *(ci)* exclude prose with per-file path predicates
+- *(deps)* keep the locked canvas graph on the patched source
+- *(workspace)* keep common.sh non-executable
+- *(examples)* rename cef_webview_example to webview-cef-example
+- *(release)* remove extracted filtrate overrides from release-plz.toml
+- clear the C1 CI fallout on Linux and in the hygiene gate
+- *(ffi)* clear the unlinted clippy debt in the CEF C ABI
+- *(skill_snippets)* drop the unused waterui-map dependency
+- *(markdown)* make FlowMarkdownConfig a constant signal
+- *(macros)* keep the single-field FormBuilder view type in step with its body
+- *(animation)* [**breaking**] merge the duplicate AnimationExt into one system-default trait
+- *(release)* bump filtrate-core out of a published version collision
+
+### Other
+
+- *(agents)* point the header command at the generator crate
+- *(ffi)* build the header generator outside the framework graph and cache its expansion
+- take the cargo-semver-checks fork that parses tool metadata
+- *(deps)* vello_cpu 0.2 and the remaining tooling bumps
+- *(nextest)* widen the leak window and fail on a real leak
+- Merge pull request #492 from water-rs/agent/canvas-release-432
+- Merge pull request #491 from water-rs/agent/split-boundaries-docs
+- record component example, checkout layout and Hydrolysis split boundaries
+- favor coherent redesign and selective durable tests
+- *(webview)* require JavaScript bridge tests in nightly
+- keep one-off workflow checks out of the permanent suite
+- reserve the dev feedback loop for cached compilation checks
+- Merge pull request #445 from water-rs/agent/dependency-bumps-405
+- *(deps)* keep glow on the version wgpu-hal links
+- *(deps)* take the outstanding independent dependency releases
+- Merge pull request #438 from water-rs/agent/mermaid-cycle-layout-418
+- Merge pull request #436 from water-rs/agent/math-speech-229
+- Merge pull request #407 from water-rs/agent/shared-font-collection-230
+- Merge pull request #392 from water-rs/agent/math-a11y-mathml-273
+- Merge pull request #391 from water-rs/agent/hybrid-pad-texel-centre-234
+- *(coverage)* install the Vulkan software driver the GPU tests need
+- *(windows)* run the all-features pass in its own no-target job
+- Merge pull request #357 from water-rs/agent/bench-prs-on-perf-paths
+- Merge pull request #354 from water-rs/agent/ci-cache-writers
+- Merge pull request #332 from water-rs/agent/ci-examples-once
+- *(canvas)* consume waterui-canvas 0.1.0 from crates.io and drop the in-tree copy
+- *(skill)* list waterui-mermaid and the install() step a mermaid fence needs
+- Merge pull request #285 from water-rs/agent/ndk-no-local-cache/20260902-211339
+- Merge pull request #237 from water-rs/agent/pin-toolchain
+- shorten AGENTS.md workspace-lifecycle and wait-rule paragraphs
+- Merge pull request #258 from water-rs/agent/dew-interaction-metadata/20260902-091042
+- Merge pull request #247 from water-rs/agent/machete-fontawesome7/20260902-053111
+- Merge pull request #235 from water-rs/agent/hybrid-draw-image
+- Merge pull request #250 from water-rs/agent/gpu-surface-input-ffi/20260902-060024
+- Merge pull request #241 from water-rs/agent/richtext-math/20260902
+- Merge pull request #232 from water-rs/agent/mermaid-library
+- bring five AGENTS.md statements back in line with the code
+- stop telling waterui consumers to enable the removed map feature
+- accept preinstalled packages in the setup-linux-deps check
+- refresh the apt index and verify setup-linux-deps actually installed
+- require GitHub issues and PRs targeting dev
+- [**breaking**] depend on the self-drawn component crates directly
+- exclude CEF-linking examples from the Windows workspace runs
+- *(deps)* turn off default features nothing in the workspace uses
+- [**breaking**] put syntect, pulldown-cmark, ICU formatters, bcrypt and regex behind features
+- *(deps)* delete dependencies nothing imports
+- *(deps)* drop `image`'s AVIF encoder from every consumer
+- [**breaking**] select the WebView engine in the application, not the backend
+- [**breaking**] own WPE input adaptation in waterui-browser-wpe
+- [**breaking**] own CEF input adaptation in waterui-browser-cef
+- [**breaking**] extract wgpu-external-frame from the browser engines
+- [**breaking**] let the composition root install self-drawn realizations
+- consume filtrate from crates.io
+- [**breaking**] ungate Scene2D from the GPU stack and drop its Vello escape hatches
+- move skill_snippets from examples/ to .claude/skills/waterui/
+- depend on shaderloom directly, and give the icon codegen its own name
+- require an unyanked baseline before running semver checks
+- consume Nami from crates.io
+- give the release preflight the libraries it needs to build
+- *(skill)* rewrite the waterui user skill against example-coverage evidence
+- consume shaderloom from crates.io
+
 ## [0.3.0](https://github.com/water-rs/waterui/compare/v0.2.1...v0.3.0) - 2026-08-25
 
 ### Added

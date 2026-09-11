@@ -17,7 +17,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::shape::{Rectangle, ShapeExt};
-use waterui_visualizer::{AudioCapture, Waveform, WaveformTheme};
+use waterui_visualizer::{AudioCapture, VisualizerTheme, Waveform};
 
 #[preview]
 pub fn demo() -> impl View {
@@ -83,8 +83,8 @@ fn microphone_permission_prompt(
 }
 
 fn visualizer() -> impl View {
-    // State for theme (directly as Binding<WaveformTheme>)
-    let theme = binding(WaveformTheme::cyber());
+    // State for theme (directly as Binding<VisualizerTheme>)
+    let theme = binding(VisualizerTheme::cyber());
 
     // State for theme index (for the label display)
     let theme_index = Binding::usize(0);
@@ -119,9 +119,9 @@ fn visualizer() -> impl View {
             hstack((
                 button("Cyber")
                     .action(
-                        |State(t): State<Binding<WaveformTheme>>,
+                        |State(t): State<Binding<VisualizerTheme>>,
                          State(i): State<Binding<usize>>| {
-                            t.set(WaveformTheme::cyber());
+                            t.set(VisualizerTheme::cyber());
                             i.set(0);
                         },
                     )
@@ -129,9 +129,9 @@ fn visualizer() -> impl View {
                     .state(&theme_index),
                 button("Recorder")
                     .action(
-                        |State(t): State<Binding<WaveformTheme>>,
+                        |State(t): State<Binding<VisualizerTheme>>,
                          State(i): State<Binding<usize>>| {
-                            t.set(WaveformTheme::recorder());
+                            t.set(VisualizerTheme::recorder());
                             i.set(1);
                         },
                     )
@@ -139,9 +139,9 @@ fn visualizer() -> impl View {
                     .state(&theme_index),
                 button("Oscilloscope")
                     .action(
-                        |State(t): State<Binding<WaveformTheme>>,
+                        |State(t): State<Binding<VisualizerTheme>>,
                          State(i): State<Binding<usize>>| {
-                            t.set(WaveformTheme::oscilloscope());
+                            t.set(VisualizerTheme::oscilloscope());
                             i.set(2);
                         },
                     )
