@@ -75,7 +75,7 @@ slow-timeout = { period = "120s", terminate-after = 15 }
 # ever affects a test that would otherwise be terminated, and costs nothing for
 # the ones that finish in milliseconds.
 [[profile.ci.overrides]]
-filter = 'package(hydrolysis) or package(hydrolysis-m3)'
+filter = 'package(hydrolysis)'
 slow-timeout = { period = "120s", terminate-after = 15 }
 
 # How many wgpu devices may exist at once on the Windows runner.
@@ -137,7 +137,7 @@ max-threads = 4
 
 [[profile.default.overrides]]
 platform = 'cfg(target_os = "macos")'
-filter = 'package(hydrolysis) or package(hydrolysis-m3) or package(waterui-mermaid) or package(waterui) or package(waterui-testing)'
+filter = 'package(hydrolysis) or package(waterui-mermaid) or package(waterui) or package(waterui-testing)'
 test-group = 'metal-shader-compile'
 
 [[profile.ci.overrides]]

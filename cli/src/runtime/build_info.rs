@@ -99,6 +99,20 @@ mod tests {
             .to_string()
     }
 
+    /// The version requirement the workspace itself consumes an extracted
+    /// package at. The Material 3 theme lives in its own repository (#481), so
+    /// there is no in-tree manifest to read a version from; what a scaffolded
+    /// app has to agree with is the requirement this workspace resolves
+    /// against.
+    fn workspace_dependency_requirement(workspace_manifest: &Value, name: &str) -> String {
+        let dependency = &workspace_manifest["workspace"]["dependencies"][name];
+        dependency
+            .as_str()
+            .or_else(|| dependency["version"].as_str())
+            .unwrap_or_else(|| panic!("missing workspace.dependencies.{name} version"))
+            .to_string()
+    }
+
     fn git_output(repo_root: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
             .current_dir(repo_root)
@@ -161,7 +175,10 @@ mod tests {
         );
         assert_eq!(
             manifest_scaffold_field(&cli_manifest, "hydrolysis-m3-version"),
-            package_version(&workspace_root.join("backends/hydrolysis_m3/Cargo.toml")),
+            workspace_dependency_requirement(
+                &manifest_value(&workspace_root.join("Cargo.toml")),
+                "hydrolysis-m3",
+            ),
         );
         assert_eq!(
             manifest_scaffold_field(&cli_manifest, "waterui-dew-version"),

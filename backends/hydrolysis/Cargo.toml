@@ -164,7 +164,7 @@ waterui-canvas.workspace = true
 # The wayland examples need a widget theme; m3 is the one this workspace ships.
 # A dev-dependency back onto a crate that depends on this one is a cycle cargo
 # allows, and it keeps the examples next to the renderer they exercise.
-hydrolysis-m3 = { path = "../hydrolysis_m3" }
+hydrolysis-m3.workspace = true
 waterui-testing = { path = "../../testing" }
 waterui-navigation = { path = "../../components/foundation/navigation" }
 jiff.workspace = true

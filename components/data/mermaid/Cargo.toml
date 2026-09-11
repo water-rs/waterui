@@ -44,7 +44,7 @@ thiserror.workspace = true
 # `highlight` feature the library half selects.
 waterui = { path = "../../..", features = ["flow-markdown"] }
 waterui-testing = { path = "../../../testing" }
-hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+hydrolysis-m3.workspace = true
 
 [lints]
 workspace = true
