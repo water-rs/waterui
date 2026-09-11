@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/water-rs/waterui/compare/text-v0.3.0...text-v0.4.0) - 2026-09-11
+
+### Added
+
+- *(text)* define the default type scale once
+- *(text)* share one font collection through the environment
+
+### Fixed
+
+- *(text)* draw Code from theme tokens and follow the colour scheme
+
+### Other
+
+- *(release)* make workspace-internal dev-dependencies path-only
+- *(text)* move Code into waterui-text so components can claim fences without depending on the root crate
+
 ## [0.3.0](https://github.com/water-rs/waterui/compare/text-v0.2.2...text-v0.3.0) - 2026-08-25
 
 ### Added
