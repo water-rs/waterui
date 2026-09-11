@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/water-rs/waterui/compare/graphics-v0.3.0...graphics-v0.4.0) - 2026-09-11
+
+### Added
+
+- *(ffi)* capture Android view subtrees into the filter pipeline through AHardwareBuffer
+- *(graphics)* let a picture offer its own accessible name
+- *(gpu-surface)* give a self-drawn surface an accessibility label
+- *(graphics)* draw image brushes in the hybrid scene engine
+
+### Fixed
+
+- *(graphics)* pad image brushes to texel centres on the hybrid engine
+- *(graphics)* poll the device after every presented frame
+- *(graphics)* keep the wgpu instance for the life of the process
+- *(hydrolysis)* make direct_to_target work on HiDPI, one format, opaque only
+- *(hydrolysis)* choose the scene engine from the adapter
+- *(graphics)* join the GPU completion thread before its runtime drops
+
+### Other
+
+- *(deps)* vello_cpu 0.2 and the remaining tooling bumps
+- *(wasm)* lint the wasm32 lane instead of only compiling it
+- Merge pull request #392 from water-rs/agent/math-a11y-mathml-273
+- Merge pull request #391 from water-rs/agent/hybrid-pad-texel-centre-234
+- Merge branch 'dev' into agent/scene-invalidator-watch-274/20260906-024222
+- Merge pull request #291 from water-rs/agent/gpu-instance-process-lifetime
+- Merge pull request #278 from water-rs/agent/direct-to-target-hidpi/20260902-140021
+- *(graphics)* lay the image-brush snapshots out as suite/case/stage
+- *(graphics)* assert the image brush against its source, not the other engine
+- Merge pull request #224 from water-rs/agent/graphics-recursion-limit
+
 ## [0.3.0](https://github.com/water-rs/waterui/compare/graphics-v0.2.1...graphics-v0.3.0) - 2026-08-25
 
 ### Added
