@@ -22,7 +22,6 @@ members = [
     "backends/dew",
     "backends/gtk",
     "backends/hydrolysis",
-    "backends/hydrolysis_m3",
     "components/icon/*",
 ]
 exclude = [
@@ -197,7 +196,7 @@ hydrolysis = { version = "0.2.0", path = "backends/hydrolysis", default-features
 waterui = { version = "0.4.0", path = "." }
 waterui-icons-codegen = { version = "0.1.1", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
-hydrolysis-m3 = { version = "0.1.1", path = "backends/hydrolysis_m3" }
+hydrolysis-m3 = "0.2.0"
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.3.0", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
@@ -302,7 +301,7 @@ waterui-dylib = { workspace = true, optional = true }
 
 [dev-dependencies]
 waterui-testing = { path = "testing" }
-hydrolysis-m3 = { path = "backends/hydrolysis_m3" }
+hydrolysis-m3.workspace = true
 # Writes the test portrait the avatar visual acceptance renders. PNG only:
 # the encoder is all these tests need.
 image = { version = "0.25.10", default-features = false, features = ["png"] }
@@ -457,6 +456,12 @@ waterui-video = { path = "components/multimedia/video" }
 # `Str` types and `Svg::new("…")` stops compiling.
 waterui-str = { path = "utils/str" }
 waterui-macros = { path = "macros" }
+# The Material 3 theme is extracted too (#481) and pulls the rest of the
+# framework from the registry; every crate it names needs an entry here or the
+# workspace builds a second `waterui` beside its own.
+waterui = { path = "." }
+waterui-backend-core = { path = "backends/core" }
+waterui-form = { path = "components/foundation/form" }
 # The extracted image, visualizer and video-gpu crates depend on the registry
 # waterkit crates; resolve those to the kit copies for the same reason.
 waterkit-audio = { path = "kit/multimedia/audio" }

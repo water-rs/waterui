@@ -55,7 +55,7 @@ password-hash = ["dep:bcrypt"]
 regex-validation = ["dep:regex"]
 
 [dev-dependencies]
-hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+hydrolysis-m3.workspace = true
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
 # Both gated surfaces have tests, and neither feature is in `default`. A
