@@ -4,6 +4,13 @@ All notable changes to `waterui-webview` are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/water-rs/waterui/compare/waterui-webview-v0.4.0...waterui-webview-v0.4.1) - 2026-09-11
+
+### Other
+
+- *(backends)* consume hydrolysis-m3 0.2.0 from crates.io and drop the in-tree copy ([#550](https://github.com/water-rs/waterui/pull/550))
+- Merge remote-tracking branch 'gh/main' into agent/merge-release-0.4
+
 ## [0.4.0](https://github.com/water-rs/waterui/compare/waterui-webview-v0.3.0...waterui-webview-v0.4.0) - 2026-09-11
 
 ### Added

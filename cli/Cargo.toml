@@ -1,6 +1,6 @@
 [package]
 name = "waterui-cli"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
@@ -13,19 +13,19 @@ keywords.workspace = true
 categories.workspace = true
 
 [package.metadata.waterui-scaffold]
-waterui-version = "0.4.0"
-waterui-core-version = "0.3.1"
+waterui-version = "0.4.1"
+waterui-core-version = "0.3.2"
 # `waterui-testing` inherits the workspace version rather than carrying its
 # own, so this entry mirrors `[workspace.package].version`.
-waterui-testing-version = "0.4.0"
-waterui-ffi-version = "0.3.1"
+waterui-testing-version = "0.4.1"
+waterui-ffi-version = "0.3.2"
 hydrolysis-version = "0.2.0"
 hydrolysis-m3-version = "0.2.0"
-waterui-dew-version = "0.2.0"
-waterui-gtk-version = "0.1.1"
-waterui-browser-cef-version = "0.2.0"
-waterui-preview-version = "0.1.1"
-waterui-preview-protocol-version = "0.1.0"
+waterui-dew-version = "0.2.1"
+waterui-gtk-version = "0.1.2"
+waterui-browser-cef-version = "0.2.1"
+waterui-preview-version = "0.1.2"
+waterui-preview-protocol-version = "0.1.1"
 android-kotlin-version = "2.3.21"
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 apple-backend-commit = "ceb9c75c147fba2686bf56ab36ad4f1017130657"
