@@ -452,6 +452,18 @@ waterui-map = { path = "components/data/map" }
 waterui-url = { path = "utils/url" }
 waterui-controls = { path = "components/foundation/controls" }
 waterui-video = { path = "components/multimedia/video" }
+# The eight extracted crates below still require the 0.3 foundation on
+# crates.io. Until they re-release against graphics/text 0.4 (#533) they
+# resolve from their `chore/foundation-0.4` branches, which carry exactly that
+# bump; the entries go away with the version bumps that follow those releases.
+waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "chore/foundation-0.4" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "chore/foundation-0.4" }
+waterui-chart = { git = "https://github.com/water-rs/chart", branch = "chore/foundation-0.4" }
+waterui-image = { git = "https://github.com/water-rs/image", branch = "chore/foundation-0.4" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "chore/foundation-0.4" }
+waterui-particle = { git = "https://github.com/water-rs/particle", branch = "chore/foundation-0.4" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "chore/foundation-0.4" }
+waterui-visualizer = { git = "https://github.com/water-rs/visualizer", branch = "chore/foundation-0.4" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
