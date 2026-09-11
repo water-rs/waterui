@@ -31,25 +31,33 @@ jobs:
       # `waterui-image` verify build on the missing `libva-dev`.
       - uses: ./.github/actions/setup-linux-deps
       - uses: ./.github/actions/release-plz
+        id: release_plz
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      # Read the tag out of release-plz's own report rather than looking for
+      # one on this job's HEAD. The tags do not land there: releasing 0.4.1
+      # created `waterui-cli-v0.2.1` on the release branch's tip, while this
+      # job had the merge commit checked out, so `git tag --points-at HEAD`
+      # found nothing and the binary build skipped for a release that had
+      # published perfectly well (#540).
       - name: Detect CLI release tag
         id: cli_tag
         shell: bash
+        env:
+          REPORT: ${{ steps.release_plz.outputs.report }}
         run: |
           set -euo pipefail
 
-          git fetch --force --tags origin
-          CLI_TAG="$(git tag --points-at HEAD | grep '^waterui-cli-v' | sort -V | tail -n 1 || true)"
+          CLI_TAG="$(jq -r '[.releases[]? | select(.package_name == "waterui-cli") | .tag] | last // ""' <<< "$REPORT")"
 
           echo "cli_tag=${CLI_TAG}" >> "$GITHUB_OUTPUT"
           if [[ -n "${CLI_TAG}" ]]; then
-            echo "Detected CLI tag: ${CLI_TAG}"
+            echo "release-plz released the CLI as ${CLI_TAG}."
           else
-            echo "No waterui-cli-v* tag found on HEAD."
+            echo "release-plz released no waterui-cli this run."
           fi
 
   release-pr:
