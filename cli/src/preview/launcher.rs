@@ -1150,7 +1150,14 @@ async fn preview_support_ffi_crate_path() -> Result<PathBuf> {
     smol::fs::create_dir_all(&support_path)
         .await
         .wrap_err("Failed to create the preview support application directory")?;
-    Ok(crate::water_dir::project_build_cache_dir(&support_path)
+    // The cache is brought into shape here, where the path into it is first
+    // handed out, and not left to whoever opens the support project later. A
+    // managed cache built by a different CLI is emptied when its shape is
+    // checked, and the check used to land *after* the preview module had been
+    // written into it: the module was deleted out from under the `cargo
+    // metadata` that reads it, and the first preview after any change to the
+    // CLI failed with a manifest path that does not exist.
+    Ok(crate::water_dir::ensure_project_build_cache(&support_path)
         .await?
         .join("ffi"))
 }
