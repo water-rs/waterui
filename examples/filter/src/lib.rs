@@ -339,6 +339,31 @@ pub fn demo() -> impl View {
     )
 }
 
+/// A view that filters itself, behind an opaque return type.
+///
+/// The opacity is the point: `.blur()` on a `Filtered` folds into the same
+/// `AppliedFilter` through `ChainedFilter`, so a nested pair only reaches the
+/// backend as two hosts when the inner filter is hidden behind a component
+/// boundary — which is how an application writes it.
+fn self_filtering_content() -> impl View {
+    sample_content().blur(6.0)
+}
+
+/// Two filter hosts, one inside the other (#521).
+///
+/// The outer filter desaturates completely, so the inner blur's output either
+/// arrives as a grey blurred swatch or does not arrive at all; there is no
+/// reading of this image that is ambiguous about whether the outer host
+/// captured the inner one's presentation.
+#[preview]
+fn nested_filter_preview() -> impl View {
+    vstack((
+        text("Nested filters").headline(),
+        self_filtering_content().saturation(0.0).size(220.0, 140.0),
+    ))
+    .padding()
+}
+
 #[preview]
 fn filter_preview() -> impl View {
     vstack((
