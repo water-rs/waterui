@@ -84,7 +84,12 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 
 [workspace.dependencies]
-bitflags = "2.13.1"
+# Held at 2 on purpose. `bincode` 3.0.0 is not a release: it is a name
+# reservation whose entire `lib.rs` is a `compile_error!`, with no dependencies
+# and no features, so `cargo upgrade --incompatible` proposes it and every
+# consumer that takes it stops compiling. 2.0.1 is the maintained line.
+bincode = { version = "2.0.1", features = ["serde"] }
+bitflags = "2.13.2"
 blocking = "1.7.0"
 executor-core = { version = "0.7.1", features = ["std"]}
 # No crate in this workspace runs a future on `futures`' own executor — every
@@ -114,7 +119,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0.20"
 url = "2.5"
-uuid = { version = "1.26.0", default-features = false, features = ["v4", "std"] }
+uuid = { version = "1.26.1", default-features = false, features = ["v4", "std"] }
 waterui-core = { version = "0.3.1", path = "core" }
 waterui-str = { version = "0.3.0", path = "utils/str" }
 waterui-url = { version = "0.3.0", path = "utils/url" }
@@ -190,7 +195,7 @@ waterui-gtk = { version = "0.1.1", path = "backends/gtk" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.0", path = "src", default-features = false }
 waterui-dylib = { version = "0.4.0", path = "utils/dylib", default-features = false }
-hydrolysis = { version = "0.2.0", default-features = false }
+hydrolysis = { version = "0.2.1", default-features = false }
 waterui = { version = "0.4.0", path = "." }
 waterui-icons-codegen = { version = "0.1.1", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
@@ -223,7 +228,7 @@ parley = { version = "0.11", default-features = false }
 usvg = "0.48.1"
 kurbo = "0.13"
 peniko = "0.6"
-skrifa = "0.46.2"
+skrifa = "0.47.0"
 # The only crate in the Rust ecosystem that reads the OpenType `MATH` table.
 # `read-fonts`/`skrifa` do not expose it (googlefonts/fontations#1269 has been
 # open since 2024-11), and neither `rustybuzz` nor `harfrust` port HarfBuzz's
@@ -244,7 +249,7 @@ quick-xml = "0.42"
 # filesystem, so the rules are not files anything has to install, bundle, or
 # find at runtime; without it MathCAT looks for a `Rules` directory on disk.
 mathcat = { version = "0.7.5", features = ["include-zip"] }
-toml = "1.1.5"
+toml = "1.1.6"
 vello_cpu = { version = "0.2.0", default-features = false }
 lyon = "1.0"
 wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
