@@ -30,105 +30,67 @@ pub struct PreviewAppClient {
     present_dylibs: HashSet<DylibId>,
 }
 
+/// What probing one or more candidate preview apps produced.
+///
+/// The three-way split is the whole point. "Nothing answered" and "something
+/// answered and is the wrong build" are different failures with different
+/// remedies, and collapsing them into one `None` is what let a stale `water`
+/// binary present itself as a dead TCP server.
+#[derive(Debug)]
+pub enum PreviewProbe {
+    /// An app answered the handshake and is a build this CLI can drive.
+    Connected(PreviewAppClient),
+    /// An app answered and was turned away. The string is the explanation to
+    /// put in front of whoever ran `water preview`.
+    Rejected(String),
+    /// Nothing answered on any candidate address.
+    Silent,
+}
+
+/// Why an app that answered is not one this CLI can drive.
+///
+/// Both halves are reported, because either alone is a half-diagnosis: the
+/// protocol id says the support app and the CLI were built from different
+/// checkouts of the protocol crate, and the runtime fingerprint says they link
+/// different `waterui_core` builds.
+fn describe_incompatible_app(
+    addr: SocketAddr,
+    app: &PreviewProtocolInfo,
+    expected_core: &str,
+) -> String {
+    let mut reasons = Vec::new();
+    if app.build_commit != PREVIEW_PROTOCOL_COMMIT {
+        reasons.push(format!(
+            "  preview protocol: app {}, this CLI {PREVIEW_PROTOCOL_COMMIT}",
+            app.build_commit
+        ));
+    }
+    if app.waterui_core_fingerprint != expected_core {
+        reasons.push(format!(
+            "  runtime: app {}, expected {expected_core}",
+            app.waterui_core_fingerprint
+        ));
+    }
+    format!(
+        "A preview app is listening on {addr} and answering, but it is not a build this `water` \
+         can drive:\n{}\nRebuild whichever of the two is older, so the CLI and the support app \
+         come from one checkout.",
+        reasons.join("\n")
+    )
+}
+
 impl PreviewAppClient {
-    /// Try to connect directly to a known preview app socket address.
-    ///
-    /// # Errors
-    /// Returns an error if the address is unreachable or the preview handshake fails.
-    pub async fn connect_addr(
+    /// Probe a known preview app socket address.
+    pub async fn probe_addr(
         addr: SocketAddr,
         expected_waterui_core_fingerprint: &str,
         expected_platform: PreviewRuntimePlatform,
-    ) -> Result<Self> {
-        Self::connect_to_addr(addr, expected_waterui_core_fingerprint, expected_platform)
-            .await
-            .ok_or_else(|| {
-                color_eyre::eyre::eyre!(
-                    "Could not connect to preview app at {addr} for runtime {expected_waterui_core_fingerprint} on {expected_platform:?}"
-                )
-            })
-    }
-
-    /// Try to connect to a registered local preview app instance.
-    ///
-    /// # Errors
-    /// Returns an error if no matching live registered preview app is found.
-    pub async fn connect_registered(
-        expected_waterui_core_fingerprint: &str,
-        expected_platform: PreviewRuntimePlatform,
-    ) -> Result<Self> {
-        let expected = expected_waterui_core_fingerprint.to_string();
-        let instances = smol::unblock(move || load_registered_instances_sync(&expected)).await?;
-        tracing::info!(
-            instance_count = instances.len(),
-            "Preview loaded matching registered app instances"
-        );
-
-        for instance in instances {
-            tracing::info!(pid = instance.pid, host = %instance.host, port = instance.port, "Preview trying registered app instance");
-            let addr = SocketAddr::new(instance.host, instance.port);
-            if let Some(client) =
-                Self::connect_to_addr(addr, expected_waterui_core_fingerprint, expected_platform)
-                    .await
-            {
-                return Ok(client);
-            }
-        }
-
-        bail!(
-            "Could not connect to a matching registered preview app. Launch a new preview support app for the current runtime."
-        );
-    }
-
-    /// Try to connect to a running preview app.
-    ///
-    /// # Errors
-    /// Returns an error if no preview app is found.
-    pub async fn connect(
-        config: PreviewTcpConfig,
-        expected_waterui_core_fingerprint: &str,
-        expected_platform: PreviewRuntimePlatform,
-    ) -> Result<Self> {
-        for port in config.ports() {
-            if let Some(client) = Self::connect_on_port(
-                config,
-                port,
-                expected_waterui_core_fingerprint,
-                expected_platform,
-            )
-            .await
-            {
-                return Ok(client);
-            }
-        }
-
-        bail!(
-            "Could not connect to preview app. Make sure it is running.\nThe preview app listens on ports {}..={}.",
-            config.port_start,
-            config.ports().end()
-        );
-    }
-
-    async fn connect_on_port(
-        config: PreviewTcpConfig,
-        port: u16,
-        expected_waterui_core_fingerprint: &str,
-        expected_platform: PreviewRuntimePlatform,
-    ) -> Option<Self> {
-        let addr = SocketAddr::new(config.host, port);
-        Self::connect_to_addr(addr, expected_waterui_core_fingerprint, expected_platform).await
-    }
-
-    async fn connect_to_addr(
-        addr: SocketAddr,
-        expected_waterui_core_fingerprint: &str,
-        expected_platform: PreviewRuntimePlatform,
-    ) -> Option<Self> {
+    ) -> PreviewProbe {
         let stream = match connect_with_timeout(addr, connect_timeout()).await {
             Ok(stream) => stream,
             Err(error) => {
                 tracing::warn!("Preview TCP connect failed on {addr}: {error}");
-                return None;
+                return PreviewProbe::Silent;
             }
         };
 
@@ -155,7 +117,7 @@ impl PreviewAppClient {
                     expected_waterui_core_fingerprint,
                     expected_platform,
                 ) {
-                    return Some(client);
+                    return PreviewProbe::Connected(client);
                 }
 
                 tracing::warn!(
@@ -167,6 +129,11 @@ impl PreviewAppClient {
                     expected_platform,
                     PREVIEW_PROTOCOL_COMMIT,
                 );
+                return PreviewProbe::Rejected(describe_incompatible_app(
+                    addr,
+                    &protocol,
+                    expected_waterui_core_fingerprint,
+                ));
             }
             Ok(other) => {
                 tracing::warn!("Preview handshake got unexpected response from {addr}: {other:?}");
@@ -176,7 +143,67 @@ impl PreviewAppClient {
             }
         }
 
-        None
+        PreviewProbe::Silent
+    }
+
+    /// Probe every live registered local preview app instance.
+    ///
+    /// # Errors
+    /// Returns an error if the instance registry cannot be read.
+    pub async fn probe_registered(
+        expected_waterui_core_fingerprint: &str,
+        expected_platform: PreviewRuntimePlatform,
+    ) -> Result<PreviewProbe> {
+        let expected = expected_waterui_core_fingerprint.to_string();
+        let instances = smol::unblock(move || load_registered_instances_sync(&expected)).await?;
+        tracing::info!(
+            instance_count = instances.len(),
+            "Preview loaded matching registered app instances"
+        );
+
+        // An app that answered and was turned away is the one worth reporting:
+        // "nothing is listening" sends a reader to the network, and this is
+        // never the network.
+        let mut rejection = None;
+        for instance in instances {
+            tracing::info!(pid = instance.pid, host = %instance.host, port = instance.port, "Preview trying registered app instance");
+            let addr = SocketAddr::new(instance.host, instance.port);
+            match Self::probe_addr(addr, expected_waterui_core_fingerprint, expected_platform).await
+            {
+                PreviewProbe::Connected(client) => return Ok(PreviewProbe::Connected(client)),
+                PreviewProbe::Rejected(reason) => {
+                    rejection.get_or_insert(reason);
+                }
+                PreviewProbe::Silent => {}
+            }
+        }
+
+        Ok(rejection.map_or(PreviewProbe::Silent, PreviewProbe::Rejected))
+    }
+
+    /// Probe the configured port range for a running preview app.
+    pub async fn probe_ports(
+        config: PreviewTcpConfig,
+        expected_waterui_core_fingerprint: &str,
+        expected_platform: PreviewRuntimePlatform,
+    ) -> PreviewProbe {
+        // Same reasoning as `probe_registered`: an app that answered and was
+        // turned away outranks every silent port, because silence is the
+        // expected state of a port and an answer is the finding.
+        let mut rejection = None;
+        for port in config.ports() {
+            let addr = SocketAddr::new(config.host, port);
+            match Self::probe_addr(addr, expected_waterui_core_fingerprint, expected_platform).await
+            {
+                PreviewProbe::Connected(client) => return PreviewProbe::Connected(client),
+                PreviewProbe::Rejected(reason) => {
+                    rejection.get_or_insert(reason);
+                }
+                PreviewProbe::Silent => {}
+            }
+        }
+
+        rejection.map_or(PreviewProbe::Silent, PreviewProbe::Rejected)
     }
 
     /// Render a view symbol to PNG bytes.
@@ -640,5 +667,44 @@ mod tests {
             "runtime-fingerprint",
             PreviewRuntimePlatform::Macos
         ));
+    }
+
+    #[test]
+    fn rejection_names_both_halves_of_the_mismatch() {
+        let addr: SocketAddr = "127.0.0.1:9123".parse().unwrap();
+        let app = PreviewProtocolInfo {
+            build_commit: "app-protocol-build".to_string(),
+            waterui_core_fingerprint: "app-runtime".to_string(),
+            platform: PreviewRuntimePlatform::Macos,
+        };
+
+        let explanation = describe_incompatible_app(addr, &app, "cli-runtime");
+
+        assert!(explanation.contains("127.0.0.1:9123"), "{explanation}");
+        assert!(explanation.contains("app-protocol-build"), "{explanation}");
+        assert!(
+            explanation.contains(PREVIEW_PROTOCOL_COMMIT),
+            "{explanation}"
+        );
+        assert!(explanation.contains("app-runtime"), "{explanation}");
+        assert!(explanation.contains("cli-runtime"), "{explanation}");
+    }
+
+    #[test]
+    fn rejection_reports_only_the_half_that_differs() {
+        let addr: SocketAddr = "127.0.0.1:9123".parse().unwrap();
+        let app = PreviewProtocolInfo {
+            build_commit: PREVIEW_PROTOCOL_COMMIT.to_string(),
+            waterui_core_fingerprint: "app-runtime".to_string(),
+            platform: PreviewRuntimePlatform::Macos,
+        };
+
+        let explanation = describe_incompatible_app(addr, &app, "cli-runtime");
+
+        assert!(!explanation.contains("preview protocol:"), "{explanation}");
+        assert!(
+            explanation.contains("runtime: app app-runtime"),
+            "{explanation}"
+        );
     }
 }
