@@ -9,6 +9,11 @@ repository.workspace = true
 description = "Mermaid diagram component for WaterUI, drawn through Scene2D"
 keywords = ["mermaid", "diagram", "flowchart", "waterui"]
 categories = ["gui", "visualization"]
+# `merman-core` / `merman-render` are consumed from the water-rs/merman fork
+# (git, see the root manifest) until upstream releases the typed layout
+# projection; crates.io refuses git-only dependencies, so this crate cannot be
+# published and must not abort the release run for the crates behind it (#533).
+publish = false
 
 [dependencies]
 waterui-core.workspace = true
