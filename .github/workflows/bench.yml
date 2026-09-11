@@ -90,12 +90,12 @@ jobs:
               - "cli/src/bench/**"
               - "cli/src/terminal/commands/bench.rs"
               - "components/devtools/preview/protocol/**"
-              # What renders every measured frame. Both benches install
-              # `hydrolysis_m3::install` as their theme and are driven by the
-              # Hydrolysis GPU renderer through the shared backend contract.
+              # What renders every measured frame. Both benches install the
+              # Material 3 theme and are driven by the Hydrolysis GPU renderer
+              # through the shared backend contract; both live in their own
+              # repositories now (#480, #481), so the version this workspace
+              # consumes is a manifest change and already covered below.
               - "backends/core/**"
-              - "backends/hydrolysis/**"
-              - "backends/hydrolysis_m3/**"
               - "backends/dew/**"
               # Foundations both scenes go through: the View contract and
               # reactivity, layout / text / shape / controls, the colour and

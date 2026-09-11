@@ -30,7 +30,7 @@ serde_json = { version = "1.0", features = ["raw_value"] }
 conformance = []
 
 [dev-dependencies]
-hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+hydrolysis-m3.workspace = true
 # `#[js_api]` expands to `::waterui::webview::…` paths, so testing it means
 # reaching this crate back through the facade the way an application does.
 waterui = { path = "../../..", features = ["webview"] }

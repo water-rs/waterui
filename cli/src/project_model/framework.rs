@@ -1063,6 +1063,16 @@ mod tests {
         assert_eq!(theme.version.unwrap().to_string(), "=0.1.0");
     }
 
+    /// The exact requirement a stable channel writes for one scaffold entry.
+    ///
+    /// Spelling the number out here would put a third copy of it beside the two
+    /// the manifest and the workspace already keep in step (#548), and it would
+    /// have to be edited on every release.
+    fn scaffolded(field: &str) -> String {
+        let version = &ResolvedFramework::stable().scaffold[field];
+        format!("={version}")
+    }
+
     #[test]
     fn channel_update_preserves_aliases_features_and_unrelated_dependencies() {
         let manifest = toml::toml! {
@@ -1088,7 +1098,7 @@ mod tests {
         assert!(document["dependencies"]["ui"].get("path").is_none());
         assert_eq!(
             document["dependencies"]["ui"]["version"].as_str(),
-            Some("=0.3.0")
+            Some(scaffolded("waterui-version").as_str())
         );
         assert_eq!(
             document["dependencies"]["ui"]["default-features"].as_bool(),
@@ -1106,7 +1116,7 @@ mod tests {
         assert_eq!(
             updated["target"]["cfg(unix)"]["build-dependencies"]["waterui-core"]["version"]
                 .as_str(),
-            Some("=0.3.0")
+            Some(scaffolded("waterui-core-version").as_str())
         );
     }
 
@@ -1157,7 +1167,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         assert!(!rendered.contains("patch"), "{rendered}");
         assert_eq!(
             document["dependencies"]["waterui"]["version"].as_str(),
-            Some("=0.3.0")
+            Some(scaffolded("waterui-version").as_str())
         );
     }
 

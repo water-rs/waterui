@@ -16,7 +16,7 @@ use crate::accessibility::ActionTarget;
 use crate::dispatch::{DewNode, DewRenderer, RenderContext, WatchedSignal, build_node};
 use crate::pointer::{PointerHandler, PointerTargetHandle};
 use crate::text::DewState;
-use crate::views::{LabelText, child_in_rect, to_f32};
+use crate::views::{LabelText, to_f32};
 
 const TRACK_HEIGHT: f64 = 4.0;
 const THUMB_RADIUS: f64 = 10.0;
@@ -195,8 +195,7 @@ impl DewNode for SliderNode {
                 bounds.x0 + f64::from(min_size.width),
                 control_bottom,
             );
-            self.min_value_label
-                .render(renderer, child_in_rect(ctx, rect));
+            self.min_value_label.render(renderer, ctx.child_in(rect));
             track_left += f64::from(min_size.width) + LABEL_SPACING;
         }
         if max_size.width > 0.0 {
@@ -206,8 +205,7 @@ impl DewNode for SliderNode {
                 bounds.x1,
                 control_bottom,
             );
-            self.max_value_label
-                .render(renderer, child_in_rect(ctx, rect));
+            self.max_value_label.render(renderer, ctx.child_in(rect));
             track_right -= f64::from(max_size.width) + LABEL_SPACING;
         }
         assert!(

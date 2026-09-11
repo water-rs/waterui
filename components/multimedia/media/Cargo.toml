@@ -48,7 +48,7 @@ std = ["waterui-core/std", "dep:waterkit-dialog"]
 
 [dev-dependencies]
 futures-lite.workspace = true
-hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+hydrolysis-m3.workspace = true
 waterui = { path = "../../..", features = ["video-gpu"] }
 waterui-testing = { path = "../../../testing" }
 waterkit-codec = { path = "../../../kit/multimedia/codec", features = ["software-fallback"] }

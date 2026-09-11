@@ -732,20 +732,16 @@ fn render_destination(
     });
     let bottom = entry.chrome.bottom_layout(renderer.state_cell());
 
-    // Where the chrome stops and the content starts is one edge, so it is
-    // computed once — on layout's `f32` grid, the coarser of the two the
-    // backend works in. Painting the bar to its `f64` height and starting the
-    // content at that height narrowed to `f32` describes two edges up to half
-    // an ULP apart, which is a hairline of window background under the bar or a
-    // hairline of content painted beneath it, depending on which way the height
-    // rounds. Invisible while every bar measured to a round number; a title
-    // whose font puts the height off that grid shows it immediately.
-    let top_seam = f64::from(to_f32(
-        bounds.y0 + bar.as_ref().map_or(0.0, |layout| layout.height),
-    ));
-    let bottom_seam = f64::from(to_f32(
-        bounds.y1 - bottom.as_ref().map_or(0.0, |(height, _)| *height),
-    ));
+    // Where the chrome stops and the content starts is one edge, so it is one
+    // number, and the content is placed by its two edges rather than by a frame
+    // — see `RenderContext::child_in`. Painting the bar to its own height and
+    // framing the content from that height describes two edges up to half an
+    // `f32` ULP apart, which is a hairline of window background under the bar
+    // or a hairline of content painted beneath it, depending on which way the
+    // size rounds. Invisible while every bar measured to a round number; a
+    // title whose font puts the height off that grid shows it immediately.
+    let top_seam = bounds.y0 + bar.as_ref().map_or(0.0, |layout| layout.height);
+    let bottom_seam = bounds.y1 - bottom.as_ref().map_or(0.0, |(height, _)| *height);
     if let Some(layout) = &bar {
         let rect = Rect::new(bounds.x0, bounds.y0, bounds.x1, top_seam);
         entry.chrome.render(renderer, ctx, rect, layout);
@@ -754,14 +750,8 @@ fn render_destination(
         let rect = Rect::new(bounds.x0, bottom_seam, bounds.x1, bounds.y1);
         entry.chrome.render_bottom(renderer, ctx, rect, sizes);
     }
-    let content = LayoutRect::new(
-        Point::new(to_f32(bounds.x0), to_f32(top_seam)),
-        Size::new(
-            to_f32(bounds.width()),
-            to_f32((bottom_seam - top_seam).max(0.0)),
-        ),
-    );
-    entry.content.render(renderer, ctx.child(content));
+    let content = Rect::new(bounds.x0, top_seam, bounds.x1, bottom_seam.max(top_seam));
+    entry.content.render(renderer, ctx.child_in(content));
     if renderer.accessibility_enabled() {
         renderer.pop_accessibility_parent();
     }
@@ -1136,19 +1126,12 @@ fn render_split_destination(
         render_destination(
             Some(entry),
             renderer,
-            ctx.child(rect_frame(frame.bounds)),
+            ctx.child_in(frame.bounds),
             frame.show_back,
         );
     } else {
-        placeholder.render(renderer, ctx.child(rect_frame(frame.bounds)));
+        placeholder.render(renderer, ctx.child_in(frame.bounds));
     }
-}
-
-const fn rect_frame(rect: Rect) -> LayoutRect {
-    LayoutRect::new(
-        Point::new(to_f32(rect.x0), to_f32(rect.y0)),
-        Size::new(to_f32(rect.width()), to_f32(rect.height())),
-    )
 }
 
 impl DewNode for SplitNode {
@@ -1174,7 +1157,7 @@ impl DewNode for SplitNode {
 
         let mut dividers = Vec::new();
         if let Some(bounds) = presentation.primary {
-            self.primary.render(renderer, ctx.child(rect_frame(bounds)));
+            self.primary.render(renderer, ctx.child_in(bounds));
             if bounds.x1 < ctx.bounds.x1 {
                 dividers.push(bounds.x1);
             }

@@ -217,16 +217,6 @@ pub fn emit_styled_text(
     crate::text::emit_text_commands(renderer.list_mut(), &layout, transform);
 }
 
-/// A child render context covering the window-coordinate-free local `rect`
-/// within the current widget's bounds.
-pub fn child_in_rect(ctx: RenderContext, rect: Rect) -> RenderContext {
-    use waterui_core::layout::{Point, Rect as LayoutRect};
-    ctx.child(LayoutRect::new(
-        Point::new(to_f32(rect.x0), to_f32(rect.y0)),
-        Size::new(to_f32(rect.width()), to_f32(rect.height())),
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

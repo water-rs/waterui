@@ -28,7 +28,7 @@ serde = { workspace = true, optional = true }
 erased-serde = { workspace = true, optional = true }
 
 [dev-dependencies]
-hydrolysis-m3 = { path = "../../../backends/hydrolysis_m3" }
+hydrolysis-m3.workspace = true
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
 waterui-icons-lucide = { path = "../../icon/lucide" }
