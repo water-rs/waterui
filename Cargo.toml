@@ -124,14 +124,14 @@ waterui-url = { version = "0.3.0", path = "utils/url" }
 waterui-watcher-set = { version = "0.1.0", path = "utils/watcher-set" }
 waterui-text = { version = "0.4.0", path = "components/foundation/text" }
 waterui-media = { version = "0.3.1", path = "components/multimedia/media" }
-waterui-image = "0.3.0"
+waterui-image = "0.4.0"
 waterui-video = { version = "0.3.1", path = "components/multimedia/video" }
 waterui-video-gpu = "0.3.0"
-waterui-visualizer = "0.3.0"
+waterui-visualizer = "0.4.0"
 waterui-form = { version = "0.3.1", path = "components/foundation/form" }
 waterui-controls = { version = "0.3.1", path = "components/foundation/controls"}
 waterui-graphics = { version = "0.4.0", path = "components/visual/graphics", default-features = false }
-waterui-canvas = "0.1.1"
+waterui-canvas = "0.1.2"
 waterui-mermaid = { version = "0.1.0", path = "components/data/mermaid" }
 # Mermaid parsing, semantic model and diagram layout. Consumed from our fork
 # while `typed-layout-projection` is unreleased upstream: `merman-render`'s only
@@ -179,10 +179,10 @@ waterui-backend-core = { version = "0.1.1", path = "backends/core", default-feat
 filtrate = "0.2.0"
 filtrate-core = "0.2.0"
 filtrate-derive = "0.1.0"
-waterui-barcode = "0.1.0"
-waterui-particle = "0.1.0"
-waterui-chart = "0.1.0"
-waterui-map-gpu = "0.1.0"
+waterui-barcode = "0.2.0"
+waterui-particle = "0.1.1"
+waterui-chart = "0.2.0"
+waterui-map-gpu = "0.2.0"
 waterui-assets = { version = "0.1.1", path = "components/assets/runtime" }
 waterui-assets-planner = { version = "0.1.1", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.1.1", path = "components/assets/macros" }
@@ -452,18 +452,14 @@ waterui-map = { path = "components/data/map" }
 waterui-url = { path = "utils/url" }
 waterui-controls = { path = "components/foundation/controls" }
 waterui-video = { path = "components/multimedia/video" }
-# The eight extracted crates below still require the 0.3 foundation on
-# crates.io. Until they re-release against graphics/text 0.4 (#533) they
-# resolve from the commits on their `dev` branches that carry exactly that
-# bump (the `chore/foundation-0.4` PRs); the entries go away with the version bumps that follow those releases.
-waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "68e42866d455d0e2c865c06c1ff39dfc3f9253f4" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "db68b844edba01f307d10021595f43a285ac4274" }
-waterui-chart = { git = "https://github.com/water-rs/chart", rev = "6a728447fcd1d7463556e30ef44b3bb3c43d02ca" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "eeb6ca0e4ad159466e413964a16978908539553e" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "4346d0fa542375a82a2b1c3fdabf43cbd20f39bb" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "5e8454d617576ec440af26d26dbb9e9b0da1dba7" }
+# The extracted image, visualizer and video-gpu crates depend on the registry
+# waterkit codec/audio crates; resolve those to the kit copies for the same reason.
+waterkit-audio = { path = "kit/multimedia/audio" }
+waterkit-codec = { path = "kit/multimedia/codec" }
+# `waterui-video-gpu` on crates.io still requires the 0.3 foundation; until it
+# re-releases against graphics/text 0.4 (#533) it resolves from the commit on
+# its `dev` branch that carries exactly that bump.
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "6101fa9daa17aba022e270eb4a0b7c6a0d9e5a79" }
-waterui-visualizer = { git = "https://github.com/water-rs/visualizer", rev = "cfd147e7f5614b2066ba2362f183e6dc333452c3" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
