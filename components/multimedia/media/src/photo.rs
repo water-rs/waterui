@@ -28,7 +28,7 @@ use waterkit_fs::WaterFs;
 use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{AnyView, Computed, Environment, Metadata, Retain, Signal, View};
-use waterui_image::{Image, ReactiveImage, ReactiveImageHandle, reactive_image};
+use waterui_image::{ContentMode, Image, ReactiveImage, ReactiveImageHandle, reactive_image};
 use zenwave::{Client, Method};
 
 /// A photo component that displays an image from a URL.
@@ -104,6 +104,16 @@ impl Photo {
     #[must_use]
     pub fn resizable(mut self) -> Self {
         self.content = self.content.resizable();
+        self
+    }
+
+    /// Preserves the decoded picture's aspect ratio inside the bounds the
+    /// parent proposes: [`ContentMode::Fit`] letterboxes, [`ContentMode::Fill`]
+    /// covers the bounds and crops the overflow. Without it a resizable photo
+    /// stretches on both axes independently.
+    #[must_use]
+    pub fn content_mode(mut self, mode: ContentMode) -> Self {
+        self.content = self.content.content_mode(mode);
         self
     }
 
