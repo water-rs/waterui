@@ -13,9 +13,21 @@ runs:
   steps:
     - name: Refresh the Ubuntu package index
       shell: bash
-      # Ubuntu 24.04 declares its archive in deb822 form at this path; apt
-      # picks the parser from the `.sources` extension.
-      run: >
-        sudo apt-get update
-        -o Dir::Etc::SourceList=/etc/apt/sources.list.d/ubuntu.sources
-        -o Dir::Etc::SourceParts=/dev/null
+      # Ubuntu 24.04 declares its archive in deb822 form at
+      # `sources.list.d/ubuntu.sources`; 22.04 still uses the one-line
+      # `sources.list`, and the runners here are both. Naming the file that is
+      # not there resolves an empty index instead of failing, so apt then
+      # reports every package as unlocatable and the install step aborts —
+      # which is how the WPE runtime legs of the CLI release died.
+      run: |
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+          list=/etc/apt/sources.list.d/ubuntu.sources
+        elif [ -s /etc/apt/sources.list ]; then
+          list=/etc/apt/sources.list
+        else
+          echo "::error::no Ubuntu archive source file on this runner"
+          exit 1
+        fi
+        sudo apt-get update \
+          -o Dir::Etc::SourceList="$list" \
+          -o Dir::Etc::SourceParts=/dev/null

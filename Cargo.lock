@@ -12162,19 +12162,6 @@ dependencies = [
 
 [[package]]
 name = "wasm-streams"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
-dependencies = [
- "futures-util",
- "js-sys",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "wasm-streams"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
@@ -12218,7 +12205,7 @@ dependencies = [
  "web-sys",
  "windows 0.62.2",
  "zbus",
- "zenwave 0.5.0",
+ "zenwave",
 ]
 
 [[package]]
@@ -12509,7 +12496,7 @@ dependencies = [
  "uuid",
  "waterkit-video-core",
  "windows 0.62.2",
- "zenwave 0.5.0",
+ "zenwave",
 ]
 
 [[package]]
@@ -12784,7 +12771,7 @@ dependencies = [
  "waterui-preview-protocol",
  "which 8.0.6",
  "whoami",
- "zenwave 0.6.1",
+ "zenwave",
  "zip 8.6.0",
 ]
 
@@ -13300,7 +13287,7 @@ dependencies = [
  "waterui-map",
  "waterui-url",
  "wgpu",
- "zenwave 0.6.1",
+ "zenwave",
 ]
 
 [[package]]
@@ -13355,7 +13342,7 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "waterui-video",
- "zenwave 0.6.1",
+ "zenwave",
 ]
 
 [[package]]
@@ -13555,7 +13542,7 @@ dependencies = [
  "sha2",
  "tracing",
  "waterui-str",
- "zenwave 0.6.1",
+ "zenwave",
 ]
 
 [[package]]
@@ -15098,54 +15085,6 @@ dependencies = [
 
 [[package]]
 name = "zenwave"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "317f927428f5b87778df87834ecf7543b837733ebd1fa981210153247d9047c1"
-dependencies = [
- "anyhow",
- "async-fs",
- "async-io",
- "async-lock",
- "async-native-tls",
- "async-net",
- "async-tungstenite",
- "base64 0.22.1",
- "block",
- "dirs 6.0.0",
- "dns-lookup",
- "executor-core",
- "futures-channel",
- "futures-io",
- "futures-rustls",
- "futures-util",
- "gloo-timers 0.3.0",
- "http",
- "http-body-util",
- "http-kit",
- "httpdate",
- "hyper",
- "js-sys",
- "native-tls",
- "objc",
- "once_cell",
- "rustls",
- "rustls-native-certs",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "time",
- "tower-service",
- "tracing",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-streams 0.4.2",
- "web-sys",
- "webpki-roots 1.0.9",
-]
-
-[[package]]
-name = "zenwave"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dcebfb9dc75f253b47fa02ca3116d90c9fde75487e21586133a5d017c645081e"
@@ -15156,6 +15095,7 @@ dependencies = [
  "async-lock",
  "async-native-tls",
  "async-net",
+ "async-tungstenite",
  "base64 0.22.1",
  "cfg_aliases 0.2.2",
  "dirs 6.0.0",
@@ -15187,7 +15127,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.5.0",
+ "wasm-streams",
  "web-sys",
 ]
 
