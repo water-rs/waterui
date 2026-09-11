@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/water-rs/waterui/compare/waterui-gtk-v0.1.1...waterui-gtk-v0.1.2) - 2026-09-11
+
+### Other
+
+- updated the following local packages: waterui-core, waterui-graphics, waterui-layout, waterui-locale, waterui-text, waterui-icon, waterui-controls, waterui-assets, waterui-shape, waterui-shape, waterui-form, waterui-navigation, waterui-webview, waterui, waterui-backend-core
+
 ## [0.1.1](https://github.com/water-rs/waterui/compare/waterui-gtk-v0.1.0...waterui-gtk-v0.1.1) - 2026-09-11
 
 ### Added

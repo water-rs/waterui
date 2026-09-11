@@ -4,6 +4,12 @@ All notable changes to `waterui-testing` are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/water-rs/waterui/compare/waterui-testing-v0.4.0...waterui-testing-v0.4.1) - 2026-09-11
+
+### Other
+
+- *(backends)* consume hydrolysis 0.2.0 from crates.io and drop the in-tree copy ([#553](https://github.com/water-rs/waterui/pull/553))
+
 ## [0.4.0](https://github.com/water-rs/waterui/compare/waterui-testing-v0.3.0...waterui-testing-v0.4.0) - 2026-09-11
 
 ### Added

@@ -1,6 +1,6 @@
 [package]
 name = "waterui-browser-wpe"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true

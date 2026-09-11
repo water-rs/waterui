@@ -7,14 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.2](https://github.com/water-rs/waterui/compare/locale-v0.1.1...locale-v0.1.2) - 2026-09-11
+## [0.1.1](https://github.com/water-rs/waterui/compare/preview-protocol-v0.1.0...preview-protocol-v0.1.1) - 2026-09-11
 
 ### Other
 
 - update Cargo.toml dependencies
-
-## [0.1.1](https://github.com/water-rs/waterui/compare/locale-v0.1.0...locale-v0.1.1) - 2026-09-11
-
-### Other
-
-- updated the following local packages: waterui-core

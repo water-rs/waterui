@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/water-rs/waterui/compare/waterui-icons-fontawesome7-v0.2.0...waterui-icons-fontawesome7-v0.2.1) - 2026-09-11
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.2.0](https://github.com/water-rs/waterui/compare/waterui-icons-fontawesome7-v0.1.0...waterui-icons-fontawesome7-v0.2.0) - 2026-09-11
 
 ### Other

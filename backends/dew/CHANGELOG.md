@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/water-rs/waterui/compare/waterui-dew-v0.2.0...waterui-dew-v0.2.1) - 2026-09-11
+
+### Fixed
+
+- *(dew)* place chrome-carved children at f64, not through an f32 frame ([#552](https://github.com/water-rs/waterui/pull/552))
+
 ## [0.2.0](https://github.com/water-rs/waterui/compare/waterui-dew-v0.1.0...waterui-dew-v0.2.0) - 2026-09-11
 
 ### Added
