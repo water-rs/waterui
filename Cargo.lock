@@ -12692,7 +12692,7 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/barcode?branch=chore%2Ffoundation-0.4#68e42866d455d0e2c865c06c1ff39dfc3f9253f4"
+source = "git+https://github.com/water-rs/barcode?rev=68e42866d455d0e2c865c06c1ff39dfc3f9253f4#68e42866d455d0e2c865c06c1ff39dfc3f9253f4"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -12774,7 +12774,7 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.1.1"
-source = "git+https://github.com/water-rs/canvas?branch=chore%2Ffoundation-0.4#db68b844edba01f307d10021595f43a285ac4274"
+source = "git+https://github.com/water-rs/canvas?rev=db68b844edba01f307d10021595f43a285ac4274#db68b844edba01f307d10021595f43a285ac4274"
 dependencies = [
  "image",
  "kurbo 0.13.1",
@@ -12788,7 +12788,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/chart?branch=chore%2Ffoundation-0.4#6a728447fcd1d7463556e30ef44b3bb3c43d02ca"
+source = "git+https://github.com/water-rs/chart?rev=6a728447fcd1d7463556e30ef44b3bb3c43d02ca#6a728447fcd1d7463556e30ef44b3bb3c43d02ca"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13199,7 +13199,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/image?branch=chore%2Ffoundation-0.4#eeb6ca0e4ad159466e413964a16978908539553e"
+source = "git+https://github.com/water-rs/image?rev=eeb6ca0e4ad159466e413964a16978908539553e#eeb6ca0e4ad159466e413964a16978908539553e"
 dependencies = [
  "half",
  "image",
@@ -13367,7 +13367,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=chore%2Ffoundation-0.4#093e3a06a750906534be6e066464aa4048030324"
+source = "git+https://github.com/water-rs/map-gpu?rev=4346d0fa542375a82a2b1c3fdabf43cbd20f39bb#4346d0fa542375a82a2b1c3fdabf43cbd20f39bb"
 dependencies = [
  "blocking",
  "bytemuck",
@@ -13399,7 +13399,7 @@ dependencies = [
  "waterui-map",
  "waterui-url",
  "wgpu",
- "zenwave 0.5.0",
+ "zenwave 0.6.1",
 ]
 
 [[package]]
@@ -13501,7 +13501,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/particle?branch=chore%2Ffoundation-0.4#5e8454d617576ec440af26d26dbb9e9b0da1dba7"
+source = "git+https://github.com/water-rs/particle?rev=5e8454d617576ec440af26d26dbb9e9b0da1dba7#5e8454d617576ec440af26d26dbb9e9b0da1dba7"
 dependencies = [
  "bytemuck",
  "encase",
@@ -13670,7 +13670,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=chore%2Ffoundation-0.4#6101fa9daa17aba022e270eb4a0b7c6a0d9e5a79"
+source = "git+https://github.com/water-rs/video-gpu?rev=6101fa9daa17aba022e270eb4a0b7c6a0d9e5a79#6101fa9daa17aba022e270eb4a0b7c6a0d9e5a79"
 dependencies = [
  "async-channel",
  "executor-core",
@@ -13698,7 +13698,7 @@ dependencies = [
 [[package]]
 name = "waterui-visualizer"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/visualizer?branch=chore%2Ffoundation-0.4#cfd147e7f5614b2066ba2362f183e6dc333452c3"
+source = "git+https://github.com/water-rs/visualizer?rev=cfd147e7f5614b2066ba2362f183e6dc333452c3#cfd147e7f5614b2066ba2362f183e6dc333452c3"
 dependencies = [
  "async-channel",
  "blocking",
