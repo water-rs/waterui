@@ -17,6 +17,8 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use waterui_controls::{IntoLabel, Label};
 use waterui_core::accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
+#[cfg(feature = "media")]
+use waterui_layout::ContentMode;
 use waterui_layout::stack::zstack;
 use waterui_shape::{Circle, PathCommand, Shape, ShapeExt, ShapeKind};
 use waterui_text::Text;
@@ -287,7 +289,13 @@ impl View for Avatar {
         );
 
         #[cfg(feature = "media")]
-        let picture = image.map(|source| AnyView::new(Photo::new(source).resizable()));
+        let picture = image.map(|source| {
+            AnyView::new(
+                Photo::new(source)
+                    .resizable()
+                    .content_mode(ContentMode::Fill),
+            )
+        });
         #[cfg(not(feature = "media"))]
         let picture: Option<AnyView> = None;
 

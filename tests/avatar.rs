@@ -27,16 +27,29 @@ use waterui_testing::{OffscreenApp, Role, UiBuilder};
 /// the page — which reads in both colour schemes, unlike a light or dark
 /// border, either of which disappears into one of the two backgrounds and
 /// makes a circular clip look like an octagon.
+///
+/// The portrait is wider than it is tall and carries a white disc at its
+/// centre: an avatar that stretched the picture would show that disc as an
+/// ellipse, one that covers and crops keeps it round. Quadrants alone could
+/// not tell the two apart, since both leave their boundaries at the centre.
 fn write_test_portrait(dir: &Path) -> PathBuf {
-    const SIDE: u32 = 240;
+    const WIDTH: u32 = 320;
+    const HEIGHT: u32 = 200;
+    const DISC_RADIUS: f32 = 60.0;
     let path = dir.join("portrait.png");
-    let mut pixels = image::RgbaImage::new(SIDE, SIDE);
+    let mut pixels = image::RgbaImage::new(WIDTH, HEIGHT);
+    let (centre_x, centre_y) = (WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0);
     for (x, y, pixel) in pixels.enumerate_pixels_mut() {
-        *pixel = match (x < SIDE / 2, y < SIDE / 2) {
-            (true, true) => image::Rgba([220, 40, 40, 255]),
-            (false, true) => image::Rgba([40, 160, 60, 255]),
-            (true, false) => image::Rgba([40, 80, 220, 255]),
-            (false, false) => image::Rgba([230, 190, 40, 255]),
+        let (dx, dy) = (x as f32 + 0.5 - centre_x, y as f32 + 0.5 - centre_y);
+        *pixel = if dx.hypot(dy) <= DISC_RADIUS {
+            image::Rgba([255, 255, 255, 255])
+        } else {
+            match (x < WIDTH / 2, y < HEIGHT / 2) {
+                (true, true) => image::Rgba([220, 40, 40, 255]),
+                (false, true) => image::Rgba([40, 160, 60, 255]),
+                (true, false) => image::Rgba([40, 80, 220, 255]),
+                (false, false) => image::Rgba([230, 190, 40, 255]),
+            }
         };
     }
     std::fs::create_dir_all(dir).expect("test portrait directory");
@@ -173,6 +186,7 @@ fn row(url: Url, side: f32, observed: Option<Rc<Cell<bool>>>) -> impl View {
                 let observed = Rc::clone(&observed);
                 Photo::new(watched.clone())
                     .resizable()
+                    .content_mode(ContentMode::Fill)
                     .on_event(move |event: PhotoEvent| {
                         if matches!(event, PhotoEvent::Loaded) {
                             observed.set(true);
