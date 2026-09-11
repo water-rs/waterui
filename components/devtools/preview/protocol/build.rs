@@ -32,8 +32,27 @@ fn track_git_commit_inputs(crate_dir: &Path) {
     }
 }
 
+/// The last commit that changed this crate, not the last commit in the tree.
+///
+/// This value is a *protocol* version: the CLI refuses to talk to a support app
+/// whose value differs, because the two would be speaking different wire
+/// formats. Taking the workspace `HEAD` instead made every commit anywhere
+/// declare a new protocol, so a `water` binary built before your last commit
+/// could never preview anything again — the handshake rejected the app it had
+/// just built, retried until the startup backstop, and reported the failure as
+/// a TCP server that would not start.
+///
+/// Runtime compatibility is a separate question and already has an answer:
+/// `waterui_core_fingerprint` carries the package version, the feature set, the
+/// dependency-graph hash and the profile, and the CLI computes what it expects
+/// from the tree at run time rather than baking it in. That is what catches an
+/// app built against a different runtime. This value only has to change when
+/// the protocol does.
 fn resolve_git_commit(crate_dir: &Path) -> Option<String> {
-    git_output(crate_dir, &["rev-parse", "--short=12", "HEAD"])
+    git_output(
+        crate_dir,
+        &["log", "-1", "--format=%h", "--abbrev=12", "--", "."],
+    )
 }
 
 fn resolve_git_path(crate_dir: &Path, name: &str) -> Option<std::path::PathBuf> {
