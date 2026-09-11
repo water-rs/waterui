@@ -238,42 +238,31 @@ jobs:
 
       # The tap's `dev` is ruled like every other branch in the organisation:
       # changes arrive through a pull request and commits carry a verified
-      # signature. A plain `git push` of a locally made commit satisfies
-      # neither and was rejected with GH013 for `waterui-cli-v0.2.1`, failing
-      # the job after the release assets had already gone up. Both rules are
-      # met by going through GitHub rather than around it: this action commits
-      # through the API, which signs, and opens the pull request; the merge
-      # below is an API merge, which signs too.
-      - name: Open the Homebrew formula update
-        id: homebrew
-        uses: peter-evans/create-pull-request@v7
-        with:
-          path: homebrew-water
-          token: ${{ secrets.HOMEBREW_PAT }}
-          sign-commits: true
-          branch: water-${{ needs.check.outputs.version }}
-          delete-branch: true
-          add-paths: Formula/water.rb
-          commit-message: "water ${{ needs.check.outputs.version }}"
-          title: "water ${{ needs.check.outputs.version }}"
-          body: |
-            The formula `dist` generated for
-            [`${{ needs.check.outputs.tag }}`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.check.outputs.tag }}).
-
-      # The formula is generated, so there is nothing here for a human to
-      # review; the pull request exists because the branch rule asks for one.
-      - name: Merge the Homebrew formula update
-        if: steps.homebrew.outputs.pull-request-number
+      # signature. This job can satisfy neither directly — a commit made on a
+      # runner is unsigned, and `HOMEBREW_PAT` may write contents there but
+      # not pull requests (`Resource not accessible by personal access
+      # token`). So it pushes the branch and stops. water-rs/homebrew-water's
+      # own `publish-formula.yml` picks it up, opens the pull request and
+      # merges it under that repository's `GITHUB_TOKEN`, and the squash
+      # commit GitHub writes is signed.
+      #
+      # `--force` because a re-run of a release pushes the same branch again.
+      - name: Push the Homebrew formula branch
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_PAT }}
-          PR: ${{ steps.homebrew.outputs.pull-request-number }}
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
           set -euo pipefail
-          gh pr merge "$PR" \
-            --repo water-rs/homebrew-water \
-            --squash \
-            --delete-branch
+          cd homebrew-water
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add Formula/water.rb
+          if git diff --cached --quiet; then
+            echo "No Homebrew changes to publish."
+            exit 0
+          fi
+          git commit -m "water ${VERSION}"
+          git push --force origin "HEAD:refs/heads/water-${VERSION}"
 
   # The runtime zips and the manifest the CLI resolves them through, appended
   # to the release the job above already published. Separate because the WPE
