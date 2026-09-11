@@ -230,9 +230,9 @@ jobs:
       matrix:
         # Windows is kept in its own workflow because it needs platform-
         # specific exclusions and compile-only CEF coverage; `nightly.yml`
-        # calls it beside this one. macOS is a nightly platform too: the
-        # default-features gate a pull request runs is Linux only.
-        os: ${{ fromJSON(inputs.full && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        # calls it beside this one. This job runs only when `full` is set, so
+        # both platforms are always in the matrix.
+        os: ["ubuntu-latest", "macos-latest"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -478,7 +478,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.full && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+        # Gated on `full` like `test` above, so both platforms always run.
+        os: ["ubuntu-latest", "macos-latest"]
     steps:
       - uses: actions/checkout@v4
         with:

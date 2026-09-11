@@ -7,12 +7,19 @@ permissions:
   pull-requests: read
 
 # The pull-request gate (#379); dev pushes use the lint-only dev.yml (#458).
-# It is deliberately the default-features shape on Linux plus the checks a
-# change can break, chosen per change by the `changes` job below. The full
-# matrix — every clippy shape, macOS and Windows, the all-features runs, the
-# macOS suites, coverage, the `cargo hack` sweep — is `nightly.yml`, once a
-# day against `dev`. Nothing is checked less often than daily; nothing a
-# change cannot break waits in front of it.
+# It is a compile-check gate, not a test-certifying one: format and
+# default-features clippy on Linux, plus the checks a change can break, chosen
+# per change by the `changes` job below. Running anything is `test.yml` with
+# `full: false`, and every job in that workflow except `lint` is gated on
+# `full`, so no test executes here — that is the #458 decision, "dev is the
+# compile-checked, not test-certified channel". The tests themselves, every
+# other clippy shape, macOS and Windows, the all-features runs, the macOS
+# suites, the examples, coverage and the `cargo hack` sweep are `nightly.yml`,
+# once a day against `dev`. Nothing is checked less often than daily.
+#
+# So a green gate here says the change compiles and lints, and says nothing
+# about whether it works. A change whose correctness matters is run locally by
+# whoever writes it, and the nightly is what certifies `dev`.
 on:
   # Integration branches only: a branch that also has a PR would otherwise run
   # the whole gate twice for one commit.
