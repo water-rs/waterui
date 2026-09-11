@@ -85,6 +85,10 @@ impl RenderContext {
     }
 
     /// A child context placed at `frame` inside this context.
+    ///
+    /// This is the layout path: `frame` is what a measurement pass produced, in
+    /// `f32`, and the child gets its own origin. Chrome that already knows the
+    /// exact region a child must cover uses [`Self::child_in`] instead.
     #[must_use]
     pub fn child(self, frame: LayoutRect) -> Self {
         Self {
@@ -96,6 +100,26 @@ impl RenderContext {
                 f64::from(frame.width()),
                 f64::from(frame.height()),
             ),
+        }
+    }
+
+    /// A child context covering `rect` of this context, at `f64` throughout.
+    ///
+    /// A child is placed by its origin and its extent, so the far edge it
+    /// reaches is the two added back together and the extent has to be exact
+    /// for that to be the edge the caller named. At `f32` it is not: the
+    /// distance between two edges a bar's height apart needs more significant
+    /// bits than an `f32` carries, so a frame rounds it and moves the far edge
+    /// by up to half an ULP — a hairline of page under a bar, or of window
+    /// background between them. At `f64` the same distance is exact with
+    /// twenty-odd bits to spare, which is why chrome that carves its window
+    /// into regions hands them over here rather than rounding them through
+    /// [`Self::child`].
+    #[must_use]
+    pub fn child_in(self, rect: Rect) -> Self {
+        Self {
+            transform: self.transform * Affine::translate((rect.x0, rect.y0)),
+            bounds: Rect::new(0.0, 0.0, rect.width(), rect.height()),
         }
     }
 
@@ -1329,4 +1353,40 @@ const fn placement_rect(bounds: Rect) -> LayoutRect {
 )]
 fn max_width_from_bounds(bounds: Rect) -> Option<f32> {
     (bounds.width() > 0.0).then(|| bounds.width() as f32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A child reaches the far edge of the region it was given.
+    ///
+    /// The pair is the one the tab bar and its page disagreed over: a bar
+    /// bottom and a seam, both on the `f32` grid. Their distance does not fit
+    /// in an `f32`, so a frame placed the page a hairline short of the bar;
+    /// it fits in an `f64` with room to spare.
+    #[test]
+    fn a_child_reaches_the_far_edge_of_its_region() {
+        const NEAR: f64 = 62.964_000_701_904_3;
+        const FAR: f64 = 207.100_006_103_515_62;
+
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the frame path this replaced is exactly this cast"
+        )]
+        let framed = NEAR + f64::from((FAR - NEAR) as f32);
+        assert_ne!(
+            framed.to_bits(),
+            FAR.to_bits(),
+            "an `f32` extent reaches this edge after all"
+        );
+
+        let painted = RenderContext::root(320.0, 480.0)
+            .child_in(Rect::new(NEAR, NEAR, FAR, FAR))
+            .window_bounds();
+        assert_eq!(painted.x0.to_bits(), NEAR.to_bits());
+        assert_eq!(painted.y0.to_bits(), NEAR.to_bits());
+        assert_eq!(painted.x1.to_bits(), FAR.to_bits());
+        assert_eq!(painted.y1.to_bits(), FAR.to_bits());
+    }
 }
