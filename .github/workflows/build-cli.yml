@@ -117,6 +117,12 @@ jobs:
             target/distrib/*${{ matrix.target }}*.zip*
             target/distrib/*${{ matrix.target }}*-dist-manifest.json
 
+  # Not on the CLI release's critical path. This build has never once
+  # succeeded (#155) and is allowed up to six hours to fail, so gating the
+  # binaries on it means no `water` binary ever reaches a release page: run
+  # 34631973105 built all six CLI targets and still skipped the upload. The
+  # runtime is an optional add-on for one browser backend, and it publishes
+  # from its own job below once it works.
   browser-runtime-wpe:
     name: Build WPE runtime ${{ matrix.architecture }}
     needs: check
@@ -177,7 +183,7 @@ jobs:
 
   release:
     name: Upload Release Assets
-    needs: [check, build, browser-runtime-wpe]
+    needs: [check, build]
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -198,25 +204,6 @@ jobs:
           path: target/distrib
           merge-multiple: true
 
-      - name: Download browser runtime artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: browser-runtime-wpe-*
-          path: target/distrib
-          merge-multiple: true
-
-      - name: Generate browser runtime manifest
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.check.outputs.tag }}
-        run: |
-          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          python3 components/platform/browser-wpe/runtime/generate-manifest.py \
-            --base-url "$BASE_URL" \
-            --output target/distrib/browser-runtime-manifest.json \
-            target/distrib/*.artifact.json
-          find target/distrib -maxdepth 1 -name '*.artifact.json' -delete
-
       - name: Build global release artifacts
         run: dist build --tag "${{ needs.check.outputs.tag }}" --artifacts=global
 
@@ -229,7 +216,6 @@ jobs:
             target/distrib/*.zip
             target/distrib/*.sha256
             target/distrib/sha256.sum
-            target/distrib/browser-runtime-manifest.json
 
       - name: Checkout Homebrew tap
         uses: actions/checkout@v4
@@ -257,3 +243,50 @@ jobs:
           fi
           git commit -m "water ${VERSION}"
           git push
+
+  # The runtime zips and the manifest the CLI resolves them through, appended
+  # to the release the job above already published. Separate because the WPE
+  # build is hours long and has never finished: a release's binaries must not
+  # wait on it, and its absence means only that this CLI version offers no
+  # prebuilt WPE runtime, which `cli/src/browser_runtime.rs` already reports
+  # as a missing manifest.
+  release-browser-runtime:
+    name: Upload WPE runtime assets
+    # `release` is in here for ordering, not for content: both jobs upload to
+    # the same tag, and only one of them may be the one that creates it.
+    needs: [check, browser-runtime-wpe, release]
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+          submodules: recursive
+
+      - name: Download browser runtime artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: browser-runtime-wpe-*
+          path: target/distrib
+          merge-multiple: true
+
+      - name: Generate browser runtime manifest
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          python3 components/platform/browser-wpe/runtime/generate-manifest.py \
+            --base-url "$BASE_URL" \
+            --output target/distrib/browser-runtime-manifest.json \
+            target/distrib/*.artifact.json
+          find target/distrib -maxdepth 1 -name '*.artifact.json' -delete
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check.outputs.tag }}
+          files: |
+            target/distrib/*.zip
+            target/distrib/browser-runtime-manifest.json
