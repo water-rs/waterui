@@ -146,15 +146,10 @@ jobs:
             --exclude '*-example' `
             --exclude waterui-core `
             --exclude waterui-ffi `
-            --exclude hydrolysis `
             --exclude waterui-browser-cef `
             --exclude skill_snippets
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
-      - name: Test (hydrolysis, every portable feature)
-        run: |
-          cargo nextest run --locked -p hydrolysis --profile ci `
-            --features accessibility,inspector-signals,testing,web,winit
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4

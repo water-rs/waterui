@@ -100,10 +100,10 @@ mod tests {
     }
 
     /// The version requirement the workspace itself consumes an extracted
-    /// package at. The Material 3 theme lives in its own repository (#481), so
-    /// there is no in-tree manifest to read a version from; what a scaffolded
-    /// app has to agree with is the requirement this workspace resolves
-    /// against.
+    /// package at. The Hydrolysis renderer and its Material 3 theme live in
+    /// their own repositories (#480, #481), so there is no in-tree manifest to
+    /// read a version from; what a scaffolded app has to agree with is the
+    /// requirement this workspace resolves against.
     fn workspace_dependency_requirement(workspace_manifest: &Value, name: &str) -> String {
         let dependency = &workspace_manifest["workspace"]["dependencies"][name];
         dependency
@@ -167,18 +167,16 @@ mod tests {
             manifest_scaffold_field(&cli_manifest, "waterui-core-version"),
             package_version(&workspace_root.join("core/Cargo.toml")),
         );
+        let workspace_manifest = manifest_value(&workspace_root.join("Cargo.toml"));
         assert_eq!(
             scaffold_metadata["hydrolysis-version"]
                 .as_str()
                 .expect("missing package.metadata.waterui-scaffold.hydrolysis-version"),
-            package_version(&workspace_root.join("backends/hydrolysis/Cargo.toml")),
+            workspace_dependency_requirement(&workspace_manifest, "hydrolysis"),
         );
         assert_eq!(
             manifest_scaffold_field(&cli_manifest, "hydrolysis-m3-version"),
-            workspace_dependency_requirement(
-                &manifest_value(&workspace_root.join("Cargo.toml")),
-                "hydrolysis-m3",
-            ),
+            workspace_dependency_requirement(&workspace_manifest, "hydrolysis-m3"),
         );
         assert_eq!(
             manifest_scaffold_field(&cli_manifest, "waterui-dew-version"),

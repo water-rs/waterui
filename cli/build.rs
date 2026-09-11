@@ -229,14 +229,6 @@ fn register_rerun_inputs(workspace_root: Option<&Path>) {
             "cargo:rerun-if-changed={}",
             workspace_root
                 .join("backends")
-                .join("hydrolysis")
-                .join("Cargo.toml")
-                .display()
-        );
-        println!(
-            "cargo:rerun-if-changed={}",
-            workspace_root
-                .join("backends")
                 .join("dew")
                 .join("Cargo.toml")
                 .display()
@@ -255,11 +247,7 @@ fn resolve_workspace_root(cli_manifest_dir: &Path) -> Option<PathBuf> {
     let root = cli_manifest_dir.parent()?.canonicalize().ok()?;
     if root.join("Cargo.toml").is_file()
         && root.join("ffi").join("Cargo.toml").is_file()
-        && root
-            .join("backends")
-            .join("hydrolysis")
-            .join("Cargo.toml")
-            .is_file()
+        && root.join("testing").join("Cargo.toml").is_file()
     {
         Some(root)
     } else {
@@ -328,11 +316,9 @@ fn resolve_scaffold_metadata(
                     scaffold_metadata,
                     "android-kotlin-version",
                 ),
-                hydrolysis: manifest_package_version(
-                    &workspace_root
-                        .join("backends")
-                        .join("hydrolysis")
-                        .join("Cargo.toml"),
+                hydrolysis: workspace_dependency_requirement(
+                    &workspace_root.join("Cargo.toml"),
+                    "hydrolysis",
                 ),
                 hydrolysis_m3: workspace_dependency_requirement(
                     &workspace_root.join("Cargo.toml"),
@@ -437,9 +423,10 @@ fn manifest_backend_reference(scaffold_metadata: &Value, key_prefix: &str) -> Ba
 
 /// The version requirement the workspace consumes an extracted package at.
 ///
-/// The Material 3 theme has its own repository (#481), so there is no in-tree
-/// manifest to read a `package.version` from; what a scaffolded project has to
-/// agree with is the requirement this workspace resolves against.
+/// The Hydrolysis renderer and its Material 3 theme have their own
+/// repositories (#480, #481), so there is no in-tree manifest to read a
+/// `package.version` from; what a scaffolded project has to agree with is the
+/// requirement this workspace resolves against.
 fn workspace_dependency_requirement(workspace_manifest: &Path, name: &str) -> String {
     let manifest = manifest_value(workspace_manifest);
     let dependency = &manifest["workspace"]["dependencies"][name];
