@@ -10866,24 +10866,68 @@ struct WuiAppliedFilterState *waterui_applied_filter_create(struct WuiAppliedFil
                                                             const struct WuiEnv *env);
 
 /**
- * Attaches a native presentation target while preserving the semantic filter.
+ * Attaches a presentation surface (non-Apple only).
+ *
+ * # Safety
+ *
+ * `state` must come from [`waterui_applied_filter_create`].
+ *
+ * # Panics
+ *
+ * Always panics: Apple hosts own their presentation memory and attach with
+ * [`waterui_applied_filter_attach_host_textures`].
+ */
+void waterui_applied_filter_attach(struct WuiAppliedFilterState *_state,
+                                   void *_output_layer,
+                                   uint32_t _input_width,
+                                   uint32_t _input_height,
+                                   bool _prefers_hdr);
+
+/**
+ * The `MTLPixelFormat` an attached filter renders its output in (Apple only).
+ *
+ * The host allocates its `IOSurface` pair from this. It is the raw Metal enum
+ * value rather than a `WuiCaptureFormat` because the two are not the same
+ * alphabet: `WuiCaptureFormat` names `AHardwareBuffer` layouts, and the
+ * presentation format here is `BGRA8Unorm_sRGB`, which has no name there.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from [`waterui_applied_filter_create`] with a
+ * presentation target attached.
+ *
+ * # Panics
+ *
+ * Panics if the filter is detached, or if its output format has no Metal
+ * equivalent.
+ */
+uint32_t waterui_applied_filter_output_metal_pixel_format(const struct WuiAppliedFilterState *state);
+
+/**
+ * Attaches host-owned presentation on Apple, where frames arrive per texture.
+ *
+ * No layer is named because none is configured: the host keeps a pair of
+ * `IOSurface`-backed textures, hands one to
+ * [`waterui_applied_filter_render_to_metal_texture`] per frame, and shows it
+ * on `CALayer.contents` once that frame's fence completes. The texture format
+ * is this call's answer, read back with
+ * [`waterui_applied_filter_output_metal_pixel_format`].
  *
  * # Safety
  *
  * - `state` must come from [`waterui_applied_filter_create`].
- * - `output_layer` must remain valid until [`waterui_applied_filter_detach`].
  * - The state must currently be detached.
  *
  * # Panics
  *
- * Panics if `state` already has an output surface attached, or if
- * `input_width`/`input_height` is zero.
+ * Panics if `state` already has a presentation target attached, if
+ * `input_width`/`input_height` is zero, or if the chosen format cannot carry
+ * the subtree capture.
  */
-void waterui_applied_filter_attach(struct WuiAppliedFilterState *state,
-                                   void *output_layer,
-                                   uint32_t input_width,
-                                   uint32_t input_height,
-                                   bool prefers_hdr);
+void waterui_applied_filter_attach_host_textures(struct WuiAppliedFilterState *state,
+                                                 uint32_t input_width,
+                                                 uint32_t input_height,
+                                                 bool prefers_hdr);
 
 /**
  * Detaches the presentation target without destroying the semantic filter.
@@ -10941,36 +10985,50 @@ void waterui_applied_filter_setup(struct WuiAppliedFilterState *state);
 bool waterui_applied_filter_is_ready(const struct WuiAppliedFilterState *state);
 
 /**
- * Render the filter.
+ * Render the filter into a host-owned Metal texture (Apple only).
  *
- * This function applies the filter to the captured input and renders to the output.
- * Pass current width/height - resources are recreated if size changed.
+ * The host keeps a pair of `IOSurface`-backed textures and hands in the one it
+ * is not currently showing. The returned fence is that frame's: the host shows
+ * the texture on `CALayer.contents` when it completes, never before, so a
+ * half-drawn frame is never composited.
  *
- * # Arguments
- *
- * * `state` - Pointer to attached persistent state
- * * `width` - Current width in pixels
- * * `height` - Current height in pixels
- *
- * # Returns
- *
- * Whether another frame is needed for animation or an effect callback that
- * arrived while this frame was rendering.
+ * `needs_redraw` is reported through `out_needs_redraw` because the return
+ * value carries the fence.
  *
  * # Safety
  *
- * - `state` must be a valid pointer from `waterui_applied_filter_create`
- * - A presentation target must be attached
- * - `waterui_applied_filter_setup` must have completed
+ * - `state` must be a valid pointer from `waterui_applied_filter_create` with
+ *   a presentation target attached.
+ * - `texture` must point to a live `MTLTexture` of the attached format, at
+ *   least `width` by `height`.
+ * - `out_needs_redraw` must be writable.
  *
  * # Panics
  *
- * Panics if the asynchronous setup started by `waterui_applied_filter_setup`
- * has not completed yet.
+ * Panics if `texture` is null, if its format is not the one established at
+ * attach, or if setup has not completed.
  */
-bool waterui_applied_filter_render(struct WuiAppliedFilterState *state,
-                                   uint32_t width,
-                                   uint32_t height);
+struct WuiGpuCaptureFence *waterui_applied_filter_render_to_metal_texture(struct WuiAppliedFilterState *state,
+                                                                          void *texture,
+                                                                          uint32_t width,
+                                                                          uint32_t height,
+                                                                          bool *out_needs_redraw);
+
+/**
+ * Render the filter, presenting into the attached surface (non-Apple only).
+ *
+ * # Safety
+ *
+ * `state` must come from [`waterui_applied_filter_create`].
+ *
+ * # Panics
+ *
+ * Always panics: Apple hosts render with
+ * [`waterui_applied_filter_render_to_metal_texture`].
+ */
+bool waterui_applied_filter_render(struct WuiAppliedFilterState *_state,
+                                   uint32_t _width,
+                                   uint32_t _height);
 
 /**
  * Resolve the current output size from the latest observed filter state.
