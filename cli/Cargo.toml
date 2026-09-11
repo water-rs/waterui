@@ -19,7 +19,7 @@ waterui-core-version = "0.3.1"
 # own, so this entry mirrors `[workspace.package].version`.
 waterui-testing-version = "0.4.0"
 waterui-ffi-version = "0.3.1"
-hydrolysis-version = "0.2.0"
+hydrolysis-version = "0.2.1"
 hydrolysis-m3-version = "0.2.0"
 waterui-dew-version = "0.2.0"
 waterui-gtk-version = "0.1.1"

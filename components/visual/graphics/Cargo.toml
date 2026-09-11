@@ -96,7 +96,7 @@ ash = { workspace = true, optional = true }
 wgpu-hal = { workspace = true, features = ["vulkan"], optional = true }
 
 [build-dependencies]
-naga = { version = "30.0.0", features = ["wgsl-in"], optional = true }
+naga = { version = "30.0.1", features = ["wgsl-in"], optional = true }
 shaderloom = { workspace = true, features = ["build"], optional = true }
 
 [dev-dependencies]

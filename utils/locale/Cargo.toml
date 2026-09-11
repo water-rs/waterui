@@ -23,17 +23,17 @@ nami.workspace = true
 # purpose, and `PluralCategory` is the data model of a translation catalog —
 # `parser.rs` keys every pluralized entry by it — so the plural rules cannot be
 # separated from the catalogs that describe themselves in terms of them.
-icu_locale = "2.2"
-icu_plurals = "2.2"
-icu_provider = "2.2"
+icu_locale = "2.3"
+icu_plurals = "2.3"
+icu_provider = "2.3"
 fixed_decimal = "0.7"
 # Each formatter below carries its own slice of CLDR data, and an application
 # usually wants one of them rather than all three.
-icu_decimal = { version = "2.2", optional = true }
-icu_datetime = { version = "2.2", optional = true }
-icu_time = { version = "2.2", features = ["unstable_jiff_0_2"], optional = true }
-icu_calendar = { version = "2.2", optional = true }
-icu_list = { version = "2.2", optional = true }
+icu_decimal = { version = "2.3", optional = true }
+icu_datetime = { version = "2.3", optional = true }
+icu_time = { version = "2.3", features = ["unstable_jiff_0_2"], optional = true }
+icu_calendar = { version = "2.3", optional = true }
+icu_list = { version = "2.3", optional = true }
 jiff = { workspace = true, optional = true }
 
 # Other dependencies

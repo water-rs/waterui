@@ -65,7 +65,7 @@ pastey.workspace = true
 # The document parser `FlowMarkdown` re-parses incrementally as a stream
 # arrives. Only the Markdown grammar: fenced code is highlighted by the `Code`
 # widget through syntect, not by a per-language tree-sitter grammar.
-tree-sitter = { version = "0.26", optional = true }
+tree-sitter = { version = "0.27", optional = true }
 tree-sitter-md = { version = "0.5.3", optional = true }
 
 # Opening a URL in a system handler (robius-open) has no meaning on bare
