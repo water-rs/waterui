@@ -3336,6 +3336,20 @@ pub fn project_patches(
     }
 }
 
+/// The directory whose `Cargo.toml` Cargo reads `[patch]` tables from when it
+/// builds the package at `project_root`.
+///
+/// That is the root of the governing workspace, and the package's own directory
+/// when it is standalone. A `[patch]` table anywhere else is inert: Cargo
+/// ignores it and warns on every build.
+///
+/// # Errors
+/// Returns an error if an ancestor manifest cannot be read or parsed.
+pub fn patch_manifest_dir(project_root: &Path) -> io::Result<PathBuf> {
+    Ok(find_workspace_manifest(project_root)?
+        .map_or_else(|| project_root.to_path_buf(), |(dir, _)| dir))
+}
+
 /// Finds the manifest Cargo would treat as the workspace root for a package at
 /// `project_root`: the nearest ancestor manifest with a `[workspace]` section,
 /// or the package's own manifest when it is standalone.
