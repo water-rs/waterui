@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789124069098,
+  "lastUpdate": 1789124071805,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -3143,6 +3143,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 45576,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8478096f9eba3745cc0bca6e476ff7714dede57a",
+          "message": "ci(release): give the CLI binary legs the tools they build with (#541)\n\n* ci(release): give the CLI binary legs the tools they build with\n\nThe `waterui-cli-v0.2.0` release built one binary out of eight, so\n`Upload Release Assets` was skipped and the release carries no download.\nThree separate pre-existing gaps in this workflow, one per platform:\n\n* Linux legs never install the workspace's native libraries, so\n  `cros-libva`'s build script stops with \"libva is not found\"; the\n  aarch64 leg failed a second way, cross-compiling from x86_64 with a\n  pkg-config that has no cross configuration. Both legs now run the same\n  `setup-linux-deps` every other Linux job runs, and aarch64 builds\n  natively on `ubuntu-24.04-arm` instead of cross-compiling.\n* Windows images ship no `dxc`, so `filtrate`'s shader compilation fails\n  with \"unable to execute dxc: program not found\" on both Windows legs.\n  Install it the way `windows.yml` and `bench.yml` already do.\n* `refresh-apt-index` names 24.04's deb822 `ubuntu.sources`\n  unconditionally. The WPE runtime legs run on 22.04, where that file\n  does not exist: apt then resolves an empty index, reports every\n  package as unlocatable, and `setup-linux-deps` aborts. Pick the file\n  the runner actually has, and fail loudly when it has neither.\n\nFixes #540\n\n* build(kit): take the half-precision decode fix that unblocks Intel macOS\n\nThe `x86_64-apple-darwin` leg of the CLI release failed in the codec\nkit's Swift sources: `Float16` is unavailable when targeting x86_64\nmacOS, so the same file that compiles on Apple silicon does not compile\nfor Intel. water-rs/waterkit#52 widens those pixels arithmetically and\nis merged; this moves the submodule onto it.",
+          "timestamp": "2026-09-11T10:48:18Z",
+          "url": "https://github.com/water-rs/waterui/commit/8478096f9eba3745cc0bca6e476ff7714dede57a"
+        },
+        "date": 1789124071031,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 431891,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 387517,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 59063,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 44231,
             "unit": "us"
           }
         ]
