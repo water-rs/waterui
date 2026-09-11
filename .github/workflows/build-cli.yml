@@ -207,12 +207,21 @@ jobs:
       - name: Build global release artifacts
         run: dist build --tag "${{ needs.check.outputs.tag }}" --artifacts=global
 
+      # The patterns must not overlap. `*.tar.*` also matched every
+      # `…tar.xz.sha256`, which `*.sha256` matched again, so each checksum
+      # beside a tarball was listed twice; the action then issued two deletes
+      # for the one existing asset of that name and the second answered
+      # `Not Found`, failing the step. Invisible on a first release, where
+      # there is nothing to delete — and fatal on the re-run that recovers
+      # one. `.tar.xz`, `.tar.gz`, `.zip`, `.sha256` and `sha256.sum` are
+      # disjoint suffixes, so each file is named once.
       - name: Upload assets to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.check.outputs.tag }}
           files: |
-            target/distrib/*.tar.*
+            target/distrib/*.tar.xz
+            target/distrib/*.tar.gz
             target/distrib/*.zip
             target/distrib/*.sha256
             target/distrib/sha256.sum
