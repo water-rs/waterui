@@ -13,7 +13,7 @@ mod inputs;
 mod launcher;
 pub mod protocol;
 
-pub use app_client::PreviewAppClient;
+pub use app_client::{PreviewAppClient, PreviewProbe};
 pub use hydrolysis::{
     HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewRequest,
     HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource,

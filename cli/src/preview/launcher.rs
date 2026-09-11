@@ -16,7 +16,7 @@ use sha2::Digest as _;
 use smol::stream::StreamExt;
 use tracing::{error, info};
 
-use super::app_client::PreviewAppClient;
+use super::app_client::{PreviewAppClient, PreviewProbe};
 use super::inputs::{ProjectInputsFingerprint, project_inputs_fingerprint};
 use super::protocol::DylibId;
 use super::protocol::PreviewPlatform;
@@ -583,20 +583,30 @@ async fn try_connect_existing_preview_app(
     platform: PreviewPlatform,
     sccache_path: Option<PathBuf>,
 ) -> Result<Option<PreviewSession>> {
-    let client = match platform {
-        PreviewPlatform::Macos => connect_existing_macos_preview_app(expected_fingerprint).await?,
+    let probe = match platform {
+        PreviewPlatform::Macos => {
+            PreviewAppClient::probe_registered(expected_fingerprint, PreviewRuntimePlatform::Macos)
+                .await?
+        }
         PreviewPlatform::IosSimulator | PreviewPlatform::Ios | PreviewPlatform::Android => {
-            PreviewAppClient::connect(
+            PreviewAppClient::probe_ports(
                 tcp_config,
                 expected_fingerprint,
                 preview_runtime_platform(platform),
             )
             .await
-            .ok()
         }
     };
-    let Some(client) = client else {
-        return Ok(None);
+    let client = match probe {
+        PreviewProbe::Connected(client) => client,
+        // Not an error here: a support app from another checkout is exactly the
+        // case this function exists to decline, and the caller goes on to launch
+        // one that matches. Saying so keeps the launch from looking unexplained.
+        PreviewProbe::Rejected(reason) => {
+            info!("Not reusing the running preview app: {reason}");
+            return Ok(None);
+        }
+        PreviewProbe::Silent => return Ok(None),
     };
 
     info!("Connected to existing preview app");
@@ -609,16 +619,6 @@ async fn try_connect_existing_preview_app(
         sccache_path,
         runtime_fingerprint: expected_fingerprint.to_string(),
     }))
-}
-
-async fn connect_existing_macos_preview_app(
-    expected_fingerprint: &str,
-) -> Result<Option<PreviewAppClient>> {
-    Ok(
-        PreviewAppClient::connect_registered(expected_fingerprint, PreviewRuntimePlatform::Macos)
-            .await
-            .ok(),
-    )
 }
 
 const fn preview_runtime_platform(platform: PreviewPlatform) -> PreviewRuntimePlatform {
@@ -779,7 +779,17 @@ async fn build_preview_session_from_launch(
 Check the app logs for more information."
             );
         }
-        ConnectionWaitResult::Timeout => {
+        // An app that answered and was turned away is not a connection problem,
+        // and listing connection problems in front of it is how this timeout
+        // once sent two debugging sessions at the network.
+        ConnectionWaitResult::Timeout(Some(rejection)) => {
+            bail!(
+                "Preview app started but no compatible app ever answered within {} seconds.
+{rejection}",
+                STARTUP_DEADLINE.as_secs()
+            );
+        }
+        ConnectionWaitResult::Timeout(None) => {
             bail!(
                 "Preview app is still running after {} seconds but never accepted a connection.
 Possible causes:
@@ -805,7 +815,11 @@ enum ConnectionWaitResult {
     /// App exited without crash.
     Exited,
     /// The app stayed alive but never became reachable before the hang backstop.
-    Timeout,
+    ///
+    /// Carries the explanation of an app that answered and was turned away, when
+    /// one did: that is a different failure from silence and has to be reported
+    /// as itself.
+    Timeout(Option<String>),
 }
 
 /// How long a launched preview app may stay alive without ever becoming reachable.
@@ -857,7 +871,9 @@ async fn wait_for_connection_or_crash(
     };
 
     match ready {
-        ConnectionWaitResult::Timeout => drain_terminal_preview_event(running).await,
+        ConnectionWaitResult::Timeout(rejection) => {
+            drain_terminal_preview_event(running, rejection).await
+        }
         other => other,
     }
 }
@@ -870,17 +886,21 @@ async fn wait_for_registered_preview_ready(
 ) -> ConnectionWaitResult {
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-    if let Some(client) =
-        try_connect_registered_preview(expected_fingerprint, PreviewRuntimePlatform::Macos, start)
-            .await
+    // The one app that answered and was turned away outlives every silent poll:
+    // on timeout it is the only thing here that explains anything.
+    let mut rejection = None;
+
+    match probe_registered_preview(expected_fingerprint, PreviewRuntimePlatform::Macos, start).await
     {
-        return ConnectionWaitResult::Ready(client);
+        PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
+        PreviewProbe::Rejected(reason) => rejection = Some(reason),
+        PreviewProbe::Silent => {}
     }
 
     let registry_dir = preview_instance_registry_dir();
     if let Err(error) = smol::fs::create_dir_all(&registry_dir).await {
         error!(path = %registry_dir.display(), "Failed to create preview registry dir: {error}");
-        return ConnectionWaitResult::Timeout;
+        return ConnectionWaitResult::Timeout(rejection);
     }
 
     let (event_tx, event_rx) = async_channel::unbounded();
@@ -891,28 +911,26 @@ async fn wait_for_registered_preview_ready(
         Ok(watcher) => watcher,
         Err(error) => {
             error!(path = %registry_dir.display(), "Failed to create preview registry watcher: {error}");
-            return ConnectionWaitResult::Timeout;
+            return ConnectionWaitResult::Timeout(rejection);
         }
     };
     if let Err(error) = watcher.watch(&registry_dir, RecursiveMode::NonRecursive) {
         error!(path = %registry_dir.display(), "Failed to watch preview registry dir: {error}");
-        return ConnectionWaitResult::Timeout;
+        return ConnectionWaitResult::Timeout(rejection);
     }
 
     loop {
-        if let Some(client) = try_connect_registered_preview(
-            expected_fingerprint,
-            PreviewRuntimePlatform::Macos,
-            start,
-        )
-        .await
+        match probe_registered_preview(expected_fingerprint, PreviewRuntimePlatform::Macos, start)
+            .await
         {
-            return ConnectionWaitResult::Ready(client);
+            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
+            PreviewProbe::Rejected(reason) => rejection = Some(reason),
+            PreviewProbe::Silent => {}
         }
 
         let remaining = timeout.saturating_sub(start.elapsed());
         if remaining.is_zero() {
-            return ConnectionWaitResult::Timeout;
+            return ConnectionWaitResult::Timeout(rejection);
         }
 
         let sleep = futures::FutureExt::fuse(smol::Timer::after(POLL_INTERVAL.min(remaining)));
@@ -929,6 +947,7 @@ async fn wait_for_registered_preview_ready(
                     expected_fingerprint,
                     PreviewRuntimePlatform::Macos,
                     start,
+                    &mut rejection,
                 )
                 .await
                 {
@@ -941,7 +960,7 @@ async fn wait_for_registered_preview_ready(
                     Ok(Err(error)) => {
                         error!(path = %registry_dir.display(), "Preview registry watcher error: {error}");
                     }
-                    Err(_) => return ConnectionWaitResult::Timeout,
+                    Err(_) => return ConnectionWaitResult::Timeout(rejection),
                 }
             },
             _ = sleep => {}
@@ -958,17 +977,19 @@ async fn wait_for_polled_preview_ready(
     timeout: Duration,
     poll_interval: Duration,
 ) -> ConnectionWaitResult {
+    let mut rejection = None;
+
     loop {
-        if let Some(client) =
-            try_connect_polled_preview(tcp_config, expected_fingerprint, expected_platform, start)
-                .await
+        match probe_polled_preview(tcp_config, expected_fingerprint, expected_platform, start).await
         {
-            return ConnectionWaitResult::Ready(client);
+            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
+            PreviewProbe::Rejected(reason) => rejection = Some(reason),
+            PreviewProbe::Silent => {}
         }
 
         let remaining = timeout.saturating_sub(start.elapsed());
         if remaining.is_zero() {
-            return ConnectionWaitResult::Timeout;
+            return ConnectionWaitResult::Timeout(rejection);
         }
 
         let sleep = futures::FutureExt::fuse(smol::Timer::after(poll_interval.min(remaining)));
@@ -983,6 +1004,7 @@ async fn wait_for_polled_preview_ready(
                     expected_fingerprint,
                     expected_platform,
                     start,
+                    &mut rejection,
                 )
                 .await
                 {
@@ -999,36 +1021,43 @@ async fn wait_for_polled_preview_ready(
 /// The probe completes a full protocol handshake, so discarding the client and
 /// reconnecting afterwards would pay for that handshake twice and reopen the window
 /// for the app to go away in between.
-async fn try_connect_registered_preview(
+async fn probe_registered_preview(
     expected_fingerprint: &str,
     expected_platform: PreviewRuntimePlatform,
     start: Instant,
-) -> Option<PreviewAppClient> {
-    let client = PreviewAppClient::connect_registered(expected_fingerprint, expected_platform)
-        .await
-        .ok()?;
-    info!(
-        "Connected to preview app after {}ms",
-        start.elapsed().as_millis()
-    );
-    Some(client)
+) -> PreviewProbe {
+    match PreviewAppClient::probe_registered(expected_fingerprint, expected_platform).await {
+        Ok(PreviewProbe::Connected(client)) => {
+            info!(
+                "Connected to preview app after {}ms",
+                start.elapsed().as_millis()
+            );
+            PreviewProbe::Connected(client)
+        }
+        Ok(other) => other,
+        Err(error) => {
+            error!("Failed to read the preview instance registry: {error}");
+            PreviewProbe::Silent
+        }
+    }
 }
 
 /// Probe the configured port range for a ready preview app, keeping the connection.
-async fn try_connect_polled_preview(
+async fn probe_polled_preview(
     tcp_config: PreviewTcpConfig,
     expected_fingerprint: &str,
     expected_platform: PreviewRuntimePlatform,
     start: Instant,
-) -> Option<PreviewAppClient> {
-    let client = PreviewAppClient::connect(tcp_config, expected_fingerprint, expected_platform)
-        .await
-        .ok()?;
-    info!(
-        "Connected to preview app after {}ms",
-        start.elapsed().as_millis()
-    );
-    Some(client)
+) -> PreviewProbe {
+    let probe =
+        PreviewAppClient::probe_ports(tcp_config, expected_fingerprint, expected_platform).await;
+    if matches!(probe, PreviewProbe::Connected(_)) {
+        info!(
+            "Connected to preview app after {}ms",
+            start.elapsed().as_millis()
+        );
+    }
+    probe
 }
 
 async fn preview_connection_result_from_device_event(
@@ -1036,6 +1065,7 @@ async fn preview_connection_result_from_device_event(
     expected_fingerprint: &str,
     expected_platform: PreviewRuntimePlatform,
     start: Instant,
+    rejection: &mut Option<String>,
 ) -> Option<ConnectionWaitResult> {
     match event? {
         DeviceEvent::Crashed(message) => {
@@ -1051,16 +1081,23 @@ async fn preview_connection_result_from_device_event(
             if level == tracing::Level::ERROR {
                 error!("{message}");
             }
-            if let Some(addr) = parse_preview_listening_addr(&message)
-                && let Ok(client) =
-                    PreviewAppClient::connect_addr(addr, expected_fingerprint, expected_platform)
-                        .await
-            {
-                info!(
-                    "Connected to preview app after {}ms",
-                    start.elapsed().as_millis()
-                );
-                return Some(ConnectionWaitResult::Ready(client));
+            if let Some(addr) = parse_preview_listening_addr(&message) {
+                match PreviewAppClient::probe_addr(addr, expected_fingerprint, expected_platform)
+                    .await
+                {
+                    PreviewProbe::Connected(client) => {
+                        info!(
+                            "Connected to preview app after {}ms",
+                            start.elapsed().as_millis()
+                        );
+                        return Some(ConnectionWaitResult::Ready(client));
+                    }
+                    // The app this launch just started announced its own port and
+                    // is the wrong build: that is the finding, and the wait keeps
+                    // it so the deadline can report it instead of guessing.
+                    PreviewProbe::Rejected(reason) => *rejection = Some(reason),
+                    PreviewProbe::Silent => {}
+                }
             }
             None
         }
@@ -1075,7 +1112,10 @@ fn parse_preview_listening_addr(message: &str) -> Option<SocketAddr> {
     Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
 }
 
-async fn drain_terminal_preview_event(running: &mut Pin<Box<Running>>) -> ConnectionWaitResult {
+async fn drain_terminal_preview_event(
+    running: &mut Pin<Box<Running>>,
+    rejection: Option<String>,
+) -> ConnectionWaitResult {
     while let Some(event) = futures_lite::future::poll_once(running.as_mut().next())
         .await
         .flatten()
@@ -1087,7 +1127,7 @@ async fn drain_terminal_preview_event(running: &mut Pin<Box<Running>>) -> Connec
         }
     }
 
-    ConnectionWaitResult::Timeout
+    ConnectionWaitResult::Timeout(rejection)
 }
 
 /// Get the path to the preview support app.
