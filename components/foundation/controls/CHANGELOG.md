@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/water-rs/waterui/compare/controls-v0.3.0...controls-v0.3.1) - 2026-09-11
+
+### Other
+
+- updated the following local packages: waterui-core, waterui-layout, waterui-text, waterui-locale, waterui-icon
+
 ## [0.3.0](https://github.com/water-rs/waterui/compare/controls-v0.2.1...controls-v0.3.0) - 2026-08-25
 
 ### Changed

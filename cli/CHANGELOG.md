@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/water-rs/waterui/compare/waterui-cli-v0.1.4...waterui-cli-v0.2.0) - 2026-09-11
+
+### Added
+
+- *(cli)* select coherent dev, nightly and stable framework channels
+- *(gpu-surface)* give a self-drawn surface an accessibility label
+- *(cli)* offer STIX Two Math in the built-in font registry
+
+### Fixed
+
+- *(cli)* pin the scaffold backend commits to the current submodules
+- *(cli)* pin the run and package context futures on the heap
+- *(cli)* pin the preview dylib build future on the heap
+- *(cli)* carry the checkout's [patch] tables into a local-path project
+- *(cli)* write framework patches as explicit tables
+- *(android)* clip a scroll container to its own viewport
+- *(android)* keep a gesture with the view that took its touch-down
+- *(cli)* use dunce canonicalize and stage hydrolysis assets before build on Windows
+- *(cli)* check native library versions in the Linux doctor
+- *(cli)* report the diagnostics a failed command's tail elides
+- *(apple)* attach the native capture fence's completion handler before committing it
+
+### Other
+
+- *(backends)* pin the backend dev heads with the slider measurement fix
+- Merge pull request #512 from water-rs/agent/graphics-deps-405
+- *(deps)* vello_cpu 0.2 and the remaining tooling bumps
+- *(backends)* pin the merged backend dev heads
+- *(android)* take the runtime's type-resolved detekt pass
+- Merge pull request #404 from water-rs/agent/cef-generic-input-252
+- Merge pull request #378 from water-rs/fix/windows-run-canonicalize-icon
+- Merge pull request #384 from water-rs/agent/apple-inspect-node-326
+- Merge pull request #385 from water-rs/agent/doctor-linux-lib-versions-376
+- *(cli)* pin the scaffold to the Android runtime with the bounded colour fill
+- *(apple)* take apple-backend dev at dd07ae94 and move the CLI pin with it
+- *(apple)* take apple-backend dev at aa55c057 and move the CLI pin with it
+- Merge pull request #346 from water-rs/agent/failure-report-diagnostics
+- *(apple)* pin apple-backend a676865 and demo the text-field selection menu
+- Merge pull request #309 from water-rs/agent/apple-capture-fence
+- Merge pull request #263 from water-rs/agent/watcher-set-crate/20260902-105630
+- *(webview)* decouple the Chromium CDP session from waterui-webview
+- *(cli)* move the built-in font registry into TOML data
+
 ## [0.1.4](https://github.com/water-rs/waterui/compare/cli-v0.1.3...waterui-cli-v0.1.4) - 2026-08-25
 
 ### Changed

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/water-rs/waterui/compare/media-v0.3.0...media-v0.3.1) - 2026-09-11
+
+### Fixed
+
+- *(web)* restore the wasm32 build of the hydrolysis web runner and check it in CI
+- *(testing)* install self-drawn realizations in the test harness env
+- *(release)* verify registry-only package graph
+
+### Other
+
+- *(deps)* delete dependencies nothing imports
+- ship the licence texts in every published crate
+- prepare WaterUI 0.3 release versions
+
 ## [0.3.0](https://github.com/water-rs/waterui/compare/media-v0.2.1...media-v0.3.0) - 2026-08-25
 
 ### Changed

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/water-rs/waterui/compare/ffi-v0.3.0...ffi-v0.3.1) - 2026-09-11
+
+### Added
+
+- *(ffi)* draw nested GPU surfaces into a captured subtree
+- *(ffi)* capture Android view subtrees into the filter pipeline through AHardwareBuffer
+- *(graphics)* let a picture offer its own accessible name
+- *(gpu-surface)* give a self-drawn surface an accessibility label
+- *(text)* share one font collection through the environment
+- *(graphics)* rasterise static scenes into a native Picture view
+- *(cli)* make `water run --logs` raise the app's Rust log filter
+- *(ffi)* carry SurfaceInputEvent to GpuSurface over the C ABI
+
+### Fixed
+
+- *(ffi)* record the capture copy in its own raw encoder
+- *(ffi)* drop the hand-written JNI ids the gpu macros now generate
+- *(ffi)* build the capture fence constructor only where a capture path exists
+- *(graphics)* poll the device after every presented frame
+- *(ffi)* initialise the applied-filter capture texture before the host writes it
+- *(ffi)* drop the argument-count expectation clippy never fulfils on an extern fn
+
+### Other
+
+- *(ffi)* build the header generator outside the framework graph and cache its expansion
+- *(ffi)* retire the CEF-specific input entry points for the GpuSurface carrier
+- Merge pull request #315 from water-rs/agent/map-native-realization-hook
+- Merge pull request #307 from water-rs/agent/run-logs-rust-filter
+- *(ffi)* consume the struct ToJavaStruct converts
+- *(ffi)* compile and lint the Android FFI
+- *(ffi)* sort the gpu_surface re-exports the way rustfmt groups them
+
 ## [0.3.0](https://github.com/water-rs/waterui/compare/ffi-v0.2.1...ffi-v0.3.0) - 2026-08-25
 
 ### Changed
