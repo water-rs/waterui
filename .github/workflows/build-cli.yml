@@ -227,22 +227,44 @@ jobs:
       - name: Stage dist-generated Homebrew formula
         run: cp target/distrib/water.rb homebrew-water/Formula/water.rb
 
-      - name: Push Homebrew formula update
+      # The tap's `dev` is ruled like every other branch in the organisation:
+      # changes arrive through a pull request and commits carry a verified
+      # signature. A plain `git push` of a locally made commit satisfies
+      # neither and was rejected with GH013 for `waterui-cli-v0.2.1`, failing
+      # the job after the release assets had already gone up. Both rules are
+      # met by going through GitHub rather than around it: this action commits
+      # through the API, which signs, and opens the pull request; the merge
+      # below is an API merge, which signs too.
+      - name: Open the Homebrew formula update
+        id: homebrew
+        uses: peter-evans/create-pull-request@v7
+        with:
+          path: homebrew-water
+          token: ${{ secrets.HOMEBREW_PAT }}
+          sign-commits: true
+          branch: water-${{ needs.check.outputs.version }}
+          delete-branch: true
+          add-paths: Formula/water.rb
+          commit-message: "water ${{ needs.check.outputs.version }}"
+          title: "water ${{ needs.check.outputs.version }}"
+          body: |
+            The formula `dist` generated for
+            [`${{ needs.check.outputs.tag }}`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.check.outputs.tag }}).
+
+      # The formula is generated, so there is nothing here for a human to
+      # review; the pull request exists because the branch rule asks for one.
+      - name: Merge the Homebrew formula update
+        if: steps.homebrew.outputs.pull-request-number
         shell: bash
         env:
-          VERSION: ${{ needs.check.outputs.version }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_PAT }}
+          PR: ${{ steps.homebrew.outputs.pull-request-number }}
         run: |
           set -euo pipefail
-          cd homebrew-water
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          git add Formula/water.rb
-          if git diff --cached --quiet; then
-            echo "No Homebrew changes to publish."
-            exit 0
-          fi
-          git commit -m "water ${VERSION}"
-          git push
+          gh pr merge "$PR" \
+            --repo water-rs/homebrew-water \
+            --squash \
+            --delete-branch
 
   # The runtime zips and the manifest the CLI resolves them through, appended
   # to the release the job above already published. Separate because the WPE
