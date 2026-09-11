@@ -1301,10 +1301,36 @@ impl Project {
     /// dropped, and a project scaffolded earlier would otherwise build a graph
     /// the checkout no longer produces, silently. The manifest is rewritten
     /// only when the tables differ, so an up-to-date project stays untouched.
+    ///
+    /// A project that is itself a member of the checkout's workspace — every
+    /// example and playground in this repository — needs no copy, because the
+    /// tables Cargo reads are the checkout's own. Writing one anyway put a
+    /// `[patch.crates-io]` table into a member manifest, where Cargo ignores it
+    /// and says so on every single build.
     async fn refresh_local_patches(project_root: &Path, waterui_path: &Path) -> eyre::Result<()> {
         let project_root = project_root.to_path_buf();
         let waterui_path = waterui_path.to_path_buf();
         unblock(move || {
+            let checkout = project_root.join(&waterui_path);
+            let patch_root = templates::patch_manifest_dir(&project_root)?;
+            if same_directory(&patch_root, &checkout)? {
+                return Ok(());
+            }
+            if !same_directory(&patch_root, &project_root)? {
+                // Cargo reads `[patch]` from `patch_root` and nothing this
+                // function writes into the project could change that, so the
+                // honest move is to say which manifest the tables belong in
+                // rather than write a copy that is read by nobody.
+                eyre::bail!(
+                    "This project is a member of the Cargo workspace at {}, so Cargo reads \
+                     [patch] from {} and ignores any copy here. Move the WaterUI checkout's \
+                     [patch] tables — the ones in {} — into that workspace manifest, or take \
+                     the project out of that workspace.",
+                    patch_root.display(),
+                    patch_root.join("Cargo.toml").display(),
+                    checkout.join("Cargo.toml").display(),
+                );
+            }
             let cargo_path = project_root.join("Cargo.toml");
             let text = std::fs::read_to_string(&cargo_path)?;
             let current = CargoManifest::from_slice(text.as_bytes())?.patch;
@@ -1965,6 +1991,16 @@ pub struct Package {
     pub accessory: bool,
 }
 
+/// Whether two paths name the same directory on disk.
+///
+/// Compared after canonicalization, because the two sides come from different
+/// places — one walked up from the project, one joined from a relative
+/// `waterui_path` — and `examples/filter/../..` is the repository root however
+/// it is spelled.
+fn same_directory(left: &Path, right: &Path) -> std::io::Result<bool> {
+    Ok(std::fs::canonicalize(left)? == std::fs::canonicalize(right)?)
+}
+
 fn default_assets_path() -> String {
     "assets".to_string()
 }
@@ -2385,6 +2421,73 @@ mod local_patch_tests {
         assert_eq!(
             std::fs::read_to_string(&cargo_path).expect("manifest after the second refresh"),
             refreshed
+        );
+    }
+
+    /// A project inside the checkout's own workspace — every example in this
+    /// repository — is already governed by the checkout's tables, so nothing is
+    /// copied into the member manifest, where Cargo would ignore it and warn on
+    /// every build.
+    #[test]
+    fn a_member_of_the_checkouts_workspace_keeps_its_manifest() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let checkout = directory.path().join("waterui");
+        let app = checkout.join("examples/app");
+        std::fs::create_dir_all(&app).expect("project dir");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            include_str!("../../tests/fixtures/local_checkout_patches.toml"),
+        )
+        .expect("checkout manifest");
+        let manifest = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nwaterui = { path = \"../..\" }\n";
+        let cargo_path = app.join("Cargo.toml");
+        std::fs::write(&cargo_path, manifest).expect("project manifest");
+
+        smol::block_on(Project::refresh_local_patches(&app, Path::new("../..")))
+            .expect("tables refresh");
+
+        assert_eq!(
+            std::fs::read_to_string(&cargo_path).expect("manifest after the refresh"),
+            manifest
+        );
+    }
+
+    /// A project inside someone else's workspace cannot carry the tables at all:
+    /// Cargo reads them from that workspace root. Saying which manifest they
+    /// belong in beats writing a copy that is read by nobody.
+    #[test]
+    fn a_member_of_a_foreign_workspace_is_told_where_the_tables_belong() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let checkout = directory.path().join("waterui");
+        std::fs::create_dir_all(&checkout).expect("checkout dir");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            include_str!("../../tests/fixtures/local_checkout_patches.toml"),
+        )
+        .expect("checkout manifest");
+        let workspace = directory.path().join("their-workspace");
+        let app = workspace.join("app");
+        std::fs::create_dir_all(&app).expect("project dir");
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\"]\n",
+        )
+        .expect("workspace manifest");
+        let manifest = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nwaterui = { path = \"../../waterui\" }\n";
+        let cargo_path = app.join("Cargo.toml");
+        std::fs::write(&cargo_path, manifest).expect("project manifest");
+
+        let error = smol::block_on(Project::refresh_local_patches(
+            &app,
+            Path::new("../../waterui"),
+        ))
+        .expect_err("a copy here would be ignored");
+
+        let message = error.to_string();
+        assert!(message.contains("their-workspace"), "{message}");
+        assert_eq!(
+            std::fs::read_to_string(&cargo_path).expect("manifest after the refusal"),
+            manifest
         );
     }
 }
