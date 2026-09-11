@@ -204,6 +204,10 @@ native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.3.0", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
+# 29, not 30, and not by neglect: `vello` 0.10.0 — the newest release — pins
+# `wgpu` 29.0.3 in its own workspace, so taking 30 here would put two `wgpu`
+# majors in the graph and split every type that crosses between the renderer
+# and us. This moves when vello releases against 30 (#405).
 wgpu = "29.0.4"
 encase = "0.12"
 vello = "0.9"
@@ -489,9 +493,19 @@ xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e7
 # storage and takes its address as the opaque class pointer.
 block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae859d1ee8e8cb5eef6a516471f1578d26b96" }
 
-# vello 0.9 loses the Vulkan device on Mali (select's discarded arm computes an
-# underflowed workgroup-array index; Mali page-faults on it). Fixed upstream in
-# linebender/vello#1817; drop this patch when a release containing it ships.
+# vello loses the Vulkan device on Mali: `select`'s discarded arm computes an
+# underflowed workgroup-array index and Mali page-faults on it. The fix is
+# ours, offered upstream as linebender/vello#1817 and still open there, so this
+# patch is what carries it — drop it when a release containing that PR ships.
+#
+# This rev is `v0.10.0` for every crate the workspace takes from it. The six
+# commits between it and the tag are the version bump and five changes under
+# `sparse_strips/`, which is `vello_hybrid`'s line and comes from a different
+# rev below; not a line of `vello`, `vello_encoding` or `vello_shaders`
+# differs. So the `vello = "0.9"` requirement above understates what is
+# actually compiled, and moving it to "0.10" would buy no code — only a
+# lockstep re-release of `waterui-graphics` and then `hydrolysis`, which
+# consumes graphics from crates.io and requires `vello ^0.9`.
 vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
 
 # vello_hybrid 0.2.0 keeps only one physical layer in its image atlas off wasm,
