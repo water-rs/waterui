@@ -21,11 +21,9 @@ members = [
     "backends/core",
     "backends/dew",
     "backends/gtk",
-    "backends/hydrolysis",
     "components/icon/*",
 ]
 exclude = [
-  "hydrolysis",
   "derive",
   ".github",
   "*.png",
@@ -192,7 +190,7 @@ waterui-gtk = { version = "0.1.1", path = "backends/gtk" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.0", path = "src", default-features = false }
 waterui-dylib = { version = "0.4.0", path = "utils/dylib", default-features = false }
-hydrolysis = { version = "0.2.0", path = "backends/hydrolysis", default-features = false }
+hydrolysis = { version = "0.2.0", default-features = false }
 waterui = { version = "0.4.0", path = "." }
 waterui-icons-codegen = { version = "0.1.1", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
@@ -456,12 +454,19 @@ waterui-video = { path = "components/multimedia/video" }
 # `Str` types and `Svg::new("…")` stops compiling.
 waterui-str = { path = "utils/str" }
 waterui-macros = { path = "macros" }
-# The Material 3 theme is extracted too (#481) and pulls the rest of the
-# framework from the registry; every crate it names needs an entry here or the
-# workspace builds a second `waterui` beside its own.
+# The Hydrolysis renderer and its Material 3 theme are extracted too (#480,
+# #481) and pull the rest of the framework from the registry; every crate they
+# name needs an entry here or the workspace builds a second `waterui` beside
+# its own.
 waterui = { path = "." }
+waterui-assets = { path = "components/assets/runtime" }
 waterui-backend-core = { path = "backends/core" }
 waterui-form = { path = "components/foundation/form" }
+waterui-icon = { path = "components/foundation/icon" }
+waterui-inspector-protocol = { path = "components/devtools/inspector/protocol" }
+waterui-locale = { path = "utils/locale" }
+waterui-webview = { path = "components/platform/webview" }
+waterkit-clipboard = { path = "kit/platform/clipboard" }
 # The extracted image, visualizer and video-gpu crates depend on the registry
 # waterkit crates; resolve those to the kit copies for the same reason.
 waterkit-audio = { path = "kit/multimedia/audio" }

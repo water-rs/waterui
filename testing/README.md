@@ -63,6 +63,6 @@ fn stepper_updates(ui: UiBuilder) {
   frames (`PerfConfig`, `PerfReport`) with per-phase Hydrolysis timings and process
   resource samples.
 
-Because the tree under test is the [Hydrolysis accessibility tree](../backends/hydrolysis),
+Because the tree under test is the [Hydrolysis accessibility tree](https://github.com/water-rs/hydrolysis),
 every test doubles as an accessibility-correctness test: a component that cannot be
 driven through this crate is a component assistive technology cannot drive either.
