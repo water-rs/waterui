@@ -126,7 +126,7 @@ waterui-text = { version = "0.4.0", path = "components/foundation/text" }
 waterui-media = { version = "0.3.1", path = "components/multimedia/media" }
 waterui-image = "0.4.0"
 waterui-video = { version = "0.3.1", path = "components/multimedia/video" }
-waterui-video-gpu = "0.3.0"
+waterui-video-gpu = "0.3.1"
 waterui-visualizer = "0.4.0"
 waterui-form = { version = "0.3.1", path = "components/foundation/form" }
 waterui-controls = { version = "0.3.1", path = "components/foundation/controls"}
@@ -453,13 +453,16 @@ waterui-url = { path = "utils/url" }
 waterui-controls = { path = "components/foundation/controls" }
 waterui-video = { path = "components/multimedia/video" }
 # The extracted image, visualizer and video-gpu crates depend on the registry
-# waterkit codec/audio crates; resolve those to the kit copies for the same reason.
+# waterkit crates; resolve those to the kit copies for the same reason.
 waterkit-audio = { path = "kit/multimedia/audio" }
+waterkit-build = { path = "kit/utils/build" }
+waterkit-fs = { path = "kit/platform/fs" }
 waterkit-codec = { path = "kit/multimedia/codec" }
-# `waterui-video-gpu` on crates.io still requires the 0.3 foundation; until it
-# re-releases against graphics/text 0.4 (#533) it resolves from the commit on
-# its `dev` branch that carries exactly that bump.
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "6101fa9daa17aba022e270eb4a0b7c6a0d9e5a79" }
+waterkit-video = { path = "kit/multimedia/video" }
+waterkit-video-container = { path = "kit/multimedia/video/container" }
+waterkit-video-core = { path = "kit/multimedia/video/core" }
+waterkit-video-player = { path = "kit/multimedia/video/player" }
+waterkit-video-streaming = { path = "kit/multimedia/video/streaming" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte

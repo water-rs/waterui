@@ -1208,7 +1208,7 @@ version = "3.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dee98b0db6a962de883bf5d20362dee4d7ca0d12fe39a7c6c73c844e1cd7c1f"
 dependencies = [
- "darling 0.21.3",
+ "darling 0.23.0",
  "ident_case",
  "prettyplease",
  "proc-macro2",
@@ -2456,7 +2456,6 @@ dependencies = [
  "ident_case",
  "proc-macro2",
  "quote",
- "strsim",
  "syn 2.0.119",
 ]
 
@@ -12206,41 +12205,6 @@ dependencies = [
  "smallvec",
  "smol",
  "swift-bridge",
- "symphonia-codec-aac",
- "symphonia-core 0.6.1",
- "tempfile",
- "thiserror 2.0.20",
- "timestretch",
- "tracing",
- "url",
- "wasm-bindgen",
- "waterkit-build 0.1.1",
- "web-sys",
- "windows 0.62.2",
- "zbus",
- "zenwave 0.5.0",
-]
-
-[[package]]
-name = "waterkit-audio"
-version = "0.1.1"
-source = "git+https://github.com/water-rs/waterkit.git?branch=dev#8465221f3087b2403f92e1edc0c3ba384a2b3a83"
-dependencies = [
- "async-channel",
- "cpal 0.18.2",
- "futures",
- "jni 0.22.4",
- "js-sys",
- "lofty",
- "mpris-server",
- "ndk",
- "ndk-context",
- "ndk-sys",
- "num-traits",
- "rodio",
- "smallvec",
- "smol",
- "swift-bridge",
  "symphonia-adapter-fdk-aac",
  "symphonia-codec-aac",
  "symphonia-core 0.6.1",
@@ -12250,27 +12214,16 @@ dependencies = [
  "tracing",
  "url",
  "wasm-bindgen",
- "waterkit-build 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
+ "waterkit-build",
  "web-sys",
  "windows 0.62.2",
  "zbus",
- "zenwave 0.6.1",
+ "zenwave 0.5.0",
 ]
 
 [[package]]
 name = "waterkit-build"
 version = "0.1.1"
-dependencies = [
- "jni 0.22.4",
- "ndk-context",
- "swift-bridge-build",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "waterkit-build"
-version = "0.1.1"
-source = "git+https://github.com/water-rs/waterkit.git?branch=dev#8465221f3087b2403f92e1edc0c3ba384a2b3a83"
 dependencies = [
  "jni 0.22.4",
  "ndk-context",
@@ -12292,7 +12245,7 @@ dependencies = [
  "objc",
  "swift-bridge",
  "thiserror 2.0.20",
- "waterkit-build 0.1.1",
+ "waterkit-build",
  "waterkit-core",
  "wgpu",
 ]
@@ -12325,7 +12278,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
  "wasm-bindgen-futures",
- "waterkit-build 0.1.1",
+ "waterkit-build",
  "web-sys",
 ]
 
@@ -12356,44 +12309,8 @@ dependencies = [
  "swift-bridge",
  "thiserror 2.0.20",
  "tracing",
- "waterkit-build 0.1.1",
- "waterkit-video-core 0.1.1",
- "wgpu",
- "wgpu-hal",
- "windows 0.62.2",
- "yuv",
-]
-
-[[package]]
-name = "waterkit-codec"
-version = "0.1.1"
-source = "git+https://github.com/water-rs/waterkit.git?branch=dev#8465221f3087b2403f92e1edc0c3ba384a2b3a83"
-dependencies = [
- "avif-parse",
- "cros-codecs",
- "half",
- "image",
- "jni 0.22.4",
- "libc",
- "moxcms",
- "ndk",
- "ndk-sys",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-core-media",
- "objc2-core-video",
- "objc2-foundation 0.3.2",
- "objc2-io-surface",
- "objc2-metal 0.3.2",
- "objc2-video-toolbox",
- "rav1d",
- "rav1e",
- "shaderloom",
- "swift-bridge",
- "thiserror 2.0.20",
- "tracing",
- "waterkit-build 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
- "waterkit-video-core 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
+ "waterkit-build",
+ "waterkit-video-core",
  "wgpu",
  "wgpu-hal",
  "windows 0.62.2",
@@ -12422,8 +12339,8 @@ dependencies = [
  "roxmltree 0.21.1",
  "swift-bridge",
  "thiserror 2.0.20",
- "waterkit-build 0.1.1",
- "waterkit-fs 0.1.1",
+ "waterkit-build",
+ "waterkit-fs",
 ]
 
 [[package]]
@@ -12439,25 +12356,7 @@ dependencies = [
  "swift-bridge",
  "thiserror 2.0.20",
  "tracing",
- "waterkit-build 0.1.1",
- "windows 0.62.2",
-]
-
-[[package]]
-name = "waterkit-fs"
-version = "0.1.1"
-source = "git+https://github.com/water-rs/waterkit.git?branch=dev#8465221f3087b2403f92e1edc0c3ba384a2b3a83"
-dependencies = [
- "async-fs",
- "dirs 6.0.0",
- "indexed_db_futures",
- "jni 0.22.4",
- "serde",
- "serde_json",
- "swift-bridge",
- "thiserror 2.0.20",
- "tracing",
- "waterkit-build 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
+ "waterkit-build",
  "windows 0.62.2",
 ]
 
@@ -12470,7 +12369,7 @@ dependencies = [
  "ndk-context",
  "swift-bridge",
  "thiserror 2.0.20",
- "waterkit-build 0.1.1",
+ "waterkit-build",
  "waterkit-core",
  "windows 0.62.2",
  "zbus",
@@ -12489,7 +12388,7 @@ dependencies = [
  "swift-bridge",
  "thiserror 2.0.20",
  "wasm-bindgen",
- "waterkit-build 0.1.1",
+ "waterkit-build",
  "waterkit-core",
  "waterkit-permission",
  "web-sys",
@@ -12509,7 +12408,7 @@ dependencies = [
  "swift-bridge",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "waterkit-build 0.1.1",
+ "waterkit-build",
  "waterkit-core",
  "web-sys",
  "windows 0.62.2",
@@ -12532,7 +12431,7 @@ dependencies = [
  "swift-bridge",
  "thiserror 2.0.20",
  "tracing",
- "waterkit-build 0.1.1",
+ "waterkit-build",
  "waterkit-core",
  "wayland-sys",
  "wgpu",
@@ -12542,10 +12441,9 @@ dependencies = [
 [[package]]
 name = "waterkit-video"
 version = "0.1.1"
-source = "git+https://github.com/water-rs/waterkit.git?branch=dev#8465221f3087b2403f92e1edc0c3ba384a2b3a83"
 dependencies = [
  "waterkit-video-container",
- "waterkit-video-core 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
+ "waterkit-video-core",
  "waterkit-video-player",
  "waterkit-video-streaming",
 ]
@@ -12553,7 +12451,6 @@ dependencies = [
 [[package]]
 name = "waterkit-video-container"
 version = "0.1.1"
-source = "git+https://github.com/water-rs/waterkit.git?branch=dev#8465221f3087b2403f92e1edc0c3ba384a2b3a83"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -12562,20 +12459,12 @@ dependencies = [
  "quick-xml 0.41.0",
  "subtp",
  "transmux",
- "waterkit-video-core 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
+ "waterkit-video-core",
 ]
 
 [[package]]
 name = "waterkit-video-core"
 version = "0.1.1"
-dependencies = [
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "waterkit-video-core"
-version = "0.1.1"
-source = "git+https://github.com/water-rs/waterkit.git?branch=dev#8465221f3087b2403f92e1edc0c3ba384a2b3a83"
 dependencies = [
  "thiserror 2.0.20",
 ]
@@ -12583,7 +12472,6 @@ dependencies = [
 [[package]]
 name = "waterkit-video-player"
 version = "0.1.1"
-source = "git+https://github.com/water-rs/waterkit.git?branch=dev#8465221f3087b2403f92e1edc0c3ba384a2b3a83"
 dependencies = [
  "aes",
  "async-channel",
@@ -12595,18 +12483,17 @@ dependencies = [
  "num-traits",
  "swift-bridge",
  "tracing",
- "waterkit-audio 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
- "waterkit-build 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
- "waterkit-codec 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
+ "waterkit-audio",
+ "waterkit-build",
+ "waterkit-codec",
  "waterkit-video-container",
- "waterkit-video-core 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
+ "waterkit-video-core",
  "waterkit-video-streaming",
 ]
 
 [[package]]
 name = "waterkit-video-streaming"
 version = "0.1.1"
-source = "git+https://github.com/water-rs/waterkit.git?branch=dev#8465221f3087b2403f92e1edc0c3ba384a2b3a83"
 dependencies = [
  "async-fs",
  "base64 0.22.1",
@@ -12620,9 +12507,9 @@ dependencies = [
  "quick-m3u8",
  "url",
  "uuid",
- "waterkit-video-core 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
+ "waterkit-video-core",
  "windows 0.62.2",
- "zenwave 0.6.1",
+ "zenwave 0.5.0",
 ]
 
 [[package]]
@@ -13001,7 +12888,7 @@ dependencies = [
  "tracing-oslog",
  "tracing-panic",
  "tracing-subscriber",
- "waterkit-audio 0.1.1",
+ "waterkit-audio",
  "waterui",
  "waterui-browser-cef",
  "waterui-chromium",
@@ -13220,7 +13107,7 @@ dependencies = [
  "mp4-atom",
  "num-traits",
  "peniko",
- "waterkit-codec 0.1.1",
+ "waterkit-codec",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
@@ -13455,9 +13342,9 @@ dependencies = [
  "hydrolysis-m3",
  "image",
  "tracing",
- "waterkit-codec 0.1.1",
+ "waterkit-codec",
  "waterkit-dialog",
- "waterkit-fs 0.1.1",
+ "waterkit-fs",
  "waterui",
  "waterui-controls",
  "waterui-core",
@@ -13684,8 +13571,9 @@ dependencies = [
 
 [[package]]
 name = "waterui-video-gpu"
-version = "0.3.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=6101fa9daa17aba022e270eb4a0b7c6a0d9e5a79#6101fa9daa17aba022e270eb4a0b7c6a0d9e5a79"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49e265d88476772a1197c05724c69c75bf2a9509619ed25c80406ecced6a8d5e"
 dependencies = [
  "async-channel",
  "executor-core",
@@ -13697,9 +13585,9 @@ dependencies = [
  "shaderloom",
  "tracing",
  "uuid",
- "waterkit-audio 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
- "waterkit-codec 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
- "waterkit-fs 0.1.1 (git+https://github.com/water-rs/waterkit.git?branch=dev)",
+ "waterkit-audio",
+ "waterkit-codec",
+ "waterkit-fs",
  "waterkit-video",
  "waterui-controls",
  "waterui-core",
@@ -13724,7 +13612,7 @@ dependencies = [
  "peniko",
  "realfft",
  "tracing",
- "waterkit-audio 0.1.1",
+ "waterkit-audio",
  "waterui-core",
  "waterui-graphics",
 ]
@@ -15268,7 +15156,6 @@ dependencies = [
  "async-lock",
  "async-native-tls",
  "async-net",
- "async-tungstenite",
  "base64 0.22.1",
  "cfg_aliases 0.2.2",
  "dirs 6.0.0",
