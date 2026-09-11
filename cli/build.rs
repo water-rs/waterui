@@ -53,7 +53,7 @@ fn main() {
         RELEASE_BUILD_KIND
     };
     let scaffold_metadata = resolve_scaffold_metadata(&cli_manifest_dir, workspace_root.as_deref());
-    warn_on_stale_backend_pins(
+    check_scaffold_pins(
         &cli_manifest_dir,
         workspace_root.as_deref(),
         &scaffold_metadata,
@@ -132,27 +132,72 @@ fn emit_scaffold_metadata(
     );
 }
 
-/// Warn when a backend pin in `cli/Cargo.toml` has drifted from its submodule.
+/// Hold the pins in `cli/Cargo.toml` to what this workspace actually is.
 ///
-/// A workspace build reads the real submodule commit, so the literals in the manifest
-/// only ever reach a *published* CLI — which has no submodule to read and therefore has
-/// to carry the value. They cannot be derived away, only kept honest, and when they go
-/// stale a released CLI scaffolds projects against a backend several commits behind the
-/// one this repository builds and tests against.
+/// A workspace build reads the real versions and the real submodule commits, so the
+/// literals in the manifest only ever reach a *published* CLI — which has no workspace
+/// to read and therefore has to carry them. They cannot be derived away, only kept
+/// honest, and when they go stale `cargo install waterui-cli` scaffolds projects against
+/// a framework one or two releases behind the tree they were scaffolded from (#548).
 ///
-/// A test asserts the pins match, but that only fires when someone runs the CLI's tests.
-/// Surfacing it as a build warning puts it in front of whoever bumped the submodule, in
-/// the same command they were already running.
-fn warn_on_stale_backend_pins(
+/// The two kinds of pin fail differently on purpose. A version changes only when a crate
+/// is released, and a wrong one is shipped straight to users, so a mismatch stops the
+/// build with the line to write. A submodule commit moves all the time during ordinary
+/// backend work, where a hard failure would be in the way of the change itself, so that
+/// one warns.
+fn check_scaffold_pins(
     cli_manifest_dir: &Path,
     workspace_root: Option<&Path>,
     resolved: &ScaffoldMetadata,
 ) {
-    let Some(_) = workspace_root else {
+    let Some(workspace_root) = workspace_root else {
         return;
     };
     let cli_manifest = manifest_value(&cli_manifest_dir.join("Cargo.toml"));
     let scaffold_metadata = &cli_manifest["package"]["metadata"]["waterui-scaffold"];
+
+    // `waterui-testing` inherits the workspace version rather than carrying one
+    // of its own, and a channel update looks its entry up by name like any
+    // other, so it is held to `[workspace.package]`.
+    let workspace_version =
+        manifest_value(&workspace_root.join("Cargo.toml"))["workspace"]["package"]["version"]
+            .as_str()
+            .expect("missing workspace.package.version")
+            .to_string();
+    let versions = &resolved.versions;
+    let stale: Vec<String> = [
+        ("waterui-version", versions.waterui.as_str()),
+        ("waterui-core-version", versions.waterui_core.as_str()),
+        ("waterui-testing-version", workspace_version.as_str()),
+        ("waterui-ffi-version", versions.waterui_ffi.as_str()),
+        ("hydrolysis-version", versions.hydrolysis.as_str()),
+        ("hydrolysis-m3-version", versions.hydrolysis_m3.as_str()),
+        ("waterui-dew-version", versions.waterui_dew.as_str()),
+        ("waterui-gtk-version", versions.waterui_gtk.as_str()),
+        (
+            "waterui-browser-cef-version",
+            versions.waterui_browser_cef.as_str(),
+        ),
+        ("waterui-preview-version", versions.waterui_preview.as_str()),
+        (
+            "waterui-preview-protocol-version",
+            versions.waterui_preview_protocol.as_str(),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(field, resolved_version)| {
+        let pinned = manifest_scaffold_string(scaffold_metadata, field);
+        (pinned != resolved_version)
+            .then(|| format!("  {field} = \"{resolved_version}\"   (pinned {pinned})"))
+    })
+    .collect();
+    assert!(
+        stale.is_empty(),
+        "cli/Cargo.toml [package.metadata.waterui-scaffold] is behind this workspace. \
+         A released CLI scaffolds projects against these literals, so they travel with \
+         the version bump. Set:\n{}",
+        stale.join("\n")
+    );
 
     for (field, resolved_commit) in [
         (

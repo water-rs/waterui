@@ -13,16 +13,18 @@ keywords.workspace = true
 categories.workspace = true
 
 [package.metadata.waterui-scaffold]
-waterui-version = "0.3.0"
-waterui-core-version = "0.3.0"
-waterui-testing-version = "0.3.0"
-waterui-ffi-version = "0.3.0"
+waterui-version = "0.4.0"
+waterui-core-version = "0.3.1"
+# `waterui-testing` inherits the workspace version rather than carrying its
+# own, so this entry mirrors `[workspace.package].version`.
+waterui-testing-version = "0.4.0"
+waterui-ffi-version = "0.3.1"
 hydrolysis-version = "0.2.0"
 hydrolysis-m3-version = "0.2.0"
-waterui-dew-version = "0.1.0"
-waterui-gtk-version = "0.1.0"
-waterui-browser-cef-version = "0.1.0"
-waterui-preview-version = "0.1.0"
+waterui-dew-version = "0.2.0"
+waterui-gtk-version = "0.1.1"
+waterui-browser-cef-version = "0.2.0"
+waterui-preview-version = "0.1.1"
 waterui-preview-protocol-version = "0.1.0"
 android-kotlin-version = "2.3.21"
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
