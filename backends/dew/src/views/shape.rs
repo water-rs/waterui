@@ -133,11 +133,17 @@ fn append_arc(
     width: f64,
     height: f64,
 ) {
+    use kurbo::Shape as _;
+
     let radii = (f64::from(radius_x) * width, f64::from(radius_y) * height);
     let arc = kurbo::Arc::new(center, radii, f64::from(start), f64::from(sweep), 0.0);
-    let mut segments = arc.append_iter(BEZIER_TOLERANCE);
-    // The first element is a `MoveTo` to the arc's start; a path already under
-    // construction wants a line there instead, and an empty one wants the move.
+    // `Shape::path_elements`, not `Arc::append_iter`: only the former leads with
+    // a `MoveTo` to the arc's start. This used to call `append_iter`, whose
+    // first element is the first cubic, so the `MoveTo` match below discarded
+    // a segment of every arc and never joined the path to the arc's start.
+    let mut segments = arc.path_elements(BEZIER_TOLERANCE);
+    // A path already under construction wants a line to the start instead of
+    // the move, and an empty one wants the move.
     if let Some(PathEl::MoveTo(entry)) = segments.next() {
         if path.elements().is_empty() {
             path.move_to(entry);
@@ -271,4 +277,44 @@ pub fn build_clip(shape: ClipShape, child: Box<dyn DewNode>) -> Box<dyn DewNode>
         child,
         mask: RefCell::new(None),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use core::f32::consts::TAU;
+
+    use kurbo::{PathEl, Point, Rect, Shape as _};
+    use waterui_shape::{PathCommand, ShapeKind};
+
+    use super::shape_path;
+
+    /// A custom path that is a single full-turn arc, as `Circle::path` emits.
+    /// The arc's start is where the path has to begin, and the whole turn has
+    /// to be there: this used to drop the first cubic of every arc and start
+    /// the path at the origin instead.
+    #[test]
+    fn a_custom_arc_starts_at_its_own_start_and_keeps_every_segment() {
+        let path = shape_path(
+            ShapeKind::CustomPath,
+            &[PathCommand::Arc {
+                cx: 0.5,
+                cy: 0.5,
+                rx: 0.5,
+                ry: 0.5,
+                start: 0.0,
+                sweep: TAU,
+            }],
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+        );
+        let Some(PathEl::MoveTo(entry)) = path.elements().first() else {
+            panic!("an arc opening a path moves to its start");
+        };
+        assert!((*entry - Point::new(100.0, 50.0)).hypot() < 1e-3);
+        let expected = core::f64::consts::PI * 50.0 * 50.0;
+        assert!(
+            (path.area().abs() - expected).abs() / expected < 1e-3,
+            "the full turn is present: area {} against {expected}",
+            path.area().abs()
+        );
+    }
 }
