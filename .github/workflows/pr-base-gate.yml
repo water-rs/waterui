@@ -1,0 +1,29 @@
+name: PR Base Gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited]
+
+permissions: {}
+
+jobs:
+  verify-source:
+    name: PR source gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: main only accepts merges from dev
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "${HEAD_REPO}" != "${BASE_REPO}" ]; then
+            echo "::error::Pull requests into 'main' must come from this repository, not a fork."
+            exit 1
+          fi
+          if [ "${HEAD_REF}" != "dev" ]; then
+            echo "::error::Pull requests into 'main' are only allowed from 'dev'. Retarget this pull request at 'dev' instead."
+            exit 1
+          fi
+          echo "'${HEAD_REF}' -> 'main': allowed."
