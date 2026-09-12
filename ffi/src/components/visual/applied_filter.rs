@@ -355,6 +355,88 @@ fn resolve_output_size(
     }
 }
 
+/// Combines a filter with the filter it encloses, into one.
+///
+/// A component that filters its own body, filtered again by its caller, is two
+/// filters over one subtree, and the `impl View` boundary between them hides
+/// the first from the second's type — so nothing at the authoring layer fuses
+/// them the way a chain written in one expression is fused. Run as written they
+/// cost two captures of the same content, two presentation targets and two
+/// full-size intermediates (#521).
+///
+/// A backend reaches this when the walk it already runs to resolve a view — id
+/// against its component registry, `waterui_view_body` when the id is not
+/// registered — starts at `outer`'s content and lands on another filter. That
+/// it landed there is the proof there was nothing realizable in between: every
+/// view that could draw is a registered component that would have stopped the
+/// walk first.
+///
+/// That walk consumes the views it steps through, `outer`'s content among them,
+/// so `outer.content` must already be null when this is called: the caller nulls
+/// it as it walks, and a non-null one here would mean a handle the backend still
+/// believes it owns.
+///
+/// Both descriptors are consumed. The returned descriptor carries `inner`'s
+/// content and a filter that runs `inner`'s filters and then `outer`'s, and the
+/// caller repeats until the content no longer resolves to a filter.
+///
+/// # Safety
+///
+/// - `inner` and `outer` must be valid descriptors whose filters have not been
+///   consumed by a previous call to this function or to
+///   [`waterui_applied_filter_create`].
+/// - `inner`'s content must be an owning handle from the matching FFI
+///   constructor; it becomes the returned descriptor's content.
+///
+/// # Panics
+///
+/// Panics if either descriptor's filter was already consumed, or if `outer`
+/// still holds a content handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_applied_filter_chain(
+    inner: *mut WuiAppliedFilter,
+    outer: *mut WuiAppliedFilter,
+) -> WuiAppliedFilter {
+    // SAFETY: the caller contract requires both descriptors to be valid and not
+    // otherwise borrowed for this call.
+    let (inner, outer) = unsafe { (&mut *inner, &mut *outer) };
+    // SAFETY: `take_filter` asserts the descriptor still owns its filter and nulls
+    // the field, so each is reclaimed exactly once.
+    let (inner_filter, outer_filter) =
+        unsafe { (take_filter(inner, "inner"), take_filter(outer, "outer")) };
+
+    // The chain captures what the inner filter captured, and the view that led
+    // from one to the other was consumed by the walk that found it.
+    assert!(
+        outer.content.is_null(),
+        "waterui_applied_filter_chain: the outer descriptor still holds a content handle, so the walk that reached the inner filter did not run on it"
+    );
+
+    let content = core::mem::replace(&mut inner.content, core::ptr::null_mut());
+    WuiAppliedFilter {
+        content,
+        filter: Box::into_raw(Box::new(AppliedFilter::chained(inner_filter, outer_filter)))
+            .cast::<c_void>(),
+    }
+}
+
+/// Reclaims a descriptor's filter, leaving the descriptor consumed.
+///
+/// # Safety
+///
+/// The descriptor must still own its filter.
+unsafe fn take_filter(descriptor: &mut WuiAppliedFilter, which: &str) -> AppliedFilter {
+    assert!(
+        !descriptor.filter.is_null(),
+        "waterui_applied_filter_chain: the {which} descriptor was already consumed"
+    );
+    // SAFETY: the assert above proves the descriptor still owns its filter, and the
+    // field is nulled immediately after, so it is reclaimed once.
+    let filter = unsafe { *Box::from_raw(descriptor.filter.cast::<AppliedFilter>()) };
+    descriptor.filter = core::ptr::null_mut();
+    filter
+}
+
 /// Creates persistent state and immediately consumes the semantic filter.
 ///
 /// Presentation targets are attached later with [`waterui_applied_filter_attach`],
@@ -382,7 +464,7 @@ pub unsafe extern "C" fn waterui_applied_filter_create(
         !wui_filter.filter.is_null(),
         "waterui_applied_filter_create: descriptor was already consumed"
     );
-    let filter: AppliedFilter =
+    let mut filter: AppliedFilter =
         // SAFETY: the assert above proves the descriptor still owns its filter, and the
         // field is nulled immediately after, so it is reclaimed once.
         unsafe { *Box::from_raw(wui_filter.filter.cast::<AppliedFilter>()) };

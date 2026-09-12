@@ -10846,6 +10846,48 @@ struct WuiTypeId waterui_metadata_applied_filter_id(void);
 struct WuiAppliedFilter waterui_force_as_metadata_applied_filter(struct WuiAnyView *view);
 
 /**
+ * Combines a filter with the filter it encloses, into one.
+ *
+ * A component that filters its own body, filtered again by its caller, is two
+ * filters over one subtree, and the `impl View` boundary between them hides
+ * the first from the second's type — so nothing at the authoring layer fuses
+ * them the way a chain written in one expression is fused. Run as written they
+ * cost two captures of the same content, two presentation targets and two
+ * full-size intermediates (#521).
+ *
+ * A backend reaches this when the walk it already runs to resolve a view — id
+ * against its component registry, `waterui_view_body` when the id is not
+ * registered — starts at `outer`'s content and lands on another filter. That
+ * it landed there is the proof there was nothing realizable in between: every
+ * view that could draw is a registered component that would have stopped the
+ * walk first.
+ *
+ * That walk consumes the views it steps through, `outer`'s content among them,
+ * so `outer.content` must already be null when this is called: the caller nulls
+ * it as it walks, and a non-null one here would mean a handle the backend still
+ * believes it owns.
+ *
+ * Both descriptors are consumed. The returned descriptor carries `inner`'s
+ * content and a filter that runs `inner`'s filters and then `outer`'s, and the
+ * caller repeats until the content no longer resolves to a filter.
+ *
+ * # Safety
+ *
+ * - `inner` and `outer` must be valid descriptors whose filters have not been
+ *   consumed by a previous call to this function or to
+ *   [`waterui_applied_filter_create`].
+ * - `inner`'s content must be an owning handle from the matching FFI
+ *   constructor; it becomes the returned descriptor's content.
+ *
+ * # Panics
+ *
+ * Panics if either descriptor's filter was already consumed, or if `outer`
+ * still holds a content handle.
+ */
+struct WuiAppliedFilter waterui_applied_filter_chain(struct WuiAppliedFilter *inner,
+                                                     struct WuiAppliedFilter *outer);
+
+/**
  * Creates persistent state and immediately consumes the semantic filter.
  *
  * Presentation targets are attached later with [`waterui_applied_filter_attach`],
