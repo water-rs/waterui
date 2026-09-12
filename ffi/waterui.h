@@ -7057,6 +7057,20 @@ typedef struct WuiViewEffect {
 } WuiViewEffect;
 
 /**
+ * Resolved output size returned to native before render scheduling.
+ */
+typedef struct WuiViewEffectOutputSize {
+  /**
+   * Output width in pixels.
+   */
+  uint32_t width;
+  /**
+   * Output height in pixels.
+   */
+  uint32_t height;
+} WuiViewEffectOutputSize;
+
+/**
  * Native callback invoked when an idle view-effect surface becomes dirty.
  */
 typedef void (*WuiViewEffectRedrawCallback)(void *context);
@@ -11663,24 +11677,22 @@ struct WuiViewEffectState *waterui_view_effect_create(struct WuiViewEffect *effe
                                                       const struct WuiEnv *env);
 
 /**
- * Attaches a native presentation target while preserving the effect renderer.
+ * Attaches a native presentation surface (non-Apple only).
  *
  * # Safety
  *
- * - `state` must come from [`waterui_view_effect_create`].
- * - `layer` must remain valid until [`waterui_view_effect_detach`].
- * - The state must currently be detached.
+ * Unreachable on Apple, where the host starts the renderer with
+ * [`waterui_view_effect_attach_host_textures`].
  *
  * # Panics
  *
- * Panics if `state` already has an output surface attached, if
- * `input_width`/`input_height` is zero, or if the computed output size is zero.
+ * Always.
  */
-void waterui_view_effect_attach(struct WuiViewEffectState *state,
-                                void *layer,
-                                uint32_t input_width,
-                                uint32_t input_height,
-                                bool prefers_hdr);
+void waterui_view_effect_attach(struct WuiViewEffectState *_state,
+                                void *_layer,
+                                uint32_t _input_width,
+                                uint32_t _input_height,
+                                bool _prefers_hdr);
 
 /**
  * Detaches the native presentation target without destroying the effect renderer.
@@ -11694,6 +11706,69 @@ void waterui_view_effect_attach(struct WuiViewEffectState *state,
  * Panics if `state` does not currently have an output surface attached.
  */
 void waterui_view_effect_detach(struct WuiViewEffectState *state);
+
+/**
+ * Attaches host-owned presentation on Apple, where frames arrive per texture.
+ *
+ * No layer is named because none is configured: the host keeps a pair of
+ * `IOSurface`-backed textures, hands one to
+ * [`waterui_view_effect_render_to_metal_texture`] per frame, and shows it on
+ * `CALayer.contents` once that frame's fence completes. The texture format is
+ * this call's answer, read back with
+ * [`waterui_view_effect_output_metal_pixel_format`], and the size the host
+ * must allocate comes from [`waterui_view_effect_resolve_output_size`].
+ *
+ * # Safety
+ *
+ * - `state` must come from [`waterui_view_effect_create`].
+ * - The state must currently be detached.
+ *
+ * # Panics
+ *
+ * Panics if `state` already has a presentation target attached, or if
+ * `input_width`/`input_height` or the computed output size is zero.
+ */
+void waterui_view_effect_attach_host_textures(struct WuiViewEffectState *state,
+                                              uint32_t input_width,
+                                              uint32_t input_height,
+                                              bool prefers_hdr);
+
+/**
+ * The `MTLPixelFormat` an attached effect renders its output in (Apple only).
+ *
+ * The host allocates its `IOSurface` pair from this. It is the raw Metal enum
+ * value because the presentation format has no name in the capture-format
+ * alphabet the Android path uses.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from [`waterui_view_effect_create`] with a
+ * presentation target attached.
+ *
+ * # Panics
+ *
+ * Panics if the effect is detached, or if its output format has no Metal
+ * equivalent.
+ */
+uint32_t waterui_view_effect_output_metal_pixel_format(const struct WuiViewEffectState *state);
+
+/**
+ * The output size this effect resolves an input size to.
+ *
+ * The host allocates the textures it presents from, so unlike the swapchain
+ * path the size cannot stay entirely on the Rust side.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer from [`waterui_view_effect_create`].
+ *
+ * # Panics
+ *
+ * Panics if the resolved size is zero in either dimension.
+ */
+struct WuiViewEffectOutputSize waterui_view_effect_resolve_output_size(const struct WuiViewEffectState *state,
+                                                                       uint32_t input_width,
+                                                                       uint32_t input_height);
 
 /**
  * Installs the native wake target for renderer-driven redraw requests.
@@ -11775,27 +11850,44 @@ void waterui_view_effect_composite_gpu_surface(struct WuiViewEffectState *_effec
 bool waterui_view_effect_is_ready(const struct WuiViewEffectState *state);
 
 /**
- * Render the effect.
+ * Render the effect into a host-owned Metal texture (Apple only).
  *
- * This function applies the effect to the captured input and renders to the output.
- *
- * # Arguments
- *
- * * `state` - Pointer to attached persistent state
- *
- * # Returns
- *
- * Whether another frame should be scheduled immediately.
+ * The returned fence completes when the GPU has finished writing `texture`;
+ * the host shows it then, and not before, because Core Animation would
+ * otherwise composite a half-drawn frame.
  *
  * # Safety
  *
- * `state` must be a valid pointer from `waterui_view_effect_create` with an attached target.
+ * - `state` must come from [`waterui_view_effect_create`] with a host-texture
+ *   target attached.
+ * - `texture` must point to a live `MTLTexture` of the attached output format
+ *   and the resolved output size.
+ * - `out_needs_redraw` must be writable.
  *
  * # Panics
  *
- * Panics if no input texture was imported before this call.
+ * Panics if the effect is detached, if setup has not completed, or if the host
+ * texture's format does not match the attached output format.
  */
-bool waterui_view_effect_render(struct WuiViewEffectState *state);
+struct WuiGpuCaptureFence *waterui_view_effect_render_to_metal_texture(struct WuiViewEffectState *state,
+                                                                       void *texture,
+                                                                       uint32_t width,
+                                                                       uint32_t height,
+                                                                       bool *out_needs_redraw);
+
+/**
+ * Render the effect, presenting into the attached surface (non-Apple only).
+ *
+ * # Safety
+ *
+ * Unreachable on Apple, where the host renders with
+ * [`waterui_view_effect_render_to_metal_texture`].
+ *
+ * # Panics
+ *
+ * Always.
+ */
+bool waterui_view_effect_render(struct WuiViewEffectState *_state);
 
 /**
  * Clean up `ViewEffect` resources.

@@ -15,6 +15,9 @@
 use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::App;
+use waterui::graphics::{
+    EffectRenderer, ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput, wgpu,
+};
 use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;
@@ -360,6 +363,88 @@ fn nested_filter_preview() -> impl View {
     vstack((
         text("Nested filters").headline(),
         self_filtering_content().saturation(0.0).size(220.0, 140.0),
+    ))
+    .padding()
+}
+
+/// An effect that ignores what it captured and fills its output.
+///
+/// Where the pixels land is the whole point here, not what they are: the fill
+/// is a colour nothing else in this view draws, so an output showing the
+/// content underneath instead of the fill is an output the capture never read.
+struct FillEffect;
+
+impl EffectRenderer for FillEffect {
+    async fn setup(&mut self, _ctx: &ViewEffectContext<'_>) {}
+
+    fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput) {
+        let mut encoder = input
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("fill effect"),
+            });
+        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("fill effect"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &output.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 1.0,
+                        g: 0.0,
+                        b: 1.0,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        }));
+        input.queue.submit([encoder.finish()]);
+    }
+}
+
+/// A custom `ViewEffect` over a view.
+///
+/// `ViewEffect` is the escape hatch for an application's own wgpu effect, and
+/// nothing in this repository exercised it. The swatch grid underneath is
+/// entirely covered by the fill, so this image answers one question: does a
+/// `ViewEffect`'s output reach the screen and the capture at all?
+#[preview]
+fn view_effect_preview() -> impl View {
+    vstack((
+        text("View effect").headline(),
+        ViewEffect::new(sample_content(), FillEffect).size(220.0, 140.0),
+    ))
+    .padding()
+}
+
+/// A view that fills itself with an effect, behind an opaque return type.
+///
+/// Opaque for the same reason [`self_filtering_content`] is: the enclosing
+/// filter has to meet a component boundary, which is how an application writes
+/// it.
+fn self_effecting_content() -> impl View {
+    ViewEffect::new(sample_content(), FillEffect)
+}
+
+/// A `ViewEffect` inside a filter (#579).
+///
+/// A filter captures its content with `CARenderer`, which reads exactly what
+/// `cacheDisplay(in:to:)` and the preview snapshot read. The outer filter
+/// desaturates completely, so the fill arrives as a grey rectangle or does not
+/// arrive at all — magenta at full saturation would mean the outer host never
+/// captured, and the swatch grid showing through would mean it captured the
+/// content instead of the effect's output.
+#[preview]
+fn effect_in_filter_preview() -> impl View {
+    vstack((
+        text("Effect in filter").headline(),
+        self_effecting_content().saturation(0.0).size(220.0, 140.0),
     ))
     .padding()
 }
