@@ -26,7 +26,7 @@ pub mod view_renderer;
 /// was drawn, and the caller must report the frame as still pending so the host
 /// comes back for it — a view whose only clock is its own render loop has no
 /// other way to be woken.
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(any(target_os = "macos", target_os = "ios"))))]
 fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
     device: &wgpu::Device,
@@ -79,7 +79,7 @@ fn acquire_surface_texture(
 /// in our own innermost scope claims that error back so failures can name their
 /// cause. The pop future is ready immediately on native (error scopes are
 /// thread-local bookkeeping, not GPU work), so blocking on it never waits.
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(any(target_os = "macos", target_os = "ios"))))]
 fn checked_surface_acquire(
     surface: &wgpu::Surface<'_>,
     device: &wgpu::Device,
@@ -98,7 +98,7 @@ fn checked_surface_acquire(
 /// # Panics
 /// Panics with the underlying validation error when the configuration is
 /// rejected by the device.
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(any(target_os = "macos", target_os = "ios"))))]
 pub fn checked_surface_configure(
     surface: &wgpu::Surface<'_>,
     device: &wgpu::Device,

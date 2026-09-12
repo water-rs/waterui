@@ -19,6 +19,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use alloc::boxed::Box;
+// Only a swapchain configuration names view formats.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 use alloc::vec;
 // Only the platform input-import paths drive asynchronous effect setup.
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
@@ -168,14 +170,71 @@ struct ViewEffectRendererWrapper {
 // Generate waterui_view_effect_id() and waterui_force_as_view_effect()
 ffi_view!(ViewEffectErased, WuiViewEffect, view_effect);
 
+/// Where a view effect's finished frames go.
+///
+/// Apple hands the target in per frame: the host owns a pair of
+/// `IOSurface`-backed textures and shows the one this effect just finished, so
+/// there is no swapchain here and nothing to present. That is not a detail of
+/// how the pixels arrive — a `CAMetalLayer`'s drawable can only be read by the
+/// pipeline that presented it, so an effect that owned one was invisible to
+/// `CARenderer` and `cacheDisplay(in:to:)`, which is what the preview snapshot
+/// and every enclosing filter capture with, and it was composited under the
+/// native content it should draw over (#579).
+///
+/// Every other platform still presents into a surface of its own.
+enum ViewEffectTarget {
+    /// A swapchain this effect presents into.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    Surface {
+        surface: wgpu::Surface<'static>,
+        config: wgpu::SurfaceConfiguration,
+    },
+    /// A texture the host hands in with every frame.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    HostTexture { format: wgpu::TextureFormat },
+}
+
+impl ViewEffectTarget {
+    /// The format frames are drawn in, which the host texture must match.
+    const fn format(&self) -> wgpu::TextureFormat {
+        match self {
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+            Self::Surface { config, .. } => config.format,
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            Self::HostTexture { format } => *format,
+        }
+    }
+
+    /// Follows an output resize.
+    ///
+    /// Only a swapchain has one to follow, which is why this exists nowhere
+    /// else: a host texture pair is made by the host, which hands the first of
+    /// the new pair in with the next frame.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        let Self::Surface { surface, config } = self;
+        config.width = width;
+        config.height = height;
+        surface.configure(device, config);
+    }
+}
+
+/// Resolved output size returned to native before render scheduling.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct WuiViewEffectOutputSize {
+    /// Output width in pixels.
+    pub width: u32,
+    /// Output height in pixels.
+    pub height: u32,
+}
+
 /// Opaque state held by the native backend after initialization.
 pub struct WuiViewEffectState {
     /// Explicit environment-owned GPU runtime used by this semantic effect.
     runtime: GpuRuntime,
-    /// Native presentation surface attached to this semantic effect.
-    output_surface: Option<wgpu::Surface<'static>>,
-    /// Configuration for the currently attached surface.
-    output_config: Option<wgpu::SurfaceConfiguration>,
+    /// Currently attached presentation target.
+    output: Option<ViewEffectTarget>,
     /// Imported native capture texture.
     imported_texture: Option<wgpu::Texture>,
     /// Format of the imported texture.
@@ -258,8 +317,7 @@ pub unsafe extern "C" fn waterui_view_effect_create(
     let redraw_handle = effect_wrapper.erased.redraw_handle();
     Box::into_raw(Box::new(WuiViewEffectState {
         runtime,
-        output_surface: None,
-        output_config: None,
+        output: None,
         imported_texture: None,
         imported_format: None,
         effect_wrapper: Rc::new(RefCell::new(Some(effect_wrapper))),
@@ -278,6 +336,7 @@ pub unsafe extern "C" fn waterui_view_effect_create(
     }))
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn create_configured_surface(
     state: &WuiViewEffectState,
     layer: *mut c_void,
@@ -343,6 +402,7 @@ fn create_configured_surface(
 ///
 /// Panics if `state` already has an output surface attached, if
 /// `input_width`/`input_height` is zero, or if the computed output size is zero.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_attach(
     state: *mut WuiViewEffectState,
@@ -355,23 +415,67 @@ pub unsafe extern "C" fn waterui_view_effect_attach(
     // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     assert!(
-        state.output_surface.is_none(),
+        state.output.is_none(),
         "waterui_view_effect_attach: output surface is already attached"
     );
     let (surface, config) =
         create_configured_surface(state, layer, input_width, input_height, prefers_hdr);
+    let (output_width, output_height) = (config.width, config.height);
+    finish_attach(
+        state,
+        ViewEffectTarget::Surface { surface, config },
+        input_width,
+        input_height,
+        output_width,
+        output_height,
+    );
+}
+
+/// Attaches a native presentation surface (non-Apple only).
+///
+/// # Safety
+///
+/// Unreachable on Apple, where the host starts the renderer with
+/// [`waterui_view_effect_attach_host_textures`].
+///
+/// # Panics
+///
+/// Always.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_effect_attach(
+    _state: *mut WuiViewEffectState,
+    _layer: *mut c_void,
+    _input_width: u32,
+    _input_height: u32,
+    _prefers_hdr: bool,
+) {
+    panic!(
+        "waterui_view_effect_attach: Apple hosts attach with waterui_view_effect_attach_host_textures"
+    );
+}
+
+/// Records an attached target and wakes the renderer if setup already finished.
+fn finish_attach(
+    state: &mut WuiViewEffectState,
+    output: ViewEffectTarget,
+    input_width: u32,
+    input_height: u32,
+    output_width: u32,
+    output_height: u32,
+) {
     if let Some((_, setup_output_format)) = state.setup_formats.get() {
         assert_eq!(
-            setup_output_format, config.format,
+            setup_output_format,
+            output.format(),
             "ViewEffect output format changed after setup"
         );
     }
     state.input_width = input_width;
     state.input_height = input_height;
-    state.output_width = config.width;
-    state.output_height = config.height;
-    state.output_config = Some(config);
-    state.output_surface = Some(surface);
+    state.output_width = output_width;
+    state.output_height = output_height;
+    state.output = Some(output);
     let _ = state.redraw_handle.take_dirty();
     if state.setup_ready.get() {
         state.redraw_handle.request_redraw();
@@ -392,23 +496,163 @@ pub unsafe extern "C" fn waterui_view_effect_detach(state: *mut WuiViewEffectSta
     // SAFETY: the caller contract requires `state` to be a valid handle, alive and
     // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
-    let surface = state
-        .output_surface
-        .take()
-        .expect("waterui_view_effect_detach: output surface is already detached");
+    assert!(
+        state.output.is_some(),
+        "waterui_view_effect_detach: output surface is already detached"
+    );
     // Before the input texture goes: the imported buffers are raw Vulkan objects
     // wgpu does not defer the destruction of, so they are released here rather
     // than left to outlive the target they were captured for.
     #[cfg(target_os = "android")]
     state.hardware_buffer_imports.clear();
-    state.output_config = None;
     state.imported_texture = None;
     state.imported_format = None;
     state.input_width = 0;
     state.input_height = 0;
     state.output_width = 0;
     state.output_height = 0;
-    drop(surface);
+    // Last, after the imports above: where the target is a swapchain, it is what
+    // those raw objects were captured for and must outlive them.
+    state.output = None;
+}
+
+/// The format an Apple host renders this effect into, with no swapchain to ask.
+///
+/// A `CAMetalLayer` reported capabilities to choose from; an `IOSurface` has
+/// none — it is created in whatever format it is told, so the choice moves here
+/// and the host asks for it with
+/// [`waterui_view_effect_output_metal_pixel_format`]. These are the two the
+/// layer path picked between anyway: half-float linear for an extended-range
+/// presentation, sRGB-encoded 8-bit otherwise.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const fn apple_presentation_format(prefers_hdr: bool) -> wgpu::TextureFormat {
+    if prefers_hdr {
+        wgpu::TextureFormat::Rgba16Float
+    } else {
+        wgpu::TextureFormat::Bgra8UnormSrgb
+    }
+}
+
+/// Attaches host-owned presentation on Apple, where frames arrive per texture.
+///
+/// No layer is named because none is configured: the host keeps a pair of
+/// `IOSurface`-backed textures, hands one to
+/// [`waterui_view_effect_render_to_metal_texture`] per frame, and shows it on
+/// `CALayer.contents` once that frame's fence completes. The texture format is
+/// this call's answer, read back with
+/// [`waterui_view_effect_output_metal_pixel_format`], and the size the host
+/// must allocate comes from [`waterui_view_effect_resolve_output_size`].
+///
+/// # Safety
+///
+/// - `state` must come from [`waterui_view_effect_create`].
+/// - The state must currently be detached.
+///
+/// # Panics
+///
+/// Panics if `state` already has a presentation target attached, or if
+/// `input_width`/`input_height` or the computed output size is zero.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_effect_attach_host_textures(
+    state: *mut WuiViewEffectState,
+    input_width: u32,
+    input_height: u32,
+    prefers_hdr: bool,
+) {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
+    let state = unsafe { crate::borrow_ffi_mut(state) };
+    assert!(
+        state.output.is_none(),
+        "waterui_view_effect_attach_host_textures: output surface is already attached"
+    );
+    assert!(
+        input_width > 0 && input_height > 0,
+        "waterui_view_effect_attach_host_textures: dimensions must be non-zero, got {input_width}x{input_height}"
+    );
+    let (output_width, output_height) = state.output_size.compute(input_width, input_height);
+    assert!(
+        output_width > 0 && output_height > 0,
+        "waterui_view_effect_attach_host_textures: output size must be non-zero, got {output_width}x{output_height}"
+    );
+    let format = apple_presentation_format(prefers_hdr);
+    finish_attach(
+        state,
+        ViewEffectTarget::HostTexture { format },
+        input_width,
+        input_height,
+        output_width,
+        output_height,
+    );
+}
+
+/// The `MTLPixelFormat` an attached effect renders its output in (Apple only).
+///
+/// The host allocates its `IOSurface` pair from this. It is the raw Metal enum
+/// value because the presentation format has no name in the capture-format
+/// alphabet the Android path uses.
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from [`waterui_view_effect_create`] with a
+/// presentation target attached.
+///
+/// # Panics
+///
+/// Panics if the effect is detached, or if its output format has no Metal
+/// equivalent.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_effect_output_metal_pixel_format(
+    state: *const WuiViewEffectState,
+) -> u32 {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
+    let state = unsafe { crate::borrow_ffi(state) };
+    let format = state
+        .output
+        .as_ref()
+        .expect("waterui_view_effect_output_metal_pixel_format: presentation target is detached")
+        .format();
+    let metal_format = match format {
+        wgpu::TextureFormat::Bgra8Unorm => MTLPixelFormat::BGRA8Unorm,
+        wgpu::TextureFormat::Bgra8UnormSrgb => MTLPixelFormat::BGRA8Unorm_sRGB,
+        wgpu::TextureFormat::Rgba16Float => MTLPixelFormat::RGBA16Float,
+        other => panic!(
+            "waterui_view_effect_output_metal_pixel_format: {other:?} has no Metal equivalent"
+        ),
+    };
+    u32::try_from(metal_format.0).expect("MTLPixelFormat values fit in a u32")
+}
+
+/// The output size this effect resolves an input size to.
+///
+/// The host allocates the textures it presents from, so unlike the swapchain
+/// path the size cannot stay entirely on the Rust side.
+///
+/// # Safety
+///
+/// `state` must be a valid pointer from [`waterui_view_effect_create`].
+///
+/// # Panics
+///
+/// Panics if the resolved size is zero in either dimension.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_effect_resolve_output_size(
+    state: *const WuiViewEffectState,
+    input_width: u32,
+    input_height: u32,
+) -> WuiViewEffectOutputSize {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
+    let state = unsafe { crate::borrow_ffi(state) };
+    let (width, height) = state.output_size.compute(input_width, input_height);
+    assert!(
+        width > 0 && height > 0,
+        "waterui_view_effect_resolve_output_size: output size must be non-zero, got {width}x{height} for input {input_width}x{input_height}"
+    );
+    WuiViewEffectOutputSize { width, height }
 }
 
 /// Installs the native wake target for renderer-driven redraw requests.
@@ -464,17 +708,14 @@ fn ensure_dimensions(state: &mut WuiViewEffectState, width: u32, height: u32) {
     if output_resized {
         state.output_width = output_width;
         state.output_height = output_height;
-        let config = state
-            .output_config
+        // A host texture pair follows the size on the host's side, so only a
+        // swapchain has to be reconfigured here.
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        state
+            .output
             .as_mut()
-            .expect("ViewEffect resize requires an attached output configuration");
-        config.width = output_width;
-        config.height = output_height;
-        let surface = state
-            .output_surface
-            .as_ref()
-            .expect("ViewEffect resize requires an attached output surface");
-        surface.configure(&state.runtime.context().device, config);
+            .expect("ViewEffect resize requires an attached output surface")
+            .resize(&state.runtime.context().device, output_width, output_height);
     }
 }
 
@@ -729,6 +970,7 @@ pub unsafe extern "C" fn waterui_view_effect_is_ready(state: *const WuiViewEffec
 /// # Panics
 ///
 /// Panics if no input texture was imported before this call.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectState) -> bool {
     // SAFETY: the caller contract requires `state` to be a valid handle, alive and
@@ -743,14 +985,13 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
         "waterui_view_effect_render called before asynchronous setup completed"
     );
     assert_setup_input_format(state, input_format);
-    let output_surface = state
-        .output_surface
-        .as_ref()
-        .expect("waterui_view_effect_render: presentation target is detached");
-    let output_config = state
-        .output_config
-        .as_ref()
-        .expect("waterui_view_effect_render: output configuration is detached");
+    let Some(ViewEffectTarget::Surface {
+        surface: output_surface,
+        config: output_config,
+    }) = state.output.as_ref()
+    else {
+        panic!("waterui_view_effect_render: presentation target is detached");
+    };
 
     // Get output texture
     let Some(output) = super::acquire_surface_texture(
@@ -766,23 +1007,48 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
         return true;
     };
 
+    let output_format = output_config.format;
+    let needs_redraw = render_effect_into(
+        state,
+        &output.texture,
+        output_format,
+        "waterui_view_effect_render",
+    );
+    output.present();
+    reclaim_device(&state.runtime.context().device);
+
+    needs_redraw
+}
+
+/// Runs the semantic renderer over the imported capture, into `output`.
+///
+/// Both presentation paths end here: a swapchain texture this module acquired,
+/// or a host-owned `IOSurface` texture handed in for the frame. What differs is
+/// who owns the target and how the frame is shown, not the render.
+fn render_effect_into(
+    state: &WuiViewEffectState,
+    output_texture: &wgpu::Texture,
+    output_format: wgpu::TextureFormat,
+    caller: &str,
+) -> bool {
+    let input_format = state
+        .imported_format
+        .unwrap_or_else(|| panic!("{caller}: input texture was not provided"));
     let input_texture = state
         .imported_texture
         .as_ref()
-        .expect("waterui_view_effect_render: input texture was not provided");
+        .unwrap_or_else(|| panic!("{caller}: input texture was not provided"));
 
     let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some("ViewEffect Input View"),
         ..Default::default()
     });
-
-    let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor {
+    let output_view = output_texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some("ViewEffect Output View"),
-        format: Some(output_config.format),
+        format: Some(output_format),
         ..Default::default()
     });
 
-    // Create input/output structs
     let input = ViewEffectInput {
         device: &state.runtime.context().device,
         queue: &state.runtime.context().queue,
@@ -792,29 +1058,163 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
         width: state.input_width,
         height: state.input_height,
     };
-
     let effect_output = ViewEffectOutput {
         device: &state.runtime.context().device,
         queue: &state.runtime.context().queue,
-        texture: &output.texture,
+        texture: output_texture,
         view: output_view,
-        format: output_config.format,
+        format: output_format,
         width: state.output_width,
         height: state.output_height,
     };
 
-    // Call effect render
     let mut effect_wrapper = state.effect_wrapper.borrow_mut();
     let effect_wrapper = effect_wrapper
         .as_mut()
         .expect("ViewEffect ready state is missing its semantic renderer");
-    let needs_redraw = effect_wrapper.erased.render(&input, &effect_output);
+    effect_wrapper.erased.render(&input, &effect_output)
+}
 
-    // Present
-    output.present();
+/// Render the effect into a host-owned Metal texture (Apple only).
+///
+/// The returned fence completes when the GPU has finished writing `texture`;
+/// the host shows it then, and not before, because Core Animation would
+/// otherwise composite a half-drawn frame.
+///
+/// # Safety
+///
+/// - `state` must come from [`waterui_view_effect_create`] with a host-texture
+///   target attached.
+/// - `texture` must point to a live `MTLTexture` of the attached output format
+///   and the resolved output size.
+/// - `out_needs_redraw` must be writable.
+///
+/// # Panics
+///
+/// Panics if the effect is detached, if setup has not completed, or if the host
+/// texture's format does not match the attached output format.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_effect_render_to_metal_texture(
+    state: *mut WuiViewEffectState,
+    texture: *mut c_void,
+    width: u32,
+    height: u32,
+    out_needs_redraw: *mut bool,
+) -> *mut super::gpu_surface::WuiGpuCaptureFence {
+    // SAFETY: the caller contract requires `state` to be a valid handle, alive and
+    // not otherwise borrowed for this call; the exclusive borrow ends here.
+    let state = unsafe { crate::borrow_ffi_mut(state) };
+    // SAFETY: the caller contract requires `texture` to be a live `MTLTexture`;
+    // `retain` takes its own reference, so it outlives the render below.
+    let metal_texture = unsafe {
+        Retained::<ProtocolObject<dyn MTLTexture>>::retain(texture.cast())
+            .expect("waterui_view_effect_render_to_metal_texture received a null texture")
+    };
+
+    assert!(
+        state.setup_ready.get(),
+        "waterui_view_effect_render_to_metal_texture called before asynchronous setup completed"
+    );
+    ensure_dimensions(state, width, height);
+    let output_format = state
+        .output
+        .as_ref()
+        .expect("waterui_view_effect_render_to_metal_texture: presentation target is detached")
+        .format();
+    let texture_format = match metal_texture.pixelFormat() {
+        MTLPixelFormat::BGRA8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+        MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
+        MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
+        other => panic!(
+            "waterui_view_effect_render_to_metal_texture: unsupported Metal format {other:?}"
+        ),
+    };
+    assert_eq!(
+        texture_format, output_format,
+        "waterui_view_effect_render_to_metal_texture: host texture format does not match the attached output format"
+    );
+
+    let (output_width, output_height) = (state.output_width, state.output_height);
+    // SAFETY: `metal_texture` is the retained texture above, and the format and
+    // size passed alongside it are read from that same texture and the output
+    // size it was created for, so the HAL description matches the real resource.
+    let hal_texture = unsafe {
+        <MetalApi as wgpu_hal::Api>::Device::texture_from_raw(
+            metal_texture,
+            output_format,
+            MTLTextureType::Type2D,
+            1,
+            1,
+            wgpu_hal::CopyExtent {
+                width: output_width,
+                height: output_height,
+                depth: 1,
+            },
+        )
+    };
+    // SAFETY: the HAL texture above was created from this runtime's device, which
+    // is the device the wgpu texture is created on.
+    let wgpu_texture = unsafe {
+        state
+            .runtime
+            .context()
+            .device
+            .create_texture_from_hal::<MetalApi>(
+                hal_texture,
+                &wgpu::TextureDescriptor {
+                    label: Some("ViewEffect Host Presentation Texture"),
+                    size: wgpu::Extent3d {
+                        width: output_width,
+                        height: output_height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: output_format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                },
+            )
+    };
+
+    let needs_redraw = render_effect_into(
+        state,
+        &wgpu_texture,
+        output_format,
+        "waterui_view_effect_render_to_metal_texture",
+    );
+    // SAFETY: the caller contract requires `out_needs_redraw` to be writable.
+    unsafe { out_needs_redraw.write(needs_redraw) };
+
+    let submission = state.runtime.context().queue.submit([]);
+    let fence = super::gpu_surface::WuiGpuCaptureFence::new(
+        state.runtime.context().submission_completion_driver(),
+        submission,
+    );
+    // A frame loop that only submits never returns the resources wgpu retains
+    // for a submission, so every presented frame would leak a little (#370).
     reclaim_device(&state.runtime.context().device);
+    Box::into_raw(Box::new(fence))
+}
 
-    needs_redraw
+/// Render the effect, presenting into the attached surface (non-Apple only).
+///
+/// # Safety
+///
+/// Unreachable on Apple, where the host renders with
+/// [`waterui_view_effect_render_to_metal_texture`].
+///
+/// # Panics
+///
+/// Always.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_view_effect_render(_state: *mut WuiViewEffectState) -> bool {
+    panic!(
+        "waterui_view_effect_render: Apple hosts render with waterui_view_effect_render_to_metal_texture"
+    );
 }
 
 /// Kicks off asynchronous effect setup for the given input format.
@@ -825,10 +1225,10 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 fn start_view_effect_setup(state: &WuiViewEffectState, input_format: wgpu::TextureFormat) {
     let output_format = state
-        .output_config
+        .output
         .as_ref()
         .expect("ViewEffect setup requires an attached presentation target")
-        .format;
+        .format();
     if let Some((setup_input_format, setup_output_format)) = state.setup_formats.get() {
         assert_eq!(
             setup_input_format, input_format,

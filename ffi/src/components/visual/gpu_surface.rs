@@ -1440,21 +1440,11 @@ pub unsafe extern "C" fn waterui_gpu_surface_set_input(
 }
 
 /// Create a wgpu Surface from a platform-specific layer pointer.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-pub(crate) fn create_surface_from_layer(
-    instance: &wgpu::Instance,
-    layer: *mut c_void,
-) -> wgpu::Surface<'static> {
-    // Apple backends provide a CAMetalLayer pointer.
-    // SAFETY: `layer` is the caller's `CAMetalLayer`, which must outlive the surface
-    // created from it — that is the contract this entry point documents.
-    unsafe {
-        instance
-            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer))
-            .expect("failed to create wgpu surface from CAMetalLayer")
-    }
-}
-
+///
+/// Apple has no arm here on purpose: nothing on those platforms presents
+/// through a swapchain any more. A `CAMetalLayer`'s drawable is readable only
+/// by the pipeline that presented it, so every Apple host now renders into a
+/// host-owned `IOSurface` texture instead (#519, #579).
 #[cfg(target_os = "android")]
 pub(crate) fn create_surface_from_layer(
     instance: &wgpu::Instance,
