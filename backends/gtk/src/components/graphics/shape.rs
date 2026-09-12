@@ -10,9 +10,11 @@ use waterui::shape::{PathCommand, ResolvedShape, ShapeKind};
 use waterui_core::{Environment, Native};
 use waterui_graphics::color::ResolvedColor;
 
+use super::gsk_path;
 use crate::component::GtkComponent;
 use crate::renderer::GtkRenderer;
 use crate::shape_geometry::{Corner, RoundedRect, ShapeGeometry, resolve};
+use crate::shape_path::bez_path;
 use crate::util::{resolved_color_to_srgba_f64, store_watcher_guard, subscribe_then_get};
 
 impl GtkComponent for Native<ResolvedShape> {
@@ -63,8 +65,9 @@ impl GtkComponent for Native<ResolvedShape> {
 /// Appends the shape's outline, resolved against the size it is drawn at.
 ///
 /// The geometry comes from [`crate::shape_geometry`], which is also what the
-/// clip widget resolves through, so a clipped fill and its clip agree. Only a
-/// custom path falls back to the unit-space commands.
+/// clip widget resolves through, so a clipped fill and its clip agree. A custom
+/// path resolves through [`crate::shape_path`] for the same reason: the clip
+/// fills the very path this traces.
 fn append_shape(
     cr: &gtk4::cairo::Context,
     kind: ShapeKind,
@@ -75,9 +78,7 @@ fn append_shape(
     match resolve(kind, width, height) {
         ShapeGeometry::Rounded(rect) => append_rounded_rect(cr, &rect),
         ShapeGeometry::CustomPath => {
-            for command in commands {
-                apply_path_command(cr, *command, width, height);
-            }
+            gsk_path(&bez_path(commands, width, height)).to_cairo(cr);
         }
     }
 }
@@ -161,89 +162,6 @@ fn append_corner_arc(
     cr.scale(corner.horizontal, corner.vertical);
     cr.arc(0.0, 0.0, 1.0, start, end);
     cr.restore().expect("failed to restore the cairo state");
-}
-
-/// Appends one resolved path command to the cairo context.
-///
-/// # Panics
-///
-/// Panics if a quadratic command is emitted with no current point.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "GTK widget geometry is integer pixels while WaterUI layout is f32"
-)]
-fn apply_path_command(cr: &gtk4::cairo::Context, command: PathCommand, width: f64, height: f64) {
-    match command {
-        PathCommand::MoveTo { x, y } => {
-            cr.move_to(f64::from(x) * width, f64::from(y) * height);
-        }
-        PathCommand::LineTo { x, y } => {
-            cr.line_to(f64::from(x) * width, f64::from(y) * height);
-        }
-        PathCommand::QuadTo { cx, cy, x, y } => {
-            let cx = f64::from(cx) * width;
-            let cy = f64::from(cy) * height;
-            let x = f64::from(x) * width;
-            let y = f64::from(y) * height;
-
-            let (sx, sy) = cr
-                .current_point()
-                .expect("quad command requires an active current point");
-            let c1x = f64::mul_add(2.0 / 3.0, cx - sx, sx);
-            let c1y = f64::mul_add(2.0 / 3.0, cy - sy, sy);
-            let c2x = f64::mul_add(2.0 / 3.0, cx - x, x);
-            let c2y = f64::mul_add(2.0 / 3.0, cy - y, y);
-            cr.curve_to(c1x, c1y, c2x, c2y, x, y);
-        }
-        PathCommand::CubicTo {
-            c1x,
-            c1y,
-            c2x,
-            c2y,
-            x,
-            y,
-        } => {
-            cr.curve_to(
-                f64::from(c1x) * width,
-                f64::from(c1y) * height,
-                f64::from(c2x) * width,
-                f64::from(c2y) * height,
-                f64::from(x) * width,
-                f64::from(y) * height,
-            );
-        }
-        PathCommand::Arc {
-            cx,
-            cy,
-            rx,
-            ry,
-            start,
-            sweep,
-        } => {
-            let center_x = f64::from(cx) * width;
-            let center_y = f64::from(cy) * height;
-            let radius_x = f64::from(rx) * width;
-            let radius_y = f64::from(ry) * height;
-
-            let segments = 32usize;
-            let start = f64::from(start);
-            let step = f64::from(sweep) / segments as f64;
-            let start_x = radius_x.mul_add(start.cos(), center_x);
-            let start_y = radius_y.mul_add(start.sin(), center_y);
-
-            cr.line_to(start_x, start_y);
-            let mut angle = start;
-            for _ in 0..segments {
-                angle += step;
-                let x = radius_x.mul_add(angle.cos(), center_x);
-                let y = radius_y.mul_add(angle.sin(), center_y);
-                cr.line_to(x, y);
-            }
-        }
-        PathCommand::Close => {
-            cr.close_path();
-        }
-    }
 }
 
 fn to_rgba(color: ResolvedColor) -> (f64, f64, f64, f64) {

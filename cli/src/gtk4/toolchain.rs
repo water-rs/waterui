@@ -31,9 +31,11 @@ impl PkgConfigProbe {
 }
 
 const REQUIRED_PROBES: &[PkgConfigProbe] = &[
+    // The same floor as the `v4_14` feature in `backends/gtk/Cargo.toml`:
+    // clipping to an arbitrary path is `gtk_snapshot_push_fill`, which is 4.14.
     PkgConfigProbe {
         module: "gtk4",
-        min_version: None,
+        min_version: Some("4.14"),
     },
     PkgConfigProbe {
         module: "pango",
@@ -85,7 +87,7 @@ impl Toolchain for Gtk4Toolchain {
                     Err(ToolchainError::Unfixable(UnfixableToolchain::new(
                         format!("GTK4 pkg-config probe failed: missing {missing}"),
                         format!(
-                            "{base_hint} Also ensure these probes pass: `pkg-config --exists gtk4` and `pkg-config --exists pango && pkg-config --atleast-version=1.50 pango`. Repair planner error: {}",
+                            "{base_hint} Also ensure these probes pass: `pkg-config --exists gtk4 && pkg-config --atleast-version=4.14 gtk4` and `pkg-config --exists pango && pkg-config --atleast-version=1.50 pango`. Repair planner error: {}",
                             error.message()
                         ),
                     )))
