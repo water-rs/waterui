@@ -210,7 +210,13 @@ impl ViewEffectTarget {
     /// Only a swapchain has one to follow, which is why this exists nowhere
     /// else: a host texture pair is made by the host, which hands the first of
     /// the new pair in with the next frame.
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    ///
+    /// Android alone, because a resize only ever arrives through
+    /// `ensure_dimensions`, and that is reached only from the platform
+    /// input-import entry points — Apple's and Android's. Every other platform
+    /// feeds `ViewEffect` through the Rust-side filter pipeline, which attaches
+    /// a surface already configured for the size it wants.
+    #[cfg(target_os = "android")]
     fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         let Self::Surface { surface, config } = self;
         config.width = width;
