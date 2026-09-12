@@ -4,11 +4,19 @@
 //! using wgpu. Uses a shared GPU context for efficient multi-view rendering.
 //!
 //! The native backend is responsible for:
-//! 1. Creating a native surface layer (`CAMetalLayer` on Apple, `SurfaceView` on Android)
-//! 2. Creating persistent renderer state with `waterui_gpu_surface_create`
-//! 3. Attaching and detaching native presentation surfaces as their lifecycle changes
-//! 4. Calling `waterui_gpu_surface_render` when the redraw callback fires
-//! 5. Calling `waterui_gpu_surface_drop` when the semantic view is destroyed
+//! 1. Creating persistent renderer state with `waterui_gpu_surface_create`
+//! 2. Providing somewhere to draw, which differs by platform:
+//!    - Android attaches a `SurfaceView`'s `ANativeWindow` with
+//!      `waterui_gpu_surface_attach`, replaces it as its lifecycle demands, and
+//!      renders into the swapchain with `waterui_gpu_surface_render`.
+//!    - Apple owns the presentation memory itself: a pair of `IOSurface`-backed
+//!      `MTLTexture`s shown as a plain layer's `contents`. It declares the
+//!      target format once with `waterui_gpu_surface_prepare_metal_texture` and
+//!      renders each frame with `waterui_gpu_surface_render_to_metal_texture`,
+//!      so there is no swapchain to attach and `attach`, `detach` and `render`
+//!      panic there.
+//! 3. Calling into whichever of those applies when the redraw callback fires
+//! 4. Calling `waterui_gpu_surface_drop` when the semantic view is destroyed
 //!
 //! # Thread affinity
 //!
@@ -27,6 +35,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alloc::boxed::Box;
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 use alloc::vec;
 use executor_core::spawn_local;
 
@@ -93,9 +102,12 @@ pub struct WuiGpuSurfaceState {
     /// Native presentation surface currently attached to this semantic GPU view.
     ///
     /// Android may replace the underlying `ANativeWindow` while preserving the
-    /// `GpuView` and its persistent resources.
+    /// `GpuView` and its persistent resources. Apple platforms present through
+    /// host-owned textures instead and never attach a swapchain.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     wgpu_surface: Option<wgpu::Surface<'static>>,
     /// Surface configuration
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     config: Option<wgpu::SurfaceConfiguration>,
     /// The format selected when asynchronous renderer setup starts.
     renderer_format: Cell<Option<wgpu::TextureFormat>>,
@@ -366,6 +378,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_hdr_preference(
     }
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn attached_surface_format(
     capabilities: &wgpu::SurfaceCapabilities,
     renderer_format: Option<wgpu::TextureFormat>,
@@ -388,6 +401,7 @@ fn attached_surface_format(
     )
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn create_attached_surface(
     runtime: &GpuRuntime,
     layer: *mut c_void,
@@ -520,6 +534,7 @@ pub(super) fn with_semantic_input<T>(
         .map(|semantic| use_surface(&mut semantic.gpu_surface))
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn attached_surface<'a>(
     state: &'a WuiGpuSurfaceState,
     scope: &'static str,
@@ -530,6 +545,7 @@ fn attached_surface<'a>(
         .unwrap_or_else(|| panic!("{scope}: native surface is detached"))
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn attached_config<'a>(
     state: &'a WuiGpuSurfaceState,
     scope: &'static str,
@@ -584,12 +600,14 @@ pub unsafe extern "C" fn waterui_gpu_surface_create(
     let now = Instant::now();
     Box::into_raw(Box::new(WuiGpuSurfaceState {
         runtime,
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         wgpu_surface: None,
         renderer_format: Cell::new(None),
         #[cfg(target_os = "android")]
         composite_texture: None,
         setup_ready: Rc::new(Cell::new(false)),
         msaa_max_samples,
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         config: None,
         semantic: Rc::new(RefCell::new(Some(GpuSurfaceSemantic { gpu_surface, env }))),
         priority,
@@ -669,6 +687,8 @@ pub(crate) const fn priority_state(state: &WuiGpuSurfaceState) -> i32 {
 /// `GpuView` and its persistent renderer resources.
 ///
 /// Android calls this when `SurfaceView` receives a replacement `Surface`.
+/// Apple platforms have no swapchain to replace and call
+/// [`waterui_gpu_surface_prepare_metal_texture`] instead.
 ///
 /// # Safety
 ///
@@ -679,7 +699,8 @@ pub(crate) const fn priority_state(state: &WuiGpuSurfaceState) -> i32 {
 /// # Panics
 ///
 /// Panics if `state` already has a native surface attached, or if `width` or
-/// `height` is zero.
+/// `height` is zero. Panics unconditionally on Apple platforms.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_attach(
     state: *mut WuiGpuSurfaceState,
@@ -713,6 +734,30 @@ pub unsafe extern "C" fn waterui_gpu_surface_attach(
     start_renderer_setup(state, format);
 }
 
+/// Attaches a native presentation surface (non-Apple only).
+///
+/// # Safety
+///
+/// `state` must come from [`waterui_gpu_surface_create`].
+///
+/// # Panics
+///
+/// Always panics: Apple hosts own their presentation memory and start the
+/// renderer with [`waterui_gpu_surface_prepare_metal_texture`].
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_attach(
+    _state: *mut WuiGpuSurfaceState,
+    _layer: *mut c_void,
+    _width: u32,
+    _height: u32,
+    _prefers_hdr: bool,
+) {
+    panic!(
+        "waterui_gpu_surface_attach: Apple hosts start the renderer with waterui_gpu_surface_prepare_metal_texture"
+    );
+}
+
 /// Detaches the current native presentation surface without destroying the
 /// semantic `GpuView` or its persistent renderer resources.
 ///
@@ -722,7 +767,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_attach(
 ///
 /// # Panics
 ///
-/// Panics if `state` does not currently have a native surface attached.
+/// Panics if `state` does not currently have a native surface attached. Panics
+/// unconditionally on Apple platforms, which never attach one.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_detach(state: *mut WuiGpuSurfaceState) {
     // SAFETY: the caller contract requires `state` to be a valid handle, alive and
@@ -734,6 +781,22 @@ pub unsafe extern "C" fn waterui_gpu_surface_detach(state: *mut WuiGpuSurfaceSta
         .expect("waterui_gpu_surface_detach: native surface is already detached");
     drop(surface);
     state.config = None;
+}
+
+/// Detaches the native presentation surface (non-Apple only).
+///
+/// # Safety
+///
+/// `state` must come from [`waterui_gpu_surface_create`].
+///
+/// # Panics
+///
+/// Always panics: an Apple host releases its own textures and has no swapchain
+/// to detach.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_detach(_state: *mut WuiGpuSurfaceState) {
+    panic!("waterui_gpu_surface_detach: Apple hosts own their presentation textures");
 }
 
 /// Installs the native wake target for renderer-driven redraw requests.
@@ -806,7 +869,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_is_ready(state: *const WuiGpuSurfac
 ///
 /// # Panics
 ///
-/// Panics if `width` or `height` is zero, or if `scale` is not positive and finite.
+/// Panics if `width` or `height` is zero, or if `scale` is not positive and
+/// finite. Panics unconditionally on Apple platforms.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_surface_render(
     state: *mut WuiGpuSurfaceState,
@@ -901,6 +966,29 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     reclaim_device(&state.runtime.context().device);
 
     needs_redraw
+}
+
+/// Renders one frame into the attached swapchain (non-Apple only).
+///
+/// # Safety
+///
+/// `state` must come from [`waterui_gpu_surface_create`].
+///
+/// # Panics
+///
+/// Always panics: Apple hosts render with
+/// [`waterui_gpu_surface_render_to_metal_texture`].
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_render(
+    _state: *mut WuiGpuSurfaceState,
+    _width: u32,
+    _height: u32,
+    _scale: f64,
+) -> bool {
+    panic!(
+        "waterui_gpu_surface_render: Apple hosts render with waterui_gpu_surface_render_to_metal_texture"
+    );
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -1038,10 +1126,16 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
         scale,
     );
     let submission = state.runtime.context().queue.submit([]);
-    Box::into_raw(Box::new(WuiGpuCaptureFence::new(
+    let fence = WuiGpuCaptureFence::new(
         state.runtime.context().submission_completion_driver(),
         submission,
-    )))
+    );
+    // A frame loop that only submits never returns the resources wgpu retains for
+    // a submission, so every presented frame would leak a little (#370). The
+    // swapchain path reclaimed after `present`; this one reclaims after the fence
+    // is taken, which is the same point in the frame.
+    reclaim_device(&state.runtime.context().device);
+    Box::into_raw(Box::new(fence))
 }
 
 /// Renders one frame of the semantic GPU view into a texture it does not own.
@@ -1396,7 +1490,7 @@ pub(crate) fn create_surface_from_layer(
     panic!("native GpuSurface presentation is unsupported on this platform")
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(target_os = "macos", target_os = "ios"))))]
 mod tests {
     use super::*;
 
