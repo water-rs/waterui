@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789124071805,
+  "lastUpdate": 1789209021672,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -1191,6 +1191,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 25627,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ff78fa8ee28aa297d5c280c61dda23e62ba8e0eb",
+          "message": "Merge pull request #581 from water-rs/chore/backend-pins-579\n\nbuild(backends): pin the merged backend dev heads",
+          "timestamp": "2026-09-12T07:35:37Z",
+          "url": "https://github.com/water-rs/waterui/commit/ff78fa8ee28aa297d5c280c61dda23e62ba8e0eb"
+        },
+        "date": 1789209020248,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 147530,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 143745,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 30883,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 27608,
             "unit": "us"
           }
         ]
