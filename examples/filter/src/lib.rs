@@ -423,6 +423,32 @@ fn view_effect_preview() -> impl View {
     .padding()
 }
 
+/// A view that fills itself with an effect, behind an opaque return type.
+///
+/// Opaque for the same reason [`self_filtering_content`] is: the enclosing
+/// filter has to meet a component boundary, which is how an application writes
+/// it.
+fn self_effecting_content() -> impl View {
+    ViewEffect::new(sample_content(), FillEffect)
+}
+
+/// A `ViewEffect` inside a filter (#579).
+///
+/// A filter captures its content with `CARenderer`, which reads exactly what
+/// `cacheDisplay(in:to:)` and the preview snapshot read. The outer filter
+/// desaturates completely, so the fill arrives as a grey rectangle or does not
+/// arrive at all — magenta at full saturation would mean the outer host never
+/// captured, and the swatch grid showing through would mean it captured the
+/// content instead of the effect's output.
+#[preview]
+fn effect_in_filter_preview() -> impl View {
+    vstack((
+        text("Effect in filter").headline(),
+        self_effecting_content().saturation(0.0).size(220.0, 140.0),
+    ))
+    .padding()
+}
+
 #[preview]
 fn filter_preview() -> impl View {
     vstack((
