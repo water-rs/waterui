@@ -11,10 +11,12 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 use color_eyre::eyre::{self, Context};
+#[cfg(feature = "svg-icons")]
 use resvg::{tiny_skia, usvg};
 
 /// The official `WaterUI` logo, used as the app icon when a project does not
 /// provide an `Icon.*` asset of its own.
+#[cfg(feature = "svg-icons")]
 const DEFAULT_APP_ICON_SVG: &str = include_str!("../../templates/icon.svg");
 
 /// Side length of the Android adaptive-icon foreground drawable in pixels
@@ -54,9 +56,13 @@ const MAX_RENDER_SIZE: u32 = 4096;
 /// A loaded app-icon source that can be rendered at any pixel size.
 pub enum IconSource {
     /// Vector source, re-rendered per size.
+    #[cfg(feature = "svg-icons")]
     Svg(Box<usvg::Tree>),
     /// Raster source, resampled per size.
     Raster(image::DynamicImage),
+    /// The bundled logo, stroked procedurally for builds without SVG support.
+    #[cfg(not(feature = "svg-icons"))]
+    Logo,
 }
 
 impl IconSource {
@@ -72,48 +78,34 @@ impl IconSource {
             .and_then(OsStr::to_str)
             .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
         {
-            let data = std::fs::read(path)
-                .wrap_err_with(|| format!("Failed to read SVG app icon '{}'", path.display()))?;
-            let mut options = usvg::Options {
-                resources_dir: std::fs::canonicalize(path)
-                    .ok()
-                    .and_then(|absolute| absolute.parent().map(Path::to_path_buf)),
-                ..usvg::Options::default()
-            };
-            options.fontdb_mut().load_system_fonts();
-            let tree = usvg::Tree::from_data(&data, &options).map_err(|error| {
-                eyre::eyre!("Failed to parse SVG app icon '{}': {error}", path.display())
-            })?;
-            let size = tree.size();
-            if (size.width() - size.height()).abs() > f32::EPSILON {
-                eyre::bail!(
-                    "App icon source '{}' must be square, got {}x{}",
-                    path.display(),
-                    size.width(),
-                    size.height()
-                );
-            }
-            Ok(Self::Svg(Box::new(tree)))
-        } else {
-            let image = image::open(path).wrap_err_with(|| {
-                format!("Failed to decode app icon source '{}'", path.display())
-            })?;
-            if image.width() != image.height() {
-                eyre::bail!(
-                    "App icon source '{}' must be square, got {}x{}",
-                    path.display(),
-                    image.width(),
-                    image.height()
-                );
-            }
-            Ok(Self::Raster(image))
+            #[cfg(feature = "svg-icons")]
+            return load_svg(path);
+            #[cfg(not(feature = "svg-icons"))]
+            eyre::bail!(
+                "SVG app icon '{}' requires the `svg-icons` feature of waterui-cli; \
+                 provide a raster icon (PNG/JPEG/WebP) instead",
+                path.display()
+            );
         }
+        let image = image::open(path).wrap_err_with(|| {
+            format!("Failed to decode app icon source '{}'", path.display())
+        })?;
+        if image.width() != image.height() {
+            eyre::bail!(
+                "App icon source '{}' must be square, got {}x{}",
+                path.display(),
+                image.width(),
+                image.height()
+            );
+        }
+        Ok(Self::Raster(image))
     }
 
     /// The bundled `WaterUI` logo.
     ///
-    /// The SVG is a compile-time asset, so a parse failure is a build defect
-    /// and panics immediately.
+    /// The icon is a compile-time asset, so a decode failure is a build
+    /// defect and panics immediately.
+    #[cfg(feature = "svg-icons")]
     #[must_use]
     pub fn default_logo() -> Self {
         let tree =
@@ -122,14 +114,31 @@ impl IconSource {
         Self::Svg(Box::new(tree))
     }
 
+    /// The bundled `WaterUI` logo, stroked procedurally from the same
+    /// geometry as `templates/icon.svg`.
+    #[cfg(not(feature = "svg-icons"))]
+    #[must_use]
+    pub const fn default_logo() -> Self {
+        Self::Logo
+    }
+
     /// Renders the source as a square RGBA image with the given side length.
     ///
     /// # Errors
     ///
     /// Fails when a raster surface of the requested size cannot be
     /// allocated.
+    #[cfg_attr(
+        not(feature = "svg-icons"),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "rendering is infallible without SVG sources, but the \
+                      signature stays uniform across feature sets"
+        )
+    )]
     pub fn render(&self, size: u32) -> eyre::Result<image::RgbaImage> {
         match self {
+            #[cfg(feature = "svg-icons")]
             Self::Svg(tree) => {
                 let mut pixmap = tiny_skia::Pixmap::new(size, size).ok_or_else(|| {
                     eyre::eyre!("Failed to allocate {size}x{size} surface for app icon")
@@ -151,6 +160,8 @@ impl IconSource {
             Self::Raster(source) => Ok(source
                 .resize_exact(size, size, image::imageops::FilterType::Lanczos3)
                 .to_rgba8()),
+            #[cfg(not(feature = "svg-icons"))]
+            Self::Logo => Ok(render_default_logo(size)),
         }
     }
 
@@ -168,6 +179,34 @@ impl IconSource {
         let probe = self.render(PROBE_SIZE)?;
         Ok(uniform_edge_color(&probe))
     }
+}
+
+/// Parses an SVG icon source, resolving relative references against the
+/// file's directory and loading system fonts for `font-family` lookup.
+#[cfg(feature = "svg-icons")]
+fn load_svg(path: &Path) -> eyre::Result<IconSource> {
+    let data = std::fs::read(path)
+        .wrap_err_with(|| format!("Failed to read SVG app icon '{}'", path.display()))?;
+    let mut options = usvg::Options {
+        resources_dir: std::fs::canonicalize(path)
+            .ok()
+            .and_then(|absolute| absolute.parent().map(Path::to_path_buf)),
+        ..usvg::Options::default()
+    };
+    options.fontdb_mut().load_system_fonts();
+    let tree = usvg::Tree::from_data(&data, &options).map_err(|error| {
+        eyre::eyre!("Failed to parse SVG app icon '{}': {error}", path.display())
+    })?;
+    let size = tree.size();
+    if (size.width() - size.height()).abs() > f32::EPSILON {
+        eyre::bail!(
+            "App icon source '{}' must be square, got {}x{}",
+            path.display(),
+            size.width(),
+            size.height()
+        );
+    }
+    Ok(IconSource::Svg(Box::new(tree)))
 }
 
 /// Renders one Apple icon slot.
@@ -369,6 +408,64 @@ impl ContentBox {
     }
 }
 
+/// Stroke segments of the bundled logo in its 200×200 viewBox coordinates,
+/// transcribed from `templates/icon.svg`: every path there is a straight
+/// `M … L …` segment with `stroke-width="7"` and round caps and joins, so a
+/// union of capsule distances reproduces the vector render exactly.
+#[cfg(not(feature = "svg-icons"))]
+const DEFAULT_LOGO_STROKES: &[(f64, f64, f64, f64)] = &[
+    (46.0, 80.0, 18.0, 100.0),
+    (18.0, 100.0, 46.0, 120.0),
+    (154.0, 80.0, 182.0, 100.0),
+    (182.0, 100.0, 154.0, 120.0),
+    (67.0, 74.0, 62.0, 126.0),
+    (80.0, 74.0, 75.0, 126.0),
+    (56.5, 90.0, 87.5, 90.0),
+    (54.5, 110.0, 85.5, 110.0),
+    (125.0, 74.0, 120.0, 126.0),
+    (138.0, 74.0, 133.0, 126.0),
+    (114.5, 90.0, 145.5, 90.0),
+    (112.5, 110.0, 143.5, 110.0),
+    (93.0, 100.0, 107.0, 100.0),
+];
+
+/// Distance from `(px, py)` to the segment `(x1, y1)-(x2, y2)`.
+#[cfg(not(feature = "svg-icons"))]
+fn segment_distance(px: f64, py: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len_sq = dx.mul_add(dx, dy * dy);
+    let t = if len_sq == 0.0 {
+        0.0
+    } else {
+        ((px - x1).mul_add(dx, (py - y1) * dy) / len_sq).clamp(0.0, 1.0)
+    };
+    (x1 + t * dx - px).hypot(y1 + t * dy - py)
+}
+
+/// Renders the bundled logo as black round-cap strokes on white by
+/// supersampling-free capsule coverage: each output pixel's distance to the
+/// nearest stroke centerline maps to antialiased ink coverage.
+#[cfg(not(feature = "svg-icons"))]
+fn render_default_logo(size: u32) -> image::RgbaImage {
+    let scale = f64::from(size) / 200.0;
+    // `stroke-width="7"` halved, in output pixels.
+    let radius = 3.5 * scale;
+    let mut image = image::RgbaImage::from_pixel(size, size, image::Rgba([255; 4]));
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let px = (f64::from(x) + 0.5) / scale;
+        let py = (f64::from(y) + 0.5) / scale;
+        let distance = DEFAULT_LOGO_STROKES
+            .iter()
+            .map(|&(x1, y1, x2, y2)| segment_distance(px, py, x1, y1, x2, y2))
+            .fold(f64::INFINITY, f64::min);
+        let coverage = (radius + 0.5 - distance * scale).clamp(0.0, 1.0);
+        let ink = scale_alpha(u8::MAX, coverage);
+        *pixel = image::Rgba([255 - ink, 255 - ink, 255 - ink, u8::MAX]);
+    }
+    image
+}
+
 fn uniform_edge_color(image: &image::RgbaImage) -> Option<[u8; 3]> {
     let mut reference: Option<[u8; 3]> = None;
     let (width, height) = image.dimensions();
@@ -491,6 +588,7 @@ fn round_to_u32(value: f64) -> u32 {
     }
 }
 
+#[cfg(feature = "svg-icons")]
 const fn to_f32(value: f64) -> f32 {
     #[expect(
         clippy::cast_possible_truncation,

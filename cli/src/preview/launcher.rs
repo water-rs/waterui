@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre::{Context, Result, bail};
 use futures::{FutureExt as _, pin_mut, select};
+#[cfg(feature = "preview")]
 use notify::{RecursiveMode, Watcher as _};
 use sha2::Digest as _;
 use smol::stream::StreamExt;
@@ -903,21 +904,24 @@ async fn wait_for_registered_preview_ready(
         return ConnectionWaitResult::Timeout(rejection);
     }
 
-    let (event_tx, event_rx) = async_channel::unbounded();
-    let callback_tx = event_tx.clone();
-    let mut watcher = match notify::recommended_watcher(move |result| {
-        let _ = callback_tx.try_send(result);
-    }) {
-        Ok(watcher) => watcher,
-        Err(error) => {
-            error!(path = %registry_dir.display(), "Failed to create preview registry watcher: {error}");
+    #[cfg(feature = "preview")]
+    let (event_rx, _watcher) = {
+        let (event_tx, event_rx) = async_channel::unbounded();
+        let mut watcher = match notify::recommended_watcher(move |result| {
+            let _ = event_tx.try_send(result);
+        }) {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                error!(path = %registry_dir.display(), "Failed to create preview registry watcher: {error}");
+                return ConnectionWaitResult::Timeout(rejection);
+            }
+        };
+        if let Err(error) = watcher.watch(&registry_dir, RecursiveMode::NonRecursive) {
+            error!(path = %registry_dir.display(), "Failed to watch preview registry dir: {error}");
             return ConnectionWaitResult::Timeout(rejection);
         }
+        (event_rx, watcher)
     };
-    if let Err(error) = watcher.watch(&registry_dir, RecursiveMode::NonRecursive) {
-        error!(path = %registry_dir.display(), "Failed to watch preview registry dir: {error}");
-        return ConnectionWaitResult::Timeout(rejection);
-    }
 
     loop {
         match probe_registered_preview(expected_fingerprint, PreviewRuntimePlatform::Macos, start)
@@ -935,7 +939,10 @@ async fn wait_for_registered_preview_ready(
 
         let sleep = futures::FutureExt::fuse(smol::Timer::after(POLL_INTERVAL.min(remaining)));
         let running_event = running.next().fuse();
+        #[cfg(feature = "preview")]
         let registry_event = futures::FutureExt::fuse(event_rx.recv());
+        #[cfg(not(feature = "preview"))]
+        let registry_event = futures::FutureExt::fuse(futures::future::pending::<()>());
         pin_mut!(sleep);
         pin_mut!(running_event);
         pin_mut!(registry_event);
@@ -955,6 +962,7 @@ async fn wait_for_registered_preview_ready(
                 }
             },
             event = registry_event => {
+                #[cfg(feature = "preview")]
                 match event {
                     Ok(Ok(_notification)) => {}
                     Ok(Err(error)) => {
@@ -962,6 +970,8 @@ async fn wait_for_registered_preview_ready(
                     }
                     Err(_) => return ConnectionWaitResult::Timeout(rejection),
                 }
+                #[cfg(not(feature = "preview"))]
+                let () = event;
             },
             _ = sleep => {}
         }
