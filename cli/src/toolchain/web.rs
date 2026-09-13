@@ -3,6 +3,7 @@
 use crate::{
     toolchain::{Host, Installation, Toolchain, ToolchainError},
     utils::CommandError,
+    web::PackageManager,
 };
 
 /// Rust `wasm32-unknown-unknown` target support.
@@ -98,6 +99,91 @@ impl Installation for WasmPackInstallation {
         host.run("cargo", ["install", "wasm-pack"])
             .await
             .map(|_| ())
+    }
+}
+
+/// The `[web] package_manager` a project declares: the executable the CLI
+/// invokes for frontend builds and scaffolding. Doctor checks the declared
+/// manager only — it never substitutes another.
+#[derive(Debug, Clone, Copy)]
+pub struct PackageManagerToolchain(pub PackageManager);
+
+/// Installation plan for a declared package manager, using its official
+/// installer.
+#[derive(Debug, Clone, Copy)]
+pub struct PackageManagerInstallation(pub PackageManager);
+
+impl Toolchain for PackageManagerToolchain {
+    type Installation = PackageManagerInstallation;
+
+    async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
+        let package_manager = self.0;
+        if host.which(package_manager.binary()).await.is_ok() {
+            return Ok(());
+        }
+        match package_manager {
+            // npm ships with Node.js; there is no official standalone
+            // installer, so this stays a manual step.
+            PackageManager::Npm => Err(ToolchainError::unfixable(
+                "npm is not installed",
+                package_manager.install_hint(),
+            )),
+            _ => Err(ToolchainError::fixable(PackageManagerInstallation(
+                package_manager,
+            ))),
+        }
+    }
+}
+
+impl Installation for PackageManagerInstallation {
+    type Error = eyre::Report;
+
+    async fn install(&self, host: &Host) -> Result<(), Self::Error> {
+        match self.0 {
+            // Yarn's official distribution is the corepack shim.
+            PackageManager::Yarn => host
+                .run("corepack", ["enable"])
+                .await
+                .map(|_| ())
+                .map_err(Into::into),
+            PackageManager::Npm => Err(eyre::eyre!(
+                "npm ships with Node.js; install Node.js from https://nodejs.org/"
+            )),
+            package_manager => {
+                #[cfg(unix)]
+                {
+                    let script = match package_manager {
+                        PackageManager::Bun => "curl -fsSL https://bun.sh/install | bash",
+                        PackageManager::Pnpm => "curl -fsSL https://get.pnpm.io/install.sh | sh -",
+                        _ => unreachable!(),
+                    };
+                    host.run("sh", ["-c", script])
+                        .await
+                        .map(|_| ())
+                        .map_err(Into::into)
+                }
+                #[cfg(windows)]
+                {
+                    let script = match package_manager {
+                        PackageManager::Bun => "irm bun.sh/install.ps1 | iex",
+                        PackageManager::Pnpm => "iwr https://get.pnpm.io/install.ps1 -useb | iex",
+                        _ => unreachable!(),
+                    };
+                    host.run("powershell", ["-c", script])
+                        .await
+                        .map(|_| ())
+                        .map_err(Into::into)
+                }
+                #[cfg(not(any(unix, windows)))]
+                {
+                    Err(eyre::eyre!(
+                        "no automatic installer for {} on this platform; run: {}",
+                        package_manager.binary(),
+                        package_manager.install_hint()
+                    ))
+                }
+            }
+        }
     }
 }
 

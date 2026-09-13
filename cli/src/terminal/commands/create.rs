@@ -10,8 +10,9 @@ use heck::{ToKebabCase, ToSnakeCase};
 use crate::shell::Shell;
 use crate::{header, line, success};
 use waterui_cli::framework::FrameworkChannel;
-use waterui_cli::project::{CreateOptions, PackageType, Project};
+use waterui_cli::project::{CreateOptions, PackageType, Project, WebScaffold};
 use waterui_cli::project_types::BundleIdentifier;
+use waterui_cli::web::PackageManager;
 
 /// Arguments for the create command.
 #[derive(ClapArgs, Debug)]
@@ -44,6 +45,20 @@ pub struct Args {
     /// Project mode (`app` or `playground`).
     #[arg(long, value_enum, default_value_t = ProjectMode::App)]
     mode: ProjectMode,
+
+    /// Project template: `app` for the standard Rust shell, `web` to add a
+    /// `web/` Vite frontend mounted through `include_web!`.
+    #[arg(long, value_enum, default_value_t = CreateTemplate::App)]
+    template: CreateTemplate,
+
+    /// JavaScript package manager declared in `[web]` (default bun).
+    #[arg(long, value_enum)]
+    package_manager: Option<PackageManager>,
+
+    /// Vite template for the scaffolded frontend (e.g. `vanilla-ts`); skips
+    /// `create vite`'s interactive framework picker.
+    #[arg(long)]
+    vite_template: Option<String>,
 }
 
 struct CreatePlan {
@@ -56,6 +71,9 @@ struct CreatePlan {
     framework_manifest: Option<PathBuf>,
     folder_name: String,
     project_path: PathBuf,
+    template: CreateTemplate,
+    package_manager: PackageManager,
+    vite_template: Option<String>,
 }
 
 /// Backend options for scaffolding.
@@ -73,6 +91,17 @@ enum ProjectMode {
     #[default]
     App,
     Playground,
+}
+
+/// The starting shape `create` scaffolds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+enum CreateTemplate {
+    /// The standard Rust shell.
+    #[default]
+    App,
+    /// A Rust shell whose root view is `include_web!("web")` plus a `web/`
+    /// Vite frontend.
+    Web,
 }
 
 impl ProjectMode {
@@ -118,8 +147,24 @@ impl Backend {
 /// Run the create command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let plan = resolve_create_plan(shell, &args)?;
+    if plan.template == CreateTemplate::Web {
+        // The declared manager must exist before anything touches disk.
+        super::web::ensure_installed(plan.package_manager).await?;
+    }
     header!(shell, "Creating WaterUI project: {}", plan.name);
     let mut project = create_project(shell, &plan).await?;
+    if plan.template == CreateTemplate::Web {
+        super::web::create_vite(
+            shell,
+            project.root(),
+            "web",
+            plan.package_manager,
+            plan.vite_template.as_deref(),
+        )
+        .await?;
+        super::web::install_dependencies(shell, plan.package_manager, &project.root().join("web"))
+            .await?;
+    }
     initialize_requested_backends(shell, &mut project, &plan).await?;
     print_create_summary(shell, &plan);
     Ok(())
@@ -139,6 +184,13 @@ fn resolve_create_plan(shell: &Shell, args: &Args) -> Result<CreatePlan> {
         validate_backends_on_host(&backends)?;
     }
 
+    if args.template == CreateTemplate::App
+        && (args.package_manager.is_some() || args.vite_template.is_some())
+    {
+        bail!("--package-manager and --vite-template require --template web");
+    }
+    let package_manager = resolve_package_manager(args, interactive)?;
+
     Ok(CreatePlan {
         name,
         bundle_id,
@@ -149,7 +201,22 @@ fn resolve_create_plan(shell: &Shell, args: &Args) -> Result<CreatePlan> {
         framework_manifest: args.framework_manifest.clone(),
         folder_name,
         project_path,
+        template: args.template,
+        package_manager,
+        vite_template: args.vite_template.clone(),
     })
+}
+
+/// The declared manager: the flag, else a prompt when the web template is
+/// being created interactively, else `bun`.
+fn resolve_package_manager(args: &Args, interactive: bool) -> Result<PackageManager> {
+    if let Some(package_manager) = args.package_manager {
+        return Ok(package_manager);
+    }
+    if args.template == CreateTemplate::Web && interactive {
+        return super::web::prompt_package_manager(PackageManager::Bun);
+    }
+    Ok(PackageManager::Bun)
 }
 
 fn resolve_project_name(args: &Args, interactive: bool) -> Result<String> {
@@ -212,6 +279,10 @@ async fn create_project(shell: &Shell, plan: &CreatePlan) -> Result<Project> {
             framework: None,
             author: whoami::username()
                 .map_err(|error| eyre!("Failed to determine project author: {error}"))?,
+            web: (plan.template == CreateTemplate::Web).then(|| WebScaffold {
+                package_manager: plan.package_manager,
+                include_arg: "web".to_string(),
+            }),
         },
     )
     .await?;
@@ -426,6 +497,86 @@ mod tests {
     // Only the non-Linux host test exercises this.
     #[cfg(not(target_os = "linux"))]
     use super::validate_backends_on_host;
+
+    /// End-to-end `--template web`: scaffolds a project plus a Vite frontend
+    /// into a tempdir and `cargo check`s the result against this checkout.
+    ///
+    /// Gated on `bun` being on PATH; skipped in environments without it.
+    #[test]
+    fn create_template_web_scaffolds_and_checks() {
+        if which::which("bun").is_err() {
+            eprintln!("skipping: bun is not installed");
+            return;
+        }
+        smol::block_on(async {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let project_path = temp.path().join("web-app");
+            let waterui_checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("cli/ has a parent")
+                .to_path_buf();
+            let shell = Shell::new(false);
+            let project = waterui_cli::project::Project::create(
+                &project_path,
+                waterui_cli::project::CreateOptions {
+                    name: "Web App".to_string(),
+                    bundle_identifier: waterui_cli::project_types::BundleIdentifier::try_from(
+                        "dev.waterui.webapp",
+                    )
+                    .expect("bundle identifier"),
+                    package_type: PackageType::App,
+                    waterui_path: Some(waterui_checkout),
+                    channel: None,
+                    author: "water test".to_string(),
+                    web: Some(waterui_cli::project::WebScaffold {
+                        package_manager: super::PackageManager::Bun,
+                        include_arg: "web".to_string(),
+                    }),
+                },
+            )
+            .await
+            .expect("project scaffold");
+
+            crate::commands::web::create_vite(
+                &shell,
+                project.root(),
+                "web",
+                super::PackageManager::Bun,
+                Some("vanilla-ts"),
+            )
+            .await
+            .expect("vite scaffold");
+            crate::commands::web::install_dependencies(
+                &shell,
+                super::PackageManager::Bun,
+                &project.root().join("web"),
+            )
+            .await
+            .expect("dependency install");
+
+            assert!(project_path.join("web/package.json").exists());
+            let water_toml =
+                std::fs::read_to_string(project_path.join("Water.toml")).expect("Water.toml");
+            assert!(
+                water_toml.contains("[web]") && water_toml.contains("package_manager = \"bun\""),
+                "Water.toml declares the manager:\n{water_toml}"
+            );
+            let lib_rs =
+                std::fs::read_to_string(project_path.join("src/lib.rs")).expect("src/lib.rs");
+            assert!(
+                lib_rs.contains("include_web!(\"web\")"),
+                "the root view mounts the frontend:\n{lib_rs}"
+            );
+
+            let status = smol::process::Command::new("cargo")
+                .arg("check")
+                .current_dir(&project_path)
+                .status()
+                .await
+                .expect("cargo check runs");
+            assert!(status.success(), "the generated project must check");
+        });
+    }
 
     #[test]
     fn parse_backends_rejects_unknown_values() {

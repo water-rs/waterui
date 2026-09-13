@@ -15,8 +15,8 @@ use futures_util::future::{self, Either};
 use tracing_subscriber::EnvFilter;
 
 use commands::{
-    backend, bench, build, channel, clean, create, device, devices, doctor, gc, inspector, mcp,
-    package, preview, run,
+    backend, bench, build, channel, clean, create, device, devices, doctor, gc, init, inspector,
+    mcp, package, preview, run,
 };
 
 /// `WaterUI` command line interface.
@@ -39,6 +39,10 @@ struct Cli {
 enum Commands {
     /// Create a new `WaterUI` project.
     Create(create::Args),
+
+    /// Initialize the current directory as a `WaterUI` project, adopting or
+    /// scaffolding a web frontend.
+    Init(init::Args),
 
     /// Inspect or explicitly update the project's framework channel.
     Channel(channel::Args),
@@ -125,6 +129,7 @@ fn main() -> Result<()> {
             let command = async {
                 match cli.command {
                     Commands::Create(args) => create::run(&shell, args).await,
+                    Commands::Init(args) => init::run(&shell, args).await,
                     Commands::Channel(args) => channel::run(&shell, args).await,
                     Commands::Backend(args) => backend::run(&shell, args).await,
                     Commands::Run(args) => Box::pin(run::run(&shell, args)).await,

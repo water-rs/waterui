@@ -8,3 +8,4 @@ pub mod project_types;
 pub mod support_app;
 pub mod templates;
 pub mod water_dir;
+pub mod web;

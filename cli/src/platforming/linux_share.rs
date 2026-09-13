@@ -78,6 +78,7 @@ mod tests {
                     // GitHub; a unit test resolves a fixture in place instead.
                     framework: Some(crate::framework::test_fixtures::stable_framework()),
                     author: "Lexo Liu".to_string(),
+                    web: None,
                 },
             )
             .await

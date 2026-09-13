@@ -290,6 +290,11 @@ pub struct TemplateContext {
     pub preview_app_dependency: Option<(CrateName, PathBuf)>,
     /// Package type of the project being scaffolded.
     pub package_type: crate::project::PackageType,
+    /// The `include_web!` argument when the root view is a web frontend:
+    /// `"web"` for the conventional layout, a path relative to the project
+    /// root for a frontend referenced in place. `None` renders the demo
+    /// `lib.rs` instead.
+    pub web_frontend_arg: Option<String>,
     /// ESP32 harness parameters used by the esp32 templates.
     pub esp32: Esp32TemplateEntry,
     /// The launch screen assets the Apple templates refer to.
@@ -297,6 +302,12 @@ pub struct TemplateContext {
 }
 
 impl TemplateContext {
+    /// The `include_web!` argument rendered into `web_lib.rs.tpl`.
+    #[must_use]
+    pub fn web_arg(&self) -> &str {
+        self.web_frontend_arg.as_deref().unwrap_or("web")
+    }
+
     /// Build a template context for a new root project scaffold.
     #[must_use]
     pub fn for_create_options(
@@ -330,6 +341,7 @@ impl TemplateContext {
             preview_runtime_features: Vec::new(),
             preview_app_dependency: None,
             package_type: options.package_type,
+            web_frontend_arg: options.web.as_ref().map(|web| web.include_arg.clone()),
             esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
         }
@@ -369,6 +381,7 @@ impl TemplateContext {
             preview_runtime_features: Vec::new(),
             preview_app_dependency: None,
             package_type: manifest.package.package_type,
+            web_frontend_arg: manifest.web.as_ref().map(|_| "web".to_string()),
             esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
         }
@@ -421,6 +434,7 @@ impl TemplateContext {
             preview_runtime_features: Vec::new(),
             preview_app_dependency: None,
             package_type: crate::project::PackageType::Playground,
+            web_frontend_arg: None,
             esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
         }
@@ -1065,6 +1079,7 @@ define_scaffold_templates! {
     Gtk4BuildScriptTemplate => (Gtk4, "src/templates/gtk4/build.rs.tpl"),
     Gtk4MainTemplate => (Gtk4, "src/templates/gtk4/src/main.rs.tpl"),
     HydrolysisBuildScriptTemplate => (Hydrolysis, "src/templates/hydrolysis/build.rs.tpl"),
+    RootWebLibTemplate => (Root, "src/templates/web_lib.rs.tpl"),
     HydrolysisLibTemplate => (Hydrolysis, "src/templates/hydrolysis/src/lib.rs.tpl"),
     HydrolysisMainTemplate => (Hydrolysis, "src/templates/hydrolysis/src/main.rs.tpl"),
     HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
@@ -1124,6 +1139,7 @@ mod tests {
             preview_runtime_features: Vec::new(),
             preview_app_dependency: None,
             package_type,
+            web_frontend_arg: None,
             esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
         }
@@ -4582,10 +4598,7 @@ pub mod root {
     /// workflow work out of the box: the planner walks the assets root
     /// recursively, so the directory has to exist before the first `assets!`
     /// call, and a tracked file is what keeps it present in git.
-    static ROOT_TEMPLATES: &[(&str, &str)] = &[
-        ("lib.rs.tpl", "src/lib.rs"),
-        (".gitignore.tpl", ".gitignore"),
-    ];
+    static ROOT_TEMPLATES: &[(&str, &str)] = &[(".gitignore.tpl", ".gitignore")];
 
     /// Write root templates to the given directory.
     ///
@@ -4604,11 +4617,22 @@ pub mod root {
         generate_cargo_toml(base_dir, ctx).await?;
 
         let assets_readme = format!("{assets_dir}/README.md");
-        let templates: Vec<(&str, String)> = ROOT_TEMPLATES
-            .iter()
-            .map(|(template, dest)| (*template, (*dest).to_string()))
-            .chain(core::iter::once(("assets_readme.md.tpl", assets_readme)))
-            .collect();
+        // A web-frontend project gets the `include_web!` root view
+        // instead of the demo form.
+        let lib_template = if ctx.web_frontend_arg.is_some() {
+            "web_lib.rs.tpl"
+        } else {
+            "lib.rs.tpl"
+        };
+        let templates: Vec<(&str, String)> =
+            core::iter::once((lib_template, "src/lib.rs".to_string()))
+                .chain(
+                    ROOT_TEMPLATES
+                        .iter()
+                        .map(|(template, dest)| (*template, (*dest).to_string())),
+                )
+                .chain(core::iter::once(("assets_readme.md.tpl", assets_readme)))
+                .collect();
         // The WaterUI logo is the starting app icon; the planner picks up any
         // root-level `Icon.*` asset, so replacing the file rebrands the app.
         // Builds without SVG support scaffold a rendered PNG instead.
@@ -4674,7 +4698,7 @@ pub mod root {
             )]),
             dependencies: BTreeMap::from([("waterui".to_string(), waterui_dependency.clone())]),
             build_dependencies: BTreeMap::new(),
-            target: native_target_section(waterui_dependency),
+            target: native_target_section(waterui_dependency, ctx.web_frontend_arg.is_some()),
             workspace: GeneratedWorkspaceSection {},
             patch: match &ctx.waterui_path {
                 Some(waterui_path) => {
@@ -4704,17 +4728,24 @@ pub mod root {
 
     fn native_target_section(
         waterui_dependency: GeneratedDependencyDetail,
+        web_frontend: bool,
     ) -> BTreeMap<String, GeneratedTargetSection<GeneratedDependencyDetail>> {
         // Desktop conveniences only: `media` pulls the GPU stack, which does
         // not exist on espidf targets, so firmware builds must fall through
         // to the bare default-features-off dependency for the scaffolded app
         // to cross-compile for ESP32 chips at all.
+        // `include_web!` expands against both the assets bundle API and the
+        // webview surface, so a web-frontend project enables both.
+        let mut waterui_features = vec!["assets", "media", "flow-markdown"];
+        if web_frontend {
+            waterui_features.push("webview");
+        }
         BTreeMap::from([(
             "cfg(not(any(target_arch = \"wasm32\", target_os = \"espidf\")))".to_string(),
             GeneratedTargetSection {
                 dependencies: BTreeMap::from([(
                     "waterui".to_string(),
-                    waterui_dependency.with_features(&["assets", "media", "flow-markdown"]),
+                    waterui_dependency.with_features(&waterui_features),
                 )]),
             },
         )])

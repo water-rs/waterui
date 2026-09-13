@@ -1248,6 +1248,7 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
         framework_manifest: None,
         framework: None,
         author: String::new(),
+        web: None,
     };
 
     // Create as normal playground project

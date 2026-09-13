@@ -11,8 +11,17 @@ use waterui_cli::toolchain::doctor::{DoctorItemRecord, ids};
 #[test]
 fn doctor_json_emits_typed_item_records_for_every_check() {
     let home = tempfile::tempdir().expect("scratch home for the child process");
+    // `web-package-manager` only emits inside a project declaring `[web]`;
+    // run the child in one so `ids::ALL` is covered exhaustively.
+    let project = tempfile::tempdir().expect("scratch project for the child process");
+    std::fs::write(
+        project.path().join("Water.toml"),
+        "[package]\ntype = \"app\"\nname = \"Doctor Fixture\"\nbundle_identifier = \"dev.waterui.doctor_fixture\"\n\n[web]\npackage_manager = \"bun\"\n",
+    )
+    .expect("write fixture manifest");
     let output = Command::new(env!("CARGO_BIN_EXE_water"))
         .args(["--json", "doctor"])
+        .current_dir(project.path())
         // Redirect the child's home so `ensure_global_config` never writes
         // `~/.water/config.toml` on the machine running the tests. (dirs'
         // Windows backend consults the known-folder API, so this is only

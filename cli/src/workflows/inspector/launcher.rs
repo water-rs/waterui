@@ -209,6 +209,7 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
         framework_manifest: None,
         framework: None,
         author: String::new(),
+        web: None,
     };
 
     let project = Project::create(path, options)
