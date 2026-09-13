@@ -12,10 +12,64 @@ permissions:
   id-token: write
 
 jobs:
+  tag-backends:
+    name: Tag the backend repositories
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      # A released CLI scaffolds each backend at the `v<version>` tag of its
+      # repository, where <version> is the CLI's own package version
+      # (cli/build.rs renders `v$CARGO_PKG_VERSION`), so the tag has to exist
+      # before `release` publishes. Each backend is pinned at the submodule
+      # commits that CLI version was cut at: its own release tag when one
+      # already exists, else the checkout this run is releasing. The PAT needs
+      # `contents: write` on both backend repositories — the workflow's own
+      # GITHUB_TOKEN cannot push to them.
+      - name: Push the release tag to each backend
+        env:
+          GH_TOKEN: ${{ secrets.SUBMODULE_UPDATE_PAT }}
+        run: |
+          set -euo pipefail
+
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "waterui-cli") | .version')"
+          tag="v${version}"
+
+          if git rev-parse --verify --quiet "refs/tags/waterui-cli-${tag}" >/dev/null; then
+            pins="refs/tags/waterui-cli-${tag}"
+          else
+            pins="HEAD"
+          fi
+
+          for path in backends/apple backends/android; do
+            url="$(git config -f .gitmodules --get "submodule.${path}.url")"
+            repo="${url#https://github.com/}"
+            repo="${repo%.git}"
+            commit="$(git rev-parse "${pins}:${path}")"
+            existing="$(gh api "repos/${repo}/git/ref/tags/${tag}" --jq '.object.sha' 2>/dev/null || true)"
+            if [[ -z "${existing}" ]]; then
+              gh api "repos/${repo}/git/refs" -f "ref=refs/tags/${tag}" -f "sha=${commit}"
+              echo "Tagged ${repo} ${tag} at ${commit}"
+            elif [[ "${existing}" == "${commit}" ]]; then
+              echo "${repo} ${tag} already points at ${commit}"
+            else
+              echo "::error::${repo} ${tag} already exists at ${existing}, expected ${commit}"
+              exit 1
+            fi
+          done
+
   release:
     name: Release unpublished packages
     runs-on: ubuntu-latest
+    needs: tag-backends
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    concurrency:
+      group: release-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
     outputs:
       cli_tag: ${{ steps.cli_tag.outputs.cli_tag }}
     steps:
@@ -98,4 +152,3 @@ jobs:
       tag: ${{ needs.release.outputs.cli_tag }}
     secrets:
       HOMEBREW_PAT: ${{ secrets.HOMEBREW_PAT }}
-

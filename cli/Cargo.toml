@@ -12,25 +12,18 @@ description = "Cross-platform tooling for WaterUI applications"
 keywords.workspace = true
 categories.workspace = true
 
+# Only values no manifest in this workspace can supply live here: the
+# requirements of crates released from their own repositories, the Android
+# Kotlin toolchain version, and the backend repository coordinates. Every
+# workspace crate's scaffolded version is derived at build time — a released
+# CLI pins them at its own package version — and each backend resolves to the
+# `v<version>` tag the release workflow pushes to its repository.
 [package.metadata.waterui-scaffold]
-waterui-version = "0.4.0"
-waterui-core-version = "0.3.1"
-# `waterui-testing` inherits the workspace version rather than carrying its
-# own, so this entry mirrors `[workspace.package].version`.
-waterui-testing-version = "0.4.0"
-waterui-ffi-version = "0.3.1"
 hydrolysis-version = "0.2.1"
 hydrolysis-m3-version = "0.2.0"
-waterui-dew-version = "0.2.0"
-waterui-gtk-version = "0.1.1"
-waterui-browser-cef-version = "0.2.0"
-waterui-preview-version = "0.1.1"
-waterui-preview-protocol-version = "0.1.0"
 android-kotlin-version = "2.3.21"
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
-apple-backend-commit = "51ddd77bf40e05d87937d5eb7b8f69231574fbf4"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-commit = "843727addb253b3079c2f0504ea6aa4c6a5b8f2d"
 
 [[bin]]
 name = "water"
@@ -128,6 +121,7 @@ icns = "0.4"
 zenwave = { workspace = true, features = ["rustls"] }
 
 [build-dependencies]
+cargo_metadata = "0.23.1"
 toml = "1.1.5"
 
 [lints]

@@ -535,7 +535,7 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     pub fn android_remote_backend_dependency(&self) -> String {
         jitpack_dependency_coordinate(
             self.framework.scaffold_value("android-backend-url"),
-            self.framework.scaffold_value("android-backend-commit"),
+            self.framework.scaffold_value("android-backend-revision"),
         )
     }
 
@@ -725,7 +725,7 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
                     \t\t}};\n\
                     /* End XCRemoteSwiftPackageReference section */",
                     self.framework.scaffold_value("apple-backend-url"),
-                    self.framework.scaffold_value("apple-backend-commit"),
+                    self.framework.scaffold_value("apple-backend-revision"),
                 )
             },
             |backend_path| {
@@ -823,9 +823,9 @@ fn github_repository_name(repository_url: &str) -> &str {
     repo
 }
 
-fn jitpack_dependency_coordinate(repository_url: &str, commit: &str) -> String {
+fn jitpack_dependency_coordinate(repository_url: &str, revision: &str) -> String {
     let (owner, repo) = github_repository_owner_and_name(repository_url);
-    format!("com.github.{owner}:{repo}:{commit}")
+    format!("com.github.{owner}:{repo}:{revision}")
 }
 
 macro_rules! define_scaffold_templates {
@@ -1289,7 +1289,7 @@ mod tests {
         assert!(!rendered.contains("libwaterui_app"));
         assert!(rendered.contains("LIBRARY_SEARCH_PATHS = \"$(BUILT_PRODUCTS_DIR)\";"));
         assert!(rendered.contains(APPLE_BACKEND.repository_url));
-        assert!(rendered.contains(APPLE_BACKEND.commit));
+        assert!(rendered.contains(APPLE_BACKEND.revision));
         assert!(rendered.contains("kind = revision;"));
     }
 
@@ -1374,7 +1374,7 @@ mod tests {
     }
 
     #[test]
-    fn android_build_gradle_uses_embedded_remote_backend_commit() {
+    fn android_build_gradle_uses_embedded_remote_backend_revision() {
         let ctx = app_ctx();
         let template = embedded::ANDROID
             .get_file("app/build.gradle.kts.tpl")
@@ -1393,7 +1393,7 @@ mod tests {
         assert!(rendered.contains("minSdk = 26"));
         assert!(rendered.contains(&jitpack_dependency_coordinate(
             ANDROID_BACKEND.repository_url,
-            ANDROID_BACKEND.commit,
+            ANDROID_BACKEND.revision,
         )));
     }
 
