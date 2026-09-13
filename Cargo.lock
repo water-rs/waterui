@@ -71,6 +71,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "aither-core"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8650545d626a0d958fcd15ba5b9d434e71dc30644ccec002e56fc05ec3bf102e"
+dependencies = [
+ "aither-derive",
+ "anyhow",
+ "futures-core",
+ "futures-lite",
+ "mime",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "aither-derive"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "935ae735d08b71f5d226a1703f4fda1c3053bc6cdc0ac14230c2d405bbc61a56"
+dependencies = [
+ "convert_case 0.11.0",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
+name = "aither-mcp"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee6416fb4ecda69cbaf921e119dca60ec581fd16733c8294aa185e59d303502f"
+dependencies = [
+ "aither-core",
+ "async-channel",
+ "async-lock",
+ "async-process",
+ "blocking",
+ "futures-lite",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "aligned"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1637,6 +1685,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "convert_case"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "affbf0190ed2caf063e3def54ff444b449371d55c58e513a95ab98eca50adb49"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "cookie"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2177,7 +2234,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case",
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -8168,8 +8225,21 @@ checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [
  "dyn-clone",
  "ref-cast",
+ "schemars_derive",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d98c67716b46af2f0b8cf752abc930f6f9aecfbf671ecfb531db8a31dbe4e2ba"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -8273,6 +8343,17 @@ name = "serde_derive"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -9964,6 +10045,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -11378,6 +11460,24 @@ dependencies = [
  "waterui-graphics",
  "waterui-layout",
  "waterui-text",
+]
+
+[[package]]
+name = "waterui-mcp"
+version = "0.4.1"
+dependencies = [
+ "accesskit",
+ "aither-core",
+ "aither-mcp",
+ "async-channel",
+ "futures-lite",
+ "image",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tracing",
+ "waterui",
+ "waterui-testing",
 ]
 
 [[package]]
