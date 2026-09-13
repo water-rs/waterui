@@ -21,8 +21,7 @@ use cef::{
     Browser, Callback, CefString, Frame, ImplRequest, ImplRequestContext, ImplResourceHandler,
     ImplResponse, ImplSchemeHandlerFactory, ImplSchemeRegistrar, Request, RequestContext,
     ResourceHandler, ResourceReadCallback, ResourceSkipCallback, Response, SchemeHandlerFactory,
-    SchemeOptions, SchemeRegistrar, WrapResourceHandler, WrapSchemeHandlerFactory,
-    rc::Rc as _,
+    SchemeOptions, SchemeRegistrar, WrapResourceHandler, WrapSchemeHandlerFactory, rc::Rc as _,
     wrap_resource_handler, wrap_scheme_handler_factory,
 };
 use suiteki::Str;
@@ -41,12 +40,10 @@ pub fn register_asset_scheme(registrar: SchemeRegistrar) {
         | SchemeOptions::SECURE.get_raw()
         | SchemeOptions::CORS_ENABLED.get_raw()
         | SchemeOptions::FETCH_ENABLED.get_raw();
-    if registrar
-        .add_custom_scheme(
-            Some(&CefString::from(ASSET_SCHEME)),
-            c_int::try_from(options).expect("CEF scheme option bits fit in c_int"),
-        )
-        == 0
+    if registrar.add_custom_scheme(
+        Some(&CefString::from(ASSET_SCHEME)),
+        c_int::try_from(options).expect("CEF scheme option bits fit in c_int"),
+    ) == 0
     {
         tracing::error!("CEF refused to register the `waterui` asset scheme");
     }

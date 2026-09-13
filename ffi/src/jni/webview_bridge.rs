@@ -930,7 +930,9 @@ extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeAsse
 /// Releases the `WuiAssetServer` the wrapper holds; called when the web view is
 /// released. Zero is a no-op — a view opened without assets holds no server.
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeFreeAssetServer<'local>(
+extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeFreeAssetServer<
+    'local,
+>(
     mut env: EnvUnowned<'local>,
     _this: JObject<'local>,
     server_ptr: jlong,

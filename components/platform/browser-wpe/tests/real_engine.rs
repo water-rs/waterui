@@ -44,9 +44,7 @@ use executor_core::LocalExecutor;
 use executor_core::async_executor::AsyncLocalExecutor;
 use serde_json::Value;
 use tiny_http::{Header, Response, Server};
-use waterui_browser_wpe::{
-    WpeController, WpePage, WpeRuntime, WpeRuntimePaths, WpeWebViewHandle,
-};
+use waterui_browser_wpe::{WpeController, WpePage, WpeRuntime, WpeRuntimePaths, WpeWebViewHandle};
 use waterui_url::Url;
 use waterui_webview::{
     BackendEvent, IntoJsReply, JsReply, Json, ScriptInjectionTime, ScriptMessageHandler,
@@ -489,7 +487,7 @@ fn integers_beyond_two_to_the_fifty_third_cross_intact_both_ways() {
 #[test]
 fn the_asset_origin_serves_bundled_content() {
     let engine = RealEngine::start();
-    engine.block_on(waterui_webview::conformance::asset_origin_serves_bundled_content(
-        &engine.controller,
-    ));
+    engine.block_on(
+        waterui_webview::conformance::asset_origin_serves_bundled_content(&engine.controller),
+    );
 }

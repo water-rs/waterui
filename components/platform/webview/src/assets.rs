@@ -245,8 +245,8 @@ mod tests {
     };
 
     use super::{
-        ASSET_HOST, ASSET_HTTPS_HOST, ASSET_HTTPS_ORIGIN, ASSET_ORIGIN, ASSET_SCHEME,
-        AssetRequest, AssetResponse, AssetServer, asset_target, dispatch,
+        ASSET_HOST, ASSET_HTTPS_HOST, ASSET_HTTPS_ORIGIN, ASSET_ORIGIN, ASSET_SCHEME, AssetRequest,
+        AssetResponse, AssetServer, asset_target, dispatch,
     };
 
     fn counting_server(calls: &Arc<AtomicUsize>) -> AssetServer {
@@ -270,7 +270,8 @@ mod tests {
             response
                 .headers
                 .iter()
-                .any(|(name, value)| name.as_str() == "Content-Type" && value.as_str() == "text/plain")
+                .any(|(name, value)| name.as_str() == "Content-Type"
+                    && value.as_str() == "text/plain")
         );
         assert!(
             response
@@ -305,8 +306,7 @@ mod tests {
                 response
                     .headers
                     .iter()
-                    .any(|(name, value)| name.as_str() == "Allow"
-                        && value.as_str() == "GET, HEAD")
+                    .any(|(name, value)| name.as_str() == "Allow" && value.as_str() == "GET, HEAD")
             );
         }
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -355,7 +355,10 @@ mod tests {
                 Some(("/a.js", Some("v=1")))
             );
             assert_eq!(asset_target(origin, origin), Some(("/", None)));
-            assert_eq!(asset_target(&format!("{origin}/"), origin), Some(("/", None)));
+            assert_eq!(
+                asset_target(&format!("{origin}/"), origin),
+                Some(("/", None))
+            );
             // An explicit port still names the asset host.
             assert_eq!(
                 asset_target(&format!("{origin}:8443/x"), origin),

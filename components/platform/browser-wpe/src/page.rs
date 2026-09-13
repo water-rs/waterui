@@ -824,13 +824,11 @@ unsafe extern "C" fn asset_callback(
             CStr::from_ptr(uri).to_string_lossy(),
         )
     };
-    let response = waterui_webview::assets::asset_target(
-        &uri,
-        waterui_webview::ASSET_ORIGIN,
-    )
-    .map_or_else(waterui_webview::AssetResponse::not_found, |(path, query)| {
-        waterui_webview::assets::dispatch(server, &method, path, query)
-    });
+    let response = waterui_webview::assets::asset_target(&uri, waterui_webview::ASSET_ORIGIN)
+        .map_or_else(
+            waterui_webview::AssetResponse::not_found,
+            |(path, query)| waterui_webview::assets::dispatch(server, &method, path, query),
+        );
     // The wire form is "Name: value" lines joined by `\n` — the same the FFI
     // asset contract uses; header names and values can never contain a
     // newline, so the lines form is lossless.

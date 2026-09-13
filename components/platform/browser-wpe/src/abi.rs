@@ -85,12 +85,8 @@ pub struct WpeApi {
         *mut *mut c_char,
     ) -> *mut WaterWpePage,
     pub page_free: unsafe extern "C" fn(*mut WaterWpePage),
-    pub page_set_asset_server: unsafe extern "C" fn(
-        *mut WaterWpePage,
-        AssetCallback,
-        *mut c_void,
-        DestroyNotify,
-    ),
+    pub page_set_asset_server:
+        unsafe extern "C" fn(*mut WaterWpePage, AssetCallback, *mut c_void, DestroyNotify),
     pub page_load_uri: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
     pub page_go_back: unsafe extern "C" fn(*mut WaterWpePage),
     pub page_go_forward: unsafe extern "C" fn(*mut WaterWpePage),
@@ -161,10 +157,7 @@ impl WpeApi {
                 string_free: symbol(library, b"water_wpe_string_free\0"),
                 page_new: symbol(library, b"water_wpe_page_new\0"),
                 page_free: symbol(library, b"water_wpe_page_free\0"),
-                page_set_asset_server: symbol(
-                    library,
-                    b"water_wpe_page_set_asset_server\0",
-                ),
+                page_set_asset_server: symbol(library, b"water_wpe_page_set_asset_server\0"),
                 page_load_uri: symbol(library, b"water_wpe_page_load_uri\0"),
                 page_go_back: symbol(library, b"water_wpe_page_go_back\0"),
                 page_go_forward: symbol(library, b"water_wpe_page_go_forward\0"),

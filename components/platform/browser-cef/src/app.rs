@@ -1,12 +1,12 @@
 use async_channel::Sender;
 
+#[cfg(feature = "webview")]
+use cef::SchemeRegistrar;
 use cef::rc::Rc as _;
 use cef::{
     App, BrowserProcessHandler, CefString, CommandLine, ImplApp, ImplBrowserProcessHandler,
     ImplCommandLine, WrapApp, WrapBrowserProcessHandler,
 };
-#[cfg(feature = "webview")]
-use cef::SchemeRegistrar;
 
 use crate::runtime::PumpDeadline;
 

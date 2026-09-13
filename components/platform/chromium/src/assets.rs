@@ -73,7 +73,10 @@ async fn answer(cdp: &CdpSession, server: &AssetServer, params: &Value) {
         return;
     };
     let request = params.get("request").unwrap_or(&Value::Null);
-    let url = request.get("url").and_then(Value::as_str).unwrap_or_default();
+    let url = request
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let method = request
         .get("method")
         .and_then(Value::as_str)
@@ -110,10 +113,7 @@ async fn answer(cdp: &CdpSession, server: &AssetServer, params: &Value) {
 )]
 async fn continue_request(cdp: &CdpSession, request_id: &str) {
     let result = cdp
-        .execute_raw(
-            "Fetch.continueRequest",
-            json!({ "requestId": request_id }),
-        )
+        .execute_raw("Fetch.continueRequest", json!({ "requestId": request_id }))
         .await;
     if let Err(error) = result {
         tracing::warn!(%error, "Chromium refused Fetch.continueRequest for a paused request");
