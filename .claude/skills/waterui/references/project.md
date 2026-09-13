@@ -189,10 +189,11 @@ Defaults follow each platform's own convention rather than one shared look:
 | iOS | system background, no artwork (a launch screen resembles the first screen) | centered, inside the safe area |
 | Android | the OS default: the launcher icon on the window background | shown as the splash icon, which Android masks to a circle |
 | Web (Hydrolysis) | theme background, the app icon, and a download progress bar | replaces the icon |
-| macOS, GTK, desktop Hydrolysis | the window background color only | ignored |
+| macOS, GTK, desktop Hydrolysis | nothing | ignored |
 
-Desktop platforms have no launch screen: nothing can be drawn before the window's first
-frame, so the background color is all they take from `[launch]`.
+Desktop platforms have no launch screen and take nothing from `[launch]`: the window
+appears with the app's first frame already in it (Hydrolysis keeps it hidden until then,
+macOS and GTK create it after the tree exists), so there is no moment for one to show.
 
 ## Running and building
 
