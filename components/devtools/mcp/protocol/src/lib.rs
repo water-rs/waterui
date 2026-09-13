@@ -18,9 +18,9 @@ mod tools;
 
 pub use tools::{
     Act, ActAction, ActArgs, Find, FindArgs, Key, KeyArgs, Pointer, PointerArgs, PointerKind,
-    Restart, RestartArgs, Screenshot, ScreenshotArgs, SelectorArgs, SESSION_TOOL_NAMES, Snapshot,
-    SnapshotArgs, SnapshotFormat, ToolDispatch, TypeText, TypeTextArgs, ValueEqArgs, Wait, WaitArgs,
-    register_session_tools,
+    Restart, RestartArgs, SESSION_TOOL_NAMES, Screenshot, ScreenshotArgs, SelectorArgs, Snapshot,
+    SnapshotArgs, SnapshotFormat, ToolDispatch, TypeText, TypeTextArgs, ValueEqArgs, Wait,
+    WaitArgs, register_session_tools,
 };
 
 /// Server instructions handed to the client during `initialize`.

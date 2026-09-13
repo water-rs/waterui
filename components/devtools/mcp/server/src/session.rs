@@ -10,8 +10,8 @@ use async_channel::Sender;
 use waterui_testing::{DragOptions, NodeId, OffscreenApp, Role, Selector, WaitOptions, WaitResult};
 
 use waterui_mcp_protocol::{
-    ActAction, ActArgs, FindArgs, KeyArgs, PointerArgs, PointerKind, SelectorArgs, SnapshotArgs,
-    SnapshotFormat, ScreenshotArgs, RestartArgs, ToolDispatch, TypeTextArgs, WaitArgs,
+    ActAction, ActArgs, FindArgs, KeyArgs, PointerArgs, PointerKind, RestartArgs, ScreenshotArgs,
+    SelectorArgs, SnapshotArgs, SnapshotFormat, ToolDispatch, TypeTextArgs, WaitArgs,
 };
 
 use crate::tree;

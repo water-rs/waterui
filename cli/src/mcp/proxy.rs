@@ -29,8 +29,8 @@ use smol::Task;
 use smol::process::Child;
 use tracing::{debug, error, info};
 use waterui_mcp_protocol::{
-    ActArgs, FindArgs, KeyArgs, PointerArgs, RestartArgs, ScreenshotArgs, SnapshotArgs, ToolDispatch,
-    TypeTextArgs, WaitArgs,
+    ActArgs, FindArgs, KeyArgs, PointerArgs, RestartArgs, ScreenshotArgs, SnapshotArgs,
+    ToolDispatch, TypeTextArgs, WaitArgs,
 };
 use waterui_preview_protocol::hydrolysis::{MCP_RUN_CONFIG_ENV, McpRunConfig};
 
@@ -256,8 +256,7 @@ impl ToolDispatch for ChildProxy {
     /// the fresh tree comes back through the new child's `snapshot`.
     async fn restart(&self, _args: RestartArgs) -> ToolResult {
         self.rebuild().await;
-        self.forward_call("snapshot", SnapshotArgs::default())
-            .await
+        self.forward_call("snapshot", SnapshotArgs::default()).await
     }
 }
 
@@ -308,7 +307,8 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
     .await?;
 
     let binary_path =
-        built_hydrolysis_binary_path(&project, platform, "debug", RustLinkage::SharedRuntime).await?;
+        built_hydrolysis_binary_path(&project, platform, "debug", RustLinkage::SharedRuntime)
+            .await?;
     stage_hydrolysis_shared_runtime(&binary_path, platform).await?;
 
     let run_config = McpRunConfig {

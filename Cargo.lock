@@ -11491,7 +11491,6 @@ dependencies = [
  "aither-core",
  "schemars 1.2.2",
  "serde",
- "serde_json",
 ]
 
 [[package]]

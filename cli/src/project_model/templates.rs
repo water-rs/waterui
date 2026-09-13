@@ -2882,11 +2882,10 @@ pub mod hydrolysis {
     use super::{
         GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
         GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection,
-        HYDROLYSIS_M3_VERSION, HYDROLYSIS_VERSION, MCP_VERSION,
-        NativeBackendDependencyPathKind, NativeBackendDependencySpec, PREVIEW_PROTOCOL_VERSION,
-        PREVIEW_VERSION, Path, TemplateContext, TemplateNamespace, WATERUI_BROWSER_CEF_VERSION,
-        WATERUI_CORE_VERSION, WATERUI_VERSION, embedded, io, scaffold_dir,
-        write_generated_cargo_toml,
+        HYDROLYSIS_M3_VERSION, HYDROLYSIS_VERSION, MCP_VERSION, NativeBackendDependencyPathKind,
+        NativeBackendDependencySpec, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, Path,
+        TemplateContext, TemplateNamespace, WATERUI_BROWSER_CEF_VERSION, WATERUI_CORE_VERSION,
+        WATERUI_VERSION, embedded, io, scaffold_dir, write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
 
@@ -3144,10 +3143,7 @@ pub mod hydrolysis {
                     .with_default_features(false),
                 ),
             ),
-            (
-                "serde".to_string(),
-                GeneratedDependencyValue::simple("1"),
-            ),
+            ("serde".to_string(), GeneratedDependencyValue::simple("1")),
             (
                 "serde_json".to_string(),
                 GeneratedDependencyValue::simple("1"),

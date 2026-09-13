@@ -166,10 +166,7 @@ pub(crate) async fn ensure_mcp_json(project_root: &Path) -> io::Result<bool> {
 
 /// Writes the [`McpRunConfig`] JSON next to the backend sources and returns
 /// its path; the file is rewritten on every build.
-pub(crate) async fn write_run_config(
-    project: &Project,
-    config: &McpRunConfig,
-) -> Result<PathBuf> {
+pub(crate) async fn write_run_config(project: &Project, config: &McpRunConfig) -> Result<PathBuf> {
     let path = project
         .backend_path::<HydrolysisBackend>()
         .join("mcp-run.json");

@@ -29,8 +29,8 @@ use waterui_mcp_protocol::{INSTRUCTIONS, register_session_tools};
 use waterui_testing::OffscreenApp;
 
 pub use aither_mcp::protocol::ServerInfo;
-pub use waterui_mcp_protocol::SESSION_TOOL_NAMES;
 use session::{Session, SessionHandle};
+pub use waterui_mcp_protocol::SESSION_TOOL_NAMES;
 
 /// Serves a session over standard input and output.
 ///

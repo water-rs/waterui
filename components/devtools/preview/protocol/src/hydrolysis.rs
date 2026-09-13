@@ -120,8 +120,7 @@ mod tests {
             scale_factor: 2.0,
         };
         let json = serde_json::to_string(&config).expect("config serializes");
-        let parsed: McpRunConfig =
-            serde_json::from_str(&json).expect("config deserializes");
+        let parsed: McpRunConfig = serde_json::from_str(&json).expect("config deserializes");
         assert_eq!(parsed, config);
     }
 }
