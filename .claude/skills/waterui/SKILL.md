@@ -214,11 +214,12 @@ opt-in facade features `canvas`, `chart`, `barcode` and `particle`, exposing the
 independent crates as `waterui::canvas`, `waterui::chart`, `waterui::barcode` and
 `waterui::particle`. Direct dependencies such as `waterui-chart` remain valid and expose
 the same types as the facade, including with dynamic linking. Maps and Mermaid diagrams
-use direct dependencies on `waterui-map` and `waterui-mermaid`. Mermaid additionally
-needs one call at the root of the app: a
+use direct dependencies on `waterui-map` and `waterui-mermaid`; `waterui-mermaid` lives
+in its own repository (water-rs/mermaid) and is a git dependency until it can be
+published. Mermaid additionally needs one call at the root of the app: a
 ```` ```mermaid ```` fence in Markdown stays plain code until the environment has
-`waterui_mermaid::install(&mut env)` (do it inside `use_env` at the root view, as
-`examples/markdown` does, so `water preview` gets it too). Keep
+`waterui_mermaid::install(&mut env)` (do it inside `use_env` at the root view, as the
+component repository's `examples/markdown` shows, so `water preview` gets it too). Keep
 the generated `dev = ["waterui/dynamic_linking"]` feature — it is what makes `water preview`
 and the fast dev loop link dynamically ([references/project.md](references/project.md)).
 
