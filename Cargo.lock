@@ -995,7 +995,7 @@ version = "3.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dee98b0db6a962de883bf5d20362dee4d7ca0d12fe39a7c6c73c844e1cd7c1f"
 dependencies = [
- "darling 0.21.3",
+ "darling 0.23.0",
  "ident_case",
  "prettyplease",
  "proc-macro2",
@@ -2115,7 +2115,6 @@ dependencies = [
  "ident_case",
  "proc-macro2",
  "quote",
- "strsim",
  "syn 2.0.119",
 ]
 
@@ -12048,13 +12047,14 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8144ea3eb1106fb27cb925662cce8e4ec4c586537e7c2793549f0f0cf60e1b8f"
 dependencies = [
  "kurbo 0.13.1",
  "mathcat",
  "nami",
  "parley",
  "peniko",
- "pollster 1.0.1",
  "pulldown-latex",
  "quick-xml 0.42.0",
  "serde",
@@ -12062,14 +12062,11 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "tracing",
  "ttf-parser",
- "waterui",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
  "waterui-str",
- "waterui-testing",
  "waterui-text",
- "wgpu",
 ]
 
 [[package]]
