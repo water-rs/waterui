@@ -26,7 +26,7 @@ use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View};
 use waterui_graphics::Color;
 use waterui_layout::{Point, Rect, Size};
-use waterui_str::Str;
+use suiteki::Str;
 
 use crate::app::application_name;
 #[cfg(feature = "snackbar")]

@@ -56,7 +56,7 @@ use waterui_layout::safe_area::SafeAreaInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{Alignment, hstack};
 use waterui_layout::{AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
-use waterui_str::Str;
+use suiteki::Str;
 use waterui_text::{font::Font, text::text};
 
 use crate::AnyView;

@@ -39,7 +39,7 @@ use waterui_layout::{
     stack::Alignment,
 };
 use waterui_navigation::NavigationView;
-use waterui_str::Str;
+use suiteki::Str;
 
 use crate::{
     accessibility::{

@@ -12,7 +12,7 @@ use waterui_layout::{
 };
 #[cfg(feature = "media")]
 use waterui_media::{Url, photo::photo as media_photo};
-use waterui_str::Str;
+use suiteki::Str;
 use waterui_text::{
     Text,
     highlight::Language,

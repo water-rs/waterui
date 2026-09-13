@@ -9,7 +9,7 @@
 //! assistive technologies convey the intended experience.
 
 use nami::{Computed, impl_constant, signal::IntoComputed};
-use waterui_str::Str;
+use suiteki::Str;
 
 use crate::metadata::MetadataKey;
 use crate::{AnyView, Environment, IgnorableMetadata, View};

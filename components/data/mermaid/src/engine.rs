@@ -12,7 +12,7 @@ use merman_render::environment::RenderEnvironment;
 use merman_render::family::{self, LayoutProjection};
 use merman_render::model::{LayoutEdge, LayoutLabel, LayoutNode};
 use waterui_core::layout::{Point, Rect, Size};
-use waterui_str::Str;
+use suiteki::Str;
 use waterui_text::FontCollection;
 
 use crate::layout::{

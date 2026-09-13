@@ -23,7 +23,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use waterui_core::extract::{ExtractionState, Extractor};
 use waterui_core::{Environment, Error};
-use waterui_str::Str;
+use suiteki::Str;
 
 /// The request being handled, placed in the environment so extractors can read
 /// it the way `State<T>` reads its value.
@@ -228,7 +228,7 @@ mod tests {
     use std::rc::Rc;
     use waterui_core::Environment;
     use waterui_core::extract::Extractor;
-    use waterui_str::Str;
+    use suiteki::Str;
 
     fn env_with(name: &str, payload: &[u8]) -> Environment {
         let mut env = Environment::new();

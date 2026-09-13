@@ -44,7 +44,7 @@ use alloc::string::{String, ToString};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use core::fmt;
-use waterui_str::Str;
+use suiteki::Str;
 
 #[cfg(feature = "std")]
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;

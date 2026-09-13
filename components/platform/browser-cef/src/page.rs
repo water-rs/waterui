@@ -1464,8 +1464,8 @@ fn create_request_context(
 
 /// Describes a Chromium certificate error code for the `WebViewError::Ssl` message.
 #[cfg(feature = "webview")]
-fn alloc_error_text(code: cef::Errorcode) -> waterui_str::Str {
-    waterui_str::Str::from(format!("certificate error {code:?}"))
+fn alloc_error_text(code: cef::Errorcode) -> suiteki::Str {
+    suiteki::Str::from(format!("certificate error {code:?}"))
 }
 
 fn frame_url(frame: &Frame) -> Url {

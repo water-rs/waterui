@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 #[cfg(target_vendor = "apple")]
 use waterui_core::{Environment, view::ViewConfiguration as _};
 use waterui_map::{Annotation, Coordinate, Location, MapConfig, MapStatus, MapStyle, Region};
-use waterui_str::Str;
+use suiteki::Str;
 
 /// Announces the Apple backend's `MapKit` bridge as this app's map realization.
 ///

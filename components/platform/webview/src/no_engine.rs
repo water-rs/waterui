@@ -25,7 +25,7 @@ use std::future::{Future, ready};
 
 use cookie::Cookie;
 use waterui_core::Signal;
-use waterui_str::Str;
+use suiteki::Str;
 use waterui_url::Url;
 
 use crate::{

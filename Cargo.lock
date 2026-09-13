@@ -995,7 +995,7 @@ version = "3.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dee98b0db6a962de883bf5d20362dee4d7ca0d12fe39a7c6c73c844e1cd7c1f"
 dependencies = [
- "darling 0.23.0",
+ "darling",
  "ident_case",
  "prettyplease",
  "proc-macro2",
@@ -2087,35 +2087,12 @@ dependencies = [
 
 [[package]]
 name = "darling"
-version = "0.21.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cdf337090841a411e2a7f3deb9187445851f91b309c0c0a29e05f74a00a48c0"
-dependencies = [
- "darling_core 0.21.3",
- "darling_macro 0.21.3",
-]
-
-[[package]]
-name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
 dependencies = [
- "darling_core 0.23.0",
- "darling_macro 0.23.0",
-]
-
-[[package]]
-name = "darling_core"
-version = "0.21.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1247195ecd7e3c85f83c8d2a366e4210d588e802133e1e355180a9870b517ea4"
-dependencies = [
- "fnv",
- "ident_case",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
+ "darling_core",
+ "darling_macro",
 ]
 
 [[package]]
@@ -2133,22 +2110,11 @@ dependencies = [
 
 [[package]]
 name = "darling_macro"
-version = "0.21.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d38308df82d1080de0afee5d069fa14b0326a88c14f15c5ccda35b4a6c414c81"
-dependencies = [
- "darling_core 0.21.3",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "darling_macro"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
 dependencies = [
- "darling_core 0.23.0",
+ "darling_core",
  "quote",
  "syn 2.0.119",
 ]
@@ -9007,7 +8973,7 @@ version = "3.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8705578779c2b6bd90d84d66eb2e206b708b1a4d7b9f17641b293545bf1c7e46"
 dependencies = [
- "darling 0.23.0",
+ "darling",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -9425,6 +9391,16 @@ checksum = "0047fd0d9ecdd63a24dfa175437888045dafaecfb3487c7c84f52ef7483d08a6"
 dependencies = [
  "peg",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "suiteki"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d44b6f6c8cdaee3db2b37786c53faefb88d1b86a529f2bc76ec78c9886f1e241"
+dependencies = [
+ "nami-core",
+ "serde",
 ]
 
 [[package]]
@@ -11402,6 +11378,7 @@ dependencies = [
  "objc2",
  "serde",
  "serde_json",
+ "suiteki",
  "thiserror 2.0.20",
  "tiny_http",
  "tracing",
@@ -11409,7 +11386,6 @@ dependencies = [
  "waterui-chromium",
  "waterui-core",
  "waterui-graphics",
- "waterui-str",
  "waterui-url",
  "waterui-watcher-set",
  "waterui-webview",
@@ -11433,11 +11409,11 @@ dependencies = [
  "pollster 1.0.1",
  "serde",
  "serde_json",
+ "suiteki",
  "tiny_http",
  "tracing",
  "waterui-core",
  "waterui-graphics",
- "waterui-str",
  "waterui-url",
  "waterui-watcher-set",
  "waterui-webview",
@@ -11591,8 +11567,8 @@ dependencies = [
  "nami",
  "num-traits",
  "serde",
+ "suiteki",
  "waterui-macros",
- "waterui-str",
 ]
 
 [[package]]
@@ -11624,6 +11600,7 @@ dependencies = [
  "peniko",
  "pollster 1.0.1",
  "raw-window-handle",
+ "suiteki",
  "tracing",
  "tracing-android",
  "tracing-oslog",
@@ -11642,7 +11619,6 @@ dependencies = [
  "waterui-locale",
  "waterui-map",
  "waterui-navigation",
- "waterui-str",
  "waterui-svg",
  "waterui-text",
  "waterui-video",
@@ -11764,10 +11740,10 @@ dependencies = [
 name = "waterui-icon"
 version = "0.3.2"
 dependencies = [
+ "suiteki",
  "waterui",
  "waterui-core",
  "waterui-graphics",
- "waterui-str",
  "waterui-svg",
  "waterui-testing",
  "waterui-text",
@@ -11824,16 +11800,16 @@ dependencies = [
 name = "waterui-icons-native"
 version = "0.1.2"
 dependencies = [
+ "suiteki",
  "waterui-icon",
- "waterui-str",
 ]
 
 [[package]]
 name = "waterui-icons-sf-symbol"
 version = "0.1.2"
 dependencies = [
+ "suiteki",
  "waterui-icon",
- "waterui-str",
 ]
 
 [[package]]
@@ -11899,6 +11875,7 @@ dependencies = [
  "pastey 0.2.3",
  "pulldown-cmark",
  "robius-open",
+ "suiteki",
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
@@ -11926,7 +11903,6 @@ dependencies = [
  "waterui-navigation",
  "waterui-particle",
  "waterui-shape",
- "waterui-str",
  "waterui-svg",
  "waterui-text",
  "waterui-url",
@@ -11966,13 +11942,13 @@ dependencies = [
  "nami",
  "num-traits",
  "serde",
+ "suiteki",
  "sys-locale",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
  "waterui",
  "waterui-core",
  "waterui-locale",
- "waterui-str",
 ]
 
 [[package]]
@@ -11998,10 +11974,10 @@ name = "waterui-map"
 version = "0.1.2"
 dependencies = [
  "nami",
+ "suiteki",
  "waterkit-location",
  "waterui",
  "waterui-core",
- "waterui-str",
  "waterui-testing",
 ]
 
@@ -12047,8 +12023,7 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8144ea3eb1106fb27cb925662cce8e4ec4c586537e7c2793549f0f0cf60e1b8f"
+source = "git+https://github.com/water-rs/math?rev=39b7886f21595645425d326bf9dc652489f11a9f#39b7886f21595645425d326bf9dc652489f11a9f"
 dependencies = [
  "kurbo 0.13.1",
  "mathcat",
@@ -12058,6 +12033,7 @@ dependencies = [
  "pulldown-latex",
  "quick-xml 0.42.0",
  "serde",
+ "suiteki",
  "thiserror 2.0.20",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
@@ -12065,7 +12041,6 @@ dependencies = [
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
- "waterui-str",
  "waterui-text",
 ]
 
@@ -12107,13 +12082,13 @@ dependencies = [
  "nami",
  "parley",
  "serde_json",
+ "suiteki",
  "thiserror 2.0.20",
  "waterui",
  "waterui-canvas",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
- "waterui-str",
  "waterui-testing",
  "waterui-text",
 ]
@@ -12205,28 +12180,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "waterui-str"
-version = "0.3.0"
-dependencies = [
- "nami-core",
- "serde",
-]
-
-[[package]]
 name = "waterui-svg"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "491f11aaf677ae078ce4b8f1bf0f6d6404ac418892e29a418af630218d9f2bfa"
+version = "0.1.0"
+source = "git+https://github.com/water-rs/svg?rev=eff02dbb78e7ba876751e597fd016db85bbc64a2#eff02dbb78e7ba876751e597fd016db85bbc64a2"
 dependencies = [
  "kurbo 0.13.1",
  "peniko",
+ "suiteki",
  "tracing",
  "usvg",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
  "waterui-macros",
- "waterui-str",
 ]
 
 [[package]]
@@ -12262,6 +12228,7 @@ dependencies = [
  "parley",
  "pulldown-cmark",
  "smallvec",
+ "suiteki",
  "syntect",
  "tracing",
  "two-face",
@@ -12272,7 +12239,6 @@ dependencies = [
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
- "waterui-str",
  "waterui-testing",
  "waterui-text",
  "web-sys",
@@ -12290,8 +12256,8 @@ dependencies = [
  "nami",
  "nami-core",
  "sha2",
+ "suiteki",
  "tracing",
- "waterui-str",
  "zenwave",
 ]
 
@@ -12368,12 +12334,12 @@ dependencies = [
  "hydrolysis-m3",
  "serde",
  "serde_json",
+ "suiteki",
  "thiserror 2.0.20",
  "tracing",
  "waterui",
  "waterui-core",
  "waterui-layout",
- "waterui-str",
  "waterui-testing",
  "waterui-url",
  "waterui-watcher-set",

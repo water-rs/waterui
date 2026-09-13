@@ -13,7 +13,7 @@
 //!   large payload; the `exec!`/`eval!` macros put `@{...}` holes into arguments
 //!   the engine binds.
 
-use waterui_str::Str;
+use suiteki::Str;
 
 /// Everything `WaterUI` injects at document start: the bridge and the evaluation
 /// wrapper.
@@ -287,7 +287,7 @@ impl JsOutcome {
 mod tests {
     use super::{JsError, JsExpr, JsOutcome, JsProgram};
     use serde_json::json;
-    use waterui_str::Str;
+    use suiteki::Str;
 
     /// Builds the program `exec!("app.set(@{a}, @{b})")` expands to: the macro has
     /// already replaced each `@{...}` hole with a positional parameter name.

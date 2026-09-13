@@ -33,7 +33,7 @@ use waterui_core::{
     handler::{BoxedAction, Handler, boxed_action},
     metadata::{Metadata, MetadataKey},
 };
-use waterui_str::Str;
+use suiteki::Str;
 
 use crate::reactive::Binding;
 

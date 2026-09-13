@@ -18,7 +18,7 @@ use std::rc::{Rc, Weak};
 
 use futures::channel::oneshot;
 use num_traits::ToPrimitive as _;
-use waterui_str::Str;
+use suiteki::Str;
 use waterui_url::Url;
 use waterui_watcher_set::WatcherSet;
 use waterui_webview::{BackendEvent, WebViewError, WebViewEvent, bridge};

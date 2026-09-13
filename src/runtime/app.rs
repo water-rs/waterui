@@ -2,7 +2,7 @@
 
 use nami::{Computed, signal::IntoComputed};
 use waterui_core::{Environment, handler::ViewBuilder};
-use waterui_str::Str;
+use suiteki::Str;
 
 use crate::{
     component::menu::{Menu, MenuBarView},

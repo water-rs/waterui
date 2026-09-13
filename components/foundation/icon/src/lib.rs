@@ -53,7 +53,7 @@ mod glyph;
 pub use glyph::IconGlyph;
 
 use waterui_core::{impl_constant, raw_view};
-use waterui_str::Str;
+use suiteki::Str;
 
 /// `SystemIcon` component representing a platform system icon by name.
 ///

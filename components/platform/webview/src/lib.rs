@@ -180,7 +180,7 @@ use waterui_core::{
 };
 use waterui_layout::spacer;
 use waterui_layout::stack::vstack;
-use waterui_str::Str;
+use suiteki::Str;
 
 /// Something that happened in a `WebView`.
 ///

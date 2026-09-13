@@ -21,7 +21,7 @@ use waterui_core::{
     id::Identifiable,
 };
 use waterui_layout::stack::{HorizontalAlignment, VStack};
-use waterui_str::Str;
+use suiteki::Str;
 use waterui_text::styled::StyledStr;
 
 use crate::{

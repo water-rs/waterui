@@ -29,7 +29,7 @@ use waterui_layout::{
     spacer,
     stack::{HorizontalAlignment, VStack, hstack},
 };
-use waterui_str::Str;
+use suiteki::Str;
 
 use crate::{
     font::{Body, Font},

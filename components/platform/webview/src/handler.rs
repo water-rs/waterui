@@ -3,7 +3,7 @@ use std::{any::Any, pin::Pin, rc::Rc};
 use cookie::Cookie;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Computed, Signal, impl_debug};
-use waterui_str::Str;
+use suiteki::Str;
 
 use crate::{BackendEvent, WatcherGuard};
 use waterui_url::Url;

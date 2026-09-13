@@ -51,7 +51,7 @@ use waterui_core::layout::{Layout, Point, ProposalSize, Rect, Size, StretchAxis,
 use waterui_core::view::{Hook, ViewConfiguration as _};
 use waterui_core::{AnyView, Environment, View, resolve::Resolvable as _};
 use waterui_layout::container::FixedContainer;
-use waterui_str::Str;
+use suiteki::Str;
 use waterui_text::FontCollection;
 use waterui_text::code::CodeConfig;
 use waterui_text::text;

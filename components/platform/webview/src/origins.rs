@@ -14,7 +14,7 @@
 //!     .bridge_origins(["https://app.waterui.dev", "https://docs.waterui.dev"])
 //! ```
 
-use waterui_str::Str;
+use suiteki::Str;
 use waterui_url::Url;
 
 /// Which origins may reach the bridge.

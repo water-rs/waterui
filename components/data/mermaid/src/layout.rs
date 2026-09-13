@@ -8,7 +8,7 @@
 use alloc::vec::Vec;
 
 use waterui_core::layout::{Point, Rect, Size};
-use waterui_str::Str;
+use suiteki::Str;
 
 /// One laid-out diagram.
 #[derive(Debug, Clone, Default)]

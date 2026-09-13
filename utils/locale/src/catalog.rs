@@ -5,7 +5,7 @@ use std::string::String;
 
 use icu_locale::LanguageIdentifier;
 use waterui_core::plugin::Plugin;
-use waterui_str::Str;
+use suiteki::Str;
 
 use crate::locale::{Locale, find_in_fallback_chain, locales};
 use crate::parser::{TranslationFile, TranslationValue};

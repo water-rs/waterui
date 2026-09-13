@@ -16,7 +16,7 @@ path = "lib.rs"
 [dependencies]
 nami.workspace = true
 waterui-core.workspace = true
-waterui-str.workspace = true
+suiteki.workspace = true
 waterui-url.workspace = true
 waterui-layout.workspace = true
 waterui-text.workspace = true

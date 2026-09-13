@@ -25,7 +25,7 @@ waterui-layout.workspace = true
 # measured from real faces, so a build carrying this component must be able to
 # reach them.
 waterui-text = { workspace = true, features = ["system-fonts"] }
-waterui-str.workspace = true
+suiteki.workspace = true
 nami.workspace = true
 merman-core.workspace = true
 merman-render.workspace = true

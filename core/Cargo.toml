@@ -12,7 +12,7 @@ keywords = ["ui", "core", "framework", "waterui"]
 categories = ["gui"]
 
 [dependencies]
-waterui-str.workspace = true
+suiteki.workspace = true
 nami.workspace = true
 waterui-macros.workspace = true
 
@@ -35,7 +35,7 @@ features = ["derive"]
 default = ["std"]
 std = []
 nightly = []
-serde = ["dep:serde", "waterui-str/serde"]
+serde = ["dep:serde", "suiteki/serde"]
 
 [lints]
 workspace = true
