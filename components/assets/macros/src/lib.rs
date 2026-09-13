@@ -13,7 +13,7 @@ use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input,
 };
-use waterui_assets::{AssetKind, is_loopback_http_url, is_remote_url};
+use waterui_assets_core::{AssetKind, is_loopback_http_url, is_remote_url};
 use waterui_assets_planner::{BundleManifest, PlannedAsset, plan_bundle, read_assets_path};
 
 fn waterui_crate_path() -> syn::Result<TokenStream2> {

@@ -190,6 +190,7 @@ waterui-particle = "0.1.1"
 waterui-chart = "0.2.0"
 waterui-map-gpu = "0.2.0"
 waterui-assets = { version = "0.1.2", path = "components/assets/runtime" }
+waterui-assets-core = { version = "0.1.0", path = "components/assets/core" }
 waterui-assets-planner = { version = "0.1.2", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.1.2", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.1.2", path = "components/devtools/inspector/protocol" }
@@ -471,6 +472,7 @@ waterui-macros = { path = "macros" }
 # its own.
 waterui = { path = "." }
 waterui-assets = { path = "components/assets/runtime" }
+waterui-assets-core = { path = "components/assets/core" }
 waterui-backend-core = { path = "backends/core" }
 waterui-form = { path = "components/foundation/form" }
 waterui-icon = { path = "components/foundation/icon" }
