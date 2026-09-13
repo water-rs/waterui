@@ -11,6 +11,7 @@ use vello::kurbo::Shape;
 use waterui::Computed;
 use waterui::View;
 use waterui::ViewExt as _;
+use waterui::app::App;
 use waterui::color::ResolvedColor;
 use waterui::component::{hstack, text, vstack};
 use waterui::graphics::SceneViewMergeToParent;
@@ -289,6 +290,21 @@ fn semantic_builder_does_not_require_theme_package() {
         .role(Role::LABEL)
         .label("Semantic only")
         .single();
+}
+
+/// `mount_app` runs the application path: the app's own environment — theme
+/// included, as a real app installs it — is mounted verbatim, and the
+/// configured scale factor scales the captured snapshot.
+#[test]
+fn mount_app_hosts_main_window_with_app_environment() {
+    let mut env = Environment::new();
+    install_default_theme(&mut env);
+    let app = App::new(|| text("Mounted app").body(), env);
+    let mut app = ui().viewport(200, 100).scale_factor(2.0).mount_app(app);
+    app.query().label("Mounted app").assert_exists();
+    let snapshot = app.snapshot();
+    assert_eq!(snapshot.width, 400);
+    assert_eq!(snapshot.height, 200);
 }
 
 #[test]
