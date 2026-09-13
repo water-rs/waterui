@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define WATER_WPE_ABI_VERSION 2
+#define WATER_WPE_ABI_VERSION 3
 #define WATER_WPE_MAX_PLANES 4
 
 typedef struct WaterWpeRuntime WaterWpeRuntime;
@@ -61,6 +61,23 @@ typedef void (*WaterWpeResultCallback)(
     const char *data,
     size_t len);
 
+/* One answer to a `waterui://localhost` request. `headers` is `"Name: value"`
+ * lines joined by `\n`; each `WaterWpeBytes` releases its own storage through
+ * `destroy`. */
+typedef struct {
+    uint32_t status;
+    WaterWpeBytes headers;
+    WaterWpeBytes body;
+} WaterWpeAssetResponse;
+/* Answers one request on the page's asset origin. `method` and `uri` are the
+ * engine's own authenticated request — the URI arrives whole so the Rust side
+ * applies the shared host, method and traversal rules to exactly what the
+ * engine was asked to load. */
+typedef WaterWpeAssetResponse (*WaterWpeAssetCallback)(
+    void *user_data,
+    const char *method,
+    const char *uri);
+
 uint32_t water_wpe_abi_version(void);
 WaterWpeRuntime *water_wpe_runtime_new(char **error);
 void water_wpe_runtime_free(WaterWpeRuntime *runtime);
@@ -76,6 +93,16 @@ WaterWpePage *water_wpe_page_new(
     WaterWpeDestroyNotify destroy_user_data,
     char **error);
 void water_wpe_page_free(WaterWpePage *page);
+/* Arms the page's `waterui://localhost` asset origin: the scheme is registered
+ * on the page's web context (once per context) and `callback` answers the
+ * page's requests on it. Call between `water_wpe_page_new` and the first
+ * `water_wpe_page_load_uri` — an asset URL can only be navigated to after the
+ * interception exists. `user_data` is freed by `destroy` when the page dies. */
+void water_wpe_page_set_asset_server(
+    WaterWpePage *page,
+    WaterWpeAssetCallback callback,
+    void *user_data,
+    WaterWpeDestroyNotify destroy);
 void water_wpe_page_load_uri(WaterWpePage *page, const char *uri);
 void water_wpe_page_go_back(WaterWpePage *page);
 void water_wpe_page_go_forward(WaterWpePage *page);

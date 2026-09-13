@@ -39,6 +39,8 @@ base64 = "0.23"
 executor-core = { workspace = true, features = ["async-executor"] }
 pollster.workspace = true
 tiny_http = "0.12"
+# The shared real-engine assertions; `real-engine` already selects `webview`.
+waterui-webview = { workspace = true, features = ["conformance"] }
 
 [[example]]
 name = "runtime_smoke"

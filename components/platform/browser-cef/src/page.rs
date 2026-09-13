@@ -768,7 +768,7 @@ fn new_client(
 pub struct CefPageHandle {
     browser: Browser,
     host: BrowserHost,
-    _request_context: RequestContext,
+    request_context: RequestContext,
     cdp: CefCdpSession,
     state: Rc<PageState>,
 }
@@ -832,7 +832,7 @@ impl CefPageHandle {
         let handle = Self {
             browser,
             host,
-            _request_context: request_context,
+            request_context,
             cdp,
             state,
         };
@@ -1111,6 +1111,11 @@ impl CefPageHandle {
         self.cdp.clone()
     }
 
+    /// Returns the request context this page's browser runs on.
+    pub(crate) const fn request_context(&self) -> &RequestContext {
+        &self.request_context
+    }
+
     pub(crate) fn navigate(&self, url: &Url) {
         self.browser
             .main_frame()
@@ -1370,6 +1375,9 @@ impl From<ChromiumConfiguration> for CefPageConfiguration {
             proxy,
             language,
             user_agent,
+            // CEF's `waterui` scheme handler serves the asset origin; the
+            // Chromium CDP `Fetch` path does not apply.
+            asset_server: _,
         } = configuration;
         Self {
             url,

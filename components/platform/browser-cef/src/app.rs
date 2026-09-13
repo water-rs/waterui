@@ -5,6 +5,8 @@ use cef::{
     App, BrowserProcessHandler, CefString, CommandLine, ImplApp, ImplBrowserProcessHandler,
     ImplCommandLine, WrapApp, WrapBrowserProcessHandler,
 };
+#[cfg(feature = "webview")]
+use cef::SchemeRegistrar;
 
 use crate::runtime::PumpDeadline;
 
@@ -92,6 +94,17 @@ fn new_cef_app(handler: BrowserProcessHandler) -> App {
                 disable_features(command_line, &MACOS_SYSTEM_NOTIFICATION_FEATURES);
                 #[cfg(all(target_os = "macos", debug_assertions))]
                 command_line.append_switch(Some(&"use-mock-keychain".into()));
+            }
+
+            #[cfg(feature = "webview")]
+            fn on_register_custom_schemes(&self, registrar: Option<&mut SchemeRegistrar>) {
+                let Some(registrar) = registrar else {
+                    tracing::error!(
+                        "CEF did not provide a scheme registrar; `waterui` asset origins will not resolve"
+                    );
+                    return;
+                };
+                crate::assets::register_asset_scheme(*registrar);
             }
 
             fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {

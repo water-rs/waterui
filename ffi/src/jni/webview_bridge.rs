@@ -12,6 +12,7 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::string::ToString;
+use core::fmt::Write as _;
 
 use jni::objects::{Global, JObject, JString, JValue};
 use jni::sys::{jboolean, jfloat, jint, jlong, jobject};
@@ -19,13 +20,16 @@ use jni::{Env, EnvUnowned, JavaVM, jni_sig, jni_str};
 
 use crate::closure::WuiFn;
 use crate::components::webview::{
-    FfiWebViewHandle, WuiJsCallback, WuiJsReplyKind, WuiScriptInjectionTime, WuiStringCallback,
-    WuiWebViewEvent, WuiWebViewEventType, WuiWebViewHandle, WuiWebViewMessage, WuiWebViewReply,
+    FfiWebViewHandle, WuiAssetServer, WuiJsCallback, WuiJsReplyKind, WuiScriptInjectionTime,
+    WuiStringCallback, WuiWebViewEvent, WuiWebViewEventType, WuiWebViewHandle, WuiWebViewMessage,
+    WuiWebViewReply, waterui_webview_asset_server_free,
 };
 use crate::reactive::WuiComputed;
 use crate::{IntoFFI, IntoRust, WuiStr};
 use base64::Engine as _;
-use waterui_webview::{CustomWebViewController, WebViewController, WebViewHandle, bridge};
+use waterui_webview::{
+    CustomWebViewController, WebViewConfig, WebViewController, WebViewHandle, bridge,
+};
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -34,6 +38,9 @@ struct AndroidWebViewHandle {
     wrapper: Global<JObject<'static>>,
     event_callback: Option<Rc<WuiFn<WuiWebViewEvent>>>,
     handlers: HashMap<String, Rc<WuiFn<WuiWebViewMessage>>>,
+    /// Whether the wrapper was created with an asset server and therefore
+    /// answers `https://waterui.localhost` itself.
+    has_asset_server: bool,
 }
 
 impl AndroidWebViewHandle {
@@ -54,14 +61,19 @@ impl AndroidWebViewFactory {
             .expect("AndroidWebViewFactory failed to attach its JVM thread")
     }
 
-    fn create_webview(&self) -> WuiWebViewHandle {
+    fn create_webview(&self, config: WebViewConfig) -> WuiWebViewHandle {
+        // Ownership of the boxed server passes to the Kotlin wrapper, which
+        // serves `shouldInterceptRequest` through it and frees it with
+        // `nativeFreeAssetServer` when the view is released.
+        let asset_server = config.asset_server.into_ffi() as jlong;
+        let has_asset_server = asset_server != 0;
         self.with_env(|env| {
             let wrapper_obj = env
                 .call_method(
                     &self.factory,
                     jni_str!("create"),
-                    jni_sig!("()Ldev/waterui/android/components/WebViewWrapper;"),
-                    &[],
+                    jni_sig!("(J)Ldev/waterui/android/components/WebViewWrapper;"),
+                    &[JValue::Long(asset_server)],
                 )
                 .expect("Android WebViewFactory.create failed")
                 .l()
@@ -76,6 +88,7 @@ impl AndroidWebViewFactory {
                 wrapper: wrapper_ref,
                 event_callback: None,
                 handlers: HashMap::new(),
+                has_asset_server,
             });
             let handle_ptr = Box::into_raw(handle).cast::<()>();
 
@@ -99,6 +112,7 @@ impl AndroidWebViewFactory {
                 get_cookies: Some(webview_get_cookies),
                 run_javascript: webview_run_javascript,
                 call_async_javascript: webview_call_async_javascript,
+                asset_origin: Some(webview_asset_origin),
                 drop: webview_drop,
             }
         })
@@ -106,8 +120,8 @@ impl AndroidWebViewFactory {
 }
 
 impl CustomWebViewController for AndroidWebViewFactory {
-    fn open(&self) -> impl WebViewHandle {
-        FfiWebViewHandle::new(self.create_webview())
+    fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
+        FfiWebViewHandle::new(self.create_webview(config))
     }
 }
 
@@ -462,6 +476,24 @@ unsafe extern "C" fn webview_call_async_javascript(
         )
         .expect("webview_call_async_javascript: failed to call WebViewWrapper.callAsyncJavaScript");
     });
+}
+
+/// The asset origin the Android `WebView` answers — `https://waterui.localhost`
+/// when the wrapper was created with a server, the empty string otherwise.
+///
+/// Android's `WebView` grants a secure context only to `https://`,
+/// `http://localhost` and `file://` origins, so the reserved `.localhost` host
+/// is the only spelling that keeps `isSecureContext` without touching the
+/// filesystem; RFC 6761 keeps a missed interception on-box.
+unsafe extern "C" fn webview_asset_origin(data: *const ()) -> WuiStr {
+    // SAFETY: `data` is the handle pointer this vtable entry was registered with in
+    // `create_webview`, and it stays live until `webview_drop` reclaims it.
+    let handle = unsafe { &*data.cast::<AndroidWebViewHandle>() };
+    if handle.has_asset_server {
+        waterui::Str::from_static(waterui_webview::ASSET_HTTPS_ORIGIN).into_ffi()
+    } else {
+        waterui::Str::from_static("").into_ffi()
+    }
 }
 
 unsafe extern "C" fn webview_drop(data: *mut ()) {
@@ -822,5 +854,90 @@ extern "system" fn Java_dev_waterui_android_components_NativeWebViewEventCallbac
         };
 
         callback.call(event);
+    });
+}
+
+// =============================================================================
+// Asset origin serving
+// =============================================================================
+
+/// Serves one request the wrapper's `shouldInterceptRequest` intercepted on the
+/// asset origin.
+///
+/// The interception callback runs on a `WebView` worker thread, not the main
+/// thread, which is exactly why the call goes straight to the `Send + Sync`
+/// server rather than hopping through the Kotlin main-thread machinery. Method
+/// enforcement and traversal refusal happen inside `assets::dispatch`, the same
+/// entry point every engine uses.
+///
+/// Returns a `dev.waterui.android.components.AssetResponse`.
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeAssetRespond<'local>(
+    mut env: EnvUnowned<'local>,
+    _this: JObject<'local>,
+    server_ptr: jlong,
+    method: JString<'local>,
+    path: JString<'local>,
+    query: JString<'local>,
+) -> jobject {
+    super::with_env(&mut env, |env| {
+        let method = method
+            .try_to_string(env)
+            .expect("nativeAssetRespond requires a method");
+        let path = path
+            .try_to_string(env)
+            .expect("nativeAssetRespond requires a path");
+        let query = if query.is_null() {
+            None
+        } else {
+            Some(
+                query
+                    .try_to_string(env)
+                    .expect("nativeAssetRespond requires a string query"),
+            )
+        };
+        // SAFETY: Kotlin passes back the `WuiAssetServer` pointer `create` was
+        // handed, which stays live until `nativeFreeAssetServer` — invoked from
+        // `release` after `WebView.destroy` has stopped interception.
+        let server = unsafe { &*(server_ptr as *const WuiAssetServer) };
+        let response =
+            waterui_webview::assets::dispatch(&server.server, &method, &path, query.as_deref());
+
+        let mut headers = String::new();
+        for (name, value) in &response.headers {
+            // The lines form `WuiAssetResponse` uses on the C side; header
+            // names and values can never contain a newline.
+            let _ = writeln!(headers, "{}: {}", name.as_str(), value.as_str());
+        }
+        let jheaders = java_string(env, &headers);
+        let jbody = env
+            .byte_array_from_slice(&response.body)
+            .expect("nativeAssetRespond failed to marshal the body");
+        env.new_object(
+            jni_str!("dev/waterui/android/components/AssetResponse"),
+            jni_sig!("(ILjava/lang/String;[B)V"),
+            &[
+                JValue::Int(jint::from(response.status)),
+                JValue::Object(&jheaders),
+                JValue::Object(&jbody),
+            ],
+        )
+        .expect("Failed to create AssetResponse")
+        .into_raw()
+    })
+}
+
+/// Releases the `WuiAssetServer` the wrapper holds; called when the web view is
+/// released. Zero is a no-op — a view opened without assets holds no server.
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_components_WebViewWrapper_nativeFreeAssetServer<'local>(
+    mut env: EnvUnowned<'local>,
+    _this: JObject<'local>,
+    server_ptr: jlong,
+) {
+    super::with_env(&mut env, |_env| {
+        // SAFETY: Kotlin passes the pointer `create` was handed; each server is
+        // freed once, when its view is released, and a zero frees nothing.
+        unsafe { waterui_webview_asset_server_free(server_ptr as *mut WuiAssetServer) };
     });
 }
