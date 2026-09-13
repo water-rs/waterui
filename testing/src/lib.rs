@@ -98,7 +98,8 @@ pub(crate) mod wait;
 
 pub use accesskit::Role as AccessKitRole;
 pub use app::{
-    DragOptions, OffscreenApp, SemanticApp, ThemeInstaller, UiBuilder, install_default_theme, ui,
+    DragOptions, OffscreenApp, RuntimeFlavor, SemanticApp, ThemeInstaller, UiBuilder,
+    install_default_theme, ui,
 };
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 pub use driver::FrameTiming;

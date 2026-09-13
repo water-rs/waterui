@@ -6,6 +6,7 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
 use hydrolysis::{KeyCode, Modifiers};
+use waterui::app::App;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
 
@@ -55,6 +56,16 @@ pub fn install_default_theme(env: &mut Environment) {
     hydrolysis_m3::install_defaults(env);
 }
 
+/// Which Hydrolysis headless runtime backs a session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RuntimeFlavor {
+    /// Deterministic bundled fonts, software adapters permitted (the default for tests).
+    #[default]
+    Test,
+    /// The application's resource fonts and production adapter selection — what `water run` shows.
+    Application,
+}
+
 /// Runtime test host and configuration.
 ///
 /// Theme and render mode are orthogonal: [`Self::theme`] swaps the installed
@@ -69,6 +80,8 @@ pub struct UiBuilder {
     height: u32,
     theme: Rc<dyn Fn(&mut Environment)>,
     perf_config: PerfConfig,
+    flavor: RuntimeFlavor,
+    scale_factor: f64,
 }
 
 impl core::fmt::Debug for UiBuilder {
@@ -77,6 +90,8 @@ impl core::fmt::Debug for UiBuilder {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("perf_config", &self.perf_config)
+            .field("flavor", &self.flavor)
+            .field("scale_factor", &self.scale_factor)
             .finish_non_exhaustive()
     }
 }
@@ -97,6 +112,8 @@ impl UiBuilder {
             height: 844,
             theme: Rc::new(install_default_theme),
             perf_config: PerfConfig::default(),
+            flavor: RuntimeFlavor::Test,
+            scale_factor: 1.0,
         }
     }
 
@@ -132,6 +149,32 @@ impl UiBuilder {
         self
     }
 
+    /// Selects which Hydrolysis headless runtime backs the session.
+    ///
+    /// [`RuntimeFlavor::Test`] (the default) mounts on deterministic bundled
+    /// fonts and permits software adapters; [`RuntimeFlavor::Application`]
+    /// mounts the application's resource fonts under production adapter
+    /// selection — the runtime `water run` hosts.
+    #[must_use]
+    pub const fn runtime(mut self, flavor: RuntimeFlavor) -> Self {
+        self.flavor = flavor;
+        self
+    }
+
+    /// Renders captures at `scale_factor` physical pixels per logical pixel.
+    ///
+    /// Layout stays in logical units — a `200x100` viewport captured at `2.0`
+    /// produces a `400x200` snapshot. Defaults to `1.0`.
+    ///
+    /// # Panics
+    ///
+    /// Panics at mount time if `scale_factor` is not finite or not positive.
+    #[must_use]
+    pub const fn scale_factor(mut self, scale_factor: f64) -> Self {
+        self.scale_factor = scale_factor;
+        self
+    }
+
     fn themed_env(&self) -> Environment {
         let mut env = self.env.clone();
         (self.theme)(&mut env);
@@ -156,11 +199,14 @@ impl UiBuilder {
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
+        let content = AnyViewBuilder::new(move || AnyView::new(view_fn()));
         mount_app(
             self.themed_env(),
             self.width,
             self.height,
-            view_fn,
+            content,
+            self.flavor,
+            self.scale_factor,
             DriverMode::Semantic,
         )
     }
@@ -175,12 +221,54 @@ impl UiBuilder {
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
+        let content = AnyViewBuilder::new(move || AnyView::new(view_fn()));
         OffscreenApp {
             app: mount_app(
                 self.themed_env(),
                 self.width,
                 self.height,
-                view_fn,
+                content,
+                self.flavor,
+                self.scale_factor,
+                DriverMode::Offscreen,
+            ),
+        }
+    }
+
+    /// Mounts a whole [`App`] and returns an offscreen GPU-backed session.
+    ///
+    /// This is the application path: the session runs the app's own
+    /// [`Environment`] exactly as [`App::new`] configured it — theme install and
+    /// `waterui::realization::install` included — so [`Self::environment`] and
+    /// [`Self::theme`] are not applied. The builder's [`Self::viewport`] still
+    /// wins over the window frame, and [`Self::runtime`] and
+    /// [`Self::scale_factor`] apply.
+    ///
+    /// Only the main window's content is mounted: the headless runtime hosts a
+    /// single window, so the app's menu bar and any additional windows are not
+    /// mounted. Popup windows the app opens at runtime (context menus,
+    /// pickers) are still merged into the accessibility tree by Hydrolysis.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initial Hydrolysis offscreen frame does not produce an
+    /// accessibility tree, or if [`Self::scale_factor`] was configured with a
+    /// non-finite or non-positive value.
+    #[must_use]
+    pub fn mount_app(self, app: App) -> OffscreenApp {
+        let (windows, _menu_bar, env) = app.into_parts();
+        let window = windows
+            .into_iter()
+            .next()
+            .expect("App::into_parts yields the main window first");
+        OffscreenApp {
+            app: mount_app(
+                env,
+                self.width,
+                self.height,
+                window.content,
+                self.flavor,
+                self.scale_factor,
                 DriverMode::Offscreen,
             ),
         }
@@ -239,22 +327,29 @@ pub enum DriverMode {
     Offscreen,
 }
 
-fn mount_app<V, F>(
+fn mount_app(
     env: Environment,
     width: u32,
     height: u32,
-    view_fn: F,
+    content: AnyViewBuilder<AnyView>,
+    flavor: RuntimeFlavor,
+    scale_factor: f64,
     mode: DriverMode,
-) -> SemanticApp
-where
-    V: View + 'static,
-    F: Fn() -> V + 'static,
-{
-    let builder = AnyViewBuilder::new(move || AnyView::new(view_fn()));
+) -> SemanticApp {
+    assert!(
+        scale_factor.is_finite() && scale_factor > 0.0,
+        "waterui-testing scale_factor must be finite and greater than zero, got {scale_factor}"
+    );
     let mut app = SemanticApp {
         env,
-        content: builder,
-        driver: Box::new(HydrolysisA11yDriver::new(width, height, mode)),
+        content,
+        driver: Box::new(HydrolysisA11yDriver::new(
+            width,
+            height,
+            mode,
+            flavor,
+            scale_factor,
+        )),
         tree: TreeSnapshot::empty(),
         ui_focus: None,
         revision: 1,
