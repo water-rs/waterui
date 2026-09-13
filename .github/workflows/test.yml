@@ -121,16 +121,6 @@ jobs:
       - name: Clippy (waterui-browser-cef, CEF runtime)
         if: inputs.full
         run: cargo clippy --locked -p waterui-browser-cef --all-targets --features chromium,webview -- -D warnings
-      # Dew's firmware shape, which is a first-class configuration rather than
-      # a degraded one. Neither pass above compiles dew's test targets without
-      # default features, and the `Features` job's `--each-feature` sweep runs
-      # `--no-dev-deps`, so the shape a device actually ships was the one
-      # configuration nothing checked — and its test targets had stopped
-      # compiling entirely (#259). `--all-targets` is the whole point: the
-      # library alone has always been clean here.
-      - name: Clippy (dew firmware shape)
-        if: inputs.full
-        run: cargo clippy --locked -p waterui-dew --all-targets --no-default-features -- -D warnings
       # The waterui skill's snippet compile gate: every rust fence in
       # .claude/skills/waterui is transcribed into .claude/skills/waterui/skill_snippets
       # and must keep compiling. The non-default feature exposes the test/bench
@@ -330,11 +320,6 @@ jobs:
       # The CEF runtime shape; `compile-only` and `real-engine` exclude it.
       - name: Test (waterui-browser-cef, CEF runtime)
         run: cargo nextest run --locked -p waterui-browser-cef --features chromium,webview --profile ci
-      # Dew's firmware shape, a first-class configuration whose test targets
-      # had stopped compiling entirely before the clippy pass covered them
-      # (#259); this is the run that goes with that lint.
-      - name: Test (dew firmware shape)
-        run: cargo nextest run --locked -p waterui-dew --no-default-features --profile ci
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -375,8 +360,8 @@ jobs:
       # Linux `all-features` job (see there; `waterui-browser-wpe` is
       # Linux-only, so it needs no exclusion here). Of the excluded crates,
       # the two whose feature shapes carry macOS-specific code run below; the
-      # FFI C surfaces, the CEF runtime shape and dew's firmware shape are
-      # host-independent and the Linux job covers them.
+      # FFI C surfaces and the CEF runtime shape are host-independent and the
+      # Linux job covers them.
       - name: Test (all features, workspace)
         run: |
           cargo nextest run --locked --workspace --all-features --profile ci \

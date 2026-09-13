@@ -21,6 +21,7 @@ categories.workspace = true
 [package.metadata.waterui-scaffold]
 hydrolysis-version = "0.2.1"
 hydrolysis-m3-version = "0.2.0"
+waterui-dew-version = "0.2.1"
 android-kotlin-version = "2.3.21"
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 android-backend-url = "https://github.com/water-rs/android-backend.git"

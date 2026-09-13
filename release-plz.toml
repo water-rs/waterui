@@ -216,10 +216,6 @@ name = "waterui-backend-core"
 version_group = "waterui"
 
 [[package]]
-name = "waterui-dew"
-version_group = "waterui"
-
-[[package]]
 name = "waterui-gtk"
 version_group = "waterui"
 
