@@ -19,7 +19,7 @@ use skrifa::prelude::{FontRef, GlyphId, LocationRef, MetadataProvider, Size};
 use waterui_core::Environment;
 use waterui_graphics::color::ResolvedColor;
 use waterui_text::FontCollection;
-use waterui_text::font::{Font, FontWeight, ResolvedFont};
+use waterui_text::font::{Font, FontDesign, FontWeight, ResolvedFont};
 use waterui_text::styled::{Style, StyledStr};
 
 use crate::display_list::{DisplayList, DrawCommand};
@@ -509,9 +509,7 @@ fn push_layout_defaults(
     builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
         font.weight,
     )));
-    builder.push_default(parley::StyleProperty::FontFamily(font_family(
-        font.family.as_deref(),
-    )));
+    builder.push_default(parley::StyleProperty::FontFamily(font_family(font)));
 }
 
 /// Pushes one [`StyledStr`] chunk's resolved style as parley range styles.
@@ -527,12 +525,10 @@ fn push_span_style(
         parley::StyleProperty::FontWeight(parley_font_weight(font.weight)),
         range.clone(),
     );
-    if let Some(family) = &font.family {
-        builder.push(
-            parley::StyleProperty::FontFamily(font_family(Some(family.as_str()))),
-            range.clone(),
-        );
-    }
+    builder.push(
+        parley::StyleProperty::FontFamily(font_family(&font)),
+        range.clone(),
+    );
     builder.push(
         parley::StyleProperty::FontStyle(if style.italic {
             parley::FontStyle::Italic
@@ -572,9 +568,17 @@ const fn parley_font_weight(weight: FontWeight) -> parley::FontWeight {
     })
 }
 
-fn font_family(family: Option<&str>) -> parley::FontFamily<'static> {
-    family.map_or_else(
-        || parley::style::GenericFamily::SansSerif.into(),
+/// The parley family for a resolved font: a named family verbatim, else the
+/// CSS generic the font's design stands for, which fontique resolves against
+/// the system or the bundled faces.
+fn font_family(font: &ResolvedFont) -> parley::FontFamily<'static> {
+    use parley::style::GenericFamily;
+
+    font.family.as_deref().map_or_else(
+        || match font.design {
+            FontDesign::Default => GenericFamily::SansSerif.into(),
+            FontDesign::Monospaced => GenericFamily::Monospace.into(),
+        },
         |family| parley::FontFamily::Source(std::borrow::Cow::Owned(family.to_string())),
     )
 }

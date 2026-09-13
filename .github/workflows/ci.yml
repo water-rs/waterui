@@ -145,22 +145,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      # Only the license check below needs a native dependency (nasm, for a
-      # build script) and it never runs a GUI/audio/video stack, so this job
-      # does not need the full setup-linux-deps package list.
-      - uses: ./.github/actions/refresh-apt-index
-      - run: sudo apt-get install -y nasm
       # Restore-only: this job and Features share `ci-ubuntu`, and two jobs
       # saving the same key race for the reservation, so one of them always
       # loses and uploads nothing. Features owns the write because it builds
       # the larger graph.
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
           save-if: false
           cache-on-failure: true
+      # Only the license check below needs a native dependency (nasm, for a
+      # build script) and it never runs a GUI/audio/video stack, so this job
+      # does not need the full setup-linux-deps package list.
+      - uses: ./.github/actions/refresh-apt-index
+      - run: sudo apt-get install -y nasm
       # The audit and deny checks run against the COMMITTED Cargo.lock — the
       # dependency set the workspace actually builds. A `cargo generate-lockfile`
       # step used to precede them; it silently re-resolved everything to the
@@ -234,10 +233,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      # Its own key: this is the only leg that compiles the dependency graph
+      # for an Android target, so it shares no artifacts with the others and
+      # storing it under theirs would evict a tarball nothing else can use.
+      - uses: ./.github/actions/setup-rust
         with:
           targets: aarch64-linux-android
           components: clippy
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
       # `--all-targets` reaches the crate's dev-dependency graph, part of which
       # is built for the host: without this the Linux-only `cros-libva` build
       # script fails on the missing `libva-dev`, long before anything Android
@@ -256,15 +262,6 @@ jobs:
           # the probe below a tree with the clang wrappers but no clang (#284).
           # A miss costs ~79 s against ~53 s for a hit, on a 9-12 minute job.
           local-cache: false
-      # Its own key: this is the only leg that compiles the dependency graph
-      # for an Android target, so it shares no artifacts with the others and
-      # storing it under theirs would evict a tarball nothing else can use.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
       # `ring` compiles C for the target, so the NDK's clang wrapper is
       # required even though clippy itself never links. The wrapper is named
       # after the API level, which the CLI already owns — read it from there

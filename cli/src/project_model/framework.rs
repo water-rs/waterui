@@ -7,6 +7,7 @@ use std::{
     str::FromStr,
 };
 
+use crate::build_info::{ANDROID_BACKEND, APPLE_BACKEND, SCAFFOLD_PACKAGE_VERSIONS};
 use crate::project::Project;
 use cargo_lock::{Dependency as LockedDependency, Lockfile};
 use cargo_toml::{Dependency, DependencyDetail, PatchSet};
@@ -129,6 +130,9 @@ struct Certification {
     revision: String,
     tag: String,
     lockfiles: BTreeMap<String, String>,
+    /// Submodule path -> commit the certification recorded for the revision.
+    #[serde(default)]
+    submodules: BTreeMap<String, String>,
     scaffold: BTreeMap<String, String>,
 }
 
@@ -214,8 +218,7 @@ impl ResolvedFramework {
         Self {
             source: Source::Stable,
             minimum_cli_version: None,
-            scaffold: scaffold_metadata(include_str!("../../Cargo.toml"))
-                .expect("embedded scaffold metadata is valid"),
+            scaffold: stable_scaffold(),
             packages: BTreeMap::new(),
             patches: PatchSet::default(),
         }
@@ -242,7 +245,9 @@ impl ResolvedFramework {
     }
 
     pub(crate) fn scaffold_value(&self, key: &str) -> &str {
-        &self.scaffold[key]
+        self.scaffold
+            .get(key)
+            .unwrap_or_else(|| panic!("resolved framework carries no `{key}` scaffold metadata"))
     }
 
     pub(crate) fn patches(&self) -> PatchSet {
@@ -589,7 +594,8 @@ impl ResolvedFramework {
             validate_installed_cli(minimum, &git_cli_update(repository, &revision))?;
         }
         let lock_bytes = fetch(&format!("{base}/Cargo.lock")).await?;
-        let (source, scaffold) = if let Some(certification) = certification {
+        let lock: Lockfile = std::str::from_utf8(&lock_bytes)?.parse()?;
+        let (source, mut scaffold, submodule_commits) = if let Some(certification) = certification {
             if certification.minimum_cli_version != minimum_cli_version {
                 bail!("nightly CLI requirement does not match the certified framework manifest");
             }
@@ -608,6 +614,7 @@ impl ResolvedFramework {
                     lock_sha256: expected.clone(),
                 },
                 certification.scaffold,
+                Some(certification.submodules),
             )
         } else {
             let metadata = fetch(&format!("{base}/cli/Cargo.toml")).await?;
@@ -618,15 +625,17 @@ impl ResolvedFramework {
                     lock_sha256: hex::encode(Sha256::digest(&lock_bytes)),
                 },
                 scaffold_metadata(std::str::from_utf8(&metadata)?)?,
+                None,
             )
         };
-        for key in Self::stable().scaffold.keys() {
-            if !scaffold.contains_key(key) {
-                bail!(
-                    "framework revision {revision} has no {key} scaffold metadata required by this CLI"
-                );
-            }
-        }
+        complete_scaffold(
+            slug,
+            &revision,
+            &mut scaffold,
+            submodule_commits.as_ref(),
+            &lock,
+        )
+        .await?;
         let mut patches: PatchSet = root
             .get("patch")
             .cloned()
@@ -644,7 +653,6 @@ impl ResolvedFramework {
                 }
             }
         }
-        let lock: Lockfile = std::str::from_utf8(&lock_bytes)?.parse()?;
         let packages = resolve_packages(&scaffold, &lock, repository, &revision)?;
         Ok((
             Self {
@@ -824,6 +832,114 @@ fn scaffold_metadata(contents: &str) -> Result<BTreeMap<String, String>> {
         .clone()
         .try_into()
         .wrap_err("invalid framework scaffold metadata")
+}
+
+/// The scaffold metadata table embedded in this CLI's manifest — only what no
+/// manifest in this workspace can supply: the extracted crates' requirements,
+/// the Android Kotlin toolchain, and the backend repository coordinates.
+fn embedded_scaffold() -> BTreeMap<String, String> {
+    scaffold_metadata(include_str!("../../Cargo.toml"))
+        .expect("embedded scaffold metadata is valid")
+}
+
+/// The stable channel's scaffold metadata: the embedded table plus the values
+/// this build resolves itself — every workspace crate's version and each
+/// backend's git ref (the submodule commit in a development build, the
+/// `v<version>` release tag in a release build).
+fn stable_scaffold() -> BTreeMap<String, String> {
+    let mut scaffold = embedded_scaffold();
+    for &(name, version) in SCAFFOLD_PACKAGE_VERSIONS {
+        scaffold.insert(format!("{name}-version"), version.to_owned());
+    }
+    scaffold.insert(
+        "apple-backend-revision".to_owned(),
+        APPLE_BACKEND.revision.to_owned(),
+    );
+    scaffold.insert(
+        "android-backend-revision".to_owned(),
+        ANDROID_BACKEND.revision.to_owned(),
+    );
+    scaffold
+}
+
+#[derive(Deserialize)]
+struct SubmoduleEntry {
+    sha: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+/// Fill in what a fetched revision's scaffold metadata does not carry: the
+/// backend revisions its own submodules record, and the workspace-crate
+/// versions resolved from its lock. A nightly's certification carries the
+/// submodule pins; a dev revision's gitlinks read straight from the repository
+/// tree.
+async fn complete_scaffold(
+    slug: &str,
+    revision: &str,
+    scaffold: &mut BTreeMap<String, String>,
+    submodule_commits: Option<&BTreeMap<String, String>>,
+    lock: &Lockfile,
+) -> Result<()> {
+    for (submodule, key) in [
+        ("backends/apple", "apple-backend-revision"),
+        ("backends/android", "android-backend-revision"),
+    ] {
+        let commit = match submodule_commits.and_then(|submodules| submodules.get(submodule)) {
+            Some(commit) => commit.clone(),
+            None => submodule_revision(slug, revision, submodule).await?,
+        };
+        validate_revision(&commit)?;
+        scaffold.insert(key.to_owned(), commit);
+    }
+    // The remote manifest only has to carry the keys nothing else can supply;
+    // the CLI derives the rest.
+    for key in embedded_scaffold().keys() {
+        if !scaffold.contains_key(key) {
+            bail!(
+                "framework revision {revision} has no {key} scaffold metadata required by this CLI"
+            );
+        }
+    }
+    // A manifest no longer restates the workspace crates' versions, so each is
+    // looked up in the framework's own lock. A revision that still declares
+    // one is held to its lock by `resolve_packages`.
+    for &(name, _) in SCAFFOLD_PACKAGE_VERSIONS {
+        let key = format!("{name}-version");
+        if scaffold.contains_key(&key) {
+            continue;
+        }
+        let candidates: Vec<_> = lock
+            .packages
+            .iter()
+            .filter(|package| package.name.as_str() == name)
+            .collect();
+        let version = match candidates.as_slice() {
+            [package] => package.version.to_string(),
+            [] => bail!("framework lock has no package named {name}"),
+            _ => bail!("framework lock has multiple packages named {name}"),
+        };
+        scaffold.insert(key, version);
+    }
+    Ok(())
+}
+
+/// The commit a submodule of the framework repository records at `revision`,
+/// read from the repository tree — the only record that pairs the revision
+/// with the backends it was built and tested against.
+async fn submodule_revision(slug: &str, revision: &str, path: &str) -> Result<String> {
+    let bytes = fetch(&format!(
+        "https://api.github.com/repos/{slug}/contents/{path}?ref={revision}"
+    ))
+    .await?;
+    let entry: SubmoduleEntry = serde_json::from_slice(&bytes)?;
+    if entry.kind != "submodule" {
+        bail!(
+            "{path} at {slug}@{revision} is a {}, not a submodule",
+            entry.kind
+        );
+    }
+    Ok(entry.sha)
 }
 
 fn validate_revision(revision: &str) -> Result<()> {

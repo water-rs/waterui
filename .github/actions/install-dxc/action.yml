@@ -1,0 +1,15 @@
+name: Install DirectX Shader Compiler
+description: >
+  Installs `dxc`, which `shaderloom` needs to compile WGSL to DXIL and which
+  the Windows runner image does not ship, then proves the binary answers
+  `dxc --version` — the check the call sites used to spell out as a second
+  step. Pinned by commit so a bump is one edit, not five.
+
+runs:
+  using: composite
+  steps:
+    - name: Install DirectX Shader Compiler
+      uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+    - name: Verify DirectX Shader Compiler
+      shell: pwsh
+      run: dxc --version

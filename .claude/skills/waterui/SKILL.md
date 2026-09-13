@@ -295,10 +295,13 @@ text("Settings").title()                        // title/headline/sub_headline/b
 text!("Count: {count}")                         // updates automatically
 text!("{unread} unread", unread = mail.count()) // aliasing an expression into a slot
 text!("Blur: {blur:.1}")                        // format specs work
+text("0x1F60").monospaced()                     // the platform's fixed-pitch face, same size
 ```
 
 Import the macro and write bare `text!` — never `waterui::text!`. On a `Text`, `.size(..)`
-is the *font* size (and shadows the two-argument frame `.size(w, h)`).
+is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced()` is a
+design, not a family: it keeps the slot and size and each backend picks its own monospaced
+face, so never spell a font name for code.
 
 ### Layout
 

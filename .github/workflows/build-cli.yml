@@ -75,8 +75,9 @@ jobs:
           ref: ${{ needs.check.outputs.tag }}
           submodules: recursive
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: dist-${{ matrix.target }}
 
       # The CLI links the framework, so a Linux build needs the same native
       # libraries every other Linux job installs: without VA-API's headers
@@ -88,11 +89,7 @@ jobs:
       # image does not ship.
       - name: Install DirectX Shader Compiler
         if: runner.os == 'Windows'
-        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: dist-${{ matrix.target }}
+        uses: ./.github/actions/install-dxc
 
       - name: Install cargo-dist
         uses: taiki-e/install-action@v2
@@ -116,70 +113,6 @@ jobs:
             target/distrib/*${{ matrix.target }}*.tar.*
             target/distrib/*${{ matrix.target }}*.zip*
             target/distrib/*${{ matrix.target }}*-dist-manifest.json
-
-  # Not on the CLI release's critical path. This build has never once
-  # succeeded (#155) and is allowed up to six hours to fail, so gating the
-  # binaries on it means no `water` binary ever reaches a release page: run
-  # 34631973105 built all six CLI targets and still skipped the upload. The
-  # runtime is an optional add-on for one browser backend, and it publishes
-  # from its own job below once it works.
-  browser-runtime-wpe:
-    name: Build WPE runtime ${{ matrix.architecture }}
-    needs: check
-    if: needs.check.outputs.should_build == 'true'
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 360
-    env:
-      CC: gcc-12
-      CXX: g++-12
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - architecture: x86_64
-            runner: ubuntu-22.04
-          - architecture: aarch64
-            runner: ubuntu-22.04-arm
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.check.outputs.tag }}
-          submodules: recursive
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: ./.github/actions/setup-linux-deps
-        with:
-          gpu: "true"
-          gcc-version: "12"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: browser-runtime-${{ matrix.architecture }}
-          cache-on-failure: true
-
-      - name: Build self-contained WPE runtime
-        run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts
-
-      - name: Upload WPE runtime
-        uses: actions/upload-artifact@v4
-        with:
-          name: browser-runtime-wpe-${{ matrix.architecture }}
-          if-no-files-found: error
-          path: |
-            runtime-artifacts/*.zip
-            runtime-artifacts/*.artifact.json
-
-      - name: Upload WPE validation
-        uses: actions/upload-artifact@v4
-        with:
-          name: browser-validation-wpe-${{ matrix.architecture }}
-          if-no-files-found: error
-          path: |
-            runtime-artifacts/wpe-smoke-*.json
-            runtime-artifacts/wpe-smoke-*.png
 
   release:
     name: Upload Release Assets
@@ -263,50 +196,3 @@ jobs:
           fi
           git commit -m "water ${VERSION}"
           git push --force origin "HEAD:refs/heads/water-${VERSION}"
-
-  # The runtime zips and the manifest the CLI resolves them through, appended
-  # to the release the job above already published. Separate because the WPE
-  # build is hours long and has never finished: a release's binaries must not
-  # wait on it, and its absence means only that this CLI version offers no
-  # prebuilt WPE runtime, which `cli/src/browser_runtime.rs` already reports
-  # as a missing manifest.
-  release-browser-runtime:
-    name: Upload WPE runtime assets
-    # `release` is in here for ordering, not for content: both jobs upload to
-    # the same tag, and only one of them may be the one that creates it.
-    needs: [check, browser-runtime-wpe, release]
-    if: needs.check.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.check.outputs.tag }}
-          submodules: recursive
-
-      - name: Download browser runtime artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: browser-runtime-wpe-*
-          path: target/distrib
-          merge-multiple: true
-
-      - name: Generate browser runtime manifest
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.check.outputs.tag }}
-        run: |
-          set -euo pipefail
-          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          python3 components/platform/browser-wpe/runtime/generate-manifest.py \
-            --base-url "$BASE_URL" \
-            --output target/distrib/browser-runtime-manifest.json \
-            target/distrib/*.artifact.json
-          find target/distrib -maxdepth 1 -name '*.artifact.json' -delete
-
-      - name: Upload assets to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.check.outputs.tag }}
-          files: |
-            target/distrib/*.zip
-            target/distrib/browser-runtime-manifest.json

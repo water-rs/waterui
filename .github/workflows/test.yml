@@ -48,22 +48,20 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - name: Install native dependencies
-        uses: ./.github/actions/setup-linux-deps
       # The fast gate owns the target-cache budget, including workspace check
       # artifacts. Only integration-branch fast runs write it; pull requests
       # and the full nightly lint restore without adding cache generations.
       # The check-only Cargo profile avoids optimizing build dependencies for
       # runtime speed when this job only needs their compiler output.
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
+          components: clippy, rustfmt
           shared-key: lint-${{ runner.os }}
           cache-targets: true
           cache-workspace-crates: true
           save-if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
       - name: Format
         run: cargo fmt --all -- --check
       # Workspace-wide under default features first: it is the cheapest of the
@@ -173,20 +171,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
           targets: wasm32-unknown-unknown
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
       # Build scripts and proc macros still compile for the host even when
       # every library target is wasm, and this graph reaches the ones that need
       # native headers.
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
       - name: Lint the wasm32-only paths
         run: |
           cargo clippy --locked --target wasm32-unknown-unknown \
@@ -226,7 +222,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      # The nightly test profiles restore only Cargo sources. Their multi-GB
+      # target archives previously occupied the cache budget while every dev
+      # push cold-compiled clippy. The frequent lint gate now owns that budget;
+      # these daily runs keep every test without evicting its check artifacts.
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
       # GPU snapshot tests run in this job, so this leg needs the Vulkan ICD
       # loader (mesa-vulkan-drivers/libvulkan1) on top of the base package
       # list — that's what lets llvmpipe/lavapipe stand in for a real GPU on
@@ -236,16 +241,6 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-      # The nightly test profiles restore only Cargo sources. Their multi-GB
-      # target archives previously occupied the cache budget while every dev
-      # push cold-compiled clippy. The frequent lint gate now owns that budget;
-      # these daily runs keep every test without evicting its check artifacts.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       # One full-workspace pass under default features. Every crate's own
       # optional features are the `all-features` job below (Linux) and the
@@ -301,21 +296,20 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      # Restore-only reader of the shared Linux `~/.cargo` tarball (see the
+      # cache budget note in ci.yml).
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
       # GPU snapshot tests run under these features too, so this leg needs
       # the Vulkan ICD loader the way `test` does.
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-      # Restore-only reader of the shared Linux `~/.cargo` tarball (see the
-      # cache budget note in ci.yml).
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       - name: Test (all features, workspace)
         run: |
@@ -363,17 +357,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      # clippy is needed by the macOS-only CEF real-engine target at the end
-      # of this job, which cannot be linted on Linux the way its WPE sibling
-      # is, because CEF requires a macOS application bundle and the target
+      # Writes the macOS `~/.cargo` tarball for the macOS jobs that store no
+      # target directory (see the cache budget note in ci.yml). clippy is
+      # needed by the macOS-only CEF real-engine target at the end of this
+      # job, which cannot be linted on Linux the way its WPE sibling is,
+      # because CEF requires a macOS application bundle and the target
       # refuses to compile anywhere else.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
           components: clippy
-      # Writes the macOS `~/.cargo` tarball for the macOS jobs that store no
-      # target directory (see the cache budget note in ci.yml).
-      - uses: Swatinem/rust-cache@v2
-        with:
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
@@ -455,9 +447,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
           components: clippy
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: ${{ runner.os == 'Linux' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+          cache-on-failure: true
       # Examples carry GPU snapshot tests too, so the Linux leg needs the same
       # Vulkan ICD loader the `test` job installs.
       - name: Install native dependencies
@@ -465,12 +461,6 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: ${{ runner.os == 'Linux' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-          cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       - name: Clippy (examples)
         if: runner.os == 'Linux'

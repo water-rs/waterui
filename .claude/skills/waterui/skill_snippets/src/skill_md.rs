@@ -296,6 +296,9 @@ pub fn skill_block_12() {
     let _ = {
         text!("Blur: {blur:.1}") // format specs work
     };
+    let _ = {
+        text("0x1F60").monospaced() // the platform's fixed-pitch face, same size
+    };
 }
 
 // ---------------------------------------------------------------------------

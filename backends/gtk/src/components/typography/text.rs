@@ -7,7 +7,7 @@ use std::fmt::Write;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_core::{Environment, Native};
 use waterui_text::TextConfig;
-use waterui_text::font::{FontWeight, ResolvedFont};
+use waterui_text::font::{FontDesign, FontWeight, ResolvedFont};
 use waterui_text::styled::{Style, StyledStr};
 
 use crate::component::GtkComponent;
@@ -134,11 +134,19 @@ fn style_to_markup_attrs(style: &Style, env: &Environment) -> String {
         font_weight_to_pango_value(resolved_font.weight)
     );
 
+    // A named family verbatim; otherwise the design, as the fontconfig generic
+    // Pango resolves to the platform's own face. The proportional default is
+    // what Pango uses when no family is given at all.
     if let Some(family) = resolved_font.family
         && !family.is_empty()
     {
         let family = escape_markup_attr(family.as_str());
         let _ = write!(attrs, " font_family=\"{family}\"");
+    } else {
+        match resolved_font.design {
+            FontDesign::Default => {}
+            FontDesign::Monospaced => attrs.push_str(" font_family=\"monospace\""),
+        }
     }
 
     if style.italic {

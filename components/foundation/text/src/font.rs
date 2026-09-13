@@ -26,6 +26,12 @@
 //! Theme-resolved font slots, layer 3 escapes that resolution entirely.
 //! Do not collapse them — readability of UI code beats minimalism of API
 //! surface.
+//!
+//! Orthogonal to all three is the [`FontDesign`]: `.monospaced()` keeps a
+//! font's slot, size and weight and only asks for the platform's monospaced
+//! face, the way a design does in `SwiftUI`. It is not a family name — the
+//! backend picks the face — and not a slot, so `Font::from(Caption)
+//! .monospaced()` is as expressible as the body-sized code block.
 
 use core::fmt::Debug;
 
@@ -66,6 +72,31 @@ pub struct ResolvedFont {
     /// Optional font family name (e.g., "MaterialIcons-Regular").
     /// None means use the system default font.
     pub family: Option<Str>,
+    /// The design the face is chosen from when no family is named.
+    ///
+    /// A named family is exact and wins; the design says which of the
+    /// platform's own faces to use in its absence.
+    pub design: FontDesign,
+}
+
+/// A semantic choice of typeface, resolved by each backend to a platform face.
+///
+/// This is the axis `SwiftUI` calls a font design and Material a generic font
+/// family: it names what the text is for, not a font. Every backend maps it
+/// to its own face — the system monospaced font on Apple platforms, the
+/// monospace typeface on Android, the fontconfig or parley generic elsewhere —
+/// so a code block reads in a fixed-pitch face on every platform without an
+/// application naming one.
+///
+/// Exhaustive on purpose: every backend maps each design to a face, so a new
+/// design is a change every backend has to answer, and the compiler says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FontDesign {
+    /// The platform's default proportional face.
+    #[default]
+    Default,
+    /// The platform's fixed-pitch face, for code and aligned columns.
+    Monospaced,
 }
 
 impl ResolvedFont {
@@ -79,6 +110,7 @@ impl ResolvedFont {
             line_height: None,
             letter_spacing: 0.0,
             family: None,
+            design: FontDesign::Default,
         }
     }
 
@@ -91,6 +123,7 @@ impl ResolvedFont {
             line_height: None,
             letter_spacing: 0.0,
             family: Some(family.into()),
+            design: FontDesign::Default,
         }
     }
 
@@ -103,7 +136,15 @@ impl ResolvedFont {
             line_height: None,
             letter_spacing: 0.0,
             family: Some(Str::from_static(family)),
+            design: FontDesign::Default,
         }
+    }
+
+    /// Sets the design the face is chosen from.
+    #[must_use]
+    pub const fn with_design(mut self, design: FontDesign) -> Self {
+        self.design = design;
+        self
     }
 
     /// Sets absolute line height and letter spacing.
@@ -139,7 +180,7 @@ pub enum FontWeight {
     Black,
 }
 
-impl_constant!(Font, ResolvedFont, FontWeight);
+impl_constant!(Font, ResolvedFont, FontWeight, FontDesign);
 
 impl Font {
     /// Creates a new font from a resolvable value.
@@ -150,37 +191,45 @@ impl Font {
     /// Sets the font weight.
     #[must_use]
     pub fn weight(self, weight: FontWeight) -> Self {
-        Self::new(resolve::Map::new(self.0, move |font| ResolvedFont {
-            size: font.size,
-            weight,
-            line_height: font.line_height,
-            letter_spacing: font.letter_spacing,
-            family: font.family,
+        Self::new(resolve::Map::new(self.0, move |mut font| {
+            font.weight = weight;
+            font
         }))
     }
 
     /// Sets the font size in points.
     #[must_use]
     pub fn size(self, size: f32) -> Self {
-        Self::new(resolve::Map::new(self.0, move |font| ResolvedFont {
-            size,
-            weight: font.weight,
-            line_height: font.line_height,
-            letter_spacing: font.letter_spacing,
-            family: font.family,
+        Self::new(resolve::Map::new(self.0, move |mut font| {
+            font.size = size;
+            font
         }))
     }
 
     /// Sets the font family.
     #[must_use]
     pub fn family(self, family: impl Into<Str> + Clone + 'static) -> Self {
-        Self::new(resolve::Map::new(self.0, move |font| ResolvedFont {
-            size: font.size,
-            weight: font.weight,
-            line_height: font.line_height,
-            letter_spacing: font.letter_spacing,
-            family: Some(family.clone().into()),
+        Self::new(resolve::Map::new(self.0, move |mut font| {
+            font.family = Some(family.clone().into());
+            font
         }))
+    }
+
+    /// Sets the design the face is chosen from, keeping the slot, size and
+    /// weight.
+    #[must_use]
+    pub fn design(self, design: FontDesign) -> Self {
+        Self::new(resolve::Map::new(self.0, move |mut font| {
+            font.design = design;
+            font
+        }))
+    }
+
+    /// Asks for the platform's fixed-pitch face.
+    /// Equal to calling `font.design(FontDesign::Monospaced)`.
+    #[must_use]
+    pub fn monospaced(self) -> Self {
+        self.design(FontDesign::Monospaced)
     }
 
     /// Sets an absolute line height in logical points.

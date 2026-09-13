@@ -6,6 +6,8 @@ pub const CLI_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 pub const WATERUI_VERSION: &str = env!("WATERUI_CLI_WATERUI_VERSION");
 /// Exact `waterui-core` version used when scaffolding registry-based projects.
 pub const WATERUI_CORE_VERSION: &str = env!("WATERUI_CLI_WATERUI_CORE_VERSION");
+/// Exact `waterui-testing` version used when scaffolding registry-based projects.
+pub const WATERUI_TESTING_VERSION: &str = env!("WATERUI_CLI_WATERUI_TESTING_VERSION");
 /// Exact `waterui-ffi` version used when scaffolding registry-based projects.
 pub const WATERUI_FFI_VERSION: &str = env!("WATERUI_CLI_WATERUI_FFI_VERSION");
 /// Exact `hydrolysis` version used when scaffolding registry-based projects.
@@ -24,14 +26,20 @@ pub const PREVIEW_VERSION: &str = env!("WATERUI_CLI_WATERUI_PREVIEW_VERSION");
 pub const PREVIEW_PROTOCOL_VERSION: &str = env!("WATERUI_CLI_WATERUI_PREVIEW_PROTOCOL_VERSION");
 /// Exact Android Kotlin compiler version required by the embedded Android backend/runtime.
 pub const ANDROID_KOTLIN_VERSION: &str = env!("WATERUI_CLI_ANDROID_KOTLIN_VERSION");
-/// Remote Apple backend repository URL used for release scaffolding.
+/// The tag a released CLI pins each backend repository at: `v` followed by
+/// this package's version, pushed to the backend repositories by the release
+/// workflow before the crates are published.
+pub const BACKEND_RELEASE_TAG: &str = env!("WATERUI_CLI_BACKEND_RELEASE_TAG");
+/// Remote Apple backend repository URL used for scaffolding.
 pub const APPLE_BACKEND_URL: &str = env!("WATERUI_CLI_APPLE_BACKEND_URL");
-/// Remote Apple backend commit used for release scaffolding.
-pub const APPLE_BACKEND_COMMIT: &str = env!("WATERUI_CLI_APPLE_BACKEND_COMMIT");
-/// Remote Android backend repository URL used for release scaffolding.
+/// Apple backend git ref used for scaffolding: the submodule's commit in a
+/// development build, `BACKEND_RELEASE_TAG` in a release build.
+pub const APPLE_BACKEND_REVISION: &str = env!("WATERUI_CLI_APPLE_BACKEND_REVISION");
+/// Remote Android backend repository URL used for scaffolding.
 pub const ANDROID_BACKEND_URL: &str = env!("WATERUI_CLI_ANDROID_BACKEND_URL");
-/// Remote Android backend commit used for release scaffolding.
-pub const ANDROID_BACKEND_COMMIT: &str = env!("WATERUI_CLI_ANDROID_BACKEND_COMMIT");
+/// Android backend git ref used for scaffolding: the submodule's commit in a
+/// development build, `BACKEND_RELEASE_TAG` in a release build.
+pub const ANDROID_BACKEND_REVISION: &str = env!("WATERUI_CLI_ANDROID_BACKEND_REVISION");
 
 const BUILD_KIND: &str = env!("WATERUI_CLI_BUILD_KIND");
 
@@ -40,21 +48,39 @@ const BUILD_KIND: &str = env!("WATERUI_CLI_BUILD_KIND");
 pub struct BackendReference {
     /// Git remote URL for the backend repository.
     pub repository_url: &'static str,
-    /// Exact commit pinned into the CLI binary at build time.
-    pub commit: &'static str,
+    /// Git ref the scaffold pins — the submodule's commit in a development
+    /// build, the `v<version>` release tag in a release build.
+    pub revision: &'static str,
 }
 
 /// Embedded Apple backend repository reference.
 pub const APPLE_BACKEND: BackendReference = BackendReference {
     repository_url: APPLE_BACKEND_URL,
-    commit: APPLE_BACKEND_COMMIT,
+    revision: APPLE_BACKEND_REVISION,
 };
 
 /// Embedded Android backend repository reference.
 pub const ANDROID_BACKEND: BackendReference = BackendReference {
     repository_url: ANDROID_BACKEND_URL,
-    commit: ANDROID_BACKEND_COMMIT,
+    revision: ANDROID_BACKEND_REVISION,
 };
+
+/// Every crate a scaffolded project pins, as `(crate name, version)` pairs —
+/// re-keyed as `<name>-version` entries in a resolved framework's scaffold
+/// metadata.
+pub const SCAFFOLD_PACKAGE_VERSIONS: &[(&str, &str)] = &[
+    ("waterui", WATERUI_VERSION),
+    ("waterui-core", WATERUI_CORE_VERSION),
+    ("waterui-testing", WATERUI_TESTING_VERSION),
+    ("waterui-ffi", WATERUI_FFI_VERSION),
+    ("waterui-dew", DEW_VERSION),
+    ("waterui-gtk", GTK_BACKEND_VERSION),
+    ("waterui-browser-cef", WATERUI_BROWSER_CEF_VERSION),
+    ("waterui-preview", PREVIEW_VERSION),
+    ("waterui-preview-protocol", PREVIEW_PROTOCOL_VERSION),
+    ("hydrolysis", HYDROLYSIS_VERSION),
+    ("hydrolysis-m3", HYDROLYSIS_M3_VERSION),
+];
 
 /// How this CLI binary was built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,9 +107,32 @@ pub fn build_kind() -> BuildKind {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path, process::Command};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process::Command,
+    };
 
+    use cargo_metadata::MetadataCommand;
     use toml::Value;
+
+    use super::{
+        ANDROID_BACKEND, APPLE_BACKEND, BACKEND_RELEASE_TAG, BackendReference, BuildKind,
+        SCAFFOLD_PACKAGE_VERSIONS, build_kind,
+    };
+
+    /// The `WaterUI` workspace root when this binary was built inside the
+    /// monorepo, `None` for a packaged build — the same probe build.rs runs.
+    fn workspace_root() -> Option<PathBuf> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()?
+            .canonicalize()
+            .ok()?;
+        (root.join("Cargo.toml").is_file()
+            && root.join("ffi").join("Cargo.toml").is_file()
+            && root.join("testing").join("Cargo.toml").is_file())
+        .then_some(root)
+    }
 
     fn manifest_value(path: &Path) -> Value {
         let contents = fs::read_to_string(path)
@@ -92,18 +141,8 @@ mod tests {
             .unwrap_or_else(|error| panic!("failed to parse {}: {error}", path.display()))
     }
 
-    fn package_version(path: &Path) -> String {
-        manifest_value(path)["package"]["version"]
-            .as_str()
-            .unwrap_or_else(|| panic!("missing package.version in {}", path.display()))
-            .to_string()
-    }
-
     /// The version requirement the workspace itself consumes an extracted
-    /// package at. The Hydrolysis renderer and its Material 3 theme live in
-    /// their own repositories (#480, #481), so there is no in-tree manifest to
-    /// read a version from; what a scaffolded app has to agree with is the
-    /// requirement this workspace resolves against.
+    /// package at, read from `[workspace.dependencies]`.
     fn workspace_dependency_requirement(workspace_manifest: &Value, name: &str) -> String {
         let dependency = &workspace_manifest["workspace"]["dependencies"][name];
         dependency
@@ -130,121 +169,100 @@ mod tests {
             .to_string()
     }
 
-    fn manifest_backend_field<'a>(cli_manifest: &'a Value, field: &str) -> &'a str {
-        cli_manifest["package"]["metadata"]["waterui-scaffold"][field]
-            .as_str()
-            .unwrap_or_else(|| panic!("missing package.metadata.waterui-scaffold.{field}"))
-    }
-
-    fn manifest_scaffold_field<'a>(cli_manifest: &'a Value, field: &str) -> &'a str {
-        cli_manifest["package"]["metadata"]["waterui-scaffold"][field]
-            .as_str()
-            .unwrap_or_else(|| panic!("missing package.metadata.waterui-scaffold.{field}"))
+    #[test]
+    fn backend_release_tag_is_the_cli_version_tag() {
+        assert_eq!(
+            BACKEND_RELEASE_TAG,
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            "a released CLI scaffolds each backend at the tag carrying its own version"
+        );
     }
 
     #[test]
-    fn fallback_release_versions_match_workspace_versions() {
-        let cli_manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let workspace_root = cli_manifest_dir
-            .parent()
-            .expect("cli crate should live under workspace root");
-        let cli_manifest = manifest_value(&cli_manifest_dir.join("Cargo.toml"));
+    fn scaffold_versions_match_their_source() {
+        let cli_manifest =
+            manifest_value(&Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"));
         let scaffold_metadata = &cli_manifest["package"]["metadata"]["waterui-scaffold"];
-
-        assert_eq!(
-            scaffold_metadata["waterui-version"]
-                .as_str()
-                .expect("missing package.metadata.waterui-scaffold.waterui-version"),
-            package_version(&workspace_root.join("Cargo.toml")),
-        );
-        assert_eq!(
-            scaffold_metadata["waterui-ffi-version"]
-                .as_str()
-                .expect("missing package.metadata.waterui-scaffold.waterui-ffi-version"),
-            package_version(&workspace_root.join("ffi/Cargo.toml")),
-        );
-        assert_eq!(
-            manifest_scaffold_field(&cli_manifest, "waterui-core-version"),
-            package_version(&workspace_root.join("core/Cargo.toml")),
-        );
-        let workspace_manifest = manifest_value(&workspace_root.join("Cargo.toml"));
-        assert_eq!(
-            scaffold_metadata["hydrolysis-version"]
-                .as_str()
-                .expect("missing package.metadata.waterui-scaffold.hydrolysis-version"),
-            workspace_dependency_requirement(&workspace_manifest, "hydrolysis"),
-        );
-        assert_eq!(
-            manifest_scaffold_field(&cli_manifest, "hydrolysis-m3-version"),
-            workspace_dependency_requirement(&workspace_manifest, "hydrolysis-m3"),
-        );
-        assert_eq!(
-            manifest_scaffold_field(&cli_manifest, "waterui-dew-version"),
-            package_version(&workspace_root.join("backends/dew/Cargo.toml")),
-        );
-        assert_eq!(
-            manifest_scaffold_field(&cli_manifest, "waterui-gtk-version"),
-            package_version(&workspace_root.join("backends/gtk/Cargo.toml")),
-        );
-        assert_eq!(
-            manifest_scaffold_field(&cli_manifest, "waterui-browser-cef-version"),
-            package_version(&workspace_root.join("components/platform/browser-cef/Cargo.toml")),
-        );
-        assert_eq!(
-            manifest_scaffold_field(&cli_manifest, "waterui-preview-version"),
-            package_version(&workspace_root.join("components/devtools/preview/runtime/Cargo.toml"))
-        );
-        assert_eq!(
-            manifest_scaffold_field(&cli_manifest, "waterui-preview-protocol-version"),
-            package_version(
-                &workspace_root.join("components/devtools/preview/protocol/Cargo.toml")
-            )
-        );
-        assert_eq!(
-            manifest_scaffold_field(&cli_manifest, "android-kotlin-version"),
-            super::ANDROID_KOTLIN_VERSION,
-        );
+        if let Some(root) = workspace_root() {
+            // A workspace build derives each version from the workspace itself:
+            // the package manifest for an in-tree crate, the
+            // `[workspace.dependencies]` requirement for an extracted one.
+            let metadata = MetadataCommand::new()
+                .current_dir(&root)
+                .no_deps()
+                .exec()
+                .expect("cargo metadata on the workspace");
+            let workspace_manifest = manifest_value(&root.join("Cargo.toml"));
+            for (name, version) in SCAFFOLD_PACKAGE_VERSIONS {
+                let expected = metadata
+                    .workspace_packages()
+                    .into_iter()
+                    .find(|package| package.name.as_str() == *name)
+                    .map_or_else(
+                        || workspace_dependency_requirement(&workspace_manifest, name),
+                        |package| package.version.to_string(),
+                    );
+                assert_eq!(*version, expected, "embedded version for {name}");
+            }
+        } else {
+            // A packaged build pins every workspace crate at the CLI's own
+            // release version and keeps the extracted crates' literals.
+            for (name, version) in SCAFFOLD_PACKAGE_VERSIONS {
+                let expected = scaffold_metadata
+                    .get(format!("{name}-version"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(env!("CARGO_PKG_VERSION"));
+                assert_eq!(*version, expected, "embedded version for {name}");
+            }
+        }
     }
 
     #[test]
-    fn fallback_release_backend_refs_match_workspace_backend_refs() {
-        let cli_manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let workspace_root = cli_manifest_dir
-            .parent()
-            .expect("cli crate should live under workspace root");
-        let cli_manifest = manifest_value(&cli_manifest_dir.join("Cargo.toml"));
-
-        // A workspace build reads the submodules directly, so these literals only ever
-        // reach a *published* CLI, which has no submodules and must carry the value. They
-        // cannot be derived away — only kept honest. When one goes stale, a released CLI
-        // scaffolds projects against a backend behind the one this repository builds
-        // against, so say plainly what to write rather than printing two bare hashes.
-        for (backend, submodule) in [("apple", "backends/apple"), ("android", "backends/android")] {
-            let commit_field = format!("{backend}-backend-commit");
-            let pinned = manifest_backend_field(&cli_manifest, &commit_field);
-            let actual = git_output(&workspace_root.join(submodule), &["rev-parse", "HEAD"]);
-            assert_eq!(
-                pinned, actual,
-                "cli/Cargo.toml `{commit_field}` is stale. \
-                 Set `{commit_field} = \"{actual}\"` under [package.metadata.waterui-scaffold]; \
-                 a released CLI scaffolds against the pinned commit, not the submodule."
-            );
-
-            let url_field = format!("{backend}-backend-url");
-            assert_eq!(
-                manifest_backend_field(&cli_manifest, &url_field),
-                git_output(
-                    workspace_root,
-                    &[
-                        "config",
-                        "-f",
-                        ".gitmodules",
-                        "--get",
-                        &format!("submodule.{submodule}.url"),
-                    ],
-                ),
-                "cli/Cargo.toml `{url_field}` disagrees with .gitmodules",
-            );
+    fn backend_revisions_match_their_source() {
+        let backends: [(BackendReference, &str); 2] = [
+            (APPLE_BACKEND, "backends/apple"),
+            (ANDROID_BACKEND, "backends/android"),
+        ];
+        match build_kind() {
+            // A development build pins each backend at its live submodule
+            // commit, exactly as the checkout records it.
+            BuildKind::DevBranch => {
+                let root = workspace_root().expect("a development build is a workspace build");
+                for (reference, submodule) in backends {
+                    assert_eq!(
+                        reference.revision,
+                        git_output(&root.join(submodule), &["rev-parse", "HEAD"]),
+                        "embedded {submodule} revision"
+                    );
+                }
+            }
+            // A release build pins each backend at the tag carrying the CLI's
+            // own version.
+            BuildKind::Release => {
+                for (reference, _) in backends {
+                    assert_eq!(reference.revision, BACKEND_RELEASE_TAG);
+                }
+            }
+        }
+        // The repository URL comes from `.gitmodules` whenever the workspace
+        // is there to read, which the build script's drift check enforces.
+        if let Some(root) = workspace_root() {
+            for (reference, submodule) in backends {
+                assert_eq!(
+                    reference.repository_url,
+                    git_output(
+                        &root,
+                        &[
+                            "config",
+                            "-f",
+                            ".gitmodules",
+                            "--get",
+                            &format!("submodule.{submodule}.url"),
+                        ],
+                    ),
+                    "embedded {submodule} URL"
+                );
+            }
         }
     }
 }

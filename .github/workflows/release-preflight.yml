@@ -27,7 +27,9 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
       # cargo-semver-checks builds rustdoc for the real crate, so this job needs
       # the same native libraries a normal build does — without them it dies in
       # `khronos-egl`'s build script and reports nothing about the API at all.
@@ -52,3 +54,152 @@ jobs:
         uses: ./.github/actions/cargo-semver-checks
       - if: steps.baseline.outputs.exists == 'true'
         run: cargo semver-checks check-release
+
+  resolve-gate:
+    name: Consumer resolve and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-linux-deps
+      - uses: taiki-e/install-action@cargo-binstall
+      - name: Install registry tooling
+        run: |
+          set -euo pipefail
+          cargo binstall -y cargo-local-registry
+          # margo is not on crates.io; upstream publishes it to its own sparse
+          # index. Installing from the repo is not an option: its manifest's
+          # dev-dependencies name a registry that only exists in that repo's
+          # config, so `cargo install --git` cannot read the package at all.
+          cargo install margo --index sparse+https://integer32llc.github.io/margo/
+      - name: Package the publishable set
+        run: |
+          set -euo pipefail
+          # Only crates that would actually reach crates.io belong in the
+          # registry: `publish = false` members carry git and path-only
+          # dependencies that can never be packaged, and `cargo package
+          # --workspace` does not skip them.
+          mapfile -t specs < <(
+            cargo metadata --format-version 1 --no-deps \
+              | jq -r '.packages[] | select(.publish != []) | "-p\n" + .name'
+          )
+          cargo package --no-verify "${specs[@]}"
+      - name: Build a local registry that replaces crates.io
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/resolve-gate"
+          reg="$scratch/registry"
+          staged="$scratch/staged"
+          mkdir -p "$staged" "$scratch/probe/src"
+          touch "$scratch/probe/src/lib.rs"
+          # The closure has to come from the packaged manifests, not the
+          # workspace: in-workspace deps resolve through `path` entries that
+          # `sync` skips, while the .crate manifests name registry versions —
+          # e.g. `waterui-media` declares `waterkit-dialog`, which the kit
+          # checkout satisfies by path here but a consumer must fetch.
+          for crate in "$GITHUB_WORKSPACE"/target/package/*.crate; do
+            tar -xzf "$crate" -C "$staged"
+          done
+          {
+            printf '[package]\nname = "probe"\nversion = "0.0.0"\nedition = "2024"\npublish = false\n\n[workspace]\n\n[patch.crates-io]\n'
+            for dir in "$staged"/*/; do
+              base=$(basename "$dir")
+              name=$(sed -E 's/-[0-9]+\.[0-9]+\.[0-9]+.*//' <<< "$base")
+              printf '%s = { path = "%s" }\n' "$name" "${dir%/}"
+            done
+            printf '\n[dependencies]\n'
+            # Exact pins keep every staged name unified on its packaged
+            # version; without them a newer published minor would win each
+            # transitive `^` requirement and the staged crate would go
+            # unresolved.
+            for dir in "$staged"/*/; do
+              base=$(basename "$dir")
+              name=$(sed -E 's/-[0-9]+\.[0-9]+\.[0-9]+.*//' <<< "$base")
+              printf '%s = "=%s"\n' "$name" "${base#"$name"-}"
+            done
+            # A lockfile only records the deps a feature set enables, but the
+            # registry index demands every name a staged manifest declares —
+            # optional ones like `pulldown-cmark` included. Re-declare each
+            # non-dev dep with its requested features so the locked closure
+            # covers them all.
+            for dir in "$staged"/*/; do
+              cargo metadata --format-version 1 --no-deps \
+                --manifest-path "${dir%/}/Cargo.toml"
+            done | jq -rs '
+              [ .[].packages[0].dependencies[]
+                | select(.kind != "dev")
+                | select(.source == "registry+https://github.com/rust-lang/crates.io-index")
+                | {name, req, features, uses_default_features} ]
+              | unique | to_entries[]
+              | "gate_dep_\(.key) = { package = \(.value.name | @json)"
+                + ", version = \(.value.req | @json)"
+                + ", features = \(.value.features | @json)"
+                + (if .value.uses_default_features then "" else ", default-features = false" end)
+                + " }"'
+          } > "$scratch/probe/Cargo.toml"
+          cargo generate-lockfile --manifest-path "$scratch/probe/Cargo.toml"
+          # `margo add` writes index entries for the packaged set first, into
+          # the `index/` layout a local-registry source uses. The staged
+          # entries must go in before `sync`: margo parses each existing index
+          # file before extending it, and its strict schema rejects the
+          # `"kind": null` fields `sync` emits — while `sync --no-delete`
+          # happily keeps margo's lines when it adds its own entries after.
+          margo init "$reg/index" --defaults --base-url "file://$reg/index/"
+          margo add --registry "$reg/index" target/package/*.crate
+          cargo local-registry "$reg" sync --no-delete "$scratch/probe/Cargo.lock"
+          # `margo` stores archives under `index/crates/`; a local-registry
+          # source expects `<name>-<version>.crate` at the registry root.
+          while IFS= read -r crate; do
+            cp "$crate" "$reg/$(basename "$(dirname "$crate")")-$(basename "$crate")"
+          done < <(find "$reg/index/crates" -name '*.crate')
+      - name: Install the packaged CLI and scaffold a project
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/resolve-gate"
+          consumer="$scratch/consumer"
+          mkdir -p "$consumer/.cargo"
+          cat > "$consumer/.cargo/config.toml" <<-EOF
+          [source.crates-io]
+          replace-with = "local-registry"
+
+          [source.local-registry]
+          local-registry = "$scratch/registry"
+          EOF
+          # `cargo install` discovers config starting at $CARGO_HOME, not the
+          # project directory, so the replacement must also live there.
+          cat >> "$CARGO_HOME/config.toml" <<-EOF
+          [source.crates-io]
+          replace-with = "local-registry"
+
+          [source.local-registry]
+          local-registry = "$scratch/registry"
+          EOF
+          cd "$consumer"
+          cli_version=$(cargo metadata --format-version 1 --no-deps \
+            --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
+            | jq -r '.packages[] | select(.name == "waterui-cli") | .version')
+          cargo install waterui-cli --version "$cli_version"
+          water create gate --mode playground
+      - name: Resolve and build the scaffolded project
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/resolve-gate/consumer/gate"
+          # A stable-channel scaffold must resolve the framework from the
+          # registry alone: any `waterui_path` or `path =` pin would hide the
+          # very resolution this gate exists to test.
+          if grep -q waterui_path Water.toml || grep -q 'path =' Cargo.toml; then
+            echo "Scaffold pins a local waterui checkout; the registry was not exercised."
+            exit 1
+          fi
+          cargo build
+          # --duplicates prints each repeated package flush-left with its
+          # dependents indented beneath; anchoring on the first column keeps
+          # a third-party duplicate that merely has a framework dependent
+          # from tripping the check.
+          if cargo tree --duplicates | grep -E '^(waterui|hydrolysis|waterkit|nami)'; then
+            echo "The consumer graph carries two versions of a framework crate."
+            exit 1
+          fi
