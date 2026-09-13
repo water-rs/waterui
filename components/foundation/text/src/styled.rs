@@ -65,6 +65,13 @@ impl Style {
         self
     }
 
+    /// Asks for the platform's fixed-pitch face, keeping size and weight.
+    #[must_use]
+    pub fn monospaced(mut self) -> Self {
+        self.font = self.font.monospaced();
+        self
+    }
+
     /// Sets the bold style.
     /// Equal to calling `self.weight(FontWeight::Bold)`.
     #[must_use]
@@ -409,6 +416,14 @@ impl StyledStr {
         self.weight(FontWeight::Bold)
     }
 
+    /// Asks for the platform's fixed-pitch face for all chunks.
+    #[must_use]
+    pub fn monospaced(self) -> Self {
+        self.apply_style(|s| {
+            *s = take(s).monospaced();
+        })
+    }
+
     /// Sets the italic style for all chunks.
     #[must_use]
     pub fn italic(self, italic: bool) -> Self {
@@ -593,10 +608,10 @@ pub fn heading_style(level: HeadingLevel) -> Style {
     Style::default().font(font).bold()
 }
 
-fn inline_code_style(mut style: Style) -> Style {
-    style.font = style.font.clone().family("monospace");
-    style.background = Some(Color::new(SurfaceVariantColor));
+fn inline_code_style(style: Style) -> Style {
     style
+        .monospaced()
+        .background(Color::new(SurfaceVariantColor))
 }
 
 impl View for StyledStr {

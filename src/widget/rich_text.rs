@@ -955,7 +955,8 @@ fn language_from_kind(kind: &CodeBlockKind) -> Language {
 
 fn inline_code_style() -> Style {
     Style::default()
-        .font(waterui_text::font::Font::from(waterui_text::font::Body).family("monospace"))
+        .font(waterui_text::font::Body)
+        .monospaced()
         .background(waterui_graphics::color::Srgb::new_u8(236, 239, 241))
 }
 
