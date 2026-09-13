@@ -1142,9 +1142,11 @@ fn kind_to_morph_shape(kind: ShapeKind) -> Option<MorphSdfShape> {
             radii: [0.0; 4],
         }),
         // Absolute radii cannot be normalized for the SDF shader without
-        // knowing the bounds the shape resolves against.
-        ShapeKind::FixedRoundedRect { .. } | ShapeKind::FixedUnevenRoundedRect { .. } => None,
-        ShapeKind::CustomPath => None,
+        // knowing the bounds the shape resolves against, and custom paths
+        // carry no radius structure at all.
+        ShapeKind::FixedRoundedRect { .. }
+        | ShapeKind::FixedUnevenRoundedRect { .. }
+        | ShapeKind::CustomPath => None,
     }
 }
 

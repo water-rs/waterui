@@ -4770,8 +4770,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9009e73e27944c275456cde01a13c69dd6d2658799edf17ebd2ef3831c32b870"
+source = "git+https://github.com/water-rs/hydrolysis?rev=0079f80864ef95282005c44e0bb699085b50dfd3#0079f80864ef95282005c44e0bb699085b50dfd3"
 dependencies = [
  "accesskit",
  "async-task",
@@ -15102,3 +15101,8 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
+
+[[patch.unused]]
+name = "hydrolysis-m3"
+version = "0.2.1"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=260f1eafe8bf86f2a4d611ada2ca342cbc15dfaf#260f1eafe8bf86f2a4d611ada2ca342cbc15dfaf"
