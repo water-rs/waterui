@@ -103,20 +103,9 @@ fn mcp_session_drives_a_mounted_app() {
         .collect::<Vec<_>>();
     // `Tools` stores registrations in a `BTreeMap`, so `tools/list` is
     // alphabetical.
-    assert_eq!(
-        names,
-        [
-            "act",
-            "find",
-            "key",
-            "pointer",
-            "restart",
-            "screenshot",
-            "snapshot",
-            "type_text",
-            "wait",
-        ]
-    );
+    let mut expected = waterui_mcp::SESSION_TOOL_NAMES;
+    expected.sort_unstable();
+    assert_eq!(names, expected);
 
     let snapshot = call_tool(&mut client, "snapshot", serde_json::json!({}));
     let text = tool_text(&snapshot);

@@ -3,7 +3,6 @@
 use std::{
     fs,
     path::Path,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -17,7 +16,7 @@ use waterui_preview_protocol::hydrolysis::{
 };
 
 pub(crate) fn run() {
-    let config = load_run_config();
+    let config = crate::run_config::load_run_config::<PreviewRunConfig>(PREVIEW_RUN_CONFIG_ENV, "preview");
     match config.mode {
         PreviewRunMode::Image { ref output } => {
             run_image(output, config.width, config.height);
@@ -31,24 +30,6 @@ pub(crate) fn run() {
             "hydrolysis preview: semantic runs require the preview test binary (waterui-preview-test-mode)"
         ),
     }
-}
-
-fn load_run_config() -> PreviewRunConfig {
-    let path = std::env::var_os(PREVIEW_RUN_CONFIG_ENV).unwrap_or_else(|| {
-        panic!("hydrolysis preview: missing environment variable `{PREVIEW_RUN_CONFIG_ENV}`")
-    });
-    let raw = fs::read(&path).unwrap_or_else(|error| {
-        panic!(
-            "hydrolysis preview: failed to read run config `{}`: {error}",
-            PathBuf::from(&path).display()
-        )
-    });
-    serde_json::from_slice(&raw).unwrap_or_else(|error| {
-        panic!(
-            "hydrolysis preview: failed to parse run config `{}`: {error}",
-            PathBuf::from(&path).display()
-        )
-    })
 }
 
 fn new_runtime(width: f32, height: f32) -> HeadlessRuntime {

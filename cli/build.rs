@@ -36,6 +36,7 @@ const WORKSPACE_PACKAGES: &[(&str, &str)] = &[
         "waterui-preview-protocol",
         "WATERUI_CLI_WATERUI_PREVIEW_PROTOCOL_VERSION",
     ),
+    ("waterui-mcp", "WATERUI_CLI_WATERUI_MCP_VERSION"),
 ];
 
 /// The extracted crates a scaffolded project pins, with the `cargo:rustc-env`

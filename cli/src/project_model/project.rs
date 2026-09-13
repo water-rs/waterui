@@ -970,6 +970,12 @@ impl Project {
         templates::root::scaffold(&path, &ctx, &assets_path)
             .await
             .map_err(FailToCreateProject::Scaffold)?;
+
+        // `.mcp.json` lets MCP clients launched in the project root find
+        // `water mcp` without any user configuration.
+        crate::mcp::ensure_mcp_json(&path)
+            .await
+            .map_err(FailToCreateProject::Scaffold)?;
         if let Some(lockfile) = lockfile {
             let contents = ctx
                 .framework
@@ -1156,6 +1162,11 @@ impl Project {
             .save(&self.root)
             .await
             .map_err(|e| crate::backend::FailToInitBackend::Io(std::io::Error::other(e)))?;
+
+        // The Hydrolysis backend is what `water mcp` drives, so adding it is
+        // what makes the project MCP-servable; the file is user-owned and
+        // only written when absent.
+        crate::mcp::ensure_mcp_json(&self.root).await?;
         Ok(())
     }
 

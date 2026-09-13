@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::build_info::{
-    DEW_VERSION, GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION, HYDROLYSIS_VERSION,
+    DEW_VERSION, GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION, HYDROLYSIS_VERSION, MCP_VERSION,
     PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, WATERUI_BROWSER_CEF_VERSION, WATERUI_CORE_VERSION,
     WATERUI_FFI_VERSION, WATERUI_VERSION,
 };
@@ -973,6 +973,7 @@ define_scaffold_templates! {
     HydrolysisMainTemplate => (Hydrolysis, "src/templates/hydrolysis/src/main.rs.tpl"),
     HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
     HydrolysisPreviewTestRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_test_runtime.rs.tpl"),
+    HydrolysisMcpRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/mcp_runtime.rs.tpl"),
     HydrolysisWebIndexTemplate => (Hydrolysis, "src/templates/hydrolysis/web/index.html.tpl"),
     Esp32MainTemplate => (Esp32, "src/templates/esp32/src/main.rs.tpl"),
     Esp32CargoConfigTemplate => (Esp32, "src/templates/esp32/.cargo/config.toml.tpl"),
@@ -2568,6 +2569,8 @@ struct GeneratedDependencyDetail {
     default_features: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     features: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    optional: bool,
 }
 
 impl GeneratedDependencyValue {
@@ -2598,6 +2601,7 @@ impl GeneratedDependencyDetail {
             rev: self.rev,
             default_features: self.default_features.unwrap_or(true),
             features: self.features,
+            optional: self.optional,
             ..Default::default()
         }
     }
@@ -2611,6 +2615,7 @@ impl GeneratedDependencyDetail {
             rev: dependency.rev,
             default_features: None,
             features: Vec::new(),
+            optional: false,
         }
     }
 
@@ -2622,6 +2627,7 @@ impl GeneratedDependencyDetail {
             rev: None,
             default_features: None,
             features: Vec::new(),
+            optional: false,
         }
     }
 
@@ -2633,11 +2639,17 @@ impl GeneratedDependencyDetail {
             rev: None,
             default_features: None,
             features: Vec::new(),
+            optional: false,
         }
     }
 
     const fn with_default_features(mut self, default_features: bool) -> Self {
         self.default_features = Some(default_features);
+        self
+    }
+
+    const fn with_optional(mut self) -> Self {
+        self.optional = true;
         self
     }
 
@@ -2687,6 +2699,7 @@ fn generated_dependency_from_spec(
             rev: None,
             default_features: None,
             features: Vec::new(),
+            optional: false,
         }
     } else if spec.path_kind.is_some() {
         GeneratedDependencyDetail::framework(ctx, spec.crate_name)
@@ -2869,7 +2882,7 @@ pub mod hydrolysis {
     use super::{
         GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
         GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection,
-        HYDROLYSIS_M3_VERSION, HYDROLYSIS_VERSION, NativeBackendDependencyPathKind,
+        HYDROLYSIS_M3_VERSION, HYDROLYSIS_VERSION, MCP_VERSION, NativeBackendDependencyPathKind,
         NativeBackendDependencySpec, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, Path,
         TemplateContext, TemplateNamespace, WATERUI_BROWSER_CEF_VERSION, WATERUI_CORE_VERSION,
         WATERUI_VERSION, embedded, io, scaffold_dir, write_generated_cargo_toml,
@@ -2952,6 +2965,10 @@ pub mod hydrolysis {
             features: BTreeMap::from([
                 ("waterui-preview-mode".to_string(), Vec::new()),
                 ("waterui-preview-test-mode".to_string(), Vec::new()),
+                (
+                    "waterui-mcp-mode".to_string(),
+                    vec!["dep:waterui-mcp".to_string()],
+                ),
             ]),
             dependencies: cargo_dependencies(ctx),
             // The build script embeds the staged Windows icon resource; the
@@ -2999,6 +3016,7 @@ pub mod hydrolysis {
                     rev: None,
                     default_features: None,
                     features: Vec::new(),
+                    optional: false,
                 }),
             ),
             (
@@ -3125,9 +3143,28 @@ pub mod hydrolysis {
                     .with_default_features(false),
                 ),
             ),
+            ("serde".to_string(), GeneratedDependencyValue::simple("1")),
             (
                 "serde_json".to_string(),
                 GeneratedDependencyValue::simple("1"),
+            ),
+            (
+                "waterui-mcp".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "waterui-mcp",
+                            MCP_VERSION,
+                            &[],
+                            Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
+                                "components/devtools/mcp/server",
+                            )),
+                        ),
+                    )
+                    .with_default_features(false)
+                    .with_optional(),
+                ),
             ),
             (
                 "waterui-testing".to_string(),

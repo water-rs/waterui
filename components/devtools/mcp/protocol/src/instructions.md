@@ -32,5 +32,7 @@ screen; everything you see and do goes through its accessibility tree.
 ## Housekeeping
 
 - Node ids are stable across turns until `restart`.
-- `restart` remounts the app from scratch and returns the fresh tree.
+- `restart` relaunches the app from scratch and returns the fresh tree; state
+  resets. Under `water mcp` it rebuilds the app from the current sources
+  first, so edit → `restart` → `snapshot` is the development loop.
 - The viewport is fixed for the whole session; there is no resize tool.

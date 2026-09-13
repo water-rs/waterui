@@ -8,6 +8,7 @@ mod dependencies;
 pub mod esp32;
 pub mod gtk4;
 pub mod hydrolysis;
+pub mod mcp;
 mod platforming;
 pub mod preview;
 mod project_model;

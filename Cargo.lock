@@ -10928,11 +10928,14 @@ dependencies = [
 name = "waterui-cli"
 version = "0.2.1"
 dependencies = [
+ "aither-core",
+ "aither-mcp",
  "anstream",
  "anstyle",
  "askama",
  "async-channel",
  "async-lock",
+ "base64 0.23.1",
  "cargo-lock",
  "cargo_metadata",
  "cargo_toml",
@@ -10989,6 +10992,7 @@ dependencies = [
  "waterui-assets",
  "waterui-assets-planner",
  "waterui-inspector-protocol",
+ "waterui-mcp-protocol",
  "waterui-preview-protocol",
  "which 8.0.6",
  "whoami",
@@ -11472,12 +11476,21 @@ dependencies = [
  "async-channel",
  "futures-lite",
  "image",
- "schemars 1.2.2",
  "serde",
  "serde_json",
  "tracing",
  "waterui",
+ "waterui-mcp-protocol",
  "waterui-testing",
+]
+
+[[package]]
+name = "waterui-mcp-protocol"
+version = "0.1.0"
+dependencies = [
+ "aither-core",
+ "schemars 1.2.2",
+ "serde",
 ]
 
 [[package]]
