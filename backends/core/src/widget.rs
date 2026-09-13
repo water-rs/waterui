@@ -1,7 +1,7 @@
 //! Widget chrome contracts shared by rendering backends and theme packages.
 
 use core::time::Duration;
-use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
+use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii, Vec2};
 use nami::signal::IntoComputed;
 use waterui_controls::button::{ButtonSize, ButtonStyle};
 use waterui_controls::toggle::ToggleStyle;
@@ -61,6 +61,19 @@ pub trait DrawContext {
     fn fill_path(&mut self, path: &BezPath, brush: &Brush);
     /// Stroke a Bezier path.
     fn stroke_path(&mut self, path: &BezPath, brush: &Brush, width: f64);
+    /// Draw a blurred shadow behind a rounded rectangle.
+    ///
+    /// Elevated surfaces — menus, dialogs, pickers — cast their elevation
+    /// through this primitive rather than filling the rect itself, so the
+    /// shadow follows `radii` instead of a hard-cornered bounds rect.
+    fn draw_shadow(
+        &mut self,
+        rect: Rect,
+        radii: RoundedRectRadii,
+        offset: Vec2,
+        blur: f64,
+        color: peniko::Color,
+    );
     /// Push a temporary drawing layer.
     fn push_layer(&mut self, alpha: f32, clip: Option<&Rect>);
     /// Push a temporary drawing layer clipped to a rounded rectangle.
