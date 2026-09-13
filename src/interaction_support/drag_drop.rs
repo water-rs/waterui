@@ -27,13 +27,13 @@
 use core::fmt;
 use nami::Computed;
 use nami::signal::IntoComputed;
+use suiteki::Str;
 use waterui_core::{
     Environment, Error,
     extract::Extractor,
     handler::{BoxedAction, Handler, boxed_action},
     metadata::{Metadata, MetadataKey},
 };
-use suiteki::Str;
 
 use crate::reactive::Binding;
 

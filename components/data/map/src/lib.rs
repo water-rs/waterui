@@ -27,8 +27,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use nami::{Binding, impl_constant, signal::IntoComputed};
-use waterui_core::{Computed, SignalExt, configurable, layout::StretchAxis};
 use suiteki::Str;
+use waterui_core::{Computed, SignalExt, configurable, layout::StretchAxis};
 
 // Re-export waterkit-location for downstream convenience.
 pub use waterkit_location as location;

@@ -21,9 +21,9 @@ use std::rc::Rc;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use suiteki::Str;
 use waterui_core::extract::{ExtractionState, Extractor};
 use waterui_core::{Environment, Error};
-use suiteki::Str;
 
 /// The request being handled, placed in the environment so extractors can read
 /// it the way `State<T>` reads its value.
@@ -226,9 +226,9 @@ where
 mod tests {
     use super::{Bytes, HandlerName, IntoJsReply, JsReply, JsRequest, Json};
     use std::rc::Rc;
+    use suiteki::Str;
     use waterui_core::Environment;
     use waterui_core::extract::Extractor;
-    use suiteki::Str;
 
     fn env_with(name: &str, payload: &[u8]) -> Environment {
         let mut env = Environment::new();

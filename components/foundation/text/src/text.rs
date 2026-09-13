@@ -9,12 +9,12 @@ use fmt::Display;
 
 use nami::signal::{IntoComputed, IntoSignal};
 use nami::{Binding, Computed, Signal, SignalExt};
+use suiteki::Str;
 use waterui_core::configurable;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_core::{Environment, View, flatten_signal};
 use waterui_graphics::color::Color;
 use waterui_locale::{Locale, TranslationCatalog, locale_binding};
-use suiteki::Str;
 
 use crate::font::FontWeight;
 use crate::{font::Font, styled::StyledStr};

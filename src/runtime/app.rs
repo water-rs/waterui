@@ -1,8 +1,8 @@
 //! A `WaterUI` application representation.
 
 use nami::{Computed, signal::IntoComputed};
-use waterui_core::{Environment, handler::ViewBuilder};
 use suiteki::Str;
+use waterui_core::{Environment, handler::ViewBuilder};
 
 use crate::{
     component::menu::{Menu, MenuBarView},

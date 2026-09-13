@@ -31,6 +31,7 @@ use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::filter_view::FilterViewExt;
 
+use suiteki::Str;
 use waterui_layout::{
     AspectRatio, ContentMode, EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority,
     Overlay, VerticalAlignmentGuide,
@@ -39,7 +40,6 @@ use waterui_layout::{
     stack::Alignment,
 };
 use waterui_navigation::NavigationView;
-use suiteki::Str;
 
 use crate::{
     accessibility::{

@@ -172,6 +172,7 @@ pub use message::{Bytes, HandlerName, IntoJsReply, JsReply, Json};
 mod state;
 pub use state::{FieldEntry, JsField, StateWriteError};
 
+use suiteki::Str;
 use waterui_core::{
     AnyView, Binding, Computed, Environment, Native, Signal, View, binding,
     layout::StretchAxis,
@@ -180,7 +181,6 @@ use waterui_core::{
 };
 use waterui_layout::spacer;
 use waterui_layout::stack::vstack;
-use suiteki::Str;
 
 /// Something that happened in a `WebView`.
 ///

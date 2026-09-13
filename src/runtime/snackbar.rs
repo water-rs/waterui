@@ -41,6 +41,7 @@ use core::time::Duration;
 use executor_core::spawn_local;
 use nami::Binding;
 use nami::collection::List;
+use suiteki::Str;
 use waterui_controls::{Button, ButtonStyle, button, label};
 use waterui_core::animation::Animation;
 use waterui_core::extract::State;
@@ -56,7 +57,6 @@ use waterui_layout::safe_area::SafeAreaInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{Alignment, hstack};
 use waterui_layout::{AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
-use suiteki::Str;
 use waterui_text::{font::Font, text::text};
 
 use crate::AnyView;

@@ -22,11 +22,11 @@
 use std::{fmt::Debug, rc::Rc};
 
 use nami::{Binding, Computed, SignalExt as _, impl_constant, signal::IntoComputed};
+use suiteki::Str;
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View};
 use waterui_graphics::Color;
 use waterui_layout::{Point, Rect, Size};
-use suiteki::Str;
 
 use crate::app::application_name;
 #[cfg(feature = "snackbar")]

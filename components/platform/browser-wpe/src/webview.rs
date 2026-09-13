@@ -256,10 +256,7 @@ impl WebViewHandle for WpeWebViewHandle {
         clippy::future_not_send,
         reason = "WPE WebKit and WaterUI view state are confined to the UI thread"
     )]
-    async fn call_async_javascript(
-        &self,
-        body: &str,
-    ) -> Result<suiteki::Str, suiteki::Str> {
+    async fn call_async_javascript(&self, body: &str) -> Result<suiteki::Str, suiteki::Str> {
         self.page.call_async_javascript(body).await
     }
 }
