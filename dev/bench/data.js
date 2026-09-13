@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789299761920,
+  "lastUpdate": 1789299764692,
   "repoUrl": "https://github.com/water-rs/waterui",
   "entries": {
     "WaterUI Bench (ubuntu-latest)": [
@@ -2511,6 +2511,48 @@ window.BENCHMARK_DATA = {
           {
             "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
             "value": 16322,
+            "unit": "us"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lexo Liu",
+            "username": "lexoliu",
+            "email": "me@lexo.cool"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c0dbd3d1bcb7a9aac8f2c1591621c5cbccbacfbd",
+          "message": "feat(a11y): add the Dialog accessibility role (#653)\n\n* feat(a11y): add the Dialog accessibility role\n\nModal surfaces need distinct semantics from a plain group. Adds the\nrole to the shared enum, FFI code 29, the GTK/accesskit mappings, and\nthe Apple/Android decode tables.\n\n* chore: deduplicate darling in the lockfile\n\n* feat(backend-core)!: add a shadow primitive to DrawContext\n\nElevated chrome (menus, dialogs, picker popups) could not cast shadows:\nthe trait only fills and strokes. Adds draw_shadow so a theme can cast a\nblurred shadow that follows the surface's corner radii. Implementors\ngain a required method — hydrolysis and the theme test doubles provide\ntheirs in their own repositories.\n\n* build: pin the backend implementations carrying draw_shadow",
+          "timestamp": "2026-09-13T11:16:46Z",
+          "url": "https://github.com/water-rs/waterui/commit/c0dbd3d1bcb7a9aac8f2c1591621c5cbccbacfbd"
+        },
+        "date": 1789299763903,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame p95",
+            "value": 155258,
+            "unit": "us"
+          },
+          {
+            "name": "stress-example/stress_steady_redraw/steady-redraw frame mean",
+            "value": 106562,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame p95",
+            "value": 24957,
+            "unit": "us"
+          },
+          {
+            "name": "list-example/list_wheel_scroll/wheel-scroll frame mean",
+            "value": 16377,
             "unit": "us"
           }
         ]
