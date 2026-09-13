@@ -1072,7 +1072,7 @@ version = "3.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dee98b0db6a962de883bf5d20362dee4d7ca0d12fe39a7c6c73c844e1cd7c1f"
 dependencies = [
- "darling 0.23.0",
+ "darling 0.21.3",
  "ident_case",
  "prettyplease",
  "proc-macro2",
@@ -2320,6 +2320,7 @@ dependencies = [
  "ident_case",
  "proc-macro2",
  "quote",
+ "strsim",
  "syn 2.0.119",
 ]
 
@@ -4814,9 +4815,8 @@ dependencies = [
 
 [[package]]
 name = "hydrolysis-m3"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b54784e892531b75695470e38679187e63c1d115bc47888160fe97208862141"
+version = "0.2.1"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=260f1eafe8bf86f2a4d611ada2ca342cbc15dfaf#260f1eafe8bf86f2a4d611ada2ca342cbc15dfaf"
 dependencies = [
  "material-color-utils",
  "num-traits",
@@ -15101,8 +15101,3 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
-
-[[patch.unused]]
-name = "hydrolysis-m3"
-version = "0.2.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=260f1eafe8bf86f2a4d611ada2ca342cbc15dfaf#260f1eafe8bf86f2a4d611ada2ca342cbc15dfaf"
