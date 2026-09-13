@@ -65,6 +65,16 @@ pub const ANDROID_BACKEND: BackendReference = BackendReference {
     revision: ANDROID_BACKEND_REVISION,
 };
 
+/// Embedded TUI backend repository reference.
+///
+/// The experimental TUI backend is not a workspace submodule, so its pin is a
+/// source literal rather than a build-script value — bump `revision` when the
+/// CLI starts depending on a newer `waterui-tui` API.
+pub const TUI_BACKEND: BackendReference = BackendReference {
+    repository_url: "https://github.com/water-rs/tui",
+    revision: "4782df8a39626a9f24fd27b909d884924e2bce95",
+};
+
 /// Every crate a scaffolded project pins, as `(crate name, version)` pairs —
 /// re-keyed as `<name>-version` entries in a resolved framework's scaffold
 /// metadata.

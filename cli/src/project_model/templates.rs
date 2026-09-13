@@ -76,6 +76,7 @@ pub fn scaffold_template_digest() -> String {
         &embedded::PREVIEW_FFI,
         &embedded::INSPECTOR,
         &embedded::FFI,
+        &embedded::TUI,
     ] {
         hash_dir(&mut hasher, dir);
     }
@@ -99,6 +100,7 @@ mod embedded {
     pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
     pub static PREVIEW_FFI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview_ffi");
     pub static INSPECTOR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/inspector");
+    pub static TUI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/tui");
     pub static ROOT: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
 }
 
@@ -766,6 +768,7 @@ enum TemplateNamespace {
     Inspector,
     Preview,
     PreviewFfi,
+    Tui,
     Root,
 }
 
@@ -781,6 +784,7 @@ impl TemplateNamespace {
             Self::Inspector => "src/templates/inspector",
             Self::Preview => "src/templates/preview",
             Self::PreviewFfi => "src/templates/preview_ffi",
+            Self::Tui => "src/templates/tui",
             Self::Root => "src/templates",
         }
     }
@@ -980,6 +984,7 @@ define_scaffold_templates! {
     Esp32PartitionsTemplate => (Esp32, "src/templates/esp32/partitions.csv.tpl"),
     PreviewLibTemplate => (Preview, "src/templates/preview/src/lib.rs.tpl"),
     PreviewFfiLibTemplate => (PreviewFfi, "src/templates/preview_ffi/src/lib.rs.tpl"),
+    TuiMainTemplate => (Tui, "src/templates/tui/src/main.rs.tpl"),
 }
 
 #[cfg(test)]
@@ -3248,6 +3253,186 @@ pub mod esp32 {
     /// Returns an error if file operations fail.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
         scaffold_dir(TemplateNamespace::Esp32, &embedded::ESP32, base_dir, ctx).await
+    }
+}
+
+/// Experimental terminal (TUI) backend templates.
+///
+/// `water run --tui` generates a thin launcher crate into the project's managed
+/// build cache. The crate depends on the pinned `waterui-tui` backend and calls
+/// its `run_app` entry point with the application's composed `App`.
+pub mod tui {
+    use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Workspace};
+
+    use super::{
+        NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, PathBuf,
+        TemplateContext, TemplateNamespace, WATERUI_VERSION, embedded, io,
+        normalize_path_for_config, scaffold_dir, write_file_if_changed,
+    };
+    use crate::build_info::TUI_BACKEND;
+
+    /// `waterui-*` crates `waterui-tui` names directly that the framework's own
+    /// `[patch.crates-io]` table never lists — the workspace only patches crates
+    /// an extracted backend depends on, and none names these two. Without
+    /// entries here they resolve from the registry beside the checkout- or
+    /// channel-sourced graph, so `App` becomes a different type on either side
+    /// of the launcher's `run_app` call. Values are in-checkout directories.
+    const EXTRA_PATCHES: &[(&str, &str)] = &[
+        ("waterui-internal", "src"),
+        ("waterui-navigation", "components/foundation/navigation"),
+    ];
+
+    /// Write all TUI launcher templates to the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations or manifest rendering fail.
+    pub async fn scaffold(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        generate_cargo_toml(base_dir, ctx, package_name).await?;
+        scaffold_dir(TemplateNamespace::Tui, &embedded::TUI, base_dir, ctx).await
+    }
+
+    /// Every file `scaffold` would write, as launcher-relative path and
+    /// content, without touching the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if template or manifest rendering fails.
+    pub fn rendered_outputs(
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+        let mut outputs = super::render_dir_outputs(TemplateNamespace::Tui, &embedded::TUI, ctx)?;
+        outputs.push((
+            PathBuf::from("Cargo.toml"),
+            render_cargo_toml(ctx, package_name)?.into_bytes(),
+        ));
+        Ok(outputs)
+    }
+
+    async fn generate_cargo_toml(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        let toml_string = render_cargo_toml(ctx, package_name)?;
+        super::fs::create_dir_all(base_dir).await?;
+        write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await
+    }
+
+    fn render_cargo_toml(ctx: &TemplateContext, package_name: &str) -> io::Result<String> {
+        let mut manifest = Manifest::<()>::default();
+        let mut package = Package::new(package_name.to_string(), super::cargo_semver("0.1.0"));
+        package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
+        manifest.package = Some(package);
+        // The launcher is its own workspace root and therefore inherits no
+        // profile — a TUI built at opt-level 0 cannot push frames, so the dev
+        // profile has to be carried here like every other generated crate.
+        manifest.profile = super::generated_dev_profile();
+
+        manifest.dependencies.insert(
+            ctx.crate_name.to_string(),
+            Dependency::Detailed(Box::new(DependencyDetail {
+                path: Some(ctx.project_root_relative_path()),
+                ..Default::default()
+            })),
+        );
+        manifest.dependencies.insert(
+            "waterui".to_string(),
+            Dependency::Detailed(Box::new(
+                super::generated_dependency_from_spec(
+                    ctx,
+                    NativeBackendDependencySpec::new(
+                        "waterui",
+                        WATERUI_VERSION,
+                        &[],
+                        Some(NativeBackendDependencyPathKind::WateruiRoot),
+                    ),
+                )
+                .with_default_features(false)
+                .into_cargo(),
+            )),
+        );
+        manifest
+            .dependencies
+            .insert("waterui-tui".to_string(), tui_backend_dependency(ctx)?);
+
+        manifest.workspace = Some(Workspace::default());
+        manifest.patch = tui_patch_set(ctx)?;
+
+        toml::to_string_pretty(&manifest)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    /// The `waterui-tui` dependency the launcher resolves:
+    /// `WATERUI_TUI_PATH` when set (the escape hatch for developing the backend
+    /// itself), a `water-rs/tui` checkout beside a local `waterui_path`, and
+    /// the pinned backend revision otherwise.
+    fn tui_backend_dependency(ctx: &TemplateContext) -> io::Result<Dependency> {
+        if let Some(path) = std::env::var_os("WATERUI_TUI_PATH") {
+            return Ok(path_dependency(&dunce::canonicalize(path)?));
+        }
+        if let Some(root) = ctx
+            .waterui_workspace_root()
+            .and_then(|root| dunce::canonicalize(root).ok())
+            && let Some(sibling) = root.parent().map(|parent| parent.join("water-rs/tui"))
+            && sibling.join("Cargo.toml").is_file()
+        {
+            return Ok(path_dependency(&sibling));
+        }
+        Ok(Dependency::Detailed(Box::new(DependencyDetail {
+            git: Some(TUI_BACKEND.repository_url.to_string()),
+            rev: Some(TUI_BACKEND.revision.to_string()),
+            ..Default::default()
+        })))
+    }
+
+    fn path_dependency(path: &Path) -> Dependency {
+        Dependency::Detailed(Box::new(DependencyDetail {
+            path: Some(normalize_path_for_config(path)),
+            ..Default::default()
+        }))
+    }
+
+    /// The `[patch]` table the launcher needs as its own workspace root: the
+    /// checkout's or channel's set every other generated crate gets, plus the
+    /// [`EXTRA_PATCHES`] entries `waterui-tui` alone requires.
+    fn tui_patch_set(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
+        let waterui_root = ctx.waterui_workspace_root();
+        let mut patch = match &waterui_root {
+            Some(root) => super::collect_workspace_patches(root)?,
+            None => ctx.framework.patches(),
+        };
+        let crates_io = patch.entry("crates-io".to_string()).or_default();
+        if let Some(root) = &waterui_root {
+            for &(name, subdir) in EXTRA_PATCHES {
+                crates_io
+                    .entry(name.to_string())
+                    .or_insert_with(|| path_dependency_patch(root.join(subdir)));
+            }
+        } else if let Some((repository, revision)) = ctx.framework.git_source() {
+            for &(name, _) in EXTRA_PATCHES {
+                crates_io.entry(name.to_string()).or_insert_with(|| {
+                    Dependency::Detailed(Box::new(DependencyDetail {
+                        git: Some(repository.to_string()),
+                        rev: Some(revision.to_string()),
+                        ..Default::default()
+                    }))
+                });
+            }
+        }
+        Ok(patch)
+    }
+
+    fn path_dependency_patch(path: PathBuf) -> Dependency {
+        Dependency::Detailed(Box::new(DependencyDetail {
+            path: Some(normalize_path_for_config(&path)),
+            ..Default::default()
+        }))
     }
 }
 

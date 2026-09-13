@@ -554,6 +554,27 @@ impl ResolvedFramework {
         Ok(lock)
     }
 
+    /// The `(repository, revision)` a channel framework resolves its packages
+    /// from — `None` on the stable channel, which resolves from the registry.
+    ///
+    /// Generated crates use this to point `[patch]` entries the framework's own
+    /// table does not carry at the same source the framework resolves to.
+    pub(crate) fn git_source(&self) -> Option<(&str, &str)> {
+        match &self.source {
+            Source::Stable => None,
+            Source::Dev {
+                repository,
+                revision,
+                ..
+            }
+            | Source::Nightly {
+                repository,
+                revision,
+                ..
+            } => Some((repository.as_str(), revision.as_str())),
+        }
+    }
+
     pub(crate) fn dependency(&self, name: &str) -> DependencyDetail {
         match &self.source {
             Source::Stable => DependencyDetail {
