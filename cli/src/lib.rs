@@ -14,6 +14,7 @@ pub mod preview;
 mod project_model;
 mod runtime;
 pub mod toolchain;
+pub mod tui;
 mod workflows;
 
 pub use dependencies::brew;

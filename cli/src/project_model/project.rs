@@ -377,6 +377,12 @@ impl Project {
         self.crate_name.with_suffix("esp32")
     }
 
+    /// Get the crate name of the generated experimental TUI launcher.
+    #[must_use]
+    pub fn tui_backend_crate_name(&self) -> CrateName {
+        self.crate_name.with_suffix("tui")
+    }
+
     /// Get package type declared in `Water.toml`.
     #[must_use]
     pub const fn package_type(&self) -> PackageType {

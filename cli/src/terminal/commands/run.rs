@@ -212,6 +212,18 @@ pub struct Args {
     /// This is noisy but useful for debugging native code issues.
     #[arg(long)]
     native_logs: bool,
+
+    /// Run the app in this terminal with the experimental TUI backend.
+    ///
+    /// The terminal becomes the application surface: `water` hands the TTY to
+    /// the built launcher binary, so device and log streaming flags do not
+    /// apply. The backend is pinned to a fixed `water-rs/tui` revision; set
+    /// `WATERUI_TUI_PATH` to a local checkout when developing the backend.
+    #[arg(
+        long,
+        conflicts_with_all = ["platform", "backend", "device", "logs", "native_logs"]
+    )]
+    tui: bool,
 }
 
 /// Log level for filtering device logs (CLI argument wrapper).
@@ -365,6 +377,10 @@ const fn resolve_platform(platform_override: Option<TargetPlatform>) -> TargetPl
 
 /// Run the run command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    if args.tui {
+        return run_tui_app(shell, args).await;
+    }
+
     // The run context carries the opened project, the resolved device, backend
     // and build options; on Windows that future crosses clippy's `large_futures`
     // threshold (16 KiB), so it is pinned on the heap instead of the caller's stack.
@@ -422,6 +438,43 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     stream_running_events(shell, running, context.backend).await?;
 
     Ok(())
+}
+
+/// Build and launch the experimental TUI backend in the invoking terminal.
+///
+/// This path bypasses the device pipeline entirely: the generated launcher is
+/// a plain host binary that owns the TTY, so `water` hands the terminal over
+/// after the build instead of streaming events through a device abstraction.
+async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
+    use std::io::IsTerminal as _;
+
+    warn!(
+        shell,
+        "The TUI backend is experimental — unsupported views panic instead of degrading"
+    );
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        bail!("the TUI backend requires an interactive terminal");
+    }
+
+    let project_path = crate::project_path::canonicalize(&args.path)?;
+    let project = Project::open(&project_path).await?;
+    let launcher_dir = waterui_cli::tui::ensure_launcher(&project).await?;
+
+    let sccache_path = detect_sccache_path(shell).await;
+    let binary = shell
+        .display_output(waterui_cli::tui::build(
+            &project,
+            &launcher_dir,
+            sccache_path,
+        ))
+        .await?;
+
+    note!(
+        shell,
+        "The TUI backend replaces this terminal until the app exits"
+    );
+    shell.clear();
+    waterui_cli::tui::exec(&binary)
 }
 
 async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<RunContext> {
