@@ -3,7 +3,6 @@
 mod commands;
 mod project_path;
 mod shell;
-mod toolchain_checks;
 
 use std::sync::{
     Arc,

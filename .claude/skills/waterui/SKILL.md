@@ -494,6 +494,10 @@ Once connected, the loop is: `snapshot` to read the tree, `act` (or `pointer` / 
 conditions instead of polling, then edit the source and `restart` to rebuild and relaunch
 with the changes. Node ids are stable across turns within a session.
 
+`preview` renders a `#[preview]` function or an `expr` expression (e.g. `text("hi")`) and
+returns the PNG image content directly — use it to check one component without driving the
+whole app.
+
 ## Gotchas worth memorizing
 
 | Symptom | Cause | Fix |

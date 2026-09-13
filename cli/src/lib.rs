@@ -14,6 +14,7 @@ pub mod preview;
 mod project_model;
 mod runtime;
 pub mod toolchain;
+pub mod toolchain_checks;
 pub mod tui;
 mod workflows;
 

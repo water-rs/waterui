@@ -2008,6 +2008,27 @@ pub struct Package {
     pub accessory: bool,
 }
 
+/// Reads the `package.name` of a project's `Cargo.toml` — the crate name the
+/// generated backends and preview symbols build on.
+///
+/// Lighter than [`Project::open`]: this only parses the manifest, so callers
+/// that need just the crate name (the `water preview`/`water mcp` entry
+/// points) do not pay for a full project open.
+///
+/// # Errors
+/// Returns an error if `Cargo.toml` cannot be read or has no `package.name`.
+pub async fn read_project_crate_name(project_path: &Path) -> eyre::Result<String> {
+    let cargo_toml = project_path.join("Cargo.toml");
+    let cargo_content = smol::fs::read_to_string(&cargo_toml).await?;
+    let cargo: toml::Table = cargo_content.parse()?;
+    cargo
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(ToString::to_string)
+        .ok_or_else(|| eyre::eyre!("Could not find package name in Cargo.toml"))
+}
+
 /// Whether two paths name the same directory on disk.
 ///
 /// Compared after canonicalization, because the two sides come from different

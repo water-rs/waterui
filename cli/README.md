@@ -78,7 +78,10 @@ water mcp --viewport 800x600 --scale 1.0
 `water create` writes a `.mcp.json` that registers the server for MCP clients
 launched in the project root. The CLI fronts the generated app process, so
 `initialize` and `tools/list` answer immediately even while a cold build is
-still compiling; `restart` rebuilds from the current sources.
+still compiling; `restart` rebuilds from the current sources. The `preview`
+tool renders a `#[preview]` function or `expr` expression and returns the PNG
+image content directly — the same render `water preview` produces, without a
+shell round trip.
 
 Mark functions with `#[preview]` to make them previewable:
 

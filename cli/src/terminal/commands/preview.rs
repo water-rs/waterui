@@ -6,49 +6,30 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use clap::{Args as ClapArgs, Subcommand, ValueEnum};
+use clap::{Args as ClapArgs, Subcommand};
 use color_eyre::eyre::{Result, bail};
 use ignore::WalkBuilder;
 use serde::Deserialize;
 use syn::{Attribute, Item};
 
-use super::{parse_frame, read_project_crate_name};
 use crate::shell::Shell;
-use crate::toolchain_checks;
 use crate::{error, header, note, success};
-use waterui_cli::preview::protocol::{AppError, DylibId, function_path_to_symbol};
+use waterui_cli::mcp::preview::PreviewArgs;
+use waterui_cli::preview::protocol::function_path_to_symbol;
+use waterui_cli::preview::request::{
+    self, CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewPlatform, PreviewTarget,
+};
 use waterui_cli::preview::{
     HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewRequest,
-    HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource,
-    HydrolysisPreviewTheme, PreviewPlatform, PreviewSession, launch_preview_session,
-    render_preview_with_hydrolysis, test_preview_with_hydrolysis,
+    HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, PreviewPlatform,
+    launch_preview_session, render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
-
-/// Target platform for preview.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CliPreviewPlatform {
-    /// iOS Simulator.
-    Ios,
-    /// macOS.
-    Macos,
-    /// Android Emulator.
-    Android,
-}
-
-impl From<CliPreviewPlatform> for PreviewPlatform {
-    fn from(p: CliPreviewPlatform) -> Self {
-        match p {
-            CliPreviewPlatform::Ios => Self::IosSimulator,
-            CliPreviewPlatform::Macos => Self::Macos,
-            CliPreviewPlatform::Android => Self::Android,
-        }
-    }
-}
+use waterui_cli::project::read_project_crate_name;
 
 async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
-    let platform = resolve_preview_platform(args.platform)?;
-    ensure_hydrolysis_preview_platform(platform)?;
-    let (width, height) = parse_frame(&args.frame)?;
+    let platform = request::resolve_preview_platform(args.platform)?;
+    request::ensure_hydrolysis_preview_platform(platform)?;
+    let (width, height) = request::parse_frame(&args.frame)?;
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let crate_name = read_project_crate_name(&project_path).await?;
     let targets = resolve_test_targets(
@@ -97,32 +78,6 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
     Ok(())
 }
 
-/// Rendering backend for preview.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CliPreviewBackend {
-    /// Apple preview support app.
-    Apple,
-    /// Android preview support app.
-    Android,
-    /// Hydrolysis direct renderer.
-    Hydrolysis,
-}
-
-/// Theme package for Hydrolysis preview.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CliHydrolysisPreviewTheme {
-    /// Material Design 3 theme package.
-    Material3,
-}
-
-impl From<CliHydrolysisPreviewTheme> for HydrolysisPreviewTheme {
-    fn from(value: CliHydrolysisPreviewTheme) -> Self {
-        match value {
-            CliHydrolysisPreviewTheme::Material3 => Self::Material3,
-        }
-    }
-}
-
 /// Arguments for the preview command.
 #[derive(ClapArgs, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -151,7 +106,7 @@ pub struct Args {
     theme: Option<CliHydrolysisPreviewTheme>,
 
     /// Frame size `WIDTHxHEIGHT` (default: `375x667`).
-    #[arg(short, long, default_value = "375x667")]
+    #[arg(short, long, default_value = request::DEFAULT_FRAME)]
     frame: String,
 
     /// Output file (default: preview.png).
@@ -169,6 +124,21 @@ pub struct Args {
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
+}
+
+impl Args {
+    /// The shared preview arguments — the same shape the MCP `preview` tool
+    /// accepts, so `water preview` and `tools/call preview` resolve identically.
+    fn preview_args(&self, target: &str) -> PreviewArgs {
+        PreviewArgs {
+            target: target.to_string(),
+            expr: self.expr,
+            frame: Some(self.frame.clone()),
+            backend: self.backend,
+            theme: self.theme,
+            platform: self.platform,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -235,35 +205,33 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         );
     };
 
-    // Parse frame size
-    let (width, height) = parse_frame(&args.frame)?;
-    let platform = resolve_preview_platform(args.platform)?;
-
     // Canonicalize project path
     let project_path = crate::project_path::canonicalize(&args.path)?;
 
     let crate_name = read_project_crate_name(&project_path).await?;
 
-    let backend = resolve_preview_backend(platform, args.backend)?;
-    let hydrolysis_theme = resolve_hydrolysis_preview_theme(backend, args.theme)?;
-    let preview_target = resolve_preview_target(&crate_name, target, args.expr);
-    header!(shell, "Preview: {}", preview_target.display_name());
+    // Resolve through the shared `PreviewArgs` contract — the same arguments
+    // the MCP `preview` tool takes.
+    let request = args.preview_args(target).resolve(&crate_name)?;
+    header!(shell, "Preview: {}", request.target.display_name());
 
-    check_toolchain_for_backend(platform, backend).await?;
+    request::check_toolchain_for_backend(request.platform, request.backend).await?;
 
     // Detect sccache for compilation caching
     let sccache_path = super::detect_sccache_path(shell).await;
 
-    if backend == CliPreviewBackend::Hydrolysis {
+    if request.backend == CliPreviewBackend::Hydrolysis {
         let scenario = load_hydrolysis_scenario(args.scenario.as_deref(), args.output_dir).await?;
         let spinner = shell.spinner("Building and rendering with hydrolysis...");
         render_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
                 project_path: &project_path,
-                source: preview_target.hydrolysis_source(),
-                theme: hydrolysis_theme.expect("hydrolysis preview theme must be resolved"),
-                width,
-                height,
+                source: request.target.hydrolysis_source(),
+                theme: request
+                    .hydrolysis_theme
+                    .expect("hydrolysis preview theme must be resolved"),
+                width: request.width,
+                height: request.height,
                 sccache_path,
             },
             &args.output,
@@ -292,14 +260,14 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let PreviewTarget::Function {
         function_path,
         symbol,
-    } = &preview_target
+    } = &request.target
     else {
         bail!("Expression preview is currently supported only with `--backend hydrolysis`.");
     };
 
     // Launch preview session (connects to existing app or launches new one)
     let spinner = shell.spinner("Connecting to preview app...");
-    let preview_platform: PreviewPlatform = platform.into();
+    let preview_platform: PreviewPlatform = request.platform.into();
     let mut session =
         launch_preview_session(&project_path, preview_platform, sccache_path.clone()).await?;
     if let Some(s) = spinner {
@@ -315,14 +283,14 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         }
 
         let spinner = shell.spinner("Rendering view...");
-        let png_data = render_with_symbol(
+        let png_data = request::render_with_symbol(
             &mut session,
             function_path,
             symbol,
             dylib.id,
             &dylib.path,
-            width,
-            height,
+            request.width,
+            request.height,
         )
         .await?;
         if let Some(s) = spinner {
@@ -495,7 +463,9 @@ async fn resolve_test_targets(
                     expression: target.to_string(),
                 }])
             } else {
-                Ok(vec![resolve_preview_target(crate_name, target, false)])
+                Ok(vec![request::resolve_preview_target(
+                    crate_name, target, false,
+                )])
             }
         }
         (false, None) => {
@@ -619,257 +589,96 @@ fn emit_child_output(shell: &Shell, output: &str) {
     }
 }
 
-#[derive(Debug)]
-enum PreviewTarget {
-    Function {
-        function_path: String,
-        symbol: String,
-    },
-    Expression {
-        expression: String,
-    },
-}
-
-impl PreviewTarget {
-    fn display_name(&self) -> &str {
-        match self {
-            Self::Function { symbol, .. } => symbol,
-            Self::Expression { expression } => expression,
-        }
-    }
-
-    fn hydrolysis_source(&self) -> HydrolysisPreviewSource<'_> {
-        match self {
-            Self::Function { symbol, .. } => HydrolysisPreviewSource::Symbol(symbol),
-            Self::Expression { expression } => HydrolysisPreviewSource::Expression(expression),
-        }
-    }
-}
-
-fn resolve_preview_target(crate_name: &str, target: &str, force_expression: bool) -> PreviewTarget {
-    if force_expression || !is_function_path(target) {
-        return PreviewTarget::Expression {
-            expression: target.to_string(),
-        };
-    }
-
-    PreviewTarget::Function {
-        function_path: target.to_string(),
-        symbol: function_path_to_symbol(crate_name, target),
-    }
-}
-
-fn is_function_path(target: &str) -> bool {
-    let mut segments = target.split("::").peekable();
-    if segments.peek().is_none() {
-        return false;
-    }
-
-    segments.all(is_rust_ident)
-}
-
-fn is_rust_ident(segment: &str) -> bool {
-    let mut chars = segment.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first == '_' || first.is_ascii_alphabetic())
-        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-}
-
-fn resolve_preview_backend(
-    platform: CliPreviewPlatform,
-    backend_override: Option<CliPreviewBackend>,
-) -> Result<CliPreviewBackend> {
-    let default_backend = match platform {
-        CliPreviewPlatform::Ios | CliPreviewPlatform::Macos => CliPreviewBackend::Apple,
-        CliPreviewPlatform::Android => CliPreviewBackend::Android,
-    };
-
-    let backend = backend_override.unwrap_or(default_backend);
-    let supported = matches!(
-        (platform, backend),
-        (
-            CliPreviewPlatform::Ios | CliPreviewPlatform::Macos,
-            CliPreviewBackend::Apple
-        ) | (CliPreviewPlatform::Macos, CliPreviewBackend::Hydrolysis)
-            | (CliPreviewPlatform::Android, CliPreviewBackend::Android)
-    );
-    if !supported {
-        bail!(
-            "Preview backend {:?} does not support platform {:?}. Valid combinations: ios/apple, macos/apple, macos/hydrolysis, android/android",
-            backend,
-            platform
-        );
-    }
-    Ok(backend)
-}
-
-fn resolve_preview_platform(
-    platform_override: Option<CliPreviewPlatform>,
-) -> Result<CliPreviewPlatform> {
-    if let Some(platform) = platform_override {
-        return Ok(platform);
-    }
-    native_preview_platform()
-}
-
-// Both lints are host-dependent, so neither `expect` can be fulfilled everywhere:
-// on macOS the body is an infallible `const`-compatible `Ok`, while every other host
-// bails at runtime with an unsupported-host error.
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "non-macOS hosts return an explicit unsupported-host error"
-)]
-#[allow(
-    clippy::missing_const_for_fn,
-    reason = "non-macOS hosts call the non-const `bail!`"
-)]
-fn native_preview_platform() -> Result<CliPreviewPlatform> {
-    #[cfg(target_os = "macos")]
-    {
-        Ok(CliPreviewPlatform::Macos)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        // `bail!` expands to a `return`, so the trailing semicolon keeps this a
-        // statement rather than a macro invocation in expression position.
-        bail!(
-            "No native preview platform is configured for this host. Pass `--platform` explicitly."
-        );
-    }
-}
-
-fn ensure_hydrolysis_preview_platform(platform: CliPreviewPlatform) -> Result<()> {
-    if platform != CliPreviewPlatform::Macos {
-        bail!("`water preview test` supports Hydrolysis on macos only.");
-    }
-    Ok(())
-}
-
-fn resolve_hydrolysis_preview_theme(
-    backend: CliPreviewBackend,
-    theme: Option<CliHydrolysisPreviewTheme>,
-) -> Result<Option<HydrolysisPreviewTheme>> {
-    match (backend, theme) {
-        (CliPreviewBackend::Hydrolysis, Some(theme)) => Ok(Some(theme.into())),
-        (CliPreviewBackend::Hydrolysis, None) => {
-            bail!(
-                "Hydrolysis preview requires an explicit theme package. Pass `--theme material3`."
-            );
-        }
-        (_, Some(_)) => {
-            bail!("`--theme` is only supported with `--backend hydrolysis`.");
-        }
-        (_, None) => Ok(None),
-    }
-}
-
-async fn check_toolchain_for_backend(
-    platform: CliPreviewPlatform,
-    backend: CliPreviewBackend,
-) -> Result<()> {
-    match backend {
-        CliPreviewBackend::Apple => {
-            let sdk = match platform {
-                CliPreviewPlatform::Ios => waterui_cli::apple::toolchain::AppleSdk::IosSimulator,
-                CliPreviewPlatform::Macos => waterui_cli::apple::toolchain::AppleSdk::Macos,
-                CliPreviewPlatform::Android => {
-                    bail!("Internal error: Apple preview backend is not supported on android");
-                }
-            };
-            toolchain_checks::check_apple(sdk).await?;
-        }
-        CliPreviewBackend::Android => {
-            if platform != CliPreviewPlatform::Android {
-                bail!("Internal error: Android preview backend is not supported on {platform:?}");
-            }
-            toolchain_checks::check_android_run().await?;
-        }
-        CliPreviewBackend::Hydrolysis => {
-            if platform != CliPreviewPlatform::Macos {
-                bail!(
-                    "Internal error: Hydrolysis preview backend is not supported on {platform:?}"
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn render_with_symbol(
-    session: &mut PreviewSession,
-    function_path: &str,
-    symbol: &str,
-    dylib_id: DylibId,
-    dylib_path: &std::path::Path,
-    width: f32,
-    height: f32,
-) -> Result<Vec<u8>> {
-    let prefer_local_path = session.platform == PreviewPlatform::Macos;
-    match session
-        .client
-        .render_with_dylib_file(
-            dylib_id,
-            dylib_path,
-            symbol,
-            width,
-            height,
-            prefer_local_path,
-        )
-        .await
-    {
-        Ok(data) => Ok(data),
-        Err(AppError::SymbolNotFound(_)) => {
-            bail!("{}", missing_preview_symbol_message(function_path, symbol));
-        }
-        Err(err) => {
-            bail!("Preview app error: {err}");
-        }
-    }
-}
-
-fn missing_preview_symbol_message(function_path: &str, symbol: &str) -> String {
-    format!(
-        "Preview component not found: `{function_path}`\nExpected export symbol: `{symbol}`\n\
-The preview function is likely missing `#[preview]` (or the name is wrong).\n\
-Example:\n  #[preview]\n  fn {}() -> impl View {{ ... }}",
-        function_path.rsplit("::").next().unwrap_or(function_path)
-    )
-}
-
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
+
     use super::*;
 
+    #[derive(Parser)]
+    struct PreviewCommandLine {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    fn parse(args: &[&str]) -> Args {
+        PreviewCommandLine::try_parse_from(args)
+            .expect("args parse")
+            .args
+    }
+
     #[test]
-    fn formats_missing_preview_symbol_message() {
-        let symbol = "waterui_preview_app_card_preview";
-        let message = missing_preview_symbol_message("dashboard::admin::card_preview", symbol);
-        assert!(message.contains("dashboard::admin::card_preview"));
-        assert!(message.contains("waterui_preview_app_card_preview"));
-        assert!(message.contains("#[preview]"));
-        assert!(message.contains("fn card_preview()"));
+    fn cli_and_mcp_args_resolve_to_the_same_request() {
+        // `water preview --expr --frame 800x600 --backend hydrolysis --theme
+        // material3 --platform macos 'text("hi")'` and the equivalent MCP
+        // `preview` call must produce the identical render request.
+        let cli_args = parse(&[
+            "preview",
+            "text(\"hi\")",
+            "--expr",
+            "--frame",
+            "800x600",
+            "--backend",
+            "hydrolysis",
+            "--theme",
+            "material3",
+            "--platform",
+            "macos",
+        ]);
+        let cli_request = cli_args
+            .preview_args(cli_args.target.as_deref().expect("target"))
+            .resolve("demo_app")
+            .expect("cli resolve");
+
+        let mcp_args: PreviewArgs = serde_json::from_str(
+            r#"{
+                "target": "text(\"hi\")",
+                "expr": true,
+                "frame": "800x600",
+                "backend": "hydrolysis",
+                "theme": "material3",
+                "platform": "macos"
+            }"#,
+        )
+        .expect("mcp args parse");
+        let mcp_request = mcp_args.resolve("demo_app").expect("mcp resolve");
+
+        assert_eq!(cli_request, mcp_request);
+    }
+
+    #[test]
+    fn cli_and_mcp_defaults_resolve_to_the_same_request() {
+        let cli_args = parse(&["preview", "views::home", "--platform", "macos"]);
+        let cli_request = cli_args
+            .preview_args(cli_args.target.as_deref().expect("target"))
+            .resolve("demo_app")
+            .expect("cli resolve");
+
+        let mcp_args: PreviewArgs =
+            serde_json::from_str(r#"{"target": "views::home", "platform": "macos"}"#)
+                .expect("mcp args parse");
+        let mcp_request = mcp_args.resolve("demo_app").expect("mcp resolve");
+
+        assert_eq!(cli_request, mcp_request);
     }
 
     #[test]
     fn rejects_non_positive_frame_values() {
-        assert!(parse_frame("0x100").is_err());
-        assert!(parse_frame("-1x100").is_err());
-        assert!(parse_frame("100x0").is_err());
-        assert!(parse_frame("100x-1").is_err());
+        assert!(request::parse_frame("0x100").is_err());
+        assert!(request::parse_frame("-1x100").is_err());
+        assert!(request::parse_frame("100x0").is_err());
+        assert!(request::parse_frame("100x-1").is_err());
     }
 
     #[test]
     fn rejects_non_finite_frame_values() {
-        assert!(parse_frame("NaNx100").is_err());
-        assert!(parse_frame("100xinf").is_err());
+        assert!(request::parse_frame("NaNx100").is_err());
+        assert!(request::parse_frame("100xinf").is_err());
     }
 
     #[test]
     fn resolves_plain_path_as_preview_function() {
-        let target = resolve_preview_target("my-crate", "dashboard::card", false);
+        let target = request::resolve_preview_target("my-crate", "dashboard::card", false);
         let PreviewTarget::Function {
             function_path,
             symbol,
@@ -883,7 +692,7 @@ mod tests {
 
     #[test]
     fn resolves_expression_syntax_as_expression_preview() {
-        let target = resolve_preview_target("my-crate", "button(\"Save\")", false);
+        let target = request::resolve_preview_target("my-crate", "button(\"Save\")", false);
         let PreviewTarget::Expression { expression } = target else {
             panic!("expected expression target");
         };
@@ -892,7 +701,7 @@ mod tests {
 
     #[test]
     fn expr_flag_forces_identifier_as_expression_preview() {
-        let target = resolve_preview_target("my-crate", "main_view", true);
+        let target = request::resolve_preview_target("my-crate", "main_view", true);
         let PreviewTarget::Expression { expression } = target else {
             panic!("expected expression target");
         };
@@ -901,13 +710,13 @@ mod tests {
 
     #[test]
     fn hydrolysis_preview_requires_explicit_theme() {
-        let result = resolve_hydrolysis_preview_theme(CliPreviewBackend::Hydrolysis, None);
+        let result = request::resolve_hydrolysis_preview_theme(CliPreviewBackend::Hydrolysis, None);
         assert!(result.is_err());
     }
 
     #[test]
     fn rejects_theme_for_non_hydrolysis_preview() {
-        let result = resolve_hydrolysis_preview_theme(
+        let result = request::resolve_hydrolysis_preview_theme(
             CliPreviewBackend::Apple,
             Some(CliHydrolysisPreviewTheme::Material3),
         );
