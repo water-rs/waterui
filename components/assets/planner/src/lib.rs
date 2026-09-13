@@ -13,33 +13,39 @@ use thiserror::Error;
 use walkdir::WalkDir;
 use waterui_assets_core::AssetKind;
 
-/// Theme color overrides discovered from asset metadata.
+mod color;
+mod launch;
+
+pub use color::{HexColor, InvalidHexColor};
+pub use launch::{ColorScheme, LaunchConfig, LaunchPlan};
+
+/// The `[theme]` section of `Water.toml`: the theme color slots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThemeConfig {
     /// Window or page background color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background: Option<String>,
+    pub background: Option<HexColor>,
     /// Main surface color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub surface: Option<String>,
+    pub surface: Option<HexColor>,
     /// Secondary surface color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub surface_variant: Option<String>,
+    pub surface_variant: Option<HexColor>,
     /// Border color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub border: Option<String>,
+    pub border: Option<HexColor>,
     /// Primary foreground color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub foreground: Option<String>,
+    pub foreground: Option<HexColor>,
     /// Muted foreground color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub muted_foreground: Option<String>,
+    pub muted_foreground: Option<HexColor>,
     /// Accent color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accent: Option<String>,
+    pub accent: Option<HexColor>,
     /// Foreground color used on accent surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accent_foreground: Option<String>,
+    pub accent_foreground: Option<HexColor>,
 }
 
 impl ThemeConfig {
@@ -71,8 +77,55 @@ pub struct BundleMount {
 pub enum AssetRole {
     /// Normal asset exposed through generated asset modules.
     Regular,
-    /// Root-level application icon asset.
+    /// Root-level application icon asset (`Icon.*`).
     AppIcon,
+    /// Root-level launch screen artwork (`Launch.*`).
+    LaunchImage,
+}
+
+impl AssetRole {
+    /// The file stem that claims this role at the asset root, or `None` for
+    /// a regular asset.
+    #[must_use]
+    pub const fn root_stem(self) -> Option<&'static str> {
+        match self {
+            Self::Regular => None,
+            Self::AppIcon => Some("Icon"),
+            Self::LaunchImage => Some("Launch"),
+        }
+    }
+
+    /// The roles a file at the asset root can claim by its stem.
+    const ROOT_ARTWORK: [Self; 2] = [Self::AppIcon, Self::LaunchImage];
+
+    fn for_root_stem(stem: &str) -> Self {
+        Self::ROOT_ARTWORK
+            .into_iter()
+            .find(|role| role.root_stem() == Some(stem))
+            .unwrap_or(Self::Regular)
+    }
+}
+
+/// The root-level artwork files seen so far while planning, by stem: each
+/// role may be claimed by exactly one file.
+#[derive(Default)]
+struct RootArtwork(BTreeMap<&'static str, PathBuf>);
+
+impl RootArtwork {
+    fn claim(&mut self, role: AssetRole, path: &Path) -> Result<(), PlannerError> {
+        let Some(stem) = role.root_stem() else {
+            return Ok(());
+        };
+        self.0
+            .insert(stem, path.to_path_buf())
+            .map_or(Ok(()), |first| {
+                Err(PlannerError::DuplicateArtwork {
+                    stem,
+                    first,
+                    second: path.to_path_buf(),
+                })
+            })
+    }
 }
 
 /// Asset discovered during bundle planning.
@@ -135,6 +188,15 @@ pub struct BundleManifest {
     pub mounts: Vec<BundleMount>,
     /// Planned assets across the main root and all mounts.
     pub assets: Vec<PlannedAsset>,
+}
+
+impl BundleManifest {
+    /// The root-level artwork claiming `role` (`Icon.*`, `Launch.*`), if the
+    /// project provides one.
+    #[must_use]
+    pub fn root_artwork(&self, role: AssetRole) -> Option<&PlannedAsset> {
+        self.assets.iter().find(|asset| asset.role == role)
+    }
 }
 
 /// Errors produced while discovering and planning asset bundles.
@@ -214,18 +276,22 @@ pub enum PlannerError {
         /// Second source path seen.
         second: PathBuf,
     },
-    /// Root-level icon asset is not a supported image.
-    #[error("App icon source '{path}' must be a square raster image or SVG")]
-    InvalidIconSource {
-        /// Invalid icon source path.
+    /// Root-level artwork (`Icon.*`, `Launch.*`) is not a supported image.
+    #[error("Root-level {stem}.* asset '{path}' must be a square raster image or SVG")]
+    InvalidArtworkSource {
+        /// The file stem that names the role.
+        stem: &'static str,
+        /// Invalid artwork source path.
         path: PathBuf,
     },
-    /// More than one root-level icon asset was found.
-    #[error("Only one root-level Icon.* asset is allowed, found '{first}' and '{second}'")]
-    DuplicateIcon {
-        /// First icon path seen.
+    /// More than one root-level file claims the same artwork role.
+    #[error("Only one root-level {stem}.* asset is allowed, found '{first}' and '{second}'")]
+    DuplicateArtwork {
+        /// The file stem that names the role.
+        stem: &'static str,
+        /// First artwork path seen.
         first: PathBuf,
-        /// Second icon path seen.
+        /// Second artwork path seen.
         second: PathBuf,
     },
 }
@@ -346,7 +412,7 @@ pub fn plan_bundle(crate_root: &Path, assets_path: &str) -> Result<BundleManifes
     let mut by_logical = BTreeMap::<String, PathBuf>::new();
     let mut by_module = BTreeMap::<String, PathBuf>::new();
     let mut root_namespaces = BTreeSet::<String>::new();
-    let mut app_icon_source: Option<PathBuf> = None;
+    let mut root_artwork = RootArtwork::default();
 
     if assets_root.exists() {
         collect_mount_assets(
@@ -356,7 +422,7 @@ pub fn plan_bundle(crate_root: &Path, assets_path: &str) -> Result<BundleManifes
             &mut by_logical,
             &mut by_module,
             &mut root_namespaces,
-            &mut app_icon_source,
+            &mut root_artwork,
         )?;
     }
 
@@ -374,7 +440,7 @@ pub fn plan_bundle(crate_root: &Path, assets_path: &str) -> Result<BundleManifes
             &mut by_logical,
             &mut by_module,
             &mut root_namespaces,
-            &mut app_icon_source,
+            &mut root_artwork,
         )?;
     }
 
@@ -394,7 +460,7 @@ fn collect_mount_assets(
     by_logical: &mut BTreeMap<String, PathBuf>,
     by_module: &mut BTreeMap<String, PathBuf>,
     root_namespaces: &mut BTreeSet<String>,
-    app_icon_source: &mut Option<PathBuf>,
+    root_artwork: &mut RootArtwork,
 ) -> Result<(), PlannerError> {
     if !root.exists() {
         return Ok(());
@@ -428,7 +494,7 @@ fn collect_mount_assets(
             });
         }
 
-        let role = infer_role(mount_name, &relative_path, path, app_icon_source)?;
+        let role = infer_role(mount_name, &relative_path, path, root_artwork)?;
         let kind = infer_kind(path);
         let asset = PlannedAsset {
             mount: mount_name.to_string(),
@@ -470,7 +536,7 @@ fn infer_role(
     mount_name: &str,
     relative_path: &Path,
     absolute_path: &Path,
-    app_icon_source: &mut Option<PathBuf>,
+    root_artwork: &mut RootArtwork,
 ) -> Result<AssetRole, PlannerError> {
     if !mount_name.is_empty() {
         return Ok(AssetRole::Regular);
@@ -481,21 +547,18 @@ fn infer_role(
     let Some(stem) = relative_path.file_stem().and_then(OsStr::to_str) else {
         return Ok(AssetRole::Regular);
     };
-    if stem != "Icon" {
+    let role = AssetRole::for_root_stem(stem);
+    let Some(stem) = role.root_stem() else {
         return Ok(AssetRole::Regular);
-    }
+    };
     if !matches!(infer_kind(absolute_path), AssetKind::Image) {
-        return Err(PlannerError::InvalidIconSource {
+        return Err(PlannerError::InvalidArtworkSource {
+            stem,
             path: absolute_path.to_path_buf(),
         });
     }
-    if let Some(first) = app_icon_source.replace(absolute_path.to_path_buf()) {
-        return Err(PlannerError::DuplicateIcon {
-            first,
-            second: absolute_path.to_path_buf(),
-        });
-    }
-    Ok(AssetRole::AppIcon)
+    root_artwork.claim(role, absolute_path)?;
+    Ok(role)
 }
 
 fn infer_kind(path: &Path) -> AssetKind {
@@ -652,6 +715,34 @@ mod tests {
         let manifest = plan_bundle(temp.path(), "assets").expect("plan bundle");
         assert_eq!(manifest.assets.len(), 1);
         assert_eq!(manifest.assets[0].role, AssetRole::AppIcon);
+    }
+
+    #[test]
+    fn plan_bundle_marks_root_launch_artwork_and_rejects_a_second_one() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join("Water.toml"),
+            "[package]\nname = 'Demo'\nbundle_identifier = 'dev.waterui.demo'\n",
+        )
+        .expect("write Water.toml");
+        fs::create_dir_all(temp.path().join("assets/nested")).expect("create assets");
+        fs::write(temp.path().join("assets/Launch.svg"), b"<svg/>").expect("write launch");
+        // A nested Launch.* is a regular asset, not a second claim.
+        fs::write(temp.path().join("assets/nested/Launch.png"), b"png").expect("write nested");
+
+        let manifest = plan_bundle(temp.path(), "assets").expect("plan bundle");
+        let launch = manifest
+            .root_artwork(AssetRole::LaunchImage)
+            .expect("root Launch.svg is the launch image");
+        assert!(launch.source_path.ends_with("Launch.svg"));
+        assert!(manifest.root_artwork(AssetRole::AppIcon).is_none());
+
+        fs::write(temp.path().join("assets/Launch.png"), b"png").expect("write second launch");
+        let error = plan_bundle(temp.path(), "assets").expect_err("two root Launch.* files");
+        assert!(matches!(
+            error,
+            PlannerError::DuplicateArtwork { stem: "Launch", .. }
+        ));
     }
 
     #[test]

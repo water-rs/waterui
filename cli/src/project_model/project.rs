@@ -1019,6 +1019,7 @@ impl Project {
             permissions: BTreeMap::default(),
             app: None,
             theme: None,
+            launch: None,
         };
 
         // Save Water.toml
@@ -1719,7 +1720,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use smol::{fs::read_to_string, process::Command, unblock};
-use waterui_assets_planner::ThemeConfig;
+use waterui_assets_planner::{LaunchConfig, ThemeConfig};
 
 use crate::{
     android::{backend::AndroidBackend, device::AndroidAbiProvider, platform::AndroidPlatform},
@@ -1758,6 +1759,9 @@ pub struct Manifest {
     /// Cross-platform app theme slots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<ThemeConfig>,
+    /// The launch screen shown until the app's first frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<LaunchConfig>,
 }
 
 /// Permission entry for playground projects.
@@ -1849,6 +1853,7 @@ impl Manifest {
             permissions: BTreeMap::default(),
             app: None,
             theme: None,
+            launch: None,
         }
     }
 }

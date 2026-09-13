@@ -8,17 +8,21 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use smol::fs;
 use waterui_assets_core::AssetKind;
-use waterui_assets_planner::{AssetRole, BundleManifest, PlannedAsset, ThemeConfig, plan_bundle};
+use waterui_assets_planner::{
+    AssetRole, BundleManifest, HexColor, PlannedAsset, ThemeConfig, plan_bundle,
+};
 
 #[cfg(target_os = "macos")]
 use super::icon::encode_macos_icns;
 use super::icon::{
-    IconSource, LINUX_HICOLOR_SIZES, WINDOW_ICON_SIZE, encode_png, hex_color,
-    render_android_foreground, render_apple_icon,
+    IconSource, LINUX_HICOLOR_SIZES, WINDOW_ICON_SIZE, encode_png, render_android_foreground,
+    render_apple_icon,
 };
 use crate::project::Project;
 
 const ASSET_ROOT_DIR: &str = "waterui_assets";
+/// The accent every platform falls back to when `[theme]` names none.
+const DEFAULT_ACCENT: HexColor = HexColor::from_rgb([0x0A, 0x84, 0xFF]);
 const ANDROID_VALUES_DIR: &str = "app/src/main/res/values";
 const ANDROID_VALUES_NIGHT_DIR: &str = "app/src/main/res/values-night";
 const ANDROID_DRAWABLE_DIR: &str = "app/src/main/res/drawable";
@@ -44,7 +48,7 @@ pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result
         .manifest()
         .theme
         .as_ref()
-        .and_then(|theme| theme.accent.as_deref());
+        .and_then(|theme| theme.accent);
 
     let icon = load_project_icon(&manifest)?;
     write_apple_app_icon(&icon, &xcassets_dest).await?;
@@ -56,14 +60,10 @@ pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result
 /// Loads the project's `Icon.*` asset, or the bundled `WaterUI` logo when the
 /// project does not provide one.
 fn load_project_icon(manifest: &BundleManifest) -> eyre::Result<IconSource> {
-    manifest
-        .assets
-        .iter()
-        .find(|asset| asset.role == AssetRole::AppIcon)
-        .map_or_else(
-            || Ok(IconSource::default_logo()),
-            |icon| IconSource::load(&icon.source_path),
-        )
+    manifest.root_artwork(AssetRole::AppIcon).map_or_else(
+        || Ok(IconSource::default_logo()),
+        |icon| IconSource::load(&icon.source_path),
+    )
 }
 
 pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::Result<()> {
@@ -310,7 +310,10 @@ fn detect_font_family(path: &Path) -> eyre::Result<String> {
     Ok(family)
 }
 
-async fn write_apple_accent_color(accent: Option<&str>, xcassets_dest: &Path) -> eyre::Result<()> {
+async fn write_apple_accent_color(
+    accent: Option<HexColor>,
+    xcassets_dest: &Path,
+) -> eyre::Result<()> {
     #[derive(Serialize)]
     struct Components<'a> {
         red: &'a str,
@@ -344,8 +347,7 @@ async fn write_apple_accent_color(accent: Option<&str>, xcassets_dest: &Path) ->
         info: Info<'a>,
     }
 
-    let accent = accent.unwrap_or("#0A84FF");
-    let [red, green, blue] = parse_rgb(accent)?;
+    let [red, green, blue] = accent.unwrap_or(DEFAULT_ACCENT).rgb();
     let accent_dir = xcassets_dest.join("AccentColor.colorset");
     fs::create_dir_all(&accent_dir).await?;
     let red = component_string(red);
@@ -513,7 +515,7 @@ async fn write_android_theme_files(
     fs::create_dir_all(&values_dir).await?;
     fs::create_dir_all(&values_night_dir).await?;
 
-    let colors_xml = build_android_colors_xml(theme, icon_background)?;
+    let colors_xml = build_android_colors_xml(theme, icon_background);
     let themes_xml = build_android_themes_xml(theme);
     fs::write(values_dir.join("colors.xml"), &colors_xml).await?;
     fs::write(values_dir.join("themes.xml"), &themes_xml).await?;
@@ -524,55 +526,45 @@ async fn write_android_theme_files(
 fn build_android_colors_xml(
     theme: Option<&ThemeConfig>,
     icon_background: Option<[u8; 3]>,
-) -> eyre::Result<String> {
+) -> String {
     let mut xml = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n");
     // The adaptive-icon background must match the icon's own background so
     // the two layers join seamlessly; the theme accent only stands in when
     // no background color can be derived from the icon.
-    let derived = icon_background.map(hex_color);
-    let background = derived.as_deref().unwrap_or_else(|| {
-        theme
-            .and_then(|value| value.accent.as_deref())
-            .unwrap_or("#0A84FF")
-    });
-    validate_hex_color(background)?;
+    let background = icon_background.map_or_else(
+        || {
+            theme
+                .and_then(|value| value.accent)
+                .unwrap_or(DEFAULT_ACCENT)
+        },
+        HexColor::from_rgb,
+    );
     let _ = writeln!(
         &mut xml,
         "    <color name=\"ic_launcher_background\">{background}</color>"
     );
     if let Some(theme) = theme {
-        write_android_color(&mut xml, "waterui_background", theme.background.as_deref())?;
-        write_android_color(&mut xml, "waterui_surface", theme.surface.as_deref())?;
-        write_android_color(
-            &mut xml,
-            "waterui_surface_variant",
-            theme.surface_variant.as_deref(),
-        )?;
-        write_android_color(&mut xml, "waterui_border", theme.border.as_deref())?;
-        write_android_color(&mut xml, "waterui_foreground", theme.foreground.as_deref())?;
-        write_android_color(
-            &mut xml,
-            "waterui_muted_foreground",
-            theme.muted_foreground.as_deref(),
-        )?;
-        write_android_color(&mut xml, "waterui_accent", theme.accent.as_deref())?;
+        write_android_color(&mut xml, "waterui_background", theme.background);
+        write_android_color(&mut xml, "waterui_surface", theme.surface);
+        write_android_color(&mut xml, "waterui_surface_variant", theme.surface_variant);
+        write_android_color(&mut xml, "waterui_border", theme.border);
+        write_android_color(&mut xml, "waterui_foreground", theme.foreground);
+        write_android_color(&mut xml, "waterui_muted_foreground", theme.muted_foreground);
+        write_android_color(&mut xml, "waterui_accent", theme.accent);
         write_android_color(
             &mut xml,
             "waterui_accent_foreground",
-            theme.accent_foreground.as_deref(),
-        )?;
+            theme.accent_foreground,
+        );
     }
     xml.push_str("</resources>\n");
-    Ok(xml)
+    xml
 }
 
-fn write_android_color(xml: &mut String, name: &str, value: Option<&str>) -> eyre::Result<()> {
-    let Some(value) = value else {
-        return Ok(());
-    };
-    validate_hex_color(value)?;
-    let _ = writeln!(xml, "    <color name=\"{name}\">{value}</color>");
-    Ok(())
+fn write_android_color(xml: &mut String, name: &str, value: Option<HexColor>) {
+    if let Some(value) = value {
+        let _ = writeln!(xml, "    <color name=\"{name}\">{value}</color>");
+    }
 }
 
 fn build_android_themes_xml(theme: Option<&ThemeConfig>) -> String {
@@ -583,49 +575,34 @@ fn build_android_themes_xml(theme: Option<&ThemeConfig>) -> String {
         maybe_theme_item(
             &mut xml,
             "android:colorBackground",
-            theme.background.as_deref(),
+            theme.background,
             "waterui_background",
         );
-        maybe_theme_item(
-            &mut xml,
-            "colorSurface",
-            theme.surface.as_deref(),
-            "waterui_surface",
-        );
+        maybe_theme_item(&mut xml, "colorSurface", theme.surface, "waterui_surface");
         maybe_theme_item(
             &mut xml,
             "colorSurfaceVariant",
-            theme.surface_variant.as_deref(),
+            theme.surface_variant,
             "waterui_surface_variant",
         );
-        maybe_theme_item(
-            &mut xml,
-            "colorOutline",
-            theme.border.as_deref(),
-            "waterui_border",
-        );
+        maybe_theme_item(&mut xml, "colorOutline", theme.border, "waterui_border");
         maybe_theme_item(
             &mut xml,
             "colorOnSurface",
-            theme.foreground.as_deref(),
+            theme.foreground,
             "waterui_foreground",
         );
         maybe_theme_item(
             &mut xml,
             "colorOnSurfaceVariant",
-            theme.muted_foreground.as_deref(),
+            theme.muted_foreground,
             "waterui_muted_foreground",
         );
-        maybe_theme_item(
-            &mut xml,
-            "colorPrimary",
-            theme.accent.as_deref(),
-            "waterui_accent",
-        );
+        maybe_theme_item(&mut xml, "colorPrimary", theme.accent, "waterui_accent");
         maybe_theme_item(
             &mut xml,
             "colorOnPrimary",
-            theme.accent_foreground.as_deref(),
+            theme.accent_foreground,
             "waterui_accent_foreground",
         );
     }
@@ -633,31 +610,13 @@ fn build_android_themes_xml(theme: Option<&ThemeConfig>) -> String {
     xml
 }
 
-fn maybe_theme_item(xml: &mut String, attr: &str, value: Option<&str>, color_name: &str) {
+fn maybe_theme_item(xml: &mut String, attr: &str, value: Option<HexColor>, color_name: &str) {
     if value.is_some() {
         let _ = writeln!(
             xml,
             "        <item name=\"{attr}\">@color/{color_name}</item>"
         );
     }
-}
-
-fn validate_hex_color(value: &str) -> eyre::Result<()> {
-    let raw = value.strip_prefix('#').unwrap_or(value);
-    if raw.len() != 6 || !raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        eyre::bail!("Invalid theme color '{value}'; expected #RRGGBB");
-    }
-    Ok(())
-}
-
-fn parse_rgb(value: &str) -> eyre::Result<[u8; 3]> {
-    validate_hex_color(value)?;
-    let raw = value.strip_prefix('#').unwrap_or(value);
-    Ok([
-        u8::from_str_radix(&raw[0..2], 16)?,
-        u8::from_str_radix(&raw[2..4], 16)?,
-        u8::from_str_radix(&raw[4..6], 16)?,
-    ])
 }
 
 fn component_string(value: u8) -> String {
@@ -708,17 +667,16 @@ mod tests {
     #[test]
     fn colors_xml_uses_derived_icon_background_over_accent() {
         let theme = ThemeConfig {
-            accent: Some("#0A84FF".to_string()),
+            accent: Some(DEFAULT_ACCENT),
             ..ThemeConfig::default()
         };
-        let xml = build_android_colors_xml(Some(&theme), Some([255, 255, 255]))
-            .expect("colors xml must build");
+        let xml = build_android_colors_xml(Some(&theme), Some([255, 255, 255]));
         assert!(
             xml.contains("<color name=\"ic_launcher_background\">#FFFFFF</color>"),
             "derived icon background must win over the accent color:\n{xml}"
         );
 
-        let xml = build_android_colors_xml(Some(&theme), None).expect("colors xml must build");
+        let xml = build_android_colors_xml(Some(&theme), None);
         assert!(
             xml.contains("<color name=\"ic_launcher_background\">#0A84FF</color>"),
             "accent must remain the launcher background when none can be derived:\n{xml}"
