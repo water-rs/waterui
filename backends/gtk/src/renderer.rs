@@ -11,7 +11,7 @@ use gtk4::prelude::*;
 use nami::Signal;
 use waterui::accessibility::{
     AccessibilityChecked, AccessibilityChildren, AccessibilityHidden, AccessibilityLabel,
-    AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
+    AccessibilityRole, AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
 };
 use waterui::background::{Background, MaterialBackground};
 use waterui::border::Border;
@@ -1405,6 +1405,25 @@ impl GtkRenderer {
                     }
                 });
                 widget.update_property(&[gtk4::accessible::Property::Label(initial.as_str())]);
+                store_watcher_guard(&widget, Box::new(guard));
+                widget
+            },
+        );
+        Self::register_with_renderer::<IgnorableMetadata<AccessibilityValue>>(
+            dispatcher,
+            |renderer, metadata, env| {
+                let widget = renderer.render_any(metadata.content, env);
+                let weak = widget.downgrade();
+                let (initial, guard) = subscribe_then_get(metadata.value.signal(), move |ctx| {
+                    if let Some(widget) = weak.upgrade() {
+                        let value = ctx.into_value();
+                        widget.update_property(&[gtk4::accessible::Property::Description(
+                            value.as_str(),
+                        )]);
+                    }
+                });
+                widget
+                    .update_property(&[gtk4::accessible::Property::Description(initial.as_str())]);
                 store_watcher_guard(&widget, Box::new(guard));
                 widget
             },

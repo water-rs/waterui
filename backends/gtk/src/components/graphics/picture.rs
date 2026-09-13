@@ -32,6 +32,11 @@ impl GtkComponent for Native<Picture> {
         if let Some(label) = picture.label() {
             widget.update_property(&[gtk4::accessible::Property::Label(label.as_str())]);
         }
+        // What the drawing says lives on the description property — the value
+        // channel's AT-SPI analogue — so a label never has to carry it.
+        if let Some(value) = picture.value() {
+            widget.update_property(&[gtk4::accessible::Property::Description(value.as_str())]);
+        }
 
         let paint = Rc::new({
             let widget = widget.clone();
