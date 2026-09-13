@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/water-rs/waterui/compare/media-v0.3.1...media-v0.3.2) - 2026-09-11
+
+### Added
+
+- *(media)* let a photo preserve its aspect ratio inside the frame it is given ([#542](https://github.com/water-rs/waterui/pull/542))
+
+### Other
+
+- *(backends)* consume hydrolysis-m3 0.2.0 from crates.io and drop the in-tree copy ([#550](https://github.com/water-rs/waterui/pull/550))
+- Merge remote-tracking branch 'gh/main' into agent/merge-release-0.4
+
 ## [0.3.1](https://github.com/water-rs/waterui/compare/media-v0.3.0...media-v0.3.1) - 2026-09-11
 
 ### Fixed

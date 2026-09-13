@@ -44,7 +44,7 @@ use waterui_str::Str;
 use crate::{
     accessibility::{
         self, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
-        AccessibilityLabel, AccessibilityRole, AccessibilityState,
+        AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityValue,
     },
     background::IntoBackground,
     border::Border,
@@ -549,6 +549,23 @@ pub trait ViewExt: View + Sized {
     /// * `label` - The accessibility label to apply, constant or reactive
     fn a11y_label(self, label: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityLabel> {
         IgnorableMetadata::new(self, accessibility::AccessibilityLabel::new(label))
+    }
+
+    /// Sets the accessibility value for this view.
+    ///
+    /// The value is the node's own semantic content, announced by assistive
+    /// technologies after the label — a formula's spoken mathematics, a chart's
+    /// summary, a document's description. It exists beside the label, so
+    /// applying a human-readable `.a11y_label(...)` no longer discards the
+    /// content a component publishes about itself.
+    ///
+    /// The value is reactive: pass a signal and it stays current without
+    /// rebuilding the subtree.
+    ///
+    /// # Arguments
+    /// * `value` - The accessibility value to apply, constant or reactive
+    fn a11y_value(self, value: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityValue> {
+        IgnorableMetadata::new(self, accessibility::AccessibilityValue::new(value))
     }
 
     /// Sets the accessibility role for this view.

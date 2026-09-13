@@ -27,7 +27,6 @@ const WORKSPACE_PACKAGES: &[(&str, &str)] = &[
     ("waterui-core", "WATERUI_CLI_WATERUI_CORE_VERSION"),
     ("waterui-testing", "WATERUI_CLI_WATERUI_TESTING_VERSION"),
     ("waterui-ffi", "WATERUI_CLI_WATERUI_FFI_VERSION"),
-    ("waterui-dew", "WATERUI_CLI_WATERUI_DEW_VERSION"),
     ("waterui-gtk", "WATERUI_CLI_WATERUI_GTK_VERSION"),
     (
         "waterui-browser-cef",
@@ -43,13 +42,14 @@ const WORKSPACE_PACKAGES: &[(&str, &str)] = &[
 /// The extracted crates a scaffolded project pins, with the `cargo:rustc-env`
 /// name carrying each one's resolved version.
 ///
-/// The Hydrolysis renderer and its Material 3 theme are released from their
-/// own repositories (#480, #481), so no manifest in this workspace carries a
-/// version for them — `cli/Cargo.toml`'s scaffold metadata holds the
-/// requirement this workspace consumes them at.
+/// The Hydrolysis renderer, its Material 3 theme, and the Dew renderer are
+/// released from their own repositories (#480, #481, #614), so no manifest in
+/// this workspace carries a version for them — `cli/Cargo.toml`'s scaffold
+/// metadata holds the requirement this workspace consumes them at.
 const EXTERNAL_PACKAGES: &[(&str, &str)] = &[
     ("hydrolysis", "WATERUI_CLI_HYDROLYSIS_VERSION"),
     ("hydrolysis-m3", "WATERUI_CLI_HYDROLYSIS_M3_VERSION"),
+    ("waterui-dew", "WATERUI_CLI_WATERUI_DEW_VERSION"),
 ];
 
 /// The submodule each native backend repository lives at; the backend name is

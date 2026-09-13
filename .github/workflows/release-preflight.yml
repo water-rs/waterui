@@ -27,7 +27,9 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
       # cargo-semver-checks builds rustdoc for the real crate, so this job needs
       # the same native libraries a normal build does — without them it dies in
       # `khronos-egl`'s build script and reports nothing about the API at all.
@@ -61,8 +63,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
       - uses: ./.github/actions/setup-linux-deps
       - uses: taiki-e/install-action@cargo-binstall
       - name: Install registry tooling

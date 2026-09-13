@@ -96,7 +96,6 @@ jobs:
               # repositories now (#480, #481), so the version this workspace
               # consumes is a manifest change and already covered below.
               - "backends/core/**"
-              - "backends/dew/**"
               # Foundations both scenes go through: the View contract and
               # reactivity, layout / text / shape / controls, the colour and
               # filter pipeline the stress scene's third pressure path drives,
@@ -159,7 +158,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      # No target tarball: the bench legs are off every gating path and their
+      # three generations did not fit the cache budget (see ci.yml). They read
+      # the per-OS `~/.cargo` tarball and compile from there.
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
       # GPU offscreen benches run here, same as test.yml's GPU snapshot tests,
       # so the Linux leg needs the Vulkan ICD loader for llvmpipe/lavapipe.
       - name: Install native dependencies
@@ -169,19 +176,7 @@ jobs:
           gpu: "true"
       - name: Install DirectX Shader Compiler
         if: runner.os == 'Windows'
-        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
-      - name: Verify DirectX Shader Compiler
-        if: runner.os == 'Windows'
-        run: dxc --version
-      # No target tarball: the bench legs are off every gating path and their
-      # three generations did not fit the cache budget (see ci.yml). They read
-      # the per-OS `~/.cargo` tarball and compile from there.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+        uses: ./.github/actions/install-dxc
       - uses: taiki-e/install-action@nextest
       - name: Build water CLI
         run: cargo build -p waterui-cli

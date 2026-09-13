@@ -107,10 +107,6 @@ name = "waterui-graphics"
 version_group = "waterui"
 git_tag_name = "graphics-v{{ version }}"
 
-[[package]]
-name = "waterui-math"
-version_group = "waterui"
-
 # Multimedia components
 
 [[package]]
@@ -213,10 +209,6 @@ version_group = "waterui"
 
 [[package]]
 name = "waterui-backend-core"
-version_group = "waterui"
-
-[[package]]
-name = "waterui-dew"
 version_group = "waterui"
 
 [[package]]

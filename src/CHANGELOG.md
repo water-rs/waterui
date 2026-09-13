@@ -4,6 +4,12 @@ All notable changes to `waterui-internal` are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/water-rs/waterui/compare/waterui-internal-v0.4.0...waterui-internal-v0.4.1) - 2026-09-11
+
+### Added
+
+- *(media)* let a photo preserve its aspect ratio inside the frame it is given ([#542](https://github.com/water-rs/waterui/pull/542))
+
 ## [0.4.0](https://github.com/water-rs/waterui/compare/waterui-internal-v0.3.0...waterui-internal-v0.4.0) - 2026-09-11
 
 ### Added

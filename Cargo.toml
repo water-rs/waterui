@@ -19,7 +19,6 @@ members = [
     "examples/*",
     ".claude/skills/waterui/skill_snippets",
     "backends/core",
-    "backends/dew",
     "backends/gtk",
     "components/icon/*",
 ]
@@ -37,7 +36,7 @@ resolver = "2"
 
 [package]
 name = "waterui"
-version = "0.4.0"
+version = "0.4.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -54,7 +53,7 @@ minimum-cli-version = "0.1.4"
 path = "facade.rs"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 authors = ["Lexo Liu"]
 rust-version = "1.95"
@@ -120,19 +119,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0.20"
 url = "2.5"
 uuid = { version = "1.26.1", default-features = false, features = ["v4", "std"] }
-waterui-core = { version = "0.3.1", path = "core" }
+waterui-core = { version = "0.3.2", path = "core" }
 waterui-str = { version = "0.3.0", path = "utils/str" }
-waterui-url = { version = "0.3.0", path = "utils/url" }
+waterui-url = { version = "0.3.1", path = "utils/url" }
 waterui-watcher-set = { version = "0.1.0", path = "utils/watcher-set" }
-waterui-text = { version = "0.4.0", path = "components/foundation/text" }
-waterui-media = { version = "0.3.1", path = "components/multimedia/media" }
+waterui-text = { version = "0.4.1", path = "components/foundation/text" }
+waterui-media = { version = "0.3.2", path = "components/multimedia/media" }
 waterui-image = "0.4.0"
-waterui-video = { version = "0.3.1", path = "components/multimedia/video" }
+waterui-video = { version = "0.3.2", path = "components/multimedia/video" }
 waterui-video-gpu = "0.3.1"
-waterui-visualizer = "0.4.0"
-waterui-form = { version = "0.3.1", path = "components/foundation/form" }
-waterui-controls = { version = "0.3.1", path = "components/foundation/controls"}
-waterui-graphics = { version = "0.4.0", path = "components/visual/graphics", default-features = false }
+waterui-form = { version = "0.3.2", path = "components/foundation/form" }
+waterui-controls = { version = "0.3.2", path = "components/foundation/controls"}
+waterui-graphics = { version = "0.4.1", path = "components/visual/graphics", default-features = false }
 waterui-canvas = "0.1.2"
 waterui-mermaid = { version = "0.1.0", path = "components/data/mermaid" }
 # Mermaid parsing, semantic model and diagram layout. Consumed from our fork
@@ -143,28 +141,29 @@ waterui-mermaid = { version = "0.1.0", path = "components/data/mermaid" }
 # public and changes nothing else. See water-rs/waterui#217.
 merman-core = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c05844003a0e765a3cf78df6678d" }
 merman-render = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c05844003a0e765a3cf78df6678d", default-features = false }
-waterui-shape = { version = "0.1.1", path = "components/foundation/shape", default-features = false }
+waterui-shape = { version = "0.1.2", path = "components/foundation/shape", default-features = false }
 waterui-svg = "0.3.0"
-waterui-math = { version = "0.1.0", path = "components/visual/math" }
-waterui-ffi = { version = "0.3.1", path = "ffi" }
-waterui-layout = { version = "0.3.1", path = "components/foundation/layout" }
-waterui-navigation = { version = "0.3.1", path = "components/foundation/navigation" }
-waterui-webview = { version = "0.4.0", path = "components/platform/webview" }
-waterui-chromium = { version = "0.1.1", path = "components/platform/chromium" }
-waterui-browser-cef = { version = "0.2.0", path = "components/platform/browser-cef", default-features = false }
-waterui-browser-wpe = { version = "0.1.1", path = "components/platform/browser-wpe", default-features = false }
+# waterui-math is extracted (#616) and consumed from crates.io like the other split components.
+waterui-math = "0.1.1"
+waterui-ffi = { version = "0.3.2", path = "ffi" }
+waterui-layout = { version = "0.3.2", path = "components/foundation/layout" }
+waterui-navigation = { version = "0.3.2", path = "components/foundation/navigation" }
+waterui-webview = { version = "0.4.1", path = "components/platform/webview" }
+waterui-chromium = { version = "0.1.2", path = "components/platform/chromium" }
+waterui-browser-cef = { version = "0.2.1", path = "components/platform/browser-cef", default-features = false }
+waterui-browser-wpe = { version = "0.1.2", path = "components/platform/browser-wpe", default-features = false }
 # Zero-copy import of an externally produced GPU frame into a wgpu texture.
 # Deliberately free of every waterui dependency: it is a general interop layer
 # and lives in its own repository at water-rs/wgpu-external-frame.
 wgpu-external-frame = "0.1.1"
-waterui-icon = { version = "0.3.1", path = "components/foundation/icon" }
-waterui-icons-sf-symbol = { version = "0.1.1", path = "components/icon/sf_symbol" }
-waterui-icons-material-icon = { version = "0.1.1", path = "components/icon/material" }
-waterui-icons-fontawesome7 = { version = "0.2.0", path = "components/icon/fontawesome7" }
-waterui-icons-lucide = { version = "0.1.1", path = "components/icon/lucide" }
-waterui-icons-native = { version = "0.1.1", path = "components/icon/native" }
-waterui-locale = { version = "0.1.1", path = "utils/locale" }
-waterui-map = { version = "0.1.1", path = "components/data/map" }
+waterui-icon = { version = "0.3.2", path = "components/foundation/icon" }
+waterui-icons-sf-symbol = { version = "0.1.2", path = "components/icon/sf_symbol" }
+waterui-icons-material-icon = { version = "0.1.2", path = "components/icon/material" }
+waterui-icons-fontawesome7 = { version = "0.2.1", path = "components/icon/fontawesome7" }
+waterui-icons-lucide = { version = "0.1.2", path = "components/icon/lucide" }
+waterui-icons-native = { version = "0.1.2", path = "components/icon/native" }
+waterui-locale = { version = "0.1.2", path = "utils/locale" }
+waterui-map = { version = "0.1.2", path = "components/data/map" }
 waterkit-location = { version = "0.1.0", path = "kit/device/location" }
 waterkit-screen = { version = "0.1.0", path = "kit/platform/screen" }
 waterkit-audio = { version = "0.1.0", path = "kit/multimedia/audio", default-features = false }
@@ -177,7 +176,7 @@ waterkit-camera = { version = "0.1.0", path = "kit/device/camera" }
 waterkit-codec = { version = "0.1.0", path = "kit/multimedia/codec", default-features = false }
 waterkit-video = { version = "0.1.0", path = "kit/multimedia/video", features = ["streaming"] }
 waterkit-build = { version = "0.1.0", path = "kit/utils/build" }
-waterui-backend-core = { version = "0.1.1", path = "backends/core", default-features = false }
+waterui-backend-core = { version = "0.1.2", path = "backends/core", default-features = false }
 filtrate = "0.2.0"
 filtrate-core = "0.2.0"
 filtrate-derive = "0.1.0"
@@ -185,23 +184,24 @@ waterui-barcode = "0.2.0"
 waterui-particle = "0.1.1"
 waterui-chart = "0.2.0"
 waterui-map-gpu = "0.2.0"
-waterui-assets = { version = "0.1.1", path = "components/assets/runtime" }
-waterui-assets-planner = { version = "0.1.1", path = "components/assets/planner" }
-waterui-assets-macros = { version = "0.1.1", path = "components/assets/macros" }
-waterui-inspector-protocol = { version = "0.1.1", path = "components/devtools/inspector/protocol" }
-waterui-inspector-app = { version = "0.1.1", path = "components/devtools/inspector/app" }
-waterui-preview-protocol = { version = "0.1.0", path = "components/devtools/preview/protocol" }
-waterui-gtk = { version = "0.1.1", path = "backends/gtk" }
+waterui-assets = { version = "0.1.2", path = "components/assets/runtime" }
+waterui-assets-planner = { version = "0.1.2", path = "components/assets/planner" }
+waterui-assets-macros = { version = "0.1.2", path = "components/assets/macros" }
+waterui-inspector-protocol = { version = "0.1.2", path = "components/devtools/inspector/protocol" }
+waterui-inspector-app = { version = "0.1.2", path = "components/devtools/inspector/app" }
+waterui-preview-protocol = { version = "0.1.1", path = "components/devtools/preview/protocol" }
+waterui-gtk = { version = "0.1.2", path = "backends/gtk" }
 waterui-testing = { path = "testing" }
-waterui-internal = { version = "0.4.0", path = "src", default-features = false }
-waterui-dylib = { version = "0.4.0", path = "utils/dylib", default-features = false }
+waterui-internal = { version = "0.4.1", path = "src", default-features = false }
+waterui-dylib = { version = "0.4.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.2.1", default-features = false }
-waterui = { version = "0.4.0", path = "." }
+waterui-dew = "0.2.1"
+waterui = { version = "0.4.1", path = "." }
 waterui-icons-codegen = { version = "0.1.1", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
 hydrolysis-m3 = "0.2.0"
 native-executor = { version = "0.8.0" }
-waterui-macros = { version = "0.3.0", path = "macros" }
+waterui-macros = { version = "0.3.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
 # 29, not 30, and not by neglect: `vello` 0.10.0 — the newest release — pins
@@ -492,7 +492,7 @@ xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e7
 # they stop compiling the moment this branch adds the fixed-radius variants;
 # the companion branches on water-rs resolve them. Drop these entries once the
 # releases carry the new kinds.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "0079f80864ef95282005c44e0bb699085b50dfd3" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "3c35425" }
 hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "260f1eafe8bf86f2a4d611ada2ca342cbc15dfaf" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte

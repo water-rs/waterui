@@ -793,7 +793,21 @@ fn resolve_packages(
             .collect();
         let package = match candidates.as_slice() {
             [package] => *package,
-            [] => bail!("framework lock has no package for {name} {version}"),
+            // An extracted crate the framework no longer builds never enters
+            // its lock — `waterui-dew` releases from water-rs/dew (#614), so
+            // the scaffold's declared requirement is the resolution, the same
+            // `=<version>` the registry-source arm below produces for a crate
+            // the framework still carries.
+            [] => {
+                packages.insert(
+                    name.to_owned(),
+                    DependencyDetail {
+                        version: Some(format!("={version}").parse()?),
+                        ..Default::default()
+                    },
+                );
+                continue;
+            }
             _ => bail!("framework lock has multiple sources for {name} {version}"),
         };
         let mut dependency = DependencyDetail::default();
@@ -1177,6 +1191,35 @@ mod tests {
         let theme = framework.dependency("hydrolysis-m3");
         assert!(theme.git.is_none());
         assert_eq!(theme.version.unwrap().to_string(), "=0.1.0");
+    }
+
+    #[test]
+    fn extracted_crate_absent_from_the_lock_resolves_to_its_declared_requirement() {
+        // A crate released from its own repository and not consumed by the
+        // framework never enters the framework lock — the scaffold's declared
+        // requirement is the requirement a dev/nightly resolution pins.
+        let lock = Lockfile {
+            packages: vec![package("waterui", "0.3.0", None)],
+            version: cargo_lock::ResolveVersion::V4,
+            root: None,
+            metadata: BTreeMap::default(),
+            patch: cargo_lock::Patch::default(),
+        };
+        let scaffold = BTreeMap::from([
+            ("waterui-version".to_string(), "0.3.0".to_string()),
+            ("waterui-dew-version".to_string(), "0.2.1".to_string()),
+        ]);
+        let packages = resolve_packages(
+            &scaffold,
+            &lock,
+            env!("CARGO_PKG_REPOSITORY").trim_end_matches(".git"),
+            &"a".repeat(40),
+        )
+        .unwrap();
+        assert!(packages["waterui"].git.is_some());
+        let dew = &packages["waterui-dew"];
+        assert!(dew.git.is_none());
+        assert_eq!(dew.version.as_ref().unwrap().to_string(), "=0.2.1");
     }
 
     /// The exact requirement a stable channel writes for one scaffold entry.

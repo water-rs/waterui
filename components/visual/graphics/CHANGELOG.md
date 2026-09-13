@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/water-rs/waterui/compare/graphics-v0.4.0...graphics-v0.4.1) - 2026-09-11
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.4.0](https://github.com/water-rs/waterui/compare/graphics-v0.3.0...graphics-v0.4.0) - 2026-09-11
 
 ### Added
