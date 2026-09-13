@@ -108,6 +108,7 @@ fn gtk_accessibility_role(role: &AccessibilityRole) -> gtk4::AccessibleRole {
         AccessibilityRole::Combobox => gtk4::AccessibleRole::ComboBox,
         AccessibilityRole::Option => gtk4::AccessibleRole::Option,
         AccessibilityRole::Group => gtk4::AccessibleRole::Group,
+        AccessibilityRole::Dialog => gtk4::AccessibleRole::Dialog,
         _ => panic!("unsupported accessibility role in GTK backend"),
     }
 }

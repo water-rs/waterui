@@ -78,6 +78,8 @@ impl Role {
     pub const COLUMN_HEADER: Self = Self(AccessibilityRole::ColumnHeader);
     /// Logical grouping role.
     pub const GROUP: Self = Self(AccessibilityRole::Group);
+    /// Modal dialog role.
+    pub const DIALOG: Self = Self(AccessibilityRole::Dialog);
     /// Window root role.
     pub const WINDOW: Self = Self(AccessibilityRole::Window);
     /// Main landmark role.
