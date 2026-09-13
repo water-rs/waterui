@@ -1413,7 +1413,11 @@ mod tests {
 
         let cargo_toml = std::fs::read_to_string(tempdir.path().join("Cargo.toml"))
             .expect("gtk4 Cargo.toml should be written");
-        assert!(cargo_toml.contains(&format!("version = \"{GTK_BACKEND_VERSION}\"")));
+        // The dependency is emitted as a caret requirement (`version = "^x.y.z"`).
+        assert!(
+            cargo_toml.contains(&format!("version = \"^{GTK_BACKEND_VERSION}\"")),
+            "generated Cargo.toml:\n{cargo_toml}"
+        );
         assert!(!cargo_toml.contains("webview-default"));
     }
 
@@ -2588,9 +2592,8 @@ pub mod android {
 /// GTK4 backend templates.
 pub mod gtk4 {
     use super::{
-        GTK_BACKEND_VERSION, NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path,
-        TemplateContext, TemplateNamespace, embedded, io, scaffold_dir,
-        write_native_backend_bin_cargo_toml,
+        GTK_BACKEND_VERSION, NativeBackendDependencySpec, Path, TemplateContext,
+        TemplateNamespace, embedded, io, scaffold_dir, write_native_backend_bin_cargo_toml,
     };
 
     /// Write all GTK4 templates to the given directory.
@@ -2624,11 +2627,15 @@ pub mod gtk4 {
             .webview_backend_feature()
             .into_iter()
             .collect::<Vec<_>>();
+        // The extracted `backends/gtk` submodule pins published `waterui-*`
+        // versions that this checkout cannot satisfy, so a path dependency
+        // would link a second, registry copy of `waterui` beside the local
+        // one — registry resolution only.
         let dependencies = [NativeBackendDependencySpec::new(
             "waterui-gtk",
             GTK_BACKEND_VERSION,
             &features,
-            Some(NativeBackendDependencyPathKind::BackendsSubdir("gtk")),
+            None,
         )];
         outputs.push((
             std::path::PathBuf::from("Cargo.toml"),
@@ -2648,11 +2655,15 @@ pub mod gtk4 {
             .webview_backend_feature()
             .into_iter()
             .collect::<Vec<_>>();
+        // The extracted `backends/gtk` submodule pins published `waterui-*`
+        // versions that this checkout cannot satisfy, so a path dependency
+        // would link a second, registry copy of `waterui` beside the local
+        // one — registry resolution only.
         let dependencies = [NativeBackendDependencySpec::new(
             "waterui-gtk",
             GTK_BACKEND_VERSION,
             &features,
-            Some(NativeBackendDependencyPathKind::BackendsSubdir("gtk")),
+            None,
         )];
         write_native_backend_bin_cargo_toml(base_dir, ctx, package_name, &dependencies).await
     }

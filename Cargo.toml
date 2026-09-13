@@ -19,7 +19,6 @@ members = [
     ".claude/skills/waterui/skill_snippets",
     "backends/core",
     "backends/dew",
-    "backends/gtk",
     "backends/hydrolysis",
     "backends/hydrolysis_m3",
     "components/icon/*",
@@ -191,7 +190,6 @@ waterui-assets-macros = { version = "0.1.0", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.1.0", path = "components/devtools/inspector/protocol" }
 waterui-inspector-app = { version = "0.1.0", path = "components/devtools/inspector/app" }
 waterui-preview-protocol = { version = "0.1.0", path = "components/devtools/preview/protocol" }
-waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.3.0", path = "src", default-features = false }
 waterui-dylib = { version = "0.3.0", path = "utils/dylib", default-features = false }

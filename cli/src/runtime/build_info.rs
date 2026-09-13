@@ -167,10 +167,10 @@ mod tests {
             manifest_scaffold_field(&cli_manifest, "waterui-dew-version"),
             package_version(&workspace_root.join("backends/dew/Cargo.toml")),
         );
-        assert_eq!(
-            manifest_scaffold_field(&cli_manifest, "waterui-gtk-version"),
-            package_version(&workspace_root.join("backends/gtk/Cargo.toml")),
-        );
+        // `waterui-gtk-version` pins the crates.io release scaffolds resolve;
+        // the `backends/gtk` submodule's manifest intentionally leads it
+        // (dev-versioned between publishes), so there is no local equality
+        // to assert here.
         assert_eq!(
             manifest_scaffold_field(&cli_manifest, "waterui-browser-cef-version"),
             package_version(&workspace_root.join("components/platform/browser-cef/Cargo.toml")),

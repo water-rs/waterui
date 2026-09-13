@@ -14,3 +14,7 @@
 	path = utils/nami
 	url = https://github.com/water-rs/nami.git
 	branch = dev
+[submodule "backends/gtk"]
+	path = backends/gtk
+	url = https://github.com/water-rs/gtk-backend.git
+	branch = dev
