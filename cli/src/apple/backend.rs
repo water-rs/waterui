@@ -166,7 +166,7 @@ impl Backend for AppleBackend {
             })
             .collect();
         let webview_enabled = project
-            .links_runtime_package("waterui-webview")
+            .uses_standard_webview()
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
         let chromium_enabled = project
