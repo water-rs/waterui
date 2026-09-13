@@ -1133,6 +1133,121 @@ fn ui_focus_is_separate_from_accessibility_focus() {
 }
 
 #[test]
+fn runtime_focus_writes_move_and_clear_ui_focus() {
+    use waterui::form::secure::Secure;
+    use waterui::prelude::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Field {
+        Username,
+        Password,
+    }
+
+    let focus = Binding::container(None::<Field>);
+    let username = Binding::container(Str::from(""));
+    let password = Binding::container(Secure::default());
+    let focus_for_view = focus.clone();
+    let mut app = ui().theme(hydrolysis_m3::install).mount(move || {
+        vstack((
+            TextField::new(text("Username"), &username).focused(&focus_for_view, Field::Username),
+            SecureField::new(text("Password"), &password).focused(&focus_for_view, Field::Password),
+        ))
+    });
+
+    let username_selector = Selector::default().role(Role::TEXT_INPUT).label("Username");
+    let password_selector = Selector::default()
+        .role(Role::PASSWORD_INPUT)
+        .label("Password");
+
+    assert_eq!(app.ui_focus(), None);
+
+    focus.set(Some(Field::Password));
+    assert!(
+        app.wait_for_ui_focus(&password_selector, Duration::from_millis(200)),
+        "a runtime write to the focus binding must move UI focus to the password field"
+    );
+    app.assert_ui_focus(&password_selector);
+
+    focus.set(Some(Field::Username));
+    assert!(
+        app.wait_for_ui_focus(&username_selector, Duration::from_millis(200)),
+        "a later write must move UI focus back to the username field"
+    );
+
+    focus.set(None);
+    app.settle();
+    assert_eq!(app.ui_focus(), None);
+}
+
+#[test]
+fn ui_focus_accepts_a_new_target_after_being_cleared() {
+    use waterui::prelude::*;
+
+    let focus = Binding::container(None::<i32>);
+    let value = Binding::container(Str::from(""));
+    let focus_for_view = focus.clone();
+    let mut app = ui()
+        .theme(hydrolysis_m3::install)
+        .mount(move || TextField::new(text("Field"), &value).focused(&focus_for_view, 0));
+
+    let selector = Selector::default().role(Role::TEXT_INPUT).label("Field");
+
+    focus.set(Some(0));
+    assert!(app.wait_for_ui_focus(&selector, Duration::from_millis(200)));
+
+    app.clear_ui_focus();
+    assert_eq!(app.ui_focus(), None);
+    assert_eq!(focus.get(), None);
+
+    app.query().role(Role::TEXT_INPUT).label("Field").focus();
+    app.assert_ui_focus(&selector);
+    assert_eq!(focus.get(), Some(0));
+}
+
+#[test]
+#[should_panic(expected = "requires exactly one TextField or SecureField")]
+fn focused_modifier_without_a_text_anchor_panics() {
+    use waterui::prelude::*;
+
+    let focus = Binding::container(None::<i32>);
+    let _app = ui()
+        .theme(hydrolysis_m3::install)
+        .mount(move || button("No anchor").focused(&focus, 0));
+}
+
+#[test]
+#[should_panic(expected = "found 2")]
+fn focused_modifier_with_two_text_anchors_panics() {
+    use waterui::prelude::*;
+
+    let focus = Binding::container(None::<i32>);
+    let first = Binding::container(Str::from(""));
+    let second = Binding::container(Str::from(""));
+    let _app = ui().theme(hydrolysis_m3::install).mount(move || {
+        vstack((
+            TextField::new(text("First"), &first),
+            TextField::new(text("Second"), &second),
+        ))
+        .focused(&focus, 0)
+    });
+}
+
+#[test]
+#[should_panic(expected = "multiple .focused()")]
+fn focused_modifier_twice_on_the_same_control_panics() {
+    use waterui::prelude::*;
+
+    let focus_a = Binding::container(None::<i32>);
+    let focus_b = Binding::container(None::<i32>);
+    let value = Binding::container(Str::from(""));
+    let _app = ui().theme(hydrolysis_m3::install).mount(move || {
+        TextField::new(text("Field"), &value)
+            .focused(&focus_a, 0)
+            .focused(&focus_b, 1)
+    });
+}
+
+#[test]
 fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
     use waterui::prelude::*;
 

@@ -107,7 +107,10 @@ impl Focused {
 
 #[cfg(test)]
 mod tests {
-    use nami::Binding;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use nami::{Binding, Signal};
 
     use super::Focused;
 
@@ -135,5 +138,66 @@ mod tests {
         focused.0.set(false);
 
         assert_eq!(source.get(), Some(Field::Password));
+    }
+
+    #[test]
+    fn reads_true_only_while_source_holds_the_matching_value() {
+        let source = Binding::container(Some(Field::Username));
+        let focused = Focused::new(&source, Field::Username);
+
+        assert!(focused.0.get());
+        source.set(Some(Field::Password));
+        assert!(!focused.0.get());
+        source.set(None);
+        assert!(!focused.0.get());
+    }
+
+    #[test]
+    fn setting_focus_writes_the_matching_value() {
+        let source = Binding::container(None::<Field>);
+        let focused = Focused::new(&source, Field::Password);
+
+        focused.0.set(true);
+
+        assert_eq!(source.get(), Some(Field::Password));
+    }
+
+    #[test]
+    fn focusing_one_field_unfocuses_the_other() {
+        let source = Binding::container(Some(Field::Username));
+        let username = Focused::new(&source, Field::Username);
+        let password = Focused::new(&source, Field::Password);
+
+        password.0.set(true);
+
+        assert_eq!(source.get(), Some(Field::Password));
+        assert!(!username.0.get());
+        assert!(password.0.get());
+    }
+
+    #[test]
+    fn clearing_focus_on_empty_source_is_a_no_op() {
+        let source = Binding::container(None::<Field>);
+        let focused = Focused::new(&source, Field::Username);
+
+        focused.0.set(false);
+
+        assert_eq!(source.get(), None);
+    }
+
+    #[test]
+    fn source_changes_reach_focused_watchers() {
+        let source = Binding::container(Some(Field::Username));
+        let focused = Focused::new(&source, Field::Username);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let _guard = focused.0.watch({
+            let seen = Rc::clone(&seen);
+            move |ctx| seen.borrow_mut().push(ctx.into_value())
+        });
+
+        source.set(Some(Field::Password));
+        source.set(None);
+
+        assert_eq!(*seen.borrow(), vec![false, false]);
     }
 }
