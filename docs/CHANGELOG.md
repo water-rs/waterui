@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/water-rs/waterui/compare/v0.4.0...v0.4.1) - 2026-09-11
+
+### Added
+
+- *(media)* let a photo preserve its aspect ratio inside the frame it is given ([#542](https://github.com/water-rs/waterui/pull/542))
+
+### Fixed
+
+- *(cli)* hold the scaffold versions to the workspace, and correct them ([#554](https://github.com/water-rs/waterui/pull/554))
+- *(tests)* keep the avatar portrait's geometry off lossy casts ([#549](https://github.com/water-rs/waterui/pull/549))
+
+### Other
+
+- *(backends)* consume hydrolysis 0.2.0 from crates.io and drop the in-tree copy ([#553](https://github.com/water-rs/waterui/pull/553))
+- *(backends)* consume hydrolysis-m3 0.2.0 from crates.io and drop the in-tree copy ([#550](https://github.com/water-rs/waterui/pull/550))
+- *(deps)* consume waterui-svg 0.3.0 from crates.io and drop the in-tree copy ([#546](https://github.com/water-rs/waterui/pull/546))
+- *(release)* give the CLI binary legs the tools they build with ([#541](https://github.com/water-rs/waterui/pull/541))
+- *(ci)* say that the pull-request gate runs no tests ([#543](https://github.com/water-rs/waterui/pull/543))
+- *(deps)* consume the extracted crates from crates.io at their foundation-0.4 releases ([#536](https://github.com/water-rs/waterui/pull/536))
+- pin the extracted crates to exact commits, map-gpu to its zenwave fix
+- Merge remote-tracking branch 'gh/main' into agent/merge-release-0.4
+
 ## [0.4.0](https://github.com/water-rs/waterui/compare/v0.3.0...v0.4.0) - 2026-09-11
 
 ### Added
