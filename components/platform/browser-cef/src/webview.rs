@@ -6,8 +6,8 @@ use cef::{ImplBrowser, ImplBrowserHost, ImplFrame};
 use cookie::{Expiration, SameSite, time::OffsetDateTime};
 use num_traits::ToPrimitive as _;
 use serde_json::Value;
+use suiteki::Str;
 use waterui_core::{Computed, Signal};
-use waterui_str::Str;
 use waterui_url::Url;
 use waterui_webview::{
     Cookie, CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewHandle, bridge,

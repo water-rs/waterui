@@ -121,7 +121,7 @@ max-threads = 4
 
 [[profile.default.overrides]]
 platform = 'cfg(target_os = "macos")'
-filter = 'package(waterui-mermaid) or package(waterui) or package(waterui-testing)'
+filter = 'package(waterui) or package(waterui-testing)'
 test-group = 'metal-shader-compile'
 
 [[profile.ci.overrides]]

@@ -12,7 +12,7 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-str.workspace = true
+suiteki.workspace = true
 waterkit-location.workspace = true
 nami.workspace = true
 

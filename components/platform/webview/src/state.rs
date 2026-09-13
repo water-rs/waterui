@@ -20,8 +20,8 @@ use std::rc::Rc;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use suiteki::Str;
 use waterui_core::{Binding, Computed, Signal};
-use waterui_str::Str;
 
 use waterui_core::reactive::watcher::BoxWatcherGuard;
 

@@ -30,10 +30,10 @@
 //! ```
 
 use nami::signal::IntoComputed;
+use suiteki::Str;
 use waterui_core::{AnyView, Computed, IgnorableMetadata, View, metadata::MetadataKey};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::BackgroundView;
-use waterui_str::Str;
 
 use crate::gradient::{
     AngularGradient, ColorStop, Gradient, LinearGradient, MeshGradient, MeshVertex, RadialGradient,

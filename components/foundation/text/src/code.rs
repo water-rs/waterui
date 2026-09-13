@@ -16,6 +16,7 @@ use core::fmt;
 #[cfg(target_arch = "wasm32")]
 use executor_core::spawn_local;
 use nami::SignalExt;
+use suiteki::Str;
 use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
@@ -29,7 +30,6 @@ use waterui_layout::{
     spacer,
     stack::{HorizontalAlignment, VStack, hstack},
 };
-use waterui_str::Str;
 
 use crate::{
     font::{Body, Font},
