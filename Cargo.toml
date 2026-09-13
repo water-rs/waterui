@@ -19,7 +19,6 @@ members = [
     "examples/*",
     ".claude/skills/waterui/skill_snippets",
     "backends/core",
-    "backends/gtk",
     "components/icon/*",
 ]
 exclude = [
@@ -181,7 +180,7 @@ waterui-assets-macros = { version = "0.1.2", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.1.2", path = "components/devtools/inspector/protocol" }
 waterui-inspector-app = { version = "0.1.2", path = "components/devtools/inspector/app" }
 waterui-preview-protocol = { version = "0.1.1", path = "components/devtools/preview/protocol" }
-waterui-gtk = { version = "0.1.2", path = "backends/gtk" }
+waterui-gtk = "0.1.2"
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.4.1", path = "utils/dylib", default-features = false }

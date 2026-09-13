@@ -352,14 +352,15 @@ The paths below describe the existing `backends/` layout, not permanent reposito
 
 - **`apple/`** - Currently a git submodule; independently distributed Apple Swift package
 - **`android/`** - Currently a git submodule; independent Android Views + JNI Gradle project
-- **`gtk/`** - GTK4 backend
 
 The high-end self-drawn renderer is not in this directory. `hydrolysis`
 (water-rs/hydrolysis, #480) and its Material 3 widget theme `hydrolysis-m3`
-(water-rs/hydrolysis-m3, #481) are consumed from crates.io. The versions the
-workspace builds against are the `[workspace.dependencies]` entries in the
-root manifest, and `[patch.crates-io]` there resolves the framework crates
-they name to this tree so the graph carries one copy of each.
+(water-rs/hydrolysis-m3, #481) are consumed from crates.io. The GTK4 backend
+`waterui-gtk` (water-rs/gtk-backend, #612) is also an extracted crate consumed
+from crates.io. The versions the workspace builds against are the
+`[workspace.dependencies]` entries in the root manifest, and
+`[patch.crates-io]` there resolves the framework crates they name to this
+tree so the graph carries one copy of each.
 
 #### Rendering backend philosophy: Hydrolysis vs Dew (self-drawn renderers)
 
