@@ -824,6 +824,13 @@ pub fn scan_project_font_assets(project: &Project) -> eyre::Result<Vec<ResolvedF
     unified::scan_project_fonts(project)
 }
 
+pub use unified::LaunchAssets;
+
+/// Resolve the project's launch screen and load its artwork.
+pub fn project_launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
+    unified::launch_assets(project)
+}
+
 /// Stage project assets for web packaging.
 pub async fn stage_project_assets_for_web(project: &Project, site_root: &Path) -> eyre::Result<()> {
     web::stage_for_web(project, site_root).await
