@@ -17,35 +17,18 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Detect project type
-        id: detect
-        run: |
-          if [ -f Cargo.toml ]; then
-            echo "type=rust" >> "$GITHUB_OUTPUT"
-          elif [ -f package.json ]; then
-            echo "type=node" >> "$GITHUB_OUTPUT"
-          elif [ -f Package.swift ]; then
-            echo "type=swift" >> "$GITHUB_OUTPUT"
-          else
-            echo "type=unknown" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup Rust
-        if: steps.detect.outputs.type == 'rust'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
-        if: steps.detect.outputs.type == 'rust'
         uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-edit
-        if: steps.detect.outputs.type == 'rust'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-edit
 
       - name: Check Rust dependencies
-        if: steps.detect.outputs.type == 'rust'
         run: |
           # `cargo upgrade --dry-run` resolves the workspace in place, so it
           # follows workspace inheritance and the submodule path dependencies
@@ -64,27 +47,7 @@ jobs:
             exit 1
           fi
 
-      - name: Setup Node
-        if: steps.detect.outputs.type == 'node'
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-
-      - name: Check Node dependencies
-        if: steps.detect.outputs.type == 'node'
-        run: |
-          npm install --ignore-scripts 2>/dev/null || true
-          npm outdated --long 2>/dev/null > outdated.txt || true
-          cat outdated.txt
-
-      - name: Check Swift dependencies
-        if: steps.detect.outputs.type == 'swift'
-        run: |
-          swift package show-dependencies 2>/dev/null > outdated.txt || echo "Unable to check Swift dependencies" > outdated.txt
-          cat outdated.txt
-
       - name: Report
-        if: steps.detect.outputs.type != 'unknown'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
