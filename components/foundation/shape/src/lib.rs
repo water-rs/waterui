@@ -490,6 +490,127 @@ impl Shape for UnevenRoundedRectangle {
     }
 }
 
+/// A rectangle with a uniform corner radius in logical points.
+///
+/// [`RoundedRectangle`] expresses the corner as a fraction of the shorter side;
+/// this type expresses it as an absolute length — the shape specs give for a
+/// dialog (28dp) or a card (12dp). The rendered radius does not change as the
+/// shape resizes, which is the whole point: spec radii stay constant however
+/// tall or wide the surface ends up.
+#[derive(Debug, Clone, Copy)]
+pub struct FixedRoundedRectangle {
+    /// Corner radius in logical points.
+    pub corner_radius: f32,
+}
+
+impl FixedRoundedRectangle {
+    /// Creates a rounded rectangle whose corners are `corner_radius` points.
+    ///
+    /// The radius is clamped to half the shorter side when the shape resolves
+    /// against its bounds — a radius wider than the surface degenerates to the
+    /// capsule, the same way a normalized `0.5` does.
+    #[must_use]
+    pub const fn new(corner_radius: f32) -> Self {
+        Self {
+            corner_radius: if corner_radius.is_finite() {
+                corner_radius.max(0.0)
+            } else {
+                0.0
+            },
+        }
+    }
+}
+
+impl Shape for FixedRoundedRectangle {
+    type Iter = [PathCommand; 10];
+
+    /// Unit-space approximation only — maximally rounded, like a stadium.
+    ///
+    /// An absolute radius cannot be expressed in normalized commands without
+    /// knowing the bounds. Backends must render this shape from
+    /// [`ShapeKind::FixedRoundedRect`], not from these commands.
+    fn path(&self) -> Self::Iter {
+        RoundedRectangle::new(0.5).path()
+    }
+
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::FixedRoundedRect {
+            corner_radius: self.corner_radius,
+        }
+    }
+}
+
+/// A rectangle with independent corner radii in logical points.
+///
+/// The absolute-radius counterpart of [`UnevenRoundedRectangle`]: each corner
+/// is a length in points, used where a spec names per-corner values — a modal
+/// panel's trailing corners, say.
+#[derive(Debug, Clone, Copy)]
+pub struct FixedUnevenRoundedRectangle {
+    /// Top-leading corner radius in logical points.
+    pub top_leading: f32,
+    /// Top-trailing corner radius in logical points.
+    pub top_trailing: f32,
+    /// Bottom-leading corner radius in logical points.
+    pub bottom_leading: f32,
+    /// Bottom-trailing corner radius in logical points.
+    pub bottom_trailing: f32,
+}
+
+impl FixedUnevenRoundedRectangle {
+    /// Creates an uneven rounded rectangle with per-corner radii in points.
+    #[must_use]
+    pub const fn new(
+        top_leading: f32,
+        top_trailing: f32,
+        bottom_leading: f32,
+        bottom_trailing: f32,
+    ) -> Self {
+        const fn point_radius(radius: f32) -> f32 {
+            if radius.is_finite() {
+                radius.max(0.0)
+            } else {
+                0.0
+            }
+        }
+        Self {
+            top_leading: point_radius(top_leading),
+            top_trailing: point_radius(top_trailing),
+            bottom_leading: point_radius(bottom_leading),
+            bottom_trailing: point_radius(bottom_trailing),
+        }
+    }
+}
+
+impl Shape for FixedUnevenRoundedRectangle {
+    type Iter = [PathCommand; 10];
+
+    /// Unit-space approximation only — each corner saturates independently,
+    /// like [`UnevenRoundedRectangle`] at its maximum.
+    ///
+    /// Absolute radii cannot be expressed in normalized commands without
+    /// knowing the bounds. Backends must render this shape from
+    /// [`ShapeKind::FixedUnevenRoundedRect`], not from these commands.
+    fn path(&self) -> Self::Iter {
+        UnevenRoundedRectangle::new(
+            clamp_radius(self.top_leading),
+            clamp_radius(self.top_trailing),
+            clamp_radius(self.bottom_leading),
+            clamp_radius(self.bottom_trailing),
+        )
+        .path()
+    }
+
+    fn shape_kind(&self) -> ShapeKind {
+        ShapeKind::FixedUnevenRoundedRect {
+            top_left: self.top_leading,
+            top_right: self.top_trailing,
+            bottom_left: self.bottom_leading,
+            bottom_right: self.bottom_trailing,
+        }
+    }
+}
+
 /// A simple rectangle with sharp corners.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Rectangle;
@@ -675,6 +796,30 @@ pub enum ShapeKind {
     },
     /// Capsule (pill) shape.
     Capsule,
+    /// Rectangle with a uniform corner radius in logical points.
+    ///
+    /// Unlike [`ShapeKind::RoundedRect`], the radius is an absolute length, not
+    /// a fraction of the shorter side: a `corner_radius` of `28.0` is 28 points
+    /// whether the bounds are 280x140 or 560x300. Backends clamp it to half the
+    /// shorter side at resolve time.
+    FixedRoundedRect {
+        /// Corner radius in logical points.
+        corner_radius: f32,
+    },
+    /// Rectangle with per-corner radii in logical points.
+    ///
+    /// Same absolute semantics as [`ShapeKind::FixedRoundedRect`], with each
+    /// corner named independently.
+    FixedUnevenRoundedRect {
+        /// Top-left corner radius in logical points.
+        top_left: f32,
+        /// Top-right corner radius in logical points.
+        top_right: f32,
+        /// Bottom-left corner radius in logical points.
+        bottom_left: f32,
+        /// Bottom-right corner radius in logical points.
+        bottom_right: f32,
+    },
     /// Custom path.
     CustomPath,
 }
@@ -996,7 +1141,12 @@ fn kind_to_morph_shape(kind: ShapeKind) -> Option<MorphSdfShape> {
             shape_type: 4,
             radii: [0.0; 4],
         }),
-        ShapeKind::CustomPath => None,
+        // Absolute radii cannot be normalized for the SDF shader without
+        // knowing the bounds the shape resolves against, and custom paths
+        // carry no radius structure at all.
+        ShapeKind::FixedRoundedRect { .. }
+        | ShapeKind::FixedUnevenRoundedRect { .. }
+        | ShapeKind::CustomPath => None,
     }
 }
 
@@ -1276,6 +1426,10 @@ impl ShapeExt for RoundedRectangle {}
 
 impl ShapeExt for UnevenRoundedRectangle {}
 
+impl ShapeExt for FixedRoundedRectangle {}
+
+impl ShapeExt for FixedUnevenRoundedRectangle {}
+
 impl ShapeExt for Path {}
 
 #[cfg(test)]
@@ -1288,6 +1442,54 @@ mod tests {
         match kind {
             ShapeKind::RoundedRect { corner_radius } => {
                 assert!((corner_radius - 0.5).abs() < 1e-6);
+            }
+            _ => panic!("unexpected kind"),
+        }
+    }
+
+    #[test]
+    fn fixed_rounded_rectangle_carries_its_radius_in_points() {
+        let kind = FixedRoundedRectangle::new(28.0).shape_kind();
+        match kind {
+            ShapeKind::FixedRoundedRect { corner_radius } => {
+                assert!((corner_radius - 28.0).abs() < 1e-6);
+            }
+            _ => panic!("unexpected kind"),
+        }
+    }
+
+    #[test]
+    fn fixed_uneven_rounded_rectangle_carries_each_corner_in_points() {
+        let kind = FixedUnevenRoundedRectangle::new(0.0, 16.0, 0.0, 16.0).shape_kind();
+        match kind {
+            ShapeKind::FixedUnevenRoundedRect {
+                top_left,
+                top_right,
+                bottom_left,
+                bottom_right,
+            } => {
+                assert!((top_left - 0.0).abs() < 1e-6);
+                assert!((top_right - 16.0).abs() < 1e-6);
+                assert!((bottom_left - 0.0).abs() < 1e-6);
+                assert!((bottom_right - 16.0).abs() < 1e-6);
+            }
+            _ => panic!("unexpected kind"),
+        }
+    }
+
+    #[test]
+    fn fixed_radii_reject_negative_and_non_finite_values() {
+        let kind = FixedRoundedRectangle::new(f32::NAN).shape_kind();
+        match kind {
+            ShapeKind::FixedRoundedRect { corner_radius } => {
+                assert!((corner_radius - 0.0).abs() < 1e-6);
+            }
+            _ => panic!("unexpected kind"),
+        }
+        let kind = FixedRoundedRectangle::new(-4.0).shape_kind();
+        match kind {
+            ShapeKind::FixedRoundedRect { corner_radius } => {
+                assert!((corner_radius - 0.0).abs() < 1e-6);
             }
             _ => panic!("unexpected kind"),
         }

@@ -133,20 +133,10 @@ waterui-media = { version = "0.3.2", path = "components/multimedia/media" }
 waterui-image = "0.4.0"
 waterui-video = { version = "0.3.2", path = "components/multimedia/video" }
 waterui-video-gpu = "0.3.1"
-waterui-visualizer = "0.4.0"
 waterui-form = { version = "0.3.2", path = "components/foundation/form" }
 waterui-controls = { version = "0.3.2", path = "components/foundation/controls"}
 waterui-graphics = { version = "0.4.1", path = "components/visual/graphics", default-features = false }
 waterui-canvas = "0.1.2"
-waterui-mermaid = { version = "0.1.0", path = "components/data/mermaid" }
-# Mermaid parsing, semantic model and diagram layout. Consumed from our fork
-# while `typed-layout-projection` is unreleased upstream: `merman-render`'s only
-# public exit from the layout stage is `layout_json`, whose `#[serde(skip)]`
-# fields drop geometry a self-drawing host needs — a sequence diagram's
-# loop/alt fragment boxes among them. The branch makes the typed projection
-# public and changes nothing else. See water-rs/waterui#217.
-merman-core = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c05844003a0e765a3cf78df6678d" }
-merman-render = { git = "https://github.com/water-rs/merman", rev = "a6f41d47b497c05844003a0e765a3cf78df6678d", default-features = false }
 waterui-shape = { version = "0.1.2", path = "components/foundation/shape", default-features = false }
 # waterui-svg and waterui-math are extracted (#186, #616). Pinned to the `dev`
 # commits that migrated them from `waterui-str` to `suiteki` (water-rs/svg#14,
@@ -494,6 +484,12 @@ waterkit-video-core = { path = "kit/multimedia/video/core" }
 waterkit-video-player = { path = "kit/multimedia/video/player" }
 waterkit-video-streaming = { path = "kit/multimedia/video/streaming" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
+# The registry `hydrolysis`/`hydrolysis-m3` match `ShapeKind` exhaustively, so
+# they stop compiling the moment this branch adds the fixed-radius variants;
+# the companion branches on water-rs resolve them. Drop these entries once the
+# releases carry the new kinds.
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "3c35425" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "260f1eafe8bf86f2a4d611ada2ca342cbc15dfaf" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
 # storage and takes its address as the opaque class pointer.

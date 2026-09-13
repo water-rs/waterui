@@ -61,7 +61,7 @@ use waterui_text::{font::Font, text::text};
 
 use crate::AnyView;
 use crate::ViewExt;
-use crate::shape::{FilledShape, Path, RoundedRectangle, ShapeExt};
+use crate::shape::{FilledShape, FixedRoundedRectangle, Path, ShapeExt};
 use crate::style::{Shadow, Vector};
 use waterui_graphics::color::Color;
 
@@ -175,10 +175,9 @@ pub struct SnackbarTheme {
     pub close_state_layer_size: f32,
     /// Minimum height for single-line snackbars.
     pub single_line_min_height: f32,
-    /// Container corner radius in logical units for shadows.
+    /// Container corner radius in logical units — the same length traces the
+    /// fill and the shadows.
     pub corner_radius: f32,
-    /// Normalized corner radius for clipping and filled shape rendering.
-    pub clip_radius: f32,
     /// Shadow color.
     pub shadow_color: Color,
     /// Shadow blur radius.
@@ -220,7 +219,6 @@ impl SnackbarTheme {
             close_state_layer_size: 40.0,
             single_line_min_height: 48.0,
             corner_radius: 4.0,
-            clip_radius: 0.08,
             shadow_color: Color::srgb(0, 0, 0).with_opacity(0.2),
             shadow_radius: 3.0,
             shadow_offset_y: 3.0,
@@ -255,7 +253,6 @@ impl SnackbarTheme {
             close_state_layer_size: 32.0,
             single_line_min_height: 50.0,
             corner_radius: 15.0,
-            clip_radius: 0.3,
             shadow_color: Color::srgb(0, 0, 0).with_opacity(0.18),
             shadow_radius: 18.0,
             shadow_offset_y: 6.0,
@@ -997,7 +994,7 @@ impl View for StackedSnackbarView {
                     .height(theme.single_line_min_height),),
             )
             .background(
-                RoundedRectangle::new(theme.clip_radius).fill(theme.container_color.clone()),
+                FixedRoundedRectangle::new(theme.corner_radius).fill(theme.container_color.clone()),
             )
             .shadow(ambient_shadow)
             .shadow(shadow)
