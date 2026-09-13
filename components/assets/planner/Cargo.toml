@@ -17,7 +17,7 @@ syn = { version = "3", features = ["full", "visit", "parsing"] }
 thiserror.workspace = true
 toml = "1.1"
 walkdir = "2.5"
-waterui-assets.workspace = true
+waterui-assets-core.workspace = true
 
 [lints]
 workspace = true

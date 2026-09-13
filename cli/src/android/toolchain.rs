@@ -9,7 +9,7 @@ use std::{
 use color_eyre::eyre::{self, WrapErr};
 use url::Url;
 use walkdir::WalkDir;
-use waterui_assets::{download_remote_bytes, write_bytes_atomically};
+use waterui_assets_core::{download_remote_bytes, write_bytes_atomically};
 
 use crate::{
     android::platform::{ALL_ABIS, AndroidAbi},

@@ -11,7 +11,7 @@ use syn::visit::Visit;
 use syn::{File, LitStr, Token, parse::Parse, parse::ParseStream};
 use thiserror::Error;
 use walkdir::WalkDir;
-use waterui_assets::AssetKind;
+use waterui_assets_core::AssetKind;
 
 /// Theme color overrides discovered from asset metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
