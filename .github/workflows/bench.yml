@@ -96,7 +96,6 @@ jobs:
               # repositories now (#480, #481), so the version this workspace
               # consumes is a manifest change and already covered below.
               - "backends/core/**"
-              - "backends/dew/**"
               # Foundations both scenes go through: the View contract and
               # reactivity, layout / text / shape / controls, the colour and
               # filter pipeline the stress scene's third pressure path drives,

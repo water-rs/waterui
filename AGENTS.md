@@ -352,7 +352,6 @@ The paths below describe the existing `backends/` layout, not permanent reposito
 
 - **`apple/`** - Currently a git submodule; independently distributed Apple Swift package
 - **`android/`** - Currently a git submodule; independent Android Views + JNI Gradle project
-- **`dew/`** - Self-drawn CPU renderer (`vello_cpu` sparse-strip) - experimental. The embedded / constrained-device renderer (see "Rendering backend philosophy" below)
 - **`gtk/`** - GTK4 backend
 
 The high-end self-drawn renderer is not in this directory. `hydrolysis`

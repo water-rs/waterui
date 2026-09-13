@@ -19,7 +19,6 @@ members = [
     "examples/*",
     ".claude/skills/waterui/skill_snippets",
     "backends/core",
-    "backends/dew",
     "backends/gtk",
     "components/icon/*",
 ]
@@ -196,6 +195,7 @@ waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.4.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.2.1", default-features = false }
+waterui-dew = "0.2.1"
 waterui = { version = "0.4.1", path = "." }
 waterui-icons-codegen = { version = "0.1.1", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
