@@ -74,6 +74,19 @@ impl CapturedShape {
                 bottom_left,
                 bottom_right,
             } => top_left.max(top_right).max(bottom_left).max(bottom_right) * side,
+            // Fixed radii are already in points; only the box's own ceiling
+            // applies.
+            ShapeKind::FixedRoundedRect { corner_radius } => corner_radius.min(side / 2.0),
+            ShapeKind::FixedUnevenRoundedRect {
+                top_left,
+                top_right,
+                bottom_left,
+                bottom_right,
+            } => top_left
+                .max(top_right)
+                .max(bottom_left)
+                .max(bottom_right)
+                .min(side / 2.0),
         }
     }
 }

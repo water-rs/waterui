@@ -488,6 +488,12 @@ waterkit-video-core = { path = "kit/multimedia/video/core" }
 waterkit-video-player = { path = "kit/multimedia/video/player" }
 waterkit-video-streaming = { path = "kit/multimedia/video/streaming" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
+# The registry `hydrolysis`/`hydrolysis-m3` match `ShapeKind` exhaustively, so
+# they stop compiling the moment this branch adds the fixed-radius variants;
+# the companion branches on water-rs resolve them. Drop these entries once the
+# releases carry the new kinds.
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "3c35425" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "260f1eafe8bf86f2a4d611ada2ca342cbc15dfaf" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
 # storage and takes its address as the opaque class pointer.
