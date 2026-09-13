@@ -75,8 +75,9 @@ jobs:
           ref: ${{ needs.check.outputs.tag }}
           submodules: recursive
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: dist-${{ matrix.target }}
 
       # The CLI links the framework, so a Linux build needs the same native
       # libraries every other Linux job installs: without VA-API's headers
@@ -88,11 +89,7 @@ jobs:
       # image does not ship.
       - name: Install DirectX Shader Compiler
         if: runner.os == 'Windows'
-        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: dist-${{ matrix.target }}
+        uses: ./.github/actions/install-dxc
 
       - name: Install cargo-dist
         uses: taiki-e/install-action@v2
