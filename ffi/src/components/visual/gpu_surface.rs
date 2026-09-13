@@ -193,6 +193,18 @@ impl WuiGpuSurfaceState {
             .and_then(|semantic| semantic.gpu_surface.accessibility_label())
             .map(Str::from)
     }
+
+    /// The semantic content the GPU view carries, for a screen reader.
+    ///
+    /// `None` while the renderer's asynchronous setup is still running, and
+    /// whenever the view publishes no semantic value.
+    fn accessibility_value(&self) -> Option<Str> {
+        self.semantic
+            .borrow()
+            .as_ref()
+            .and_then(|semantic| semantic.gpu_surface.accessibility_value())
+            .map(Str::from)
+    }
 }
 
 /// What this surface's content says about itself, for a screen reader.
@@ -227,6 +239,38 @@ pub unsafe extern "C" fn waterui_gpu_surface_accessibility_label(
     // alive for this call; it is only borrowed.
     let state = unsafe { crate::borrow_ffi(state) };
     state.accessibility_label().unwrap_or_default().into_ffi()
+}
+
+/// The semantic value this surface's content carries, for a screen reader.
+///
+/// This is the value channel's counterpart to
+/// [`waterui_gpu_surface_accessibility_label`]: the content's own semantic
+/// payload — a formula's spoken mathematics, a chart's summary — which a host
+/// publishes on the surface's element so an application-supplied label does not
+/// have to stand in for it.
+///
+/// Ask again after each frame, for the same reason as the label: a view whose
+/// content follows a signal re-draws and re-describes itself at the same
+/// moment, and the answer is empty until asynchronous renderer setup finishes.
+///
+/// # Returns
+///
+/// An owning [`WuiStr`], empty when this surface publishes no value. There is
+/// no third state: "no value" and "the empty value" are the same instruction
+/// to a screen reader.
+///
+/// # Safety
+///
+/// `state` must be a valid pointer returned by
+/// [`waterui_gpu_surface_create`], on the thread that created it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_surface_accessibility_value(
+    state: *const WuiGpuSurfaceState,
+) -> WuiStr {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
+    let state = unsafe { crate::borrow_ffi(state) };
+    state.accessibility_value().unwrap_or_default().into_ffi()
 }
 
 struct GpuSurfaceSemantic {

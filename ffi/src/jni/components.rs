@@ -2343,6 +2343,38 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAccessibili
     })
 }
 
+/// The semantic value the GPU view carries, for a screen reader.
+///
+/// The value channel's counterpart to `gpuSurfaceAccessibilityLabel`: the
+/// content's own semantic payload — a formula's spoken mathematics, a chart's
+/// summary — published beside the label rather than underneath it.
+///
+/// Empty until asynchronous renderer setup finishes, and for every view that
+/// carries no semantic content of its own.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAccessibilityValue<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+) -> jni::sys::jstring {
+    super::with_env(&mut env, |env| {
+        let state_ptr = state_ptr as *const JniGpuSurfaceState;
+        // SAFETY: Kotlin passes back the live handle from `gpuSurfaceCreate`.
+        let wrapper = unsafe { &*state_ptr };
+        // SAFETY: `wrapper.state` is live for this call and only read.
+        let value = unsafe {
+            crate::components::gpu_surface::waterui_gpu_surface_accessibility_value(wrapper.state)
+        };
+        // SAFETY: the entry point builds the `WuiStr` from a Rust `Str`, so its
+        // bytes are UTF-8; the borrow ends before `value` is dropped below.
+        let text = unsafe { value.as_str() }.to_owned();
+        env.new_string(&text)
+            .expect("gpuSurfaceAccessibilityValue: failed to create the Java string")
+            .into_raw()
+    })
+}
+
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDrop<'local>(

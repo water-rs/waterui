@@ -69,14 +69,14 @@ pub trait SceneContent: 'static {
         None
     }
 
-    /// What this drawing says, for a screen reader.
+    /// What this drawing is named, for a screen reader.
     ///
     /// A scene reaches the screen as anonymous fills and glyph runs, so the node
     /// a backend emits for the leaf is the only place its content can be
     /// announced at all, and the backend has nothing to read it from but this. A
-    /// formula answers with its `MathML`, a chart with what it plots; content
-    /// that is decoration, or that cannot say anything true about itself,
-    /// answers `None` — the default — and the node stays unnamed.
+    /// chart answers with its title; content that is decoration, or that cannot
+    /// name itself honestly, answers `None` — the default — and the node stays
+    /// unnamed.
     ///
     /// This is the name the content *offers*, not the name it imposes: the
     /// application's own `.a11y_label(…)` wins over it wherever both exist,
@@ -84,7 +84,29 @@ pub trait SceneContent: 'static {
     /// only knows what it drew. It is read on every emission rather than once,
     /// so content whose drawing follows a signal answers with what it currently
     /// draws.
+    ///
+    /// The label is the node's *name*; what the drawing actually says — a
+    /// formula's spoken mathematics, a chart's plotted summary — belongs to
+    /// [`SceneContent::accessibility_value`], which the label never replaces.
     fn accessibility_label(&self) -> Option<String> {
+        None
+    }
+
+    /// What this drawing says, for a screen reader.
+    ///
+    /// The value channel: the semantic content the drawing carries, announced
+    /// beside the label rather than underneath it. A formula answers with its
+    /// spoken mathematics, a chart with what it plots; content with nothing to
+    /// say answers `None` — the default.
+    ///
+    /// Because the value is a separate channel from the label, it survives an
+    /// application-supplied `.a11y_label(…)`: a formula labelled `"Euler's
+    /// identity"` keeps speaking `e raised to i pi plus one equals zero`
+    /// instead of falling silent. An application's own `.a11y_value(…)` wins
+    /// over the content's answer wherever both exist. Like the label, it is
+    /// read on every emission, so content whose drawing follows a signal
+    /// answers with what it currently draws.
+    fn accessibility_value(&self) -> Option<String> {
         None
     }
 }
@@ -202,13 +224,22 @@ impl SceneView {
         self.content.intrinsic_size()
     }
 
-    /// What the wrapped content says about itself, for a screen reader.
+    /// What the wrapped content is named, for a screen reader.
     ///
     /// See [`SceneContent::accessibility_label`]; a backend emitting the leaf's
     /// semantic node offers this as the node's default name.
     #[must_use]
     pub fn accessibility_label(&self) -> Option<String> {
         self.content.accessibility_label()
+    }
+
+    /// What the wrapped content says about itself, for a screen reader.
+    ///
+    /// See [`SceneContent::accessibility_value`]; a backend emitting the leaf's
+    /// semantic node offers this as the node's default value.
+    #[must_use]
+    pub fn accessibility_value(&self) -> Option<String> {
+        self.content.accessibility_value()
     }
 
     /// Takes ownership of the wrapped scene content.
@@ -300,31 +331,38 @@ mod tests {
             false
         }
 
-        fn accessibility_label(&self) -> Option<alloc::string::String> {
+        fn accessibility_value(&self) -> Option<alloc::string::String> {
             Some("x squared plus one".into())
         }
     }
 
-    /// The label has to survive the trip onto a GPU surface, because that is
+    /// The value has to survive the trip onto a GPU surface, because that is
     /// the path every native backend takes: a `SceneView` that is not merged
     /// into a backend's own scene becomes a `GpuSurface`, and a surface whose
-    /// renderer forgot the label is announced to a screen reader as an
-    /// unlabelled rectangle.
+    /// renderer forgot the value is announced to a screen reader as a silent
+    /// rectangle.
     #[cfg(feature = "gpu")]
     #[test]
-    fn a_surface_carries_the_label_its_content_gives() {
+    fn a_surface_carries_the_value_its_content_gives() {
+        assert_eq!(
+            SceneView::new(Spoken)
+                .into_gpu_surface()
+                .accessibility_value(),
+            Some("x squared plus one".into())
+        );
         assert_eq!(
             SceneView::new(Spoken)
                 .into_gpu_surface()
                 .accessibility_label(),
-            Some("x squared plus one".into())
+            None,
+            "content that names nothing must not invent a name for itself"
         );
         assert_eq!(
             SceneView::new(Sizeless)
                 .into_gpu_surface()
-                .accessibility_label(),
+                .accessibility_value(),
             None,
-            "content with nothing to say must not invent a name for itself"
+            "content with nothing to say must not invent a value either"
         );
     }
 

@@ -2586,7 +2586,7 @@ typedef struct WuiIgnorableMetadataAccessibilityLabel {
 } WuiIgnorableMetadataAccessibilityLabel;
 
 /**
- * Accessibility metadata containing a static integer value.
+ * Reactive accessibility value metadata.
  */
 typedef struct WuiIgnorableMetadataAccessibilityValue {
   /**
@@ -2594,10 +2594,24 @@ typedef struct WuiIgnorableMetadataAccessibilityValue {
    */
   struct WuiAnyView *content;
   /**
-   * Backend-independent semantic value.
+   * Resolved semantic value.
+   */
+  WuiComputed_StyledStr *value;
+} WuiIgnorableMetadataAccessibilityValue;
+
+/**
+ * Accessibility metadata containing a static integer payload.
+ */
+typedef struct WuiIgnorableMetadataAccessibilityInt {
+  /**
+   * Wrapped view content.
+   */
+  struct WuiAnyView *content;
+  /**
+   * Backend-independent semantic payload.
    */
   int32_t value;
-} WuiIgnorableMetadataAccessibilityValue;
+} WuiIgnorableMetadataAccessibilityInt;
 
 /**
  * FFI-owned wrapper around a [`waterui::Computed`] signal.
@@ -6967,6 +6981,12 @@ typedef struct WuiPicture {
    * An application's own label on the view or an ancestor still wins.
    */
   struct WuiStr label;
+  /**
+   * The semantic content the drawing offers a screen reader — announced
+   * after the label; empty when it offers none. An application's own value
+   * on the view or an ancestor still wins.
+   */
+  struct WuiStr value;
 } WuiPicture;
 
 /**
@@ -7503,6 +7523,21 @@ struct WuiIgnorableMetadataAccessibilityLabel waterui_force_as_ignorable_metadat
  * Returns the type ID as a 128-bit value for O(1) comparison.
  * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
+struct WuiTypeId waterui_ignorable_metadata_accessibility_value_id(void);
+
+/**
+ * Force-casts an `AnyView` to this ignorable metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains an `IgnorableMetadata<$ty>`.
+ */
+struct WuiIgnorableMetadataAccessibilityValue waterui_force_as_ignorable_metadata_accessibility_value(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
 struct WuiTypeId waterui_ignorable_metadata_accessibility_role_id(void);
 
 /**
@@ -7512,7 +7547,7 @@ struct WuiTypeId waterui_ignorable_metadata_accessibility_role_id(void);
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
  * that contains an `IgnorableMetadata<$ty>`.
  */
-struct WuiIgnorableMetadataAccessibilityValue waterui_force_as_ignorable_metadata_accessibility_role(struct WuiAnyView *view);
+struct WuiIgnorableMetadataAccessibilityInt waterui_force_as_ignorable_metadata_accessibility_role(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
@@ -7527,7 +7562,7 @@ struct WuiTypeId waterui_ignorable_metadata_accessibility_hidden_id(void);
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
  * that contains an `IgnorableMetadata<$ty>`.
  */
-struct WuiIgnorableMetadataAccessibilityValue waterui_force_as_ignorable_metadata_accessibility_hidden(struct WuiAnyView *view);
+struct WuiIgnorableMetadataAccessibilityInt waterui_force_as_ignorable_metadata_accessibility_hidden(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
@@ -7542,7 +7577,7 @@ struct WuiTypeId waterui_ignorable_metadata_accessibility_children_id(void);
  * The caller must ensure that `view` is a valid pointer to an `AnyView`
  * that contains an `IgnorableMetadata<$ty>`.
  */
-struct WuiIgnorableMetadataAccessibilityValue waterui_force_as_ignorable_metadata_accessibility_children(struct WuiAnyView *view);
+struct WuiIgnorableMetadataAccessibilityInt waterui_force_as_ignorable_metadata_accessibility_children(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
@@ -11295,6 +11330,32 @@ struct WuiTypeId waterui_gpu_surface_id(void);
  * [`waterui_gpu_surface_create`], on the thread that created it.
  */
 struct WuiStr waterui_gpu_surface_accessibility_label(const struct WuiGpuSurfaceState *state);
+
+/**
+ * The semantic value this surface's content carries, for a screen reader.
+ *
+ * This is the value channel's counterpart to
+ * [`waterui_gpu_surface_accessibility_label`]: the content's own semantic
+ * payload — a formula's spoken mathematics, a chart's summary — which a host
+ * publishes on the surface's element so an application-supplied label does not
+ * have to stand in for it.
+ *
+ * Ask again after each frame, for the same reason as the label: a view whose
+ * content follows a signal re-draws and re-describes itself at the same
+ * moment, and the answer is empty until asynchronous renderer setup finishes.
+ *
+ * # Returns
+ *
+ * An owning [`WuiStr`], empty when this surface publishes no value. There is
+ * no third state: "no value" and "the empty value" are the same instruction
+ * to a screen reader.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_surface_create`], on the thread that created it.
+ */
+struct WuiStr waterui_gpu_surface_accessibility_value(const struct WuiGpuSurfaceState *state);
 
 /**
  * Returns the renderer-driven HDR preference for a `WuiGpuSurface`.

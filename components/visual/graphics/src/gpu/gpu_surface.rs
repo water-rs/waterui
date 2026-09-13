@@ -700,7 +700,7 @@ pub trait GpuView: 'static {
         None
     }
 
-    /// What this view says about itself, for a screen reader.
+    /// What this view is named, for a screen reader.
     ///
     /// A surface is a rectangle of pixels to the platform's accessibility
     /// layer: nothing about the formula, chart or diagram inside it is
@@ -709,11 +709,31 @@ pub trait GpuView: 'static {
     /// leaf's name when the application supplied none of its own, so an
     /// explicit `.a11y_label(...)` always wins.
     ///
-    /// The value is read again after each frame, because a view whose content
+    /// The label is the node's *name*; what the view actually says — a
+    /// formula's spoken mathematics, a chart's plotted summary — belongs to
+    /// [`GpuView::accessibility_value`], which the label never replaces.
+    ///
+    /// The answer is read again after each frame, because a view whose content
     /// is driven by a signal draws and re-describes itself at the same moment.
-    /// `None` means the view has nothing to say — the default, and right for a
-    /// purely decorative surface.
+    /// `None` means the view has no name to offer — the default, and right for
+    /// a purely decorative surface.
     fn accessibility_label(&self) -> Option<String> {
+        None
+    }
+
+    /// What this view says about itself, for a screen reader.
+    ///
+    /// The value channel: the semantic content the view carries, published
+    /// beside its label rather than underneath it — a formula's spoken
+    /// mathematics, a chart's plotted summary. Because it is a separate
+    /// channel, an application-supplied `.a11y_label(...)` names the surface
+    /// without silencing what the content says about itself, and an explicit
+    /// `.a11y_value(...)` wins over this answer wherever both exist.
+    ///
+    /// The answer is read again after each frame, for the same reason as the
+    /// label. `None` — the default — means the view publishes no semantic
+    /// value.
+    fn accessibility_value(&self) -> Option<String> {
         None
     }
 
@@ -1093,6 +1113,7 @@ trait GpuViewImpl: 'static {
     fn input(&mut self, event: &SurfaceInputEvent);
     fn ime_caret(&self) -> Option<kurbo::Rect>;
     fn accessibility_label(&self) -> Option<String>;
+    fn accessibility_value(&self) -> Option<String>;
 }
 
 impl<T: GpuView> GpuViewImpl for T {
@@ -1142,6 +1163,10 @@ impl<T: GpuView> GpuViewImpl for T {
 
     fn accessibility_label(&self) -> Option<String> {
         GpuView::accessibility_label(self)
+    }
+
+    fn accessibility_value(&self) -> Option<String> {
+        GpuView::accessibility_value(self)
     }
 }
 
@@ -1578,13 +1603,23 @@ impl GpuSurface {
         self.renderer.ime_caret()
     }
 
-    /// What the GPU view says about itself, for a screen reader.
+    /// What the GPU view is named, for a screen reader.
     ///
     /// See [`GpuView::accessibility_label`]. A backend naming this surface's
     /// accessibility node offers this when the application named it nothing.
     #[must_use]
     pub fn accessibility_label(&self) -> Option<String> {
         self.renderer.accessibility_label()
+    }
+
+    /// What the GPU view says about itself, for a screen reader.
+    ///
+    /// See [`GpuView::accessibility_value`]. A backend publishing this
+    /// surface's accessibility node offers this as the node's value when the
+    /// application supplied no `.a11y_value(...)` of its own.
+    #[must_use]
+    pub fn accessibility_value(&self) -> Option<String> {
+        self.renderer.accessibility_value()
     }
 }
 

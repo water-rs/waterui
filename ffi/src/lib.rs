@@ -960,6 +960,7 @@ use nami::{Computed, SignalExt as _};
 use waterui::accessibility::{
     AccessibilityChecked, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
     AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
+    AccessibilityValue,
 };
 
 /// FFI-safe representation of `IgnorableMetadata<AccessibilityIdentifier>`
@@ -1019,6 +1020,34 @@ ffi_ignorable_metadata!(
     accessibility_label
 );
 
+/// Reactive accessibility value metadata.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiIgnorableMetadataAccessibilityValue {
+    /// Wrapped view content.
+    pub content: *mut WuiAnyView,
+    /// Resolved semantic value.
+    pub value: *mut WuiComputed<StyledStr>,
+}
+
+impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityValue> {
+    type FFI = WuiIgnorableMetadataAccessibilityValue;
+
+    fn into_ffi(self) -> Self::FFI {
+        let value = self.value.signal().clone().map(StyledStr::from).computed();
+        WuiIgnorableMetadataAccessibilityValue {
+            content: self.content.into_ffi(),
+            value: value.into_ffi(),
+        }
+    }
+}
+
+ffi_ignorable_metadata!(
+    AccessibilityValue,
+    WuiIgnorableMetadataAccessibilityValue,
+    accessibility_value
+);
+
 fn accessibility_role_code(role: &AccessibilityRole) -> i32 {
     match role {
         AccessibilityRole::Button => 0,
@@ -1054,21 +1083,21 @@ fn accessibility_role_code(role: &AccessibilityRole) -> i32 {
     }
 }
 
-/// Accessibility metadata containing a static integer value.
+/// Accessibility metadata containing a static integer payload.
 #[repr(C)]
 #[derive(Debug)]
-pub struct WuiIgnorableMetadataAccessibilityValue {
+pub struct WuiIgnorableMetadataAccessibilityInt {
     /// Wrapped view content.
     pub content: *mut WuiAnyView,
-    /// Backend-independent semantic value.
+    /// Backend-independent semantic payload.
     pub value: i32,
 }
 
 impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityRole> {
-    type FFI = WuiIgnorableMetadataAccessibilityValue;
+    type FFI = WuiIgnorableMetadataAccessibilityInt;
 
     fn into_ffi(self) -> Self::FFI {
-        WuiIgnorableMetadataAccessibilityValue {
+        WuiIgnorableMetadataAccessibilityInt {
             content: self.content.into_ffi(),
             value: accessibility_role_code(&self.value),
         }
@@ -1076,10 +1105,10 @@ impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityRole> {
 }
 
 impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityHidden> {
-    type FFI = WuiIgnorableMetadataAccessibilityValue;
+    type FFI = WuiIgnorableMetadataAccessibilityInt;
 
     fn into_ffi(self) -> Self::FFI {
-        WuiIgnorableMetadataAccessibilityValue {
+        WuiIgnorableMetadataAccessibilityInt {
             content: self.content.into_ffi(),
             value: i32::from(self.value.is_hidden()),
         }
@@ -1087,10 +1116,10 @@ impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityHidden> {
 }
 
 impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityChildren> {
-    type FFI = WuiIgnorableMetadataAccessibilityValue;
+    type FFI = WuiIgnorableMetadataAccessibilityInt;
 
     fn into_ffi(self) -> Self::FFI {
-        WuiIgnorableMetadataAccessibilityValue {
+        WuiIgnorableMetadataAccessibilityInt {
             content: self.content.into_ffi(),
             value: i32::from(self.value.excludes_descendants()),
         }
@@ -1099,17 +1128,17 @@ impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityChildren> {
 
 ffi_ignorable_metadata!(
     AccessibilityRole,
-    WuiIgnorableMetadataAccessibilityValue,
+    WuiIgnorableMetadataAccessibilityInt,
     accessibility_role
 );
 ffi_ignorable_metadata!(
     AccessibilityHidden,
-    WuiIgnorableMetadataAccessibilityValue,
+    WuiIgnorableMetadataAccessibilityInt,
     accessibility_hidden
 );
 ffi_ignorable_metadata!(
     AccessibilityChildren,
-    WuiIgnorableMetadataAccessibilityValue,
+    WuiIgnorableMetadataAccessibilityInt,
     accessibility_children
 );
 

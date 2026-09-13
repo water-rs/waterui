@@ -41,6 +41,10 @@ pub struct WuiPicture {
     /// The name the drawing offers a screen reader; empty when it offers none.
     /// An application's own label on the view or an ancestor still wins.
     pub label: WuiStr,
+    /// The semantic content the drawing offers a screen reader — announced
+    /// after the label; empty when it offers none. An application's own value
+    /// on the view or an ancestor still wins.
+    pub value: WuiStr,
 }
 
 impl IntoFFI for Picture {
@@ -49,11 +53,13 @@ impl IntoFFI for Picture {
     fn into_ffi(self) -> Self::FFI {
         let size = self.size();
         let label = self.label().cloned().unwrap_or_default();
+        let value = self.value().cloned().unwrap_or_default();
         WuiPicture {
             picture: Box::into_raw(Box::new(WuiPictureHandle(self))),
             width: size.width,
             height: size.height,
             label: label.into_ffi(),
+            value: value.into_ffi(),
         }
     }
 }
