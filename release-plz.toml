@@ -7,88 +7,225 @@ release_always = true
 git_tag_enable = true
 changelog_update = true
 
+# Facade
+
 [[package]]
 name = "waterui"
+version_group = "waterui"
 git_release_name = "v{{ version }}"
 git_tag_name = "v{{ version }}"
 changelog_path = "docs/CHANGELOG.md"
 
+# Foundation
+
+[[package]]
+name = "waterui-internal"
+version_group = "waterui"
+
 [[package]]
 name = "waterui-core"
+version_group = "waterui"
 git_tag_name = "core-v{{ version }}"
 
 [[package]]
-name = "waterui-text"
-git_tag_name = "text-v{{ version }}"
-
-[[package]]
-name = "waterui-layout"
-git_tag_name = "layout-v{{ version }}"
-
-[[package]]
-name = "waterui-form"
-git_tag_name = "form-v{{ version }}"
-
-[[package]]
-name = "waterui-controls"
-git_tag_name = "controls-v{{ version }}"
-
-[[package]]
-name = "waterui-graphics"
-git_tag_name = "graphics-v{{ version }}"
-
-[[package]]
-name = "waterui-media"
-git_tag_name = "media-v{{ version }}"
-
-[[package]]
-name = "waterui-navigation"
-git_tag_name = "navigation-v{{ version }}"
+name = "waterui-macros"
+version_group = "waterui"
+git_tag_name = "macros-v{{ version }}"
 
 [[package]]
 name = "waterui-str"
+version_group = "waterui"
 git_tag_name = "str-v{{ version }}"
 
 [[package]]
 name = "waterui-url"
+version_group = "waterui"
 git_tag_name = "url-v{{ version }}"
 
 [[package]]
 name = "waterui-locale"
+version_group = "waterui"
 git_tag_name = "locale-v{{ version }}"
 
 [[package]]
+name = "waterui-watcher-set"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-ffi"
+version_group = "waterui"
+git_tag_name = "ffi-v{{ version }}"
+
+[[package]]
+name = "waterui-testing"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-dylib"
+version_group = "waterui"
+
+# Foundation components
+
+[[package]]
+name = "waterui-text"
+version_group = "waterui"
+git_tag_name = "text-v{{ version }}"
+
+[[package]]
+name = "waterui-layout"
+version_group = "waterui"
+git_tag_name = "layout-v{{ version }}"
+
+[[package]]
+name = "waterui-form"
+version_group = "waterui"
+git_tag_name = "form-v{{ version }}"
+
+[[package]]
+name = "waterui-controls"
+version_group = "waterui"
+git_tag_name = "controls-v{{ version }}"
+
+[[package]]
 name = "waterui-icon"
+version_group = "waterui"
 git_tag_name = "icon-v{{ version }}"
 
 [[package]]
+name = "waterui-shape"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-navigation"
+version_group = "waterui"
+git_tag_name = "navigation-v{{ version }}"
+
+# Visual components
+
+[[package]]
+name = "waterui-graphics"
+version_group = "waterui"
+git_tag_name = "graphics-v{{ version }}"
+
+[[package]]
+name = "waterui-math"
+version_group = "waterui"
+
+# Multimedia components
+
+[[package]]
+name = "waterui-media"
+version_group = "waterui"
+git_tag_name = "media-v{{ version }}"
+
+[[package]]
 name = "waterui-video"
+version_group = "waterui"
 git_tag_name = "video-v{{ version }}"
+
+# Platform components
+
+[[package]]
+name = "waterui-webview"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-chromium"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-browser-cef"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-browser-wpe"
+version_group = "waterui"
+
+# Data components
+
+[[package]]
+name = "waterui-map"
+version_group = "waterui"
+
+# Asset pipeline
 
 [[package]]
 name = "waterui-assets"
+version_group = "waterui"
 git_tag_name = "assets-v{{ version }}"
 
 [[package]]
 name = "waterui-assets-planner"
+version_group = "waterui"
 git_tag_name = "assets-planner-v{{ version }}"
 
 [[package]]
+name = "waterui-assets-macros"
+version_group = "waterui"
+
+# Devtools
+
+[[package]]
 name = "waterui-inspector-protocol"
+version_group = "waterui"
 git_tag_name = "inspector-protocol-v{{ version }}"
 
 [[package]]
+name = "waterui-inspector-app"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-preview-protocol"
+version_group = "waterui"
 git_tag_name = "preview-protocol-v{{ version }}"
 
 [[package]]
-name = "waterui-macros"
-git_tag_name = "macros-v{{ version }}"
+name = "waterui-preview"
+version_group = "waterui"
+
+# Icon sets
 
 [[package]]
-name = "waterui-ffi"
-git_tag_name = "ffi-v{{ version }}"
+name = "waterui-icons-codegen"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-icons-sf-symbol"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-icons-material-icon"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-icons-fontawesome7"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-icons-lucide"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-icons-native"
+version_group = "waterui"
+
+# Backends
+
+[[package]]
+name = "waterui-backend-core"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-dew"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-gtk"
+version_group = "waterui"
+
+# Tooling
 
 [[package]]
 name = "waterui-cli"
+version_group = "waterui"
 git_tag_name = "waterui-cli-v{{ version }}"
