@@ -547,6 +547,15 @@ impl Text {
         self.weight(FontWeight::Bold)
     }
 
+    /// Asks for the platform's fixed-pitch face, keeping the font's slot,
+    /// size and weight.
+    pub fn monospaced(self) -> Self {
+        self.map_config(|mut config| {
+            config.content = config.content.map(StyledStr::monospaced).computed();
+            config
+        })
+    }
+
     /// Sets the italic style.
     pub fn italic(self, is_italic: impl Signal<Output = bool> + 'static) -> Self {
         self.map_config(move |mut config| {

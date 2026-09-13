@@ -431,6 +431,22 @@ typedef enum WuiFontWeight {
 } WuiFontWeight;
 
 /**
+ *C ABI mirror of `FontDesign`.
+ * Which of the platform's own faces a font is drawn in when it names no
+ * family: the proportional default, or the fixed-pitch face.
+ */
+typedef enum WuiFontDesign {
+  /**
+   *Mirrors `FontDesign::Default`.
+   */
+  WuiFontDesign_Default,
+  /**
+   *Mirrors `FontDesign::Monospaced`.
+   */
+  WuiFontDesign_Monospaced,
+} WuiFontDesign;
+
+/**
  * FFI-compatible representation of [`WindowState`].
  */
 typedef enum WuiWindowState {
@@ -4143,6 +4159,10 @@ typedef struct WuiResolvedFont {
    * Font family name (empty string means system default).
    */
   struct WuiStr family;
+  /**
+   * The design the platform face is chosen from when `family` is empty.
+   */
+  enum WuiFontDesign design;
 } WuiResolvedFont;
 
 /**
@@ -10826,14 +10846,16 @@ struct WuiResolvedFont waterui_resolved_font_new(float size, enum WuiFontWeight 
 /**
  * Creates a concrete `Font` from resolved font properties.
  *
- * `family` can be an empty string to indicate system font.
+ * `family` can be an empty string to indicate system font, in which case
+ * `design` says which of the platform's own faces to use.
  *
  * # Safety
  * `family` must contain valid UTF-8 bytes.
  */
 struct WuiFont *waterui_font_from_resolved(float size,
                                            enum WuiFontWeight weight,
-                                           struct WuiStr family);
+                                           struct WuiStr family,
+                                           enum WuiFontDesign design);
 
 /**
  * Resolves a font in the given environment.
