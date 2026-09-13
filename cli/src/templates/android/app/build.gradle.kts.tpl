@@ -163,6 +163,8 @@ dependencies {
     }
 
     implementation("androidx.core:core-ktx:1.19.0")
+    // The launch screen: the platform SplashScreen API on 31+, backported below.
+    implementation("androidx.core:core-splashscreen:1.2.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.13.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
