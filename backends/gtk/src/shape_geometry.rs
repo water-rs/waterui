@@ -94,6 +94,9 @@ pub fn resolve(kind: ShapeKind, width: f64, height: f64) -> ShapeGeometry {
     let shorter = width.min(height);
     let limit = shorter / 2.0;
     let circular = |radius: f32| Corner::circular((f64::from(radius) * shorter).clamp(0.0, limit));
+    // A fixed radius is an absolute length in points, capped at the same
+    // ceiling a normalized 0.5 lands on.
+    let fixed = |radius: f32| Corner::circular(f64::from(radius.max(0.0)).min(limit));
     let full = |corners: [Corner; 4]| {
         ShapeGeometry::Rounded(RoundedRect {
             x: 0.0,
@@ -134,6 +137,18 @@ pub fn resolve(kind: ShapeKind, width: f64, height: f64) -> ShapeGeometry {
             circular(bottom_left),
         ]),
         ShapeKind::Capsule => full([Corner::circular(limit); 4]),
+        ShapeKind::FixedRoundedRect { corner_radius } => full([fixed(corner_radius); 4]),
+        ShapeKind::FixedUnevenRoundedRect {
+            top_left,
+            top_right,
+            bottom_right,
+            bottom_left,
+        } => full([
+            fixed(top_left),
+            fixed(top_right),
+            fixed(bottom_right),
+            fixed(bottom_left),
+        ]),
         ShapeKind::CustomPath => ShapeGeometry::CustomPath,
     }
 }
@@ -220,6 +235,47 @@ mod tests {
                 Corner::circular(5.0),
                 Corner::SQUARE,
                 Corner::circular(20.0),
+            ],
+        );
+    }
+
+    /// A fixed radius is a length in points: the same corner on a 200x50
+    /// snackbar, a 50x200 rail tile, and a 28pt-tall chip — only the
+    /// half-shorter-side ceiling changes it.
+    #[test]
+    fn fixed_rounded_rect_keeps_its_radius_at_any_aspect() {
+        for (width, height) in [(200.0, 50.0), (50.0, 200.0), (300.0, 28.0)] {
+            let rect = rounded(
+                ShapeKind::FixedRoundedRect {
+                    corner_radius: 12.0,
+                },
+                width,
+                height,
+            );
+            let expected = 12.0f64.min(width.min(height) / 2.0);
+            assert_corners(rect.corners, [Corner::circular(expected); 4]);
+        }
+    }
+
+    #[test]
+    fn fixed_uneven_rounded_rect_keeps_each_corner_in_points() {
+        let rect = rounded(
+            ShapeKind::FixedUnevenRoundedRect {
+                top_left: 0.0,
+                top_right: 16.0,
+                bottom_right: 16.0,
+                bottom_left: 0.0,
+            },
+            360.0,
+            300.0,
+        );
+        assert_corners(
+            rect.corners,
+            [
+                Corner::SQUARE,
+                Corner::circular(16.0),
+                Corner::circular(16.0),
+                Corner::SQUARE,
             ],
         );
     }

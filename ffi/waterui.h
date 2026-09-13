@@ -3044,24 +3044,26 @@ typedef struct WuiMetadata_WuiRetain WuiMetadataRetain;
 typedef struct WuiShapeKind {
   /**
    * Discriminant: 0 = rect, 1 = circle, 2 = ellipse, 3 = rounded rect
-   * (uniform radius), 4 = uneven rounded rect (per-corner radii),
-   * 5 = capsule, 6 = custom path.
+   * (uniform radius, normalized to the shorter side), 4 = uneven rounded
+   * rect (per-corner normalized radii), 5 = capsule, 6 = custom path,
+   * 7 = fixed rounded rect (uniform radius in logical points),
+   * 8 = fixed uneven rounded rect (per-corner radii in logical points).
    */
   int32_t tag;
   /**
-   * Top-left corner radius, used by tags 3 and 4.
+   * Top-left corner radius, used by tags 3, 4, 7, and 8.
    */
   float top_left;
   /**
-   * Top-right corner radius, used by tags 3 and 4.
+   * Top-right corner radius, used by tags 3, 4, 7, and 8.
    */
   float top_right;
   /**
-   * Bottom-right corner radius, used by tags 3 and 4.
+   * Bottom-right corner radius, used by tags 3, 4, 7, and 8.
    */
   float bottom_right;
   /**
-   * Bottom-left corner radius, used by tags 3 and 4.
+   * Bottom-left corner radius, used by tags 3, 4, 7, and 8.
    */
   float bottom_left;
 } WuiShapeKind;

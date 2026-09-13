@@ -615,15 +615,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "audio-visualizer-example"
-version = "0.1.0"
-dependencies = [
- "waterkit-permission",
- "waterui",
- "waterui-visualizer",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1352,16 +1343,6 @@ dependencies = [
  "cfg-if 1.0.4",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
-]
-
-[[package]]
-name = "chart-example"
-version = "0.1.0"
-dependencies = [
- "hydrolysis-m3",
- "waterui",
- "waterui-chart",
- "waterui-testing",
 ]
 
 [[package]]
@@ -3022,15 +3003,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
-name = "flame-example"
-version = "0.1.0"
-dependencies = [
- "shaderloom",
- "waterui",
- "wgpu",
-]
-
-[[package]]
 name = "flate2"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4258,8 +4230,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9009e73e27944c275456cde01a13c69dd6d2658799edf17ebd2ef3831c32b870"
+source = "git+https://github.com/water-rs/hydrolysis?rev=3c35425#3c354253bac5c3dbf650e351a120f46f423cf0d3"
 dependencies = [
  "accesskit",
  "async-task",
@@ -4303,9 +4274,8 @@ dependencies = [
 
 [[package]]
 name = "hydrolysis-m3"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b54784e892531b75695470e38679187e63c1d115bc47888160fe97208862141"
+version = "0.2.1"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=260f1eafe8bf86f2a4d611ada2ca342cbc15dfaf#260f1eafe8bf86f2a4d611ada2ca342cbc15dfaf"
 dependencies = [
  "material-color-utils",
  "num-traits",
@@ -7540,16 +7510,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "particle-example"
-version = "0.1.0"
-dependencies = [
- "pollster 1.0.1",
- "waterui",
- "waterui-graphics",
- "waterui-particle",
-]
-
-[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8254,15 +8214,6 @@ dependencies = [
  "core_maths",
  "font-types",
  "once_cell",
-]
-
-[[package]]
-name = "realfft"
-version = "3.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f821338fddb99d089116342c46e9f1fbf3828dba077674613e734e01d6ea8677"
-dependencies = [
- "rustfft",
 ]
 
 [[package]]
@@ -12299,25 +12250,6 @@ dependencies = [
  "waterui-text",
  "waterui-video",
  "wgpu",
-]
-
-[[package]]
-name = "waterui-visualizer"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7793023c48ec9e8c8f4571989de29343b6af95f1c6c54efaca70d5f0b97b8963"
-dependencies = [
- "async-channel",
- "blocking",
- "executor-core",
- "futures",
- "kurbo 0.13.1",
- "peniko",
- "realfft",
- "tracing",
- "waterkit-audio",
- "waterui-core",
- "waterui-graphics",
 ]
 
 [[package]]

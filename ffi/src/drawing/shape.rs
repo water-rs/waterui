@@ -8,16 +8,18 @@ use crate::{IntoFFI, WuiArray, WuiPathCommand, reactive::WuiComputed};
 #[derive(Clone, Copy, Debug)]
 pub struct WuiShapeKind {
     /// Discriminant: 0 = rect, 1 = circle, 2 = ellipse, 3 = rounded rect
-    /// (uniform radius), 4 = uneven rounded rect (per-corner radii),
-    /// 5 = capsule, 6 = custom path.
+    /// (uniform radius, normalized to the shorter side), 4 = uneven rounded
+    /// rect (per-corner normalized radii), 5 = capsule, 6 = custom path,
+    /// 7 = fixed rounded rect (uniform radius in logical points),
+    /// 8 = fixed uneven rounded rect (per-corner radii in logical points).
     pub tag: i32,
-    /// Top-left corner radius, used by tags 3 and 4.
+    /// Top-left corner radius, used by tags 3, 4, 7, and 8.
     pub top_left: f32,
-    /// Top-right corner radius, used by tags 3 and 4.
+    /// Top-right corner radius, used by tags 3, 4, 7, and 8.
     pub top_right: f32,
-    /// Bottom-right corner radius, used by tags 3 and 4.
+    /// Bottom-right corner radius, used by tags 3, 4, 7, and 8.
     pub bottom_right: f32,
-    /// Bottom-left corner radius, used by tags 3 and 4.
+    /// Bottom-left corner radius, used by tags 3, 4, 7, and 8.
     pub bottom_left: f32,
 }
 
@@ -72,6 +74,25 @@ impl IntoFFI for ShapeKind {
                 top_right: 0.0,
                 bottom_right: 0.0,
                 bottom_left: 0.0,
+            },
+            Self::FixedRoundedRect { corner_radius } => WuiShapeKind {
+                tag: 7,
+                top_left: corner_radius,
+                top_right: corner_radius,
+                bottom_right: corner_radius,
+                bottom_left: corner_radius,
+            },
+            Self::FixedUnevenRoundedRect {
+                top_left,
+                top_right,
+                bottom_left,
+                bottom_right,
+            } => WuiShapeKind {
+                tag: 8,
+                top_left,
+                top_right,
+                bottom_right,
+                bottom_left,
             },
             Self::CustomPath => WuiShapeKind {
                 tag: 6,
