@@ -12,11 +12,12 @@ keywords = ["ui", "gtk", "waterui", "gui", "backend"]
 categories = ["gui"]
 
 [dependencies]
-# Shape geometry is plain arithmetic with no GTK in it, so `shape_geometry`
-# compiles and is tested on every host even though the rest of this backend is
-# Linux only. Default features are off here: the GPU morph renderer is Linux-only
-# work, and the Linux entry below turns it back on.
+# Shape geometry is plain arithmetic with no GTK in it, so `shape_geometry` and
+# `shape_path` compile and are tested on every host even though the rest of this
+# backend is Linux only. Default features are off here: the GPU morph renderer
+# is Linux-only work, and the Linux entry below turns it back on.
 waterui-shape = { workspace = true, default-features = false }
+kurbo.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 waterui.workspace = true
@@ -41,11 +42,13 @@ pin-project-lite.workspace = true
 executor-core.workspace = true
 native-executor.workspace = true
 
-gtk4 = { workspace = true, features = ["v4_12"] }
+# 4.14 is the floor because clipping to an arbitrary path is
+# `gtk_snapshot_push_fill`, which arrived there; `water doctor` checks the same
+# version (`cli/src/gtk4/toolchain.rs`).
+gtk4 = { workspace = true, features = ["v4_14"] }
 waterui-assets.workspace = true
-gdk4 = { workspace = true, features = ["v4_12"] }
+gdk4 = { workspace = true, features = ["v4_14"] }
 glib.workspace = true
-kurbo.workspace = true
 # Chromium's own physical-key table, used to name a GDK hardware keycode in the
 # W3C vocabulary the surface input events carry.
 keycode = "1.0"

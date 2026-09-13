@@ -1135,7 +1135,7 @@ impl GtkRenderer {
             wrapper.upcast()
         });
 
-        // Metadata<ClipShape> - clip content for known canonical shapes
+        // Metadata<ClipShape> - clip content to a shape
         Self::register_with_renderer::<Metadata<ClipShape>>(
             dispatcher,
             |renderer, metadata, env| {
@@ -1144,7 +1144,9 @@ impl GtkRenderer {
                 // allocated size at snapshot time. CSS cannot: a percentage
                 // `border-radius` resolves per axis, so it turns every round
                 // corner on a non-square surface into an elliptical one (#157).
-                WuiClipShape::new(metadata.value.kind(), &content).upcast()
+                // The commands are only read for a custom path (#389).
+                WuiClipShape::new(metadata.value.kind(), metadata.value.commands(), &content)
+                    .upcast()
             },
         );
 

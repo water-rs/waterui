@@ -6,13 +6,19 @@
 //! this: `border-radius` in percent resolves horizontally against the width and
 //! vertically against the height, so a percentage that is round on a square
 //! surface is elliptical on every other one.
+//!
+//! A custom path clips through `gtk_snapshot_push_fill`, the one GTK primitive
+//! that clips to an arbitrary path; it arrived in GTK 4.14, which is why that
+//! is the backend's floor.
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{Widget, glib, graphene, gsk};
-use waterui_shape::ShapeKind;
+use waterui_shape::{PathCommand, ShapeKind};
 
+use super::gsk_path;
 use crate::shape_geometry::{Corner, ShapeGeometry, resolve};
+use crate::shape_path::bez_path;
 
 mod imp {
     // The glib subclass macros expand against the parent scope, so this module
@@ -27,6 +33,9 @@ mod imp {
     #[derive(Debug, Default)]
     pub struct WuiClipShape {
         pub kind: Cell<ShapeKind>,
+        /// The unit-space outline, consulted only for a custom path: every
+        /// other kind resolves through `shape_geometry`.
+        pub commands: RefCell<Vec<PathCommand>>,
         pub child: RefCell<Option<Widget>>,
     }
 
@@ -59,8 +68,15 @@ mod imp {
             let width = f64::from(widget.width());
             let height = f64::from(widget.height());
 
-            let ShapeGeometry::Rounded(rect) = resolve(self.kind.get(), width, height) else {
-                unreachable!("WuiClipShape rejects a custom path in its constructor");
+            let rect = match resolve(self.kind.get(), width, height) {
+                ShapeGeometry::Rounded(rect) => rect,
+                ShapeGeometry::CustomPath => {
+                    let path = gsk_path(&bez_path(&self.commands.borrow(), width, height));
+                    snapshot.push_fill(&path, gsk::FillRule::Winding);
+                    self.parent_snapshot(snapshot);
+                    snapshot.pop();
+                    return;
+                }
             };
 
             let bounds = graphene::Rect::new(
@@ -99,26 +115,15 @@ glib::wrapper! {
 }
 
 impl WuiClipShape {
-    /// Wraps `child` in a widget that clips it to `kind`.
-    ///
-    /// # Panics
-    ///
-    /// Panics for [`ShapeKind::CustomPath`]. Clipping to an arbitrary path needs
-    /// `gtk_snapshot_push_fill`, which arrived in GTK 4.14, and this backend
-    /// targets 4.12. Clipping to a custom path has never worked on GTK; it used
-    /// to panic out of the path recogniser instead of here.
+    /// Wraps `child` in a widget that clips it to `kind`, or to `commands`
+    /// when the kind is [`ShapeKind::CustomPath`].
     #[must_use]
-    pub fn new(kind: ShapeKind, child: &Widget) -> Self {
-        assert!(
-            !matches!(kind, ShapeKind::CustomPath),
-            "the GTK backend cannot clip to a custom path: gtk_snapshot_push_fill needs GTK 4.14 \
-             and this backend targets 4.12"
-        );
-
+    pub fn new(kind: ShapeKind, commands: &[PathCommand], child: &Widget) -> Self {
         let widget: Self = glib::Object::new();
         widget.set_halign(gtk4::Align::Fill);
         widget.set_valign(gtk4::Align::Fill);
         widget.imp().kind.set(kind);
+        *widget.imp().commands.borrow_mut() = commands.to_vec();
         child.set_parent(&widget);
         *widget.imp().child.borrow_mut() = Some(child.clone());
         widget

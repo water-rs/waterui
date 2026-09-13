@@ -35,6 +35,7 @@ pub mod layout;
 pub mod renderer;
 // Plain geometry with no GTK in it, so it builds and tests on every host.
 pub mod shape_geometry;
+pub mod shape_path;
 #[cfg(target_os = "linux")]
 mod theme;
 #[cfg(target_os = "linux")]
