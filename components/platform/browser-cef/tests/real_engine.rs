@@ -639,6 +639,24 @@ fn the_asset_origin_serves_bundled_content(engine: &Engine) {
     );
 }
 
+/// `include_web!`'s serving layer — a `DirectoryServer` over the site written
+/// to disk the way a staged bundle carries it — serves the same conformance
+/// site through the engine's native interception.
+fn the_directory_server_serves_the_staged_bundle(engine: &Engine) {
+    let directory = tempfile::tempdir().expect("staged bundle tempdir");
+    waterui_webview::conformance::write_bundled_site(directory.path());
+    // The strict default policy is what `include_web!` ships — including
+    // `'wasm-unsafe-eval'`, so the conformance site's WASM module compiles.
+    let server = waterui_webview::DirectoryServer::new(directory.path()).into_server();
+    engine.block_on("the DirectoryServer bundled-site case", async move {
+        waterui_webview::conformance::asset_origin_serves_bundled_content_with(
+            &engine.controller,
+            server,
+        )
+        .await;
+    });
+}
+
 /// A headless Chromium page serves the same bundled site through CDP `Fetch`
 /// interception, under `https://waterui.localhost`.
 ///
@@ -732,7 +750,7 @@ async fn cdp_eval(cdp: &waterui_chromium::CdpSession, source: &str) -> Value {
 /// Every check, in the order they run.
 type Check = (&'static str, fn(&Engine));
 
-const CHECKS: [Check; 7] = [
+const CHECKS: [Check; 8] = [
     (
         "navigation_reaches_each_url_and_history_moves_both_ways",
         navigation_reaches_each_url_and_history_moves_both_ways,
@@ -756,6 +774,10 @@ const CHECKS: [Check; 7] = [
     (
         "the_asset_origin_serves_bundled_content",
         the_asset_origin_serves_bundled_content,
+    ),
+    (
+        "the_directory_server_serves_the_staged_bundle",
+        the_directory_server_serves_the_staged_bundle,
     ),
     (
         "the_chromium_cdp_asset_origin_serves_bundled_content",

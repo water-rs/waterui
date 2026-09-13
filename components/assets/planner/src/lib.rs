@@ -86,6 +86,11 @@ pub struct BundleMountMeta {
     pub mount: String,
     /// Absolute path of the mounted directory at expansion time.
     pub path: PathBuf,
+    /// Absolute path of the toolchain project that produces `path` — the
+    /// frontend root for a web mount (`include_web!`), `None` for a plain
+    /// `include_bundle!`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<PathBuf>,
 }
 
 impl BundleMountMeta {
@@ -664,6 +669,7 @@ mod tests {
         let meta = BundleMountMeta {
             mount: "web".to_string(),
             path: PathBuf::from("/abs/path/dist"),
+            project: Some(PathBuf::from("/abs/path")),
         };
         assert_eq!(meta.symbol_leaf(), "waterui_meta_bundle_web");
         let payload = meta.to_payload();

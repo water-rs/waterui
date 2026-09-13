@@ -278,4 +278,39 @@ mod tests {
             "a release rlib must not carry waterui_meta_* statics"
         );
     }
+
+    /// `include_web!` is the one web mount an application declares; its
+    /// metadata must reach the CLI through the same `waterui_meta_bundle_*`
+    /// channel a plain `include_bundle!` uses, carrying the frontend project
+    /// root so `water run` knows what to build (#587).
+    #[test]
+    fn reads_include_web_mount_meta_from_built_rlib() {
+        futures_lite::future::block_on(async {
+            let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/web_meta");
+            let rlib = build_host_rlib(&fixture, None)
+                .await
+                .expect("fixture crate should build");
+            let symbols = ArtifactSymbols::read(&rlib).expect("rlib should parse");
+            let meta = waterui_assets_planner::BundleMountMeta::from_payload(
+                &symbols
+                    .static_bytes("waterui_meta_bundle_web")
+                    .expect("the web mount static should be present"),
+            )
+            .expect("payload should decode as BundleMountMeta");
+            assert_eq!(meta.mount, "web");
+            assert!(
+                meta.path.ends_with("dist"),
+                "the default out dir is dist: {}",
+                meta.path.display()
+            );
+            assert_eq!(
+                meta.project.as_deref(),
+                Some(
+                    dunce::canonicalize(fixture.join("web"))
+                        .as_deref()
+                        .expect("web root")
+                )
+            );
+        });
+    }
 }

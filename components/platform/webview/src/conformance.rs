@@ -105,8 +105,29 @@ pub async fn raw_evaluation_answers_json(evaluate: impl AsyncFn(&str) -> Result<
     reason = "web views are confined to the UI thread, and so is the suite that drives them"
 )]
 pub async fn asset_origin_serves_bundled_content(controller: &WebViewController) {
+    asset_origin_serves_bundled_content_with(controller, bundled_site_server()).await;
+}
+
+/// The same case with the caller's server answering.
+///
+/// The in-memory [`bundled_site_server`] is what most engines serve; a suite
+/// proving `include_web!`'s serving layer instead passes a
+/// [`DirectoryServer`](crate::DirectoryServer) over the site
+/// [`write_bundled_site`] wrote to disk — the shape the staged bundle takes at
+/// runtime — and reaches the identical assertions.
+///
+/// # Panics
+/// Same contract as [`asset_origin_serves_bundled_content`].
+#[expect(
+    clippy::future_not_send,
+    reason = "web views are confined to the UI thread, and so is the suite that drives them"
+)]
+pub async fn asset_origin_serves_bundled_content_with(
+    controller: &WebViewController,
+    server: AssetServer,
+) {
     let webview = controller.open_with(WebViewConfig {
-        asset_server: Some(bundled_site_server()),
+        asset_server: Some(server),
     });
     let handle = webview.handle().clone();
     let origin = handle
@@ -242,6 +263,33 @@ pub fn bundled_site_server() -> AssetServer {
             _ => AssetResponse::not_found(),
         }
     })
+}
+
+/// Writes the site [`bundled_site_server`] serves into `dir` as real files.
+///
+/// `index.html`, `app.js`, `style.css`, and `app.wasm` land on disk so a
+/// [`DirectoryServer`](crate::DirectoryServer) serves the same bytes and
+/// [`assert_bundled_site`] holds verbatim.
+///
+/// # Panics
+/// When a file cannot be written.
+pub fn write_bundled_site(dir: &std::path::Path) {
+    for (name, bytes) in [
+        (
+            "index.html",
+            include_bytes!("conformance/index.html").as_slice(),
+        ),
+        ("app.js", include_bytes!("conformance/app.js").as_slice()),
+        (
+            "style.css",
+            include_bytes!("conformance/style.css").as_slice(),
+        ),
+        ("app.wasm", WASM_MODULE),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes)
+            .unwrap_or_else(|error| panic!("writing {} failed: {error}", path.display()));
+    }
 }
 
 /// The events an asset-origin view has emitted and the task waiting on them.

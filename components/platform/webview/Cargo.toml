@@ -32,6 +32,7 @@ conformance = []
 
 [dev-dependencies]
 hydrolysis-m3.workspace = true
+tempfile = "3.27"
 # `#[js_api]` expands to `::waterui::webview::…` paths, so testing it means
 # reaching this crate back through the facade the way an application does.
 waterui = { path = "../../..", features = ["webview"] }

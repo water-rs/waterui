@@ -21,5 +21,8 @@ syn = { version = "3", features = ["full", "parsing"] }
 waterui-assets-core.workspace = true
 waterui-assets-planner.workspace = true
 
+[dev-dependencies]
+trybuild = "1.0"
+
 [lints]
 workspace = true

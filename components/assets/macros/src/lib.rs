@@ -248,6 +248,7 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
             mount.to_string()
         },
         path: root,
+        project: None,
     };
     let meta_ident = syn_ident(&meta.symbol_leaf());
     let payload = meta.to_payload();
@@ -314,6 +315,205 @@ pub fn include_bundle(input: TokenStream) -> TokenStream {
         }
     };
     expand_mount(&args.mount.to_string(), root, path_span).into()
+}
+
+/// Parsed arguments of an `include_web!("web", out_dir = "…", …)` invocation.
+struct IncludeWebArgs {
+    /// Web project root relative to `CARGO_MANIFEST_DIR`.
+    root: LitStr,
+    /// Build output directory inside the root (`dist` by default).
+    out_dir: Option<LitStr>,
+    /// Entry document (`index.html` by default).
+    entry: Option<LitStr>,
+    /// SPA fallback flag.
+    spa: Option<LitBool>,
+    /// Content-Security-Policy override.
+    csp: Option<LitStr>,
+}
+
+impl Parse for IncludeWebArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let root: LitStr = input.parse()?;
+        let mut args = Self {
+            root,
+            out_dir: None,
+            entry: None,
+            spa: None,
+            csp: None,
+        };
+        while input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            if input.is_empty() {
+                break;
+            }
+            let key: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            if key == "out_dir" {
+                args.out_dir = Some(input.parse()?);
+            } else if key == "entry" {
+                args.entry = Some(input.parse()?);
+            } else if key == "spa" {
+                args.spa = Some(input.parse()?);
+            } else if key == "csp" {
+                args.csp = Some(input.parse()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!(
+                        "unknown include_web! option `{key}`, expected one of \
+                         `out_dir`, `entry`, `spa`, `csp`"
+                    ),
+                ));
+            }
+        }
+        Ok(args)
+    }
+}
+
+/// One application has one web frontend: the mount is always `web`, which is
+/// also what makes a second `include_web!` an error — two statics with the
+/// same leaf and different payloads fail artifact enumeration.
+const WEB_MOUNT: &str = "web";
+
+#[proc_macro]
+/// Embeds a web frontend into a view: `include_web!("web")` expands to the
+/// `WebViewOpen` that serves the project's staged build output over the
+/// engine's asset origin.
+///
+/// The first argument is the web project root, required, resolved against
+/// `CARGO_MANIFEST_DIR`; it must contain a `package.json` (the macro points at
+/// the project, not its build output). Named arguments are the complete
+/// configuration surface:
+///
+/// - `out_dir = "build"` — the build output inside the root (`dist` default);
+///   it need not exist at expansion time: the macro embeds nothing.
+/// - `entry = "app.html"` — the entry document (`index.html` default).
+/// - `spa = true` — unresolved extensionless paths fall back to `index.html`.
+/// - `csp = "…"` — widen the strict default `Content-Security-Policy`.
+///
+/// Building the frontend and staging `<root>/<out_dir>` into the platform
+/// bundle are the CLI's job (`water package` / `water run`); the macro records
+/// the resolved paths in a `waterui_meta_bundle_web` artifact-channel symbol
+/// the CLI reads back from the compiled artifact's symbol table — debug
+/// builds only, since `#[used]` is linker-retained and the CLI reads a
+/// dev-profile host rlib rather than the target build. The macro never runs a
+/// bundler, never reads `Water.toml`, and embeds no frontend bytes in the
+/// binary. In a debug build the expansion first consults the dev-server
+/// handoff
+/// (`WATERUI_DEV_URL` or a `--waterui-dev-url=` argument) and serves the
+/// bundler's URL instead when one was handed over; release always serves the
+/// staged bundle.
+///
+/// One `include_web!` per application: a second invocation emits a metadata
+/// symbol with the same leaf and a different payload, which the CLI's artifact
+/// enumeration reports as an error.
+///
+/// The expansion is an ordinary [`WebViewOpen`](waterui_webview::WebViewOpen),
+/// so everything chains as usual:
+/// `include_web!("web").serve(MyApi).inject(..).on_event(..)`.
+///
+/// Requires the `webview` and `assets` features of the `waterui` crate.
+pub fn include_web(input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(input as IncludeWebArgs);
+    let root_span = args.root.span();
+
+    let root = match crate_root().join(args.root.value()).canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            return compile_error(
+                format!(
+                    "include_web! root '{}' cannot be resolved: {error}",
+                    args.root.value()
+                ),
+                root_span,
+            );
+        }
+    };
+    if !root.join("package.json").is_file() {
+        return compile_error(
+            format!(
+                "'{}' has no package.json — include_web! points at the web \
+                 project root, not its build output",
+                args.root.value()
+            ),
+            root_span,
+        );
+    }
+
+    let out = root.join(
+        args.out_dir
+            .as_ref()
+            .map_or_else(|| "dist".to_string(), LitStr::value),
+    );
+    let entry = args
+        .entry
+        .as_ref()
+        .map_or_else(|| "index.html".to_string(), LitStr::value);
+    let spa = args.spa.as_ref().is_some_and(LitBool::value);
+    let csp = args.csp.as_ref().map(|csp| {
+        let value = csp.value();
+        quote! { .csp(#value) }
+    });
+
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
+
+    let meta = BundleMountMeta {
+        mount: WEB_MOUNT.to_string(),
+        path: out,
+        project: Some(root.clone()),
+    };
+    let meta_ident = syn_ident(&meta.symbol_leaf());
+    let payload = meta.to_payload();
+    let payload_len = payload.len();
+    let payload_lit = syn::LitByteStr::new(&payload, root_span);
+    let package_json = LitStr::new(
+        root.join("package.json").to_string_lossy().as_ref(),
+        root_span,
+    );
+    let entry_lit = LitStr::new(&entry, root_span);
+    let web_root = LitStr::new(WEB_MOUNT, root_span);
+
+    quote! {
+        {
+            #[cfg(debug_assertions)]
+            #[used]
+            #[allow(non_upper_case_globals)]
+            #[doc(hidden)]
+            static #meta_ident: [u8; #payload_len] = *#payload_lit;
+
+            // Cargo does not see a proc macro's filesystem reads, so the
+            // package.json the expansion checked is tracked explicitly: the
+            // macro re-expands when it appears or changes.
+            const _: &[u8] = ::core::include_bytes!(#package_json);
+
+            let dev: ::core::option::Option<#waterui::Url> = {
+                #[cfg(debug_assertions)]
+                {
+                    #waterui::webview::dev_url()
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    ::core::option::Option::None
+                }
+            };
+            match dev {
+                ::core::option::Option::Some(url) => #waterui::webview::WebView::open(url),
+                ::core::option::Option::None => #waterui::webview::WebView::open_assets(
+                    #waterui::webview::DirectoryServer::new(
+                        #waterui::Bundle::new(#web_root).path("")
+                    )
+                    .spa(#spa)
+                    #csp
+                    .into_server_fn(),
+                    #entry_lit,
+                ),
+            }
+        }
+    }
+    .into()
 }
 
 #[proc_macro]

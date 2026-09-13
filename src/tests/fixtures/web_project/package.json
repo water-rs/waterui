@@ -1,0 +1,8 @@
+{
+  "name": "web-project",
+  "private": true,
+  "scripts": {
+    "dev": "true",
+    "build": "true"
+  }
+}
