@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use smol::fs;
 use waterui_assets_core::AssetKind;
 use waterui_assets_planner::{
-    AssetRole, BundleManifest, HexColor, PlannedAsset, ThemeConfig, plan_bundle,
+    AssetRole, BundleManifest, HexColor, LaunchPlan, PlannedAsset, ThemeConfig, plan_bundle,
 };
 
 #[cfg(target_os = "macos")]
@@ -55,6 +55,64 @@ pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result
     write_apple_accent_color(accent, &xcassets_dest).await?;
 
     Ok(())
+}
+
+/// The project's launch screen, resolved, with the artwork it shows.
+pub struct LaunchAssets {
+    plan: LaunchPlan,
+    artwork: Option<IconSource>,
+    app_icon: IconSource,
+}
+
+impl LaunchAssets {
+    /// The resolved `[launch]` colors and artwork path.
+    #[must_use]
+    pub const fn plan(&self) -> &LaunchPlan {
+        &self.plan
+    }
+
+    /// The `Launch.*` artwork, or the app icon where that is the platform's
+    /// default (the web).
+    #[must_use]
+    pub(super) const fn artwork_or_app_icon(&self) -> &IconSource {
+        match &self.artwork {
+            Some(artwork) => artwork,
+            None => &self.app_icon,
+        }
+    }
+
+    /// The `Launch.*` artwork or the app icon, rendered `size` pixels square
+    /// as PNG bytes.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the artwork cannot be rendered or encoded.
+    pub fn artwork_or_app_icon_png(&self, size: u32) -> eyre::Result<Vec<u8>> {
+        encode_png(&self.artwork_or_app_icon().render(size)?)
+    }
+}
+
+/// Resolves the project's launch screen: `[launch]` over `[theme]`, and the
+/// root `Launch.*` artwork.
+///
+/// # Errors
+///
+/// Fails when the assets cannot be planned or an artwork file cannot be
+/// decoded.
+pub fn launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
+    let manifest = build_manifest(project)?;
+    let water = project.manifest();
+    let plan = LaunchPlan::resolve(water.launch.as_ref(), water.theme.as_ref(), &manifest);
+    let artwork = plan
+        .image()
+        .map(|path| IconSource::load(path))
+        .transpose()?;
+    let app_icon = load_project_icon(&manifest)?;
+    Ok(LaunchAssets {
+        plan,
+        artwork,
+        app_icon,
+    })
 }
 
 /// Loads the project's `Icon.*` asset, or the bundled `WaterUI` logo when the
