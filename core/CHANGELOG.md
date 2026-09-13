@@ -4,6 +4,12 @@ All notable changes to `waterui-core` are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/water-rs/waterui/compare/core-v0.3.1...core-v0.3.2) - 2026-09-11
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.3.1](https://github.com/water-rs/waterui/compare/core-v0.3.0...core-v0.3.1) - 2026-09-11
 
 ### Other

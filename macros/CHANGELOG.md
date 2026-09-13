@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/water-rs/waterui/compare/macros-v0.3.0...macros-v0.3.1) - 2026-09-11
+
+### Other
+
+- *(backends)* consume hydrolysis-m3 0.2.0 from crates.io and drop the in-tree copy ([#550](https://github.com/water-rs/waterui/pull/550))
+
 ## [0.3.0](https://github.com/water-rs/waterui/compare/macros-v0.2.1...macros-v0.3.0) - 2026-08-25
 
 ### Changed

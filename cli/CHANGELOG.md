@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/water-rs/waterui/compare/waterui-cli-v0.2.0...waterui-cli-v0.2.1) - 2026-09-11
+
+### Fixed
+
+- *(cli)* hold the scaffold versions to the workspace, and correct them ([#554](https://github.com/water-rs/waterui/pull/554))
+
+### Other
+
+- *(backends)* consume hydrolysis 0.2.0 from crates.io and drop the in-tree copy ([#553](https://github.com/water-rs/waterui/pull/553))
+- *(backends)* consume hydrolysis-m3 0.2.0 from crates.io and drop the in-tree copy ([#550](https://github.com/water-rs/waterui/pull/550))
+
 ## [0.2.0](https://github.com/water-rs/waterui/compare/waterui-cli-v0.1.4...waterui-cli-v0.2.0) - 2026-09-11
 
 ### Added
