@@ -7,6 +7,7 @@ on:
 
 permissions:
   checks: read
+  statuses: read
 
 jobs:
   verify-source:
@@ -32,8 +33,12 @@ jobs:
 
       # This check doubles as the single required check on main: instead of
       # pinning CI job names in the ruleset (which break on every rename), it
-      # waits for every other check run on the PR's head and merge commits and
-      # goes green only when all of them did.
+      # waits for every other check run and commit status on the PR's head and
+      # merge commits — `nightly-healthy` among them — and goes green only
+      # when all of them did. Commit statuses are read alongside check runs so
+      # reporters that only publish statuses cannot slip past the gate, and an
+      # empty result after the discovery window fails instead of passing
+      # vacuously before the other workflows have registered their checks.
       - name: wait for every other check on this PR to go green
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -42,17 +47,47 @@ jobs:
         run: |
           set -euo pipefail
           deadline=$(( $(date +%s) + 3300 ))
+          discovery_deadline=$(( $(date +%s) + 300 ))
           while :; do
-            {
-              gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
-                --jq '.check_runs[] | [.name, (.conclusion // "pending")] | @tsv'
-              if [ -n "${MERGE_SHA:-}" ] && [ "${MERGE_SHA}" != "null" ]; then
-                gh api "repos/${GITHUB_REPOSITORY}/commits/${MERGE_SHA}/check-runs?per_page=100" \
-                  --jq '.check_runs[] | [.name, (.conclusion // "pending")] | @tsv'
+            # A failed query must not produce a partial check list that reads
+            # as "all green", so this poll only counts when every call
+            # succeeded; transient API errors retry until the deadline.
+            complete=true
+            : > raw.tsv
+            for ref in "${HEAD_SHA}" "${MERGE_SHA:-}"; do
+              if [ -z "${ref}" ] || [ "${ref}" = "null" ]; then
+                continue
               fi
-            } 2>/dev/null | grep -v '^PR source gate\b' > checks.tsv || true
+              gh api "repos/${GITHUB_REPOSITORY}/commits/${ref}/check-runs?per_page=100" \
+                --jq '.check_runs[] | [.name, (.conclusion // "pending")] | @tsv' >> raw.tsv \
+                || { complete=false; break; }
+              gh api "repos/${GITHUB_REPOSITORY}/commits/${ref}/status?per_page=100" \
+                --jq '.statuses[] | [.context, .state] | @tsv' >> raw.tsv \
+                || { complete=false; break; }
+            done
+            if [ "${complete}" != "true" ]; then
+              if [ "$(date +%s)" -gt "${deadline}" ]; then
+                echo "::error::the check-status API calls kept failing until the 55-minute deadline"
+                exit 1
+              fi
+              echo "check query failed; retrying in 30s..."
+              sleep 30
+              continue
+            fi
+            grep -v '^PR source gate\b' raw.tsv > checks.tsv || true
 
-            if grep -E '\t(failure|cancelled|timed_out|action_required|startup_failure|stale)$' checks.tsv; then
+            total=$(wc -l < checks.tsv | tr -d ' ')
+            if [ "${total}" -eq 0 ]; then
+              if [ "$(date +%s)" -gt "${discovery_deadline}" ]; then
+                echo "::error::no check runs or commit statuses registered on this pull request within 5 minutes; refusing to pass an unwatched merge"
+                exit 1
+              fi
+              echo "no checks registered yet; waiting..."
+              sleep 30
+              continue
+            fi
+
+            if grep -E '\t(failure|error|cancelled|timed_out|action_required|startup_failure|stale)$' checks.tsv; then
               echo "::error::a check on this pull request did not pass (see list above)"
               exit 1
             fi
