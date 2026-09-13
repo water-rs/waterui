@@ -78,7 +78,9 @@ jobs:
           ref: main
           fetch-depth: 0
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
       # `cargo publish` verifies each package by building it with its default
       # features, so the native libraries the workspace links have to be here
       # as they are in the test workflow: without them the Linux-only
@@ -133,7 +135,9 @@ jobs:
           ref: main
           fetch-depth: 0
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
       # The same native libraries as above: computing the next versions also
       # builds the workspace's metadata against every crate's dependencies.
       - uses: ./.github/actions/setup-linux-deps

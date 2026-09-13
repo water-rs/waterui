@@ -59,16 +59,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - uses: ./.github/actions/setup-linux-deps
-        # The instrumented run executes the same GPU-backed snapshot tests as
-        # Test / ubuntu-latest, so it needs the same software Vulkan ICD. Without
-        # it wgpu picks the EGL/llvmpipe GL adapter instead, which is not the
-        # backend those tests are baselined against.
-        with:
-          gpu: "true"
       # Its own key: an instrumented build shares no artifacts with the
       # ordinary ones, so storing it under the shared key would just overwrite
       # a useful tarball with one nothing else can restore. The target dir is
@@ -78,12 +68,20 @@ jobs:
       # reused by every dev push. Coverage recompiles each run, as before,
       # while restoring only the shared Cargo dependency sources. The full
       # instrumented suite and its upload are unchanged by that allocation.
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
+          components: llvm-tools-preview
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
           save-if: false
           cache-on-failure: true
+      - uses: ./.github/actions/setup-linux-deps
+        # The instrumented run executes the same GPU-backed snapshot tests as
+        # Test / ubuntu-latest, so it needs the same software Vulkan ICD. Without
+        # it wgpu picks the EGL/llvmpipe GL adapter instead, which is not the
+        # backend those tests are baselined against.
+        with:
+          gpu: "true"
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
       - name: Prepare coverage target dir
@@ -110,15 +108,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: ./.github/actions/setup-linux-deps
       # The single writer of `ci-ubuntu` (see Hygiene above).
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
           save-if: false
           cache-on-failure: true
+      - uses: ./.github/actions/setup-linux-deps
       - uses: taiki-e/install-action@cargo-hack
       # `--feature-powerset` is deliberately absent. The workspace has ~33_800
       # feature combinations (waterui alone has 14 features = 16_384), so the
