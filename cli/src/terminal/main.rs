@@ -16,8 +16,8 @@ use futures::future::{self, Either};
 use tracing_subscriber::EnvFilter;
 
 use commands::{
-    backend, bench, build, channel, clean, create, device, devices, doctor, gc, inspector, package,
-    preview, run,
+    backend, bench, build, channel, clean, create, device, devices, doctor, gc, inspector, mcp,
+    package, preview, run,
 };
 
 /// `WaterUI` command line interface.
@@ -79,6 +79,9 @@ enum Commands {
 
     /// Launch the `WaterUI` inspector app.
     Inspector(inspector::Args),
+
+    /// Serve the app to an agent over MCP.
+    Mcp(mcp::Args),
 }
 
 fn main() -> Result<()> {
@@ -135,6 +138,7 @@ fn main() -> Result<()> {
                     Commands::Gc(args) => gc::run(&shell, args).await,
                     Commands::Preview(args) => Box::pin(preview::run(&shell, args)).await,
                     Commands::Inspector(args) => inspector::run(&shell, args).await,
+                    Commands::Mcp(args) => mcp::run(&shell, args).await,
                 }
             };
 

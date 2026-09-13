@@ -24,6 +24,8 @@ pub const WATERUI_BROWSER_CEF_VERSION: &str = env!("WATERUI_CLI_WATERUI_BROWSER_
 pub const PREVIEW_VERSION: &str = env!("WATERUI_CLI_WATERUI_PREVIEW_VERSION");
 /// Exact `waterui-preview-protocol` version used when scaffolding registry-based projects.
 pub const PREVIEW_PROTOCOL_VERSION: &str = env!("WATERUI_CLI_WATERUI_PREVIEW_PROTOCOL_VERSION");
+/// Exact `waterui-mcp` version used when scaffolding registry-based projects.
+pub const MCP_VERSION: &str = env!("WATERUI_CLI_WATERUI_MCP_VERSION");
 /// Exact Android Kotlin compiler version required by the embedded Android backend/runtime.
 pub const ANDROID_KOTLIN_VERSION: &str = env!("WATERUI_CLI_ANDROID_KOTLIN_VERSION");
 /// The tag a released CLI pins each backend repository at: `v` followed by
@@ -78,6 +80,7 @@ pub const SCAFFOLD_PACKAGE_VERSIONS: &[(&str, &str)] = &[
     ("waterui-browser-cef", WATERUI_BROWSER_CEF_VERSION),
     ("waterui-preview", PREVIEW_VERSION),
     ("waterui-preview-protocol", PREVIEW_PROTOCOL_VERSION),
+    ("waterui-mcp", MCP_VERSION),
     ("hydrolysis", HYDROLYSIS_VERSION),
     ("hydrolysis-m3", HYDROLYSIS_M3_VERSION),
 ];

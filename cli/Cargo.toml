@@ -96,6 +96,12 @@ waterui-assets.workspace = true
 waterui-assets-planner.workspace = true
 waterui-preview-protocol.workspace = true
 waterui-inspector-protocol.workspace = true
+waterui-mcp-protocol.workspace = true
+aither-core.workspace = true
+aither-mcp = { workspace = true, features = ["server"] }
+# Decodes the base64 image payloads a `tools/call` response carries back from
+# the MCP child (screenshots).
+base64 = "0.23"
 tempfile = "3.27"
 walkdir = "2.5"
 pathdiff = "0.2"

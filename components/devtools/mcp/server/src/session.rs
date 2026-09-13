@@ -1,6 +1,7 @@
 //! The session thread: owns the `!Send` [`OffscreenApp`] and executes every
 //! tool request as a [`Command`] delivered over a channel.
 
+use std::future::Future;
 use std::time::Duration;
 
 use accesskit::{Action, ActionData, NodeId as AccessibilityNodeId};
@@ -8,10 +9,11 @@ use aither_core::llm::tool::ToolResult;
 use async_channel::Sender;
 use waterui_testing::{DragOptions, NodeId, OffscreenApp, Role, Selector, WaitOptions, WaitResult};
 
-use crate::tools::{
-    ActAction, ActArgs, FindArgs, KeyArgs, PointerArgs, PointerKind, SelectorArgs, SnapshotFormat,
-    WaitArgs,
+use waterui_mcp_protocol::{
+    ActAction, ActArgs, FindArgs, KeyArgs, PointerArgs, PointerKind, SelectorArgs, SnapshotArgs,
+    SnapshotFormat, ScreenshotArgs, RestartArgs, ToolDispatch, TypeTextArgs, WaitArgs,
 };
+
 use crate::tree;
 
 /// Where a finished command's [`ToolResult`] travels back to its tool handler.
@@ -112,6 +114,107 @@ impl SessionHandle {
         rx.recv()
             .await
             .map_err(|_| aither_core::Error::msg("waterui-mcp session dropped a command"))
+    }
+}
+
+impl ToolDispatch for SessionHandle {
+    fn snapshot(&self, args: SnapshotArgs) -> impl Future<Output = ToolResult> + Send {
+        let handle = self.clone();
+        async move {
+            handle
+                .request(|reply| Command::Snapshot {
+                    format: args.format,
+                    reply,
+                })
+                .await
+                .unwrap_or_else(|error| ToolResult::error(error.to_string()))
+        }
+    }
+
+    fn find(&self, args: FindArgs) -> impl Future<Output = ToolResult> + Send {
+        let handle = self.clone();
+        async move {
+            handle
+                .request(|reply| Command::Find { args, reply })
+                .await
+                .unwrap_or_else(|error| ToolResult::error(error.to_string()))
+        }
+    }
+
+    fn act(&self, args: ActArgs) -> impl Future<Output = ToolResult> + Send {
+        let handle = self.clone();
+        async move {
+            handle
+                .request(|reply| Command::Act { args, reply })
+                .await
+                .unwrap_or_else(|error| ToolResult::error(error.to_string()))
+        }
+    }
+
+    fn pointer(&self, args: PointerArgs) -> impl Future<Output = ToolResult> + Send {
+        let handle = self.clone();
+        async move {
+            handle
+                .request(|reply| Command::Pointer { args, reply })
+                .await
+                .unwrap_or_else(|error| ToolResult::error(error.to_string()))
+        }
+    }
+
+    fn key(&self, args: KeyArgs) -> impl Future<Output = ToolResult> + Send {
+        let handle = self.clone();
+        async move {
+            handle
+                .request(|reply| Command::Key { args, reply })
+                .await
+                .unwrap_or_else(|error| ToolResult::error(error.to_string()))
+        }
+    }
+
+    fn type_text(&self, args: TypeTextArgs) -> impl Future<Output = ToolResult> + Send {
+        let handle = self.clone();
+        async move {
+            handle
+                .request(|reply| Command::TypeText {
+                    text: args.text,
+                    reply,
+                })
+                .await
+                .unwrap_or_else(|error| ToolResult::error(error.to_string()))
+        }
+    }
+
+    fn wait(&self, args: WaitArgs) -> impl Future<Output = ToolResult> + Send {
+        let handle = self.clone();
+        async move {
+            handle
+                .request(|reply| Command::Wait {
+                    args: Box::new(args),
+                    reply,
+                })
+                .await
+                .unwrap_or_else(|error| ToolResult::error(error.to_string()))
+        }
+    }
+
+    fn screenshot(&self, _args: ScreenshotArgs) -> impl Future<Output = ToolResult> + Send {
+        let handle = self.clone();
+        async move {
+            handle
+                .request(|reply| Command::Screenshot { reply })
+                .await
+                .unwrap_or_else(|error| ToolResult::error(error.to_string()))
+        }
+    }
+
+    fn restart(&self, _args: RestartArgs) -> impl Future<Output = ToolResult> + Send {
+        let handle = self.clone();
+        async move {
+            handle
+                .request(|reply| Command::Restart { reply })
+                .await
+                .unwrap_or_else(|error| ToolResult::error(error.to_string()))
+        }
     }
 }
 

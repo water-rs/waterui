@@ -62,6 +62,24 @@ water preview my_view --platform macos --path ./app --output preview.png
 water preview dashboard --platform macos --frame 800x600 --output dashboard.png
 ```
 
+### Drive the App over MCP
+
+Serve the app to an agent over MCP — the accessibility tree, actions, and
+screenshots become tools:
+
+```bash
+# In the project root (or pass --path)
+water mcp
+
+# Custom viewport and scale factor
+water mcp --viewport 800x600 --scale 1.0
+```
+
+`water create` writes a `.mcp.json` that registers the server for MCP clients
+launched in the project root. The CLI fronts the generated app process, so
+`initialize` and `tools/list` answer immediately even while a cold build is
+still compiling; `restart` rebuilds from the current sources.
+
 Mark functions with `#[preview]` to make them previewable:
 
 ```text
@@ -243,6 +261,7 @@ This validates toolchain dependencies (Xcode, Android SDK, Rust targets).
 - **`commands/clean.rs`**: Cleanup command
 - **`commands/doctor.rs`**: Toolchain validation command
 - **`commands/devices.rs`**: Device listing command
+- **`commands/mcp.rs`**: MCP server command (drives the app headless for agents)
 
 ## Features
 

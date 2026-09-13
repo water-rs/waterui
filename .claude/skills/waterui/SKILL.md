@@ -456,6 +456,44 @@ interaction test and an accessibility check, which is why a component that canno
 tested this way is a bug rather than a gap. Details in
 [references/testing.md](references/testing.md).
 
+## Driving the app from an agent
+
+`water mcp` serves the running app to an agent over MCP: run it in the project root and
+it builds the app headless, then exposes the live accessibility tree, actions, and
+screenshots as tools. The server answers `initialize` and `tools/list` immediately, so
+a cold first build does not stall the client handshake — tool calls simply wait for the
+build.
+
+`water create` writes a project-level `.mcp.json` that points MCP clients at it:
+
+```json
+{
+  "mcpServers": {
+    "app": {
+      "command": "water",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+For clients that do not read `.mcp.json`, register the same server by hand. Codex, in
+`~/.codex/config.toml`:
+
+```toml
+[mcp_servers.app]
+command = "water"
+args = ["mcp"]
+```
+
+Cursor, in `.cursor/mcp.json`, uses the same shape as the generated file above.
+
+Once connected, the loop is: `snapshot` to read the tree, `act` (or `pointer` / `key` /
+`type_text`) by node id — every mutating tool returns the settled tree, so no follow-up
+`snapshot` is needed — `screenshot` when layout or appearance matters, `wait` for
+conditions instead of polling, then edit the source and `restart` to rebuild and relaunch
+with the changes. Node ids are stable across turns within a session.
+
 ## Gotchas worth memorizing
 
 | Symptom | Cause | Fix |

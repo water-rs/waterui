@@ -195,6 +195,7 @@ waterui-assets-macros = { version = "0.1.2", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.1.2", path = "components/devtools/inspector/protocol" }
 waterui-inspector-app = { version = "0.1.2", path = "components/devtools/inspector/app" }
 waterui-preview-protocol = { version = "0.1.1", path = "components/devtools/preview/protocol" }
+waterui-mcp-protocol = { version = "0.1.0", path = "components/devtools/mcp/protocol" }
 waterui-gtk = "0.1.2"
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.1", path = "src", default-features = false }

@@ -1,6 +1,6 @@
 //! Hydrolysis preview test runtime for {{ ctx.app_display_name }}.
 
-use std::{fs, io::Write as _, path::PathBuf};
+use std::io::Write as _;
 
 use crate::preview_test;
 use waterui_preview_protocol::hydrolysis::{
@@ -9,31 +9,16 @@ use waterui_preview_protocol::hydrolysis::{
 use waterui_testing::ui;
 
 pub(crate) fn run() {
-    let config = load_run_config();
+    let config = crate::run_config::load_run_config::<PreviewRunConfig>(
+        PREVIEW_RUN_CONFIG_ENV,
+        "preview test",
+    );
     match config.mode {
         PreviewRunMode::Semantic => run_semantic(config.width, config.height),
         PreviewRunMode::Image { .. } | PreviewRunMode::Scenario { .. } => panic!(
             "hydrolysis preview test: render runs require the preview binary (waterui-preview-mode)"
         ),
     }
-}
-
-fn load_run_config() -> PreviewRunConfig {
-    let path = std::env::var_os(PREVIEW_RUN_CONFIG_ENV).unwrap_or_else(|| {
-        panic!("hydrolysis preview test: missing environment variable `{PREVIEW_RUN_CONFIG_ENV}`")
-    });
-    let raw = fs::read(&path).unwrap_or_else(|error| {
-        panic!(
-            "hydrolysis preview test: failed to read run config `{}`: {error}",
-            PathBuf::from(&path).display()
-        )
-    });
-    serde_json::from_slice(&raw).unwrap_or_else(|error| {
-        panic!(
-            "hydrolysis preview test: failed to parse run config `{}`: {error}",
-            PathBuf::from(&path).display()
-        )
-    })
 }
 
 fn run_semantic(width: f32, height: f32) {

@@ -8,7 +8,7 @@
 //! - `launcher`: Preview support app lifecycle management
 
 mod app_client;
-mod hydrolysis;
+pub(crate) mod hydrolysis;
 mod inputs;
 mod launcher;
 pub mod protocol;

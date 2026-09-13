@@ -12,6 +12,7 @@ use ignore::WalkBuilder;
 use serde::Deserialize;
 use syn::{Attribute, Item};
 
+use super::{parse_frame, read_project_crate_name};
 use crate::shell::Shell;
 use crate::toolchain_checks;
 use crate::{error, header, note, success};
@@ -473,18 +474,6 @@ fn parse_scenario_event(event: &ScenarioEventFile) -> Result<HydrolysisPreviewSc
     })
 }
 
-async fn read_project_crate_name(project_path: &Path) -> Result<String> {
-    let cargo_toml = project_path.join("Cargo.toml");
-    let cargo_content = smol::fs::read_to_string(&cargo_toml).await?;
-    let cargo: toml::Table = cargo_content.parse()?;
-    cargo
-        .get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-        .map(ToString::to_string)
-        .ok_or_else(|| color_eyre::eyre::eyre!("Could not find package name in Cargo.toml"))
-}
-
 async fn resolve_test_targets(
     project_path: &Path,
     crate_name: &str,
@@ -839,30 +828,6 @@ async fn render_with_symbol(
             bail!("Preview app error: {err}");
         }
     }
-}
-
-/// Parse frame size from `WIDTHxHEIGHT` string.
-fn parse_frame(s: &str) -> Result<(f32, f32)> {
-    let parts: Vec<&str> = s.split('x').collect();
-    if parts.len() != 2 {
-        bail!("Invalid frame format: expected WIDTHxHEIGHT (e.g., 375x667)");
-    }
-
-    let width: f32 = parts[0]
-        .parse()
-        .map_err(|_| color_eyre::eyre::eyre!("Invalid frame width"))?;
-    let height: f32 = parts[1]
-        .parse()
-        .map_err(|_| color_eyre::eyre::eyre!("Invalid frame height"))?;
-
-    if !width.is_finite() || width <= 0.0 {
-        bail!("Invalid frame width: must be a positive finite number");
-    }
-    if !height.is_finite() || height <= 0.0 {
-        bail!("Invalid frame height: must be a positive finite number");
-    }
-
-    Ok((width, height))
 }
 
 fn missing_preview_symbol_message(function_path: &str, symbol: &str) -> String {

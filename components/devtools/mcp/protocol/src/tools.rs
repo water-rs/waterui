@@ -1,33 +1,37 @@
-//! Tool argument types and the `Tool` implementations that forward each call
-//! to the session thread as a [`Command`].
+//! Tool argument types, the [`ToolDispatch`] contract, and the `Tool`
+//! implementations that forward each call to a dispatch.
+//!
+//! The argument types carry the rustdoc a model reads as the tool and field
+//! descriptions, and derive [`Serialize`] so a front can forward them to a
+//! child process as JSON.
 
 use std::borrow::Cow;
 use std::future::Future;
+use std::sync::Arc;
 
 use aither_core::llm::tool::{Tool, ToolResult, Tools};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::session::{Command, SessionHandle};
-
-/// Implements [`Tool`] for a session-backed tool: `call` ships the built
-/// [`Command`] to the session thread and awaits the reply.
+/// Implements [`Tool`] for a dispatch-backed tool: `call` forwards the parsed
+/// arguments to [`ToolDispatch::$method`] and returns its [`ToolResult`].
 macro_rules! session_tool {
     (
         $(#[$meta:meta])*
-        $tool:ident, $name:literal, $args:ty, |$a:ident, $reply:ident| $command:expr
+        $tool:ident, $name:literal, $args:ty, $method:ident
     ) => {
         $(#[$meta])*
         #[derive(Debug)]
-        pub struct $tool(SessionHandle);
+        pub struct $tool<D>(Arc<D>);
 
-        impl $tool {
-            pub const fn new(handle: SessionHandle) -> Self {
-                Self(handle)
+        impl<D: ToolDispatch> $tool<D> {
+            /// Binds the tool to `dispatch`.
+            pub const fn new(dispatch: Arc<D>) -> Self {
+                Self(dispatch)
             }
         }
 
-        impl Tool for $tool {
+        impl<D: ToolDispatch> Tool for $tool<D> {
             type Arguments = $args;
             type Res = ToolResult;
 
@@ -37,19 +41,48 @@ macro_rules! session_tool {
 
             fn call(
                 &self,
-                $a: Self::Arguments,
+                args: Self::Arguments,
             ) -> impl Future<Output = aither_core::Result<Self::Res>> + Send {
-                let session = self.0.clone();
-                async move { session.request(|$reply| $command).await }
+                let dispatch = self.0.clone();
+                async move { Ok(dispatch.$method(args).await) }
             }
         }
     };
 }
 
+/// One implementation per host: the in-process session (`waterui-mcp`) and the
+/// `water mcp` front that forwards calls to a child process.
+///
+/// Every method answers with a [`ToolResult`]; transport-level failures are
+/// reported through [`ToolResult::error`] so they reach the model as ordinary
+/// tool errors.
+pub trait ToolDispatch: Send + Sync + 'static {
+    /// Read the accessibility tree.
+    fn snapshot(&self, args: SnapshotArgs) -> impl Future<Output = ToolResult> + Send;
+    /// Find nodes matching a selector.
+    fn find(&self, args: FindArgs) -> impl Future<Output = ToolResult> + Send;
+    /// Dispatch a semantic accessibility action.
+    fn act(&self, args: ActArgs) -> impl Future<Output = ToolResult> + Send;
+    /// Dispatch a pointer event.
+    fn pointer(&self, args: PointerArgs) -> impl Future<Output = ToolResult> + Send;
+    /// Dispatch a key press.
+    fn key(&self, args: KeyArgs) -> impl Future<Output = ToolResult> + Send;
+    /// Type text into the focused input.
+    fn type_text(&self, args: TypeTextArgs) -> impl Future<Output = ToolResult> + Send;
+    /// Wait for expectations.
+    fn wait(&self, args: WaitArgs) -> impl Future<Output = ToolResult> + Send;
+    /// Capture a PNG screenshot.
+    fn screenshot(&self, args: ScreenshotArgs) -> impl Future<Output = ToolResult> + Send;
+    /// Relaunch the app and return the fresh tree.
+    fn restart(&self, args: RestartArgs) -> impl Future<Output = ToolResult> + Send;
+}
+
 /// Read the accessibility tree: every node's id, role, label, value, state
-/// flags, supported actions, and bounds. Mutating tools already return the
-/// settled tree, so call this to re-read state without acting.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+/// flags, supported actions, and bounds.
+///
+/// Mutating tools already return the settled tree, so call this to re-read
+/// state without acting.
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct SnapshotArgs {
     /// `text` (default) renders indented node lines; `json` renders the full
@@ -58,7 +91,7 @@ pub struct SnapshotArgs {
 }
 
 /// Output format for the `snapshot` tool.
-#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SnapshotFormat {
     /// Indented text lines, one per node.
@@ -69,7 +102,7 @@ pub enum SnapshotFormat {
 }
 
 /// Criteria matching nodes by their accessibility properties.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct SelectorArgs {
     /// Role name as `snapshot` prints it: `button`, `text_input`,
@@ -87,7 +120,7 @@ pub struct SelectorArgs {
 
 /// Find nodes matching the criteria and return their node lines. Fails when
 /// nothing matches.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct FindArgs {
     /// The match criteria, inlined into the tool arguments.
@@ -97,7 +130,7 @@ pub struct FindArgs {
 
 /// Perform a semantic accessibility action on a node, then return the settled
 /// tree. Prefer this over `pointer` — it works regardless of layout.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ActArgs {
     /// Target node id from a `snapshot` or `find` line (`#42` → `42`).
     pub node: u64,
@@ -110,7 +143,7 @@ pub struct ActArgs {
 }
 
 /// The accessibility actions `act` can dispatch.
-#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ActAction {
     /// Activate the node — a click or tap.
@@ -137,6 +170,7 @@ pub enum ActAction {
 
 impl ActAction {
     /// The wire name, matching the `serde` spelling.
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Click => "click",
@@ -156,7 +190,7 @@ impl ActAction {
 /// Dispatch a pointer event at viewport coordinates, then return the settled
 /// tree. Coordinates are logical pixels, matching the `bounds=` values in
 /// `snapshot` output.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct PointerArgs {
     /// Which pointer event to dispatch.
     pub kind: PointerKind,
@@ -182,7 +216,7 @@ pub struct PointerArgs {
 }
 
 /// The pointer events `pointer` can dispatch.
-#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PointerKind {
     /// Primary down+up at the point.
@@ -204,7 +238,7 @@ pub enum PointerKind {
 }
 
 /// Press a key, then return the settled tree.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct KeyArgs {
     /// A single character (`"a"`, `" "`), or a W3C named key: `Enter`, `Tab`,
     /// `Escape`, `Backspace`, `Delete`, `ArrowLeft`, `ArrowRight`, `ArrowUp`,
@@ -216,7 +250,7 @@ pub struct KeyArgs {
 }
 
 /// Type text into the focused text input, then return the settled tree.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TypeTextArgs {
     /// The text to insert.
     pub text: String,
@@ -225,7 +259,7 @@ pub struct TypeTextArgs {
 /// Wait until every given expectation holds, then return `fulfilled` — or
 /// `timed out` — followed by the current tree. Prefer this over polling
 /// `snapshot`.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WaitArgs {
     /// Fulfilled once a matching node exists.
@@ -239,7 +273,7 @@ pub struct WaitArgs {
 }
 
 /// A selector plus the value a matching node must reach.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ValueEqArgs {
     /// The match criteria, inlined into the tool arguments.
     #[serde(flatten)]
@@ -249,94 +283,99 @@ pub struct ValueEqArgs {
 }
 
 /// Capture the current frame as a PNG image.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ScreenshotArgs {}
 
-/// Remount the app from scratch and return the fresh tree. Node ids from
+/// Relaunch the app from scratch and return the fresh tree; state resets.
+///
+/// Under `water mcp` the app is rebuilt from the current sources first, so
+/// edit → `restart` → `snapshot` is the development loop. Node ids from
 /// before the restart no longer refer to live nodes.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RestartArgs {}
 
 session_tool!(
     /// The `snapshot` tool.
-    Snapshot, "snapshot", SnapshotArgs, |args, reply| Command::Snapshot {
-        format: args.format,
-        reply
-    }
+    Snapshot, "snapshot", SnapshotArgs, snapshot
 );
 session_tool!(
     /// The `find` tool.
-    Find, "find", FindArgs, |args, reply| Command::Find { args, reply }
+    Find, "find", FindArgs, find
 );
 session_tool!(
     /// The `act` tool.
-    Act, "act", ActArgs, |args, reply| Command::Act { args, reply }
+    Act, "act", ActArgs, act
 );
 session_tool!(
     /// The `pointer` tool.
-    Pointer, "pointer", PointerArgs, |args, reply| Command::Pointer { args, reply }
+    Pointer, "pointer", PointerArgs, pointer
 );
 session_tool!(
     /// The `key` tool.
-    Key, "key", KeyArgs, |args, reply| Command::Key { args, reply }
+    Key, "key", KeyArgs, key
 );
 session_tool!(
     /// The `type_text` tool.
-    TypeText, "type_text", TypeTextArgs, |args, reply| Command::TypeText {
-        text: args.text,
-        reply
-    }
+    TypeText, "type_text", TypeTextArgs, type_text
 );
 session_tool!(
     /// The `wait` tool.
-    Wait, "wait", WaitArgs, |args, reply| Command::Wait {
-        args: Box::new(args),
-        reply
-    }
+    Wait, "wait", WaitArgs, wait
 );
 session_tool!(
     /// The `screenshot` tool.
-    Screenshot, "screenshot", ScreenshotArgs, |_args, reply| Command::Screenshot {
-        reply
-    }
+    Screenshot, "screenshot", ScreenshotArgs, screenshot
 );
 session_tool!(
     /// The `restart` tool.
-    Restart, "restart", RestartArgs, |_args, reply| Command::Restart { reply }
+    Restart, "restart", RestartArgs, restart
 );
 
-/// Registers every tool against `handle`.
+/// The registered tool names, in registration order.
+pub const SESSION_TOOL_NAMES: [&str; 9] = [
+    "snapshot",
+    "find",
+    "act",
+    "pointer",
+    "key",
+    "type_text",
+    "wait",
+    "screenshot",
+    "restart",
+];
+
+/// Registers the nine session tools against `dispatch`.
 ///
 /// # Panics
 ///
 /// Registration is static — fixed names and documented argument types — so a
 /// failure here is a programming error, not a runtime condition.
-pub fn register_all(tools: &mut Tools, handle: &SessionHandle) {
+pub fn register_session_tools(tools: &mut Tools, dispatch: Arc<impl ToolDispatch>) {
     tools
-        .register(Snapshot::new(handle.clone()))
+        .register(Snapshot::new(dispatch.clone()))
         .expect("static tool registration cannot fail");
     tools
-        .register(Find::new(handle.clone()))
+        .register(Find::new(dispatch.clone()))
         .expect("static tool registration cannot fail");
     tools
-        .register(Act::new(handle.clone()))
+        .register(Act::new(dispatch.clone()))
         .expect("static tool registration cannot fail");
     tools
-        .register(Pointer::new(handle.clone()))
+        .register(Pointer::new(dispatch.clone()))
         .expect("static tool registration cannot fail");
     tools
-        .register(Key::new(handle.clone()))
+        .register(Key::new(dispatch.clone()))
         .expect("static tool registration cannot fail");
     tools
-        .register(TypeText::new(handle.clone()))
+        .register(TypeText::new(dispatch.clone()))
         .expect("static tool registration cannot fail");
     tools
-        .register(Wait::new(handle.clone()))
+        .register(Wait::new(dispatch.clone()))
         .expect("static tool registration cannot fail");
     tools
-        .register(Screenshot::new(handle.clone()))
+        .register(Screenshot::new(dispatch.clone()))
         .expect("static tool registration cannot fail");
     tools
-        .register(Restart::new(handle.clone()))
+        .register(Restart::new(dispatch))
         .expect("static tool registration cannot fail");
 }

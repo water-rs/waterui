@@ -1,6 +1,6 @@
 //! CLI command implementations.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::shell::Shell;
 use crate::{note, warn};
@@ -54,6 +54,69 @@ pub mod devices;
 pub mod doctor;
 pub mod gc;
 pub mod inspector;
+pub mod mcp;
 pub mod package;
 pub mod preview;
 pub mod run;
+
+/// Parse frame size from a `WIDTHxHEIGHT` string.
+fn parse_frame(s: &str) -> color_eyre::eyre::Result<(f32, f32)> {
+    let parts: Vec<&str> = s.split('x').collect();
+    if parts.len() != 2 {
+        color_eyre::eyre::bail!("Invalid frame format: expected WIDTHxHEIGHT (e.g., 375x667)");
+    }
+
+    let width: f32 = parts[0]
+        .parse()
+        .map_err(|_| color_eyre::eyre::eyre!("Invalid frame width"))?;
+    let height: f32 = parts[1]
+        .parse()
+        .map_err(|_| color_eyre::eyre::eyre!("Invalid frame height"))?;
+
+    if !width.is_finite() || width <= 0.0 {
+        color_eyre::eyre::bail!("Invalid frame width: must be a positive finite number");
+    }
+    if !height.is_finite() || height <= 0.0 {
+        color_eyre::eyre::bail!("Invalid frame height: must be a positive finite number");
+    }
+
+    Ok((width, height))
+}
+
+/// Parse a viewport size from a `WIDTHxHEIGHT` string into whole pixels.
+fn parse_viewport(s: &str) -> color_eyre::eyre::Result<(u32, u32)> {
+    let parts: Vec<&str> = s.split('x').collect();
+    if parts.len() != 2 {
+        color_eyre::eyre::bail!("Invalid viewport format: expected WIDTHxHEIGHT (e.g., 390x844)");
+    }
+
+    let width: u32 = parts[0]
+        .parse()
+        .map_err(|_| color_eyre::eyre::eyre!("Invalid viewport width"))?;
+    let height: u32 = parts[1]
+        .parse()
+        .map_err(|_| color_eyre::eyre::eyre!("Invalid viewport height"))?;
+
+    if width == 0 {
+        color_eyre::eyre::bail!("Invalid viewport width: must be positive");
+    }
+    if height == 0 {
+        color_eyre::eyre::bail!("Invalid viewport height: must be positive");
+    }
+
+    Ok((width, height))
+}
+
+/// Reads the `package.name` of a project's `Cargo.toml` — the crate name the
+/// generated backend depends on.
+async fn read_project_crate_name(project_path: &Path) -> color_eyre::eyre::Result<String> {
+    let cargo_toml = project_path.join("Cargo.toml");
+    let cargo_content = smol::fs::read_to_string(&cargo_toml).await?;
+    let cargo: toml::Table = cargo_content.parse()?;
+    cargo
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(ToString::to_string)
+        .ok_or_else(|| color_eyre::eyre::eyre!("Could not find package name in Cargo.toml"))
+}

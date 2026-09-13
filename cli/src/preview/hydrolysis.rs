@@ -123,7 +123,7 @@ pub async fn render_preview_with_hydrolysis(
     } = request;
     let project = ensure_hydrolysis_backend_ready(project_path).await?;
     write_preview_bindings(&project, source, theme, None).await?;
-    stage_preview_resources(&project, theme).await?;
+    stage_hydrolysis_resources(&project, theme).await?;
 
     let mut build_options = BuildOptions::development(false);
     if let Some(sccache_path) = sccache_path {
@@ -167,7 +167,7 @@ pub async fn test_preview_with_hydrolysis(
     } = request;
     let project = ensure_hydrolysis_backend_ready(project_path).await?;
     write_preview_bindings(&project, source, theme, Some(automation_body)).await?;
-    stage_preview_resources(&project, theme).await?;
+    stage_hydrolysis_resources(&project, theme).await?;
 
     let mut build_options = BuildOptions::development(false);
     if let Some(sccache_path) = sccache_path {
@@ -193,7 +193,13 @@ pub async fn test_preview_with_hydrolysis(
     run_preview_test_binary(&project, &binary_path, width, height).await
 }
 
-async fn stage_preview_resources(project: &Project, theme: HydrolysisPreviewTheme) -> Result<()> {
+/// Stages the project's assets and the selected theme's fonts into the
+/// generated backend's `resources/` directory. Shared by the preview and MCP
+/// runtime modes.
+pub async fn stage_hydrolysis_resources(
+    project: &Project,
+    theme: HydrolysisPreviewTheme,
+) -> Result<()> {
     let resources_dir = project
         .backend_path::<HydrolysisBackend>()
         .join("resources");
@@ -212,7 +218,9 @@ async fn stage_preview_resources(project: &Project, theme: HydrolysisPreviewThem
     Ok(())
 }
 
-async fn ensure_hydrolysis_backend_ready(project_path: &Path) -> Result<Project> {
+/// Opens the project and makes sure its managed Hydrolysis backend exists and
+/// matches the current templates. Shared by the preview and MCP flows.
+pub async fn ensure_hydrolysis_backend_ready(project_path: &Path) -> Result<Project> {
     let mut project = Project::open(project_path).await?;
     if project.hydrolysis_backend().is_none() && !project.is_playground() {
         bail!("Hydrolysis backend is not configured. Run `water backend add hydrolysis`.");

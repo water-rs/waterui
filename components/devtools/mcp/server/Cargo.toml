@@ -12,11 +12,11 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+waterui-mcp-protocol.workspace = true
 waterui-testing.workspace = true
 accesskit = "0.25"
 aither-core.workspace = true
 aither-mcp = { workspace = true, features = ["server"] }
-schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 async-channel = "2.5"

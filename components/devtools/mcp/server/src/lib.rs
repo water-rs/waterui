@@ -18,19 +18,19 @@
 
 mod png;
 mod session;
-mod tools;
 mod tree;
+
+use std::sync::Arc;
 
 use aither_core::llm::tool::Tools;
 use aither_mcp::transport::{BidirectionalTransport, StdioTransport};
 use aither_mcp::{McpError, McpServer};
+use waterui_mcp_protocol::{INSTRUCTIONS, register_session_tools};
 use waterui_testing::OffscreenApp;
 
 pub use aither_mcp::protocol::ServerInfo;
+pub use waterui_mcp_protocol::SESSION_TOOL_NAMES;
 use session::{Session, SessionHandle};
-
-/// Server instructions handed to the client during `initialize`.
-const INSTRUCTIONS: &str = include_str!("instructions.md");
 
 /// Serves a session over standard input and output.
 ///
@@ -76,8 +76,9 @@ where
     // only once the last sender drops — which must be the copies inside
     // `tools`, released when the server thread exits.
     {
-        let handle = SessionHandle::new(tx);
-        tools::register_all(&mut tools, &handle);
+        let handle = Arc::new(SessionHandle::new(tx));
+        register_session_tools(&mut tools, handle);
+        debug_assert_eq!(tools.definitions().len(), SESSION_TOOL_NAMES.len());
     }
 
     let ServerInfo { name, version } = info;
