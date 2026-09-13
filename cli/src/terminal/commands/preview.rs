@@ -2,20 +2,16 @@
 //!
 //! Renders or semantically tests a `WaterUI` preview.
 
-use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, Subcommand};
 use eyre::{Result, bail};
-use ignore::WalkBuilder;
 use serde::Deserialize;
-use syn::{Attribute, Item};
 
 use crate::shell::Shell;
 use crate::{error, header, note, success};
+use waterui_cli::artifact_symbols::{ArtifactSymbols, build_host_rlib};
 use waterui_cli::mcp::preview::PreviewArgs;
-use waterui_cli::preview::protocol::function_path_to_symbol;
 use waterui_cli::preview::request::{
     self, CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewPlatform, PreviewTarget,
 };
@@ -32,12 +28,15 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
     let (width, height) = request::parse_frame(&args.frame)?;
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let crate_name = read_project_crate_name(&project_path).await?;
+    let sccache_path =
+        super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
     let targets = resolve_test_targets(
         &project_path,
         &crate_name,
         args.target.as_deref(),
         args.expr,
         args.all,
+        sccache_path.as_deref(),
     )
     .await?;
     let automation_body = load_automation_body(
@@ -47,9 +46,6 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
         "`water preview test`",
     )
     .await?;
-    let sccache_path =
-        super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
-
     for target in targets {
         header!(shell, "Preview test: {}", target.display_name());
         let spinner = shell.spinner("Building and testing with hydrolysis...");
@@ -450,6 +446,7 @@ async fn resolve_test_targets(
     target: Option<&str>,
     force_expression: bool,
     all: bool,
+    sccache_path: Option<&Path>,
 ) -> Result<Vec<PreviewTarget>> {
     match (all, target) {
         (true, Some(_)) => {
@@ -458,7 +455,7 @@ async fn resolve_test_targets(
         (true, None) if force_expression => {
             bail!("`--all` cannot be combined with `--expr`.");
         }
-        (true, None) => discover_preview_targets(project_path, crate_name).await,
+        (true, None) => discover_preview_targets(project_path, crate_name, sccache_path).await,
         (false, Some(target)) => {
             if force_expression {
                 Ok(vec![PreviewTarget::Expression {
@@ -479,94 +476,25 @@ async fn resolve_test_targets(
 async fn discover_preview_targets(
     project_path: &Path,
     crate_name: &str,
+    sccache_path: Option<&Path>,
 ) -> Result<Vec<PreviewTarget>> {
-    let src_dir = project_path.join("src");
-    let mut previews = BTreeMap::<String, PathBuf>::new();
-    let mut duplicates = Vec::<(String, PathBuf, PathBuf)>::new();
-
-    for entry in WalkBuilder::new(&src_dir).standard_filters(true).build() {
-        let entry = entry?;
-        if !entry
-            .file_type()
-            .is_some_and(|file_type| file_type.is_file())
-        {
-            continue;
-        }
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
-            continue;
-        }
-        let source = smol::fs::read_to_string(path).await?;
-        let file = syn::parse_file(&source)?;
-        collect_preview_functions(path, &file.items, &mut previews, &mut duplicates);
+    let rlib = build_host_rlib(project_path, sccache_path).await?;
+    let symbols = ArtifactSymbols::read(&rlib)?;
+    // `#[preview]` exports `waterui_preview_<crate>_<fn>`; crate names are
+    // normalized like `function_path_to_symbol` does (dashes become
+    // underscores).
+    let prefix = format!("waterui_preview_{}_", crate_name.replace('-', "_"));
+    let symbols_found = symbols.leaves_with_prefix(&prefix);
+    if symbols_found.is_empty() {
+        bail!("no `waterui_preview_*` exports found in {}", rlib.display());
     }
-
-    if !duplicates.is_empty() {
-        let mut message = String::from(
-            "duplicate `#[preview]` function names are not supported because WaterUI preview exports use function names only:",
-        );
-        for (name, first, second) in duplicates {
-            let _ = write!(
-                message,
-                "\n  `{name}` in {} and {}",
-                first.display(),
-                second.display()
-            );
-        }
-        bail!("{message}");
-    }
-    if previews.is_empty() {
-        bail!(
-            "no `#[preview]` functions found under {}",
-            src_dir.display()
-        );
-    }
-
-    Ok(previews
-        .into_keys()
-        .map(|function_name| PreviewTarget::Function {
-            symbol: function_path_to_symbol(crate_name, &function_name),
-            function_path: function_name,
+    Ok(symbols_found
+        .into_iter()
+        .map(|symbol| PreviewTarget::Function {
+            function_path: symbol[prefix.len()..].to_string(),
+            symbol,
         })
         .collect())
-}
-
-fn collect_preview_functions(
-    path: &Path,
-    items: &[Item],
-    previews: &mut BTreeMap<String, PathBuf>,
-    duplicates: &mut Vec<(String, PathBuf, PathBuf)>,
-) {
-    for item in items {
-        match item {
-            Item::Fn(function) if has_preview_attr(&function.attrs) => {
-                let name = function.sig.ident.to_string();
-                if let Some(first) = previews.get(&name) {
-                    duplicates.push((name, first.clone(), path.to_path_buf()));
-                } else {
-                    previews.insert(name, path.to_path_buf());
-                }
-            }
-            Item::Mod(module) => {
-                if let Some((_, items)) = &module.content {
-                    collect_preview_functions(path, items, previews, duplicates);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn has_preview_attr(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        let path = attr.path();
-        let segments = path
-            .segments
-            .iter()
-            .map(|segment| segment.ident.to_string())
-            .collect::<Vec<_>>();
-        path.is_ident("preview") || segments == ["waterui".to_string(), "preview".to_string()]
-    })
 }
 
 async fn load_automation_body(
