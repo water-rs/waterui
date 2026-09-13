@@ -794,10 +794,11 @@ fn resolve_packages(
         let package = match candidates.as_slice() {
             [package] => *package,
             // An extracted crate the framework no longer builds never enters
-            // its lock — `waterui-dew` releases from water-rs/dew (#614), so
-            // the scaffold's declared requirement is the resolution, the same
-            // `=<version>` the registry-source arm below produces for a crate
-            // the framework still carries.
+            // its lock — `waterui-dew` releases from water-rs/dew (#614) and
+            // `waterui-gtk` from water-rs/gtk-backend (#612), so the scaffold's
+            // declared requirement is the resolution, the same `=<version>` the
+            // registry-source arm below produces for a crate the framework
+            // still carries.
             [] => {
                 packages.insert(
                     name.to_owned(),
@@ -1208,6 +1209,7 @@ mod tests {
         let scaffold = BTreeMap::from([
             ("waterui-version".to_string(), "0.3.0".to_string()),
             ("waterui-dew-version".to_string(), "0.2.1".to_string()),
+            ("waterui-gtk-version".to_string(), "0.1.2".to_string()),
         ]);
         let packages = resolve_packages(
             &scaffold,
@@ -1220,6 +1222,9 @@ mod tests {
         let dew = &packages["waterui-dew"];
         assert!(dew.git.is_none());
         assert_eq!(dew.version.as_ref().unwrap().to_string(), "=0.2.1");
+        let gtk = &packages["waterui-gtk"];
+        assert!(gtk.git.is_none());
+        assert_eq!(gtk.version.as_ref().unwrap().to_string(), "=0.1.2");
     }
 
     /// The exact requirement a stable channel writes for one scaffold entry.
