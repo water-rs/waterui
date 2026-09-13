@@ -23,9 +23,22 @@
 		D018675E2E6C7BBB00802E96 /* {{ ctx.app_display_name }}.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "{{ ctx.app_display_name }}.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		D01867612E6C7BBB00802E96 /* Exceptions for "{{ ctx.app_name }}" folder in "{{ ctx.crate_name }}" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = D018675D2E6C7BBB00802E96 /* {{ ctx.crate_name }} */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		D01867602E6C7BBB00802E96 /* {{ ctx.app_name }} */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D01867612E6C7BBB00802E96 /* Exceptions for "{{ ctx.app_name }}" folder in "{{ ctx.crate_name }}" target */,
+			);
 			explicitFolders = (
 				waterui_assets,
 			);
@@ -336,6 +349,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "{{ ctx.app_name }}/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "{{ ctx.app_display_name }}";
 				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = {{ ctx.macos_lsuielement() }};
 				"INFOPLIST_KEY_NSPrincipalClass[sdk=macosx*]" = NSApplication;
@@ -343,8 +357,6 @@
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIBackgroundModes[sdk=iphoneos*][0]" = audio;
 				"INFOPLIST_KEY_UIBackgroundModes[sdk=iphonesimulator*][0]" = audio;
-				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -398,6 +410,7 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "{{ ctx.app_name }}/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "{{ ctx.app_display_name }}";
 				"INFOPLIST_KEY_LSUIElement[sdk=macosx*]" = {{ ctx.macos_lsuielement() }};
 				"INFOPLIST_KEY_NSPrincipalClass[sdk=macosx*]" = NSApplication;
@@ -405,8 +418,6 @@
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIBackgroundModes[sdk=iphoneos*][0]" = audio;
 				"INFOPLIST_KEY_UIBackgroundModes[sdk=iphonesimulator*][0]" = audio;
-				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

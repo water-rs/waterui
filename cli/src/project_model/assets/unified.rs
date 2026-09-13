@@ -9,7 +9,8 @@ use sha2::{Digest, Sha256};
 use smol::fs;
 use waterui_assets_core::AssetKind;
 use waterui_assets_planner::{
-    AssetRole, BundleManifest, HexColor, LaunchPlan, PlannedAsset, ThemeConfig, plan_bundle,
+    AssetRole, BundleManifest, ColorScheme, HexColor, LaunchPlan, PlannedAsset, ThemeConfig,
+    plan_bundle,
 };
 
 #[cfg(target_os = "macos")]
@@ -23,6 +24,11 @@ use crate::project::Project;
 const ASSET_ROOT_DIR: &str = "waterui_assets";
 /// The accent every platform falls back to when `[theme]` names none.
 const DEFAULT_ACCENT: HexColor = HexColor::from_rgb([0x0A, 0x84, 0xFF]);
+/// Point size of the iOS launch image, rendered at 1x, 2x and 3x.
+const APPLE_LAUNCH_IMAGE_POINTS: u32 = 128;
+/// Asset-catalog names the generated Xcode project refers to.
+const APPLE_LAUNCH_BACKGROUND_SET: &str = "LaunchBackground";
+const APPLE_LAUNCH_IMAGE_SET: &str = "LaunchImage";
 const ANDROID_VALUES_DIR: &str = "app/src/main/res/values";
 const ANDROID_VALUES_NIGHT_DIR: &str = "app/src/main/res/values-night";
 const ANDROID_DRAWABLE_DIR: &str = "app/src/main/res/drawable";
@@ -52,7 +58,35 @@ pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result
 
     let icon = load_project_icon(&manifest)?;
     write_apple_app_icon(&icon, &xcassets_dest).await?;
-    write_apple_accent_color(accent, &xcassets_dest).await?;
+    write_apple_color_set(
+        "AccentColor",
+        accent.unwrap_or(DEFAULT_ACCENT),
+        None,
+        &xcassets_dest,
+    )
+    .await?;
+
+    // The launch screen: a color set with a dark appearance when one differs,
+    // and the artwork as a universal image set. Neither exists when nothing
+    // is configured, and the generated project then names neither.
+    let launch = launch_assets_from(project, &manifest)?;
+    let plan = launch.plan();
+    if let Some(background) = plan.background(ColorScheme::Light) {
+        let dark = plan
+            .has_distinct_dark_background()
+            .then(|| plan.background(ColorScheme::Dark).copied())
+            .flatten();
+        write_apple_color_set(
+            APPLE_LAUNCH_BACKGROUND_SET,
+            *background,
+            dark,
+            &xcassets_dest,
+        )
+        .await?;
+    }
+    if let Some(artwork) = launch.artwork() {
+        write_apple_launch_image(artwork, &xcassets_dest).await?;
+    }
 
     Ok(())
 }
@@ -69,6 +103,19 @@ impl LaunchAssets {
     #[must_use]
     pub const fn plan(&self) -> &LaunchPlan {
         &self.plan
+    }
+
+    /// Whether a `Launch.*` artwork exists.
+    #[must_use]
+    pub const fn has_artwork(&self) -> bool {
+        self.artwork.is_some()
+    }
+
+    /// The `Launch.*` artwork, for platforms whose default is no artwork
+    /// (iOS) or the OS's own (Android).
+    #[must_use]
+    pub(super) const fn artwork(&self) -> Option<&IconSource> {
+        self.artwork.as_ref()
     }
 
     /// The `Launch.*` artwork, or the app icon where that is the platform's
@@ -101,13 +148,17 @@ impl LaunchAssets {
 /// decoded.
 pub fn launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
     let manifest = build_manifest(project)?;
+    launch_assets_from(project, &manifest)
+}
+
+fn launch_assets_from(project: &Project, manifest: &BundleManifest) -> eyre::Result<LaunchAssets> {
     let water = project.manifest();
-    let plan = LaunchPlan::resolve(water.launch.as_ref(), water.theme.as_ref(), &manifest);
+    let plan = LaunchPlan::resolve(water.launch.as_ref(), water.theme.as_ref(), manifest);
     let artwork = plan
         .image()
         .map(|path| IconSource::load(path))
         .transpose()?;
-    let app_icon = load_project_icon(&manifest)?;
+    let app_icon = load_project_icon(manifest)?;
     Ok(LaunchAssets {
         plan,
         artwork,
@@ -368,68 +419,141 @@ fn detect_font_family(path: &Path) -> eyre::Result<String> {
     Ok(family)
 }
 
-async fn write_apple_accent_color(
-    accent: Option<HexColor>,
+/// Writes a named color set with a universal color and, when given, a dark
+/// appearance.
+async fn write_apple_color_set(
+    name: &str,
+    light: HexColor,
+    dark: Option<HexColor>,
     xcassets_dest: &Path,
 ) -> eyre::Result<()> {
     #[derive(Serialize)]
-    struct Components<'a> {
-        red: &'a str,
-        green: &'a str,
-        blue: &'a str,
-        alpha: &'a str,
+    struct Components {
+        red: String,
+        green: String,
+        blue: String,
+        alpha: &'static str,
     }
 
     #[derive(Serialize)]
-    struct Color<'a> {
+    struct Color {
         #[serde(rename = "color-space")]
-        color_space: &'a str,
-        components: Components<'a>,
+        color_space: &'static str,
+        components: Components,
     }
 
     #[derive(Serialize)]
-    struct ColorItem<'a> {
-        idiom: &'a str,
-        color: Color<'a>,
+    struct Appearance {
+        appearance: &'static str,
+        value: &'static str,
     }
 
     #[derive(Serialize)]
-    struct Info<'a> {
+    struct ColorItem {
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        appearances: Vec<Appearance>,
+        idiom: &'static str,
+        color: Color,
+    }
+
+    #[derive(Serialize)]
+    struct Info {
         version: u8,
-        author: &'a str,
+        author: &'static str,
     }
 
     #[derive(Serialize)]
-    struct Contents<'a> {
-        colors: Vec<ColorItem<'a>>,
-        info: Info<'a>,
+    struct Contents {
+        colors: Vec<ColorItem>,
+        info: Info,
     }
 
-    let [red, green, blue] = accent.unwrap_or(DEFAULT_ACCENT).rgb();
-    let accent_dir = xcassets_dest.join("AccentColor.colorset");
-    fs::create_dir_all(&accent_dir).await?;
-    let red = component_string(red);
-    let green = component_string(green);
-    let blue = component_string(blue);
-    let json = serde_json::to_vec_pretty(&Contents {
-        colors: vec![ColorItem {
+    fn item(color: HexColor, appearances: Vec<Appearance>) -> ColorItem {
+        let [red, green, blue] = color.rgb();
+        ColorItem {
+            appearances,
             idiom: "universal",
             color: Color {
                 color_space: "srgb",
                 components: Components {
-                    red: &red,
-                    green: &green,
-                    blue: &blue,
+                    red: component_string(red),
+                    green: component_string(green),
+                    blue: component_string(blue),
                     alpha: "1.000000",
                 },
             },
-        }],
+        }
+    }
+
+    let mut colors = vec![item(light, Vec::new())];
+    if let Some(dark) = dark {
+        colors.push(item(
+            dark,
+            vec![Appearance {
+                appearance: "luminosity",
+                value: "dark",
+            }],
+        ));
+    }
+    let set_dir = xcassets_dest.join(format!("{name}.colorset"));
+    fs::create_dir_all(&set_dir).await?;
+    let json = serde_json::to_vec_pretty(&Contents {
+        colors,
         info: Info {
             version: 1,
             author: "water",
         },
     })?;
-    fs::write(accent_dir.join("Contents.json"), json).await?;
+    fs::write(set_dir.join("Contents.json"), json).await?;
+    Ok(())
+}
+
+/// Writes the launch artwork as a universal image set at 1x, 2x and 3x of
+/// its point size; iOS centers it at that size inside the safe area.
+async fn write_apple_launch_image(source: &IconSource, xcassets_dest: &Path) -> eyre::Result<()> {
+    #[derive(Serialize)]
+    struct ImageItem {
+        idiom: &'static str,
+        scale: &'static str,
+        filename: String,
+    }
+
+    #[derive(Serialize)]
+    struct Info {
+        version: u8,
+        author: &'static str,
+    }
+
+    #[derive(Serialize)]
+    struct Contents {
+        images: Vec<ImageItem>,
+        info: Info,
+    }
+
+    let set_dir = xcassets_dest.join(format!("{APPLE_LAUNCH_IMAGE_SET}.imageset"));
+    reset_dir(&set_dir).await?;
+    let mut images = Vec::new();
+    for (scale, factor) in [("1x", 1_u32), ("2x", 2), ("3x", 3)] {
+        let filename = format!("{APPLE_LAUNCH_IMAGE_SET}@{scale}.png");
+        write_png(
+            &source.render(APPLE_LAUNCH_IMAGE_POINTS * factor)?,
+            &set_dir.join(&filename),
+        )
+        .await?;
+        images.push(ImageItem {
+            idiom: "universal",
+            scale,
+            filename,
+        });
+    }
+    let json = serde_json::to_vec_pretty(&Contents {
+        images,
+        info: Info {
+            version: 1,
+            author: "water",
+        },
+    })?;
+    fs::write(set_dir.join("Contents.json"), json).await?;
     Ok(())
 }
 
@@ -719,6 +843,61 @@ mod tests {
                 let decoded = image::open(&launcher).expect("launcher must be a decodable png");
                 assert_eq!(decoded.width(), *size, "wrong launcher size in {dir}");
             }
+        });
+    }
+
+    #[test]
+    fn apple_color_set_carries_a_dark_appearance_only_when_given() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        smol::block_on(async {
+            let light = HexColor::from_rgb([0x0B, 0x1E, 0x3F]);
+            let dark = HexColor::from_rgb([0, 0, 0]);
+            write_apple_color_set("LaunchBackground", light, Some(dark), temp.path())
+                .await
+                .expect("color set with dark appearance");
+            let json: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(temp.path().join("LaunchBackground.colorset/Contents.json"))
+                    .expect("contents"),
+            )
+            .expect("valid json");
+            let colors = json["colors"].as_array().expect("colors");
+            assert_eq!(colors.len(), 2);
+            assert!(colors[0].get("appearances").is_none());
+            assert_eq!(colors[0]["color"]["components"]["red"], "0.043137");
+            assert_eq!(colors[1]["appearances"][0]["value"], "dark");
+            assert_eq!(colors[1]["color"]["components"]["red"], "0.000000");
+
+            write_apple_color_set("AccentColor", light, None, temp.path())
+                .await
+                .expect("color set without dark appearance");
+            let json: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(temp.path().join("AccentColor.colorset/Contents.json"))
+                    .expect("contents"),
+            )
+            .expect("valid json");
+            assert_eq!(json["colors"].as_array().expect("colors").len(), 1);
+        });
+    }
+
+    #[test]
+    fn apple_launch_image_is_written_at_three_scales() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        smol::block_on(async {
+            write_apple_launch_image(&IconSource::default_logo(), temp.path())
+                .await
+                .expect("launch image set");
+            let set = temp.path().join("LaunchImage.imageset");
+            for (scale, factor) in [("1x", 1), ("2x", 2), ("3x", 3)] {
+                let decoded = image::open(set.join(format!("LaunchImage@{scale}.png")))
+                    .expect("launch image must decode");
+                assert_eq!(decoded.width(), APPLE_LAUNCH_IMAGE_POINTS * factor);
+                assert_eq!(decoded.height(), decoded.width());
+            }
+            let json: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(set.join("Contents.json")).expect("contents"),
+            )
+            .expect("valid json");
+            assert_eq!(json["images"].as_array().expect("images").len(), 3);
         });
     }
 
