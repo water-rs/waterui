@@ -46,8 +46,9 @@ pub async fn stage_for_apple(
     project: &Project,
     dest_dir: &Path,
     sccache_path: Option<&Path>,
+    dev_server: bool,
 ) -> eyre::Result<BundleManifest> {
-    let manifest = build_manifest(project, sccache_path).await?;
+    let manifest = build_manifest(project, sccache_path, dev_server).await?;
     let assets_dest = dest_dir.join(ASSET_ROOT_DIR);
     reset_dir(&assets_dest).await?;
     copy_manifest_assets(&manifest, &assets_dest).await?;
@@ -185,8 +186,9 @@ pub async fn stage_for_android(
     project: &Project,
     backend_path: &Path,
     sccache_path: Option<&Path>,
+    dev_server: bool,
 ) -> eyre::Result<BundleManifest> {
-    let manifest = build_manifest(project, sccache_path).await?;
+    let manifest = build_manifest(project, sccache_path, dev_server).await?;
     let assets_dest = backend_path
         .join("app/src/main/assets")
         .join(ASSET_ROOT_DIR);
@@ -247,8 +249,9 @@ pub async fn stage_for_gtk(
     project: &Project,
     resources_dir: &Path,
     sccache_path: Option<&Path>,
+    dev_server: bool,
 ) -> eyre::Result<BundleManifest> {
-    let manifest = build_manifest(project, sccache_path).await?;
+    let manifest = build_manifest(project, sccache_path, dev_server).await?;
     let assets_dest = resources_dir.join(ASSET_ROOT_DIR);
     reset_dir(&assets_dest).await?;
     copy_manifest_assets(&manifest, &assets_dest).await?;
@@ -328,6 +331,7 @@ fn plan_main_assets(project: &Project) -> eyre::Result<Vec<PlannedAsset>> {
 async fn build_manifest(
     project: &Project,
     sccache_path: Option<&Path>,
+    dev_server: bool,
 ) -> eyre::Result<BundleManifest> {
     let mut assets = plan_main_assets(project)?;
 
@@ -361,8 +365,13 @@ async fn build_manifest(
         // An `include_web!` mount carries the toolchain project that produces
         // its output directory; build it before staging. Staging runs once
         // per `water` invocation — callers reuse the returned manifest — so
-        // the frontend build rides that same exactly-once guarantee.
+        // the frontend build rides that same exactly-once guarantee. In
+        // dev-server mode the app opens the bundler's URL instead, so neither
+        // the build nor the staged copy happens.
         if meta.project.is_some() {
+            if dev_server {
+                continue;
+            }
             crate::web::build_frontend(package_manager, &meta).await?;
         }
         assets.extend(plan_mount(&meta.path, &meta.mount)?);

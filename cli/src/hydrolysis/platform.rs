@@ -118,7 +118,13 @@ pub async fn build_hydrolysis_with_envs_and_features(
 
     // Stage assets and the Windows icon resource before the backend is built.
     // The generated `build.rs` expects `app-icon.ico` to exist when targeting Windows.
-    copy_assets_and_fonts(project, &backend_path, options.sccache_path()).await?;
+    copy_assets_and_fonts(
+        project,
+        &backend_path,
+        options.sccache_path(),
+        options.uses_dev_server(),
+    )
+    .await?;
 
     let llvm_envs = WindowsArm64LlvmToolchain
         .cargo_envs(&crate::toolchain::Host::current())
@@ -296,7 +302,7 @@ pub async fn package_hydrolysis(
         "release"
     };
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    copy_assets_and_fonts(project, &backend_path, None).await?;
+    copy_assets_and_fonts(project, &backend_path, None, options.uses_dev_server()).await?;
 
     let linkage = if options.uses_shared_rust_runtime() {
         RustLinkage::SharedRuntime
@@ -485,11 +491,13 @@ async fn copy_assets_and_fonts(
     project: &Project,
     backend_path: &Path,
     sccache_path: Option<&Path>,
+    dev_server: bool,
 ) -> eyre::Result<()> {
     let resources_dir = backend_path.join("resources");
     fs::create_dir_all(&resources_dir).await?;
     let manifest =
-        assets::stage_project_assets_for_gtk(project, &resources_dir, sccache_path).await?;
+        assets::stage_project_assets_for_gtk(project, &resources_dir, sccache_path, dev_server)
+            .await?;
 
     // The generated crate's build script embeds this into the executable's
     // resources when targeting Windows.

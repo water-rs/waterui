@@ -147,7 +147,7 @@ pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::R
     let backend_path = project.backend_path::<Gtk4Backend>();
 
     // Copy project assets and dependency fonts
-    copy_assets_and_fonts(project, &backend_path, None).await?;
+    copy_assets_and_fonts(project, &backend_path, None, options.uses_dev_server()).await?;
 
     let linkage = if options.uses_shared_rust_runtime() {
         RustLinkage::SharedRuntime
@@ -238,13 +238,15 @@ async fn copy_assets_and_fonts(
     project: &Project,
     backend_path: &Path,
     sccache_path: Option<&Path>,
+    dev_server: bool,
 ) -> eyre::Result<()> {
     let resources_dir = backend_path.join("resources");
     fs::create_dir_all(&resources_dir).await?;
 
     // Stage project assets using platform-native conventions.
     let manifest =
-        assets::stage_project_assets_for_gtk(project, &resources_dir, sccache_path).await?;
+        assets::stage_project_assets_for_gtk(project, &resources_dir, sccache_path, dev_server)
+            .await?;
     assets::stage_hicolor_icons(project, &resources_dir.join("icons")).await?;
 
     // Scan and resolve dependency fonts

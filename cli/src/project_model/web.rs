@@ -5,13 +5,14 @@
 //! `water init`'s frontend decision tree.
 
 use std::io;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use askama::Template;
-use color_eyre::eyre::{self, bail};
+use color_eyre::eyre::{self, Context, bail};
 use serde::{Deserialize, Serialize};
-use smol::process::Command;
+use smol::process::{Child, Command};
 use waterui_assets_planner::{BUNDLE_META_PREFIX, BundleMountMeta};
 
 use crate::artifact_symbols::{ArtifactSymbols, build_host_rlib};
@@ -201,6 +202,265 @@ pub async fn build_frontend(
         );
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `water run` dev server
+// ---------------------------------------------------------------------------
+
+/// The environment variable that carries the dev-server URL to a debug app.
+///
+/// Every launch channel reduces to this name: desktop spawns it directly,
+/// `simctl launch` forwards it as `SIMCTL_CHILD_WATERUI_DEV_URL`, and Android
+/// ships it as the `waterui.env.WATERUI_DEV_URL` intent extra that the
+/// generated `MainActivity` turns back into an environment variable before
+/// the runtime initializes. Physical iOS devices cannot receive environment
+/// variables at all; they get [`dev_url_launch_arg`] instead.
+pub const DEV_URL_ENV: &str = "WATERUI_DEV_URL";
+
+/// A target `water run` can hand a dev-server URL to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevTarget {
+    /// A desktop process the CLI spawns (macOS, GTK, Hydrolysis).
+    Desktop,
+    /// `simctl launch` on an iOS simulator.
+    IosSimulator,
+    /// `devicectl device process launch` on a physical iOS device.
+    IosDevice,
+    /// `am start` on an Android emulator or device.
+    Android,
+}
+
+/// How the dev-server URL reaches the app on a given target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DevUrlHandoff {
+    /// `WATERUI_DEV_URL` in the launch environment — the desktop, iOS
+    /// simulator, and Android launch paths all forward the run environment.
+    Environment,
+    /// `--waterui-dev-url=<url>` appended to the process-launch arguments —
+    /// the only channel a physical iOS device has.
+    LaunchArgument(String),
+}
+
+/// The handoff a target needs for the dev-server URL.
+///
+/// Every [`DevTarget`] has a defined handoff; a launch path that cannot apply
+/// the returned one must fail loudly rather than let the app fall through to
+/// the staged bundle.
+#[must_use]
+pub fn dev_url_handoff(target: DevTarget, url: &url::Url) -> DevUrlHandoff {
+    match target {
+        DevTarget::Desktop | DevTarget::IosSimulator | DevTarget::Android => {
+            DevUrlHandoff::Environment
+        }
+        DevTarget::IosDevice => DevUrlHandoff::LaunchArgument(dev_url_launch_arg(url)),
+    }
+}
+
+/// The `--waterui-dev-url=<url>` argument a physical-iOS `devicectl device
+/// process launch` receives after `--`; `dev_url()` reads it from the process
+/// arguments.
+#[must_use]
+pub fn dev_url_launch_arg(url: &url::Url) -> String {
+    format!("--waterui-dev-url={url}")
+}
+
+/// `adb -s <device> reverse tcp:<port> tcp:<port>` — maps the device's
+/// loopback port onto the host's so the dev server is reachable from an
+/// Android emulator or a USB-connected device alike.
+#[must_use]
+pub fn adb_reverse_args(device_id: &str, port: u16) -> Vec<String> {
+    vec![
+        "-s".to_string(),
+        device_id.to_string(),
+        "reverse".to_string(),
+        format!("tcp:{port}"),
+        format!("tcp:{port}"),
+    ]
+}
+
+/// The port an `adb reverse` must forward, read from the `WATERUI_DEV_URL`
+/// entry of a launch environment. `None` when no dev-server handoff is
+/// present.
+///
+/// # Errors
+///
+/// Returns an error when the variable is set but is not a URL — a malformed
+/// handoff is a bug to report, not a state to launch in.
+pub fn dev_url_port<'a>(
+    mut env_vars: impl Iterator<Item = (&'a str, &'a str)>,
+) -> eyre::Result<Option<u16>> {
+    let Some((_, value)) = env_vars.find(|(key, _)| *key == DEV_URL_ENV) else {
+        return Ok(None);
+    };
+    let url: url::Url = value
+        .parse()
+        .wrap_err_with(|| format!("{DEV_URL_ENV} is set but is not a URL: {value}"))?;
+    url.port_or_known_default().map_or_else(
+        || Err(eyre::eyre!("{DEV_URL_ENV} has no port to forward: {value}")),
+        |port| Ok(Some(port)),
+    )
+}
+
+/// The script that starts the frontend's dev server: the first of `dev`,
+/// `serve`, `start` declared in the project's `package.json`.
+///
+/// # Errors
+///
+/// Fails when `package.json` cannot be read or parsed, or declares none of
+/// the known dev scripts.
+pub fn dev_script(root: &Path) -> eyre::Result<String> {
+    let package_json_path = root.join("package.json");
+    let manifest = std::fs::read_to_string(&package_json_path)
+        .wrap_err_with(|| format!("failed to read {}", package_json_path.display()))?;
+    let package: serde_json::Value = serde_json::from_str(&manifest)
+        .wrap_err_with(|| format!("failed to parse {}", package_json_path.display()))?;
+    package
+        .get("scripts")
+        .and_then(|scripts| {
+            ["dev", "serve", "start"]
+                .iter()
+                .find(|name| scripts.get(**name).is_some())
+        })
+        .map(|name| (*name).to_string())
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "`{}` declares none of the dev scripts `dev`, `serve`, `start`",
+                package_json_path.display()
+            )
+        })
+}
+
+/// Extract the loopback URL a bundler prints once its dev server is
+/// listening.
+///
+/// Any whitespace-separated token matching
+/// `https?://(localhost|127.0.0.1|\[::1\]):<port>` counts — Vite's
+/// `Local: http://localhost:5173/` is the canonical producer. The port must
+/// be explicit and the host loopback; `Network:` URLs (LAN addresses) and
+/// every other token on the line are ignored.
+#[must_use]
+pub fn dev_url_from_line(line: &str) -> Option<url::Url> {
+    line.split_whitespace().find_map(|token| {
+        let url = token.parse::<url::Url>().ok()?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return None;
+        }
+        let loopback = url
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1")
+            || url.host() == Some(url::Host::Ipv6(std::net::Ipv6Addr::LOCALHOST));
+        (loopback && url.port().is_some()).then_some(url)
+    })
+}
+
+/// A running `<pm> run <script>` child whose printed dev-server URL has been
+/// captured.
+///
+/// Dropping the guard kills the child (`kill_on_drop`): `water run` holds it
+/// across the app's lifetime, so a normal exit, an app exit, and the Ctrl-C
+/// future-drop path all terminate the dev server.
+#[derive(Debug)]
+pub struct WebDevServer {
+    url: url::Url,
+    _child: Child,
+    _drain: smol::Task<()>,
+}
+
+impl WebDevServer {
+    /// Spawn `<pm> run <script>` inside `root` and read its stdout until the
+    /// listening URL appears.
+    ///
+    /// stdout is piped so the URL can be parsed; every line is echoed to the
+    /// terminal as it arrives and a background task keeps draining after the
+    /// URL is found so the bundler never blocks on a full pipe. stderr is
+    /// inherited — the bundler's diagnostics reach the user verbatim.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the process cannot be spawned or its stdout ends without a
+    /// loopback dev-server URL ever appearing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the spawned child has no piped stdout — impossible, since
+    /// the spawn configures it above.
+    pub async fn spawn(
+        package_manager: PackageManager,
+        root: &Path,
+        script: &str,
+    ) -> eyre::Result<Self> {
+        use smol::io::{AsyncBufReadExt, BufReader};
+        use smol::stream::StreamExt as _;
+
+        let pm = package_manager.binary();
+        let mut child = package_manager
+            .run(script)
+            .current_dir(root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .wrap_err_with(|| {
+                format!("failed to spawn `{pm} run {script}` in {}", root.display())
+            })?;
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let mut lines = BufReader::new(stdout).lines();
+
+        let url = loop {
+            match lines.next().await {
+                Some(Ok(line)) => {
+                    echo_dev_server_line(&line);
+                    if let Some(url) = dev_url_from_line(&line) {
+                        break url;
+                    }
+                }
+                Some(Err(error)) => {
+                    bail!("failed to read `{pm} run {script}` output: {error}");
+                }
+                None => {
+                    let status = child.status().await;
+                    let _ = child.kill();
+                    match status {
+                        Ok(status) => bail!(
+                            "`{pm} run {script}` exited with {status} without printing a dev-server URL"
+                        ),
+                        Err(_) => bail!(
+                            "`{pm} run {script}` closed its output without printing a dev-server URL"
+                        ),
+                    }
+                }
+            }
+        };
+
+        let drain = smol::spawn(async move {
+            while let Some(line) = lines.next().await {
+                match line {
+                    Ok(line) => echo_dev_server_line(&line),
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Ok(Self {
+            url,
+            _child: child,
+            _drain: drain,
+        })
+    }
+
+    /// The dev-server URL the app should open.
+    #[must_use]
+    pub const fn url(&self) -> &url::Url {
+        &self.url
+    }
+}
+
+/// Echo one line of dev-server output on the CLI's terminal channel — the
+/// same stderr stream the shell's human output uses.
+fn echo_dev_server_line(line: &str) {
+    let _ = writeln!(anstream::stderr().lock(), "{line}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1242,5 +1502,108 @@ mod tests {
             report.warnings
         );
         assert!(web.join("public/waterui.svg").is_file());
+    }
+
+    #[test]
+    fn dev_url_from_line_finds_vite_local_url() {
+        for line in [
+            "  ➜  Local:   http://localhost:5173/",
+            "  ➜  Local:   https://localhost:5173/",
+            "Local: http://127.0.0.1:3000",
+            "Local: http://[::1]:8080/",
+            "ready in 42ms http://localhost:5173/app/index.html",
+        ] {
+            let url = dev_url_from_line(line).unwrap_or_else(|| panic!("no URL in {line:?}"));
+            assert!(url.port().is_some(), "explicit port required: {line:?}");
+        }
+        assert_eq!(
+            dev_url_from_line("  ➜  Local:   http://localhost:5173/")
+                .unwrap()
+                .as_str(),
+            "http://localhost:5173/"
+        );
+    }
+
+    #[test]
+    fn dev_url_from_line_rejects_non_loopback_and_portless_urls() {
+        for line in [
+            "  ➜  Network: http://192.168.1.4:5173/",
+            "  ➜  Network: http://172.20.10.2:5173/",
+            "see https://localhost:5173.example.com/ for details",
+            "no url here",
+            "http://localhost is missing a port",
+            "VITE v7.0.0  ready in 120 ms",
+        ] {
+            assert_eq!(dev_url_from_line(line), None, "unexpected URL in {line:?}");
+        }
+    }
+
+    #[test]
+    fn dev_url_handoff_is_environment_except_ios_device() {
+        let url: url::Url = "http://localhost:5173/".parse().unwrap();
+        for target in [
+            DevTarget::Desktop,
+            DevTarget::IosSimulator,
+            DevTarget::Android,
+        ] {
+            assert_eq!(dev_url_handoff(target, &url), DevUrlHandoff::Environment);
+        }
+        assert_eq!(
+            dev_url_handoff(DevTarget::IosDevice, &url),
+            DevUrlHandoff::LaunchArgument("--waterui-dev-url=http://localhost:5173/".to_string())
+        );
+    }
+
+    #[test]
+    fn adb_reverse_args_forward_the_dev_url_port() {
+        assert_eq!(
+            adb_reverse_args("emulator-5554", 5173),
+            ["-s", "emulator-5554", "reverse", "tcp:5173", "tcp:5173"]
+        );
+    }
+
+    #[test]
+    fn dev_url_port_reads_the_launch_environment() {
+        assert_eq!(
+            dev_url_port(std::iter::empty::<(&str, &str)>()).unwrap(),
+            None
+        );
+        assert_eq!(
+            dev_url_port([("WATERUI_DEV_URL", "http://localhost:5173/")].into_iter()).unwrap(),
+            Some(5173)
+        );
+        assert!(
+            dev_url_port([("WATERUI_DEV_URL", "not a url")].into_iter()).is_err(),
+            "a malformed handoff fails loudly"
+        );
+    }
+
+    #[test]
+    fn dev_script_probes_dev_serve_start() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_json = temp.path().join("package.json");
+
+        std::fs::write(
+            &package_json,
+            r#"{"scripts":{"build":"vite build","serve":"vite preview"}}"#,
+        )
+        .unwrap();
+        assert_eq!(dev_script(temp.path()).unwrap(), "serve");
+
+        std::fs::write(&package_json, r#"{"scripts":{"start":"node server.js"}}"#).unwrap();
+        assert_eq!(dev_script(temp.path()).unwrap(), "start");
+
+        std::fs::write(
+            &package_json,
+            r#"{"scripts":{"dev":"vite","serve":"vite preview"}}"#,
+        )
+        .unwrap();
+        assert_eq!(dev_script(temp.path()).unwrap(), "dev");
+
+        std::fs::write(&package_json, r#"{"scripts":{"build":"vite build"}}"#).unwrap();
+        let error = dev_script(temp.path()).unwrap_err().to_string();
+        for script in ["dev", "serve", "start"] {
+            assert!(error.contains(script), "error names the probes: {error}");
+        }
     }
 }

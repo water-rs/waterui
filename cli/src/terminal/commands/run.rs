@@ -40,6 +40,7 @@ use waterui_cli::{
     },
     platform::{PackageOptions, TargetPlatform as LibTargetPlatform},
     project::Project,
+    web,
 };
 
 #[cfg(target_os = "macos")]
@@ -187,6 +188,9 @@ pub enum TargetBackend {
 
 /// Arguments for the run command.
 #[derive(ClapArgs, Debug)]
+// CLI flag structs collect booleans by nature; each flag is a documented
+// `--flag`, not structural state.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Args {
     /// Target platform to run on.
     /// Defaults to the host platform when omitted.
@@ -235,6 +239,17 @@ pub struct Args {
         conflicts_with_all = ["platform", "backend", "device", "logs", "native_logs"]
     )]
     tui: bool,
+
+    /// Build in release mode (optimized). The web dev server never runs in a
+    /// release build: `include_web!` renders the staged bundle instead.
+    #[arg(long)]
+    release: bool,
+
+    /// Do not start the frontend dev server for `include_web!` mounts; the
+    /// debug build renders the staged bundle, packaged as `water package`
+    /// does.
+    #[arg(long)]
+    no_dev_server: bool,
 }
 
 /// Parses one `--env KEY=VALUE` argument into its key and value.
@@ -443,7 +458,10 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             }
         };
 
-    let running = shell
+    // The dev-server guard is held for the app's whole run: dropping it —
+    // on app exit, normal return, or the Ctrl-C future-drop — kills the
+    // bundler child (`kill_on_drop`).
+    let (running, _dev_server) = shell
         .display_output(build_and_run(
             shell,
             &host,
@@ -762,6 +780,8 @@ async fn build_run_config(
     BuildRunConfig {
         run_options,
         sccache_path,
+        release: args.release,
+        dev_server: !args.release && !args.no_dev_server,
     }
 }
 
@@ -855,7 +875,7 @@ async fn build_and_run(
     backend: TargetBackend,
     selection: DeviceSelection,
     config: BuildRunConfig,
-) -> Result<Running> {
+) -> Result<(Running, Option<web::WebDevServer>)> {
     let build_plan = resolve_build_plan(cli_platform, backend, &selection.device)?;
     let launch_task =
         spawn_device_launch_task(host.clone(), selection.device, selection.needs_launch);
@@ -863,18 +883,108 @@ async fn build_and_run(
     let _ = shell.status(">", "Building...");
     build_for_backend(project, backend, &build_plan, build_options(&config)).await?;
 
+    // A declared `include_web!` mount is served by the bundler's own dev
+    // server in debug runs — spawn it after the Rust build (its root comes
+    // from the compiled metadata) and before packaging, so the packaged app
+    // stages no web output.
+    let dev_server = if config.dev_server {
+        start_web_dev_server(shell, project, config.sccache_path.as_deref()).await?
+    } else {
+        None
+    };
+
     let _ = shell.status(">", "Packaging...");
-    let artifact = package_for_backend(project, backend, &build_plan).await?;
+    let artifact = package_for_backend(
+        project,
+        backend,
+        &build_plan,
+        config.release,
+        dev_server.is_some(),
+    )
+    .await?;
 
     if selection.needs_launch {
         let _ = shell.status(">", "Waiting for device...");
     }
     let device = launch_task.await?;
 
-    let _ = shell.status(">", "Running...");
-    let running = run_with_options(host, device, artifact, config.run_options).await?;
+    let mut run_options = config.run_options;
+    if let Some(server) = &dev_server {
+        apply_dev_url_handoff(&device, server.url(), &mut run_options)?;
+    }
 
-    Ok(running)
+    let _ = shell.status(">", "Running...");
+    let running = run_with_options(host, device, artifact, run_options).await?;
+
+    Ok((running, dev_server))
+}
+
+/// Spawn the declared frontend's dev server for a debug run, when the
+/// compiled library mounts one with `include_web!`.
+async fn start_web_dev_server(
+    shell: &Shell,
+    project: &Project,
+    sccache_path: Option<&std::path::Path>,
+) -> Result<Option<web::WebDevServer>> {
+    let Some(meta) = web::web_mount(project, sccache_path).await? else {
+        return Ok(None);
+    };
+    let root = meta
+        .project
+        .as_ref()
+        .expect("web_mount only returns a mount that declares a project");
+    let package_manager = project
+        .manifest()
+        .web
+        .as_ref()
+        .map_or_else(web::PackageManager::default, |web| web.package_manager);
+    if !package_manager.is_installed().await {
+        bail!(
+            "`{}` is not installed; run `water doctor`",
+            package_manager.binary()
+        );
+    }
+    let script = web::dev_script(root)?;
+    let _ = shell.status(
+        ">",
+        format!("Starting `{} run {script}`", package_manager.binary()),
+    );
+    let server = web::WebDevServer::spawn(package_manager, root, &script).await?;
+    let _ = shell.status(">", format!("Dev server ready at {}", server.url()));
+    Ok(Some(server))
+}
+
+/// Route the dev-server URL into the selected target's launch channel.
+fn apply_dev_url_handoff(
+    device: &SelectedDevice,
+    url: &url::Url,
+    run_options: &mut RunOptions,
+) -> Result<()> {
+    let target = match device {
+        SelectedDevice::Local(_) => web::DevTarget::Desktop,
+        SelectedDevice::AppleSimulator(_) => web::DevTarget::IosSimulator,
+        SelectedDevice::AndroidDevice(_) | SelectedDevice::AndroidEmulator(_) => {
+            web::DevTarget::Android
+        }
+    };
+    match web::dev_url_handoff(target, url) {
+        // Every device the CLI can select receives the URL through its launch
+        // environment: `cmd.env`/`open --env` on desktop,
+        // `SIMCTL_CHILD_WATERUI_DEV_URL` under `simctl launch`, and the
+        // `waterui.env.` intent extra on Android (where `run_on_android`
+        // additionally makes the port reachable with `adb reverse`).
+        web::DevUrlHandoff::Environment => {
+            run_options.insert_env_var(web::DEV_URL_ENV.to_string(), url.to_string());
+            Ok(())
+        }
+        // A physical iOS device needs `--waterui-dev-url=<url>` in its
+        // `devicectl` launch arguments — a channel `water run` has no launch
+        // path for yet, so this fails loudly rather than falling through to
+        // the staged bundle.
+        web::DevUrlHandoff::LaunchArgument(_) => {
+            bail!("dev-server handoff is not defined for {target:?}")
+        }
+    }
 }
 
 fn resolve_build_plan(
@@ -936,10 +1046,14 @@ fn spawn_device_launch_task(
 }
 
 fn build_options(config: &BuildRunConfig) -> BuildOptions {
-    config.sccache_path.as_ref().map_or_else(
-        || BuildOptions::development(false),
-        |sccache| BuildOptions::development(false).with_sccache(sccache.clone()),
-    )
+    config
+        .sccache_path
+        .as_ref()
+        .map_or_else(
+            || BuildOptions::development(config.release),
+            |sccache| BuildOptions::development(config.release).with_sccache(sccache.clone()),
+        )
+        .with_dev_server(config.dev_server)
 }
 
 async fn build_for_backend(
@@ -978,8 +1092,12 @@ async fn package_for_backend(
     project: &Project,
     backend: TargetBackend,
     plan: &BuildPlan,
+    release: bool,
+    dev_server: bool,
 ) -> Result<Artifact> {
-    let package_options = PackageOptions::development();
+    let package_options = PackageOptions::development()
+        .with_debug(!release)
+        .with_dev_server(dev_server);
     match backend {
         TargetBackend::Apple => package_apple(project, plan.lib_platform, package_options).await,
         TargetBackend::Android => {
@@ -999,6 +1117,10 @@ async fn package_for_backend(
 struct BuildRunConfig {
     run_options: RunOptions,
     sccache_path: Option<PathBuf>,
+    release: bool,
+    /// Whether a declared `include_web!` mount may be served by the bundler's
+    /// dev server: debug builds only, unless `--no-dev-server` opts out.
+    dev_server: bool,
 }
 
 /// Run artifact on device.

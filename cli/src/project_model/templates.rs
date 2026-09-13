@@ -1800,6 +1800,8 @@ mod tests {
         .expect("android MainActivity render");
 
         assert!(activity.contains("enableEdgeToEdge()"));
+        // The dev-server URL is forwarded only on debuggable builds.
+        assert!(activity.contains(r#"envVar == "WATERUI_DEV_URL" && !BuildConfig.DEBUG"#));
         assert!(activity.contains("waterUiApplication.acquireRuntime(this)"));
         assert!(activity.contains("androidRuntimeLease.close()"));
         assert!(activity.contains("val reportActivityFinished = !isChangingConfigurations"));

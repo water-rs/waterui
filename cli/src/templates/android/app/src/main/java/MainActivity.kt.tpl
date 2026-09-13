@@ -33,6 +33,10 @@ class MainActivity : AppCompatActivity() {
                 val envVar = key.removePrefix(ENV_PREFIX)
                 val value = extras.getString(key) ?: continue
 
+                // A dev-server URL may only ever redirect a debuggable
+                // build; a release APK always renders its staged bundle.
+                if (envVar == "WATERUI_DEV_URL" && !BuildConfig.DEBUG) continue
+
                 try {
                     Os.setenv(envVar, value, true)
                     Log.d(TAG, "Set environment variable $envVar from intent extra")

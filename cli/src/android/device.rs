@@ -259,6 +259,16 @@ async fn run_on_android(
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect::<Vec<_>>();
 
+    // A dev-server URL the app is handed must be reachable: `adb reverse`
+    // maps the target's loopback port onto the host's, for emulators and
+    // USB-connected devices alike.
+    if let Some(port) =
+        crate::web::dev_url_port(env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .map_err(|error| FailToRun::Launch(eyre!("Invalid dev-server handoff: {error}")))?
+    {
+        reverse_dev_server_port(host, &adb, device_id, port).await?;
+    }
+
     install_android_artifact(host, &adb, device_id, artifact.path()).await?;
     launch_android_app(
         host,
@@ -350,6 +360,34 @@ fn build_android_start_args(
     }
 
     start_args
+}
+
+/// `adb -s <device> reverse tcp:<port> tcp:<port>` before the app launches,
+/// so the dev-server URL it receives resolves on the device as printed.
+async fn reverse_dev_server_port(
+    host: &Host,
+    adb: &Path,
+    device_id: &str,
+    port: u16,
+) -> Result<(), FailToRun> {
+    let output = host
+        .command(adb)
+        .args(crate::web::adb_reverse_args(device_id, port))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|error| FailToRun::Launch(eyre!("Failed to run `adb reverse`: {error}")))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(FailToRun::Launch(eyre!(
+        "`adb reverse tcp:{port} tcp:{port}` failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim(),
+    )))
 }
 
 async fn launch_android_app(
