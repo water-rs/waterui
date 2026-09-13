@@ -120,7 +120,12 @@ thiserror = "2.0.20"
 url = "2.5"
 uuid = { version = "1.26.1", default-features = false, features = ["v4", "std"] }
 waterui-core = { version = "0.3.2", path = "core" }
-waterui-str = { version = "0.3.0", path = "utils/str" }
+# Renamed and extracted to water-rs/suiteki. Held at v0.1.0 on purpose: the SSO
+# representation on suiteki `dev` regresses `from_string` on short inputs and
+# shows an unexplained `to_string/4096` slowdown in CI benches, so a version
+# carrying it only enters this workspace once its benchmarks prove no
+# regression (water-rs/suiteki#14).
+suiteki = { version = "0.1", features = ["nami"] }
 waterui-url = { version = "0.3.1", path = "utils/url" }
 waterui-watcher-set = { version = "0.1.0", path = "utils/watcher-set" }
 waterui-text = { version = "0.4.1", path = "components/foundation/text" }
@@ -133,9 +138,13 @@ waterui-controls = { version = "0.3.2", path = "components/foundation/controls"}
 waterui-graphics = { version = "0.4.1", path = "components/visual/graphics", default-features = false }
 waterui-canvas = "0.1.2"
 waterui-shape = { version = "0.1.2", path = "components/foundation/shape", default-features = false }
-waterui-svg = "0.3.0"
-# waterui-math is extracted (#616) and consumed from crates.io like the other split components.
-waterui-math = "0.1.1"
+# waterui-svg and waterui-math are extracted (#186, #616). Pinned to the `dev`
+# commits that migrated them from `waterui-str` to `suiteki` (water-rs/svg#14,
+# water-rs/math#3) — the published manifests still name `waterui-str`, which
+# would give the graph a second `Str` type. Back to registry versions at the
+# next release sync.
+waterui-svg = { git = "https://github.com/water-rs/svg", rev = "eff02dbb78e7ba876751e597fd016db85bbc64a2" }
+waterui-math = { git = "https://github.com/water-rs/math", rev = "39b7886f21595645425d326bf9dc652489f11a9f" }
 waterui-ffi = { version = "0.3.2", path = "ffi" }
 waterui-layout = { version = "0.3.2", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.3.2", path = "components/foundation/navigation" }
@@ -449,10 +458,6 @@ waterui-map = { path = "components/data/map" }
 waterui-url = { path = "utils/url" }
 waterui-controls = { path = "components/foundation/controls" }
 waterui-video = { path = "components/multimedia/video" }
-# `waterui-svg` is extracted too (#186) and depends on the registry
-# `waterui-str` and `waterui-macros`; without these the workspace carries two
-# `Str` types and `Svg::new("…")` stops compiling.
-waterui-str = { path = "utils/str" }
 waterui-macros = { path = "macros" }
 # The Hydrolysis renderer and its Material 3 theme are extracted too (#480,
 # #481) and pull the rest of the framework from the registry; every crate they

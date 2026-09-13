@@ -2,8 +2,8 @@
 
 use alloc::boxed::Box;
 use nami::Signal;
+use suiteki::Str;
 use waterui::drag_drop::{DragData, Draggable, DropDestination};
-use waterui_str::Str;
 
 use crate::bridge::closure::RetainedCallback;
 use crate::{IntoFFI, WuiEnv, WuiStr};

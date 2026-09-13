@@ -13,7 +13,7 @@ categories = ["internationalization", "localization"]
 [dependencies]
 # Core dependencies
 waterui-core.workspace = true
-waterui-str.workspace = true
+suiteki.workspace = true
 nami.workspace = true
 
 # ICU4X for locale handling.

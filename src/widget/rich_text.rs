@@ -1,6 +1,7 @@
 use std::{mem, num::NonZeroUsize, str::FromStr};
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
+use suiteki::Str;
 use waterui_core::{AnyView, Environment, View};
 #[cfg(feature = "snackbar")]
 use waterui_core::{State, extract::Extractor as _};
@@ -12,7 +13,6 @@ use waterui_layout::{
 };
 #[cfg(feature = "media")]
 use waterui_media::{Url, photo::photo as media_photo};
-use waterui_str::Str;
 use waterui_text::{
     Text,
     highlight::Language,

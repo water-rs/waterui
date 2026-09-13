@@ -25,7 +25,7 @@ real-engine = ["cef-runtime", "webview"]
 webview = [
     "dep:cookie",
     "dep:keycode",
-    "dep:waterui-str",
+    "dep:suiteki",
     "dep:waterui-watcher-set",
     "dep:waterui-webview",
 ]
@@ -51,7 +51,7 @@ tracing.workspace = true
 waterui-chromium = { workspace = true, optional = true }
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, features = ["gpu"] }
-waterui-str = { workspace = true, optional = true }
+suiteki = { workspace = true, optional = true }
 waterui-url.workspace = true
 waterui-watcher-set = { workspace = true, optional = true }
 waterui-webview = { workspace = true, optional = true }

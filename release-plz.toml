@@ -33,11 +33,6 @@ version_group = "waterui"
 git_tag_name = "macros-v{{ version }}"
 
 [[package]]
-name = "waterui-str"
-version_group = "waterui"
-git_tag_name = "str-v{{ version }}"
-
-[[package]]
 name = "waterui-url"
 version_group = "waterui"
 git_tag_name = "url-v{{ version }}"

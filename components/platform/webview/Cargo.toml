@@ -14,7 +14,7 @@ categories = ["gui"]
 waterui-core.workspace = true
 waterui-layout.workspace = true
 waterui-url.workspace = true
-waterui-str = { workspace = true, features = ["serde"] }
+suiteki = { workspace = true, features = ["serde"] }
 waterui-watcher-set.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

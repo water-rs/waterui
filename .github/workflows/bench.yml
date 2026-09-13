@@ -99,7 +99,7 @@ jobs:
               # Foundations both scenes go through: the View contract and
               # reactivity, layout / text / shape / controls, the colour and
               # filter pipeline the stress scene's third pressure path drives,
-              # the `waterui` facade the examples import, and `waterui-str`,
+              # the `waterui` facade the examples import, and `suiteki`,
               # which backs every text node.
               - "core/**"
               - "components/foundation/**"

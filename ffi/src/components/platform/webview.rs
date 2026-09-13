@@ -14,7 +14,7 @@ use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr};
 use base64::Engine;
 use cookie::Cookie;
 use nami::{Signal, SignalExt};
-use waterui_str::Str;
+use suiteki::Str;
 use waterui_webview::{
     BackendEvent, CustomWebViewController, JsReply, ScriptInjectionTime, Url, WatcherGuard,
     WatcherSet, WebView, WebViewController, WebViewError, WebViewEvent, WebViewHandle,
