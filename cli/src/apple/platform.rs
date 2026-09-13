@@ -428,6 +428,19 @@ fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNa
             continue;
         }
 
+        // Every crate that ran a build script may have emitted
+        // `cargo:rustc-link-*` directives; `-sys` crates like
+        // `system-configuration-sys` emit only those, with no archive or Swift
+        // bridge artifact to show for it, so the parse cannot be gated on
+        // outputs.
+        let output_path = crate_build_dir.join("output");
+        if output_path.exists() {
+            let output = std::fs::read_to_string(&output_path)?;
+            for flag in apple_linker_flags_from_build_output(&output) {
+                push_unique_flag(&mut linker_flags, flag);
+            }
+        }
+
         let out_dir = crate_build_dir.join("out");
         if !out_dir.is_dir() {
             continue;
@@ -457,18 +470,6 @@ fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNa
                 if let Some(flag) = static_archive_link_flag(archive) {
                     push_unique_flag(&mut linker_flags, flag);
                 }
-            }
-        }
-
-        // Framework and linker-argument declarations apply to the final link
-        // for every crate in the graph — a plain Rust build script such as
-        // system-configuration-sys produces no Swift archive but still declares
-        // `cargo:rustc-link-lib=framework=SystemConfiguration`.
-        let output_path = crate_build_dir.join("output");
-        if output_path.exists() {
-            let output = std::fs::read_to_string(&output_path)?;
-            for flag in apple_linker_flags_from_build_output(&output) {
-                push_unique_flag(&mut linker_flags, flag);
             }
         }
     }
@@ -1028,10 +1029,54 @@ mod tests {
         assert_eq!(
             link_inputs.linker_flags,
             vec![
-                "-lHelper".to_string(),
                 "-framework AppKit".to_string(),
                 "-rpath".to_string(),
-                "/usr/lib/swift".to_string()
+                "/usr/lib/swift".to_string(),
+                "-lHelper".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn collects_link_flags_from_crates_without_swift_or_archives() {
+        // A `-sys` crate that only emits `cargo:rustc-link-lib` directives has
+        // nothing in `out/`; its flags must still reach the linker.
+        let dir = tempdir().expect("tempdir");
+        let lib_dir = dir.path().join("aarch64-apple-darwin/release");
+        let sys_build_dir = lib_dir.join("build/system-configuration-sys-1234");
+        std::fs::create_dir_all(sys_build_dir.join("out")).expect("create out dir");
+        std::fs::write(
+            sys_build_dir.join("output"),
+            "cargo:rustc-link-lib=framework=SystemConfiguration\n",
+        )
+        .expect("write build output");
+
+        // A crate can also ship an archive with no Swift bridge at all; the
+        // archive and its `-l` flag must still be collected.
+        let plain_build_dir = lib_dir.join("build/some-native-5678");
+        let plain_out_dir = plain_build_dir.join("out");
+        std::fs::create_dir_all(&plain_out_dir).expect("create out dir");
+        std::fs::write(plain_out_dir.join("libwrapper.a"), "").expect("write archive");
+        std::fs::write(
+            plain_build_dir.join("output"),
+            "cargo:rustc-link-lib=static=wrapper\n",
+        )
+        .expect("write build output");
+
+        let link_inputs =
+            collect_apple_native_link_inputs_sync(&lib_dir).expect("collect native link inputs");
+
+        assert_eq!(
+            link_inputs.archives,
+            vec![plain_out_dir.join("libwrapper.a")]
+        );
+        let mut flags = link_inputs.linker_flags;
+        flags.sort_unstable();
+        assert_eq!(
+            flags,
+            vec![
+                "-framework SystemConfiguration".to_string(),
+                "-lwrapper".to_string()
             ]
         );
     }
