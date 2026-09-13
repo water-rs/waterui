@@ -1079,6 +1079,7 @@ fn accessibility_role_code(role: &AccessibilityRole) -> i32 {
         AccessibilityRole::Combobox => 26,
         AccessibilityRole::Option => 27,
         AccessibilityRole::Group => 28,
+        AccessibilityRole::Dialog => 29,
         _ => panic!("unsupported accessibility role in native FFI"),
     }
 }

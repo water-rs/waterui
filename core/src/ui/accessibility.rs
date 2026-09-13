@@ -181,6 +181,8 @@ pub enum AccessibilityRole {
     Option,
     /// Logical grouping container.
     Group,
+    /// Modal dialog or alert surface.
+    Dialog,
 }
 
 impl MetadataKey for AccessibilityRole {}
