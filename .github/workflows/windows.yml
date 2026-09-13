@@ -41,22 +41,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install DirectX Shader Compiler
-        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
-      - name: Verify DirectX Shader Compiler
-        run: dxc --version
-      - uses: Swatinem/rust-cache@v2
+      # Only the integration branches write the shared Cargo source cache.
+      # The Windows target archive no longer competes with the fast lint
+      # gate for the repository's 10 GB budget (#458). Tests still run in
+      # every supported shape below; only their cache allocation changes.
+      # Other Windows jobs restore the same source cache without saving.
+      - uses: ./.github/actions/setup-rust
         with:
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
-          # Only the integration branches write the shared Cargo source cache.
-          # The Windows target archive no longer competes with the fast lint
-          # gate for the repository's 10 GB budget (#458). Tests still run in
-          # every supported shape below; only their cache allocation changes.
-          # Other Windows jobs restore the same source cache without saving.
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
+      - name: Install DirectX Shader Compiler
+        uses: ./.github/actions/install-dxc
       - uses: taiki-e/install-action@nextest
       # Four crates cannot be tested here, for reasons that are not bugs:
       #
@@ -124,17 +121,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install DirectX Shader Compiler
-        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
-      - name: Verify DirectX Shader Compiler
-        run: dxc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
           save-if: false
           cache-on-failure: true
+      - name: Install DirectX Shader Compiler
+        uses: ./.github/actions/install-dxc
       - uses: taiki-e/install-action@nextest
       - name: Test (root crate, every feature but dynamic_linking)
         run: cargo nextest run --locked --features all --profile ci
@@ -167,25 +161,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      # Build scripts run under `cargo check` too, so the shader compiler has
-      # to be present here as well as in the test job.
-      - name: Install DirectX Shader Compiler
-        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
-      - name: Verify DirectX Shader Compiler
-        run: dxc --version
       # Writes the Windows `~/.cargo` tarball (see the cache budget note in
       # ci.yml); the target directory belongs to the test job above. This
       # block used to save a 2.2 GB target tarball on every pull request
       # fingerprint, ungated.
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
+          components: clippy
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
+      # Build scripts run under `cargo check` too, so the shader compiler has
+      # to be present here as well as in the test job.
+      - name: Install DirectX Shader Compiler
+        uses: ./.github/actions/install-dxc
       # Compile the CEF backend without its binary distribution (see the test
       # job for why it cannot be linked here).
       - run: cargo check --locked -p waterui-browser-cef --features compile-only
