@@ -33,7 +33,6 @@ mod handler;
 pub use handler::*;
 #[cfg(feature = "conformance")]
 pub mod conformance;
-mod no_engine;
 mod proxy;
 pub use proxy::WebViewProxy;
 
@@ -912,20 +911,19 @@ impl waterui_core::NativeView for WebView {
     }
 }
 
-/// The web view a backend with no bridged engine draws.
+/// The view a backend sees when nothing realized the component.
 ///
 /// It is what `View::body` produces when the environment carries no
 /// [`Hook<WebView>`], and — because [`Hook`] strips its own type from the
 /// environment before calling the closure — it is also the recursion floor
-/// under one.
+/// under one, which is why it must produce a view rather than abort.
 impl ViewConfiguration for WebView {
     type View = Native<Self>;
 
     fn render(self) -> Self::View {
-        // Reaching this means neither a native bridge nor an engine realization
-        // is present. Render an empty, still-accessible leaf rather than
-        // panicking: every component owes the accessibility tree a node, and a
-        // build without an engine is a missing feature, not a crash.
+        // `Native` keeps the component available to a backend that consumes it
+        // by type; the `spacer` fallback exists only so this stays a view in
+        // the stripped-hook recursion described above.
         Native::new(self).with_fallback(spacer())
     }
 }
