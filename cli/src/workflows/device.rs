@@ -1311,9 +1311,9 @@ impl ChildMonitor {
             let wait = std::pin::pin!(wait);
             let cancel = std::pin::pin!(cancel);
 
-            match futures::future::select(wait, cancel).await {
-                futures::future::Either::Left((status, _)) => Some(status),
-                futures::future::Either::Right(_) => None,
+            match futures_util::future::select(wait, cancel).await {
+                futures_util::future::Either::Left((status, _)) => Some(status),
+                futures_util::future::Either::Right(_) => None,
             }
         };
 

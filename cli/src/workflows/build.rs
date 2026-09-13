@@ -6,7 +6,7 @@ use std::{
 };
 
 use color_eyre::eyre::{self, bail};
-use futures::StreamExt as _;
+use futures_util::StreamExt as _;
 use smol::{process::Command, unblock};
 use target_lexicon::{Environment, OperatingSystem, Triple};
 

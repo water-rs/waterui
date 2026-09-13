@@ -43,7 +43,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 cargo_toml = "1.0.1"
 color-eyre = { version = "0.6.5", features = ["issue-url"]}
 include_dir = "0.7.4"
-futures.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await", "io"] }
 futures-lite = "2.6"
 async-channel.workspace = true
 async-lock = "3.4"
