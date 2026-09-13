@@ -3412,7 +3412,7 @@ pub mod tui {
             for &(name, subdir) in EXTRA_PATCHES {
                 crates_io
                     .entry(name.to_string())
-                    .or_insert_with(|| path_dependency_patch(root.join(subdir)));
+                    .or_insert_with(|| path_dependency_patch(&root.join(subdir)));
             }
         } else if let Some((repository, revision)) = ctx.framework.git_source() {
             for &(name, _) in EXTRA_PATCHES {
@@ -3428,9 +3428,9 @@ pub mod tui {
         Ok(patch)
     }
 
-    fn path_dependency_patch(path: PathBuf) -> Dependency {
+    fn path_dependency_patch(path: &Path) -> Dependency {
         Dependency::Detailed(Box::new(DependencyDetail {
-            path: Some(normalize_path_for_config(&path)),
+            path: Some(normalize_path_for_config(path)),
             ..Default::default()
         }))
     }

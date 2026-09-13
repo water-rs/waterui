@@ -52,7 +52,7 @@ fn template_context(project: &Project, dir: &Path) -> TemplateContext {
 
 /// Whether the generated launcher's sources differ from what the current
 /// templates would produce for this project.
-async fn requires_regeneration(project: &Project, dir: &Path) -> eyre::Result<bool> {
+fn requires_regeneration(project: &Project, dir: &Path) -> eyre::Result<bool> {
     let ctx = template_context(project, dir);
     for (relative, expected) in
         templates::tui::rendered_outputs(&ctx, project.tui_backend_crate_name().as_str())?
@@ -74,7 +74,7 @@ async fn requires_regeneration(project: &Project, dir: &Path) -> eyre::Result<bo
 /// fails, or the launcher's sources cannot be written.
 pub async fn ensure_launcher(project: &Project) -> eyre::Result<PathBuf> {
     let dir = launcher_dir(project).await?;
-    if requires_regeneration(project, &dir).await? {
+    if requires_regeneration(project, &dir)? {
         let ctx = template_context(project, &dir);
         templates::tui::scaffold(&dir, &ctx, project.tui_backend_crate_name().as_str()).await?;
     }

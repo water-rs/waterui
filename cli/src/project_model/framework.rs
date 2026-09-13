@@ -559,7 +559,7 @@ impl ResolvedFramework {
     ///
     /// Generated crates use this to point `[patch]` entries the framework's own
     /// table does not carry at the same source the framework resolves to.
-    pub(crate) fn git_source(&self) -> Option<(&str, &str)> {
+    pub(crate) const fn git_source(&self) -> Option<(&str, &str)> {
         match &self.source {
             Source::Stable => None,
             Source::Dev {
