@@ -273,7 +273,7 @@ ShaderSurface::new(r#"
 
 ### Custom Render Pipeline
 
-See `/Users/lexoliu/Coding/waterui/examples/flame/src/lib.rs` for a complete example implementing:
+See `examples/flame` in the `water-rs/shaderloom` repository for a complete example implementing:
 
 - Multi-pass HDR rendering
 - Procedural flame shader with fractal noise
