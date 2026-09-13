@@ -353,6 +353,7 @@ fn mount_app(
         tree: TreeSnapshot::empty(),
         ui_focus: None,
         revision: 1,
+        viewport: (width, height),
     };
     let rebuilt = app.pump_once();
     assert!(
@@ -511,6 +512,7 @@ pub struct SemanticApp {
     pub(crate) tree: TreeSnapshot,
     pub(crate) ui_focus: Option<NodeId>,
     pub(crate) revision: u64,
+    pub(crate) viewport: (u32, u32),
 }
 
 impl core::fmt::Debug for SemanticApp {
@@ -634,6 +636,12 @@ impl SemanticApp {
             kind: ExpectationKind::NotExists(selector),
             inverted: false,
         }
+    }
+
+    /// The viewport size this session was mounted with, in logical pixels.
+    #[must_use]
+    pub const fn viewport(&self) -> (u32, u32) {
+        self.viewport
     }
 
     /// Creates a value-equality expectation.
@@ -892,12 +900,21 @@ impl SemanticApp {
         }
     }
 
-    pub(crate) fn perform_action(
+    /// Performs an accessibility action on a node, then settles the resulting
+    /// updates.
+    ///
+    /// Returns whether the runtime handled the action. Unknown node ids and
+    /// actions the node does not support report `false` — they never panic,
+    /// which makes this the entry point for external drivers that must surface
+    /// failures as data rather than aborting the session. [`Query`] and
+    /// [`ElementRef`] use the same path through `perform_action_expect`, which
+    /// keeps the panicking test semantics.
+    pub fn perform_action(
         &mut self,
         node_id: NodeId,
         action: AccessibilityAction,
         data: Option<AccessibilityActionData>,
-    ) {
+    ) -> bool {
         let request = AccessibilityActionRequest {
             target_tree: AccessibilityTreeId::ROOT,
             target_node: node_id.as_accesskit(),
@@ -905,12 +922,21 @@ impl SemanticApp {
             data,
         };
         let handled = self.driver.perform_action(request, &self.env);
+        self.settle();
+        handled
+    }
+
+    pub(crate) fn perform_action_expect(
+        &mut self,
+        node_id: NodeId,
+        action: AccessibilityAction,
+        data: Option<AccessibilityActionData>,
+    ) {
         assert!(
-            handled,
+            self.perform_action(node_id, action, data),
             "waterui-testing: accessibility action {action:?} on {} was not handled by the runtime — the target does not support this action",
             self.describe_node(node_id),
         );
-        self.settle();
     }
 
     fn describe_node(&self, node_id: NodeId) -> String {
@@ -936,7 +962,9 @@ impl SemanticApp {
         }
     }
 
-    pub(crate) fn hover_at(&mut self, x: f32, y: f32) {
+    /// Moves the pointer to viewport coordinates without pressing a button,
+    /// then settles resulting updates.
+    pub fn hover_at(&mut self, x: f32, y: f32) {
         self.driver.hover_at(x, y, &self.env);
         self.settle();
     }
@@ -1125,15 +1153,15 @@ impl SemanticApp {
 
 impl SemanticApp {
     pub(crate) fn tap_node(&mut self, node_id: NodeId) {
-        self.perform_action(node_id, AccessibilityAction::Click, None);
+        self.perform_action_expect(node_id, AccessibilityAction::Click, None);
     }
 
     pub(crate) fn focus_node(&mut self, node_id: NodeId) {
-        self.perform_action(node_id, AccessibilityAction::Focus, None);
+        self.perform_action_expect(node_id, AccessibilityAction::Focus, None);
     }
 
     pub(crate) fn set_text_node(&mut self, node_id: NodeId, value: impl Into<String>) {
-        self.perform_action(
+        self.perform_action_expect(
             node_id,
             AccessibilityAction::SetValue,
             Some(AccessibilityActionData::Value(
@@ -1143,14 +1171,14 @@ impl SemanticApp {
     }
 
     pub(crate) fn increment_node(&mut self, node_id: NodeId) {
-        self.perform_action(node_id, AccessibilityAction::Increment, None);
+        self.perform_action_expect(node_id, AccessibilityAction::Increment, None);
     }
 
     pub(crate) fn decrement_node(&mut self, node_id: NodeId) {
-        self.perform_action(node_id, AccessibilityAction::Decrement, None);
+        self.perform_action_expect(node_id, AccessibilityAction::Decrement, None);
     }
 
     pub(crate) fn scroll_down_node(&mut self, node_id: NodeId) {
-        self.perform_action(node_id, AccessibilityAction::ScrollDown, None);
+        self.perform_action_expect(node_id, AccessibilityAction::ScrollDown, None);
     }
 }

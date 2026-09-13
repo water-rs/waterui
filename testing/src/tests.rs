@@ -145,6 +145,7 @@ fn node(
         busy: false,
         hidden: false,
         children: Vec::new(),
+        actions: Vec::new(),
     }
 }
 
@@ -207,6 +208,7 @@ fn mounted(tree: TreeSnapshot) -> SemanticApp {
         tree,
         ui_focus: None,
         revision: 2,
+        viewport: (0, 0),
     }
 }
 
