@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use waterui_assets_planner::ColorScheme;
 
 use crate::{
     apple::platform::{build_rust_lib, clean_apple, is_apple_platform, package_apple},
@@ -177,6 +178,14 @@ impl Backend for AppleBackend {
             .linked_browser_engine()
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
+        // The generated project names the launch assets the catalog will
+        // hold, so the two are decided from the same resolution.
+        let launch = crate::assets::project_launch_assets(project)
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        let launch_entry = templates::LaunchTemplateEntry {
+            has_background: launch.plan().background(ColorScheme::Light).is_some(),
+            has_image: launch.has_artwork(),
+        };
         let ctx = TemplateContext::for_project_manifest(
             manifest,
             crate_name_for_template,
@@ -191,7 +200,8 @@ impl Backend for AppleBackend {
         .with_ios_permissions(ios_permissions)
         .with_webview_enabled(webview_enabled)
         .with_chromium_enabled(chromium_enabled)
-        .with_browser_engine(browser_engine);
+        .with_browser_engine(browser_engine)
+        .with_launch(launch_entry);
 
         templates::apple::scaffold(&project.backend_path::<Self>(), &ctx)
             .await
