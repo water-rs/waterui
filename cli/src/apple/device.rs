@@ -210,13 +210,16 @@ fn spawn_simulator_exit_monitor(
 /// - By default, filters by the `WaterUI` subsystem ("dev.waterui").
 /// - If `native_logs` is true, filters by process ID instead to capture all native output.
 ///
-/// Returns a receiver for panic info that fires if a panic is detected.
+/// Returns a receiver for panic info that fires if a panic is detected, and
+/// the `log stream` process. It is spawned with `kill_on_drop` and the reader
+/// task only holds its stdout, so the caller retains the handle in its
+/// [`Running`] to end the stream with the run instead of leaving it behind.
 fn start_log_stream(
     sender: Sender<DeviceEvent>,
     log_level: Option<LogLevel>,
     pid: u32,
     native_logs: bool,
-) -> Receiver<PanicInfo> {
+) -> eyre::Result<(Receiver<PanicInfo>, smol::process::Child)> {
     // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
     let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
 
@@ -243,58 +246,58 @@ fn start_log_stream(
         .stderr(Stdio::null())
         .kill_on_drop(true);
 
-    if let Ok(mut log_child) = log_cmd.spawn()
-        && let Some(stdout) = log_child.stdout.take()
-    {
-        // Move log_child into the async task to keep it alive
-        spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Some(Ok(line)) = lines.next().await {
-                // Skip header lines from `log stream`
-                if line.starts_with("Filtering") || line.starts_with("Timestamp") {
-                    continue;
-                }
+    let mut log_child = log_cmd
+        .spawn()
+        .map_err(|error| eyre!("Failed to start simulator log stream: {error}"))?;
+    let stdout = log_child
+        .stdout
+        .take()
+        .expect("stdout is piped for the simulator log stream");
+    spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Some(Ok(line)) = lines.next().await {
+            // Skip header lines from `log stream`
+            if line.starts_with("Filtering") || line.starts_with("Timestamp") {
+                continue;
+            }
 
-                // Extract panic info from log line if present (only first panic via try_send)
-                if line.contains("panic.payload=")
-                    && let Some(info) = extract_panic_info_from_log(&line)
+            // Extract panic info from log line if present (only first panic via try_send)
+            if line.contains("panic.payload=")
+                && let Some(info) = extract_panic_info_from_log(&line)
+            {
+                let _ = panic_tx.try_send(info);
+            }
+
+            // Only send log events to display if user requested logs
+            if log_level.is_some() {
+                // Parse log level from compact format: "timestamp Ty Process..."
+                // Ty is: F (fault), E (error), W (warning), I (info), D (debug)
+                // Fault is Apple's highest severity - used by panic handler
+                let level = if line.contains(" F ") || line.contains(" E ") {
+                    tracing::Level::ERROR
+                } else if line.contains(" W ") {
+                    tracing::Level::WARN
+                } else if line.contains(" D ") {
+                    tracing::Level::DEBUG
+                } else {
+                    tracing::Level::INFO
+                };
+
+                if sender
+                    .try_send(DeviceEvent::Log {
+                        level,
+                        message: line,
+                    })
+                    .is_err()
                 {
-                    let _ = panic_tx.try_send(info);
-                }
-
-                // Only send log events to display if user requested logs
-                if log_level.is_some() {
-                    // Parse log level from compact format: "timestamp Ty Process..."
-                    // Ty is: F (fault), E (error), W (warning), I (info), D (debug)
-                    // Fault is Apple's highest severity - used by panic handler
-                    let level = if line.contains(" F ") || line.contains(" E ") {
-                        tracing::Level::ERROR
-                    } else if line.contains(" W ") {
-                        tracing::Level::WARN
-                    } else if line.contains(" D ") {
-                        tracing::Level::DEBUG
-                    } else {
-                        tracing::Level::INFO
-                    };
-
-                    if sender
-                        .try_send(DeviceEvent::Log {
-                            level,
-                            message: line,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
+                    break;
                 }
             }
-            // Keep log_child alive until stream ends, then let it drop to kill the process
-            drop(log_child);
-        })
-        .detach();
-    }
+        }
+    })
+    .detach();
 
-    panic_rx
+    Ok((panic_rx, log_child))
 }
 
 /// Extract panic information from a log line containing panic.payload and panic.location fields.
@@ -625,13 +628,15 @@ impl Device for AppleSimulator {
         // Create a Running instance - termination will use simctl terminate
         let udid = self.udid.clone();
         let bundle_id_for_termination = bundle_id.clone();
-        let (running, sender) = Running::new(move || {
+        let (mut running, sender) = Running::new(move || {
             spawn_simulator_termination(udid, bundle_id_for_termination);
         });
 
         // Start log streaming and get panic info receiver
         // Uses WaterUI subsystem predicate by default, or processID if native_logs is enabled
-        let panic_rx = start_log_stream(sender.clone(), log_level, pid, native_logs);
+        let (panic_rx, log_child) = start_log_stream(sender.clone(), log_level, pid, native_logs)
+            .map_err(FailToRun::Launch)?;
+        running.retain(log_child);
 
         // Monitor the actual app process and classify crash vs normal exit.
         spawn_simulator_exit_monitor(

@@ -493,14 +493,18 @@ struct MacosLogStream {
 /// Uses `log stream` with a predicate to filter by the `WaterUI` subsystem (`dev.waterui`).
 /// This captures all tracing output from the Rust code via `tracing_oslog`.
 ///
-/// The returned task owns the `log stream` process so process monitoring can
-/// stop it as soon as the application exits.
+/// The `log stream` process is returned beside the stream: it is spawned with
+/// `kill_on_drop` and the reader task only holds its stdout, so whoever owns
+/// the handle owns the process's lifetime. The caller retains it in the
+/// [`Running`] so the stream ends with the run — the app exits, the user
+/// cancels, the CLI receives `SIGTERM` — instead of outliving it as an orphan
+/// on launchd, filtering for a process that no longer exists.
 #[cfg(target_os = "macos")]
 fn start_log_stream(
     sender: Sender<DeviceEvent>,
     log_level: Option<LogLevel>,
     pid: u32,
-) -> Result<MacosLogStream, FailToRun> {
+) -> Result<(MacosLogStream, smol::process::Child), FailToRun> {
     // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
     let (panic_tx, panic_rx) = smol::channel::bounded::<String>(1);
 
@@ -567,10 +571,9 @@ fn start_log_stream(
                 }
             }
         }
-        drop(log_child);
     });
 
-    Ok(MacosLogStream { task, panic_rx })
+    Ok((MacosLogStream { task, panic_rx }, log_child))
 }
 
 /// Extract panic information from a log line containing panic.payload and panic.location fields.
@@ -1120,14 +1123,15 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
     let started_at = Instant::now();
     let (child, app_pid) = launch_macos_bundle_process(&launch, &options).await?;
     let (cancel_tx, cancel_rx) = smol::channel::bounded(1);
-    let (running, sender) = Running::new(move || {
+    let (mut running, sender) = Running::new(move || {
         let pid = nix::unistd::Pid::from_raw(
             i32::try_from(app_pid).expect("macOS process identifiers fit in i32"),
         );
         let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
         let _ = cancel_tx.try_send(());
     });
-    let log_stream = start_log_stream(sender.clone(), options.log_level(), app_pid)?;
+    let (log_stream, log_child) = start_log_stream(sender.clone(), options.log_level(), app_pid)?;
+    running.retain(log_child);
     let monitor = ChildMonitor::new(child, sender.clone(), cancel_rx);
     spawn_macos_app_exit_monitor(monitor, log_stream, sender, started_at, app_pid);
 
