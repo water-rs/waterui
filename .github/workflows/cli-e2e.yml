@@ -329,7 +329,7 @@ jobs:
             Fail "water run launched but the app died within the grace window"
           }
           '@
-          Set-Content -Path 'C:\Windows\Temp\cli-e2e\cli-e2e.ps1' -Value ($header + $e2e) -Encoding UTF8
+          Set-Content -Path 'C:\Windows\Temp\cli-e2e\cli-e2e.ps1' -Value ($header + "`n" + $e2e) -Encoding UTF8
           # The child's console output is not attached to this step — capture
           # it and echo it back so ::error:: lines and crash output surface.
           $p = Start-Process -FilePath pwsh `
