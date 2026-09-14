@@ -12,6 +12,8 @@ use smol::{
     stream::Stream,
 };
 
+use crate::toolchain::Host;
+
 #[cfg(target_os = "macos")]
 use std::collections::BTreeSet;
 #[cfg(target_os = "macos")]
@@ -235,22 +237,23 @@ pub trait Device: Sized + Send {
     /// Launch the device emulator or simulator.
     ///
     /// If the device is a physical device or local machine, this should do nothing.
-    fn launch(&self) -> impl Future<Output = eyre::Result<()>> + Send;
+    fn launch(&self, host: &Host) -> impl Future<Output = eyre::Result<()>> + Send;
 
     /// Run the given artifact on the device with the specified options.
     fn run(
         &self,
+        host: &Host,
         artifact: Artifact,
         options: RunOptions,
     ) -> impl Future<Output = Result<Running, FailToRun>> + Send;
 
-    /// Scan for available devices of this type.
+    /// Scan for available devices of this type on `host`.
     ///
     /// Each device type knows how to discover its own kind:
     /// - `Local::scan()` → always returns `vec![Local]`
     /// - `AppleSimulator::scan()` → uses `simctl list`
     /// - `AndroidDevice::scan()` → uses `adb devices`
-    fn scan() -> impl Future<Output = eyre::Result<Vec<Self>>> + Send;
+    fn scan(host: &Host) -> impl Future<Output = eyre::Result<Vec<Self>>> + Send;
 }
 
 /// Represents a running application on a device.
@@ -501,6 +504,7 @@ struct MacosLogStream {
 /// on launchd, filtering for a process that no longer exists.
 #[cfg(target_os = "macos")]
 fn start_log_stream(
+    host: &Host,
     sender: Sender<DeviceEvent>,
     log_level: Option<LogLevel>,
     pid: u32,
@@ -513,7 +517,7 @@ fn start_log_stream(
 
     let predicate = format!("processID == {pid} AND subsystem == \"dev.waterui\"");
 
-    let mut log_cmd = smol::process::Command::new("log");
+    let mut log_cmd = host.command("log");
     log_cmd
         .arg("stream")
         .arg("--predicate")
@@ -609,7 +613,11 @@ fn extract_panic_info_from_log(line: &str) -> Option<PanicInfo> {
 /// Uses `log show` to retrieve logs that contain panic info.
 /// Returns the panic message if found, along with location and payload.
 #[cfg(target_os = "macos")]
-async fn fetch_recent_panic_logs(started_at: Instant, pid: Option<u32>) -> Option<String> {
+async fn fetch_recent_panic_logs(
+    host: &Host,
+    started_at: Instant,
+    pid: Option<u32>,
+) -> Option<String> {
     let last = started_at.elapsed() + Duration::from_secs(2);
     let last_arg = format!("{}s", last.as_secs().max(5));
 
@@ -622,10 +630,19 @@ async fn fetch_recent_panic_logs(started_at: Instant, pid: Option<u32>) -> Optio
         },
     );
 
-    let output = Command::new("log")
-        .args(["show", "--predicate", &predicate, "--style", "compact"])
-        .args(["--last", &last_arg])
-        .output()
+    let output = host
+        .output(
+            "log",
+            [
+                "show",
+                "--predicate",
+                predicate.as_str(),
+                "--style",
+                "compact",
+                "--last",
+                last_arg.as_str(),
+            ],
+        )
         .await
         .ok()?;
 
@@ -687,28 +704,33 @@ impl Device for Local {
         "Local Machine"
     }
 
-    fn launch(&self) -> impl Future<Output = eyre::Result<()>> + Send {
+    fn launch(&self, _host: &Host) -> impl Future<Output = eyre::Result<()>> + Send {
         // No-op - local machine is always "launched"
         std::future::ready(Ok(()))
     }
 
-    async fn run(&self, artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
+    async fn run(
+        &self,
+        host: &Host,
+        artifact: Artifact,
+        options: RunOptions,
+    ) -> Result<Running, FailToRun> {
         let artifact_path = artifact.path();
 
         // Dispatch based on artifact type
         match artifact_path.extension().and_then(|e| e.to_str()) {
             Some("app") => {
                 // macOS .app bundle - supervise its real executable
-                run_macos_app(artifact, options).await
+                run_macos_app(host, artifact, options).await
             }
             _ => {
                 // Binary executable - run directly
-                run_binary(&artifact, &options)
+                run_binary(host, &artifact, &options)
             }
         }
     }
 
-    fn scan() -> impl Future<Output = eyre::Result<Vec<Self>>> + Send {
+    fn scan(_host: &Host) -> impl Future<Output = eyre::Result<Vec<Self>>> + Send {
         // Local machine is always available - just return a single instance
         std::future::ready(Ok(vec![Self]))
     }
@@ -722,10 +744,9 @@ struct MacosProcess {
 }
 
 #[cfg(target_os = "macos")]
-async fn list_macos_processes() -> Result<Vec<MacosProcess>, FailToRun> {
-    let output = Command::new("ps")
-        .args(["-axo", "pid=,command="])
-        .output()
+async fn list_macos_processes(host: &Host) -> Result<Vec<MacosProcess>, FailToRun> {
+    let output = host
+        .output("ps", ["-axo", "pid=,command="])
         .await
         .map_err(|e| FailToRun::Launch(eyre::eyre!("Failed to list local processes: {e}")))?;
 
@@ -835,6 +856,7 @@ fn command_app_bundle_path_for_executable(command: &str, executable_name: &str) 
 
 #[cfg(target_os = "macos")]
 async fn list_conflicting_macos_app_pids(
+    host: &Host,
     launch: &MacosBundleLaunchContext,
 ) -> Result<Vec<u32>, FailToRun> {
     let executable_name = launch
@@ -849,7 +871,7 @@ async fn list_conflicting_macos_app_pids(
         })?;
 
     let mut pids = BTreeSet::new();
-    for process in list_macos_processes().await? {
+    for process in list_macos_processes(host).await? {
         if command_runs_executable(&process.command, &launch.executable_path) {
             pids.insert(process.pid);
             continue;
@@ -882,8 +904,8 @@ async fn list_conflicting_macos_app_pids(
 }
 
 #[cfg(target_os = "macos")]
-fn quiet_kill_command(signal: &str, pid: &str) -> Command {
-    let mut command = Command::new("kill");
+fn quiet_kill_command(host: &Host, signal: &str, pid: &str) -> Command {
+    let mut command = host.command("kill");
     command
         .arg(signal)
         .arg(pid)
@@ -893,23 +915,23 @@ fn quiet_kill_command(signal: &str, pid: &str) -> Command {
 }
 
 #[cfg(target_os = "macos")]
-async fn is_pid_alive(pid: u32) -> bool {
+async fn is_pid_alive(host: &Host, pid: u32) -> bool {
     let pid = pid.to_string();
-    quiet_kill_command("-0", &pid)
+    quiet_kill_command(host, "-0", &pid)
         .status()
         .await
         .is_ok_and(|status| status.success())
 }
 
 #[cfg(target_os = "macos")]
-async fn terminate_pids(pids: &[u32]) -> Result<(), FailToRun> {
+async fn terminate_pids(host: &Host, pids: &[u32]) -> Result<(), FailToRun> {
     if pids.is_empty() {
         return Ok(());
     }
 
     for &pid in pids {
         let pid = pid.to_string();
-        let status = quiet_kill_command("-TERM", &pid)
+        let status = quiet_kill_command(host, "-TERM", &pid)
             .status()
             .await
             .map_err(|e| {
@@ -928,7 +950,7 @@ async fn terminate_pids(pids: &[u32]) -> Result<(), FailToRun> {
     while Instant::now() < deadline {
         let mut alive = false;
         for &pid in pids {
-            if is_pid_alive(pid).await {
+            if is_pid_alive(host, pid).await {
                 alive = true;
                 break;
             }
@@ -1026,22 +1048,23 @@ const MACOS_LAUNCH_BACKSTOP: Duration = Duration::from_secs(120);
 
 #[cfg(target_os = "macos")]
 async fn launch_macos_bundle_process(
+    host: &Host,
     launch: &MacosBundleLaunchContext,
     options: &RunOptions,
 ) -> Result<(smol::process::Child, u32), FailToRun> {
     use tracing::info;
 
     if options.replace_existing_macos_app_instances() {
-        let existing_pids = list_conflicting_macos_app_pids(launch).await?;
-        terminate_pids(&existing_pids).await?;
+        let existing_pids = list_conflicting_macos_app_pids(host, launch).await?;
+        terminate_pids(host, &existing_pids).await?;
     }
 
-    let existing_pids = list_conflicting_macos_app_pids(launch)
+    let existing_pids = list_conflicting_macos_app_pids(host, launch)
         .await?
         .into_iter()
         .collect::<BTreeSet<_>>();
     info!("Launching app on macOS: {}", launch.artifact_path.display());
-    let mut command = Command::new("open");
+    let mut command = host.command("open");
     command.arg("-W").arg("-n");
     for (key, value) in options.env_vars() {
         command.arg("--env").arg(format!("{key}={value}"));
@@ -1065,7 +1088,7 @@ async fn launch_macos_bundle_process(
     // about to work; see [`MACOS_LAUNCH_BACKSTOP`].
     let deadline = Instant::now() + MACOS_LAUNCH_BACKSTOP;
     while Instant::now() < deadline {
-        let new_pid = list_conflicting_macos_app_pids(launch)
+        let new_pid = list_conflicting_macos_app_pids(host, launch)
             .await?
             .into_iter()
             .find(|pid| !existing_pids.contains(pid));
@@ -1118,10 +1141,14 @@ async fn launch_macos_bundle_process(
 /// bundle preserves the process identity required by macOS privacy, lifecycle,
 /// and application services. App logs are captured from unified logging by PID.
 #[cfg(target_os = "macos")]
-async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Running, FailToRun> {
+async fn run_macos_app(
+    host: &Host,
+    artifact: Artifact,
+    options: RunOptions,
+) -> Result<Running, FailToRun> {
     let launch = prepare_macos_bundle_launch(artifact).await?;
     let started_at = Instant::now();
-    let (child, app_pid) = launch_macos_bundle_process(&launch, &options).await?;
+    let (child, app_pid) = launch_macos_bundle_process(host, &launch, &options).await?;
     let (cancel_tx, cancel_rx) = smol::channel::bounded(1);
     let (mut running, sender) = Running::new(move || {
         let pid = nix::unistd::Pid::from_raw(
@@ -1130,10 +1157,11 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
         let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
         let _ = cancel_tx.try_send(());
     });
-    let (log_stream, log_child) = start_log_stream(sender.clone(), options.log_level(), app_pid)?;
+    let (log_stream, log_child) =
+        start_log_stream(host, sender.clone(), options.log_level(), app_pid)?;
     running.retain(log_child);
     let monitor = ChildMonitor::new(child, sender.clone(), cancel_rx);
-    spawn_macos_app_exit_monitor(monitor, log_stream, sender, started_at, app_pid);
+    spawn_macos_app_exit_monitor(host, monitor, log_stream, sender, started_at, app_pid);
 
     Ok(running)
 }
@@ -1141,6 +1169,7 @@ async fn run_macos_app(artifact: Artifact, options: RunOptions) -> Result<Runnin
 /// Run a macOS .app bundle on non-macOS platforms (not supported).
 #[cfg(not(target_os = "macos"))]
 fn run_macos_app(
+    _host: &Host,
     _artifact: Artifact,
     _options: RunOptions,
 ) -> impl std::future::Future<Output = Result<Running, FailToRun>> {
@@ -1150,13 +1179,17 @@ fn run_macos_app(
 /// Run a binary executable directly.
 ///
 /// Captures stdout/stderr and extracts panic messages from stderr.
-fn run_binary(artifact: &Artifact, options: &RunOptions) -> Result<Running, FailToRun> {
+fn run_binary(
+    host: &Host,
+    artifact: &Artifact,
+    options: &RunOptions,
+) -> Result<Running, FailToRun> {
     let binary_path = artifact.path();
     if !binary_path.exists() {
         return Err(FailToRun::InvalidArtifact);
     }
 
-    let child = spawn_local_child(binary_path, options)?;
+    let child = spawn_local_child(host, binary_path, options)?;
     let (cancel_tx, cancel_rx) = smol::channel::bounded(1);
     let (running, sender) = Running::new(move || {
         let _ = cancel_tx.try_send(());
@@ -1168,12 +1201,13 @@ fn run_binary(artifact: &Artifact, options: &RunOptions) -> Result<Running, Fail
 }
 
 fn spawn_local_child(
+    host: &Host,
     executable_path: &Path,
     options: &RunOptions,
 ) -> Result<smol::process::Child, FailToRun> {
-    use smol::process::{Command, Stdio};
+    use smol::process::Stdio;
 
-    let mut cmd = Command::new(executable_path);
+    let mut cmd = host.command(executable_path);
     for (key, value) in options.env_vars() {
         cmd.env(key, value);
     }
@@ -1363,14 +1397,14 @@ fn spawn_binary_exit_monitor(monitor: ChildMonitor, sender: Sender<DeviceEvent>)
 
 #[cfg(target_os = "macos")]
 fn spawn_macos_app_exit_monitor(
+    host: &Host,
     monitor: ChildMonitor,
     log_stream: MacosLogStream,
     sender: Sender<DeviceEvent>,
     started_at: Instant,
     pid: u32,
 ) {
-    use smol::spawn;
-
+    let host = host.clone();
     spawn(async move {
         let Some(exit) = monitor.wait().await else {
             return;
@@ -1384,7 +1418,7 @@ fn spawn_macos_app_exit_monitor(
         if panic_message.is_none()
             && matches!(&exit.status, Ok(exit_status) if !exit_status.success())
         {
-            panic_message = fetch_recent_panic_logs(started_at, Some(pid)).await;
+            panic_message = fetch_recent_panic_logs(&host, started_at, Some(pid)).await;
         }
 
         emit_process_exit_event(

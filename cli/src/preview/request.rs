@@ -313,6 +313,7 @@ pub async fn check_toolchain_for_backend(
     platform: CliPreviewPlatform,
     backend: CliPreviewBackend,
 ) -> Result<()> {
+    let host = crate::toolchain::Host::current();
     match backend {
         CliPreviewBackend::Apple => {
             let sdk = match platform {
@@ -322,13 +323,13 @@ pub async fn check_toolchain_for_backend(
                     bail!("Internal error: Apple preview backend is not supported on android");
                 }
             };
-            toolchain_checks::check_apple(sdk).await?;
+            toolchain_checks::check_apple(&host, sdk).await?;
         }
         CliPreviewBackend::Android => {
             if platform != CliPreviewPlatform::Android {
                 bail!("Internal error: Android preview backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_android_run().await?;
+            toolchain_checks::check_android_run(&host).await?;
         }
         CliPreviewBackend::Hydrolysis => {
             if platform != CliPreviewPlatform::Macos {

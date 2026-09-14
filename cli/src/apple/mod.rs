@@ -15,6 +15,8 @@ pub mod local {
 
     use eyre::eyre;
 
+    use crate::toolchain::Host;
+
     /// Information about a macOS window.
     #[derive(Debug, Clone)]
     pub struct WindowInfo {
@@ -48,17 +50,23 @@ pub mod local {
     }
 
     /// Stub: local screenshot is unavailable outside macOS.
-    pub fn screenshot(_output: &Path) -> impl std::future::Future<Output = eyre::Result<()>> {
+    pub fn screenshot(
+        _host: &Host,
+        _output: &Path,
+    ) -> impl std::future::Future<Output = eyre::Result<()>> {
         unsupported_async()
     }
 
     /// Stub: local screenshot is unavailable outside macOS.
-    pub fn screenshot_bytes() -> impl std::future::Future<Output = eyre::Result<Vec<u8>>> {
+    pub fn screenshot_bytes(
+        _host: &Host,
+    ) -> impl std::future::Future<Output = eyre::Result<Vec<u8>>> {
         unsupported_async()
     }
 
     /// Stub: local screenshot is unavailable outside macOS.
     pub fn screenshot_window(
+        _host: &Host,
         _window_id: u32,
         _output: &Path,
     ) -> impl std::future::Future<Output = eyre::Result<()>> {
@@ -67,18 +75,24 @@ pub mod local {
 
     /// Stub: local screenshot is unavailable outside macOS.
     pub fn screenshot_window_bytes(
+        _host: &Host,
         _window_id: u32,
     ) -> impl std::future::Future<Output = eyre::Result<Vec<u8>>> {
         unsupported_async()
     }
 
     /// Stub: local tap is unavailable outside macOS.
-    pub fn tap(_x: u32, _y: u32) -> impl std::future::Future<Output = eyre::Result<()>> {
+    pub fn tap(
+        _host: &Host,
+        _x: u32,
+        _y: u32,
+    ) -> impl std::future::Future<Output = eyre::Result<()>> {
         unsupported_async()
     }
 
     /// Stub: local swipe is unavailable outside macOS.
     pub fn swipe(
+        _host: &Host,
         _from: (u32, u32),
         _to: (u32, u32),
         _duration_ms: Option<u32>,
@@ -87,7 +101,7 @@ pub mod local {
     }
 
     /// Stub: local text input is unavailable outside macOS.
-    pub fn text(_input: &str) -> impl std::future::Future<Output = eyre::Result<()>> {
+    pub fn text(_host: &Host, _input: &str) -> impl std::future::Future<Output = eyre::Result<()>> {
         unsupported_async()
     }
 }

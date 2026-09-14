@@ -1,8 +1,8 @@
 //! Web toolchain checks and installations.
 
 use crate::{
-    toolchain::{Installation, Toolchain, ToolchainError},
-    utils::{CommandError, run_command, run_command_output_os, which},
+    toolchain::{Host, Installation, Toolchain, ToolchainError},
+    utils::CommandError,
 };
 
 /// Rust `wasm32-unknown-unknown` target support.
@@ -16,15 +16,17 @@ pub struct Wasm32UnknownUnknownTargetInstallation;
 impl Toolchain for Wasm32UnknownUnknownTarget {
     type Installation = Wasm32UnknownUnknownTargetInstallation;
 
-    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
-        if which("rustup").await.is_err() {
+    async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
+        if host.which("rustup").await.is_err() {
             return Err(ToolchainError::unfixable(
                 "rustup is not installed or not found in PATH",
                 "Install Rust with rustup from https://rustup.rs/ and re-run the command.",
             ));
         }
 
-        let output = run_command_output_os("rustup", ["target", "list", "--installed"]).await;
+        let output = host
+            .output("rustup", ["target", "list", "--installed"])
+            .await;
         let output = match output {
             Ok(output) => output,
             Err(error) => {
@@ -62,8 +64,8 @@ impl Toolchain for Wasm32UnknownUnknownTarget {
 impl Installation for Wasm32UnknownUnknownTargetInstallation {
     type Error = CommandError;
 
-    async fn install(&self) -> Result<(), Self::Error> {
-        run_command("rustup", ["target", "add", "wasm32-unknown-unknown"])
+    async fn install(&self, host: &Host) -> Result<(), Self::Error> {
+        host.run("rustup", ["target", "add", "wasm32-unknown-unknown"])
             .await
             .map(|_| ())
     }
@@ -80,8 +82,8 @@ pub struct WasmPackInstallation;
 impl Toolchain for WasmPack {
     type Installation = WasmPackInstallation;
 
-    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
-        if which("wasm-pack").await.is_ok() {
+    async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
+        if host.which("wasm-pack").await.is_ok() {
             Ok(())
         } else {
             Err(ToolchainError::Fixable(WasmPackInstallation))
@@ -92,8 +94,8 @@ impl Toolchain for WasmPack {
 impl Installation for WasmPackInstallation {
     type Error = CommandError;
 
-    async fn install(&self) -> Result<(), Self::Error> {
-        run_command("cargo", ["install", "wasm-pack"])
+    async fn install(&self, host: &Host) -> Result<(), Self::Error> {
+        host.run("cargo", ["install", "wasm-pack"])
             .await
             .map(|_| ())
     }
@@ -101,3 +103,73 @@ impl Installation for WasmPackInstallation {
 
 /// Composite toolchain for Web/WASM support.
 pub type WebToolchain = (Wasm32UnknownUnknownTarget, WasmPack);
+
+#[cfg(test)]
+mod tests {
+    use super::{Wasm32UnknownUnknownTarget, WasmPack};
+    use crate::toolchain::testing::TestMachine;
+    use crate::toolchain::{Toolchain, ToolchainError};
+
+    fn machine_with_rustup() -> TestMachine {
+        let machine = TestMachine::new();
+        machine.install("rustup");
+        machine
+    }
+
+    #[test]
+    fn wasm32_target_unfixable_without_rustup() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(Wasm32UnknownUnknownTarget.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "missing rustup must be unfixable: {result:?}"
+        );
+    }
+
+    #[test]
+    fn wasm32_target_fixable_when_not_installed() {
+        let machine = machine_with_rustup();
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_RUSTUP_INSTALLED_TARGETS"),
+            String::from("aarch64-apple-darwin"),
+        )]);
+        let result = smol::block_on(Wasm32UnknownUnknownTarget.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Fixable(_))),
+            "absent wasm32 target must be fixable: {result:?}"
+        );
+    }
+
+    #[test]
+    fn wasm32_target_ok_when_installed() {
+        let machine = machine_with_rustup();
+        // `rustup target list --installed` emits one target per line.
+        machine.respond(
+            "RUSTUP_INSTALLED_TARGETS",
+            &["aarch64-apple-darwin", "wasm32-unknown-unknown"].join("\n"),
+        );
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(Wasm32UnknownUnknownTarget.check(&host))
+            .expect("installed wasm32 target must be ok");
+    }
+
+    #[test]
+    fn wasm_pack_ok_when_on_path() {
+        let machine = TestMachine::new();
+        machine.install("wasm-pack");
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(WasmPack.check(&host)).expect("wasm-pack on PATH must be ok");
+    }
+
+    #[test]
+    fn wasm_pack_fixable_when_missing() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(WasmPack.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Fixable(_))),
+            "missing wasm-pack must be fixable via cargo install: {result:?}"
+        );
+    }
+}

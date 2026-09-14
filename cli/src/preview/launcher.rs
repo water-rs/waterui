@@ -671,8 +671,9 @@ async fn launch_preview_on_macos(project: &Project) -> Result<Running> {
     let backend = project
         .apple_backend()
         .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
+    let host = crate::toolchain::Host::current();
     let device = Local;
-    device.launch().await?;
+    device.launch(&host).await?;
     info!("Building and running preview app on macOS...");
     project
         .run_with_options(
@@ -689,8 +690,9 @@ async fn launch_preview_on_ios_simulator(project: &Project) -> Result<Running> {
     let backend = project
         .apple_backend()
         .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
-    let simulator = crate::apple::device::AppleSimulator::select_ios(project, None).await?;
-    simulator.launch().await?;
+    let host = crate::toolchain::Host::current();
+    let simulator = crate::apple::device::AppleSimulator::select_ios(&host, project, None).await?;
+    simulator.launch(&host).await?;
     info!("Building and running preview app on iOS Simulator...");
     project
         .run_with_options(
@@ -707,13 +709,14 @@ async fn launch_preview_on_android(project: &Project) -> Result<Running> {
     let backend = project
         .android_backend()
         .ok_or_else(|| eyre::eyre!("Android backend not configured"))?;
+    let host = crate::toolchain::Host::current();
 
-    if let Some(device) = crate::android::device::AndroidDevice::scan()
+    if let Some(device) = crate::android::device::AndroidDevice::scan(&host)
         .await?
         .into_iter()
         .next()
     {
-        device.launch().await?;
+        device.launch(&host).await?;
         info!("Building and running preview app on Android device...");
         return project
             .run_android_with_options(backend, device, preview_run_options())
@@ -721,13 +724,13 @@ async fn launch_preview_on_android(project: &Project) -> Result<Running> {
             .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"));
     }
 
-    let avd_name = crate::android::platform::AndroidPlatform::list_avds()
+    let avd_name = crate::android::platform::AndroidPlatform::list_avds(&host)
         .await?
         .into_iter()
         .next()
         .ok_or_else(|| eyre::eyre!("No Android devices or emulators available."))?;
-    let emulator = crate::android::device::AndroidEmulator::open(avd_name).await?;
-    emulator.launch().await?;
+    let emulator = crate::android::device::AndroidEmulator::open(&host, avd_name).await?;
+    emulator.launch(&host).await?;
     info!("Building and running preview app on Android emulator...");
     project
         .run_android_with_options(backend, emulator, preview_run_options())

@@ -100,13 +100,14 @@ pub async fn launch_inspector_session(
     );
     run_options.insert_env_var("WATERUI_INSPECTOR_TOKEN".to_string(), options.token.clone());
 
+    let host = crate::toolchain::Host::current();
     let running = match platform {
         InspectorPlatform::Macos => {
             let backend = project
                 .apple_backend()
                 .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
             let device = Local;
-            device.launch().await?;
+            device.launch(&host).await?;
             info!("Building and running inspector app on macOS...");
             project
                 .run_with_options(backend, TargetPlatform::MacOS, device, run_options)
@@ -118,9 +119,9 @@ pub async fn launch_inspector_session(
                 .apple_backend()
                 .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
             let simulator =
-                crate::apple::device::AppleSimulator::select_ios(&project, None).await?;
+                crate::apple::device::AppleSimulator::select_ios(&host, &project, None).await?;
 
-            simulator.launch().await?;
+            simulator.launch(&host).await?;
             info!("Building and running inspector app on iOS Simulator...");
             project
                 .run_with_options(
@@ -137,22 +138,23 @@ pub async fn launch_inspector_session(
                 .android_backend()
                 .ok_or_else(|| eyre::eyre!("Android backend not configured"))?;
 
-            let devices = crate::android::device::AndroidDevice::scan().await?;
+            let devices = crate::android::device::AndroidDevice::scan(&host).await?;
             if let Some(device) = devices.into_iter().next() {
-                device.launch().await?;
+                device.launch(&host).await?;
                 info!("Building and running inspector app on Android device...");
                 project
                     .run_android_with_options(backend, device, run_options)
                     .await
                     .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
             } else {
-                let avds = crate::android::platform::AndroidPlatform::list_avds().await?;
+                let avds = crate::android::platform::AndroidPlatform::list_avds(&host).await?;
                 let avd_name = avds
                     .into_iter()
                     .next()
                     .ok_or_else(|| eyre::eyre!("No Android devices or emulators available."))?;
-                let emulator = crate::android::device::AndroidEmulator::open(avd_name).await?;
-                emulator.launch().await?;
+                let emulator =
+                    crate::android::device::AndroidEmulator::open(&host, avd_name).await?;
+                emulator.launch(&host).await?;
                 info!("Building and running inspector app on Android emulator...");
                 project
                     .run_android_with_options(backend, emulator, run_options)

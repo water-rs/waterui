@@ -134,7 +134,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
     copy_assets_and_fonts(project, &backend_path).await?;
 
     let llvm_envs = WindowsArm64LlvmToolchain
-        .cargo_envs()
+        .cargo_envs(&crate::toolchain::Host::current())
         .await
         .map_err(|error| match error {
             ToolchainError::Fixable(_) => eyre::eyre!(

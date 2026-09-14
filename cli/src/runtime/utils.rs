@@ -4,13 +4,15 @@ use std::ffi::OsStr;
 use std::{
     io,
     path::{Path, PathBuf},
-    process::{ExitStatus, Output, Stdio},
+    process::{ExitStatus, Stdio},
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use semver::Version;
 use smol::{process::Command, unblock};
 use thiserror::Error;
+
+use crate::toolchain::Host;
 
 /// An external command could not be executed or exited unsuccessfully.
 #[derive(Debug, Error)]
@@ -36,14 +38,14 @@ pub enum CommandError {
     },
 }
 
-/// Locate an executable in the system's PATH.
+/// Locate an executable in the real host's PATH.
 ///
 /// Return the path to the executable if found.
 ///
 /// # Errors
 /// - If the executable is not found in the PATH.
 pub(crate) async fn which(name: &'static str) -> Result<PathBuf, which::Error> {
-    unblock(move || which::which(name)).await
+    Host::current().which(name).await
 }
 
 /// Enable or disable standard output for command executions.
@@ -54,6 +56,11 @@ static STD_OUTPUT: AtomicBool = AtomicBool::new(false);
 /// Enable or disable standard output for command executions.
 pub fn set_std_output(enabled: bool) {
     STD_OUTPUT.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether captured command output is also echoed to the terminal.
+pub(crate) fn std_output_enabled() -> bool {
+    STD_OUTPUT.load(Ordering::SeqCst)
 }
 
 /// Returns a platform-appropriate installation hint for sccache.
@@ -74,51 +81,16 @@ pub const fn sccache_install_hint() -> &'static str {
 pub(crate) fn command(command: &mut Command) -> &mut Command {
     command
         .kill_on_drop(true)
-        .stdout(if STD_OUTPUT.load(Ordering::SeqCst) {
+        .stdout(if std_output_enabled() {
             Stdio::inherit()
         } else {
             Stdio::piped()
         })
-        .stderr(if STD_OUTPUT.load(Ordering::SeqCst) {
+        .stderr(if std_output_enabled() {
             Stdio::inherit()
         } else {
             Stdio::piped()
         })
-}
-
-/// Run a command and capture its output regardless of exit status.
-///
-/// Supports non-UTF8 executable paths and arguments.
-///
-/// # Errors
-/// - [`CommandError::Spawn`] if the command cannot be spawned.
-pub(crate) async fn run_command_output_os<N, A, S>(name: N, args: A) -> Result<Output, CommandError>
-where
-    N: AsRef<OsStr>,
-    A: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let name = name.as_ref();
-    let result = Command::new(name)
-        .args(args)
-        .kill_on_drop(true)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|source| CommandError::Spawn {
-            program: name.to_string_lossy().into_owned(),
-            source,
-        })?;
-
-    // If STD_OUTPUT is enabled, also print to terminal
-    if STD_OUTPUT.load(Ordering::SeqCst) {
-        use std::io::Write;
-        let _ = std::io::stdout().write_all(&result.stdout);
-        let _ = std::io::stderr().write_all(&result.stderr);
-    }
-
-    Ok(result)
 }
 
 /// Run a command with the specified name and arguments.
@@ -149,22 +121,7 @@ where
     A: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let name_ref = name.as_ref();
-    let result = run_command_output_os(name_ref, args).await?;
-
-    if result.status.success() {
-        Ok(String::from_utf8_lossy(&result.stdout).to_string())
-    } else {
-        Err(CommandError::Failed {
-            program: name_ref.to_string_lossy().into_owned(),
-            status: result.status,
-            report: format!(
-                "{}{}",
-                format_failure_stream("stderr", &result.stderr),
-                format_failure_stream("stdout", &result.stdout),
-            ),
-        })
-    }
+    Host::current().run(name, args).await
 }
 
 /// Number of trailing lines reported from each captured stream when a command fails.
@@ -191,7 +148,7 @@ fn is_diagnostic_line(line: &str) -> bool {
 /// whole environment on the way, so the diagnostic that explains the failure can sit
 /// well over a thousand lines before the end (#345). Every diagnostic line that falls
 /// outside the tail is therefore reported ahead of it.
-fn format_failure_stream(label: &str, bytes: &[u8]) -> String {
+pub(crate) fn format_failure_stream(label: &str, bytes: &[u8]) -> String {
     use std::fmt::Write as _;
 
     let text = String::from_utf8_lossy(bytes);

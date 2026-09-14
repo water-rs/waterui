@@ -9,7 +9,6 @@ use serde::Serialize;
 use crate::shell::Shell;
 use crate::{header, line};
 use smol::future::zip;
-use smol::process::Command;
 #[cfg(feature = "esp32")]
 use waterui_cli::esp32::platform::{SerialPortSummary, scan_serial_ports};
 use waterui_cli::{
@@ -19,6 +18,7 @@ use waterui_cli::{
     },
     apple::device::AppleSimulator,
     device::Device,
+    toolchain::Host,
 };
 
 /// Target platform for device listing.
@@ -50,15 +50,16 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         return run_json(shell, args).await;
     }
 
+    let host = Host::current();
     match args.platform {
         TargetPlatform::Ios => {
-            let ios_devices = scan_ios_devices().await?;
+            let ios_devices = scan_ios_devices(&host).await?;
             display_ios_devices(shell, &ios_devices);
         }
         TargetPlatform::Android => {
-            let adb_path = resolve_android_adb()?;
+            let adb_path = resolve_android_adb(&host)?;
             let (avds, devices, running_avds) =
-                scan_android_devices(AndroidSdk::emulator_path(), adb_path).await?;
+                scan_android_devices(&host, AndroidSdk::emulator_path(&host), adb_path).await?;
             display_android_devices(shell, &avds, &devices, &running_avds);
         }
         TargetPlatform::Macos => {
@@ -75,14 +76,14 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         }
         TargetPlatform::All => {
             // Fast-fail only when adb is unavailable.
-            let adb_path = resolve_android_adb()?;
+            let adb_path = resolve_android_adb(&host)?;
             let spinner = shell.spinner("Scanning devices...");
 
             // Scan iOS, Android, and serial ports in parallel
             let ((ios_devices, android_result), serial_ports) = zip(
                 zip(
-                    scan_ios_devices(),
-                    scan_android_devices(AndroidSdk::emulator_path(), adb_path),
+                    scan_ios_devices(&host),
+                    scan_android_devices(&host, AndroidSdk::emulator_path(&host), adb_path),
                 ),
                 scan_esp32_ports(),
             )
@@ -110,9 +111,10 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 }
 
 async fn run_json(shell: &Shell, args: Args) -> Result<()> {
+    let host = Host::current();
     let output = match args.platform {
         TargetPlatform::Ios => {
-            let ios_devices = scan_ios_devices().await?;
+            let ios_devices = scan_ios_devices(&host).await?;
             DevicesJsonOutput {
                 ty: "devices",
                 platform: "ios",
@@ -123,9 +125,9 @@ async fn run_json(shell: &Shell, args: Args) -> Result<()> {
             }
         }
         TargetPlatform::Android => {
-            let adb_path = resolve_android_adb()?;
+            let adb_path = resolve_android_adb(&host)?;
             let (avds, devices, running_avds) =
-                scan_android_devices(AndroidSdk::emulator_path(), adb_path).await?;
+                scan_android_devices(&host, AndroidSdk::emulator_path(&host), adb_path).await?;
             DevicesJsonOutput {
                 ty: "devices",
                 platform: "android",
@@ -164,11 +166,11 @@ async fn run_json(shell: &Shell, args: Args) -> Result<()> {
         }
         TargetPlatform::All => {
             // Fast-fail only when adb is unavailable.
-            let adb_path = resolve_android_adb()?;
+            let adb_path = resolve_android_adb(&host)?;
             let ((ios_devices, android_result), serial_ports) = zip(
                 zip(
-                    scan_ios_devices(),
-                    scan_android_devices(AndroidSdk::emulator_path(), adb_path),
+                    scan_ios_devices(&host),
+                    scan_android_devices(&host, AndroidSdk::emulator_path(&host), adb_path),
                 ),
                 scan_esp32_ports(),
             )
@@ -201,17 +203,18 @@ async fn run_json(shell: &Shell, args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Scan iOS simulators.
-async fn scan_ios_devices() -> Result<Vec<AppleSimulator>> {
-    AppleSimulator::scan_ios().await
+/// Scan iOS simulators on `host`.
+async fn scan_ios_devices(host: &Host) -> Result<Vec<AppleSimulator>> {
+    AppleSimulator::scan_ios(host).await
 }
 
-fn resolve_android_adb() -> Result<PathBuf> {
-    AndroidSdk::adb_path().ok_or_else(|| eyre::eyre!("Android adb not found"))
+fn resolve_android_adb(host: &Host) -> Result<PathBuf> {
+    AndroidSdk::adb_path(host).ok_or_else(|| eyre::eyre!("Android adb not found"))
 }
 
-/// Scan Android devices and emulators.
+/// Scan Android devices and emulators on `host`.
 async fn scan_android_devices(
+    host: &Host,
     emulator_path: Option<PathBuf>,
     adb_path: PathBuf,
 ) -> Result<(Vec<String>, Vec<AndroidDevice>, HashSet<String>)> {
@@ -220,9 +223,7 @@ async fn scan_android_devices(
         let Some(emulator_path) = emulator_path else {
             return Ok(Vec::new());
         };
-        Command::new(&emulator_path)
-            .arg("-list-avds")
-            .output()
+        host.output(&emulator_path, ["-list-avds"])
             .await
             .map_err(|e| eyre::eyre!("Failed to list AVDs: {e}"))
             .and_then(|output| {
@@ -240,7 +241,7 @@ async fn scan_android_devices(
             })
     };
 
-    let devices_future = AndroidDevice::scan();
+    let devices_future = AndroidDevice::scan(host);
 
     let (avds, connected_devices) = zip(avds_future, devices_future).await;
     let avds = avds?;
@@ -253,7 +254,7 @@ async fn scan_android_devices(
         if !id.starts_with("emulator-") {
             continue;
         }
-        let name = emulator_avd_name_with_adb(&adb_path, id).await?;
+        let name = emulator_avd_name_with_adb(host, &adb_path, id).await?;
         running_avds.insert(name);
     }
 

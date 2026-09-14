@@ -96,6 +96,15 @@ pub fn water_home_dir() -> Result<PathBuf, HomeDirError> {
     Ok(home.join(".water"))
 }
 
+/// Return the Water home directory root at `~/.water` for `host`.
+///
+/// # Errors
+/// Returns an error if the host's home directory cannot be determined.
+pub fn water_home_dir_in(host: &crate::toolchain::Host) -> Result<PathBuf, HomeDirError> {
+    let home = host.home_dir().ok_or(HomeDirError)?;
+    Ok(home.join(".water"))
+}
+
 /// Ensure `~/.water/config.toml` exists and return the parsed configuration.
 ///
 /// # Errors
