@@ -73,6 +73,10 @@ mod tests {
                     package_type: PackageType::Playground,
                     waterui_path: None,
                     channel: None,
+                    framework_manifest: None,
+                    // A channel resolution would fetch the newest release from
+                    // GitHub; a unit test resolves a fixture in place instead.
+                    framework: Some(crate::framework::test_fixtures::stable_framework()),
                     author: "Lexo Liu".to_string(),
                 },
             )

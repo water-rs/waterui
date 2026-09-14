@@ -32,8 +32,14 @@ pub struct Args {
     waterui_path: Option<PathBuf>,
 
     /// Framework channel: dev, nightly or stable (default).
-    #[arg(long, conflicts_with = "waterui_path")]
+    #[arg(long, conflicts_with_all = ["waterui_path", "framework_manifest"])]
     channel: Option<FrameworkChannel>,
+
+    /// Pin the framework to a certified `framework.json` on disk, exactly as a
+    /// manifest downloaded from its release resolves — reproducible scaffolding
+    /// from a certified manifest (used by release preflight).
+    #[arg(long, conflicts_with_all = ["waterui_path", "channel"])]
+    framework_manifest: Option<PathBuf>,
 
     /// Project mode (`app` or `playground`).
     #[arg(long, value_enum, default_value_t = ProjectMode::App)]
@@ -47,6 +53,7 @@ struct CreatePlan {
     package_type: PackageType,
     waterui_path: Option<PathBuf>,
     channel: Option<FrameworkChannel>,
+    framework_manifest: Option<PathBuf>,
     folder_name: String,
     project_path: PathBuf,
 }
@@ -139,6 +146,7 @@ fn resolve_create_plan(shell: &Shell, args: &Args) -> Result<CreatePlan> {
         package_type,
         waterui_path,
         channel: args.channel,
+        framework_manifest: args.framework_manifest.clone(),
         folder_name,
         project_path,
     })
@@ -200,6 +208,8 @@ async fn create_project(shell: &Shell, plan: &CreatePlan) -> Result<Project> {
             package_type: plan.package_type,
             waterui_path: plan.waterui_path.clone(),
             channel: plan.channel,
+            framework_manifest: plan.framework_manifest.clone(),
+            framework: None,
             author: whoami::username()
                 .map_err(|error| eyre!("Failed to determine project author: {error}"))?,
         },

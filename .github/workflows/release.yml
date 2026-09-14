@@ -122,6 +122,38 @@ jobs:
             echo "release-plz released no waterui-cli this run."
           fi
 
+      # The `v<version>` tag release-plz published for the `waterui` facade
+      # names the framework release `water create --channel stable` resolves.
+      # No facade release this run means no framework manifest to publish.
+      - name: Detect framework release tag
+        id: framework_tag
+        shell: bash
+        env:
+          REPORT: ${{ steps.release_plz.outputs.report }}
+        run: |
+          set -euo pipefail
+
+          FRAMEWORK_TAG="$(jq -r '[.releases[]? | select(.package_name == "waterui") | .tag] | last // ""' <<< "$REPORT")"
+
+          echo "framework_tag=${FRAMEWORK_TAG}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${FRAMEWORK_TAG}" ]]; then
+            echo "release-plz released the framework as ${FRAMEWORK_TAG}."
+          else
+            echo "release-plz released no waterui facade this run."
+          fi
+
+      # The manifest is built from the tagged tree itself: the script checks
+      # the tag out and records that revision's submodule pins and locks.
+      - name: Publish the stable framework manifest
+        if: steps.framework_tag.outputs.framework_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FRAMEWORK_TAG: ${{ steps.framework_tag.outputs.framework_tag }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/framework_manifest.py stable --tag "$FRAMEWORK_TAG"
+          gh release upload "$FRAMEWORK_TAG" framework.json --clobber
+
   release-pr:
     name: Prepare the next release
     runs-on: ubuntu-latest

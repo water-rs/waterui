@@ -266,11 +266,18 @@ impl Backend for Esp32Backend {
                  Add `fonts = [\"path/to/Font.ttf\"]` (relative to the project root) to render text."
             );
         }
-        let ctx =
-            TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
-                .with_backend_project_path(project.backend_path::<Self>())
-                .with_project_root_path(project.root().to_path_buf())
-                .with_esp32(template_entry);
+        let ctx = TemplateContext::for_project_manifest(
+            manifest,
+            project.crate_name().clone(),
+            app_name,
+            &project
+                .resolved_framework()
+                .await
+                .map_err(crate::backend::FailToInitBackend::Config)?,
+        )
+        .with_backend_project_path(project.backend_path::<Self>())
+        .with_project_root_path(project.root().to_path_buf())
+        .with_esp32(template_entry);
 
         templates::esp32::scaffold(&project.backend_path::<Self>(), &ctx)
             .await

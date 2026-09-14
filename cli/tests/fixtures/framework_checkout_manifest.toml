@@ -1,0 +1,20 @@
+# A framework checkout fixture the shape of the repository's own root
+# manifest: the metadata table the scaffold derives from, and the workspace
+# requirements `scaffold-packages` names. `minimum-cli-version` sits below the
+# test CLI's version so the checkout's CLI requirement resolves satisfied.
+[package]
+name = "waterui"
+version = "0.4.1"
+edition = "2024"
+
+[package.metadata.waterui]
+minimum-cli-version = "0.1.0"
+apple-backend-url = "https://github.com/water-rs/apple-backend.git"
+android-backend-url = "https://github.com/water-rs/android-backend.git"
+scaffold-packages = ["hydrolysis", "hydrolysis-m3", "waterui-dew", "waterui-gtk"]
+
+[workspace.dependencies]
+hydrolysis = { version = "0.2.1", default-features = false }
+hydrolysis-m3 = "0.2.0"
+waterui-dew = "0.2.1"
+waterui-gtk = "0.1.2"

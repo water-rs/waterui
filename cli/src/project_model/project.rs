@@ -117,7 +117,7 @@ impl Project {
             && previous
                 .framework
                 .as_ref()
-                .is_some_and(|previous| previous.channel() != FrameworkChannel::Stable)
+                .is_some_and(|previous| previous.channel() != Some(FrameworkChannel::Stable))
         {
             updates.push((path.join("Water.lock"), None));
         }
@@ -478,6 +478,18 @@ impl Project {
         &self.manifest
     }
 
+    /// The framework this project resolves generated code against — the
+    /// channel selection `Water.toml` records, or the checkout `waterui_path`
+    /// names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manifest records no framework source, or the
+    /// local checkout's framework facts cannot be read.
+    pub async fn resolved_framework(&self) -> eyre::Result<ResolvedFramework> {
+        ResolvedFramework::for_manifest(self.manifest(), &self.root).await
+    }
+
     /// Returns whether the packaged application links `package_name`.
     ///
     /// Development-only and build-only dependencies are excluded because they
@@ -799,8 +811,17 @@ pub struct CreateOptions {
     pub package_type: PackageType,
     /// Path to local `WaterUI` repository for development.
     pub waterui_path: Option<PathBuf>,
-    /// Framework channel, mutually exclusive with a local source path.
+    /// Framework channel, mutually exclusive with a local source path and a
+    /// manifest file.
     pub channel: Option<FrameworkChannel>,
+    /// A certified `framework.json` on disk, mutually exclusive with a channel
+    /// and a local source path: the project pins the channel and revision the
+    /// manifest declares.
+    pub framework_manifest: Option<PathBuf>,
+    /// An already-resolved framework selection — how a support app inherits
+    /// the host project's framework exactly. Mutually exclusive with every
+    /// resolving source above.
+    pub framework: Option<ResolvedFramework>,
     /// Author name for Cargo.toml.
     pub author: String,
 }
@@ -826,21 +847,39 @@ impl CreateOptions {
         })
     }
 
-    async fn resolve_framework(
-        &mut self,
-    ) -> eyre::Result<(Option<ResolvedFramework>, Option<Vec<u8>>)> {
-        if let Some(path) = &self.waterui_path {
-            if self.channel.is_some() {
-                eyre::bail!("a framework channel and a local source path are mutually exclusive");
-            }
-            let root = smol::fs::canonicalize(path).await?;
-            validate_local_cli(&root).await?;
-            self.waterui_path = Some(root);
-            return Ok((None, None));
+    /// The framework the scaffold resolves against — always resolved: a
+    /// channel's certified release, a manifest file's, a caller-supplied
+    /// selection, or the checkout `waterui_path` names. A checkout's framework
+    /// is a filesystem source, so it is never persisted into `Water.toml`;
+    /// `waterui_path` itself is the record.
+    async fn resolve_framework(&mut self) -> eyre::Result<(ResolvedFramework, Option<Vec<u8>>)> {
+        let selected = [
+            self.waterui_path.is_some(),
+            self.channel.is_some(),
+            self.framework_manifest.is_some(),
+            self.framework.is_some(),
+        ]
+        .into_iter()
+        .filter(|selected| *selected)
+        .count();
+        if selected > 1 {
+            eyre::bail!(
+                "a framework channel, a local source path, a framework manifest, \
+                 and a resolved framework are mutually exclusive"
+            );
         }
-        let (framework, lockfile) =
-            ResolvedFramework::resolve(self.channel.unwrap_or_default()).await?;
-        Ok((Some(framework), lockfile))
+        if let Some(path) = &self.waterui_path {
+            let root = smol::fs::canonicalize(path).await?;
+            self.waterui_path = Some(root.clone());
+            return Ok((ResolvedFramework::for_local_checkout(&root).await?, None));
+        }
+        if let Some(path) = &self.framework_manifest {
+            return ResolvedFramework::resolve_manifest(path).await;
+        }
+        if let Some(framework) = &self.framework {
+            return Ok((framework.clone(), None));
+        }
+        ResolvedFramework::resolve(self.channel.unwrap_or_default()).await
     }
 }
 
@@ -865,13 +904,21 @@ impl Project {
             .linked_browser_engine()
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
-        let ctx =
-            TemplateContext::for_project_manifest(manifest, self.crate_name().clone(), app_name)
-                .with_backend_project_path(self.ffi_crate_path())
-                .with_project_root_path(self.root.clone())
-                .with_webview_enabled(webview_enabled)
-                .with_chromium_enabled(chromium_enabled)
-                .with_browser_engine(browser_engine);
+        let framework = self
+            .resolved_framework()
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        let ctx = TemplateContext::for_project_manifest(
+            manifest,
+            self.crate_name().clone(),
+            app_name,
+            &framework,
+        )
+        .with_backend_project_path(self.ffi_crate_path())
+        .with_project_root_path(self.root.clone())
+        .with_webview_enabled(webview_enabled)
+        .with_chromium_enabled(chromium_enabled)
+        .with_browser_engine(browser_engine);
 
         templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
             .await
@@ -902,10 +949,18 @@ impl Project {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
-        let ctx =
-            TemplateContext::for_project_manifest(manifest, self.crate_name().clone(), app_name)
-                .with_backend_project_path(self.preview_ffi_crate_path(workspace_root))
-                .with_project_root_path(self.root.clone());
+        let framework = self
+            .resolved_framework()
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        let ctx = TemplateContext::for_project_manifest(
+            manifest,
+            self.crate_name().clone(),
+            app_name,
+            &framework,
+        )
+        .with_backend_project_path(self.preview_ffi_crate_path(workspace_root))
+        .with_project_root_path(self.root.clone());
 
         let crate_path = self.preview_ffi_crate_path(workspace_root);
         templates::preview_ffi::scaffold(&crate_path, &ctx, &self.preview_ffi_crate_name())
@@ -962,10 +1017,7 @@ impl Project {
             .map_err(FailToCreateProject::CreateDir)?;
 
         // Build template context for root files
-        let mut ctx = TemplateContext::for_create_options(&options, crate_name.clone());
-        if let Some(framework) = &framework {
-            ctx.framework = framework.clone();
-        }
+        let ctx = TemplateContext::for_create_options(&options, crate_name.clone(), &framework);
 
         // The assets root is derived once and shared with both the scaffold and
         // the manifest, so the created directory and `Water.toml` cannot disagree.
@@ -1014,7 +1066,9 @@ impl Project {
                 .waterui_path
                 .as_ref()
                 .map(|p| p.display().to_string()),
-            framework,
+            // A local checkout's framework is a filesystem source — never
+            // persisted; `waterui_path` above is the record.
+            framework: framework.channel().is_some().then_some(framework),
             permissions: BTreeMap::default(),
             app: None,
             theme: None,
@@ -1634,7 +1688,7 @@ async fn resolve_cargo_layout(
     .await?;
     validate_resolved_cli(&metadata)?;
     if let Some(framework) = framework
-        && framework.channel() != FrameworkChannel::Stable
+        && framework.channel() != Some(FrameworkChannel::Stable)
     {
         let lockfile = smol::fs::read(current_dir.join("Water.lock")).await?;
         framework.validate_dependencies(&metadata, &lockfile)?;
@@ -2101,6 +2155,8 @@ mod channel_tests {
                 package_type: PackageType::Playground,
                 waterui_path: Some(framework_root),
                 channel: None,
+                framework_manifest: None,
+                framework: None,
                 author: String::new(),
             };
             let error = Project::create(&project_root, options)
@@ -2148,9 +2204,13 @@ mod channel_tests {
                 .map(|name| (root.join(name), Some(b"invalid selected manifest".to_vec())))
                 .collect();
             assert!(
-                apply_channel_selection(root, ResolvedFramework::stable(), updates)
-                    .await
-                    .is_err()
+                apply_channel_selection(
+                    root,
+                    crate::framework::test_fixtures::stable_framework(),
+                    updates
+                )
+                .await
+                .is_err()
             );
             for (name, contents) in originals {
                 assert_eq!(smol::fs::read(root.join(name)).await.unwrap(), contents);
@@ -2388,6 +2448,10 @@ mod scaffold_tests {
                 package_type: PackageType::Playground,
                 waterui_path: None,
                 channel: None,
+                framework_manifest: None,
+                // A channel resolution would fetch the newest release from
+                // GitHub; a unit test resolves a fixture in place instead.
+                framework: Some(crate::framework::test_fixtures::stable_framework()),
                 author: "Lexo Liu".to_string(),
             },
         ))
