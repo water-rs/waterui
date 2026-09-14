@@ -1,0 +1,18 @@
+[package]
+name = "edge-layout-example"
+version = "0.1.0"
+edition = "2024"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WaterUI edge_layout edge-case example"
+publish = false
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+dev = ["waterui/dynamic_linking"]
+
+[dependencies]
+waterui.workspace = true
