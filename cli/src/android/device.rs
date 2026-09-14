@@ -56,9 +56,9 @@ where
         ))
     });
 
-    match futures::future::select(command, timeout).await {
-        futures::future::Either::Left((result, _))
-        | futures::future::Either::Right((result, _)) => result,
+    match futures_util::future::select(command, timeout).await {
+        futures_util::future::Either::Left((result, _))
+        | futures_util::future::Either::Right((result, _)) => result,
     }
 }
 
@@ -794,8 +794,8 @@ fn start_android_log_stream(
     log_level: Option<LogLevel>,
     sender: Sender<DeviceEvent>,
 ) -> Receiver<AndroidRuntimeEvent> {
-    use futures::StreamExt;
-    use futures::io::{AsyncBufReadExt, BufReader};
+    use futures_util::StreamExt;
+    use futures_util::io::{AsyncBufReadExt, BufReader};
 
     // Bounded channel with capacity 1 acts as a oneshot for the first terminal event.
     let (runtime_event_tx, runtime_event_rx) = smol::channel::bounded::<AndroidRuntimeEvent>(1);

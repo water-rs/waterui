@@ -2,8 +2,8 @@
 
 use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre;
-use futures::FutureExt as _;
-use futures::future::{BoxFuture, Shared};
+use futures_util::FutureExt as _;
+use futures_util::future::{BoxFuture, Shared};
 use tracing::info;
 
 use crate::build::RustLinkage;
@@ -1040,7 +1040,7 @@ impl Project {
                 resolve_cargo_layout(&path, Some(framework.clone()), CargoResolution::Update)
                     .await
                     .map_err(FailToCreateProject::Framework)?;
-            futures::future::ready(Ok::<CargoLayout, String>(layout))
+            futures_util::future::ready(Ok::<CargoLayout, String>(layout))
                 .boxed()
                 .shared()
         } else {

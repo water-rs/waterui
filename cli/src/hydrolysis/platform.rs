@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use askama::Template;
 use color_eyre::eyre::{self, Context, bail};
-use futures::FutureExt as _;
+use futures_util::FutureExt as _;
 use smol::{
     channel::{Sender, bounded},
     fs,
@@ -554,14 +554,14 @@ impl HydrolysisWebDevServer {
 
         let task = smol::spawn(async move {
             let shutdown = shutdown_rx.recv().fuse();
-            futures::pin_mut!(shutdown);
+            futures_util::pin_mut!(shutdown);
 
             loop {
                 let accept = listener.accept().fuse();
-                futures::pin_mut!(accept);
+                futures_util::pin_mut!(accept);
 
-                match futures::future::select(accept, shutdown.as_mut()).await {
-                    futures::future::Either::Left((Ok((mut stream, _peer)), _)) => {
+                match futures_util::future::select(accept, shutdown.as_mut()).await {
+                    futures_util::future::Either::Left((Ok((mut stream, _peer)), _)) => {
                         let site_root = site_root.clone();
                         smol::spawn(async move {
                             if let Err(error) = serve_http_request(&mut stream, &site_root).await {
@@ -574,7 +574,7 @@ impl HydrolysisWebDevServer {
                         })
                         .detach();
                     }
-                    futures::future::Either::Left((Err(error), _)) => {
+                    futures_util::future::Either::Left((Err(error), _)) => {
                         tracing::warn!(
                             target: "waterui::hydrolysis::web",
                             error = %error,
@@ -582,7 +582,7 @@ impl HydrolysisWebDevServer {
                         );
                         break;
                     }
-                    futures::future::Either::Right((_shutdown, _)) => break,
+                    futures_util::future::Either::Right((_shutdown, _)) => break,
                 }
             }
         });
