@@ -126,7 +126,9 @@ impl Backend for AppleBackend {
 
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
         let manifest = project.manifest();
-        let effective_waterui_path = manifest.waterui_path.clone();
+        // A `[backend.apple]` source override the manifest already carries is
+        // a user choice; init re-scaffolds the project without rewriting it.
+        let existing = manifest.backends.apple();
 
         // For playground projects, use fixed scheme name "WaterUIApp"
         // For regular projects, scheme name must match the Xcode target name (crate name)
@@ -198,9 +200,9 @@ impl Backend for AppleBackend {
         Ok(Self {
             project_path,
             scheme,
-            branch: None,
-            revision: None,
-            backend_path: effective_waterui_path,
+            branch: existing.and_then(|backend| backend.branch.clone()),
+            revision: existing.and_then(|backend| backend.revision.clone()),
+            backend_path: existing.and_then(|backend| backend.backend_path.clone()),
         })
     }
 

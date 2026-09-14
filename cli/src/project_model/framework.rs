@@ -307,6 +307,15 @@ impl ResolvedFramework {
                 local_submodule_revision(root, path).await?,
             );
         }
+        // A checkout from before the Apple backend left the tree still carries
+        // its `backends/apple` gitlink; a manifest declaring
+        // `apple-backend-version` has none to read.
+        if !scaffold.contains_key("apple-backend-version") {
+            submodules.insert(
+                "backends/apple".to_owned(),
+                local_submodule_revision(root, "backends/apple").await?,
+            );
+        }
         complete_scaffold(&mut scaffold, &submodules, &lock)?;
         Self {
             source: Source::Local {
@@ -371,6 +380,15 @@ impl ResolvedFramework {
         self.scaffold
             .get(key)
             .unwrap_or_else(|| panic!("resolved framework carries no `{key}` scaffold metadata"))
+    }
+
+    /// The Apple backend release a scaffolded project pins, when the
+    /// framework declares one; a framework older than the submodule's
+    /// removal pins `apple-backend-revision` — a gitlink commit — instead.
+    pub(crate) fn apple_backend_version(&self) -> Option<&str> {
+        self.scaffold
+            .get("apple-backend-version")
+            .map(String::as_str)
     }
 
     /// The Android API floor the selected framework's native runtime
@@ -846,6 +864,15 @@ impl ResolvedFramework {
                     submodule_revision(slug, revision, path).await?,
                 );
             }
+            // Revisions from before the Apple backend left the tree still
+            // carry its `backends/apple` gitlink; a manifest declaring
+            // `apple-backend-version` has none to read.
+            if !scaffold.contains_key("apple-backend-version") {
+                submodules.insert(
+                    "backends/apple".to_owned(),
+                    submodule_revision(slug, revision, "backends/apple").await?,
+                );
+            }
             (
                 Source::Dev {
                     repository: repository.to_owned(),
@@ -937,9 +964,10 @@ fn certified_source(
 }
 
 /// The submodule each native backend repository is pinned through; the
-/// directory's basename keys the scaffold metadata (`{name}-backend-url`,
-/// `{name}-backend-revision`).
-const BACKEND_SUBMODULES: &[&str] = &["backends/apple", "backends/android"];
+/// directory's basename keys the scaffold's `{name}-backend-revision` entry.
+/// Backends released on their own cadence — Apple, since #839 — carry a
+/// `{name}-backend-version` literal in `[package.metadata.waterui]` instead.
+const BACKEND_SUBMODULES: &[&str] = &["backends/android"];
 
 /// The workspace crates a scaffolded project pins; each `{name}-version`
 /// scaffold entry comes from the framework's own lockfile at the selected
@@ -991,7 +1019,9 @@ fn framework_metadata(manifest: &toml::Value) -> Result<toml::Table> {
 
 /// The scaffold facts the framework manifest itself declares: each
 /// `scaffold-packages` entry's requirement from `[workspace.dependencies]`,
-/// and each backend's `{name}-backend-url` from `[package.metadata.waterui]`.
+/// and every backend coordinate — `{name}-backend-url`, plus the
+/// `{name}-backend-version` of a backend pinned by release rather than
+/// gitlink — from `[package.metadata.waterui]`.
 ///
 /// `framework_manifest.py` emits exactly this table into every `framework.json`
 /// it publishes; both must produce the same table for the same tree.
@@ -1022,13 +1052,14 @@ fn framework_scaffold(manifest: &toml::Value) -> Result<BTreeMap<String, String>
             .ok_or_else(|| eyre!("workspace.dependencies.{name} declares no version"))?;
         scaffold.insert(format!("{name}-version"), requirement.to_owned());
     }
-    for &submodule in BACKEND_SUBMODULES {
-        let key = format!("{}-backend-url", backend_name(submodule));
-        let url = metadata
-            .get(&key)
-            .and_then(toml::Value::as_str)
-            .ok_or_else(|| eyre!("framework manifest has no package.metadata.waterui.{key}"))?;
-        scaffold.insert(key, url.to_owned());
+    for (key, value) in &metadata {
+        if !(key.ends_with("-backend-url") || key.ends_with("-backend-version")) {
+            continue;
+        }
+        let value = value
+            .as_str()
+            .ok_or_else(|| eyre!("package.metadata.waterui.{key} must be a string"))?;
+        scaffold.insert(key.clone(), value.to_owned());
     }
     Ok(scaffold)
 }
@@ -1147,6 +1178,11 @@ fn resolve_packages(
         let Some(name) = key.strip_suffix("-version") else {
             continue;
         };
+        // A `{name}-backend-version` entry pins a backend repository's release
+        // tag, not a crate — there is no package to resolve for it.
+        if name.ends_with("-backend") {
+            continue;
+        }
         let candidates: Vec<_> = lock
             .packages
             .iter()
@@ -1229,6 +1265,18 @@ fn complete_scaffold(
             format!("{}-backend-revision", backend_name(submodule)),
             commit.clone(),
         );
+    }
+    // The Apple backend pin is declared: `framework_scaffold` already copied
+    // `apple-backend-version` from the manifest. Frameworks from before the
+    // submodule was dropped declare no version — their `backends/apple`
+    // gitlink is the pin record, surfaced as `apple-backend-revision` for the
+    // `kind = revision` requirement the template emits for it.
+    if !scaffold.contains_key("apple-backend-version") {
+        let commit = submodules
+            .get("backends/apple")
+            .ok_or_else(|| eyre!("framework records no Apple backend pin"))?;
+        validate_revision(commit)?;
+        scaffold.insert("apple-backend-revision".to_owned(), commit.clone());
     }
     for &name in FRAMEWORK_PACKAGES {
         let candidates: Vec<_> = lock
@@ -1332,7 +1380,7 @@ pub(crate) mod test_fixtures {
                     "apple-backend-url".to_owned(),
                     "https://github.com/water-rs/apple-backend.git".to_owned(),
                 ),
-                ("apple-backend-revision".to_owned(), revision('b')),
+                ("apple-backend-version".to_owned(), "0.2.0".to_owned()),
                 (
                     "android-backend-url".to_owned(),
                     "https://github.com/water-rs/android-backend.git".to_owned(),
@@ -1383,14 +1431,7 @@ pub(crate) mod test_fixtures {
             "Cargo.toml".to_owned(),
             "Cargo.lock".to_owned(),
         ]);
-        for (path, seed) in [("backends/apple", 'b'), ("backends/android", 'c')] {
-            git(&[
-                "update-index".to_owned(),
-                "--add".to_owned(),
-                "--cacheinfo".to_owned(),
-                format!("160000,{},{}", seed.to_string().repeat(40), path),
-            ]);
-        }
+        write_submodule_pin(root, "backends/android", 'c');
         git(&[
             "-c".to_owned(),
             "user.name=waterui-test".to_owned(),
@@ -1400,6 +1441,56 @@ pub(crate) mod test_fixtures {
             "-qm".to_owned(),
             "init".to_owned(),
         ]);
+    }
+
+    /// The same fixture as it existed while `backends/apple` still rode a
+    /// gitlink: no `apple-backend-version` in the manifest, the submodule pin
+    /// recorded in the index.
+    pub fn write_pre_decoupling_checkout(root: &Path) {
+        write_local_checkout(root);
+        write_submodule_pin(root, "backends/apple", 'b');
+        let manifest = local_checkout_manifest().replace("apple-backend-version = \"0.2.0\"\n", "");
+        assert!(
+            !manifest.contains("apple-backend-version"),
+            "the fixture manifest moved; the pre-decoupling rewrite must be revisited"
+        );
+        std::fs::write(root.join("Cargo.toml"), manifest).expect("manifest");
+        let git = |args: &[&str]| {
+            let status = StdCommand::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["add", "Cargo.toml"]);
+        git(&[
+            "-c",
+            "user.name=waterui-test",
+            "-c",
+            "user.email=waterui-test@waterui.dev",
+            "commit",
+            "-qm",
+            "pre-decoupling manifest",
+        ]);
+    }
+
+    /// Record a gitlink pin the way a checked-out submodule records it —
+    /// `160000` is the mode `git submodule` writes into the index.
+    fn write_submodule_pin(root: &Path, path: &str, seed: char) {
+        let status = StdCommand::new("git")
+            .arg("-C")
+            .arg(root)
+            .args([
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{},{}", seed.to_string().repeat(40), path),
+            ])
+            .status()
+            .expect("git must run");
+        assert!(status.success(), "git update-index failed");
     }
 
     /// The manifest a local checkout fixture carries: the framework's own
@@ -1698,7 +1789,9 @@ fn rebase_patches_onto_source(mut patches: PatchSet, repository: &str, revision:
 
 #[cfg(test)]
 mod tests {
-    use test_fixtures::{package, stable_framework, write_local_checkout};
+    use test_fixtures::{
+        package, stable_framework, write_local_checkout, write_pre_decoupling_checkout,
+    };
 
     use super::*;
 
@@ -2305,6 +2398,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                     "apple-backend-url".to_owned(),
                     "https://github.com/water-rs/apple-backend.git".to_owned()
                 ),
+                ("apple-backend-version".to_owned(), "0.2.0".to_owned()),
                 (
                     "android-backend-url".to_owned(),
                     "https://github.com/water-rs/android-backend.git".to_owned()
@@ -2321,15 +2415,27 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
         assert_eq!(framework.channel(), None);
         assert_eq!(framework.scaffold_value("hydrolysis-version"), "0.2.1");
-        assert_eq!(
-            framework.scaffold_value("apple-backend-revision"),
-            "b".repeat(40)
-        );
+        assert_eq!(framework.scaffold_value("apple-backend-version"), "0.2.0");
         assert_eq!(
             framework.scaffold_value("android-backend-revision"),
             "c".repeat(40)
         );
         assert_eq!(framework.scaffold_value("waterui-version"), "0.4.1");
         assert!(framework.git_source().is_none());
+    }
+
+    /// A checkout from before `backends/apple` left the tree: its manifest
+    /// declares no `apple-backend-version`, so the gitlink supplies the pin.
+    #[test]
+    fn local_checkout_predating_the_apple_gitlink_removal_uses_its_pin() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("waterui");
+        write_pre_decoupling_checkout(&root);
+
+        let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
+        assert_eq!(
+            framework.scaffold_value("apple-backend-revision"),
+            "b".repeat(40)
+        );
     }
 }
