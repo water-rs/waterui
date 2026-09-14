@@ -12,7 +12,10 @@ use walkdir::WalkDir;
 use waterui_assets_core::{AssetError, download_remote_bytes, write_bytes_atomically};
 
 use crate::{
-    android::platform::{ALL_ABIS, AndroidAbi},
+    android::{
+        ndk_version,
+        platform::{ALL_ABIS, AndroidAbi},
+    },
     brew::Brew,
     build_info,
     toolchain::{
@@ -172,37 +175,11 @@ pub enum AndroidToolchainError {
     /// An `ndk;` package id is malformed.
     #[error("Invalid Android NDK package id `{0}`")]
     InvalidNdkPackageId(String),
-    /// The Android runtime Gradle config could not be located in the workspace.
-    #[error("Failed to locate `{path}` while resolving the required Android NDK version")]
-    RuntimeGradleMissing {
-        /// The relative path that was searched for.
-        path: &'static str,
-    },
-    /// The Android runtime Gradle config could not be read.
-    #[error("Failed to read Android runtime Gradle config at `{}`: {source}", path.display())]
-    RuntimeGradleRead {
-        /// The Gradle config path.
-        path: PathBuf,
-        /// The underlying I/O error.
-        #[source]
-        source: io::Error,
-    },
-    /// `ndkVersion` could not be parsed from the runtime Gradle config.
-    #[error("Failed to parse `ndkVersion` from `{}`", path.display())]
-    NdkVersionUnparseable {
-        /// The Gradle config path.
-        path: PathBuf,
-    },
     /// The required NDK package is not offered by `sdkmanager`.
-    #[error(
-        "Required Android NDK package `{package_id}` from `{}` is not available via `sdkmanager --list`",
-        gradle_path.display()
-    )]
+    #[error("Required Android NDK package `{package_id}` is not available via `sdkmanager --list`")]
     NdkPackageUnavailable {
         /// The required NDK package id.
         package_id: String,
-        /// The Gradle config that declared the requirement.
-        gradle_path: PathBuf,
     },
     /// No Android platform package is offered by `sdkmanager`.
     #[error("No installable Android platform package found via `sdkmanager --list`")]
@@ -416,9 +393,6 @@ fn sdkmanager_candidates_under_sdk_root(sdk_root: &Path) -> Vec<PathBuf> {
         ]
     }
 }
-
-const ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH: &str =
-    "backends/android/runtime/build.gradle.kts";
 
 fn parse_latest_cmdline_tools_archive(repository_xml: &str) -> Option<String> {
     let host_tag = cmdline_tools_host_tag()?;
@@ -1053,45 +1027,6 @@ async fn list_sdk_package_ids(host: &Host) -> Result<Vec<String>, AndroidToolcha
         .collect::<Vec<_>>())
 }
 
-fn find_file_in_workspace(cwd: &Path, relative_path: &Path) -> Option<PathBuf> {
-    let direct = cwd.join(relative_path);
-    if direct.exists() {
-        return Some(direct);
-    }
-
-    let mut current = cwd;
-    loop {
-        let candidate = current.join(relative_path);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-
-        let parent = current.parent()?;
-        current = parent;
-    }
-}
-
-fn parse_android_ndk_version_from_runtime_build_gradle(contents: &str) -> Option<String> {
-    contents.lines().find_map(|line| {
-        let line = line.split("//").next()?.trim();
-        let remainder = line.strip_prefix("ndkVersion")?;
-        let (_, value) = remainder.split_once('=')?;
-        let version = value.trim().trim_matches('"');
-        if version.is_empty() {
-            None
-        } else {
-            Some(version.to_string())
-        }
-    })
-}
-
-fn required_ndk_version_in_workspace(cwd: &Path) -> Option<String> {
-    let runtime_build_gradle =
-        find_file_in_workspace(cwd, Path::new(ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH))?;
-    let contents = std::fs::read_to_string(runtime_build_gradle).ok()?;
-    parse_android_ndk_version_from_runtime_build_gradle(&contents)
-}
-
 fn select_installed_ndk_path(ndk_dir: &Path, required_version: Option<&str>) -> Option<PathBuf> {
     if !ndk_dir.exists() {
         return None;
@@ -1335,26 +1270,9 @@ const fn required_kotlin_version() -> &'static str {
 }
 
 async fn required_ndk_package_id(host: &Host) -> Result<String, AndroidToolchainError> {
-    let runtime_build_gradle = find_file_in_workspace(
-        host.cwd(),
-        Path::new(ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH),
-    )
-    .ok_or(AndroidToolchainError::RuntimeGradleMissing {
-        path: ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH,
-    })?;
-    let contents = smol::fs::read_to_string(&runtime_build_gradle)
-        .await
-        .map_err(|source| AndroidToolchainError::RuntimeGradleRead {
-            path: runtime_build_gradle.clone(),
-            source,
-        })?;
-    let version =
-        parse_android_ndk_version_from_runtime_build_gradle(&contents).ok_or_else(|| {
-            AndroidToolchainError::NdkVersionUnparseable {
-                path: runtime_build_gradle.clone(),
-            }
-        })?;
-    let package_id = format!("ndk;{version}");
+    // The NDK the runtime's Gradle `ndkVersion` demands is embedded in the
+    // binary — an installed CLI has no source checkout to read it from.
+    let package_id = format!("ndk;{}", ndk_version::ANDROID_NDK_VERSION);
     let available_packages = list_sdk_package_ids(host).await?;
     if available_packages
         .iter()
@@ -1362,10 +1280,7 @@ async fn required_ndk_package_id(host: &Host) -> Result<String, AndroidToolchain
     {
         Ok(package_id)
     } else {
-        Err(AndroidToolchainError::NdkPackageUnavailable {
-            package_id,
-            gradle_path: runtime_build_gradle,
-        })
+        Err(AndroidToolchainError::NdkPackageUnavailable { package_id })
     }
 }
 
@@ -2035,20 +1950,6 @@ mod tests {
         assert_eq!(
             missing_android_rust_targets(&installed, &required),
             vec!["i686-linux-android".to_string()]
-        );
-    }
-
-    #[test]
-    fn parse_android_ndk_version_from_runtime_build_gradle_extracts_declared_version() {
-        let contents = r#"
-android {
-    compileSdk = 37
-    ndkVersion = "29.0.14206865"
-}
-"#;
-        assert_eq!(
-            parse_android_ndk_version_from_runtime_build_gradle(contents),
-            Some("29.0.14206865".to_string())
         );
     }
 
@@ -2739,10 +2640,7 @@ impl AndroidNdk {
 
         let sdk_path = AndroidSdk::detect_path(host)?;
         let ndk_dir = sdk_path.join("ndk");
-        select_installed_ndk_path(
-            &ndk_dir,
-            required_ndk_version_in_workspace(host.cwd()).as_deref(),
-        )
+        select_installed_ndk_path(&ndk_dir, Some(ndk_version::ANDROID_NDK_VERSION))
     }
 }
 
