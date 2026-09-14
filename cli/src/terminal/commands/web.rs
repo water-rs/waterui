@@ -10,8 +10,8 @@ use dialoguer::{Select, theme::ColorfulTheme};
 use walkdir::WalkDir;
 
 use crate::shell::Shell;
-use crate::success;
-use waterui_cli::web::PackageManager;
+use crate::{note, success, warn};
+use waterui_cli::web::{self, PackageManager};
 
 /// The `create`/`init` package-manager prompt, asked once; `initial` is the
 /// pre-selected entry — a lockfile guess or the `bun` default.
@@ -76,6 +76,26 @@ pub async fn create_vite(
         );
     }
     success!(shell, "Scaffolded the Vite frontend in {dir}/");
+    Ok(())
+}
+
+/// Apply the WaterUI-branded starter overlay to a freshly scaffolded `web/`
+/// and report what it did. An unrecognized layout keeps the framework's own
+/// page — reported as a note, never an error.
+pub fn brand_overlay(shell: &Shell, web_dir: &Path, display_name: &str) -> Result<()> {
+    let report = web::apply_brand_overlay(web_dir, display_name)?;
+    for warning in &report.warnings {
+        warn!(shell, "{warning}");
+    }
+    if report.branded {
+        success!(shell, "Applied the WaterUI starter page");
+    } else if let Some(frontend) = report.frontend {
+        note!(
+            shell,
+            "The starter page is the {} default — only the title and favicon were branded",
+            frontend.framework.display_name()
+        );
+    }
     Ok(())
 }
 

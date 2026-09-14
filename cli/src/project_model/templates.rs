@@ -83,7 +83,7 @@ pub fn scaffold_template_digest() -> String {
     })
 }
 
-mod embedded {
+pub mod embedded {
     use super::{Dir, include_dir};
 
     pub static APPLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple");

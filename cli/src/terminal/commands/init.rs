@@ -90,13 +90,37 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     super::web::ensure_installed(package_manager).await?;
 
+    let name = match &args.name {
+        Some(name) => name.clone(),
+        None => project_root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or_else(|| eyre!("cannot derive a project name; pass one as an argument"))?,
+    };
+
     header!(
         shell,
         "Initializing WaterUI project in {}",
         project_root.display()
     );
-    let include_arg = execute_plan(shell, &project_root, &actions, package_manager, &args).await?;
-    scaffold_shell(shell, &project_root, &args, package_manager, &include_arg).await?;
+    let include_arg = execute_plan(
+        shell,
+        &project_root,
+        &actions,
+        package_manager,
+        &args,
+        &name,
+    )
+    .await?;
+    scaffold_shell(
+        shell,
+        &project_root,
+        &args,
+        package_manager,
+        &include_arg,
+        name,
+    )
+    .await?;
     success!(shell, "WaterUI project initialized");
     line!(shell);
     line!(shell, "Next steps:");
@@ -208,6 +232,7 @@ async fn execute_plan(
     actions: &[InitAction],
     package_manager: PackageManager,
     args: &Args,
+    display_name: &str,
 ) -> Result<String> {
     let mut include_arg = None;
     for action in actions {
@@ -225,6 +250,7 @@ async fn execute_plan(
                     args.vite_template.as_deref(),
                 )
                 .await?;
+                super::web::brand_overlay(shell, &root.join("web"), display_name)?;
             }
             InitAction::CopyFrontend { source } => {
                 let dest = root.join("web");
@@ -242,22 +268,15 @@ async fn execute_plan(
     include_arg.ok_or_else(|| eyre!("the init plan produced no shell scaffold step"))
 }
 
-/// The Rust shell: name defaults to the directory name, the root view is
-/// `include_web!(<include_arg>)`.
+/// The Rust shell: the root view is `include_web!(<include_arg>)`.
 async fn scaffold_shell(
     shell: &Shell,
     root: &std::path::Path,
     args: &Args,
     package_manager: PackageManager,
     include_arg: &str,
+    name: String,
 ) -> Result<()> {
-    let name = match &args.name {
-        Some(name) => name.clone(),
-        None => root
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .ok_or_else(|| eyre!("cannot derive a project name; pass one as an argument"))?,
-    };
     let bundle_id = args
         .bundle_id
         .clone()

@@ -162,6 +162,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             plan.vite_template.as_deref(),
         )
         .await?;
+        super::web::brand_overlay(shell, &project.root().join("web"), &plan.name)?;
         super::web::install_dependencies(shell, plan.package_manager, &project.root().join("web"))
             .await?;
     }
@@ -498,8 +499,78 @@ mod tests {
     #[cfg(not(target_os = "linux"))]
     use super::validate_backends_on_host;
 
+    /// Scaffolds a `WaterUI` project plus a `create vite` frontend into `root`,
+    /// applies the brand overlay, and installs dependencies — the same steps
+    /// `run()` performs for `--template web`.
+    async fn scaffold_web_project(root: &std::path::Path, name: &str, vite_template: &str) {
+        let waterui_checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("cli/ has a parent")
+            .to_path_buf();
+        let shell = Shell::new(false);
+        let project = waterui_cli::project::Project::create(
+            root,
+            waterui_cli::project::CreateOptions {
+                name: name.to_string(),
+                bundle_identifier: waterui_cli::project_types::BundleIdentifier::try_from(
+                    "dev.waterui.webapp",
+                )
+                .expect("bundle identifier"),
+                package_type: PackageType::App,
+                waterui_path: Some(waterui_checkout),
+                channel: None,
+                framework_manifest: None,
+                framework: None,
+                author: "water test".to_string(),
+                web: Some(waterui_cli::project::WebScaffold {
+                    package_manager: super::PackageManager::Bun,
+                    include_arg: "web".to_string(),
+                }),
+            },
+        )
+        .await
+        .expect("project scaffold");
+
+        crate::commands::web::create_vite(
+            &shell,
+            project.root(),
+            "web",
+            super::PackageManager::Bun,
+            Some(vite_template),
+        )
+        .await
+        .expect("vite scaffold");
+        crate::commands::web::brand_overlay(&shell, &project.root().join("web"), name)
+            .expect("brand overlay");
+        crate::commands::web::install_dependencies(
+            &shell,
+            super::PackageManager::Bun,
+            &project.root().join("web"),
+        )
+        .await
+        .expect("dependency install");
+    }
+
+    /// Every text file under `dir`, skipping `node_modules` and `.git`.
+    fn web_project_files(dir: &std::path::Path) -> Vec<(PathBuf, String)> {
+        walkdir::WalkDir::new(dir)
+            .into_iter()
+            .filter_entry(|entry| {
+                entry.file_name() != "node_modules" && entry.file_name() != ".git"
+            })
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .filter_map(|entry| {
+                std::fs::read_to_string(entry.path())
+                    .ok()
+                    .map(|contents| (entry.into_path(), contents))
+            })
+            .collect()
+    }
+
     /// End-to-end `--template web`: scaffolds a project plus a Vite frontend
-    /// into a tempdir and `cargo check`s the result against this checkout.
+    /// into a tempdir, verifies the brand overlay landed, `bun run build`s
+    /// the frontend, and `cargo check`s the result against this checkout.
     ///
     /// Gated on `bun` being on PATH; skipped in environments without it.
     #[test]
@@ -511,48 +582,7 @@ mod tests {
         smol::block_on(async {
             let temp = tempfile::tempdir().expect("tempdir");
             let project_path = temp.path().join("web-app");
-            let waterui_checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("cli/ has a parent")
-                .to_path_buf();
-            let shell = Shell::new(false);
-            let project = waterui_cli::project::Project::create(
-                &project_path,
-                waterui_cli::project::CreateOptions {
-                    name: "Web App".to_string(),
-                    bundle_identifier: waterui_cli::project_types::BundleIdentifier::try_from(
-                        "dev.waterui.webapp",
-                    )
-                    .expect("bundle identifier"),
-                    package_type: PackageType::App,
-                    waterui_path: Some(waterui_checkout),
-                    channel: None,
-                    author: "water test".to_string(),
-                    web: Some(waterui_cli::project::WebScaffold {
-                        package_manager: super::PackageManager::Bun,
-                        include_arg: "web".to_string(),
-                    }),
-                },
-            )
-            .await
-            .expect("project scaffold");
-
-            crate::commands::web::create_vite(
-                &shell,
-                project.root(),
-                "web",
-                super::PackageManager::Bun,
-                Some("vanilla-ts"),
-            )
-            .await
-            .expect("vite scaffold");
-            crate::commands::web::install_dependencies(
-                &shell,
-                super::PackageManager::Bun,
-                &project.root().join("web"),
-            )
-            .await
-            .expect("dependency install");
+            scaffold_web_project(&project_path, "WaterUI App", "vanilla-ts").await;
 
             assert!(project_path.join("web/package.json").exists());
             let water_toml =
@@ -567,6 +597,37 @@ mod tests {
                 lib_rs.contains("include_web!(\"web\")"),
                 "the root view mounts the frontend:\n{lib_rs}"
             );
+            assert!(
+                lib_rs.contains("#[js_api]") && lib_rs.contains(".serve(Api)"),
+                "the root view serves the bridge API:\n{lib_rs}"
+            );
+
+            // The overlay landed: the WaterUI mark replaced the starter's
+            // favicon (`vite.svg` on Vite 7, `favicon.svg` on Vite 8), the
+            // title is the app name, and no starter marketing copy survives.
+            assert!(project_path.join("web/public/waterui.svg").is_file());
+            assert!(!project_path.join("web/public/vite.svg").exists());
+            assert!(!project_path.join("web/public/favicon.svg").exists());
+            assert!(!project_path.join("web/src/counter.ts").exists());
+            let index_html =
+                std::fs::read_to_string(project_path.join("web/index.html")).expect("index.html");
+            assert!(index_html.contains("WaterUI"), "{index_html}");
+            for (path, contents) in web_project_files(&project_path.join("web")) {
+                assert!(
+                    !contents.contains("Explore Vite"),
+                    "{} still contains Vite marketing copy",
+                    path.display()
+                );
+            }
+
+            // The branded starter type-checks and bundles.
+            let status = smol::process::Command::new("bun")
+                .args(["run", "build"])
+                .current_dir(project_path.join("web"))
+                .status()
+                .await
+                .expect("bun run build runs");
+            assert!(status.success(), "the branded frontend must build");
 
             let status = smol::process::Command::new("cargo")
                 .arg("check")
@@ -575,6 +636,37 @@ mod tests {
                 .await
                 .expect("cargo check runs");
             assert!(status.success(), "the generated project must check");
+        });
+    }
+
+    /// The React overlay compiles: `react-ts` scaffolds get a branded
+    /// `App.tsx` that `tsc -b && vite build` accepts.
+    ///
+    /// Gated on `bun` being on PATH; skipped in environments without it.
+    #[test]
+    fn create_template_web_react_frontend_builds() {
+        if which::which("bun").is_err() {
+            eprintln!("skipping: bun is not installed");
+            return;
+        }
+        smol::block_on(async {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let project_path = temp.path().join("web-app");
+            scaffold_web_project(&project_path, "WaterUI App", "react-ts").await;
+
+            let app_tsx = project_path.join("web/src/App.tsx");
+            assert!(app_tsx.is_file(), "react-ts scaffolds src/App.tsx");
+            let contents = std::fs::read_to_string(&app_tsx).expect("App.tsx");
+            assert!(contents.contains("WaterUI + React"), "{contents}");
+            assert!(project_path.join("web/public/waterui.svg").is_file());
+
+            let status = smol::process::Command::new("bun")
+                .args(["run", "build"])
+                .current_dir(project_path.join("web"))
+                .status()
+                .await
+                .expect("bun run build runs");
+            assert!(status.success(), "the branded React frontend must build");
         });
     }
 
