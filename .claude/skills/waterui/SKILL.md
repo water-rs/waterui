@@ -515,10 +515,10 @@ whole app.
 | `ForEach<..>: View is not satisfied` | `ForEach` is a collection, not a view | `Lazy::for_each(..)`, or hand it to a container |
 | `.title("Inbox")` rejects its argument | `Text::title()` (font size) shadows the navigation title | title the container, or `NavigationView::new(title, content)` |
 | A test's wait can never fail | query `.wait_for_existence(..)` returns `bool` | wrap it in `assert!` |
-| `use of undeclared crate 'tracing'` | logging is re-exported | `waterui::log::debug!(..)` |
+| `use of undeclared crate 'tracing'` | logging is re-exported | `use waterui::log::debug;` then `debug!(..)` |
 | `borrowed data escapes outside of function` | views are `'static` | `&'static str` / `Str` / `impl IntoText`, or `impl View + use<>` |
 | type annotations needed after `binding(v)` | `binding` takes `impl Into<T>` | `Binding::i32(0)` etc., turbofish, or annotate |
 
-Rust rules still apply on top of these: no `println!` (use `waterui::log::debug!`,
-surfaced by `water run --logs debug`), and nothing blocking on the UI thread — use
+Rust rules still apply on top of these: no `println!` (import `waterui::log::debug` and
+use `debug!`, surfaced by `water run --logs debug`), and nothing blocking on the UI thread — use
 `.action_async`, `.task(..)`, or `waterui::task::{spawn_local, sleep}` with `.detach()`.

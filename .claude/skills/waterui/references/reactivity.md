@@ -396,6 +396,8 @@ another swap.
 ## Async, tasks, and lifecycle
 
 ```rust
+use waterui::log::debug;
+
 button("Fetch")
     .action_async(|State(out): State<Binding<Str>>| async move {
         out.set(fetch().await);
@@ -403,9 +405,9 @@ button("Fetch")
     .state(&result);
 
 view.task(async { warm_cache().await });   // runs while the view is alive; dropped with it
-view.on_appear(|| waterui::log::debug!("shown"));
+view.on_appear(|| debug!("shown"));
 view.on_disappear(|| ());
-view.on_change(&query, |new_value| waterui::log::debug!(?new_value));
+view.on_change(&query, |new_value| debug!(?new_value));
 ```
 
 `.on_change(&signal, f)` takes the signal by reference and a plain `Fn(T)` closure — the

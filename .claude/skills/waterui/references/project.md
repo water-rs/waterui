@@ -217,8 +217,10 @@ You do not need `tracing` in your own `Cargo.toml`: the whole crate is re-export
 `waterui::log`:
 
 ```rust
-waterui::log::debug!(?value, "recomputed layout");
-waterui::log::info!("saved");
+use waterui::log::{debug, info};
+
+debug!(?value, "recomputed layout");
+info!("saved");
 ```
 
 ```bash
