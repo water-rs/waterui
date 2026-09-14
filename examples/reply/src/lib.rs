@@ -43,7 +43,9 @@ const SEARCH_AVATAR: f32 = 32.0;
 
 /// `labelMedium` (Roboto Medium 12/16) — sender names, timestamps, counts.
 fn label_medium() -> Font {
-    Font::new(Caption).weight(FontWeight::Medium).line_height(16.0)
+    Font::new(Caption)
+        .weight(FontWeight::Medium)
+        .line_height(16.0)
 }
 
 /// `bodyMedium` (Roboto 14/20) — list snippets and the recipients line.
@@ -59,8 +61,7 @@ fn label_large() -> Font {
         .line_height(20.0)
 }
 
-const ASSETS: &str =
-    "https://raw.githubusercontent.com/android/compose-samples/main/Reply/app/src/main/res/drawable";
+const ASSETS: &str = "https://raw.githubusercontent.com/android/compose-samples/main/Reply/app/src/main/res/drawable";
 
 fn asset(name: &str) -> Url {
     format!("{ASSETS}/{name}")
@@ -370,7 +371,12 @@ fn rail(selected_rail: Binding<usize>) -> impl View {
         icon_button("Menu", mdi::menu()),
         fab("Compose", mdi::pencil()).tertiary(),
         navigation_rail((
-            rail_item(&selected_rail, 0, "Mail", material_badge(4, mdi::email_outline())),
+            rail_item(
+                &selected_rail,
+                0,
+                "Mail",
+                material_badge(4, mdi::email_outline()),
+            ),
             rail_item(&selected_rail, 1, "Notes", mdi::note_outline()),
             rail_item(&selected_rail, 2, "Chat", mdi::message_outline()),
             rail_item(&selected_rail, 3, "Meet", mdi::video_outline()),

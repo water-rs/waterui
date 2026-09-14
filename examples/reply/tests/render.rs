@@ -28,9 +28,7 @@ fn remote_avatars_render() {
     // example's `themed` overlay then applies the sample's custom scheme.
     let mut env = Environment::new();
     hydrolysis_m3::install_defaults(&mut env);
-    let mut app = UiBuilder::new()
-        .viewport(1280, 800)
-        .mount_app(app(env));
+    let mut app = UiBuilder::new().viewport(1280, 800).mount_app(app(env));
     let before = app.snapshot();
     // Pump hot while spawned fetch work is pending; the timeout is wall-clock
     // because the network round-trip lives outside the virtual clock.
