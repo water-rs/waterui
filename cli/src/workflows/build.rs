@@ -122,15 +122,21 @@ impl RustDynamicLibraries {
     /// # Errors
     /// Returns an error when either required dynamic library is absent or ambiguous.
     pub async fn resolve(lib_dir: &Path, triple: &Triple) -> eyre::Result<Self> {
-        let waterui = lib_dir
-            .join("deps")
-            .join(dynamic_library_file_name("waterui_dylib", triple));
-        if !waterui.is_file() {
-            bail!(
+        let file_name = dynamic_library_file_name("waterui_dylib", triple);
+        // Cargo emits a dependency's final dylib artifact in `deps/` on stable
+        // and at the profile directory root on current nightlies; accept both.
+        let waterui = [
+            lib_dir.join(&file_name),
+            lib_dir.join("deps").join(&file_name),
+        ]
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            eyre::eyre!(
                 "Shared WaterUI runtime was not built at {}",
-                waterui.display()
-            );
-        }
+                lib_dir.join("deps").join(&file_name).display()
+            )
+        })?;
 
         let target_libdir = rust_target_libdir(triple).await?;
         let resolution_triple = triple.clone();
