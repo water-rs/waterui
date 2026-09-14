@@ -548,7 +548,6 @@ impl SemanticApp {
     }
 
     /// Starts a chainable semantic query.
-    #[must_use]
     pub fn query(&mut self) -> Query<'_> {
         Query {
             app: self,
