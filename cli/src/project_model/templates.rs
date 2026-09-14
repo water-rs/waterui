@@ -2397,11 +2397,74 @@ pub async fn framework_updates(
 ) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
     use crate::backend::Backend;
     use crate::project::PackageType;
-    use std::collections::BTreeMap;
 
     if previous.package.package_type == PackageType::Playground {
         return Ok(Vec::new());
     }
+    // Each manifest names its framework its own way — a recorded channel
+    // selection or a `waterui_path` checkout — and `for_manifest` reads
+    // whichever it is, so the before-state renders against the framework the
+    // backends were actually generated from.
+    let previous_framework = ResolvedFramework::for_manifest(previous, root)
+        .await
+        .map_err(io::Error::other)?;
+    let next_framework = ResolvedFramework::for_manifest(next, root)
+        .await
+        .map_err(io::Error::other)?;
+    let base = root.join(previous.backends.path());
+    let mut updates = native_backend_updates(
+        root,
+        previous,
+        next,
+        crate_name,
+        &previous_framework,
+        &next_framework,
+    )
+    .await?;
+    let rust = [
+        previous
+            .backends
+            .gtk4()
+            .map(|backend| base.join(backend.path())),
+        previous
+            .backends
+            .hydrolysis()
+            .map(|backend| base.join(backend.path())),
+        previous
+            .backends
+            .esp32()
+            .map(|backend| base.join(backend.path())),
+    ];
+    let previous_patches = project_patches(root, previous)?;
+    for directory in rust.into_iter().flatten() {
+        let path = directory.join("Cargo.toml");
+        let mut manifest: toml_edit::DocumentMut = fs::read_to_string(&path)
+            .await?
+            .parse()
+            .map_err(io::Error::other)?;
+        next_framework
+            .update_manifest(&mut manifest, &previous_patches)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        updates.push((path, manifest.to_string().into_bytes()));
+    }
+    Ok(updates)
+}
+
+/// The native backend projects' regenerated files, three-way merged over the
+/// user's edits: the templates rendered against the previous framework are the
+/// base, the files on disk the user's side, and the templates rendered against
+/// the next framework the incoming side.
+async fn native_backend_updates(
+    root: &Path,
+    previous: &crate::project::Manifest,
+    next: &crate::project::Manifest,
+    crate_name: &CrateName,
+    previous_framework: &ResolvedFramework,
+    next_framework: &ResolvedFramework,
+) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+    use crate::backend::Backend;
+    use std::collections::BTreeMap;
+
     let base = root.join(previous.backends.path());
     let native = [
         previous.backends.apple().map(|backend| {
@@ -2428,23 +2491,23 @@ pub async fn framework_updates(
     ];
     let mut updates = Vec::new();
     for (namespace, templates, directory, app_name) in native.into_iter().flatten() {
-        let context = |manifest: &crate::project::Manifest| {
+        let context = |manifest: &crate::project::Manifest, framework: &ResolvedFramework| {
             TemplateContext::for_project_manifest(
                 manifest,
                 crate_name.clone(),
                 app_name.clone(),
-                manifest
-                    .framework
-                    .as_ref()
-                    .expect("channel updates have a resolved framework"),
+                framework,
             )
             .with_backend_project_path(directory.clone())
             .with_project_root_path(root.to_path_buf())
         };
-        let before: BTreeMap<_, _> = render_dir_outputs(namespace, templates, &context(previous))?
-            .into_iter()
-            .collect();
-        for (path, after) in render_dir_outputs(namespace, templates, &context(next))? {
+        let before: BTreeMap<_, _> =
+            render_dir_outputs(namespace, templates, &context(previous, previous_framework))?
+                .into_iter()
+                .collect();
+        for (path, after) in
+            render_dir_outputs(namespace, templates, &context(next, next_framework))?
+        {
             let before = &before[&path];
             if before == &after {
                 continue;

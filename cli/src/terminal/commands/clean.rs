@@ -590,8 +590,8 @@ mod tests {
 
         let ignored_project = temp
             .path()
-            .join(".worktrees/stale/examples/ignored-project");
-        write_manifest(&ignored_project, "ignored-project");
+            .join(".worktrees/stale/examples/ignored_project");
+        write_manifest(&ignored_project, "ignored_project");
 
         let discovered = block_on(discover_projects(temp.path())).expect("discover projects");
 

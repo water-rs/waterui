@@ -1438,10 +1438,44 @@ async fn latest_certification(
     }
     let release = newest_release(releases, channel)?;
     let asset = certification_asset(&release, channel)?;
-    let certification: Certification =
-        serde_json::from_slice(&fetch(&asset.browser_download_url).await?)?;
+    let certification = parse_certification(&fetch(&asset.browser_download_url).await?)?;
     verify_certification(&certification, Some(&release), repository)?;
+    certifies_channel(&certification, channel)?;
     Ok(certification)
+}
+
+/// A release selected for `channel` must carry that channel's manifest: the
+/// tag alone does not bind the contents to the distribution it names.
+fn certifies_channel(certification: &Certification, channel: FrameworkChannel) -> Result<()> {
+    if certification.channel != channel {
+        bail!(
+            "{} certifies the {} channel, not {channel}",
+            certification.tag,
+            certification.channel
+        );
+    }
+    Ok(())
+}
+
+/// The schema a manifest declares, read before the rest of it so an
+/// unsupported schema is reported as such rather than as whichever field it
+/// happens to lack.
+#[derive(Deserialize)]
+struct CertificationSchema {
+    schema_version: u32,
+}
+
+const CERTIFICATION_SCHEMA_VERSION: u32 = 2;
+
+fn parse_certification(bytes: &[u8]) -> Result<Certification> {
+    let schema: CertificationSchema = serde_json::from_slice(bytes)?;
+    if schema.schema_version != CERTIFICATION_SCHEMA_VERSION {
+        bail!(
+            "framework manifest schema version {} is not supported; this CLI requires schema version {CERTIFICATION_SCHEMA_VERSION}",
+            schema.schema_version
+        );
+    }
+    Ok(serde_json::from_slice(bytes)?)
 }
 
 /// Whether a GitHub release can carry `channel`'s manifest.
@@ -1463,14 +1497,27 @@ fn is_stable_tag(tag: &str) -> bool {
     tag.strip_prefix('v').is_some_and(|version| {
         version
             .parse::<cargo_toml::SemVer>()
-            .is_ok_and(|version| version.pre.is_empty())
+            .is_ok_and(|version| version.pre.is_empty() && version.build.is_empty())
     })
 }
 
+/// The release a channel resolves to: the highest version for stable, whose
+/// tags are ordered; the most recently published for nightly, whose tags are
+/// dated. Publication order breaks ties.
 fn newest_release(releases: Vec<Release>, channel: FrameworkChannel) -> Result<Release> {
+    let version = |release: &Release| -> Option<cargo_toml::SemVer> {
+        match channel {
+            FrameworkChannel::Stable => release.tag_name.strip_prefix('v')?.parse().ok(),
+            FrameworkChannel::Nightly | FrameworkChannel::Dev => None,
+        }
+    };
     releases
         .into_iter()
-        .max_by(|left, right| left.published_at.cmp(&right.published_at))
+        .max_by(|left, right| {
+            version(left)
+                .cmp(&version(right))
+                .then_with(|| left.published_at.cmp(&right.published_at))
+        })
         .ok_or_else(|| match channel {
             FrameworkChannel::Nightly => {
                 eyre!("no certified nightly exists; select dev or stable explicitly")
@@ -1508,7 +1555,7 @@ async fn load_manifest(path: &Path, repository: &str) -> Result<Certification> {
     let contents = smol::fs::read(path)
         .await
         .wrap_err_with(|| format!("failed to read framework manifest {}", path.display()))?;
-    let certification: Certification = serde_json::from_slice(&contents)
+    let certification = parse_certification(&contents)
         .wrap_err_with(|| format!("invalid framework manifest {}", path.display()))?;
     verify_certification(&certification, None, repository)?;
     Ok(certification)
@@ -1524,9 +1571,9 @@ fn verify_certification(
     repository: &str,
 ) -> Result<()> {
     let channel = certification.channel;
-    if certification.schema_version != 2 {
+    if certification.schema_version != CERTIFICATION_SCHEMA_VERSION {
         bail!(
-            "framework manifest schema version {} is not supported; this CLI requires schema version 2",
+            "framework manifest schema version {} is not supported; this CLI requires schema version {CERTIFICATION_SCHEMA_VERSION}",
             certification.schema_version
         );
     }
@@ -1998,6 +2045,11 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             release("nightly-2025-12-01", false, true, "2025-12-02T00:00:00Z"),
             release("v0.4.1", false, false, "2025-11-01T00:00:00Z"),
             release("v0.9.9", true, false, "2025-12-03T00:00:00Z"),
+            // Build metadata is not a stable distribution either.
+            release("v0.6.0+build.5", false, false, "2025-12-04T00:00:00Z"),
+            // A backport published after a newer version does not outrank it:
+            // stable is ordered by version, not by publication date.
+            release("v0.3.9", false, false, "2025-12-05T00:00:00Z"),
         ];
         let eligible: Vec<_> = releases
             .into_iter()
@@ -2067,6 +2119,25 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                 .unwrap_err()
                 .to_string()
                 .contains("schema")
+        );
+        let nightly_on_a_stable_tag = certification(FrameworkChannel::Nightly, "v0.4.1");
+        let error = certifies_channel(&nightly_on_a_stable_tag, FrameworkChannel::Stable)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("certifies the nightly channel"), "{error}");
+        certifies_channel(&nightly_on_a_stable_tag, FrameworkChannel::Nightly).unwrap();
+
+        // A schema-1 manifest has no `metadata`; the schema is still what the
+        // error names, not the field the newer schema happens to require.
+        let error = parse_certification(
+            br#"{"schema_version": 1, "channel": "nightly", "repository": "water-rs/waterui"}"#,
+        )
+        .err()
+        .expect("a schema-1 manifest is rejected")
+        .to_string();
+        assert!(
+            error.contains("schema version 1 is not supported"),
+            "{error}"
         );
 
         let mut wrong_repository = certification(FrameworkChannel::Stable, "v0.4.1");
