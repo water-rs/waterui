@@ -762,6 +762,12 @@ pub struct WuiTabs {
 
     /// How the bar behaves while content scrolls.
     pub minimize_behavior: WuiTabBarMinimizeBehavior,
+
+    /// A view the platform floats above the tab bar, or null.
+    ///
+    /// An iOS primitive (`UITabBarController.bottomAccessory`); a backend
+    /// without the slot does not show it.
+    pub bottom_accessory: *mut WuiAnyView,
 }
 
 opaque!(WuiTabContent, AnyViewBuilder<NavigationView>, tab_content);
@@ -860,6 +866,9 @@ impl IntoFFI for TabsLayout {
             tabs: self.tabs.into_ffi(),
             style: self.style.into(),
             minimize_behavior: self.minimize_behavior.into_ffi(),
+            bottom_accessory: self
+                .bottom_accessory
+                .map_or(core::ptr::null_mut(), IntoFFI::into_ffi),
         }
     }
 }

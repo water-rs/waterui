@@ -271,6 +271,8 @@ pub struct TabsLayout {
     pub style: NativeTabStyle,
     /// How the bar behaves while content scrolls.
     pub minimize_behavior: TabBarMinimizeBehavior,
+    /// A view the platform floats above the tab bar, when it has such a slot.
+    pub bottom_accessory: Option<AnyView>,
 }
 
 impl TabsLayout {
@@ -282,6 +284,7 @@ impl TabsLayout {
             tabs,
             style: NativeTabStyle::Automatic,
             minimize_behavior: TabBarMinimizeBehavior::Automatic,
+            bottom_accessory: None,
         }
     }
 
@@ -296,6 +299,13 @@ impl TabsLayout {
     #[must_use]
     pub const fn minimize_behavior(mut self, behavior: TabBarMinimizeBehavior) -> Self {
         self.minimize_behavior = behavior;
+        self
+    }
+
+    /// Sets the view the platform floats above the tab bar.
+    #[must_use]
+    pub fn bottom_accessory(mut self, accessory: impl View) -> Self {
+        self.bottom_accessory = Some(AnyView::new(accessory));
         self
     }
 }
@@ -313,6 +323,7 @@ pub struct Tabs<T: 'static> {
     items: Vec<Tab<T>>,
     style: NativeTabStyle,
     minimize_behavior: TabBarMinimizeBehavior,
+    bottom_accessory: Option<AnyView>,
 }
 
 impl<T> core::fmt::Debug for Tabs<T> {
@@ -321,6 +332,7 @@ impl<T> core::fmt::Debug for Tabs<T> {
             .field("tabs", &self.items.len())
             .field("style", &self.style)
             .field("minimize_behavior", &self.minimize_behavior)
+            .field("bottom_accessory", &self.bottom_accessory.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -333,6 +345,7 @@ impl<T: Ord + Clone + 'static> Tabs<T> {
             items: tabs,
             style: NativeTabStyle::Automatic,
             minimize_behavior: TabBarMinimizeBehavior::Automatic,
+            bottom_accessory: None,
         }
     }
 
@@ -348,6 +361,21 @@ impl<T: Ord + Clone + 'static> Tabs<T> {
     /// collapse ignore it.
     pub const fn minimize_behavior(mut self, behavior: TabBarMinimizeBehavior) -> Self {
         self.minimize_behavior = behavior;
+        self
+    }
+
+    /// Sets a view the platform floats above the tab bar.
+    ///
+    /// The slot iOS 26 keeps for persistent content such as a now-playing
+    /// mini-player: a glass bar that stays above the tab bar and collapses
+    /// inline with it. The accessory is an arbitrary view; the platform gives
+    /// it the capsule, placement and collapse behavior.
+    ///
+    /// This is an iOS primitive. macOS has no counterpart and does not show
+    /// the accessory; Android ignores it. Content that must be visible on
+    /// every platform belongs in the tab's own view tree.
+    pub fn bottom_accessory(mut self, accessory: impl View) -> Self {
+        self.bottom_accessory = Some(AnyView::new(accessory));
         self
     }
 
@@ -369,6 +397,7 @@ impl<T: Ord + Clone + 'static> Tabs<T> {
             tabs,
             style: self.style,
             minimize_behavior: self.minimize_behavior,
+            bottom_accessory: self.bottom_accessory,
         }
     }
 }
