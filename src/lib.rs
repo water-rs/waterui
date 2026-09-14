@@ -230,6 +230,7 @@ macro_rules! __export_preview {
     ($fn_name:expr, $body:block) => {
         $crate::pastey::paste! {
             #[doc(hidden)]
+            #[cfg(debug_assertions)]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [<waterui_preview_ env!("CARGO_PKG_NAME") _ $fn_name>]() -> *mut () {
                 $body
