@@ -277,6 +277,8 @@ pub fn components_block_12() {
             .action(handler) // -> Button<impl FnMut(&Environment)>
             .action_async(|| async {}) // [ellipsis filled]
             .style(ButtonStyle::Plain) // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
+            // | Glass | GlassProminent (Liquid Glass capsules on Apple;
+            //   bordered / bordered-prominent elsewhere)
             .state(&value) // inject handler state (repeatable)
     };
 
