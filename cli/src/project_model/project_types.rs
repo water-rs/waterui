@@ -125,22 +125,29 @@ impl BundleIdentifier {
         &self.0
     }
 
-    /// Converts the bundle identifier into an Android package name when it satisfies Java rules.
+    /// The identifier as the Android package name.
     ///
-    /// # Errors
-    /// Returns an error when the identifier is not a valid Java-style Android package name.
-    pub fn android_package_name(&self) -> Result<AndroidPackageName, String> {
-        AndroidPackageName::try_from(self.0.clone())
+    /// Infallible: a bundle identifier satisfies the Java package rules by
+    /// construction, see [`TryFrom<String>`].
+    #[must_use]
+    pub fn android_package_name(&self) -> AndroidPackageName {
+        AndroidPackageName(self.0.clone())
     }
 }
 
 impl TryFrom<String> for BundleIdentifier {
     type Error = String;
 
+    /// One identifier names the app on every platform, so it has to satisfy
+    /// the strictest of their rules — Android's Java package segments. Apple
+    /// accepts a hyphen where Android does not, so a hyphenated identifier is
+    /// refused here, where it is typed, instead of by the first Android
+    /// template render an iOS build happens to trigger.
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.trim().is_empty() {
             return Err("bundle identifier cannot be empty".to_string());
         }
+        AndroidPackageName::try_from(value.clone())?;
         Ok(Self(value))
     }
 }
@@ -210,8 +217,8 @@ impl TryFrom<String> for AndroidPackageName {
 
         if value.contains('-') {
             return Err(format!(
-                "Invalid Android package name: '{value}' (hyphens are not allowed). \
-Set `[package].bundle_identifier` in `Water.toml` to a valid Java package name (e.g. replace '-' with '_')."
+                "Invalid bundle identifier: '{value}' (hyphens are not allowed, because the \
+identifier is also the Android package name). Use a Java package name, e.g. replace '-' with '_'."
             ));
         }
 
@@ -363,5 +370,27 @@ impl PermissionKey {
             | Self::Vibrate
             | Self::WakeLock => &[],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AndroidPackageName, BundleIdentifier};
+
+    #[test]
+    fn bundle_identifier_rejects_what_android_rejects() {
+        let error = BundleIdentifier::try_from("dev.waterui.liquid-glass").unwrap_err();
+        assert!(error.contains("hyphens are not allowed"), "{error}");
+        assert!(BundleIdentifier::try_from("dev.waterui..glass").is_err());
+        assert!(BundleIdentifier::try_from("dev.waterui.1glass").is_err());
+    }
+
+    #[test]
+    fn bundle_identifier_is_its_android_package_name() {
+        let id = BundleIdentifier::try_from("dev.waterui.liquid_glass").unwrap();
+        assert_eq!(
+            id.android_package_name(),
+            AndroidPackageName::try_from("dev.waterui.liquid_glass".to_string()).unwrap()
+        );
     }
 }

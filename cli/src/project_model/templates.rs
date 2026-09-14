@@ -500,10 +500,7 @@ impl TemplateContext {
 
     #[must_use]
     pub fn android_package_name(&self) -> String {
-        self.bundle_identifier
-            .android_package_name()
-            .unwrap_or_else(|error| panic!("{error}"))
-            .to_string()
+        self.bundle_identifier.android_package_name().to_string()
     }
 
     #[must_use]
