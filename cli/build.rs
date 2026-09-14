@@ -27,6 +27,7 @@ const WORKSPACE_PACKAGES: &[(&str, &str)] = &[
     ("waterui-core", "WATERUI_CLI_WATERUI_CORE_VERSION"),
     ("waterui-testing", "WATERUI_CLI_WATERUI_TESTING_VERSION"),
     ("waterui-ffi", "WATERUI_CLI_WATERUI_FFI_VERSION"),
+    ("waterui-locale", "WATERUI_CLI_WATERUI_LOCALE_VERSION"),
     (
         "waterui-browser-cef",
         "WATERUI_CLI_WATERUI_BROWSER_CEF_VERSION",

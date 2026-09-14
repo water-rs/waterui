@@ -241,16 +241,7 @@ macro_rules! __export_preview {
 #[doc(hidden)]
 pub use pastey;
 
-/// Configures a freshly-created environment with compile-time discovered app plugins.
-///
-/// This currently installs the runtime translation catalog generated from the caller's
-/// `i18n/*.toml` files. It is intended to be used at environment creation boundaries
-/// such as backend entry points.
-#[macro_export]
-macro_rules! configure_environment {
-    ($env:expr) => {{
-        let mut __waterui_env = $env;
-        $crate::Plugin::install($crate::catalog!(), &mut __waterui_env);
-        __waterui_env
-    }};
-}
+// `configure_environment!` lives in `waterui-core` so generated backend crates
+// that do not depend on the facade (the ESP32 harness names `waterui-core`,
+// `waterui-dew` and `waterui-locale` only) can still install the app catalog.
+pub use waterui_core::configure_environment;

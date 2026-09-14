@@ -10,6 +10,8 @@ pub const WATERUI_CORE_VERSION: &str = env!("WATERUI_CLI_WATERUI_CORE_VERSION");
 pub const WATERUI_TESTING_VERSION: &str = env!("WATERUI_CLI_WATERUI_TESTING_VERSION");
 /// Exact `waterui-ffi` version used when scaffolding registry-based projects.
 pub const WATERUI_FFI_VERSION: &str = env!("WATERUI_CLI_WATERUI_FFI_VERSION");
+/// Exact `waterui-locale` version used when scaffolding registry-based projects.
+pub const WATERUI_LOCALE_VERSION: &str = env!("WATERUI_CLI_WATERUI_LOCALE_VERSION");
 /// Exact `hydrolysis` version used when scaffolding registry-based projects.
 pub const HYDROLYSIS_VERSION: &str = env!("WATERUI_CLI_HYDROLYSIS_VERSION");
 /// Exact `hydrolysis-m3` version used when scaffolding registry-based projects.
@@ -85,6 +87,7 @@ pub const SCAFFOLD_PACKAGE_VERSIONS: &[(&str, &str)] = &[
     ("waterui-core", WATERUI_CORE_VERSION),
     ("waterui-testing", WATERUI_TESTING_VERSION),
     ("waterui-ffi", WATERUI_FFI_VERSION),
+    ("waterui-locale", WATERUI_LOCALE_VERSION),
     ("waterui-dew", DEW_VERSION),
     ("waterui-gtk", GTK_BACKEND_VERSION),
     ("waterui-browser-cef", WATERUI_BROWSER_CEF_VERSION),

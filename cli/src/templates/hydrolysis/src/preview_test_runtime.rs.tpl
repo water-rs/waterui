@@ -22,7 +22,7 @@ pub(crate) fn run() {
 }
 
 fn run_semantic(width: f32, height: f32) {
-    let mut env = waterui::env::Environment::new();
+    let mut env = waterui::configure_environment!(waterui::env::Environment::new());
     preview_test::install_preview_theme(&mut env);
     // This environment never passes through `App::new`, which is what
     // installs the self-drawn realizations for a normal run.

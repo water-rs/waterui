@@ -33,7 +33,7 @@ pub(crate) fn run() {
 }
 
 fn new_runtime(width: f32, height: f32) -> HeadlessRuntime {
-    let mut env = waterui::env::Environment::new();
+    let mut env = waterui::configure_environment!(waterui::env::Environment::new());
     preview_symbol::install_preview_theme(&mut env);
     // This environment never passes through `App::new`, which is what
     // installs the self-drawn realizations for a normal run.
