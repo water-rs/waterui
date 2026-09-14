@@ -165,9 +165,10 @@ jobs:
           # profile; -LoadUserProfile materializes that profile — without it
           # %USERPROFILE% points at a directory that does not exist yet.
           # The hosted image defines a machine-level CARGO_HOME/RUSTUP_HOME
-          # pointing at runneradmin's profile, and a credentialed child's
-          # environment is rebuilt from the registry, not inherited — so the
-          # bootstrap script overrides them inside the child's own process.
+          # pointing at runneradmin's profile, and a credentialed child
+          # inherits the caller's environment unless -UseNewEnvironment is
+          # passed — so the bootstrap runs under a fresh environment and the
+          # script pins CARGO_HOME/RUSTUP_HOME to the child's own profile.
           # Cross-account files live in C:\Windows\Temp (world read/write);
           # the runner's private RUNNER_TEMP is not readable by the user.
           $share = 'C:\Windows\Temp\cli-e2e'
@@ -183,7 +184,7 @@ jobs:
           $p = Start-Process -FilePath pwsh `
             -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$share\rustup-bootstrap.ps1" `
             -Credential (Import-Clixml "$env:RUNNER_TEMP\e2e-cred.xml") `
-            -LoadUserProfile -Wait -PassThru `
+            -UseNewEnvironment -LoadUserProfile -Wait -PassThru `
             -RedirectStandardOutput "$share\rustup-init.out" `
             -RedirectStandardError "$share\rustup-init.err"
           if ($null -eq $p.ExitCode -or $p.ExitCode -ne 0) {
@@ -335,7 +336,8 @@ jobs:
           $p = Start-Process -FilePath pwsh `
             -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\Windows\Temp\cli-e2e\cli-e2e.ps1' `
             -Credential (Import-Clixml "$env:RUNNER_TEMP\e2e-cred.xml") `
-            -LoadUserProfile -WorkingDirectory "C:\Users\$env:E2E_USER" -Wait -PassThru `
+            -UseNewEnvironment -LoadUserProfile `
+            -WorkingDirectory "C:\Users\$env:E2E_USER" -Wait -PassThru `
             -RedirectStandardOutput 'C:\Windows\Temp\cli-e2e\e2e.out' `
             -RedirectStandardError 'C:\Windows\Temp\cli-e2e\e2e.err'
           Get-Content 'C:\Windows\Temp\cli-e2e\e2e.out','C:\Windows\Temp\cli-e2e\e2e.err' -ErrorAction SilentlyContinue
