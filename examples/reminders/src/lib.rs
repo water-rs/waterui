@@ -310,7 +310,8 @@ fn destination_tile(
     .padding_with(EdgeInsets::all(10.0))
     .min_height(56.0)
     .background(signal_color(bg))
-    .clip(RoundedRectangle::new(10.0))
+    // ~10pt on the tile's shorter side, matching the official app's tiles.
+    .clip(RoundedRectangle::new(0.15))
     .on_tap(move || selection.set(Some(dest)))
 }
 
