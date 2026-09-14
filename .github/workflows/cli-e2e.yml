@@ -44,7 +44,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   E2E_USER: watere2e
-  E2E_PASS: WaterE2E-nightly-794
+  # Windows rejects a password containing the account name; keep them disjoint.
+  E2E_PASS: 'hQ9$vM2#zL8!tR4'
 
 jobs:
   e2e:
