@@ -1581,24 +1581,6 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveEdgeInsetsSta
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveEdgeInsetsStateSet<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    top: jfloat,
-    bottom: jfloat,
-    leading: jfloat,
-    trailing: jfloat,
-) {
-    // SAFETY: Kotlin passes back the handle `createReactive*State` returned for this
-    // state type, which the runtime drops only through `dropReactive*State`.
-    let state = unsafe { reactive_state::<ReactiveEdgeInsetsState>(state_ptr) };
-    state.binding.set(waterui_layout::padding::EdgeInsets::new(
-        top, bottom, leading, trailing,
-    ));
-}
-
-#[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveEdgeInsetsState<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
