@@ -128,6 +128,7 @@ pub(super) async fn write_web_shell(project: &Project, site_root: &Path) -> eyre
         project.manifest(),
         project.crate_name().clone(),
         app_name,
+        &project.resolved_framework().await?,
     );
     let launch = WebLaunch::resolve(project, wasm_bytes)?;
     let index = IndexTemplate { ctx: &ctx, launch }
@@ -183,6 +184,7 @@ mod tests {
             &manifest,
             CrateName::try_from("demo").unwrap(),
             "Demo",
+            &crate::framework::test_fixtures::stable_framework(),
         );
         let html = IndexTemplate {
             ctx: &ctx,
@@ -219,6 +221,7 @@ mod tests {
             &manifest,
             CrateName::try_from("demo").unwrap(),
             "Demo",
+            &crate::framework::test_fixtures::stable_framework(),
         );
         let html = IndexTemplate {
             ctx: &ctx,
