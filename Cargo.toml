@@ -527,7 +527,7 @@ xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e7
 # canvas (water-rs/hydrolysis#21), which the launch screen written by the CLI
 # waits for. Drop these entries once the releases carry both.
 hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "447b07fdad58c503425f3ebeea0aa1bbdc037a2d" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d8872e5" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "9a3977e296dbb236838b8a9ca069921d2953405b" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
 # storage and takes its address as the opaque class pointer.
