@@ -468,17 +468,19 @@ fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNa
             }
         }
 
-        if !has_combined_swift || archives_in_dir.is_empty() {
-            continue;
-        }
-
-        for archive in &archives_in_dir {
-            archive_paths.insert(archive.clone());
-            if let Some(flag) = static_archive_link_flag(archive) {
-                push_unique_flag(&mut linker_flags, flag);
+        if has_combined_swift {
+            for archive in &archives_in_dir {
+                archive_paths.insert(archive.clone());
+                if let Some(flag) = static_archive_link_flag(archive) {
+                    push_unique_flag(&mut linker_flags, flag);
+                }
             }
         }
 
+        // Framework and linker-argument declarations apply to the final link
+        // for every crate in the graph — a plain Rust build script such as
+        // system-configuration-sys produces no Swift archive but still declares
+        // `cargo:rustc-link-lib=framework=SystemConfiguration`.
         let output_path = crate_build_dir.join("output");
         if output_path.exists() {
             let output = std::fs::read_to_string(&output_path)?;
@@ -1055,6 +1057,28 @@ mod tests {
                 "-rpath".to_string(),
                 "/usr/lib/swift".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn collects_framework_flags_from_crates_without_swift_archives() {
+        let dir = tempdir().expect("tempdir");
+        let lib_dir = dir.path().join("aarch64-apple-darwin/debug");
+        let build_dir = lib_dir.join("build/system-configuration-sys-1234");
+        std::fs::create_dir_all(build_dir.join("out")).expect("create out dir");
+        std::fs::write(
+            build_dir.join("output"),
+            "cargo:rustc-link-lib=framework=SystemConfiguration\n",
+        )
+        .expect("write build output");
+
+        let link_inputs =
+            collect_apple_native_link_inputs_sync(&lib_dir).expect("collect native link inputs");
+
+        assert!(link_inputs.archives.is_empty());
+        assert_eq!(
+            link_inputs.linker_flags,
+            vec!["-framework SystemConfiguration".to_string()]
         );
     }
 }
