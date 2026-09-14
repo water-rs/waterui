@@ -29,11 +29,11 @@ env:
 # of the whole workspace that no cache can hold next to the default one, so
 # it is a 35-40 minute cold build on every platform, every run, and it made
 # every pull request a 60-70 minute wait whatever it changed. Those passes,
-# the macOS platform and the macOS suites now run only when `full` is set,
-# which `nightly.yml` does once a day against `dev`; a pull request and a
-# push to `dev` run default-features clippy and format on Linux (#458).
-# The complete default-feature tests and examples also belong to nightly;
-# no test coverage is removed to shorten the per-change feedback loop.
+# the macOS platform and the macOS suites run only when `full` is set; a pull
+# request and a push to `dev` run default-features clippy and format on Linux
+# (#458). Nothing in this repository schedules `full` anymore: the heavyweight
+# coverage moved to the per-repository suites (#755), and the input stays for
+# any caller that wants the complete matrix.
 jobs:
   # Lint before testing: it is the cheapest failure to produce, and the one a
   # contributor is most likely to hit, so it should not wait behind the whole
@@ -203,10 +203,9 @@ jobs:
       # results, so a cross-platform break costs one round trip per platform.
       fail-fast: false
       matrix:
-        # Windows is kept in its own workflow because it needs platform-
-        # specific exclusions and compile-only CEF coverage; `nightly.yml`
-        # calls it beside this one. This job runs only when `full` is set, so
-        # both platforms are always in the matrix.
+        # Windows coverage ran in its own workflow, which was retired with the
+        # nightly (#755). This job runs only when `full` is set, so both
+        # platforms are always in the matrix.
         os: ["ubuntu-latest", "macos-latest"]
     steps:
       - uses: actions/checkout@v4
