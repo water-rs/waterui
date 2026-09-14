@@ -8,11 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::build_info::{
-    DEW_VERSION, GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION, HYDROLYSIS_VERSION, MCP_VERSION,
-    PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, WATERUI_BROWSER_CEF_VERSION, WATERUI_CORE_VERSION,
-    WATERUI_FFI_VERSION, WATERUI_VERSION,
-};
+use crate::build_info::{PREVIEW_VERSION, WATERUI_FFI_VERSION};
 use askama::Template;
 
 use crate::framework::ResolvedFramework;
@@ -865,12 +861,13 @@ macro_rules! define_scaffold_templates {
                     })
                 }
                 "src/templates/esp32/Cargo.toml.tpl" => Esp32CargoTomlTemplate::from_ctx(ctx)
-                    .render()
-                    .map_err(|error| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("Failed to render template {display_path}: {error}"),
-                        )
+                    .and_then(|template| {
+                        template.render().map_err(|error| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("Failed to render template {display_path}: {error}"),
+                            )
+                        })
                     }),
                 $(
                     $path => $name { ctx }
@@ -916,30 +913,28 @@ struct Esp32CargoTomlTemplate {
 }
 
 impl Esp32CargoTomlTemplate {
-    fn from_ctx(ctx: &TemplateContext) -> Self {
+    fn from_ctx(ctx: &TemplateContext) -> io::Result<Self> {
         let dew_dependency = generated_dependency_from_spec(
             ctx,
             NativeBackendDependencySpec::new(
                 "waterui-dew",
-                DEW_VERSION,
                 &["espidf", "progress"],
-                Some(NativeBackendDependencyPathKind::BackendsSubdir("dew")),
+                NativeBackendDependencySource::WorkspaceDependency,
             ),
-        )
+        )?
         .with_default_features(false)
         .inline_toml();
         let core_dependency = generated_dependency_from_spec(
             ctx,
             NativeBackendDependencySpec::new(
                 "waterui-core",
-                WATERUI_CORE_VERSION,
                 &[],
-                Some(NativeBackendDependencyPathKind::WorkspaceSubdir("core")),
+                NativeBackendDependencySource::WorkspaceSubdir("core"),
             ),
-        )
+        )?
         .inline_toml();
 
-        Self {
+        Ok(Self {
             package_name: ctx.crate_name.with_suffix("esp32").to_string(),
             app_crate_name: ctx.crate_name.to_string(),
             app_crate_path: ctx.project_root_relative_path(),
@@ -956,7 +951,7 @@ impl Esp32CargoTomlTemplate {
                     })
                     .to_string(),
             },
-        }
+        })
     }
 }
 
@@ -991,13 +986,14 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserTemplateContext, Esp32TemplateEntry, GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION,
-        PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, ResolvedWebViewBackend, TemplateContext,
-        TemplateNamespace, WATERUI_BROWSER_CEF_VERSION, WATERUI_CORE_VERSION, embedded,
-        jitpack_dependency_coordinate, normalize_path_for_config, preview_ffi,
-        render_scaffold_template,
+        BrowserTemplateContext, Esp32TemplateEntry, PREVIEW_VERSION, ResolvedWebViewBackend,
+        TemplateContext, TemplateNamespace, embedded, jitpack_dependency_coordinate,
+        normalize_path_for_config, preview_ffi, render_scaffold_template,
     };
-    use crate::build_info::{ANDROID_BACKEND, APPLE_BACKEND};
+    use crate::build_info::{
+        ANDROID_BACKEND, APPLE_BACKEND, GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION,
+        PREVIEW_PROTOCOL_VERSION, WATERUI_BROWSER_CEF_VERSION, WATERUI_CORE_VERSION,
+    };
     use crate::framework::ResolvedFramework;
     use crate::project_types::{BundleIdentifier, CrateName};
     use std::path::PathBuf;
@@ -1581,6 +1577,100 @@ mod tests {
             bin["name"].as_str() == Some("waterui-cef-helper")
                 && bin["path"].as_str() == Some("src/bin/waterui-cef-helper.rs")
         }));
+    }
+
+    #[test]
+    fn path_pinned_hydrolysis_manifest_uses_the_checkouts_own_sources() {
+        // A project pinned to a local checkout resolves `hydrolysis` and
+        // `hydrolysis-m3` the way the checkout's root manifest does — the
+        // `[patch.crates-io]` git pin here — never a `backends/` directory the
+        // tree no longer carries (#699).
+        let tempdir = tempdir().expect("temporary checkout dir");
+        let checkout = tempdir.path().join("waterui");
+        std::fs::create_dir_all(&checkout).expect("checkout dir");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            include_str!("../../tests/fixtures/local_checkout_patches.toml"),
+        )
+        .expect("checkout manifest");
+
+        let hydrolysis_ctx = ctx(
+            Some(checkout.clone()),
+            Some(PathBuf::from("managed_backends/hydrolysis")),
+            None,
+            crate::project::PackageType::Playground,
+        );
+        let cargo_toml = crate::templates::hydrolysis::rendered_outputs(
+            &hydrolysis_ctx,
+            "waterui-test-hydrolysis",
+        )
+        .expect("hydrolysis outputs should render")
+        .into_iter()
+        .find_map(|(path, content)| {
+            (path == std::path::Path::new("Cargo.toml"))
+                .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+        })
+        .expect("hydrolysis Cargo.toml output should exist");
+        let manifest = cargo_toml
+            .parse::<toml::Table>()
+            .expect("hydrolysis Cargo.toml should parse");
+
+        for cfg in [
+            "cfg(not(target_arch = \"wasm32\"))",
+            "cfg(target_arch = \"wasm32\")",
+        ] {
+            let dependencies = &manifest["target"][cfg]["dependencies"];
+            let hydrolysis = &dependencies["hydrolysis"];
+            assert_eq!(
+                hydrolysis["git"].as_str(),
+                Some("https://github.com/water-rs/hydrolysis"),
+                "{cfg} hydrolysis must name the checkout's patched git source"
+            );
+            assert_eq!(
+                hydrolysis["rev"].as_str(),
+                Some("e0cab32d0302877bbc9852cf504538fcf1534cb7"),
+            );
+            assert!(hydrolysis.get("path").is_none());
+            assert!(hydrolysis.get("version").is_none());
+            let m3 = &dependencies["hydrolysis-m3"];
+            assert_eq!(
+                m3["git"].as_str(),
+                Some("https://github.com/water-rs/hydrolysis-m3"),
+            );
+            assert_eq!(m3["rev"].as_str(), Some("d8872e5"));
+            assert!(m3.get("path").is_none());
+        }
+
+        // In-tree crates still resolve by path into the checkout.
+        let native_dependencies =
+            &manifest["target"]["cfg(not(target_arch = \"wasm32\"))"]["dependencies"];
+        assert_eq!(
+            native_dependencies["waterui-core"]["path"].as_str(),
+            Some(normalize_path_for_config(&checkout.join("core")).as_str()),
+        );
+
+        // A registry requirement no patch overrides stays a registry dep — the
+        // same source the checkout's `[workspace.dependencies]` declares.
+        let gtk_ctx = ctx(
+            Some(checkout),
+            Some(PathBuf::from("gtk4")),
+            None,
+            crate::project::PackageType::App,
+        );
+        let gtk_manifest = crate::templates::gtk4::rendered_outputs(&gtk_ctx, "waterui-test-gtk")
+            .expect("GTK outputs should render")
+            .into_iter()
+            .find_map(|(path, content)| {
+                (path == std::path::Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+            })
+            .expect("GTK Cargo.toml output should exist")
+            .parse::<toml::Table>()
+            .expect("GTK Cargo.toml should parse");
+        let gtk = &gtk_manifest["dependencies"]["waterui-gtk"];
+        assert_eq!(gtk["version"].as_str(), Some("^0.1.2"));
+        assert!(gtk.get("path").is_none());
+        assert!(gtk.get("git").is_none());
     }
 
     #[test]
@@ -2364,64 +2454,66 @@ async fn write_support_cargo_toml(
     Ok(())
 }
 
+/// Where a generated backend crate resolves one of its dependencies when the
+/// project pins a local `WaterUI` checkout through `waterui_path`.
 #[derive(Clone, Copy)]
-enum NativeBackendDependencyPathKind<'a> {
+enum NativeBackendDependencySource<'a> {
+    /// The checkout root itself — the `waterui` facade crate.
     WateruiRoot,
+    /// A member directory inside the checkout (`core`, `ffi`, …).
     WorkspaceSubdir(&'a str),
-    BackendsSubdir(&'a str),
+    /// The source the checkout's own manifest resolves the crate to: its
+    /// `[patch.crates-io]` override when the declared `[workspace.dependencies]`
+    /// requirement goes to the registry, the declared entry otherwise. For the
+    /// crates extracted out of the `WaterUI` tree — `hydrolysis`,
+    /// `hydrolysis-m3`, `waterui-dew`, `waterui-gtk` — which the checkout
+    /// consumes as versioned or git dependencies, not directories.
+    WorkspaceDependency,
 }
 
 #[derive(Clone, Copy)]
 struct NativeBackendDependencySpec<'a> {
     crate_name: &'a str,
-    version: &'a str,
     features: &'a [&'a str],
-    path_kind: Option<NativeBackendDependencyPathKind<'a>>,
+    source: NativeBackendDependencySource<'a>,
 }
 
 impl<'a> NativeBackendDependencySpec<'a> {
     const fn new(
         crate_name: &'a str,
-        version: &'a str,
         features: &'a [&'a str],
-        path_kind: Option<NativeBackendDependencyPathKind<'a>>,
+        source: NativeBackendDependencySource<'a>,
     ) -> Self {
         Self {
             crate_name,
-            version,
             features,
-            path_kind,
+            source,
         }
     }
 }
 
+/// The path a generated backend manifest writes for a dependency inside the
+/// pinned `WaterUI` checkout. An absolute `waterui_path` resolves directly; a
+/// relative one goes through the backend's own `../..` chain to the project
+/// root so the project stays portable together with its checkout.
 fn compute_native_backend_dependency_path(
     ctx: &TemplateContext,
     waterui_path: &Path,
-    path_kind: NativeBackendDependencyPathKind<'_>,
+    subdir: Option<&str>,
 ) -> String {
     if waterui_path.is_absolute() {
-        let absolute_path = match path_kind {
-            NativeBackendDependencyPathKind::WateruiRoot => waterui_path.to_path_buf(),
-            NativeBackendDependencyPathKind::WorkspaceSubdir(subdir) => waterui_path.join(subdir),
-            NativeBackendDependencyPathKind::BackendsSubdir(subdir) => {
-                waterui_path.join("backends").join(subdir)
-            }
-        };
+        let absolute_path = subdir.map_or_else(
+            || waterui_path.to_path_buf(),
+            |subdir| waterui_path.join(subdir),
+        );
         return normalize_path_for_config(&absolute_path);
     }
 
     let project_relative_root = PathBuf::from(ctx.project_root_relative_path());
-    let relative_path = match path_kind {
-        NativeBackendDependencyPathKind::WateruiRoot => project_relative_root.join(waterui_path),
-        NativeBackendDependencyPathKind::WorkspaceSubdir(subdir) => {
-            project_relative_root.join(waterui_path).join(subdir)
-        }
-        NativeBackendDependencyPathKind::BackendsSubdir(subdir) => project_relative_root
-            .join(waterui_path)
-            .join("backends")
-            .join(subdir),
-    };
+    let relative_path = subdir.map_or_else(
+        || project_relative_root.join(waterui_path),
+        |subdir| project_relative_root.join(waterui_path).join(subdir),
+    );
     normalize_path_for_config(&relative_path)
 }
 
@@ -2461,7 +2553,7 @@ fn render_native_backend_bin_cargo_toml(
         manifest.dependencies.insert(
             dependency.crate_name.to_string(),
             Dependency::Detailed(Box::new(
-                generated_dependency_from_spec(ctx, *dependency).into_cargo(),
+                generated_dependency_from_spec(ctx, *dependency)?.into_cargo(),
             )),
         );
     }
@@ -2560,7 +2652,7 @@ enum GeneratedDependencyValue {
     Detailed(GeneratedDependencyDetail),
 }
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, Default)]
 struct GeneratedDependencyDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
@@ -2570,6 +2662,12 @@ struct GeneratedDependencyDetail {
     git: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rev: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package: Option<String>,
     #[serde(rename = "default-features", skip_serializing_if = "Option::is_none")]
     default_features: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -2604,6 +2702,9 @@ impl GeneratedDependencyDetail {
             path: self.path,
             git: self.git,
             rev: self.rev,
+            branch: self.branch,
+            tag: self.tag,
+            package: self.package,
             default_features: self.default_features.unwrap_or(true),
             features: self.features,
             optional: self.optional,
@@ -2618,6 +2719,9 @@ impl GeneratedDependencyDetail {
             path: dependency.path,
             git: dependency.git,
             rev: dependency.rev,
+            branch: dependency.branch,
+            tag: dependency.tag,
+            package: dependency.package,
             default_features: None,
             features: Vec::new(),
             optional: false,
@@ -2626,25 +2730,8 @@ impl GeneratedDependencyDetail {
 
     fn path(path: &Path) -> Self {
         Self {
-            version: None,
             path: Some(normalize_path_for_config(path)),
-            git: None,
-            rev: None,
-            default_features: None,
-            features: Vec::new(),
-            optional: false,
-        }
-    }
-
-    fn version(version: &str) -> Self {
-        Self {
-            version: Some(version.to_string()),
-            path: None,
-            git: None,
-            rev: None,
-            default_features: None,
-            features: Vec::new(),
-            optional: false,
+            ..Self::default()
         }
     }
 
@@ -2686,33 +2773,50 @@ fn generated_lib(crate_types: &[&str]) -> GeneratedLibSection {
     }
 }
 
+/// The dependency a generated backend manifest declares for `spec`: a `path`
+/// into the pinned checkout or the checkout's own resolved source when the
+/// project sets `waterui_path`, and the framework's registry/git source
+/// otherwise.
 fn generated_dependency_from_spec(
     ctx: &TemplateContext,
     spec: NativeBackendDependencySpec<'_>,
-) -> GeneratedDependencyDetail {
-    let detail = if let Some(waterui_path) = &ctx.waterui_path
-        && let Some(path_kind) = spec.path_kind
-    {
-        GeneratedDependencyDetail {
-            version: None,
-            path: Some(compute_native_backend_dependency_path(
-                ctx,
-                waterui_path,
-                path_kind,
-            )),
-            git: None,
-            rev: None,
-            default_features: None,
-            features: Vec::new(),
-            optional: false,
+) -> io::Result<GeneratedDependencyDetail> {
+    let mut detail = match (&ctx.waterui_path, spec.source) {
+        (Some(_), NativeBackendDependencySource::WorkspaceDependency) => {
+            local_checkout_dependency(ctx, spec.crate_name)?
         }
-    } else if spec.path_kind.is_some() {
-        GeneratedDependencyDetail::framework(ctx, spec.crate_name)
-    } else {
-        GeneratedDependencyDetail::version(spec.version)
+        (Some(waterui_path), NativeBackendDependencySource::WateruiRoot) => {
+            GeneratedDependencyDetail {
+                path: Some(compute_native_backend_dependency_path(
+                    ctx,
+                    waterui_path,
+                    None,
+                )),
+                ..GeneratedDependencyDetail::default()
+            }
+        }
+        (Some(waterui_path), NativeBackendDependencySource::WorkspaceSubdir(subdir)) => {
+            GeneratedDependencyDetail {
+                path: Some(compute_native_backend_dependency_path(
+                    ctx,
+                    waterui_path,
+                    Some(subdir),
+                )),
+                ..GeneratedDependencyDetail::default()
+            }
+        }
+        (None, _) => GeneratedDependencyDetail::framework(ctx, spec.crate_name),
     };
 
-    detail.with_features(spec.features)
+    // Features the checkout's declared entry carries resolve exactly like a
+    // member inheriting `dep.workspace = true`, so they merge with — never
+    // replace — the features the generated crate selects for itself.
+    for feature in spec.features {
+        if !detail.features.iter().any(|declared| declared == feature) {
+            detail.features.push((*feature).to_string());
+        }
+    }
+    Ok(detail)
 }
 
 fn render_generated_cargo_toml<T: serde::Serialize>(
@@ -2812,9 +2916,8 @@ pub mod android {
 /// GTK4 backend templates.
 pub mod gtk4 {
     use super::{
-        GTK_BACKEND_VERSION, NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path,
-        TemplateContext, TemplateNamespace, embedded, io, scaffold_dir,
-        write_native_backend_bin_cargo_toml,
+        NativeBackendDependencySource, NativeBackendDependencySpec, Path, TemplateContext,
+        TemplateNamespace, embedded, io, scaffold_dir, write_native_backend_bin_cargo_toml,
     };
 
     /// Write all GTK4 templates to the given directory.
@@ -2850,9 +2953,8 @@ pub mod gtk4 {
             .collect::<Vec<_>>();
         let dependencies = [NativeBackendDependencySpec::new(
             "waterui-gtk",
-            GTK_BACKEND_VERSION,
             &features,
-            Some(NativeBackendDependencyPathKind::BackendsSubdir("gtk")),
+            NativeBackendDependencySource::WorkspaceDependency,
         )];
         outputs.push((
             std::path::PathBuf::from("Cargo.toml"),
@@ -2874,9 +2976,8 @@ pub mod gtk4 {
             .collect::<Vec<_>>();
         let dependencies = [NativeBackendDependencySpec::new(
             "waterui-gtk",
-            GTK_BACKEND_VERSION,
             &features,
-            Some(NativeBackendDependencyPathKind::BackendsSubdir("gtk")),
+            NativeBackendDependencySource::WorkspaceDependency,
         )];
         write_native_backend_bin_cargo_toml(base_dir, ctx, package_name, &dependencies).await
     }
@@ -2887,10 +2988,8 @@ pub mod hydrolysis {
     use super::{
         GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
         GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection,
-        HYDROLYSIS_M3_VERSION, HYDROLYSIS_VERSION, MCP_VERSION, NativeBackendDependencyPathKind,
-        NativeBackendDependencySpec, PREVIEW_PROTOCOL_VERSION, PREVIEW_VERSION, Path,
-        TemplateContext, TemplateNamespace, WATERUI_BROWSER_CEF_VERSION, WATERUI_CORE_VERSION,
-        WATERUI_VERSION, embedded, io, scaffold_dir, write_generated_cargo_toml,
+        NativeBackendDependencySource, NativeBackendDependencySpec, Path, TemplateContext,
+        TemplateNamespace, embedded, io, scaffold_dir, write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
 
@@ -2929,7 +3028,7 @@ pub mod hydrolysis {
         let patch = collect_runtime_patches(ctx)?;
         outputs.push((
             std::path::PathBuf::from("Cargo.toml"),
-            super::render_generated_cargo_toml(&generated_manifest(ctx, package_name, patch))?
+            super::render_generated_cargo_toml(&generated_manifest(ctx, package_name, patch)?)?
                 .into_bytes(),
         ));
         Ok(outputs)
@@ -2949,7 +3048,7 @@ pub mod hydrolysis {
         ctx: &TemplateContext,
         package_name: &str,
         patch: cargo_toml::PatchSet,
-    ) -> GeneratedCargoManifest<GeneratedDependencyValue> {
+    ) -> io::Result<GeneratedCargoManifest<GeneratedDependencyValue>> {
         let mut package = super::generated_package(package_name, Vec::new());
         package.autobins = Some(false);
         let mut bins = vec![GeneratedBinSection {
@@ -2962,7 +3061,7 @@ pub mod hydrolysis {
                 path: "src/bin/waterui-cef-helper.rs".to_string(),
             });
         }
-        GeneratedCargoManifest {
+        Ok(GeneratedCargoManifest {
             package,
             lib: super::generated_lib(&["cdylib", "rlib"]),
             bins,
@@ -2975,17 +3074,17 @@ pub mod hydrolysis {
                     vec!["dep:waterui-mcp".to_string()],
                 ),
             ]),
-            dependencies: cargo_dependencies(ctx),
+            dependencies: cargo_dependencies(ctx)?,
             // The build script embeds the staged Windows icon resource; the
             // crate is a no-op on every other target.
             build_dependencies: BTreeMap::from([(
                 "winresource".to_string(),
                 GeneratedDependencyValue::Simple("0.1".to_string()),
             )]),
-            target: cargo_target_dependencies(ctx),
+            target: cargo_target_dependencies(ctx)?,
             workspace: GeneratedWorkspaceSection {},
             patch,
-        }
+        })
     }
 
     /// Whether this application's graph links the bundled CEF runtime.
@@ -3006,22 +3105,19 @@ pub mod hydrolysis {
             Some(root) => smol::unblock(move || super::collect_workspace_patches(&root)).await?,
             None => ctx.framework.patches(),
         };
-        let manifest = generated_manifest(ctx, package_name, patch);
+        let manifest = generated_manifest(ctx, package_name, patch)?;
         write_generated_cargo_toml(base_dir, super::render_generated_cargo_toml(&manifest)?).await
     }
 
-    fn cargo_dependencies(ctx: &TemplateContext) -> BTreeMap<String, GeneratedDependencyValue> {
-        BTreeMap::from([
+    fn cargo_dependencies(
+        ctx: &TemplateContext,
+    ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
+        Ok(BTreeMap::from([
             (
                 ctx.crate_name.to_string(),
                 GeneratedDependencyValue::detailed(GeneratedDependencyDetail {
-                    version: None,
                     path: Some(ctx.project_root_relative_path()),
-                    git: None,
-                    rev: None,
-                    default_features: None,
-                    features: Vec::new(),
-                    optional: false,
+                    ..GeneratedDependencyDetail::default()
                 }),
             ),
             (
@@ -3031,7 +3127,6 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui",
-                            WATERUI_VERSION,
                             // Hydrolysis draws every pixel itself, so it has no
                             // native player to bridge. Selecting the self-drawn
                             // realization is the application's call, and its
@@ -3040,32 +3135,32 @@ pub mod hydrolysis {
                             // direct dependency of the application, which
                             // installs it in its own `app(env)`.
                             &["video-gpu"],
-                            Some(NativeBackendDependencyPathKind::WateruiRoot),
+                            NativeBackendDependencySource::WateruiRoot,
                         ),
-                    )
+                    )?
                     .with_default_features(false),
                 ),
             ),
-        ])
+        ]))
     }
 
     fn cargo_target_dependencies(
         ctx: &TemplateContext,
-    ) -> BTreeMap<String, GeneratedTargetSection<GeneratedDependencyValue>> {
-        BTreeMap::from([
+    ) -> io::Result<BTreeMap<String, GeneratedTargetSection<GeneratedDependencyValue>>> {
+        Ok(BTreeMap::from([
             (
                 "cfg(not(target_arch = \"wasm32\"))".to_string(),
                 GeneratedTargetSection {
-                    dependencies: native_target_dependencies(ctx),
+                    dependencies: native_target_dependencies(ctx)?,
                 },
             ),
             (
                 "cfg(target_arch = \"wasm32\")".to_string(),
                 GeneratedTargetSection {
-                    dependencies: wasm_target_dependencies(ctx),
+                    dependencies: wasm_target_dependencies(ctx)?,
                 },
             ),
-        ])
+        ]))
     }
 
     #[allow(
@@ -3074,7 +3169,7 @@ pub mod hydrolysis {
     )]
     fn native_target_dependencies(
         ctx: &TemplateContext,
-    ) -> BTreeMap<String, GeneratedDependencyValue> {
+    ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
         let mut hydrolysis_features = vec!["winit"];
         hydrolysis_features.extend(ctx.webview_backend_feature());
         let mut dependencies: BTreeMap<String, GeneratedDependencyValue> = BTreeMap::from([
@@ -3085,13 +3180,10 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            HYDROLYSIS_VERSION,
                             &hydrolysis_features,
-                            Some(NativeBackendDependencyPathKind::BackendsSubdir(
-                                "hydrolysis",
-                            )),
+                            NativeBackendDependencySource::WorkspaceDependency,
                         ),
-                    )
+                    )?
                     .with_default_features(false),
                 ),
             ),
@@ -3106,11 +3198,10 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui-core",
-                            WATERUI_CORE_VERSION,
                             &[],
-                            Some(NativeBackendDependencyPathKind::WorkspaceSubdir("core")),
+                            NativeBackendDependencySource::WorkspaceSubdir("core"),
                         ),
-                    )
+                    )?
                     .with_default_features(false),
                 ),
             ),
@@ -3121,13 +3212,12 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui-preview",
-                            PREVIEW_VERSION,
                             &[],
-                            Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
+                            NativeBackendDependencySource::WorkspaceSubdir(
                                 "components/devtools/preview/runtime",
-                            )),
+                            ),
                         ),
-                    )
+                    )?
                     .with_default_features(false),
                 ),
             ),
@@ -3138,13 +3228,12 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui-preview-protocol",
-                            PREVIEW_PROTOCOL_VERSION,
                             &[],
-                            Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
+                            NativeBackendDependencySource::WorkspaceSubdir(
                                 "components/devtools/preview/protocol",
-                            )),
+                            ),
                         ),
-                    )
+                    )?
                     .with_default_features(false),
                 ),
             ),
@@ -3160,13 +3249,12 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui-mcp",
-                            MCP_VERSION,
                             &[],
-                            Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
+                            NativeBackendDependencySource::WorkspaceSubdir(
                                 "components/devtools/mcp/server",
-                            )),
+                            ),
                         ),
-                    )
+                    )?
                     .with_default_features(false)
                     .with_optional(),
                 ),
@@ -3178,11 +3266,10 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui-testing",
-                            WATERUI_VERSION,
                             &[],
-                            Some(NativeBackendDependencyPathKind::WorkspaceSubdir("testing")),
+                            NativeBackendDependencySource::WorkspaceSubdir("testing"),
                         ),
-                    )
+                    )?
                     .with_default_features(false),
                 ),
             ),
@@ -3193,13 +3280,10 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis-m3",
-                            HYDROLYSIS_M3_VERSION,
                             &[],
-                            Some(NativeBackendDependencyPathKind::BackendsSubdir(
-                                "hydrolysis_m3",
-                            )),
+                            NativeBackendDependencySource::WorkspaceDependency,
                         ),
-                    )
+                    )?
                     .with_default_features(false),
                 ),
             ),
@@ -3216,22 +3300,21 @@ pub mod hydrolysis {
                     ctx,
                     NativeBackendDependencySpec::new(
                         "waterui-browser-cef",
-                        WATERUI_BROWSER_CEF_VERSION,
                         &[],
-                        Some(NativeBackendDependencyPathKind::WorkspaceSubdir(
+                        NativeBackendDependencySource::WorkspaceSubdir(
                             "components/platform/browser-cef",
-                        )),
+                        ),
                     ),
-                )),
+                )?),
             );
         }
-        dependencies
+        Ok(dependencies)
     }
 
     fn wasm_target_dependencies(
         ctx: &TemplateContext,
-    ) -> BTreeMap<String, GeneratedDependencyValue> {
-        BTreeMap::from([
+    ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
+        Ok(BTreeMap::from([
             (
                 "hydrolysis".to_string(),
                 GeneratedDependencyValue::detailed(
@@ -3239,13 +3322,10 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            HYDROLYSIS_VERSION,
                             &["web"],
-                            Some(NativeBackendDependencyPathKind::BackendsSubdir(
-                                "hydrolysis",
-                            )),
+                            NativeBackendDependencySource::WorkspaceDependency,
                         ),
-                    )
+                    )?
                     .with_default_features(false),
                 ),
             ),
@@ -3260,17 +3340,14 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis-m3",
-                            HYDROLYSIS_M3_VERSION,
                             &[],
-                            Some(NativeBackendDependencyPathKind::BackendsSubdir(
-                                "hydrolysis_m3",
-                            )),
+                            NativeBackendDependencySource::WorkspaceDependency,
                         ),
-                    )
+                    )?
                     .with_default_features(false),
                 ),
             ),
-        ])
+        ]))
     }
 }
 
@@ -3302,9 +3379,9 @@ pub mod tui {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Workspace};
 
     use super::{
-        NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, PathBuf,
-        TemplateContext, TemplateNamespace, WATERUI_VERSION, embedded, io,
-        normalize_path_for_config, scaffold_dir, write_file_if_changed,
+        NativeBackendDependencySource, NativeBackendDependencySpec, Path, PathBuf, TemplateContext,
+        TemplateNamespace, embedded, io, normalize_path_for_config, scaffold_dir,
+        write_file_if_changed,
     };
     use crate::build_info::TUI_BACKEND;
 
@@ -3385,11 +3462,10 @@ pub mod tui {
                     ctx,
                     NativeBackendDependencySpec::new(
                         "waterui",
-                        WATERUI_VERSION,
                         &[],
-                        Some(NativeBackendDependencyPathKind::WateruiRoot),
+                        NativeBackendDependencySource::WateruiRoot,
                     ),
-                )
+                )?
                 .with_default_features(false)
                 .into_cargo(),
             )),
@@ -3542,6 +3618,127 @@ pub fn local_framework_patches(
     Ok(patches)
 }
 
+/// The dependency a pinned `WaterUI` checkout declares for `crate_name`,
+/// resolved exactly as a member of that checkout's workspace resolves it: the
+/// `[patch.crates-io]` override when the `[workspace.dependencies]` requirement
+/// goes to the registry, the declared entry itself otherwise.
+///
+/// Crates extracted out of the `WaterUI` tree — `hydrolysis`, `hydrolysis-m3`,
+/// `waterui-dew`, `waterui-gtk` — are consumed by the checkout as versioned or
+/// git dependencies, so a generated backend manifest names that same source
+/// rather than a directory the tree no longer carries.
+fn local_checkout_dependency(
+    ctx: &TemplateContext,
+    crate_name: &str,
+) -> io::Result<GeneratedDependencyDetail> {
+    let waterui_path = ctx
+        .waterui_path
+        .as_ref()
+        .expect("local_checkout_dependency requires a pinned waterui_path");
+    let root = ctx.waterui_workspace_root().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "relative waterui_path `{}` has no project root to read the checkout manifest from",
+                waterui_path.display()
+            ),
+        )
+    })?;
+    let manifest_path = root.join("Cargo.toml");
+    let manifest = cargo_toml::Manifest::from_path(&manifest_path)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let declared = manifest
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.dependencies.get(crate_name));
+    let patch = manifest
+        .patch
+        .get("crates-io")
+        .and_then(|deps| deps.get(crate_name));
+    let resolved = match declared {
+        // A crates.io requirement is the only kind `[patch.crates-io]`
+        // rewrites; git and path sources are used as declared.
+        Some(dependency) if registry_sourced(dependency) => patch.unwrap_or(dependency),
+        Some(dependency) => dependency,
+        None => patch.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "`{crate_name}` is declared in neither [workspace.dependencies] nor \
+                     [patch.crates-io] of {}",
+                    manifest_path.display()
+                ),
+            )
+        })?,
+    };
+    checkout_dependency_detail(ctx, waterui_path, crate_name, resolved)
+}
+
+/// Whether a declared dependency resolves from the default registry — the
+/// only requirement a `[patch.crates-io]` entry rewrites.
+fn registry_sourced(dependency: &cargo_toml::Dependency) -> bool {
+    match dependency {
+        cargo_toml::Dependency::Simple(_) => true,
+        cargo_toml::Dependency::Detailed(_) => dependency.is_crates_io(),
+        // `workspace = true` at the checkout's own root manifest resolves
+        // nowhere; `checkout_dependency_detail` reports it.
+        cargo_toml::Dependency::Inherited(_) => false,
+    }
+}
+
+/// A dependency entry read from the checkout's root manifest, re-expressed
+/// for a generated backend manifest. `path` sources are relative to the
+/// checkout root and rebase onto `waterui_path` like every other generated
+/// checkout path.
+fn checkout_dependency_detail(
+    ctx: &TemplateContext,
+    waterui_path: &Path,
+    crate_name: &str,
+    dependency: &cargo_toml::Dependency,
+) -> io::Result<GeneratedDependencyDetail> {
+    match dependency {
+        cargo_toml::Dependency::Simple(version) => Ok(GeneratedDependencyDetail {
+            version: Some(version.to_string()),
+            ..GeneratedDependencyDetail::default()
+        }),
+        cargo_toml::Dependency::Detailed(detail) => {
+            if detail.registry.is_some()
+                || detail.registry_index.is_some()
+                || !detail.unstable.is_empty()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "`{crate_name}` in the `WaterUI` checkout manifest uses a dependency \
+                         source generated manifests cannot express"
+                    ),
+                ));
+            }
+            Ok(GeneratedDependencyDetail {
+                version: detail.version.as_ref().map(ToString::to_string),
+                path: detail.path.as_ref().map(|path| {
+                    compute_native_backend_dependency_path(ctx, waterui_path, Some(path))
+                }),
+                git: detail.git.clone(),
+                rev: detail.rev.clone(),
+                branch: detail.branch.clone(),
+                tag: detail.tag.clone(),
+                package: detail.package.clone(),
+                default_features: (!detail.default_features).then_some(false),
+                features: detail.features.clone(),
+                optional: detail.optional,
+            })
+        }
+        cargo_toml::Dependency::Inherited(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "`{crate_name}` is a `workspace = true` dependency in the `WaterUI` checkout's \
+                 root manifest, which has no parent workspace to inherit from"
+            ),
+        )),
+    }
+}
+
 /// The `[patch]` tables a project's root `Cargo.toml` carries for the mode its
 /// `Water.toml` selects: the framework revision's on a channel, the checkout's
 /// when built against a local `waterui_path`, none on the registry.
@@ -3601,10 +3798,9 @@ pub mod ffi {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product, Workspace};
 
     use super::{
-        NativeBackendDependencyPathKind, NativeBackendDependencySpec, Path, TemplateContext,
-        TemplateNamespace, WATERUI_FFI_VERSION, WATERUI_VERSION, cargo_semver, embedded, fs,
-        generated_dependency_from_spec, generated_dev_profile, io, scaffold_dir,
-        write_file_if_changed,
+        NativeBackendDependencySource, NativeBackendDependencySpec, Path, TemplateContext,
+        TemplateNamespace, cargo_semver, embedded, fs, generated_dependency_from_spec,
+        generated_dev_profile, io, scaffold_dir, write_file_if_changed,
     };
 
     /// Write all FFI companion templates to the given directory.
@@ -3717,22 +3913,17 @@ pub mod ffi {
             .features
             .insert("dev".to_string(), vec![format!("{}/dev", ctx.crate_name)]);
 
-        for (name, version, path) in [
-            (
-                "waterui",
-                WATERUI_VERSION,
-                NativeBackendDependencyPathKind::WateruiRoot,
-            ),
+        for (name, source) in [
+            ("waterui", NativeBackendDependencySource::WateruiRoot),
             (
                 "waterui-ffi",
-                WATERUI_FFI_VERSION,
-                NativeBackendDependencyPathKind::WorkspaceSubdir("ffi"),
+                NativeBackendDependencySource::WorkspaceSubdir("ffi"),
             ),
         ] {
             let dependency = generated_dependency_from_spec(
                 ctx,
-                NativeBackendDependencySpec::new(name, version, &[], Some(path)),
-            )
+                NativeBackendDependencySpec::new(name, &[], source),
+            )?
             .with_default_features(false)
             .into_cargo();
             manifest
@@ -4149,10 +4340,9 @@ pub mod preview_ffi {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product};
 
     use super::{
-        NativeBackendDependencyPathKind, PREVIEW_VERSION, Path, TemplateContext, TemplateNamespace,
-        WATERUI_FFI_VERSION, cargo_semver, cargo_version_req,
-        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
-        write_file_if_changed,
+        PREVIEW_VERSION, Path, TemplateContext, TemplateNamespace, WATERUI_FFI_VERSION,
+        cargo_semver, cargo_version_req, compute_native_backend_dependency_path, embedded, fs, io,
+        scaffold_dir, write_file_if_changed,
     };
 
     /// Preview ABI exported to Apple support applications.
@@ -4221,7 +4411,7 @@ pub mod preview_ffi {
                 path: Some(compute_native_backend_dependency_path(
                     ctx,
                     waterui_path,
-                    NativeBackendDependencyPathKind::WorkspaceSubdir("ffi"),
+                    Some("ffi"),
                 )),
                 optional: true,
                 default_features: false,
@@ -4237,7 +4427,7 @@ pub mod preview_ffi {
             let waterui_root = Path::new(&compute_native_backend_dependency_path(
                 ctx,
                 waterui_path,
-                NativeBackendDependencyPathKind::WateruiRoot,
+                None,
             ))
             .to_path_buf();
             let waterui_root = if waterui_root.is_absolute() {
