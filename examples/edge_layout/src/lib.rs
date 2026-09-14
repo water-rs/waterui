@@ -19,7 +19,7 @@ fn deep_nest(depth: u32) -> AnyView {
         return AnyView::new(text("depth 0").caption().foreground(MutedForeground));
     }
     let inner = deep_nest(depth - 1);
-    if depth % 2 == 0 {
+    if depth.is_multiple_of(2) {
         AnyView::new(
             hstack((text("·").caption(), inner))
                 .spacing(2.0)
