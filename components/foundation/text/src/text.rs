@@ -93,6 +93,11 @@ impl core::cmp::PartialOrd for Text {
 }
 
 /// Conversion trait for semantic text construction.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be used as WaterUI text",
+    label = "expected a text value",
+    note = "`IntoText` is implemented by `&'static str`, `String`, `Str`, `StyledStr`, `Text`, and `Binding<T>` / `Computed<T>` whose `T` is `IntoText` — pass an owned `String`/`Str` or a reactive binding rather than `&String` or `Option<_>`."
+)]
 pub trait IntoText {
     /// Convert a value into semantic text.
     fn into_text(self) -> Text;
