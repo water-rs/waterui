@@ -52,7 +52,8 @@ pub use filtrate::multi_input as multi_input_filter;
 #[cfg(feature = "gpu")]
 pub use gpu_surface::{
     GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
-    OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSize, PointerState, RedrawHandle,
+    OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSession, OffscreenSize, PointerState,
+    RedrawHandle,
 };
 #[cfg(feature = "gpu")]
 pub use input::{
