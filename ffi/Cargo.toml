@@ -97,10 +97,19 @@ gpu = [
     "dep:wgpu",
     "dep:wgpu-hal",
     "dep:ash",
-    "dep:waterui-video-gpu",
     "dep:objc2-metal",
     "dep:pollster",
     "dep:kurbo",
+]
+# The self-drawn video player and its surface-host bridge. Off by default:
+# selecting it links decoders (rav1d, symphonia, hyper) into every package,
+# so the CLI enables it only when the application opted into
+# `waterui/video-gpu` itself. On Android the surface host's FFI surface and
+# JNI entry points are compiled in under this feature.
+video = [
+    "gpu",
+    "dep:waterui-video-gpu",
+    "waterui/video-gpu",
 ]
 # C FFI for Apple/GTK backends (default)
 c-api = ["std"]

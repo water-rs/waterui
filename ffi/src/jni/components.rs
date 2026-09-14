@@ -1756,7 +1756,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webviewNativeView<'lo
 // Android video surface host
 // ============================================================================
 
-#[cfg(all(target_os = "android", feature = "gpu"))]
+#[cfg(all(target_os = "android", feature = "video"))]
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostAttach<'local>(
     mut env: EnvUnowned<'local>,
@@ -1777,7 +1777,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHo
     });
 }
 
-#[cfg(all(target_os = "android", feature = "gpu"))]
+#[cfg(all(target_os = "android", feature = "video"))]
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostDrop<'local>(
     _env: EnvUnowned<'local>,
@@ -1793,7 +1793,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHo
     }
 }
 
-#[cfg(all(target_os = "android", feature = "gpu"))]
+#[cfg(all(target_os = "android", feature = "video"))]
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHostSurfaceDestroyed<
     'local,
