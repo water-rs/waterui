@@ -1022,13 +1022,19 @@ pub struct BadgeMetrics {
     pub large_size: f64,
     /// Horizontal padding inside a large labeled badge.
     pub large_horizontal_padding: f64,
-    /// Horizontal offset from the content center for a small badge.
+    /// Inset of the badge's leading edge from the content's trailing edge for
+    /// a small badge. Renderers place the badge's leading edge at
+    /// `trailing_edge - small_offset_x` in left-to-right layout and mirror it
+    /// to the leading edge in right-to-left layout.
     pub small_offset_x: f64,
-    /// Vertical offset from the content top for a small badge.
+    /// Downward overlap of the badge's bottom edge past the content's top edge
+    /// for a small badge: the badge's bottom sits at `top + small_offset_y`.
     pub small_offset_y: f64,
-    /// Horizontal offset from the content center for a large badge.
+    /// Inset of the badge's leading edge from the content's trailing edge for
+    /// a large badge; mirrors to the leading edge in right-to-left layout.
     pub large_offset_x: f64,
-    /// Vertical offset from the content top for a large badge.
+    /// Downward overlap of the badge's bottom edge past the content's top edge
+    /// for a large badge: the badge's bottom sits at `top + large_offset_y`.
     pub large_offset_y: f64,
 }
 
