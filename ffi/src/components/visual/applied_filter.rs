@@ -1062,7 +1062,7 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     // Get output texture
     let Some(output) = super::acquire_surface_texture(
         surface,
-        &state.runtime.context().device,
+        state.runtime.context(),
         config,
         "waterui_applied_filter_render",
     ) else {

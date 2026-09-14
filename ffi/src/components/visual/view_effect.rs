@@ -1002,7 +1002,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
     // Get output texture
     let Some(output) = super::acquire_surface_texture(
         output_surface,
-        &state.runtime.context().device,
+        state.runtime.context(),
         output_config,
         "waterui_view_effect_render",
     ) else {
