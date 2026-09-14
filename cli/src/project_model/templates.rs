@@ -906,6 +906,7 @@ struct Esp32CargoTomlTemplate {
     app_crate_path: String,
     dew_dependency: String,
     core_dependency: String,
+    locale_dependency: String,
     /// The `opt-level` value as a TOML literal: numeric levels are bare
     /// integers, while `"s"`/`"z"` must be quoted strings — cargo rejects a
     /// quoted `"2"`.
@@ -933,6 +934,15 @@ impl Esp32CargoTomlTemplate {
             ),
         )?
         .inline_toml();
+        let locale_dependency = generated_dependency_from_spec(
+            ctx,
+            NativeBackendDependencySpec::new(
+                "waterui-locale",
+                &[],
+                NativeBackendDependencySource::WorkspaceSubdir("utils/locale"),
+            ),
+        )?
+        .inline_toml();
 
         Ok(Self {
             package_name: ctx.crate_name.with_suffix("esp32").to_string(),
@@ -940,6 +950,7 @@ impl Esp32CargoTomlTemplate {
             app_crate_path: ctx.project_root_relative_path(),
             dew_dependency,
             core_dependency,
+            locale_dependency,
             opt_level_literal: match ctx.esp32.opt_level.as_str() {
                 symbolic @ ("s" | "z") => format!("\"{symbolic}\""),
                 numeric => numeric
@@ -966,20 +977,25 @@ define_scaffold_templates! {
     AndroidApplicationTemplate => (Android, "src/templates/android/app/src/main/java/WaterUiApplication.kt.tpl"),
     AndroidStringsTemplate => (Android, "src/templates/android/app/src/main/res/values/strings.xml.tpl"),
     AndroidSettingsTemplate => (Android, "src/templates/android/settings.gradle.kts.tpl"),
+    FfiBuildScriptTemplate => (Ffi, "src/templates/ffi/build.rs.tpl"),
     FfiLibTemplate => (Ffi, "src/templates/ffi/src/lib.rs.tpl"),
+    Gtk4BuildScriptTemplate => (Gtk4, "src/templates/gtk4/build.rs.tpl"),
     Gtk4MainTemplate => (Gtk4, "src/templates/gtk4/src/main.rs.tpl"),
+    HydrolysisBuildScriptTemplate => (Hydrolysis, "src/templates/hydrolysis/build.rs.tpl"),
     HydrolysisLibTemplate => (Hydrolysis, "src/templates/hydrolysis/src/lib.rs.tpl"),
     HydrolysisMainTemplate => (Hydrolysis, "src/templates/hydrolysis/src/main.rs.tpl"),
     HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
     HydrolysisPreviewTestRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_test_runtime.rs.tpl"),
     HydrolysisMcpRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/mcp_runtime.rs.tpl"),
     HydrolysisWebIndexTemplate => (Hydrolysis, "src/templates/hydrolysis/web/index.html.tpl"),
+    Esp32BuildScriptTemplate => (Esp32, "src/templates/esp32/build.rs.tpl"),
     Esp32MainTemplate => (Esp32, "src/templates/esp32/src/main.rs.tpl"),
     Esp32CargoConfigTemplate => (Esp32, "src/templates/esp32/.cargo/config.toml.tpl"),
     Esp32SdkconfigTemplate => (Esp32, "src/templates/esp32/sdkconfig.defaults.tpl"),
     Esp32PartitionsTemplate => (Esp32, "src/templates/esp32/partitions.csv.tpl"),
     PreviewLibTemplate => (Preview, "src/templates/preview/src/lib.rs.tpl"),
     PreviewFfiLibTemplate => (PreviewFfi, "src/templates/preview_ffi/src/lib.rs.tpl"),
+    TuiBuildScriptTemplate => (Tui, "src/templates/tui/build.rs.tpl"),
     TuiMainTemplate => (Tui, "src/templates/tui/src/main.rs.tpl"),
 }
 
@@ -987,7 +1003,7 @@ define_scaffold_templates! {
 mod tests {
     use super::{
         BrowserTemplateContext, Esp32TemplateEntry, PREVIEW_VERSION, ResolvedWebViewBackend,
-        TemplateContext, TemplateNamespace, embedded, jitpack_dependency_coordinate,
+        TemplateContext, TemplateNamespace, embedded, gtk4, jitpack_dependency_coordinate,
         normalize_path_for_config, preview_ffi, render_scaffold_template,
     };
     use crate::build_info::{
@@ -996,6 +1012,7 @@ mod tests {
     };
     use crate::framework::ResolvedFramework;
     use crate::project_types::{BundleIdentifier, CrateName};
+    use include_dir::Dir;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -1120,6 +1137,111 @@ mod tests {
         assert!(main_rs.contains("include_bytes!(\"/tmp/fonts/Demo.ttf\")"));
         assert!(main_rs.contains("FONTS"));
         assert!(!render_esp32("src/main.rs.tpl", &c3).contains("include_bytes!"));
+    }
+
+    fn render_embedded(
+        namespace: TemplateNamespace,
+        embedded_dir: &Dir<'_>,
+        relative: &str,
+        ctx: &TemplateContext,
+    ) -> String {
+        let template = embedded_dir
+            .get_file(relative)
+            .unwrap_or_else(|| panic!("template {relative} must exist"))
+            .contents_utf8()
+            .expect("template must be utf-8");
+        render_scaffold_template(namespace, std::path::Path::new(relative), template, ctx)
+            .unwrap_or_else(|error| panic!("template {relative} render: {error}"))
+    }
+
+    #[test]
+    fn generated_runtime_templates_install_app_catalog() {
+        // #732: runtime `text("...")` resolves through the `TranslationCatalog`
+        // `configure_environment!` installs, so every environment boundary the
+        // CLI generates must go through it — previews, preview tests and
+        // firmware alike.
+        let ctx = app_ctx().with_backend_project_path(PathBuf::from("managed_backends/hydrolysis"));
+
+        for relative in [
+            "src/main.rs.tpl",
+            "src/lib.rs.tpl",
+            "src/mcp_runtime.rs.tpl",
+            "src/preview_runtime.rs.tpl",
+            "src/preview_test_runtime.rs.tpl",
+        ] {
+            let rendered = render_embedded(
+                TemplateNamespace::Hydrolysis,
+                &embedded::HYDROLYSIS,
+                relative,
+                &ctx,
+            );
+            assert!(
+                rendered.contains("waterui::configure_environment!"),
+                "hydrolysis {relative} must create its environment through `configure_environment!`"
+            );
+        }
+
+        assert!(
+            render_esp32("src/main.rs.tpl", &ctx).contains("waterui_core::configure_environment!"),
+            "esp32 firmware must configure the environment through waterui-core, \
+             which it already depends on"
+        );
+        for (namespace, embedded_dir, relative) in [
+            (TemplateNamespace::Gtk4, &embedded::GTK4, "src/main.rs.tpl"),
+            (TemplateNamespace::Tui, &embedded::TUI, "src/main.rs.tpl"),
+        ] {
+            let rendered = render_embedded(namespace, embedded_dir, relative, &ctx);
+            assert!(
+                rendered.contains("configure_environment!"),
+                "{relative} must create its environment through `configure_environment!`"
+            );
+        }
+
+        // A generated crate's `CARGO_MANIFEST_DIR` has no `i18n/`, so each one
+        // that creates an environment exports `WATERUI_I18N_DIR` from its build
+        // script — `catalog!` then embeds the application's translations.
+        for (namespace, embedded_dir) in [
+            (TemplateNamespace::Hydrolysis, &embedded::HYDROLYSIS),
+            (TemplateNamespace::Esp32, &embedded::ESP32),
+            (TemplateNamespace::Ffi, &embedded::FFI),
+            (TemplateNamespace::Gtk4, &embedded::GTK4),
+            (TemplateNamespace::Tui, &embedded::TUI),
+        ] {
+            let rendered = render_embedded(namespace, embedded_dir, "build.rs.tpl", &ctx);
+            assert!(
+                rendered.contains("cargo:rustc-env=WATERUI_I18N_DIR="),
+                "generated build.rs must export WATERUI_I18N_DIR for `catalog!`"
+            );
+            assert!(
+                rendered.contains(".join(\"../..\")") && rendered.contains(".join(\"i18n\")"),
+                "generated build.rs must resolve i18n/ relative to the project root: {rendered}"
+            );
+            assert!(
+                rendered.contains("cargo:rerun-if-changed={}"),
+                "generated build.rs must watch i18n/ so locale changes rebuild the crate"
+            );
+        }
+
+        // The esp32 harness names `TranslationCatalog` through `waterui-locale`
+        // — it has no `waterui` facade dependency to reach it through.
+        let esp32_manifest = render_esp32("Cargo.toml.tpl", &ctx);
+        assert!(esp32_manifest.contains("waterui-locale"));
+
+        // gtk4's entry point calls `waterui::configure_environment!`, so its
+        // manifest must depend on the facade.
+        let gtk4_manifest = gtk4::rendered_outputs(&ctx, "test-gtk4")
+            .expect("gtk4 manifest should render")
+            .into_iter()
+            .find(|(path, _)| path == std::path::Path::new("Cargo.toml"))
+            .map(|(_, content)| String::from_utf8(content).expect("manifest is utf-8"))
+            .expect("gtk4 rendered outputs must include Cargo.toml");
+        let gtk4_manifest = gtk4_manifest
+            .parse::<toml::Table>()
+            .expect("gtk4 Cargo.toml should parse");
+        assert!(
+            gtk4_manifest["dependencies"].get("waterui").is_some(),
+            "gtk4 manifest must depend on waterui for `configure_environment!`"
+        );
     }
 
     #[test]
@@ -2996,11 +3118,7 @@ pub mod gtk4 {
             .webview_backend_feature()
             .into_iter()
             .collect::<Vec<_>>();
-        let dependencies = [NativeBackendDependencySpec::new(
-            "waterui-gtk",
-            &features,
-            NativeBackendDependencySource::WorkspaceDependency,
-        )];
+        let dependencies = gtk4_dependencies(&features);
         outputs.push((
             std::path::PathBuf::from("Cargo.toml"),
             super::render_native_backend_bin_cargo_toml(ctx, package_name, &dependencies)?
@@ -3019,12 +3137,27 @@ pub mod gtk4 {
             .webview_backend_feature()
             .into_iter()
             .collect::<Vec<_>>();
-        let dependencies = [NativeBackendDependencySpec::new(
-            "waterui-gtk",
-            &features,
-            NativeBackendDependencySource::WorkspaceDependency,
-        )];
+        let dependencies = gtk4_dependencies(&features);
         write_native_backend_bin_cargo_toml(base_dir, ctx, package_name, &dependencies).await
+    }
+
+    /// The generated crate calls `waterui::configure_environment!` for its
+    /// `i18n/` catalog, so it depends on the facade in addition to the backend.
+    const fn gtk4_dependencies<'a>(
+        features: &'a [&'a str],
+    ) -> [NativeBackendDependencySpec<'a>; 2] {
+        [
+            NativeBackendDependencySpec::new(
+                "waterui-gtk",
+                features,
+                NativeBackendDependencySource::WorkspaceDependency,
+            ),
+            NativeBackendDependencySpec::new(
+                "waterui",
+                &[],
+                NativeBackendDependencySource::WateruiRoot,
+            ),
+        ]
     }
 }
 

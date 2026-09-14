@@ -109,8 +109,22 @@ struct TranslationBundle {
 
 impl TranslationBundle {
     fn load_from_manifest_dir() -> std::result::Result<Self, String> {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-        let i18n_path = PathBuf::from(&manifest_dir).join("i18n");
+        // CLI-generated backend crates live outside the application crate root
+        // (managed_backends/, the playground build cache), so their
+        // `CARGO_MANIFEST_DIR` cannot see the app's `i18n/`. Their build
+        // scripts pass the directory through `WATERUI_I18N_DIR` instead, which
+        // makes `catalog!`/`text!` embed the app's translations even though the
+        // macro expands in the generated crate.
+        let i18n_path = std::env::var("WATERUI_I18N_DIR")
+            .ok()
+            .filter(|dir| !dir.is_empty())
+            .map_or_else(
+                || {
+                    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+                    PathBuf::from(&manifest_dir).join("i18n")
+                },
+                PathBuf::from,
+            );
 
         let mut bundle = Self::default();
 
@@ -976,6 +990,32 @@ fn generate_dual_plural_translation_arm(
     }
 }
 
+/// The path the expanding crate uses to name `TranslationCatalog`.
+///
+/// `TranslationCatalog` is defined in `waterui-locale` and re-exported at
+/// `waterui::locale`. Most callers have the `waterui` facade as a dependency;
+/// generated crates that stay slim — the ESP32 firmware harness names only
+/// `waterui-core`, `waterui-dew` and `waterui-locale` — go through the
+/// component crate directly instead.
+fn translation_catalog_path() -> std::result::Result<TokenStream2, TokenStream2> {
+    if let Ok(waterui) = waterui_crate_path() {
+        return Ok(quote!(#waterui::locale::TranslationCatalog));
+    }
+    match crate_name("waterui-locale") {
+        Ok(FoundCrate::Itself) => {
+            let own = own_crate_path("waterui-locale");
+            Ok(quote!(#own::TranslationCatalog))
+        }
+        Ok(FoundCrate::Name(name)) => {
+            let ident = Ident::new(&name, Span::call_site());
+            Ok(quote!(::#ident::TranslationCatalog))
+        }
+        Err(_) => Err(quote! {
+            compile_error!("`catalog!` requires the `waterui` or `waterui-locale` crate as a dependency (either may be renamed; Cargo.toml must include one).");
+        }),
+    }
+}
+
 pub fn catalog(input: &TokenStream) -> TokenStream {
     if !input.is_empty() {
         return syn::Error::new(Span::call_site(), "catalog! does not accept arguments")
@@ -983,7 +1023,7 @@ pub fn catalog(input: &TokenStream) -> TokenStream {
             .into();
     }
 
-    let waterui = match waterui_crate_path() {
+    let catalog_ty = match translation_catalog_path() {
         Ok(path) => path,
         Err(err) => return TokenStream::from(err),
     };
@@ -1009,7 +1049,7 @@ pub fn catalog(input: &TokenStream) -> TokenStream {
         .collect();
 
     TokenStream::from(quote! {{
-        let mut __catalog = #waterui::locale::TranslationCatalog::new();
+        let mut __catalog = #catalog_ty::new();
         #(#inserts)*
         __catalog
     }})

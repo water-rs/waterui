@@ -15,6 +15,7 @@ esp-idf-svc = "0.52"
 {{ app_crate_name }} = { path = "{{ app_crate_path }}" }
 waterui-dew = {{ dew_dependency }}
 waterui-core = {{ core_dependency }}
+waterui-locale = {{ locale_dependency }}
 
 [build-dependencies]
 embuild = "0.33"

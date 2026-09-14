@@ -286,10 +286,12 @@ owned by a closure or a modifier.
 
 ### Text
 
-`text()` for static strings, `text!` for anything reactive, interpolated, or localized.
-`text!` is the i18n pipeline: the whole literal is a translation-catalog key, and its
-placeholder names are slot keys — bare identifiers, aliased with `name = expr` when the
-local has a different name ([references/i18n.md](references/i18n.md)).
+`text()` for static strings, `text!` for anything reactive, interpolated, or plural.
+Both localize: `text("Settings")` resolves through the `TranslationCatalog` installed in
+the environment at runtime, while `text!` embeds the translations at compile time — the
+whole literal is a translation-catalog key, and its placeholder names are slot keys,
+bare identifiers aliased with `name = expr` when the local has a different name
+([references/i18n.md](references/i18n.md)).
 
 ```rust
 text("Settings").title()                        // title/headline/sub_headline/body/caption/footnote

@@ -116,3 +116,4 @@ pub use suiteki::Str;
 pub use ui::{accessibility, event, gesture, interaction, layout, view, view_renderer, views};
 pub use view::View;
 pub use view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
+pub use waterui_macros::catalog;

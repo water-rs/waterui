@@ -15,7 +15,7 @@ const FONTS: &[&[u8]] = &[
 
 fn main() {
     run(
-        {{ ctx.crate_name_ident() }}::app(Environment::new()),
+        {{ ctx.crate_name_ident() }}::app(waterui_core::configure_environment!(Environment::new())),
         PanelConfig::new({{ ctx.esp32.panel_width }}, {{ ctx.esp32.panel_height }}, {{ ctx.esp32.band_height }}),
         FONTS,
     );

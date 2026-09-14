@@ -1242,6 +1242,11 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
         Err(error) => return error.to_compile_error().into(),
     };
 
+    let waterui_path = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
     let attrs = &input_fn.attrs;
     let visibility = &input_fn.vis;
     let fn_name = &input_fn.sig.ident;
@@ -1250,7 +1255,15 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
     let arg_type = &typed_arg.ty;
     let async_wrapper = input_fn.sig.asyncness.is_some();
 
-    let mut builder = quote! { #testing_path::ui() };
+    // `catalog!` must expand in the test's own crate — that is where `i18n/`
+    // lives — so the configured environment comes from the expansion here
+    // rather than from inside `waterui-testing`.
+    let mut builder = quote! {
+        #testing_path::ui()
+            .environment(
+                #waterui_path::configure_environment!(#waterui_path::env::Environment::new())
+            )
+    };
     if let Some((width, height)) = &test_args.viewport {
         builder = quote! { #builder.viewport(#width, #height) };
     }
@@ -1510,6 +1523,11 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
         Err(error) => return error.to_compile_error().into(),
     };
 
+    let waterui_path = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
     let attrs = &input_fn.attrs;
     let visibility = &input_fn.vis;
     let bench_name = input_fn.sig.ident.to_string();
@@ -1521,7 +1539,12 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
     let arg_pattern = &typed_arg.pat;
     let arg_type = &typed_arg.ty;
 
-    let mut builder = quote! { #testing_path::ui() };
+    let mut builder = quote! {
+        #testing_path::ui()
+            .environment(
+                #waterui_path::configure_environment!(#waterui_path::env::Environment::new())
+            )
+    };
     if let Some((width, height)) = &bench_args.viewport {
         builder = quote! { #builder.viewport(#width, #height) };
     }
