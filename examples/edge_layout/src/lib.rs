@@ -12,7 +12,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::shape::{RoundedRectangle, ShapeExt};
 
-/// 24 levels of alternating hstack/vstack nesting. Recursion through AnyView
+/// 8 levels of alternating hstack/vstack nesting. Recursion through AnyView
 /// keeps the concrete type finite while stressing deep layout passes.
 fn deep_nest(depth: u32) -> AnyView {
     if depth == 0 {
@@ -115,8 +115,8 @@ pub fn demo() -> impl View {
                 .sub_headline()
                 .foreground(MutedForeground),
             Divider,
-            text("Deep nesting (24 levels)").sub_headline(),
-            deep_nest(24),
+            text("Deep nesting (8 levels)").sub_headline(),
+            deep_nest(8),
             Divider,
             text("Dense grid (160 eager children)").sub_headline(),
             dense_grid(),
