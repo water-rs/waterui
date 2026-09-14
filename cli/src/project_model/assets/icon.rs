@@ -387,12 +387,6 @@ pub fn render_android_foreground(
     Ok(canvas)
 }
 
-/// Formats a derived background color for Android `colors.xml`.
-#[must_use]
-pub fn hex_color(color: [u8; 3]) -> String {
-    format!("#{:02X}{:02X}{:02X}", color[0], color[1], color[2])
-}
-
 /// Axis-aligned bounding box of icon content, in pixels.
 struct ContentBox {
     x: u32,
