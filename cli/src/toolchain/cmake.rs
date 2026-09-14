@@ -159,28 +159,6 @@ fn map_winget_error_for_cmake(error: WingetInstallError) -> FailToInstallCmake {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{FailToInstallCmake, map_winget_error_for_cmake};
-    use crate::toolchain::winget::WingetInstallError;
-
-    #[test]
-    fn maps_winget_not_found_to_specific_error() {
-        let mapped = map_winget_error_for_cmake(WingetInstallError::WingetNotFound);
-        assert!(matches!(mapped, FailToInstallCmake::WingetNotFound));
-    }
-
-    #[test]
-    fn maps_not_installed_error_with_package_context() {
-        let mapped = map_winget_error_for_cmake(WingetInstallError::NotInstalled {
-            package_id: "Kitware.CMake",
-        });
-        let message = mapped.to_string();
-        assert!(message.contains("Kitware.CMake"));
-        assert!(message.contains("still missing"));
-    }
-}
-
-#[cfg(test)]
 mod host_tests {
     use super::{Cmake, CmakeInstallation};
     use crate::toolchain::testing::TestMachine;

@@ -6,8 +6,23 @@ rem The host PATH under test contains ONLY the fixture bin directory, so this
 rem script must not invoke external commands (`findstr`, ...). Everything
 rem below is cmd builtins. pkg-config module keys are file-only because '-'
 rem and '.' cannot appear in a sh ${} expansion on Unix.
+rem
+rem Asymmetry with fake_tools.sh: `sdkmanager --licenses`/`--install` cannot
+rem drain stdin here - cmd has no builtin way to read stdin to EOF (`set /p`
+rem reads one line and cannot test EOF) - so this script returns immediately
+rem while the .sh consumes piped license confirmations first. Tests must not
+rem rely on stdin being drained on Windows.
 setlocal EnableDelayedExpansion
 set "tool=%~n0"
+
+rem Defaults matching the .sh `${VAR:-default}` expansions; a declared value
+rem always wins.
+if not defined WATERUI_FAKE_RUSTC_VERSION set "WATERUI_FAKE_RUSTC_VERSION=1.0.0"
+if not defined WATERUI_FAKE_CARGO_VERSION set "WATERUI_FAKE_CARGO_VERSION=1.95.0"
+if not defined WATERUI_FAKE_XCODE_VERSION set "WATERUI_FAKE_XCODE_VERSION=16.4"
+if not defined WATERUI_FAKE_ADB_VERSION set "WATERUI_FAKE_ADB_VERSION=36.0.0-test"
+if not defined WATERUI_FAKE_KOTLINC_VERSION set "WATERUI_FAKE_KOTLINC_VERSION=0.0.0"
+if not defined WATERUI_FAKE_UNAME_MACHINE set "WATERUI_FAKE_UNAME_MACHINE=x86_64"
 goto :dispatch
 
 rem ------------------------------------------------------------------
@@ -89,6 +104,7 @@ if /i "%tool%"=="pkg-config" goto :pkg_config
 if not "%tool%"=="%tool:clang=%" goto :exit_ok
 if /i "%tool%"=="ld" goto :exit_ok
 if /i "%tool%"=="ld64" goto :exit_ok
+if /i "%tool%"=="uname" goto :uname
 goto :exit_ok
 
 :exit_ok
@@ -101,9 +117,7 @@ if "%*"=="show active-toolchain" (
 )
 if "%*"=="target list --installed" (call :respond_or_empty RUSTUP_INSTALLED_TARGETS & exit /b 0)
 set "args=%*"
-if not "!args:~0,17!"=="toolchain install" goto :rustup_not_toolchain_install
-exit /b 0
-:rustup_not_toolchain_install
+if "!args:~0,17!"=="toolchain install" exit /b 0
 if "!args:~0,7!"=="update " exit /b 0
 if "!args:~0,10!"=="target add" exit /b 0
 if "%1"=="--version" (echo rustup 1.28.2 (waterui-test) & exit /b 0)
@@ -144,9 +158,13 @@ exit /b 0
 set "args=%*"
 call :contains args --show-sdk-path && (call :respond XCRUN_SDK_PATH & exit /b !errorlevel!)
 if "%*"=="simctl list --json" (call :respond XCRUN_SIMCTL_DEVICES & exit /b !errorlevel!)
+if "%*"=="simctl delete unavailable" exit /b 0
+if "!args:~0,14!"=="simctl create " exit /b 0
 exit /b 1
 
 :sdkmanager
+rem Unlike the .sh these branches return without draining stdin - see the
+rem header note for the cmd limitation.
 set "args=%*"
 call :contains args --licenses && exit /b 0
 call :contains args --install && exit /b 0
@@ -214,21 +232,31 @@ call :list_contains "%WATERUI_FAKE_APK_INSTALLED%" "%last_arg%"
 exit /b %errorlevel%
 
 :pkg_config
+rem cmd tokenizes %1-%9 on '=', so `--atleast-version=4.14 gtk4` arrives as
+rem three tokens and %2 is the version, not the module. Match the raw %*
+rem string and take the module as the last argument, like the .sh's $2.
 if "%1"=="--version" (echo 1.8.1 & exit /b 0)
 if "%1"=="--exists" (
     call :module_exists "%~2" & exit /b !errorlevel!
 )
-set "arg1=%~1"
-if "!arg1:~0,17!"=="--atleast-version=" (
-    call :module_exists "%~2" || exit /b 1
-    call :list_contains "%WATERUI_FAKE_PKG_CONFIG_TOO_OLD%" "%~2" && exit /b 1
+set "args=%*"
+call :contains args "--atleast-version=" && (
+    call :last_arg %*
+    call :module_exists "!last_arg!" || exit /b 1
+    call :list_contains "%WATERUI_FAKE_PKG_CONFIG_TOO_OLD%" "!last_arg!" && exit /b 1
     exit /b 0
 )
 if "%1"=="--modversion" (
     call :respond_file "PKG_CONFIG_%~2" & exit /b !errorlevel!
 )
-if "!arg1:~0,11!"=="--variable=" (
-    set "varname=!arg1:~11!"
-    call :respond "PKG_CONFIG_VAR_!varname!" & exit /b !errorlevel!
+call :contains args "--variable=" && (
+    rem `--variable=prefix gtk4` tokenizes as %1=--variable, %2=prefix,
+    rem %3=gtk4 - the variable name is %2.
+    call :respond "PKG_CONFIG_VAR_%~2" & exit /b !errorlevel!
 )
+exit /b 0
+
+:uname
+if "%1"=="-m" (echo %WATERUI_FAKE_UNAME_MACHINE% & exit /b 0)
+echo WaterUITest
 exit /b 0

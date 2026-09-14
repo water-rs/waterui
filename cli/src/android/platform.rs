@@ -508,7 +508,7 @@ async fn resolve_android_build_context(
     let llvm_envs = resolve_windows_arm64_llvm_envs(host).await?;
     let (java_home, java_bin_dir) = resolve_java_home(host).await?;
     let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = resolve_kotlin_home(host).await?;
-    let (sdk_path, android_jar) = resolve_android_sdk_paths(host)?;
+    let (sdk_path, android_jar) = resolve_android_sdk_paths(host).await?;
     let wrapper_toolchain = create_android_toolchain_wrapper(&ndk_path, abi, api_level).await?;
 
     Ok(AndroidBuildContext {
@@ -579,18 +579,25 @@ async fn resolve_kotlin_home(host: &Host) -> eyre::Result<(PathBuf, PathBuf, Pat
     Ok((kotlin_compiler, kotlin_bin_dir, kotlin_home))
 }
 
-fn resolve_android_sdk_paths(host: &Host) -> eyre::Result<(PathBuf, PathBuf)> {
-    let sdk_path = AndroidSdk::detect_path(host).ok_or_else(|| {
-        eyre::eyre!("Android SDK not found. Please install it via Android Studio.")
-    })?;
-    let android_jar = AndroidSdk::android_jar_path(host)
-        .ok_or_else(|| {
+/// Resolve the SDK root and its newest `android.jar` on `host`.
+///
+/// `AndroidSdk::android_jar_path` walks `platforms/` on disk, so the whole
+/// resolution runs on a blocking thread instead of the executor.
+async fn resolve_android_sdk_paths(host: &Host) -> eyre::Result<(PathBuf, PathBuf)> {
+    let host = host.clone();
+    smol::unblock(move || {
+        let sdk_path = AndroidSdk::detect_path(&host).ok_or_else(|| {
+            eyre::eyre!("Android SDK not found. Please install it via Android Studio.")
+        })?;
+        let android_jar = AndroidSdk::android_jar_path(&host).ok_or_else(|| {
             eyre::eyre!(
                 "Android platforms not found in SDK at {}. Install an Android platform (SDK) in Android Studio.",
                 sdk_path.display()
             )
         })?;
-    Ok((sdk_path, android_jar))
+        Ok((sdk_path, android_jar))
+    })
+    .await
 }
 
 /// The `waterui-ffi` features an Android runtime is compiled with.

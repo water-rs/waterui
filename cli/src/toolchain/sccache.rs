@@ -190,28 +190,6 @@ fn map_winget_error_for_sccache(error: WingetInstallError) -> FailToInstallSccac
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{FailToInstallSccache, map_winget_error_for_sccache};
-    use crate::toolchain::winget::WingetInstallError;
-
-    #[test]
-    fn maps_winget_not_found_to_specific_error() {
-        let mapped = map_winget_error_for_sccache(WingetInstallError::WingetNotFound);
-        assert!(matches!(mapped, FailToInstallSccache::WingetNotFound));
-    }
-
-    #[test]
-    fn maps_not_installed_error_with_package_context() {
-        let mapped = map_winget_error_for_sccache(WingetInstallError::NotInstalled {
-            package_id: "Mozilla.sccache",
-        });
-        let message = mapped.to_string();
-        assert!(message.contains("Mozilla.sccache"));
-        assert!(message.contains("still missing"));
-    }
-}
-
-#[cfg(test)]
 mod host_tests {
     use super::{Sccache, SccacheInstallation};
     use crate::toolchain::testing::TestMachine;

@@ -9,6 +9,12 @@
 # The host PATH under test contains ONLY the fixture bin directory, so this
 # script must not invoke external commands (`cat`, `tr`, ...) — they are not
 # on the child PATH. Everything below is POSIX builtins.
+#
+# Asymmetry with fake_tools.cmd: `sdkmanager --licenses`/`--install` drain
+# stdin here (a `read` loop) so piped license confirmations are consumed.
+# cmd.exe has no builtin way to read stdin to EOF (`set /p` reads one line
+# and cannot test EOF), so the .cmd returns immediately instead — tests must
+# not rely on stdin being drained on Windows.
 
 tool=${0##*/}
 tool=${tool%.cmd}

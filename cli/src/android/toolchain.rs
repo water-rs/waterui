@@ -618,14 +618,14 @@ fn find_android_jar_in_sdk(sdk_root: &Path) -> Option<PathBuf> {
             .file_name()
             .and_then(|name| name.to_str())
             .and_then(|name| name.strip_prefix("android-"))
-            .and_then(parse_leading_u32)
-            .unwrap_or(0);
+            .and_then(parse_android_version_pair)
+            .unwrap_or((0, 0));
         let right_api = right
             .file_name()
             .and_then(|name| name.to_str())
             .and_then(|name| name.strip_prefix("android-"))
-            .and_then(parse_leading_u32)
-            .unwrap_or(0);
+            .and_then(parse_android_version_pair)
+            .unwrap_or((0, 0));
         right_api.cmp(&left_api)
     });
 
@@ -699,22 +699,28 @@ fn parse_sdkmanager_package_id(line: &str) -> Option<&str> {
     Some(package_id)
 }
 
-/// The leading API-level digits of an Android platform identifier.
+/// The `(major, minor)` API-level pair of an Android platform identifier.
 ///
 /// `sdkmanager` lists packages like `platforms;android-37` or, for minor
-/// API revisions, `platforms;android-37.0` (#633): the API level is the
-/// leading digit run, and a non-digit prefix means the name is not a
-/// numbered platform at all.
-fn parse_leading_u32(value: &str) -> Option<u32> {
-    let digits: String = value.chars().take_while(char::is_ascii_digit).collect();
-    if digits.is_empty() {
+/// API revisions, `platforms;android-37.0` (#633): `android-36` parses as
+/// `(36, 0)`, `android-36.1` as `(36, 1)`, so pair ordering gives
+/// `android-36 < android-36.1 < android-37.0`. A non-numeric identifier is
+/// not a numbered platform at all.
+fn parse_android_version_pair(value: &str) -> Option<(u32, u32)> {
+    let mut segments = value.split('.');
+    let major = segments.next()?.parse().ok()?;
+    let minor = match segments.next() {
+        Some(segment) => segment.parse().ok()?,
+        None => 0,
+    };
+    if segments.next().is_some() {
         return None;
     }
-    digits.parse().ok()
+    Some((major, minor))
 }
 
-fn parse_android_platform_api_level(package_id: &str) -> Option<u32> {
-    parse_leading_u32(package_id.strip_prefix("platforms;android-")?)
+fn parse_android_platform_api_level(package_id: &str) -> Option<(u32, u32)> {
+    parse_android_version_pair(package_id.strip_prefix("platforms;android-")?)
 }
 
 fn parse_android_build_tools_version(package_id: &str) -> Option<&str> {
@@ -944,7 +950,7 @@ async fn run_sdkmanager_output_with_java(
     host: &Host,
     args: Vec<OsString>,
     stdin_payload: Option<&str>,
- ) -> Result<Output, AndroidToolchainError> {
+) -> Result<Output, AndroidToolchainError> {
     let (sdkmanager_path, sdk_root) = resolve_sdkmanager_and_root(host).await?;
     let java_home = Java::detect_home(host)
         .await
@@ -1329,11 +1335,13 @@ const fn required_kotlin_version() -> &'static str {
 }
 
 async fn required_ndk_package_id(host: &Host) -> Result<String, AndroidToolchainError> {
-    let runtime_build_gradle =
-        find_file_in_workspace(host.cwd(), Path::new(ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH))
-            .ok_or(AndroidToolchainError::RuntimeGradleMissing {
-                path: ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH,
-            })?;
+    let runtime_build_gradle = find_file_in_workspace(
+        host.cwd(),
+        Path::new(ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH),
+    )
+    .ok_or(AndroidToolchainError::RuntimeGradleMissing {
+        path: ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH,
+    })?;
     let contents = smol::fs::read_to_string(&runtime_build_gradle)
         .await
         .map_err(|source| AndroidToolchainError::RuntimeGradleRead {
@@ -2268,27 +2276,26 @@ async fn verify_ndk_host_toolchain_executable(
         )
     })?;
 
-    let probe_source = std::env::temp_dir().join("waterui_android_ndk_probe.c");
-    {
-        let probe_source_for_write = probe_source.clone();
-        smol::unblock(move || {
-            std::fs::write(
-                &probe_source_for_write,
-                b"int main(void) { return 0; }
-",
-            )
-        })
-        .await
-        .map_err(|error| {
-            ToolchainError::unfixable(
-                format!(
-                    "Failed to create Android NDK probe source at {}: {error}",
-                    probe_source.display()
-                ),
-                "Ensure the temporary directory is writable, then retry `water doctor`.",
-            )
-        })?;
-    }
+    // Unique scratch source for the compile probe; the `NamedTempFile`
+    // deletes itself on drop, including on the early-error paths below.
+    let probe_file = smol::unblock(|| -> std::io::Result<tempfile::NamedTempFile> {
+        use std::io::Write as _;
+        let mut file = tempfile::Builder::new()
+            .prefix("waterui-android-ndk-probe-")
+            .suffix(".c")
+            .tempfile()?;
+        file.write_all(b"int main(void) { return 0; }\n")?;
+        file.flush()?;
+        Ok(file)
+    })
+    .await
+    .map_err(|error| {
+        ToolchainError::unfixable(
+            format!("Failed to create the Android NDK probe source: {error}"),
+            "Ensure the temporary directory is writable, then retry `water doctor`.",
+        )
+    })?;
+    let probe_source = probe_file.path().to_path_buf();
 
     let probe_output = if cfg!(target_os = "windows") {
         PathBuf::from("NUL")
@@ -2302,16 +2309,12 @@ async fn verify_ndk_host_toolchain_executable(
                 OsString::from("-x"),
                 OsString::from("c"),
                 OsString::from("-c"),
-                probe_source.clone().into_os_string(),
+                probe_source.into_os_string(),
                 OsString::from("-o"),
                 probe_output.into_os_string(),
             ],
         )
         .await;
-    {
-        let probe_source = probe_source.clone();
-        let _ = smol::unblock(move || std::fs::remove_file(&probe_source)).await;
-    }
     let output = result.map_err(|error| {
         ToolchainError::unfixable(
             format!(
@@ -2875,7 +2878,7 @@ mod host_tests {
     use super::{
         AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
         AndroidSdkPlatforms, Java, Kotlin, latest_android_platform_package_id,
-        parse_android_platform_api_level, parse_leading_u32, required_kotlin_version,
+        parse_android_platform_api_level, parse_android_version_pair, required_kotlin_version,
     };
     use crate::toolchain::testing::TestMachine;
     use crate::toolchain::{Host, Toolchain, ToolchainError};
@@ -2903,12 +2906,12 @@ mod host_tests {
     fn platform_api_level_parser_accepts_minor_versioned_packages() {
         assert_eq!(
             parse_android_platform_api_level("platforms;android-37.0"),
-            Some(37),
-            "`platforms;android-37.0` must parse to API 37 (#633)"
+            Some((37, 0)),
+            "`platforms;android-37.0` must parse to API 37.0 (#633)"
         );
         assert_eq!(
             parse_android_platform_api_level("platforms;android-36"),
-            Some(36)
+            Some((36, 0))
         );
         assert_eq!(
             parse_android_platform_api_level("platforms;android-Tiramisu"),
@@ -2918,11 +2921,17 @@ mod host_tests {
     }
 
     #[test]
-    fn leading_u32_reads_only_the_digit_prefix() {
-        assert_eq!(parse_leading_u32("37.0"), Some(37));
-        assert_eq!(parse_leading_u32("36"), Some(36));
-        assert_eq!(parse_leading_u32("android-37"), None);
-        assert_eq!(parse_leading_u32(""), None);
+    fn android_version_pair_orders_minor_within_major() {
+        assert_eq!(parse_android_version_pair("37.0"), Some((37, 0)));
+        assert_eq!(parse_android_version_pair("37.1"), Some((37, 1)));
+        assert_eq!(parse_android_version_pair("36"), Some((36, 0)));
+        assert_eq!(parse_android_version_pair("android-37"), None);
+        assert_eq!(parse_android_version_pair(""), None);
+        assert_eq!(parse_android_version_pair("36.1.2"), None);
+        // android-36 < android-36.1 < android-37.0 < android-37.1
+        assert!(parse_android_version_pair("36") < parse_android_version_pair("36.1"));
+        assert!(parse_android_version_pair("36.1") < parse_android_version_pair("37.0"));
+        assert!(parse_android_version_pair("37.0") < parse_android_version_pair("37.1"));
     }
 
     #[test]
@@ -2936,8 +2945,36 @@ mod host_tests {
         let package = smol::block_on(latest_android_platform_package_id(&host))
             .expect("sdkmanager --list transcript must yield a platform package");
         assert_eq!(
-            package, "platforms;android-37.0",
-            "the minor-versioned android-37.0 package beats android-36 (#633)"
+            package, "platforms;android-37.1",
+            "android-37.1 outranks android-37.0 and android-36.1 (#633)"
+        );
+    }
+
+    #[test]
+    fn android_jar_prefers_minor_versioned_platform_dir() {
+        // #633: the platform-directory sort is keyed on the same
+        // (major, minor) pair, so android-36.1 outranks android-36 and
+        // android-37.1 outranks android-37.0 on disk too.
+        let (machine, host) = sdk_machine();
+        machine.install_android_platform("android-36");
+        machine.install_android_platform("android-36.1");
+        machine.install_android_platform("android-37.0");
+        machine.install_android_platform("android-37.1");
+        let jar = AndroidSdk::android_jar_path(&host).expect("a staged platform jar");
+        assert_eq!(
+            jar.parent().and_then(|dir| dir.file_name()),
+            Some(std::ffi::OsStr::new("android-37.1")),
+            "the highest (major, minor) platform dir wins: {jar:?}"
+        );
+
+        let (machine36, host36) = sdk_machine();
+        machine36.install_android_platform("android-36");
+        machine36.install_android_platform("android-36.1");
+        let jar = AndroidSdk::android_jar_path(&host36).expect("a staged platform jar");
+        assert_eq!(
+            jar.parent().and_then(|dir| dir.file_name()),
+            Some(std::ffi::OsStr::new("android-36.1")),
+            "android-36.1 outranks android-36: {jar:?}"
         );
     }
 

@@ -9,8 +9,6 @@ use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
 
-use eyre;
-use serde::{Deserialize, Serialize};
 use crate::{
     android::{
         device::AndroidDevice,
@@ -36,6 +34,8 @@ use crate::{
         windows_arm64_llvm::WindowsArm64LlvmToolchain,
     },
 };
+use eyre;
+use serde::{Deserialize, Serialize};
 
 /// Status of a toolchain check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,8 +98,9 @@ impl std::fmt::Debug for DoctorItem {
 /// (the `--json` smoke test) produces owned values.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DoctorItemRecord {
-    /// Event discriminator for the record stream.
-    pub event: Cow<'static, str>,
+    /// Record discriminator, like the shell's other typed records.
+    #[serde(rename = "type")]
+    pub ty: Cow<'static, str>,
     /// Stable machine-readable item identifier.
     pub id: Cow<'static, str>,
     /// Human-readable item name.
@@ -116,7 +117,7 @@ pub struct DoctorItemRecord {
 impl From<&DoctorItem> for DoctorItemRecord {
     fn from(item: &DoctorItem) -> Self {
         Self {
-            event: Cow::Borrowed("doctor-item"),
+            ty: Cow::Borrowed("doctor-item"),
             id: Cow::Borrowed(item.id),
             name: Cow::Borrowed(item.name),
             status: Cow::Borrowed(item.status.as_str()),
@@ -246,6 +247,36 @@ pub mod ids {
     pub const GTK4: &str = "gtk4";
     /// `sccache` compile cache.
     pub const SCCACHE: &str = "sccache";
+
+    /// Every doctor item id in emission order.
+    ///
+    /// This is the single source of truth for the report's identity set:
+    /// [`crate::toolchain::doctor::doctor`], the lib-level ordering test, and
+    /// the `water doctor --json` integration test all assert against it.
+    pub const ALL: &[&str] = &[
+        XCODE,
+        IOS_SDK,
+        IOS_SIMULATOR_SDK,
+        IOS_SIMULATORS,
+        MACOS_SDK,
+        RUST,
+        ANDROID_SDK,
+        ANDROID_PLATFORM_TOOLS,
+        ANDROID_SDK_PLATFORMS,
+        ANDROID_BUILD_TOOLS,
+        ANDROID_NDK,
+        ANDROID_RUST_TARGETS,
+        ANDROID_RUN_TARGETS,
+        CMAKE,
+        WINDOWS_ARM64_LLVM,
+        JAVA,
+        KOTLIN,
+        WASM32_TARGET,
+        WASM_PACK,
+        LINUX_SYSTEM_PACKAGES,
+        GTK4,
+        SCCACHE,
+    ];
 }
 
 fn unfixable_message(error: &UnfixableToolchain) -> String {
@@ -694,36 +725,8 @@ async fn push_rust_toolchain_check(host: &Host, items: &mut Vec<DoctorItem>) {
 }
 #[cfg(test)]
 mod tests {
-    use super::{CheckStatus, DoctorItemRecord, doctor, ids};
+    use super::{CheckStatus, doctor, ids};
     use crate::toolchain::testing::TestMachine;
-
-    /// The complete per-OS identifier set in emission order. Apple items are
-    /// skipped (not omitted) off macOS and Linux items skipped off Linux, so
-    /// the sequence is identical on every host.
-    const EXPECTED_IDS: &[&str] = &[
-        ids::XCODE,
-        ids::IOS_SDK,
-        ids::IOS_SIMULATOR_SDK,
-        ids::IOS_SIMULATORS,
-        ids::MACOS_SDK,
-        ids::RUST,
-        ids::ANDROID_SDK,
-        ids::ANDROID_PLATFORM_TOOLS,
-        ids::ANDROID_SDK_PLATFORMS,
-        ids::ANDROID_BUILD_TOOLS,
-        ids::ANDROID_NDK,
-        ids::ANDROID_RUST_TARGETS,
-        ids::ANDROID_RUN_TARGETS,
-        ids::CMAKE,
-        ids::WINDOWS_ARM64_LLVM,
-        ids::JAVA,
-        ids::KOTLIN,
-        ids::WASM32_TARGET,
-        ids::WASM_PACK,
-        ids::LINUX_SYSTEM_PACKAGES,
-        ids::GTK4,
-        ids::SCCACHE,
-    ];
 
     const ANDROID_COMPONENT_IDS: &[&str] = &[
         ids::ANDROID_PLATFORM_TOOLS,
@@ -749,7 +752,7 @@ mod tests {
         let machine = TestMachine::new();
         let host = machine.host(Vec::<(String, String)>::new());
         let items = smol::block_on(doctor(&host));
-        assert_eq!(ids_of(&items), EXPECTED_IDS);
+        assert_eq!(ids_of(&items), ids::ALL);
     }
 
     #[test]
@@ -852,6 +855,31 @@ mod tests {
         }
     }
 
+    /// The staged `simctl list devices --json` transcript reports one healthy
+    /// iPhone, so `ios-simulators` comes back `Ok` — the fake `xcrun` must
+    /// answer the query and the transcript's `dataPath` must exist.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn doctor_ios_simulators_ok_when_simctl_reports_healthy_device() {
+        let machine = TestMachine::new();
+        machine.install("xcrun");
+        // Retarget the transcript's `/fake/...` paths into the scratch root
+        // so `data_path.exists()` holds on the declared host.
+        machine.dir(
+            "Library/Developer/CoreSimulator/Devices/3E8B0C4F-0000-4000-8000-000000000001/data",
+        );
+        let transcript = include_str!("testdata/simctl_devices.json")
+            .replace("/fake/", &format!("{}/", machine.root().display()));
+        machine.respond("XCRUN_SIMCTL_DEVICES", &transcript);
+        let host = machine.host(Vec::<(String, String)>::new());
+        let items = smol::block_on(doctor(&host));
+        assert_eq!(
+            item(&items, ids::IOS_SIMULATORS).status,
+            CheckStatus::Ok,
+            "a healthy simctl device must satisfy ios-simulators"
+        );
+    }
+
     #[test]
     fn doctor_linux_items_match_platform() {
         let machine = TestMachine::new();
@@ -907,28 +935,6 @@ mod tests {
         // On Linux a bare host still plans an SDK install into ~/Android/Sdk.
         #[cfg(target_os = "linux")]
         assert!(item(&items, ids::ANDROID_SDK).is_fixable());
-    }
-
-    #[test]
-    fn doctor_item_record_round_trips_typed_schema() {
-        let machine = TestMachine::new();
-        let host = machine.host(Vec::<(String, String)>::new());
-        let items = smol::block_on(doctor(&host));
-        for doctor_item in &items {
-            let record = DoctorItemRecord::from(doctor_item);
-            assert_eq!(record.event.as_ref(), "doctor-item");
-            assert!(EXPECTED_IDS.contains(&record.id.as_ref()));
-            assert!(
-                ["ok", "missing", "skipped"].contains(&record.status.as_ref()),
-                "unexpected status {:?}",
-                record.status
-            );
-            assert_eq!(record.fixable, doctor_item.is_fixable());
-            let json = serde_json::to_string(&record).expect("serialize record");
-            let back: DoctorItemRecord =
-                serde_json::from_str(&json).expect("record must deserialize");
-            assert_eq!(back, record);
-        }
     }
 
     #[test]

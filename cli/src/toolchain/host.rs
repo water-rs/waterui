@@ -15,7 +15,7 @@ use std::{
     process::{Output, Stdio},
 };
 
-use smol::{process::Command, unblock};
+use smol::{io::AsyncReadExt as _, process::Command, unblock};
 
 use crate::utils::{CommandError, format_failure_stream, std_output_enabled};
 
@@ -36,6 +36,9 @@ pub struct Host {
 
 impl Host {
     /// The real machine this process runs on.
+    ///
+    /// # Panics
+    /// Panics when the process has no current directory.
     #[must_use]
     pub fn current() -> Self {
         let env = env::vars_os().collect();
@@ -176,6 +179,19 @@ impl Host {
         unblock(move || which::which_in(name, paths, cwd)).await
     }
 
+    /// A host whose environment additionally binds `key` to `value`.
+    ///
+    /// Use for variables that must reach a single child tree (for example
+    /// `WATERUI_SKIP_RUST_BUILD` on the `xcodebuild` invocation) instead of
+    /// mutating the process environment.
+    #[must_use]
+    pub fn with_env(&self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
+        let mut host = self.clone();
+        host.env
+            .insert(key.as_ref().to_os_string(), value.as_ref().to_os_string());
+        host
+    }
+
     /// A [`Command`] that runs `program` under this host's environment.
     ///
     /// The child sees exactly this host's variables and starts in
@@ -203,12 +219,18 @@ impl Host {
 
     /// Spawn `program` with `args` under this host, capturing output.
     ///
-    /// stdout and stderr are piped; when the CLI's `--logs` passthrough is
-    /// active the captured output is also echoed to the terminal, matching
-    /// the historical `run_command_output_os` behavior.
+    /// stdout and stderr are piped and always collected for the returned
+    /// [`Output`]; when the CLI's `--logs` passthrough is active each chunk is
+    /// additionally mirrored to the terminal as it arrives, matching the
+    /// historical `run_command_output_os` behavior.
     ///
     /// # Errors
     /// - [`CommandError::Spawn`] when the program cannot be spawned or awaited.
+    ///
+    /// # Panics
+    /// Panics if the piped-stdio invariant above is violated — both streams
+    /// are configured `piped` immediately before spawn, so `take()` always
+    /// sees `Some`.
     pub async fn output(
         &self,
         program: impl AsRef<OsStr>,
@@ -222,21 +244,40 @@ impl Host {
             .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let result = command
-            .output()
-            .await
-            .map_err(|source| CommandError::Spawn {
-                program: program_name,
-                source,
-            })?;
+        let mut child = command.spawn().map_err(|source| CommandError::Spawn {
+            program: program_name.clone(),
+            source,
+        })?;
 
-        if std_output_enabled() {
-            use std::io::Write as _;
-            let _ = io::stdout().write_all(&result.stdout);
-            let _ = io::stderr().write_all(&result.stderr);
-        }
+        let echo = std_output_enabled();
+        let stdout_task = smol::spawn(drain_child_pipe(
+            child.stdout.take().expect("stdout is piped"),
+            io::stdout(),
+            echo,
+        ));
+        let stderr_task = smol::spawn(drain_child_pipe(
+            child.stderr.take().expect("stderr is piped"),
+            io::stderr(),
+            echo,
+        ));
 
-        Ok(result)
+        let status = child.status().await.map_err(|source| CommandError::Spawn {
+            program: program_name.clone(),
+            source,
+        })?;
+        let stdout = stdout_task.await.map_err(|source| CommandError::Spawn {
+            program: program_name.clone(),
+            source,
+        })?;
+        let stderr = stderr_task.await.map_err(|source| CommandError::Spawn {
+            program: program_name,
+            source,
+        })?;
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
     }
 
     /// Run `program` under this host and return stdout as text.
@@ -301,6 +342,34 @@ impl Host {
                 .expect("PATH entries produced by split_paths re-join into a PATH string"),
         )
     }
+}
+
+/// Drain a piped child stream to EOF.
+///
+/// Every chunk is appended to the returned buffer; when `echo` is set it is
+/// also written to `sink` (the matching terminal stream) as it arrives, so
+/// `--logs` output appears incrementally instead of after the process exits.
+/// Terminal write failures are ignored — a broken sink must not kill output
+/// collection.
+async fn drain_child_pipe(
+    mut reader: impl smol::io::AsyncRead + Unpin,
+    mut sink: impl io::Write,
+    echo: bool,
+) -> io::Result<Vec<u8>> {
+    let mut collected = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        if echo {
+            let _ = sink.write_all(&chunk[..read]);
+            let _ = sink.flush();
+        }
+        collected.extend_from_slice(&chunk[..read]);
+    }
+    Ok(collected)
 }
 
 /// Case-aware environment lookup matching platform semantics.

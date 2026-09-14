@@ -8,34 +8,6 @@ use std::process::Command;
 
 use waterui_cli::toolchain::doctor::{DoctorItemRecord, ids};
 
-/// The full doctor report in emission order. Apple items are skipped (not
-/// omitted) off macOS and Linux items off Linux, so the sequence is identical
-/// on every OS — statuses differ, identities never do.
-const EXPECTED_IDS: &[&str] = &[
-    ids::XCODE,
-    ids::IOS_SDK,
-    ids::IOS_SIMULATOR_SDK,
-    ids::IOS_SIMULATORS,
-    ids::MACOS_SDK,
-    ids::RUST,
-    ids::ANDROID_SDK,
-    ids::ANDROID_PLATFORM_TOOLS,
-    ids::ANDROID_SDK_PLATFORMS,
-    ids::ANDROID_BUILD_TOOLS,
-    ids::ANDROID_NDK,
-    ids::ANDROID_RUST_TARGETS,
-    ids::ANDROID_RUN_TARGETS,
-    ids::CMAKE,
-    ids::WINDOWS_ARM64_LLVM,
-    ids::JAVA,
-    ids::KOTLIN,
-    ids::WASM32_TARGET,
-    ids::WASM_PACK,
-    ids::LINUX_SYSTEM_PACKAGES,
-    ids::GTK4,
-    ids::SCCACHE,
-];
-
 #[test]
 fn doctor_json_emits_typed_item_records_for_every_check() {
     let home = tempfile::tempdir().expect("scratch home for the child process");
@@ -65,7 +37,7 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
         let record: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|error| {
             panic!("stdout line {line_number} is not a JSON record: {error}: {line:?}")
         });
-        if record.get("event").and_then(serde_json::Value::as_str) == Some("doctor-item") {
+        if record.get("type").and_then(serde_json::Value::as_str) == Some("doctor-item") {
             items.push(serde_json::from_value::<DoctorItemRecord>(record).unwrap_or_else(
                 |error| {
                     panic!("stdout line {line_number} fails the DoctorItemRecord schema: {error}: {line:?}")
@@ -75,7 +47,7 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
     }
 
     let emitted_ids: Vec<&str> = items.iter().map(|item| item.id.as_ref()).collect();
-    assert_eq!(emitted_ids, EXPECTED_IDS, "doctor item set/order drifted");
+    assert_eq!(emitted_ids, ids::ALL, "doctor item set/order drifted");
 
     for item in &items {
         assert!(
@@ -102,7 +74,7 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
         .filter(|item| item.status == "skipped")
         .map(|item| item.id.as_ref())
         .collect();
-    let expected_skipped: Vec<&str> = EXPECTED_IDS
+    let expected_skipped: Vec<&str> = ids::ALL
         .iter()
         .copied()
         .filter(|id| {

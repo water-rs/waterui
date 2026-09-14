@@ -174,7 +174,12 @@ pub async fn screenshot_window(host: &Host, window_id: u32, output: &Path) -> ey
     let result = host
         .output(
             "screencapture",
-            ["-x", "-l", window_id.to_string().as_str(), output_str],
+            [
+                "-x", // No sound
+                "-l",
+                window_id.to_string().as_str(),
+                output_str,
+            ],
         )
         .await?;
 
@@ -199,7 +204,14 @@ pub async fn screenshot_window_bytes(host: &Host, window_id: u32) -> eyre::Resul
     let result = host
         .output(
             "screencapture",
-            ["-x", "-l", window_id.to_string().as_str(), "-t", "png", "-"],
+            [
+                "-x", // No sound
+                "-l",
+                window_id.to_string().as_str(),
+                "-t",
+                "png",
+                "-",
+            ],
         )
         .await?;
 
@@ -327,7 +339,15 @@ pub async fn screenshot(host: &Host, output: &Path) -> eyre::Result<()> {
         .to_str()
         .ok_or_else(|| eyre!("Invalid output path"))?;
 
-    let result = host.output("screencapture", ["-x", output_str]).await?;
+    let result = host
+        .output(
+            "screencapture",
+            [
+                "-x", // No sound
+                output_str,
+            ],
+        )
+        .await?;
 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
@@ -347,7 +367,13 @@ pub async fn screenshot(host: &Host, output: &Path) -> eyre::Result<()> {
 pub async fn screenshot_bytes(host: &Host) -> eyre::Result<Vec<u8>> {
     // screencapture can output to stdout with -t png and using - as filename
     let result = host
-        .output("screencapture", ["-x", "-t", "png", "-"])
+        .output(
+            "screencapture",
+            [
+                "-x", // No sound
+                "-t", "png", "-",
+            ],
+        )
         .await?;
 
     if !result.status.success() {
