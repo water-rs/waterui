@@ -67,6 +67,7 @@ fn tool_text(result: &CallToolResult) -> &str {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn mcp_session_drives_a_mounted_app() {
     let (mut client, server) = DuplexTransport::pair();
     let info = ServerInfo {
