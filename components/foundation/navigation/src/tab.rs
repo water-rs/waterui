@@ -114,7 +114,26 @@ impl Debug for TabIcon {
     }
 }
 
+/// The part a tab plays in the container's chrome.
+///
+/// A role is an attribute of a tab, not a different kind of tab: the tab keeps
+/// its label, icon, badge and content, and the platform decides how a tab
+/// with that role is presented. On iOS the search role is the system's search
+/// tab — placed trailing, with its own glass treatment and the platform's own
+/// search presentation. Platforms without such a concept present the tab as a
+/// regular one.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabRole {
+    /// An ordinary section of the app.
+    #[default]
+    Regular,
+    /// The tab the platform presents as search.
+    Search,
+}
+
 /// One stable native tab.
+#[non_exhaustive]
 pub struct Tab<T> {
     /// Stable tab identifier.
     pub id: T,
@@ -128,6 +147,8 @@ pub struct Tab<T> {
     pub badge: Option<Computed<i32>>,
     /// Whether the native tab item is enabled.
     pub enabled: Computed<bool>,
+    /// The part the tab plays in the container's chrome.
+    pub role: TabRole,
 }
 
 impl_debug!(Tab<Id>);
@@ -154,6 +175,7 @@ impl<T> Tab<T> {
             content: AnyViewBuilder::new(content),
             badge: None,
             enabled: Computed::constant(true),
+            role: TabRole::Regular,
         }
     }
 
@@ -190,6 +212,15 @@ impl<T> Tab<T> {
         self
     }
 
+    /// Sets the part this tab plays in the container's chrome.
+    ///
+    /// See [`TabRole`] for what each role means per platform.
+    #[must_use]
+    pub const fn role(mut self, role: TabRole) -> Self {
+        self.role = role;
+        self
+    }
+
     /// Rewrites the tab identity, keeping every other field.
     fn with_id<U>(self, id: U) -> Tab<U> {
         Tab {
@@ -199,6 +230,7 @@ impl<T> Tab<T> {
             content: self.content,
             badge: self.badge,
             enabled: self.enabled,
+            role: self.role,
         }
     }
 }
