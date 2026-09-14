@@ -214,7 +214,11 @@ waterui-inspector-protocol = { version = "0.1.2", path = "components/devtools/in
 waterui-inspector-app = { version = "0.1.2", path = "components/devtools/inspector/app" }
 waterui-preview-protocol = { version = "0.1.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.1.0", path = "components/devtools/mcp/protocol" }
-waterui-gtk = "0.1.2"
+# The published 0.1.2 predates the `ShapeKind` fixed-radius variants and cannot
+# compile against this tree; gtk-backend's dev line carries them. The `version`
+# field is what `cargo publish` keeps, so the requirement moves back to a plain
+# registry pin once waterui-gtk 0.2.0 is released.
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "3162043e618e759bea6d6e52ec75c6ee1273c080", version = "0.2.0" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.4.1", path = "utils/dylib", default-features = false }
