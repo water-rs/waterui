@@ -260,6 +260,58 @@ fn start_log_stream(
         .stdout
         .take()
         .expect("stdout is piped for the simulator log stream");
+
+    // `log stream` only forwards entries written after it attaches to logd, and
+    // a fast first paint routinely beats the attach — the launch marker (and a
+    // fast crash's panic payload) would be permanently lost. `log show` reads
+    // the persisted store, so replay the recent window once shortly after the
+    // stream starts; consumers take the first matching marker, so a line that
+    // also arrives through the stream is harmless.
+    {
+        let host = host.clone();
+        let predicate = predicate.clone();
+        let sender = sender.clone();
+        let panic_tx = panic_tx.clone();
+        spawn(async move {
+            Timer::after(Duration::from_secs(4)).await;
+            let Ok(output) = host
+                .command("log")
+                .args(["show", "--last", "2m", "--predicate", &predicate])
+                .args(["--style", "compact"])
+                .output()
+                .await
+            else {
+                return;
+            };
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if line.starts_with("Filtering") || line.starts_with("Timestamp") {
+                    continue;
+                }
+                if line.contains("panic.payload=")
+                    && let Some(info) = extract_panic_info_from_log(line)
+                {
+                    let _ = panic_tx.try_send(info);
+                }
+                if log_level.is_some() {
+                    let level = if line.contains(" F ") || line.contains(" E ") {
+                        tracing::Level::ERROR
+                    } else if line.contains(" W ") {
+                        tracing::Level::WARN
+                    } else if line.contains(" D ") {
+                        tracing::Level::DEBUG
+                    } else {
+                        tracing::Level::INFO
+                    };
+                    let _ = sender.try_send(DeviceEvent::Log {
+                        level,
+                        message: line.to_string(),
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
     spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Some(Ok(line)) = lines.next().await {
