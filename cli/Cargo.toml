@@ -131,8 +131,12 @@ zenwave = { workspace = true, features = ["native-tls"] }
 core-graphics = "0.25"
 core-foundation = "0.10"
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(unix)'.dependencies]
+# Process-group signalling for the `water run` web dev server (SIGTERM/SIGKILL
+# to the bundler tree the package manager re-execs).
 nix = { version = "0.31", features = ["signal"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
 # `.icns` encoding for hand-assembled app bundles. Only the macOS packaging path
 # builds one, and that path is itself `#[cfg(target_os = "macos")]`, so the
 # dependency does not belong in a Linux or Windows build of the CLI.

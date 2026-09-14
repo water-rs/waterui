@@ -301,6 +301,25 @@ pub struct PackageOptions {
 
     /// Whether the package embeds the shared `WaterUI` Rust runtime.
     shared_rust_runtime: bool,
+
+    /// How `include_web!` mounts reach the packaged app.
+    web_frontend: WebFrontendMode,
+}
+
+/// Whether an `include_web!` mount is staged from a frontend build or served
+/// by a running dev server.
+///
+/// In dev-server mode staging skips a web mount entirely — no frontend build
+/// and no copied output — since the app opens the bundler's dev-server URL
+/// instead of the staged bundle. `water run` selects it in debug mode;
+/// packaging and `--release` runs never do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WebFrontendMode {
+    /// Build the frontend and stage its output into the bundle.
+    #[default]
+    Stage,
+    /// A running dev server serves the mount; nothing is staged for it.
+    DevServer,
 }
 
 impl PackageOptions {
@@ -311,6 +330,7 @@ impl PackageOptions {
             distribution: false,
             debug: true,
             shared_rust_runtime: true,
+            web_frontend: WebFrontendMode::Stage,
         }
     }
 
@@ -321,7 +341,26 @@ impl PackageOptions {
             distribution,
             debug,
             shared_rust_runtime: false,
+            web_frontend: WebFrontendMode::Stage,
         }
+    }
+
+    /// Override the debug flag without changing the runtime linkage.
+    #[must_use]
+    pub const fn with_debug(mut self, debug: bool) -> Self {
+        self.debug = debug;
+        self
+    }
+
+    /// Mark web mounts as dev-server-served for this packaging pass.
+    #[must_use]
+    pub const fn with_dev_server(mut self, dev_server: bool) -> Self {
+        self.web_frontend = if dev_server {
+            WebFrontendMode::DevServer
+        } else {
+            WebFrontendMode::Stage
+        };
+        self
     }
 
     /// Whether to package in distribution mode
@@ -340,6 +379,12 @@ impl PackageOptions {
     #[must_use]
     pub const fn uses_shared_rust_runtime(&self) -> bool {
         self.shared_rust_runtime
+    }
+
+    /// Whether web mounts are dev-server-served and skipped during staging.
+    #[must_use]
+    pub const fn uses_dev_server(&self) -> bool {
+        matches!(self.web_frontend, WebFrontendMode::DevServer)
     }
 }
 

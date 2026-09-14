@@ -317,6 +317,9 @@ pub struct BuildOptions {
     target_triple: Option<Triple>,
     /// Rust runtime linkage used by the final native application.
     linkage: RustLinkage,
+    /// Whether `include_web!` mounts are dev-server-served and skipped when
+    /// the build stages assets (Hydrolysis stages at build time).
+    dev_server: bool,
 }
 
 impl BuildOptions {
@@ -329,6 +332,7 @@ impl BuildOptions {
             sccache_path: None,
             target_triple: None,
             linkage: RustLinkage::SharedRuntime,
+            dev_server: false,
         }
     }
 
@@ -352,6 +356,7 @@ impl BuildOptions {
             sccache_path: None,
             target_triple: None,
             linkage: RustLinkage::Static,
+            dev_server: false,
         }
     }
 
@@ -359,6 +364,19 @@ impl BuildOptions {
     #[must_use]
     pub const fn is_release(&self) -> bool {
         self.release
+    }
+
+    /// Mark web mounts as dev-server-served for asset staging this build does.
+    #[must_use]
+    pub const fn with_dev_server(mut self, dev_server: bool) -> Self {
+        self.dev_server = dev_server;
+        self
+    }
+
+    /// Whether web mounts are dev-server-served and skipped during staging.
+    #[must_use]
+    pub const fn uses_dev_server(&self) -> bool {
+        self.dev_server
     }
 
     /// Get the output directory, if specified

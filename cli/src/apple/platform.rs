@@ -610,7 +610,7 @@ pub async fn package_apple(
 
     // Copy project assets and fonts
     let app_resources_dir = project_path.join(&backend.scheme);
-    copy_assets_and_fonts(project, &app_resources_dir, None).await?;
+    copy_assets_and_fonts(project, &app_resources_dir, None, options.uses_dev_server()).await?;
 
     let configuration = if options.is_debug() {
         "Debug"
@@ -828,9 +828,11 @@ async fn copy_assets_and_fonts(
     project: &Project,
     dest_dir: &Path,
     sccache_path: Option<&Path>,
+    dev_server: bool,
 ) -> eyre::Result<()> {
     // Stage project assets using platform-native conventions.
-    let manifest = assets::stage_project_assets_for_apple(project, dest_dir, sccache_path).await?;
+    let manifest =
+        assets::stage_project_assets_for_apple(project, dest_dir, sccache_path, dev_server).await?;
 
     // Scan and resolve dependency fonts
     let font_declarations = assets::scan_fonts(project).await?;

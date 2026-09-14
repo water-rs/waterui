@@ -406,7 +406,7 @@ impl AndroidPlatform {
         let backend_path = project.backend_path::<AndroidBackend>();
 
         // Copy project assets and dependency fonts
-        copy_assets_and_fonts(project, &backend_path, None).await?;
+        copy_assets_and_fonts(project, &backend_path, None, options.uses_dev_server()).await?;
 
         let gradlew = backend_path.join(if cfg!(windows) {
             "gradlew.bat"
@@ -876,12 +876,14 @@ async fn copy_assets_and_fonts(
     project: &Project,
     backend_path: &Path,
     sccache_path: Option<&Path>,
+    dev_server: bool,
 ) -> eyre::Result<()> {
     let assets_dir = backend_path.join("app/src/main/assets");
 
     // Stage project assets using platform-native conventions.
     let manifest =
-        assets::stage_project_assets_for_android(project, backend_path, sccache_path).await?;
+        assets::stage_project_assets_for_android(project, backend_path, sccache_path, dev_server)
+            .await?;
 
     // Scan and resolve dependency fonts
     let font_declarations = assets::scan_fonts(project).await?;

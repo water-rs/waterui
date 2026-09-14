@@ -811,8 +811,9 @@ pub async fn stage_project_assets_for_apple(
     project: &Project,
     dest_dir: &Path,
     sccache_path: Option<&Path>,
+    dev_server: bool,
 ) -> eyre::Result<BundleManifest> {
-    unified::stage_for_apple(project, dest_dir, sccache_path).await
+    unified::stage_for_apple(project, dest_dir, sccache_path, dev_server).await
 }
 
 /// Stage project assets for Android packaging (res + assets/raw).
@@ -820,8 +821,9 @@ pub async fn stage_project_assets_for_android(
     project: &Project,
     backend_path: &Path,
     sccache_path: Option<&Path>,
+    dev_server: bool,
 ) -> eyre::Result<BundleManifest> {
-    unified::stage_for_android(project, backend_path, sccache_path).await
+    unified::stage_for_android(project, backend_path, sccache_path, dev_server).await
 }
 
 /// Render the project's macOS `.icns` app icon for hand-assembled bundles.
@@ -848,8 +850,9 @@ pub async fn stage_project_assets_for_gtk(
     project: &Project,
     resources_dir: &Path,
     sccache_path: Option<&Path>,
+    dev_server: bool,
 ) -> eyre::Result<BundleManifest> {
-    unified::stage_for_gtk(project, resources_dir, sccache_path).await
+    unified::stage_for_gtk(project, resources_dir, sccache_path, dev_server).await
 }
 
 /// Resolves the fonts declared inside an already-staged bundle manifest.

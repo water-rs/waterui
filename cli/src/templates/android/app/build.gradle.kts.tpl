@@ -136,6 +136,8 @@ android {
     }
     buildFeatures {
         compose = false
+        // `BuildConfig.DEBUG` gates the dev-server URL intent extra.
+        buildConfig = true
     }
     compileOptions {
         isCoreLibraryDesugaringEnabled = true

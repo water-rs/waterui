@@ -205,7 +205,7 @@ pub async fn stage_hydrolysis_resources(
         .backend_path::<HydrolysisBackend>()
         .join("resources");
     let manifest =
-        assets::stage_project_assets_for_gtk(project, &resources_dir, sccache_path).await?;
+        assets::stage_project_assets_for_gtk(project, &resources_dir, sccache_path, false).await?;
 
     let mut font_declarations = assets::scan_fonts(project).await?;
     font_declarations.extend(theme.font_declarations());
