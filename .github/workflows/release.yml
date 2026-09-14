@@ -1,6 +1,13 @@
 name: Release
 
 on:
+  # crates.io trusted publishing rejects OIDC tokens minted under
+  # `workflow_run`, so publishing runs on the `main` push itself — which
+  # can only come from a merged pull request (conventionally the dev ->
+  # main release PR) whose required checks already passed on the same
+  # tree. `release-pr` still waits for CI via `workflow_run`.
+  push:
+    branches: [main]
   workflow_run:
     workflows: ["CI"]
     branches: [main]
@@ -15,7 +22,7 @@ jobs:
   tag-backends:
     name: Tag the backend repositories
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,9 +73,9 @@ jobs:
     name: Release unpublished packages
     runs-on: ubuntu-latest
     needs: tag-backends
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    if: github.event_name == 'push'
     concurrency:
-      group: release-${{ github.event.workflow_run.head_branch }}
+      group: release-${{ github.ref_name }}
       cancel-in-progress: false
     outputs:
       cli_tag: ${{ steps.cli_tag.outputs.cli_tag }}
