@@ -17,7 +17,9 @@
 
 use std::collections::HashMap;
 
-use super::gpu_surface::{WuiGpuSurfaceState, composite_runtime, render_composite_source};
+use super::gpu_surface::{
+    WuiGpuSurfaceState, composite_runtime, composite_source_ready, render_composite_source,
+};
 
 /// Where a nested surface's frame lands in the capture it is drawn into.
 #[derive(Clone, Copy, Debug)]
@@ -216,6 +218,12 @@ pub fn composite_gpu_surface(
     let runtime = composite_runtime(surface);
     let gpu = runtime.context();
 
+    if !composite_source_ready(surface) {
+        // The surface's renderer is mid-rebuild after a device loss — this
+        // frame's capture shows the cleared hole its own layer always left,
+        // and the next frame composites normally.
+        return;
+    }
     let source =
         render_composite_source(surface, placement.width, placement.height, placement.scale);
     let source_view = source.create_view(&wgpu::TextureViewDescriptor {

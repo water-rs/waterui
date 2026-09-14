@@ -622,6 +622,11 @@ pub trait GpuView: 'static {
     /// `ctx.redraw_handle` can be cloned here for external redraw triggers.
     /// `env` provides access to the `WaterUI` environment (theme, fonts, etc.).
     ///
+    /// `setup` may run again on the same view after the GPU device was lost
+    /// and rebuilt. Everything created through a previous `ctx` is then dead:
+    /// re-create all device-bound resources and drop any cached ones so the
+    /// next frame renders on the fresh device. CPU-side state may be kept.
+    ///
     /// Async setup hook for GPU resources.
     #[expect(
         async_fn_in_trait,

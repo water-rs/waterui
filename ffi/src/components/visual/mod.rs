@@ -70,10 +70,12 @@ fn retry_surface_acquire(
     first_failure: std::fmt::Arguments<'_>,
 ) -> Option<wgpu::SurfaceTexture> {
     if let Some(reason) = gpu.device_lost_reason() {
-        panic!(
-            "{context}: GPU device was lost ({reason}); the surface cannot be \
-             reconfigured onto a dead device — the runtime must be recreated"
-        );
+        // The surface is bound to a dead device and cannot be reconfigured.
+        // Skipping the frame keeps it pending; the next render call arrives
+        // on the runtime's rebuilt context, which recreates the surface from
+        // its retained window handle.
+        tracing::debug!(context, reason, "GPU device lost; skipping the frame");
+        return None;
     }
     let device = &gpu.device;
     tracing::debug!(
@@ -95,6 +97,41 @@ fn retry_surface_acquire(
         }
         Err(error) => {
             panic!("{context}: acquire after reconfigure failed: {error} with {config:?}")
+        }
+    }
+}
+
+/// Runs one frame of device-bound work, recovering when the driver kills the
+/// device in the middle of it.
+///
+/// Device loss is discovered lazily — inside whatever `wgpu` call first
+/// notices the dead driver — and `wgpu-core` purges its resource storage as it
+/// marks the loss. Any later call in the same frame that resolves one of the
+/// dead device's handles then panics inside `wgpu` rather than erroring; the
+/// semantic renderer (`vello` uploads, `queue.write_buffer`, submits) cannot
+/// be taught to bail, so the frame body runs inside `catch_unwind` here.
+///
+/// A caught panic is only swallowed when the context confirms the device was
+/// actually lost — that is the recoverable fallout this exists for, and it
+/// returns `None`. Anything else is a real bug and is re-raised unchanged.
+#[cfg(all(feature = "gpu", not(any(target_os = "macos", target_os = "ios"))))]
+pub(crate) fn run_gpu_frame<T>(
+    gpu: &waterui_graphics::shared_context::SharedGpuContext,
+    scope: &'static str,
+    frame: impl FnOnce() -> T,
+) -> Option<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(frame)) {
+        Ok(done) => Some(done),
+        Err(payload) => {
+            if gpu.device_lost_reason().is_some() {
+                tracing::warn!(
+                    scope,
+                    "GPU device was lost mid-frame; dropping it and rebuilding on the next render"
+                );
+                None
+            } else {
+                std::panic::resume_unwind(payload)
+            }
         }
     }
 }

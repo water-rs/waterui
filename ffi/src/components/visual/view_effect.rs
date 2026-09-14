@@ -25,6 +25,8 @@ use alloc::vec;
 // Only the platform input-import paths drive asynchronous effect setup.
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 use executor_core::spawn_local;
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+use futures::FutureExt;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use {
@@ -241,6 +243,18 @@ pub struct WuiViewEffectState {
     runtime: GpuRuntime,
     /// Currently attached presentation target.
     output: Option<ViewEffectTarget>,
+    /// The `ANativeWindow` `output`'s surface was created from — kept so it
+    /// can be recreated on the runtime's rebuilt context after device loss.
+    /// Valid while `output` is `Surface`; stale otherwise.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    attached_layer: *mut c_void,
+    /// The HDR preference `attach` configured the output with.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    attached_prefers_hdr: bool,
+    /// The runtime context generation the output surface and every
+    /// device-bound cache below were built under.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    context_generation: u64,
     /// Imported native capture texture.
     imported_texture: Option<wgpu::Texture>,
     /// Format of the imported texture.
@@ -325,6 +339,12 @@ pub unsafe extern "C" fn waterui_view_effect_create(
         runtime,
         output: None,
         imported_texture: None,
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        attached_layer: core::ptr::null_mut(),
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        attached_prefers_hdr: false,
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        context_generation: 0,
         imported_format: None,
         effect_wrapper: Rc::new(RefCell::new(Some(effect_wrapper))),
         redraw_handle,
@@ -427,6 +447,9 @@ pub unsafe extern "C" fn waterui_view_effect_attach(
     let (surface, config) =
         create_configured_surface(state, layer, input_width, input_height, prefers_hdr);
     let (output_width, output_height) = (config.width, config.height);
+    state.attached_layer = layer;
+    state.attached_prefers_hdr = prefers_hdr;
+    state.context_generation = state.runtime.context().generation();
     finish_attach(
         state,
         ViewEffectTarget::Surface { surface, config },
@@ -435,6 +458,64 @@ pub unsafe extern "C" fn waterui_view_effect_attach(
         output_width,
         output_height,
     );
+}
+
+/// The runtime's current context, rebuilding the output surface, the imported
+/// input texture and the Vulkan import/compositor caches when the generation
+/// they were created under died with its device, and putting the semantic
+/// effect through setup again on the fresh device.
+///
+/// Called at the top of every render and input-import entry point, so a frame
+/// never touches a resource of the dead device.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn ensure_current_context(
+    state: &mut WuiViewEffectState,
+) -> Arc<waterui_graphics::shared_context::SharedGpuContext> {
+    let gpu = state.runtime.context();
+    if gpu.generation() == state.context_generation {
+        return gpu;
+    }
+
+    tracing::warn!(
+        old = state.context_generation,
+        new = gpu.generation(),
+        "GPU device was replaced; recreating the effect's device-bound state"
+    );
+    state.context_generation = gpu.generation();
+    state.imported_texture = None;
+    state.imported_format = None;
+    #[cfg(target_os = "android")]
+    {
+        state.hardware_buffer_imports.clear_after_device_loss();
+        state.capture_compositor = super::capture_composite::CaptureCompositor::default();
+    }
+
+    // A detached effect has no output surface to recreate, but its imported
+    // input and renderer setup are still device-bound.
+    if state.output.is_some() {
+        drop(state.output.take());
+        let (surface, config) = create_configured_surface(
+            state,
+            state.attached_layer,
+            state.input_width,
+            state.input_height,
+            state.attached_prefers_hdr,
+        );
+        let (output_width, output_height) = (config.width, config.height);
+        let (input_width, input_height) = (state.input_width, state.input_height);
+        finish_attach(
+            state,
+            ViewEffectTarget::Surface { surface, config },
+            input_width,
+            input_height,
+            output_width,
+            output_height,
+        );
+    }
+    if state.setup_formats.get().is_some() {
+        restart_view_effect_setup(state);
+    }
+    gpu
 }
 
 /// Attaches a native presentation surface (non-Apple only).
@@ -796,45 +877,59 @@ pub unsafe extern "C" fn waterui_view_effect_set_input_hardware_buffer(
     // SAFETY: the caller contract requires `state` to be a valid handle, alive and
     // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
-    let buffer = buffer.cast();
-    // SAFETY: the caller contract makes `buffer` a live `AHardwareBuffer` for this
-    // call, which is all `describe_hardware_buffer` needs.
-    let description = unsafe { describe_hardware_buffer(buffer) };
-    ensure_dimensions(state, description.width, description.height);
+    // A device loss between frames lands here: the rebuilt context and the
+    // recreated output/import state must be in place before the copy below
+    // touches any of them.
+    let gpu = ensure_current_context(state);
+    // A `None` is the mid-copy device-loss path: a null token resolves
+    // immediately in `waterui_gpu_capture_fence_on_complete`, releasing the
+    // buffer the backend lent for the copy.
+    super::run_gpu_frame(
+        &gpu,
+        "waterui_view_effect_set_input_hardware_buffer",
+        || {
+            let buffer = buffer.cast();
+            // SAFETY: the caller contract makes `buffer` a live `AHardwareBuffer` for this
+            // call, which is all `describe_hardware_buffer` needs.
+            let description = unsafe { describe_hardware_buffer(buffer) };
+            ensure_dimensions(state, description.width, description.height);
 
-    let input_format = effect_input_texture_format(description.format);
-    assert_setup_input_format(state, input_format);
-    let input_texture = match state.imported_texture.take() {
-        Some(texture)
-            if texture.width() == description.width
-                && texture.height() == description.height
-                && texture.format() == input_format =>
-        {
-            texture
-        }
-        _ => create_effect_input_texture(
-            &state.runtime.context().device,
-            &state.runtime.context().queue,
-            input_format,
-            description.width,
-            description.height,
-        ),
-    };
+            let input_format = effect_input_texture_format(description.format);
+            assert_setup_input_format(state, input_format);
+            let input_texture = match state.imported_texture.take() {
+                Some(texture)
+                    if texture.width() == description.width
+                        && texture.height() == description.height
+                        && texture.format() == input_format =>
+                {
+                    texture
+                }
+                _ => create_effect_input_texture(
+                    &gpu.device,
+                    &gpu.queue,
+                    input_format,
+                    description.width,
+                    description.height,
+                ),
+            };
 
-    // SAFETY: as above, `buffer` is live for this call, which is when the import
-    // takes its own reference on it.
-    let fence = unsafe {
-        copy_hardware_buffer_into_texture(
-            &mut state.hardware_buffer_imports,
-            buffer,
-            &input_texture,
-            "waterui_view_effect_set_input_hardware_buffer",
-        )
-    };
-    state.imported_texture = Some(input_texture);
-    state.imported_format = Some(input_format);
-    start_view_effect_setup(state, input_format);
-    fence
+            // SAFETY: as above, `buffer` is live for this call, which is when the import
+            // takes its own reference on it.
+            let fence = unsafe {
+                copy_hardware_buffer_into_texture(
+                    &mut state.hardware_buffer_imports,
+                    buffer,
+                    &input_texture,
+                    "waterui_view_effect_set_input_hardware_buffer",
+                )
+            };
+            state.imported_texture = Some(input_texture);
+            state.imported_format = Some(input_format);
+            start_view_effect_setup(state, input_format);
+            fence
+        },
+    )
+    .unwrap_or(core::ptr::null_mut())
 }
 
 /// Copies a captured `AHardwareBuffer` into the effect's input (Android only).
@@ -898,23 +993,29 @@ pub unsafe extern "C" fn waterui_view_effect_composite_gpu_surface(
     // SAFETY: the caller contract requires `surface` to be a valid handle for a
     // different state, alive and not otherwise borrowed for this call.
     let surface = unsafe { crate::borrow_ffi_mut(surface) };
-    let input_texture = effect.imported_texture.take().expect(
-        "waterui_view_effect_composite_gpu_surface: no captured input has been handed over yet",
-    );
-    super::capture_composite::composite_gpu_surface(
-        &mut effect.capture_compositor,
-        surface,
-        &input_texture,
-        super::capture_composite::CompositePlacement {
-            x,
-            y,
-            width,
-            height,
-            scale,
-        },
-        "waterui_view_effect_composite_gpu_surface",
-    );
-    effect.imported_texture = Some(input_texture);
+    // Both states draw on the runtime's current context; recover whichever side
+    // a device loss left behind before either draws into the input.
+    let gpu = ensure_current_context(effect);
+    super::gpu_surface::ensure_current_context(surface);
+    super::run_gpu_frame(&gpu, "waterui_view_effect_composite_gpu_surface", || {
+        let input_texture = effect.imported_texture.take().expect(
+            "waterui_view_effect_composite_gpu_surface: no captured input has been handed over yet",
+        );
+        super::capture_composite::composite_gpu_surface(
+            &mut effect.capture_compositor,
+            surface,
+            &input_texture,
+            super::capture_composite::CompositePlacement {
+                x,
+                y,
+                width,
+                height,
+                scale,
+            },
+            "waterui_view_effect_composite_gpu_surface",
+        );
+        effect.imported_texture = Some(input_texture);
+    });
 }
 
 /// Draws a `GpuSurface` nested in the captured subtree into the input (Android only).
@@ -982,48 +1083,60 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
     // SAFETY: the caller contract requires `state` to be a valid handle, alive and
     // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
-    let input_format = state
-        .imported_format
-        .expect("waterui_view_effect_render: input texture was not provided");
 
-    assert!(
-        state.setup_ready.get(),
-        "waterui_view_effect_render called before asynchronous setup completed"
-    );
-    assert_setup_input_format(state, input_format);
-    let Some(ViewEffectTarget::Surface {
-        surface: output_surface,
-        config: output_config,
-    }) = state.output.as_ref()
-    else {
-        panic!("waterui_view_effect_render: presentation target is detached");
-    };
+    // A device loss between frames lands here: the runtime swaps in a rebuilt
+    // context and the output surface, imported input and caches are recreated
+    // before this frame touches them.
+    let gpu = ensure_current_context(state);
 
-    // Get output texture
-    let Some(output) = super::acquire_surface_texture(
-        output_surface,
-        state.runtime.context(),
-        output_config,
-        "waterui_view_effect_render",
-    ) else {
-        // Nothing was drawn, so the frame this call was asked for is still
-        // pending: the host must come back for it once the surface can be
-        // acquired again. Reporting it done here would strand a view whose only
-        // clock is its own render loop.
-        return true;
-    };
+    super::run_gpu_frame(&gpu, "waterui_view_effect_render", || {
+        let Some(input_format) = state.imported_format else {
+            // The capture that fed the previous device was dropped with it; the
+            // frame stays pending until the backend hands a fresh input over.
+            return true;
+        };
+        if !state.setup_ready.get() {
+            // The effect's setup is re-running on the rebuilt device; the frame
+            // stays pending and the host comes back for it.
+            return true;
+        }
+        assert_setup_input_format(state, input_format);
+        let Some(ViewEffectTarget::Surface {
+            surface: output_surface,
+            config: output_config,
+        }) = state.output.as_ref()
+        else {
+            panic!("waterui_view_effect_render: presentation target is detached");
+        };
 
-    let output_format = output_config.format;
-    let needs_redraw = render_effect_into(
-        state,
-        &output.texture,
-        output_format,
-        "waterui_view_effect_render",
-    );
-    output.present();
-    reclaim_device(&state.runtime.context().device);
+        // Get output texture
+        let Some(output) = super::acquire_surface_texture(
+            output_surface,
+            &gpu,
+            output_config,
+            "waterui_view_effect_render",
+        ) else {
+            // Nothing was drawn, so the frame this call was asked for is still
+            // pending: the host must come back for it once the surface can be
+            // acquired again. Reporting it done here would strand a view whose only
+            // clock is its own render loop.
+            return true;
+        };
 
-    needs_redraw
+        let output_format = output_config.format;
+        let needs_redraw = render_effect_into(
+            state,
+            &gpu,
+            &output.texture,
+            output_format,
+            "waterui_view_effect_render",
+        );
+        output.present();
+        reclaim_device(&gpu.device);
+
+        needs_redraw
+    })
+    .unwrap_or(true)
 }
 
 /// Runs the semantic renderer over the imported capture, into `output`.
@@ -1033,6 +1146,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
 /// who owns the target and how the frame is shown, not the render.
 fn render_effect_into(
     state: &WuiViewEffectState,
+    gpu: &waterui_graphics::shared_context::SharedGpuContext,
     output_texture: &wgpu::Texture,
     output_format: wgpu::TextureFormat,
     caller: &str,
@@ -1056,8 +1170,8 @@ fn render_effect_into(
     });
 
     let input = ViewEffectInput {
-        device: &state.runtime.context().device,
-        queue: &state.runtime.context().queue,
+        device: &gpu.device,
+        queue: &gpu.queue,
         texture: input_texture,
         view: input_view,
         format: input_format,
@@ -1065,8 +1179,8 @@ fn render_effect_into(
         height: state.input_height,
     };
     let effect_output = ViewEffectOutput {
-        device: &state.runtime.context().device,
-        queue: &state.runtime.context().queue,
+        device: &gpu.device,
+        queue: &gpu.queue,
         texture: output_texture,
         view: output_view,
         format: output_format,
@@ -1185,8 +1299,10 @@ pub unsafe extern "C" fn waterui_view_effect_render_to_metal_texture(
             )
     };
 
+    let gpu = state.runtime.context();
     let needs_redraw = render_effect_into(
         state,
+        &gpu,
         &wgpu_texture,
         output_format,
         "waterui_view_effect_render_to_metal_texture",
@@ -1194,14 +1310,12 @@ pub unsafe extern "C" fn waterui_view_effect_render_to_metal_texture(
     // SAFETY: the caller contract requires `out_needs_redraw` to be writable.
     unsafe { out_needs_redraw.write(needs_redraw) };
 
-    let submission = state.runtime.context().queue.submit([]);
-    let fence = super::gpu_surface::WuiGpuCaptureFence::new(
-        state.runtime.context().submission_completion_driver(),
-        submission,
-    );
+    let submission = gpu.queue.submit([]);
+    let fence =
+        super::gpu_surface::WuiGpuCaptureFence::new(gpu.submission_completion_driver(), submission);
     // A frame loop that only submits never returns the resources wgpu retains
     // for a submission, so every presented frame would leak a little (#370).
-    reclaim_device(&state.runtime.context().device);
+    reclaim_device(&gpu.device);
     Box::into_raw(Box::new(fence))
 }
 
@@ -1248,6 +1362,34 @@ fn start_view_effect_setup(state: &WuiViewEffectState, input_format: wgpu::Textu
     }
 
     state.setup_formats.set(Some((input_format, output_format)));
+    spawn_view_effect_setup(state, input_format, output_format);
+}
+
+/// Re-runs the effect's setup after the runtime's device was lost and rebuilt.
+///
+/// Every pipeline and texture the setup produced belonged to the dead device,
+/// so `setup` runs again against the fresh context; `setup_ready` drops for
+/// the duration and the completion redraw replaces the stale frame.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn restart_view_effect_setup(state: &WuiViewEffectState) {
+    let (input_format, output_format) = state
+        .setup_formats
+        .get()
+        .expect("ViewEffect recovery requires a completed earlier setup");
+    // A setup already in flight read the rebuilt context when it started, so
+    // it is the recovery; starting another one would panic on the empty slot.
+    if state.effect_wrapper.borrow().is_none() {
+        return;
+    }
+    state.setup_ready.set(false);
+    spawn_view_effect_setup(state, input_format, output_format);
+}
+
+fn spawn_view_effect_setup(
+    state: &WuiViewEffectState,
+    input_format: wgpu::TextureFormat,
+    output_format: wgpu::TextureFormat,
+) {
     let mut effect_wrapper = state
         .effect_wrapper
         .borrow_mut()
@@ -1258,14 +1400,35 @@ fn start_view_effect_setup(state: &WuiViewEffectState, input_format: wgpu::Textu
     let runtime = state.runtime.clone();
     let redraw_handle = state.redraw_handle.clone();
     spawn_local(async move {
-        let gpu = runtime.context();
-        let ctx = ViewEffectContext {
-            device: &gpu.device,
-            queue: &gpu.queue,
-            input_format,
-            output_format,
-        };
-        effect_wrapper.erased.setup(&ctx).await;
+        // Same contract as the other GPU setup tasks: only a setup that
+        // completed on the still-current context is installed; loss mid-setup
+        // (stale generation or a `wgpu` storage panic) retries on the rebuilt
+        // context.
+        loop {
+            let gpu = runtime.context();
+            let outcome = {
+                let ctx = ViewEffectContext {
+                    device: &gpu.device,
+                    queue: &gpu.queue,
+                    input_format,
+                    output_format,
+                };
+                std::panic::AssertUnwindSafe(effect_wrapper.erased.setup(&ctx))
+                    .catch_unwind()
+                    .await
+            };
+            if let Err(payload) = outcome {
+                if gpu.device_lost_reason().is_none() {
+                    std::panic::resume_unwind(payload);
+                }
+                continue;
+            }
+            if gpu.device_lost_reason().is_none()
+                && runtime.context().generation() == gpu.generation()
+            {
+                break;
+            }
+        }
         effect_slot.replace(Some(effect_wrapper));
         setup_ready.set(true);
         redraw_handle.request_redraw();
