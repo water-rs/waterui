@@ -555,6 +555,14 @@ typedef enum WuiButtonStyle {
    *Mirrors `ButtonStyle::BorderedProminent`.
    */
   WuiButtonStyle_BorderedProminent,
+  /**
+   *Mirrors `ButtonStyle::Glass`.
+   */
+  WuiButtonStyle_Glass,
+  /**
+   *Mirrors `ButtonStyle::GlassProminent`.
+   */
+  WuiButtonStyle_GlassProminent,
 } WuiButtonStyle;
 
 /**
