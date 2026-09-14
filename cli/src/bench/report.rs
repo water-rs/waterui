@@ -9,7 +9,7 @@ use std::io::Write as _;
 use std::path::Path;
 
 use askama::Template;
-use color_eyre::eyre::Result;
+use eyre::Result;
 use serde::Serialize;
 
 use waterui_preview_protocol::bench::{BenchReport, PerfFrame, PerfMeasurement};

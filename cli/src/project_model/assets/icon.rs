@@ -10,7 +10,7 @@
 use std::ffi::OsStr;
 use std::path::Path;
 
-use color_eyre::eyre::{self, Context};
+use eyre::Context;
 #[cfg(feature = "svg-icons")]
 use resvg::{tiny_skia, usvg};
 

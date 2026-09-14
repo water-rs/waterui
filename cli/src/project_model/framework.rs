@@ -11,7 +11,7 @@ use crate::build_info::{ANDROID_BACKEND, APPLE_BACKEND, SCAFFOLD_PACKAGE_VERSION
 use crate::project::Project;
 use cargo_lock::{Dependency as LockedDependency, Lockfile};
 use cargo_toml::{Dependency, DependencyDetail, PatchSet};
-use color_eyre::eyre::{Result, WrapErr, bail, eyre};
+use eyre::{Result, WrapErr, bail, eyre};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use smol::process::Command;

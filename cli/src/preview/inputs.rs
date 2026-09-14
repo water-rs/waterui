@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::Path;
 
-use color_eyre::eyre::{Context as _, Result, bail};
+use eyre::{Context as _, Result, bail};
 use sha2::{Digest as _, Sha256};
 use walkdir::WalkDir;
 
@@ -65,7 +65,7 @@ fn scan_project_inputs(project_path: &Path) -> Result<ProjectInputsFingerprint> 
             )
         })?;
         let relative = relative.to_str().ok_or_else(|| {
-            color_eyre::eyre::eyre!(
+            eyre::eyre!(
                 "preview build input path is not valid UTF-8: {}",
                 relative.display()
             )

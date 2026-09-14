@@ -22,7 +22,7 @@ use async_channel::{Receiver, Sender};
 use async_lock::{Mutex, OnceCell};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use color_eyre::eyre::{Context as _, Result, bail, eyre};
+use eyre::{Context as _, Result, bail, eyre};
 use futures_lite::io::BufReader;
 use serde::Serialize;
 use smol::Task;

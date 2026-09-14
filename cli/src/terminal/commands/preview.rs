@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, Subcommand};
-use color_eyre::eyre::{Result, bail};
+use eyre::{Result, bail};
 use ignore::WalkBuilder;
 use serde::Deserialize;
 use syn::{Attribute, Item};

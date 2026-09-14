@@ -6,13 +6,13 @@
 use std::path::Path;
 use std::time::Duration;
 
-use color_eyre::eyre::{self, eyre};
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
 use core_graphics::window::{
     CGWindowListCopyWindowInfo, kCGNullWindowID, kCGWindowListOptionOnScreenOnly,
 };
+use eyre::eyre;
 use smol::process::Command;
 
 /// Information about a macOS window.

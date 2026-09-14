@@ -41,7 +41,8 @@ cargo_metadata = "0.23.1"
 # pulls `image`'s AVIF *encoder* (ravif -> rav1e), which nothing here calls.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "ico"] }
 cargo_toml = "1.0.1"
-color-eyre = { version = "0.6.5", features = ["issue-url"]}
+eyre = "0.6"
+color-eyre = { version = "0.6.5", features = ["issue-url"] }
 include_dir = "0.7.4"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await", "io"] }
 futures-lite = "2.6"

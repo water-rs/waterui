@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::{Result, bail};
+use eyre::{Result, bail};
 use target_lexicon::{
     Aarch64Architecture, Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor,
 };

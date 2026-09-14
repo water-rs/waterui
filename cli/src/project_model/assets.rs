@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use cargo_metadata::PackageId;
-use color_eyre::eyre::{self, Context, OptionExt};
+use eyre::{Context, OptionExt};
 use serde::{Deserialize, Serialize};
 use smol::fs;
 use tracing::{debug, info, warn};

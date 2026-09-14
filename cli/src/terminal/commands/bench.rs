@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::{Result, bail};
+use eyre::{Result, bail};
 
 use crate::shell::Shell;
 use crate::{header, note, success};

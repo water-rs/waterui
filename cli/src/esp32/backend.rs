@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 
 use cargo_toml::Manifest as CargoManifest;
-use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -26,9 +25,7 @@ fn subset_font(path: &Path, ranges: &str, output_dir: &Path) -> eyre::Result<Pat
 
 #[cfg(not(feature = "esp32"))]
 fn subset_font(_path: &Path, _ranges: &str, _output_dir: &Path) -> eyre::Result<PathBuf> {
-    color_eyre::eyre::bail!(
-        "[backends.esp32] font_ranges requires the `esp32` feature of waterui-cli"
-    )
+    eyre::bail!("[backends.esp32] font_ranges requires the `esp32` feature of waterui-cli")
 }
 
 /// Configuration for the ESP32 backend in a `WaterUI` project.
@@ -154,7 +151,7 @@ impl Esp32Backend {
                     project_root.join(font)
                 };
                 if !path.is_file() {
-                    color_eyre::eyre::bail!(
+                    eyre::bail!(
                         "[backends.esp32] fonts entry {} does not exist (resolved to {})",
                         font.display(),
                         path.display()
@@ -293,9 +290,7 @@ impl Backend for Esp32Backend {
         options: BuildOptions,
     ) -> eyre::Result<PathBuf> {
         if !is_esp32_platform(platform) {
-            color_eyre::eyre::bail!(
-                "ESP32 backend only supports the esp32s3, esp32c3, and esp32p4 platforms"
-            );
+            eyre::bail!("ESP32 backend only supports the esp32s3, esp32c3, and esp32p4 platforms");
         }
         build_esp32(project, options).await
     }
@@ -307,9 +302,7 @@ impl Backend for Esp32Backend {
         options: PackageOptions,
     ) -> eyre::Result<Artifact> {
         if !is_esp32_platform(platform) {
-            color_eyre::eyre::bail!(
-                "ESP32 backend only supports the esp32s3, esp32c3, and esp32p4 platforms"
-            );
+            eyre::bail!("ESP32 backend only supports the esp32s3, esp32c3, and esp32p4 platforms");
         }
         package_esp32(project, options).await
     }

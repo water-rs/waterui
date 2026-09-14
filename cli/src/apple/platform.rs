@@ -10,7 +10,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use askama::Template;
-use color_eyre::eyre::{self, Context, bail};
+use eyre::{Context, bail};
 use smol::fs;
 use target_lexicon::Architecture;
 use tracing::{debug, info};

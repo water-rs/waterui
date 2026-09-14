@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use aither_core::llm::tool::{Tool, ToolResult};
-use color_eyre::eyre::{Context as _, Result, bail};
+use eyre::{Context as _, Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::info;

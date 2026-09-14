@@ -4,13 +4,35 @@ use std::ffi::OsStr;
 use std::{
     io,
     path::{Path, PathBuf},
-    process::Output,
-    process::Stdio,
+    process::{ExitStatus, Output, Stdio},
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use color_eyre::eyre;
 use smol::{process::Command, unblock};
+
+/// An external command could not be executed or exited unsuccessfully.
+#[derive(Debug, thiserror::Error)]
+pub enum CommandError {
+    /// The command could not be spawned.
+    #[error("failed to spawn `{program}`: {source}")]
+    Spawn {
+        /// The program that was invoked.
+        program: String,
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+    /// The command exited with a non-zero status.
+    #[error("command `{program}` failed with status {status}{report}")]
+    Failed {
+        /// The program that was invoked.
+        program: String,
+        /// The process exit status.
+        status: ExitStatus,
+        /// Formatted diagnostic tail of the captured output streams.
+        report: String,
+    },
+}
 
 /// Locate an executable in the system's PATH.
 ///
@@ -65,7 +87,10 @@ pub(crate) fn command(command: &mut Command) -> &mut Command {
 /// Run a command and capture its output regardless of exit status.
 ///
 /// Supports non-UTF8 executable paths and arguments.
-pub(crate) async fn run_command_output_os<N, A, S>(name: N, args: A) -> eyre::Result<Output>
+///
+/// # Errors
+/// - [`CommandError::Spawn`] if the command cannot be spawned.
+pub(crate) async fn run_command_output_os<N, A, S>(name: N, args: A) -> Result<Output, CommandError>
 where
     N: AsRef<OsStr>,
     A: IntoIterator<Item = S>,
@@ -78,7 +103,11 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .await?;
+        .await
+        .map_err(|source| CommandError::Spawn {
+            program: name.to_string_lossy().into_owned(),
+            source,
+        })?;
 
     // If STD_OUTPUT is enabled, also print to terminal
     if STD_OUTPUT.load(Ordering::SeqCst) {
@@ -96,18 +125,23 @@ where
 ///
 /// Return the standard output as a `String` if successful.
 /// # Errors
-/// - If the command fails to execute or returns a non-zero exit status.
+/// - [`CommandError::Spawn`] if the command cannot be spawned.
+/// - [`CommandError::Failed`] if the command exits with a non-zero status.
 pub(crate) async fn run_command(
     name: &str,
     args: impl IntoIterator<Item = &str>,
-) -> eyre::Result<String> {
+) -> Result<String, CommandError> {
     run_command_os(name, args).await
 }
 
 /// Run a command with the specified name and arguments.
 ///
 /// Like `run_command`, but supports non-UTF8 executable paths and arguments.
-pub(crate) async fn run_command_os<N, A, S>(name: N, args: A) -> eyre::Result<String>
+///
+/// # Errors
+/// - [`CommandError::Spawn`] if the command cannot be spawned.
+/// - [`CommandError::Failed`] if the command exits with a non-zero status.
+pub(crate) async fn run_command_os<N, A, S>(name: N, args: A) -> Result<String, CommandError>
 where
     N: AsRef<OsStr>,
     A: IntoIterator<Item = S>,
@@ -119,13 +153,15 @@ where
     if result.status.success() {
         Ok(String::from_utf8_lossy(&result.stdout).to_string())
     } else {
-        let name_display = name_ref.to_string_lossy();
-        Err(eyre::eyre!(
-            "Command {name_display} failed with status {}{}{}",
-            result.status,
-            format_failure_stream("stderr", &result.stderr),
-            format_failure_stream("stdout", &result.stdout),
-        ))
+        Err(CommandError::Failed {
+            program: name_ref.to_string_lossy().into_owned(),
+            status: result.status,
+            report: format!(
+                "{}{}",
+                format_failure_stream("stderr", &result.stderr),
+                format_failure_stream("stdout", &result.stdout),
+            ),
+        })
     }
 }
 

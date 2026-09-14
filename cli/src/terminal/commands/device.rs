@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, Subcommand};
-use color_eyre::eyre::{self, Result};
+use eyre::Result;
 
 use crate::shell::Shell;
 use crate::{error, line, note, success};

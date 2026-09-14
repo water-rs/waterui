@@ -1,8 +1,8 @@
 //! `water doctor` command implementation.
 
 use clap::Args as ClapArgs;
-use color_eyre::eyre::Result;
 use dialoguer::{Confirm, theme::ColorfulTheme};
+use eyre::Result;
 
 use crate::shell::Shell;
 use crate::{error, header, line, note, success, warn};

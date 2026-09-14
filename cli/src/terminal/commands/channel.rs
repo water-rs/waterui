@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::Args as ClapArgs;
-use color_eyre::eyre::{Result, bail};
+use eyre::{Result, bail};
 use waterui_cli::framework::FrameworkChannel;
 use waterui_cli::project::{Manifest, Project};
 

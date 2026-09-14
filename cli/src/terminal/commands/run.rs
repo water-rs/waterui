@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::{Result, bail};
+use eyre::{Result, bail};
 use futures_util::StreamExt;
 
 #[cfg(target_os = "macos")]
@@ -64,8 +64,8 @@ impl CrashReportContext {
             return Ok(None);
         }
 
-        let device_identifier = whoami::hostname()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to determine hostname: {e}"))?;
+        let device_identifier =
+            whoami::hostname().map_err(|e| eyre::eyre!("Failed to determine hostname: {e}"))?;
 
         // A crash report is filed under the executable's name, which is the
         // Xcode product name — the same one the bundle is built under.
@@ -909,9 +909,9 @@ async fn build_for_backend(
             build_rust_lib(project, plan.lib_platform, build_options).await?;
         }
         TargetBackend::Android => {
-            let abi = plan.android_abi.ok_or_else(|| {
-                color_eyre::eyre::eyre!("Internal error: missing Android ABI for build")
-            })?;
+            let abi = plan
+                .android_abi
+                .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
             AndroidPlatform::clean_jni_libs(project).await?;
             AndroidPlatform::new(abi)
                 .build(project, build_options)
@@ -939,9 +939,9 @@ async fn package_for_backend(
     match backend {
         TargetBackend::Apple => package_apple(project, plan.lib_platform, package_options).await,
         TargetBackend::Android => {
-            let abi = plan.android_abi.ok_or_else(|| {
-                color_eyre::eyre::eyre!("Internal error: missing Android ABI for packaging")
-            })?;
+            let abi = plan
+                .android_abi
+                .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for packaging"))?;
             AndroidPlatform::package_with_abis(project, package_options, &[abi]).await
         }
         TargetBackend::Gtk4 => package_gtk4(project, package_options).await,
@@ -1086,7 +1086,7 @@ async fn find_device(
 
             first_available
                 .map(SelectedDevice::AppleSimulator)
-                .ok_or_else(|| color_eyre::eyre::eyre!("No iOS simulators available"))
+                .ok_or_else(|| eyre::eyre!("No iOS simulators available"))
         }
         TargetPlatform::Macos => {
             // macOS with Apple backend uses the local machine
@@ -1113,7 +1113,7 @@ async fn find_device(
             // No connected devices - try to find an emulator AVD
             let avds = AndroidPlatform::list_avds().await?;
             let avd_name = avds.into_iter().next().ok_or_else(|| {
-                color_eyre::eyre::eyre!(
+                eyre::eyre!(
                     "No Android devices connected and no emulators available. Create an emulator with Android Studio or `avdmanager`, or connect a device."
                 )
             })?;

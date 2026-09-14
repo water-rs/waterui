@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{self, Context as _, bail};
+use eyre::{Context as _, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use smol::fs;

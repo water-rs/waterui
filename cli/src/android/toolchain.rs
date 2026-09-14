@@ -2,14 +2,14 @@ use std::{
     cmp::Ordering,
     env,
     ffi::OsString,
+    io,
     path::{Path, PathBuf},
     process::Output,
 };
 
-use color_eyre::eyre::{self, WrapErr};
 use url::Url;
 use walkdir::WalkDir;
-use waterui_assets_core::{download_remote_bytes, write_bytes_atomically};
+use waterui_assets_core::{AssetError, download_remote_bytes, write_bytes_atomically};
 
 use crate::{
     android::platform::{ALL_ABIS, AndroidAbi},
@@ -17,12 +17,212 @@ use crate::{
     build_info,
     toolchain::{
         Installation, Toolchain, ToolchainError,
-        linux::{has_supported_package_manager, install_java_jdk, install_named_packages},
+        linux::{
+            LinuxPackageManagerError, has_supported_package_manager, install_java_jdk,
+            install_named_packages,
+        },
         winget::{WingetInstallError, ensure_package_installed},
     },
-    utils::{command, run_command, run_command_output_os, which},
-    water_dir::water_home_dir,
+    utils::{CommandError, command, run_command, run_command_output_os, which},
+    water_dir::{HomeDirError, water_home_dir},
 };
+
+/// Errors from Android SDK/NDK inspection and installation pipelines.
+#[derive(Debug, thiserror::Error)]
+pub enum AndroidToolchainError {
+    /// `sdkmanager` could not be located.
+    #[error("Android SDK command-line tools (`sdkmanager`) not found")]
+    SdkManagerNotFound,
+    /// The Android SDK root could not be derived from the environment or `sdkmanager` path.
+    #[error("Android SDK root could not be determined from environment or sdkmanager path")]
+    SdkRootUndetermined,
+    /// The Android SDK root cannot be determined on this host.
+    #[error("Android SDK root cannot be determined on this host")]
+    SdkRootUnavailable,
+    /// No Java runtime is available for `sdkmanager`.
+    #[error("Java runtime not found while invoking sdkmanager")]
+    JavaNotFound,
+    /// The Water home directory could not be resolved.
+    #[error(transparent)]
+    HomeDir(#[from] HomeDirError),
+    /// The SDK repository metadata request failed.
+    #[error("Failed to query Android SDK repository metadata: {0}")]
+    RepositoryQuery(#[source] zenwave::Error),
+    /// The SDK repository metadata request returned an unsuccessful status.
+    #[error("Failed to query Android SDK repository metadata: HTTP {0}")]
+    RepositoryStatus(zenwave::StatusCode),
+    /// The SDK repository metadata body could not be read.
+    #[error("Failed to read Android SDK repository metadata: {0}")]
+    RepositoryBody(#[from] zenwave::BodyError),
+    /// The command-line tools archive is absent from the repository metadata.
+    #[error("Could not locate Android command-line tools archive")]
+    CmdlineToolsArchiveNotFound,
+    /// A remote archive could not be downloaded.
+    #[error("Failed to download {url}: {source}")]
+    Download {
+        /// The URL that failed to download.
+        url: String,
+        /// The underlying asset error.
+        #[source]
+        source: AssetError,
+    },
+    /// A downloaded archive could not be written to disk.
+    #[error("Failed to write downloaded archive to {}: {source}", path.display())]
+    ArchiveWrite {
+        /// The destination path.
+        path: PathBuf,
+        /// The underlying asset error.
+        #[source]
+        source: AssetError,
+    },
+    /// The command-line tools archive has no `bin` directory.
+    #[error("Invalid Android command-line tools archive layout (missing bin directory)")]
+    CmdlineToolsMissingBinDir,
+    /// The command-line tools archive has no `cmdline-tools` root.
+    #[error("Invalid Android command-line tools archive layout (missing cmdline-tools root)")]
+    CmdlineToolsMissingRoot,
+    /// The command-line tools archive does not contain `sdkmanager`.
+    #[error("Android command-line tools archive does not contain sdkmanager")]
+    CmdlineToolsMissingSdkManager,
+    /// `sdkmanager` is still absent after extraction.
+    #[error("Android command-line tools were extracted but sdkmanager is still missing")]
+    CmdlineToolsStillMissingSdkManager,
+    /// The Kotlin compiler archive has no `bin` directory.
+    #[error("Invalid Kotlin compiler archive layout (missing bin directory)")]
+    KotlinMissingBinDir,
+    /// The Kotlin compiler archive has no compiler root.
+    #[error("Invalid Kotlin compiler archive layout (missing compiler root)")]
+    KotlinMissingRoot,
+    /// The Kotlin compiler archive does not contain the `kotlinc` executable.
+    #[error("Kotlin compiler archive does not contain {0}")]
+    KotlinMissingCompiler(String),
+    /// The managed Kotlin install path has no parent directory.
+    #[error("Managed Kotlin install path has no parent")]
+    KotlinInstallPathNoParent,
+    /// `kotlinc` is still absent after extraction.
+    #[error("Kotlin compiler `{version}` was extracted but `{executable}` is still missing")]
+    KotlinCompilerStillMissing {
+        /// The requested Kotlin version.
+        version: String,
+        /// The executable that is missing.
+        executable: &'static str,
+    },
+    /// The installed Kotlin compiler does not satisfy the required version.
+    #[error(
+        "Installed Kotlin compiler version `{installed}` does not satisfy required version `{required}`"
+    )]
+    KotlinVersionMismatch {
+        /// The version reported by the installed compiler.
+        installed: String,
+        /// The required Kotlin version.
+        required: String,
+    },
+    /// The Kotlin compiler version output could not be parsed.
+    #[error(
+        "Failed to parse Kotlin compiler version from `{}` output: {output}",
+        path.display()
+    )]
+    KotlinVersionParse {
+        /// The `kotlinc` path that was probed.
+        path: PathBuf,
+        /// The combined compiler output.
+        output: String,
+    },
+    /// The proxy environment value is not a valid URL.
+    #[error("Failed to parse proxy URL `{url}` for sdkmanager: {source}")]
+    ProxyParse {
+        /// The offending proxy value.
+        url: String,
+        /// The URL parse error.
+        #[source]
+        source: url::ParseError,
+    },
+    /// The proxy URL has no host.
+    #[error("Proxy URL `{0}` is missing a host")]
+    ProxyMissingHost(String),
+    /// The proxy URL has no port.
+    #[error("Proxy URL `{0}` is missing a port")]
+    ProxyMissingPort(String),
+    /// The proxy URL scheme is not supported by `sdkmanager`.
+    #[error("Unsupported proxy scheme `{0}` for sdkmanager")]
+    ProxyUnsupportedScheme(String),
+    /// A PATH entry could not be joined into `PATH`.
+    #[error("Failed to construct PATH with required entry '{}': {source}", entry.display())]
+    PathJoin {
+        /// The entry that could not be joined.
+        entry: PathBuf,
+        /// The path-join error.
+        #[source]
+        source: env::JoinPathsError,
+    },
+    /// `sdkmanager --licenses` did not succeed.
+    #[error("Failed to accept Android SDK licenses. {0}")]
+    LicenseAcceptance(String),
+    /// `sdkmanager --install` did not succeed.
+    #[error("Failed to install package `{package_id}` via sdkmanager. {output}")]
+    PackageInstall {
+        /// The SDK package that failed to install.
+        package_id: String,
+        /// The combined `sdkmanager` output.
+        output: String,
+    },
+    /// `sdkmanager --list` did not succeed.
+    #[error("Failed to list Android SDK packages via sdkmanager. {0}")]
+    PackageList(String),
+    /// An `ndk;` package id is malformed.
+    #[error("Invalid Android NDK package id `{0}`")]
+    InvalidNdkPackageId(String),
+    /// The Android runtime Gradle config could not be located in the workspace.
+    #[error("Failed to locate `{path}` while resolving the required Android NDK version")]
+    RuntimeGradleMissing {
+        /// The relative path that was searched for.
+        path: &'static str,
+    },
+    /// The Android runtime Gradle config could not be read.
+    #[error("Failed to read Android runtime Gradle config at `{}`: {source}", path.display())]
+    RuntimeGradleRead {
+        /// The Gradle config path.
+        path: PathBuf,
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+    /// `ndkVersion` could not be parsed from the runtime Gradle config.
+    #[error("Failed to parse `ndkVersion` from `{}`", path.display())]
+    NdkVersionUnparseable {
+        /// The Gradle config path.
+        path: PathBuf,
+    },
+    /// The required NDK package is not offered by `sdkmanager`.
+    #[error(
+        "Required Android NDK package `{package_id}` from `{}` is not available via `sdkmanager --list`",
+        gradle_path.display()
+    )]
+    NdkPackageUnavailable {
+        /// The required NDK package id.
+        package_id: String,
+        /// The Gradle config that declared the requirement.
+        gradle_path: PathBuf,
+    },
+    /// No Android platform package is offered by `sdkmanager`.
+    #[error("No installable Android platform package found via `sdkmanager --list`")]
+    NoPlatformPackage,
+    /// No Android build-tools package is offered by `sdkmanager`.
+    #[error("No installable Android build-tools package found via `sdkmanager --list`")]
+    NoBuildToolsPackage,
+    /// An external command failed.
+    #[error(transparent)]
+    Command(#[from] CommandError),
+    /// An I/O operation failed.
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    /// A ZIP archive operation failed.
+    #[error(transparent)]
+    Zip(#[from] zip::result::ZipError),
+    /// A directory-tree walk failed.
+    #[error(transparent)]
+    WalkDir(#[from] walkdir::Error),
+}
 
 /// Android SDK toolchain component.
 #[derive(Debug, Clone, Default)]
@@ -96,7 +296,7 @@ fn needs_linux_x86_64_host_tools_compat(detail: &str) -> bool {
     is_linux_arm_host() && detail.contains("ld-linux-x86-64.so.2")
 }
 
-async fn install_android_linux_x86_64_host_tools_compat() -> eyre::Result<()> {
+async fn install_android_linux_x86_64_host_tools_compat() -> Result<(), LinuxPackageManagerError> {
     install_named_packages(ANDROID_LINUX_X86_64_HOST_TOOLS_COMPAT_PACKAGES).await
 }
 
@@ -256,46 +456,50 @@ fn parse_latest_cmdline_tools_archive(repository_xml: &str) -> Option<String> {
     best.map(|(_, filename)| filename)
 }
 
-async fn latest_cmdline_tools_archive_url() -> eyre::Result<String> {
+async fn latest_cmdline_tools_archive_url() -> Result<String, AndroidToolchainError> {
     use zenwave::{Client, Method};
 
     const REPOSITORY_URL: &str = "https://dl.google.com/android/repository/repository2-3.xml";
     const REPOSITORY_PREFIX: &str = "https://dl.google.com/android/repository/";
 
     let mut client = zenwave::client();
-    let response = client.method(Method::GET, REPOSITORY_URL)?.await?;
+    let response = client
+        .method(Method::GET, REPOSITORY_URL)
+        .map_err(AndroidToolchainError::RepositoryQuery)?
+        .await
+        .map_err(AndroidToolchainError::RepositoryQuery)?;
     if !response.status().is_success() {
-        return Err(eyre::eyre!(
-            "Failed to query Android SDK repository metadata: HTTP {}",
-            response.status()
-        ));
+        return Err(AndroidToolchainError::RepositoryStatus(response.status()));
     }
 
     let bytes = response.into_body().into_bytes().await?;
     let repository_xml = String::from_utf8_lossy(&bytes).into_owned();
     let archive_name = parse_latest_cmdline_tools_archive(&repository_xml)
-        .ok_or_else(|| eyre::eyre!("Could not locate Android command-line tools archive"))?;
+        .ok_or(AndroidToolchainError::CmdlineToolsArchiveNotFound)?;
     Ok(format!("{REPOSITORY_PREFIX}{archive_name}"))
 }
 
-async fn download_file_with_redirect(url: &str, destination: &Path) -> eyre::Result<()> {
-    let bytes = download_remote_bytes(url)
-        .await
-        .map_err(eyre::Report::new)
-        .wrap_err_with(|| format!("Failed to download {url}"))?;
+async fn download_file_with_redirect(
+    url: &str,
+    destination: &Path,
+) -> Result<(), AndroidToolchainError> {
+    let bytes =
+        download_remote_bytes(url)
+            .await
+            .map_err(|source| AndroidToolchainError::Download {
+                url: url.to_owned(),
+                source,
+            })?;
     write_bytes_atomically(destination, &bytes)
         .await
-        .map_err(eyre::Report::new)
-        .wrap_err_with(|| {
-            format!(
-                "Failed to write downloaded archive to {}",
-                destination.display()
-            )
+        .map_err(|source| AndroidToolchainError::ArchiveWrite {
+            path: destination.to_path_buf(),
+            source,
         })?;
     Ok(())
 }
 
-fn find_cmdline_tools_dir(root: &Path) -> eyre::Result<PathBuf> {
+fn find_cmdline_tools_dir(root: &Path) -> Result<PathBuf, AndroidToolchainError> {
     let sdkmanager_name = sdkmanager_binary_name();
 
     for entry in WalkDir::new(root) {
@@ -313,23 +517,19 @@ fn find_cmdline_tools_dir(root: &Path) -> eyre::Result<PathBuf> {
             continue;
         }
 
-        let bin_dir = path.parent().ok_or_else(|| {
-            eyre::eyre!("Invalid Android command-line tools archive layout (missing bin directory)")
-        })?;
-        let cmdline_tools_dir = bin_dir.parent().ok_or_else(|| {
-            eyre::eyre!(
-                "Invalid Android command-line tools archive layout (missing cmdline-tools root)"
-            )
-        })?;
+        let bin_dir = path
+            .parent()
+            .ok_or(AndroidToolchainError::CmdlineToolsMissingBinDir)?;
+        let cmdline_tools_dir = bin_dir
+            .parent()
+            .ok_or(AndroidToolchainError::CmdlineToolsMissingRoot)?;
         return Ok(cmdline_tools_dir.to_path_buf());
     }
 
-    Err(eyre::eyre!(
-        "Android command-line tools archive does not contain sdkmanager"
-    ))
+    Err(AndroidToolchainError::CmdlineToolsMissingSdkManager)
 }
 
-async fn ensure_cmdline_tools_available(sdk_root: &Path) -> eyre::Result<()> {
+async fn ensure_cmdline_tools_available(sdk_root: &Path) -> Result<(), AndroidToolchainError> {
     let latest_dir = sdk_root.join("cmdline-tools/latest");
     let sdkmanager = latest_dir.join("bin").join(sdkmanager_binary_name());
     if sdkmanager.exists() {
@@ -339,12 +539,11 @@ async fn ensure_cmdline_tools_available(sdk_root: &Path) -> eyre::Result<()> {
     let cmdline_tools_root = sdk_root.join("cmdline-tools");
     let temp_dir = {
         let cmdline_tools_root = cmdline_tools_root.clone();
-        smol::unblock(move || {
+        smol::unblock(move || -> io::Result<_> {
             std::fs::create_dir_all(&cmdline_tools_root)?;
             tempfile::Builder::new()
                 .prefix(".water-cmdline-tools-")
                 .tempdir_in(&cmdline_tools_root)
-                .map_err(eyre::Report::from)
         })
         .await?
     };
@@ -353,11 +552,7 @@ async fn ensure_cmdline_tools_available(sdk_root: &Path) -> eyre::Result<()> {
 
     {
         let extract_dir = extract_dir.clone();
-        smol::unblock(move || {
-            std::fs::create_dir_all(&extract_dir)?;
-            Ok::<_, eyre::Report>(())
-        })
-        .await?;
+        smol::unblock(move || std::fs::create_dir_all(&extract_dir)).await?;
     }
 
     let archive_url = latest_cmdline_tools_archive_url().await?;
@@ -366,11 +561,11 @@ async fn ensure_cmdline_tools_available(sdk_root: &Path) -> eyre::Result<()> {
     {
         let archive_path = archive_path.clone();
         let extract_dir = extract_dir.clone();
-        smol::unblock(move || {
+        smol::unblock(move || -> Result<(), AndroidToolchainError> {
             let archive_file = std::fs::File::open(&archive_path)?;
             let mut archive = zip::ZipArchive::new(archive_file)?;
             archive.extract(&extract_dir)?;
-            Ok::<_, eyre::Report>(())
+            Ok(())
         })
         .await?;
     }
@@ -394,9 +589,7 @@ async fn ensure_cmdline_tools_available(sdk_root: &Path) -> eyre::Result<()> {
     if sdkmanager.exists() {
         Ok(())
     } else {
-        Err(eyre::eyre!(
-            "Android command-line tools were extracted but sdkmanager is still missing"
-        ))
+        Err(AndroidToolchainError::CmdlineToolsStillMissingSdkManager)
     }
 }
 
@@ -585,30 +778,27 @@ fn find_d8_jar_in_sdk(sdk_root: &Path) -> Option<PathBuf> {
     None
 }
 
-async fn resolve_sdkmanager_and_root() -> eyre::Result<(PathBuf, PathBuf)> {
+async fn resolve_sdkmanager_and_root() -> Result<(PathBuf, PathBuf), AndroidToolchainError> {
     let sdkmanager_path = AndroidSdk::sdkmanager_path()
         .await
-        .ok_or_else(|| eyre::eyre!("Android SDK command-line tools (`sdkmanager`) not found"))?;
+        .ok_or(AndroidToolchainError::SdkManagerNotFound)?;
     let sdk_root = AndroidSdk::detect_path()
         .or_else(|| derive_sdk_root_from_sdkmanager_path(&sdkmanager_path))
-        .ok_or_else(|| {
-            eyre::eyre!(
-                "Android SDK root could not be determined from environment or sdkmanager path"
-            )
-        })?;
+        .ok_or(AndroidToolchainError::SdkRootUndetermined)?;
     Ok((sdkmanager_path, sdk_root))
 }
 
-fn prepend_path_entry(entry: &Path, existing: Option<OsString>) -> eyre::Result<OsString> {
+fn prepend_path_entry(
+    entry: &Path,
+    existing: Option<OsString>,
+) -> Result<OsString, AndroidToolchainError> {
     let mut entries = vec![entry.to_path_buf()];
     if let Some(existing) = existing {
         entries.extend(env::split_paths(&existing));
     }
-    env::join_paths(entries).map_err(|error| {
-        eyre::eyre!(
-            "Failed to construct PATH with required entry '{}': {error}",
-            entry.display()
-        )
+    env::join_paths(entries).map_err(|source| AndroidToolchainError::PathJoin {
+        entry: entry.to_path_buf(),
+        source,
     })
 }
 
@@ -657,28 +847,32 @@ fn proxy_env_value() -> Option<String> {
     .find_map(|key| env::var(key).ok().filter(|value| !value.trim().is_empty()))
 }
 
-fn parse_sdkmanager_proxy_config(proxy: &str) -> eyre::Result<SdkManagerProxyConfig> {
+fn parse_sdkmanager_proxy_config(
+    proxy: &str,
+) -> Result<SdkManagerProxyConfig, AndroidToolchainError> {
     let trimmed = proxy.trim();
     let normalized = if trimmed.contains("://") {
         trimmed.to_string()
     } else {
         format!("http://{trimmed}")
     };
-    let url = Url::parse(&normalized)
-        .wrap_err_with(|| format!("Failed to parse proxy URL `{trimmed}` for sdkmanager"))?;
+    let url = Url::parse(&normalized).map_err(|source| AndroidToolchainError::ProxyParse {
+        url: trimmed.to_owned(),
+        source,
+    })?;
     let host = url
         .host_str()
-        .ok_or_else(|| eyre::eyre!("Proxy URL `{trimmed}` is missing a host"))?
+        .ok_or_else(|| AndroidToolchainError::ProxyMissingHost(trimmed.to_owned()))?
         .to_string();
     let port = url
         .port_or_known_default()
-        .ok_or_else(|| eyre::eyre!("Proxy URL `{trimmed}` is missing a port"))?;
+        .ok_or_else(|| AndroidToolchainError::ProxyMissingPort(trimmed.to_owned()))?;
     let proxy_type = match url.scheme() {
         "http" | "https" => SdkManagerProxyType::Http,
         "socks" | "socks5" | "socks5h" => SdkManagerProxyType::Socks,
         scheme => {
-            return Err(eyre::eyre!(
-                "Unsupported proxy scheme `{scheme}` for sdkmanager"
+            return Err(AndroidToolchainError::ProxyUnsupportedScheme(
+                scheme.to_owned(),
             ));
         }
     };
@@ -689,7 +883,7 @@ fn parse_sdkmanager_proxy_config(proxy: &str) -> eyre::Result<SdkManagerProxyCon
     })
 }
 
-fn sdkmanager_proxy_args() -> eyre::Result<Vec<OsString>> {
+fn sdkmanager_proxy_args() -> Result<Vec<OsString>, AndroidToolchainError> {
     let Some(proxy) = proxy_env_value() else {
         return Ok(Vec::new());
     };
@@ -701,7 +895,7 @@ fn sdkmanager_proxy_args() -> eyre::Result<Vec<OsString>> {
     ])
 }
 
-pub(super) fn java_proxy_properties_from_env() -> eyre::Result<Vec<String>> {
+pub(super) fn java_proxy_properties_from_env() -> Result<Vec<String>, AndroidToolchainError> {
     let Some(proxy) = proxy_env_value() else {
         return Ok(Vec::new());
     };
@@ -730,11 +924,11 @@ fn sdkmanager_requires_license_acceptance(output: &Output) -> bool {
 async fn run_sdkmanager_output_with_java(
     args: Vec<OsString>,
     stdin_payload: Option<&str>,
-) -> eyre::Result<Output> {
+) -> Result<Output, AndroidToolchainError> {
     let (sdkmanager_path, sdk_root) = resolve_sdkmanager_and_root().await?;
     let java_home = Java::detect_home()
         .await
-        .ok_or_else(|| eyre::eyre!("Java runtime not found while invoking sdkmanager"))?;
+        .ok_or(AndroidToolchainError::JavaNotFound)?;
     let java_bin = java_home.join("bin");
     let path_env = prepend_path_entry(&java_bin, env::var_os("PATH"))?;
 
@@ -762,21 +956,21 @@ async fn run_sdkmanager_output_with_java(
         use std::process::Stdio;
 
         cmd.stdin(Stdio::piped());
-        let mut child = command(&mut cmd).spawn().map_err(eyre::Report::from)?;
+        let mut child = command(&mut cmd).spawn()?;
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(stdin_payload.as_bytes())
-                .await
-                .map_err(eyre::Report::from)?;
-            stdin.flush().await.map_err(eyre::Report::from)?;
+            stdin.write_all(stdin_payload.as_bytes()).await?;
+            stdin.flush().await?;
         }
-        child.output().await.map_err(eyre::Report::from)
+        child.output().await.map_err(AndroidToolchainError::from)
     } else {
-        command(&mut cmd).output().await.map_err(eyre::Report::from)
+        command(&mut cmd)
+            .output()
+            .await
+            .map_err(AndroidToolchainError::from)
     }
 }
 
-async fn accept_sdkmanager_licenses() -> eyre::Result<()> {
+async fn accept_sdkmanager_licenses() -> Result<(), AndroidToolchainError> {
     let license_input = sdkmanager_confirmation_input();
     let output =
         run_sdkmanager_output_with_java(vec![OsString::from("--licenses")], Some(&license_input))
@@ -784,13 +978,12 @@ async fn accept_sdkmanager_licenses() -> eyre::Result<()> {
     if output.status.success() {
         return Ok(());
     }
-    Err(eyre::eyre!(
-        "Failed to accept Android SDK licenses. {}",
-        sdkmanager_combined_output(&output)
+    Err(AndroidToolchainError::LicenseAcceptance(
+        sdkmanager_combined_output(&output),
     ))
 }
 
-async fn install_android_sdk_package(package_id: &str) -> eyre::Result<()> {
+async fn install_android_sdk_package(package_id: &str) -> Result<(), AndroidToolchainError> {
     let install_args = vec![OsString::from("--install"), OsString::from(package_id)];
     let confirmation_input = sdkmanager_confirmation_input();
     let mut output =
@@ -803,18 +996,17 @@ async fn install_android_sdk_package(package_id: &str) -> eyre::Result<()> {
         return Ok(());
     }
 
-    Err(eyre::eyre!(
-        "Failed to install package `{package_id}` via sdkmanager. {}",
-        sdkmanager_combined_output(&output)
-    ))
+    Err(AndroidToolchainError::PackageInstall {
+        package_id: package_id.to_owned(),
+        output: sdkmanager_combined_output(&output),
+    })
 }
 
-async fn list_sdk_package_ids() -> eyre::Result<Vec<String>> {
+async fn list_sdk_package_ids() -> Result<Vec<String>, AndroidToolchainError> {
     let output = run_sdkmanager_output_with_java(vec![OsString::from("--list")], None).await?;
     if !output.status.success() {
-        return Err(eyre::eyre!(
-            "Failed to list Android SDK packages via sdkmanager. {}",
-            sdkmanager_combined_output(&output)
+        return Err(AndroidToolchainError::PackageList(
+            sdkmanager_combined_output(&output),
         ));
     }
 
@@ -889,13 +1081,16 @@ fn select_installed_ndk_path(ndk_dir: &Path, required_version: Option<&str>) -> 
     versions.pop()
 }
 
-fn ndk_version_from_package_id(package_id: &str) -> eyre::Result<&str> {
+fn ndk_version_from_package_id(package_id: &str) -> Result<&str, AndroidToolchainError> {
     package_id
         .strip_prefix("ndk;")
-        .ok_or_else(|| eyre::eyre!("Invalid Android NDK package id `{package_id}`"))
+        .ok_or_else(|| AndroidToolchainError::InvalidNdkPackageId(package_id.to_owned()))
 }
 
-fn ndk_path_for_package_id(sdk_root: &Path, package_id: &str) -> eyre::Result<PathBuf> {
+fn ndk_path_for_package_id(
+    sdk_root: &Path,
+    package_id: &str,
+) -> Result<PathBuf, AndroidToolchainError> {
     Ok(sdk_root
         .join("ndk")
         .join(ndk_version_from_package_id(package_id)?))
@@ -905,16 +1100,15 @@ fn ndk_layout_is_complete(ndk_path: &Path) -> bool {
     ndk_path.join("toolchains/llvm/prebuilt").exists()
 }
 
-async fn remove_directory_if_exists(path: &Path) -> eyre::Result<()> {
+async fn remove_directory_if_exists(path: &Path) -> io::Result<()> {
     let path = path.to_path_buf();
     smol::unblock(move || {
         if path.exists() {
             remove_dir_all::remove_dir_all(&path)?;
         }
-        Ok::<(), eyre::Report>(())
+        Ok(())
     })
-    .await?;
-    Ok(())
+    .await
 }
 
 const fn kotlinc_binary_name() -> &'static str {
@@ -930,7 +1124,7 @@ fn kotlin_executable_from_home(home: &Path) -> Option<PathBuf> {
     executable.exists().then_some(executable)
 }
 
-fn managed_kotlin_home(version: &str) -> eyre::Result<PathBuf> {
+fn managed_kotlin_home(version: &str) -> Result<PathBuf, AndroidToolchainError> {
     Ok(water_home_dir()?.join("toolchains/kotlin").join(version))
 }
 
@@ -940,7 +1134,7 @@ fn kotlin_compiler_release_url(version: &str) -> String {
     )
 }
 
-fn find_kotlin_home_dir(root: &Path) -> eyre::Result<PathBuf> {
+fn find_kotlin_home_dir(root: &Path) -> Result<PathBuf, AndroidToolchainError> {
     let executable_name = kotlinc_binary_name();
     for entry in WalkDir::new(root) {
         let entry = entry?;
@@ -956,18 +1150,17 @@ fn find_kotlin_home_dir(root: &Path) -> eyre::Result<PathBuf> {
             continue;
         }
 
-        let bin_dir = path.parent().ok_or_else(|| {
-            eyre::eyre!("Invalid Kotlin compiler archive layout (missing bin directory)")
-        })?;
-        let kotlin_home = bin_dir.parent().ok_or_else(|| {
-            eyre::eyre!("Invalid Kotlin compiler archive layout (missing compiler root)")
-        })?;
+        let bin_dir = path
+            .parent()
+            .ok_or(AndroidToolchainError::KotlinMissingBinDir)?;
+        let kotlin_home = bin_dir
+            .parent()
+            .ok_or(AndroidToolchainError::KotlinMissingRoot)?;
         return Ok(kotlin_home.to_path_buf());
     }
 
-    Err(eyre::eyre!(
-        "Kotlin compiler archive does not contain {}",
-        executable_name
+    Err(AndroidToolchainError::KotlinMissingCompiler(
+        executable_name.to_owned(),
     ))
 }
 
@@ -1004,7 +1197,7 @@ fn kotlin_version_is_compatible(installed: &str, required: &str) -> bool {
     compare_version_segments(&installed_segments, &required_segments) != Ordering::Less
 }
 
-async fn kotlin_compiler_version(kotlinc_path: &Path) -> eyre::Result<String> {
+async fn kotlin_compiler_version(kotlinc_path: &Path) -> Result<String, AndroidToolchainError> {
     let output = run_command_output_os(kotlinc_path, ["-version"]).await?;
     let combined = format!(
         "{} {}",
@@ -1012,15 +1205,14 @@ async fn kotlin_compiler_version(kotlinc_path: &Path) -> eyre::Result<String> {
         String::from_utf8_lossy(&output.stderr)
     );
     parse_kotlinc_version_output(&combined).ok_or_else(|| {
-        eyre::eyre!(
-            "Failed to parse Kotlin compiler version from `{}` output: {}",
-            kotlinc_path.display(),
-            combined.trim()
-        )
+        AndroidToolchainError::KotlinVersionParse {
+            path: kotlinc_path.to_path_buf(),
+            output: combined.trim().to_owned(),
+        }
     })
 }
 
-async fn install_managed_kotlin_compiler(version: &str) -> eyre::Result<PathBuf> {
+async fn install_managed_kotlin_compiler(version: &str) -> Result<PathBuf, AndroidToolchainError> {
     let install_home = managed_kotlin_home(version)?;
     if let Some(kotlinc_path) = kotlin_executable_from_home(&install_home)
         && let Ok(installed_version) = kotlin_compiler_version(&kotlinc_path).await
@@ -1031,13 +1223,11 @@ async fn install_managed_kotlin_compiler(version: &str) -> eyre::Result<PathBuf>
 
     let install_parent = install_home
         .parent()
-        .ok_or_else(|| eyre::eyre!("Managed Kotlin install path has no parent"))?
+        .ok_or(AndroidToolchainError::KotlinInstallPathNoParent)?
         .to_path_buf();
     {
         let install_parent = install_parent.clone();
-        smol::unblock(move || std::fs::create_dir_all(&install_parent))
-            .await
-            .map_err(eyre::Report::from)?;
+        smol::unblock(move || std::fs::create_dir_all(&install_parent)).await?;
     }
 
     let temp_dir = {
@@ -1046,7 +1236,6 @@ async fn install_managed_kotlin_compiler(version: &str) -> eyre::Result<PathBuf>
             tempfile::Builder::new()
                 .prefix(".water-kotlin-")
                 .tempdir_in(&install_parent)
-                .map_err(eyre::Report::from)
         })
         .await?
     };
@@ -1056,22 +1245,18 @@ async fn install_managed_kotlin_compiler(version: &str) -> eyre::Result<PathBuf>
         .join(format!("kotlin-compiler-{version}.zip"));
     {
         let extract_dir = extract_dir.clone();
-        smol::unblock(move || {
-            std::fs::create_dir_all(&extract_dir)?;
-            Ok::<_, eyre::Report>(())
-        })
-        .await?;
+        smol::unblock(move || std::fs::create_dir_all(&extract_dir)).await?;
     }
 
     download_file_with_redirect(&kotlin_compiler_release_url(version), &archive_path).await?;
     {
         let archive_path = archive_path.clone();
         let extract_dir = extract_dir.clone();
-        smol::unblock(move || {
+        smol::unblock(move || -> Result<(), AndroidToolchainError> {
             let archive_file = std::fs::File::open(&archive_path)?;
             let mut archive = zip::ZipArchive::new(archive_file)?;
             archive.extract(&extract_dir)?;
-            Ok::<_, eyre::Report>(())
+            Ok(())
         })
         .await?;
     }
@@ -1084,24 +1269,23 @@ async fn install_managed_kotlin_compiler(version: &str) -> eyre::Result<PathBuf>
     {
         let extracted_home = extracted_home.clone();
         let install_home = install_home.clone();
-        smol::unblock(move || std::fs::rename(extracted_home, install_home))
-            .await
-            .map_err(eyre::Report::from)?;
+        smol::unblock(move || std::fs::rename(extracted_home, install_home)).await?;
     }
 
-    let kotlinc_path = kotlin_executable_from_home(&install_home).ok_or_else(|| {
-        eyre::eyre!(
-            "Kotlin compiler `{version}` was extracted but `{}` is still missing",
-            kotlinc_binary_name()
-        )
-    })?;
+    let kotlinc_path = kotlin_executable_from_home(&install_home).ok_or(
+        AndroidToolchainError::KotlinCompilerStillMissing {
+            version: version.to_owned(),
+            executable: kotlinc_binary_name(),
+        },
+    )?;
     let installed_version = kotlin_compiler_version(&kotlinc_path).await?;
     if kotlin_version_is_compatible(&installed_version, version) {
         Ok(kotlinc_path)
     } else {
-        Err(eyre::eyre!(
-            "Installed Kotlin compiler version `{installed_version}` does not satisfy required version `{version}`"
-        ))
+        Err(AndroidToolchainError::KotlinVersionMismatch {
+            installed: installed_version,
+            required: version.to_owned(),
+        })
     }
 }
 
@@ -1109,28 +1293,23 @@ const fn required_kotlin_version() -> &'static str {
     build_info::ANDROID_KOTLIN_VERSION
 }
 
-async fn required_ndk_package_id() -> eyre::Result<String> {
+async fn required_ndk_package_id() -> Result<String, AndroidToolchainError> {
     let runtime_build_gradle =
         find_file_in_current_workspace(Path::new(ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH))
-            .ok_or_else(|| {
-                eyre::eyre!(
-                    "Failed to locate `{ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH}` while resolving the required Android NDK version"
-                )
+            .ok_or(AndroidToolchainError::RuntimeGradleMissing {
+                path: ANDROID_RUNTIME_BUILD_GRADLE_RELATIVE_PATH,
             })?;
     let contents = smol::fs::read_to_string(&runtime_build_gradle)
         .await
-        .wrap_err_with(|| {
-            format!(
-                "Failed to read Android runtime Gradle config at `{}`",
-                runtime_build_gradle.display()
-            )
+        .map_err(|source| AndroidToolchainError::RuntimeGradleRead {
+            path: runtime_build_gradle.clone(),
+            source,
         })?;
     let version =
         parse_android_ndk_version_from_runtime_build_gradle(&contents).ok_or_else(|| {
-            eyre::eyre!(
-                "Failed to parse `ndkVersion` from `{}`",
-                runtime_build_gradle.display()
-            )
+            AndroidToolchainError::NdkVersionUnparseable {
+                path: runtime_build_gradle.clone(),
+            }
         })?;
     let package_id = format!("ndk;{version}");
     let available_packages = list_sdk_package_ids().await?;
@@ -1140,14 +1319,14 @@ async fn required_ndk_package_id() -> eyre::Result<String> {
     {
         Ok(package_id)
     } else {
-        Err(eyre::eyre!(
-            "Required Android NDK package `{package_id}` from `{}` is not available via `sdkmanager --list`",
-            runtime_build_gradle.display()
-        ))
+        Err(AndroidToolchainError::NdkPackageUnavailable {
+            package_id,
+            gradle_path: runtime_build_gradle,
+        })
     }
 }
 
-async fn latest_android_platform_package_id() -> eyre::Result<String> {
+async fn latest_android_platform_package_id() -> Result<String, AndroidToolchainError> {
     list_sdk_package_ids()
         .await?
         .into_iter()
@@ -1156,12 +1335,10 @@ async fn latest_android_platform_package_id() -> eyre::Result<String> {
         })
         .max_by_key(|(api_level, _)| *api_level)
         .map(|(_, package_id)| package_id)
-        .ok_or_else(|| {
-            eyre::eyre!("No installable Android platform package found via `sdkmanager --list`")
-        })
+        .ok_or(AndroidToolchainError::NoPlatformPackage)
 }
 
-async fn latest_android_build_tools_package_id() -> eyre::Result<String> {
+async fn latest_android_build_tools_package_id() -> Result<String, AndroidToolchainError> {
     let mut build_tools_packages = list_sdk_package_ids()
         .await?
         .into_iter()
@@ -1170,9 +1347,9 @@ async fn latest_android_build_tools_package_id() -> eyre::Result<String> {
     build_tools_packages.sort_by(|left, right| compare_sdk_package_ids(left, right));
     build_tools_packages.dedup();
 
-    build_tools_packages.pop().ok_or_else(|| {
-        eyre::eyre!("No installable Android build-tools package found via `sdkmanager --list`")
-    })
+    build_tools_packages
+        .pop()
+        .ok_or(AndroidToolchainError::NoBuildToolsPackage)
 }
 
 const fn rust_target_for_android_abi(abi: AndroidAbi) -> &'static str {
@@ -1194,7 +1371,7 @@ fn required_android_rust_targets_for_abis(abis: &[AndroidAbi]) -> Vec<String> {
     targets
 }
 
-async fn installed_rustup_targets() -> eyre::Result<Vec<String>> {
+async fn installed_rustup_targets() -> Result<Vec<String>, CommandError> {
     let installed = run_command("rustup", ["target", "list", "--installed"]).await?;
     Ok(installed
         .lines()
@@ -1323,7 +1500,7 @@ pub enum FailToInstallAndroidSdk {
     #[error("Failed to install Android Studio via winget: {0}")]
     WingetInstallFailed(String),
     #[error("Failed to install Android SDK prerequisites: {0}")]
-    InstallFailed(eyre::Report),
+    InstallFailed(#[from] AndroidToolchainError),
     #[error(
         "Android SDK setup completed, but SDK root is still not detectable. Install Android command-line tools and set `ANDROID_SDK_ROOT`."
     )]
@@ -1410,7 +1587,9 @@ impl Installation for AndroidSdkInstallation {
                 .map_err(|_| FailToInstallAndroidSdk::BrewNotFound)?;
             brew.install_cask("android-studio")
                 .await
-                .map_err(FailToInstallAndroidSdk::InstallFailed)?;
+                .map_err(|source| {
+                    FailToInstallAndroidSdk::InstallFailed(AndroidToolchainError::from(source))
+                })?;
         } else if cfg!(target_os = "linux") {
             // Linux CI/headless containers only need command-line tools in the SDK root.
         } else {
@@ -1418,13 +1597,13 @@ impl Installation for AndroidSdkInstallation {
         }
 
         let sdk_root = configured_android_sdk_path()
-            .ok_or_else(|| eyre::eyre!("Android SDK root cannot be determined on this host"))
+            .ok_or(AndroidToolchainError::SdkRootUnavailable)
             .map_err(FailToInstallAndroidSdk::InstallFailed)?;
         {
             let sdk_root = sdk_root.clone();
             smol::unblock(move || std::fs::create_dir_all(&sdk_root))
                 .await
-                .map_err(eyre::Report::from)
+                .map_err(AndroidToolchainError::from)
                 .map_err(FailToInstallAndroidSdk::InstallFailed)?;
         }
         ensure_cmdline_tools_available(&sdk_root)
@@ -1469,9 +1648,12 @@ pub enum FailToInstallAndroidPlatformTools {
     #[error("Android SDK command-line tools (`sdkmanager`) not found.")]
     SdkManagerNotFound,
     #[error("Failed to install Android Platform-Tools via sdkmanager: {0}")]
-    InstallFailed(eyre::Report),
+    InstallFailed(#[from] AndroidToolchainError),
     #[error("Failed to install Android x86_64 host-tools compatibility packages: {0}")]
-    HostToolsCompatFailed(eyre::Report),
+    HostToolsCompatFailed(#[from] LinuxPackageManagerError),
+    /// Post-install `adb` verification reported an unhealthy toolchain state.
+    #[error("{0}")]
+    VerificationFailed(#[from] ToolchainError<AndroidPlatformToolsInstallation>),
     #[error("Android Platform-Tools (`adb`) is still missing after installation.")]
     StillMissing,
 }
@@ -1536,11 +1718,9 @@ async fn verify_android_platform_tools_after_install()
                 .map_err(FailToInstallAndroidPlatformTools::HostToolsCompatFailed)?;
             verify_android_platform_tools_executable(&adb_path)
                 .await
-                .map_err(|error| FailToInstallAndroidPlatformTools::InstallFailed(error.into()))
+                .map_err(FailToInstallAndroidPlatformTools::VerificationFailed)
         }
-        Err(error) => Err(FailToInstallAndroidPlatformTools::InstallFailed(
-            error.into(),
-        )),
+        Err(error) => Err(FailToInstallAndroidPlatformTools::VerificationFailed(error)),
     }
 }
 
@@ -1554,7 +1734,7 @@ pub enum FailToInstallAndroidSdkPlatforms {
     #[error("Android SDK command-line tools (`sdkmanager`) not found.")]
     SdkManagerNotFound,
     #[error("Failed to install Android SDK platform package via sdkmanager: {0}")]
-    InstallFailed(eyre::Report),
+    InstallFailed(#[from] AndroidToolchainError),
     #[error("Android SDK platforms are still missing after installation.")]
     StillMissing,
 }
@@ -1615,7 +1795,7 @@ pub enum FailToInstallAndroidBuildTools {
     #[error("Android SDK command-line tools (`sdkmanager`) not found.")]
     SdkManagerNotFound,
     #[error("Failed to install Android SDK build-tools package via sdkmanager: {0}")]
-    InstallFailed(eyre::Report),
+    InstallFailed(#[from] AndroidToolchainError),
     #[error("Android SDK build-tools are still missing after installation.")]
     StillMissing,
 }
@@ -1692,10 +1872,10 @@ pub enum FailToInstallAndroidRustTargets {
         /// Target triple that failed to install.
         target: String,
         /// Underlying command error.
-        source: eyre::Report,
+        source: CommandError,
     },
     #[error("Failed to list installed Rust targets after installation: {0}")]
-    QueryTargets(eyre::Report),
+    QueryTargets(CommandError),
     #[error("Android Rust targets are still missing after installation: {missing_targets}")]
     StillMissing {
         /// Comma-separated missing targets.
@@ -2215,7 +2395,7 @@ pub enum FailToInstallJava {
     )]
     UnsupportedPackageManager,
     #[error("Failed to install Java: {0}")]
-    InstallFailed(eyre::Report),
+    InstallFailed(#[from] CommandError),
     #[error(
         "Automatic Java installation is not supported on this host. Install a JDK manually and set `JAVA_HOME`."
     )]
@@ -2288,12 +2468,12 @@ impl Installation for JavaInstallation {
     }
 }
 
-fn map_linux_error_for_java(error: eyre::Report) -> FailToInstallJava {
-    let message = error.to_string();
-    if message.contains("No supported Linux package manager found") {
-        FailToInstallJava::UnsupportedPackageManager
-    } else {
-        FailToInstallJava::InstallFailed(error)
+fn map_linux_error_for_java(error: LinuxPackageManagerError) -> FailToInstallJava {
+    match error {
+        LinuxPackageManagerError::UnsupportedPackageManager => {
+            FailToInstallJava::UnsupportedPackageManager
+        }
+        LinuxPackageManagerError::Command(source) => FailToInstallJava::InstallFailed(source),
     }
 }
 
@@ -2395,7 +2575,7 @@ pub struct KotlinInstallation;
 #[derive(Debug, thiserror::Error)]
 pub enum FailToInstallKotlin {
     #[error("Failed to install Kotlin compiler: {0}")]
-    InstallFailed(eyre::Report),
+    InstallFailed(#[from] AndroidToolchainError),
     #[error("Kotlin compiler is still missing after installation.")]
     StillMissing,
 }
@@ -2517,9 +2697,12 @@ pub enum FailToInstallAndroidNdk {
     #[error("Android SDK command-line tools (`sdkmanager`) not found.")]
     SdkManagerNotFound,
     #[error("Failed to install Android NDK via sdkmanager: {0}")]
-    InstallFailed(eyre::Report),
+    InstallFailed(#[from] AndroidToolchainError),
     #[error("Failed to install Android x86_64 host-tools compatibility packages: {0}")]
-    HostToolsCompatFailed(eyre::Report),
+    HostToolsCompatFailed(#[from] LinuxPackageManagerError),
+    /// Post-install NDK verification reported an unhealthy toolchain state.
+    #[error("{0}")]
+    VerificationFailed(#[from] ToolchainError<AndroidNdkInstallation>),
     #[error("Android NDK is still missing after installation.")]
     StillMissing,
     #[error("Android NDK is installed but incomplete (`toolchains/llvm/prebuilt` is missing).")]
@@ -2586,6 +2769,7 @@ impl Installation for AndroidNdkInstallation {
         if ndk_path.exists() && !ndk_layout_is_complete(&ndk_path) {
             remove_directory_if_exists(&ndk_path)
                 .await
+                .map_err(AndroidToolchainError::from)
                 .map_err(FailToInstallAndroidNdk::InstallFailed)?;
         }
         install_android_sdk_package(&ndk_package)
@@ -2613,8 +2797,8 @@ async fn verify_android_ndk_after_install(ndk_path: &Path) -> Result<(), FailToI
                 .map_err(FailToInstallAndroidNdk::HostToolsCompatFailed)?;
             verify_ndk_host_toolchain_executable(ndk_path)
                 .await
-                .map_err(|error| FailToInstallAndroidNdk::InstallFailed(error.into()))
+                .map_err(FailToInstallAndroidNdk::VerificationFailed)
         }
-        Err(error) => Err(FailToInstallAndroidNdk::InstallFailed(error.into())),
+        Err(error) => Err(FailToInstallAndroidNdk::VerificationFailed(error)),
     }
 }

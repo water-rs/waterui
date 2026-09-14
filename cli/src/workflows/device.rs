@@ -7,7 +7,6 @@ use std::{
     pin::Pin,
 };
 
-use color_eyre::eyre;
 use smol::{
     channel::{Receiver, Sender, unbounded},
     stream::Stream,

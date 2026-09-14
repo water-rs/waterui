@@ -5,7 +5,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use askama::Template;
-use color_eyre::eyre::{self, Context, bail};
+use eyre::{Context, bail};
 use futures_util::FutureExt as _;
 use smol::{
     channel::{Sender, bounded},

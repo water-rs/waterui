@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use color_eyre::eyre::{self, WrapErr};
+use eyre::WrapErr;
 use fs4::{FileExt, TryLockError};
 use serde::{Deserialize, Serialize};
 use smol::fs;
@@ -82,12 +82,17 @@ const fn default_build_cache_cleanup_after_unused_days() -> u64 {
     DEFAULT_BUILD_CACHE_CLEANUP_AFTER_UNUSED_DAYS
 }
 
+/// The current user's home directory could not be determined.
+#[derive(Debug, thiserror::Error)]
+#[error("Could not determine home directory")]
+pub struct HomeDirError;
+
 /// Return the Water home directory root at `~/.water`.
 ///
 /// # Errors
 /// Returns an error if the current user's home directory cannot be determined.
-pub fn water_home_dir() -> eyre::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| eyre::eyre!("Could not determine home directory"))?;
+pub fn water_home_dir() -> Result<PathBuf, HomeDirError> {
+    let home = dirs::home_dir().ok_or(HomeDirError)?;
     Ok(home.join(".water"))
 }
 

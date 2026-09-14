@@ -3,7 +3,7 @@
 use std::{collections::HashSet, path::PathBuf};
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::{Result, bail};
+use eyre::{Result, bail};
 use serde::Serialize;
 
 use crate::shell::Shell;
@@ -207,7 +207,7 @@ async fn scan_ios_devices() -> Result<Vec<AppleSimulator>> {
 }
 
 fn resolve_android_adb() -> Result<PathBuf> {
-    AndroidSdk::adb_path().ok_or_else(|| color_eyre::eyre::eyre!("Android adb not found"))
+    AndroidSdk::adb_path().ok_or_else(|| eyre::eyre!("Android adb not found"))
 }
 
 /// Scan Android devices and emulators.
@@ -224,7 +224,7 @@ async fn scan_android_devices(
             .arg("-list-avds")
             .output()
             .await
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to list AVDs: {e}"))
+            .map_err(|e| eyre::eyre!("Failed to list AVDs: {e}"))
             .and_then(|output| {
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);

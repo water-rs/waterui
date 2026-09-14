@@ -3,7 +3,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{Context as _, Result, bail};
+use eyre::{Context as _, Result, bail};
 
 use crate::utils::run_command_os;
 
@@ -114,9 +114,7 @@ async fn install_name(path: &Path) -> Result<String> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| {
-            color_eyre::eyre::eyre!("Dynamic library {} has no install name", path.display())
-        })
+        .ok_or_else(|| eyre::eyre!("Dynamic library {} has no install name", path.display()))
 }
 
 fn linked_libraries(output: &str) -> impl Iterator<Item = &str> {

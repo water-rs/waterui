@@ -1,7 +1,6 @@
 //! Project management and build utilities for `WaterUI` CLI.
 
 use cargo_toml::Manifest as CargoManifest;
-use color_eyre::eyre;
 use futures_util::FutureExt as _;
 use futures_util::future::{BoxFuture, Shared};
 use tracing::info;

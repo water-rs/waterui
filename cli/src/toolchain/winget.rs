@@ -1,8 +1,6 @@
 //! Shared helper for Windows package installation via winget.
 
-use color_eyre::eyre;
-
-use crate::utils::{run_command, run_command_output_os, which};
+use crate::utils::{CommandError, run_command, run_command_output_os, which};
 
 /// Errors from winget-backed installation.
 #[derive(Debug, thiserror::Error)]
@@ -14,7 +12,7 @@ pub enum WingetInstallError {
     WingetNotFound,
     /// Failed to invoke winget commands.
     #[error("winget command failed: {0}")]
-    CommandFailed(#[from] eyre::Report),
+    CommandFailed(#[from] CommandError),
     /// Package still not detected after install command succeeded.
     #[error("winget install completed but package `{package_id}` is still not detected")]
     NotInstalled { package_id: &'static str },

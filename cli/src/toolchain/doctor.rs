@@ -3,8 +3,6 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use color_eyre::eyre;
-
 use crate::{
     android::{
         device::AndroidDevice,

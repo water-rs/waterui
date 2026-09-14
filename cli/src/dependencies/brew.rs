@@ -1,10 +1,8 @@
 //! Brew toolchain manager for `WaterUI` CLI
 
-use color_eyre::eyre;
-
 use crate::{
     toolchain::{Installation, Toolchain, ToolchainError},
-    utils::{run_command, which},
+    utils::{CommandError, run_command, which},
 };
 
 /// Homebrew toolchain manager
@@ -19,8 +17,8 @@ impl Brew {
     ///
     /// # Errors
     ///
-    /// Returns an `eyre::Result` indicating success or failure of the installation.
-    pub async fn install(&self, name: &str) -> eyre::Result<()> {
+    /// Returns an error if the `brew install` command fails.
+    pub async fn install(&self, name: &str) -> Result<(), CommandError> {
         run_command("brew", ["install", name]).await?;
         Ok(())
     }
@@ -32,8 +30,8 @@ impl Brew {
     ///
     /// # Errors
     ///
-    /// Returns an `eyre::Result` indicating success or failure of the installation.
-    pub async fn install_cask(&self, cask: &str) -> eyre::Result<()> {
+    /// Returns an error if the `brew install --cask` command fails.
+    pub async fn install_cask(&self, cask: &str) -> Result<(), CommandError> {
         run_command("brew", ["install", "--cask", cask]).await?;
         Ok(())
     }
@@ -62,7 +60,7 @@ impl Toolchain for Brew {
 pub struct BrewInstallation;
 
 impl Installation for BrewInstallation {
-    type Error = eyre::Report;
+    type Error = CommandError;
 
     async fn install(&self) -> Result<(), Self::Error> {
         run_command(

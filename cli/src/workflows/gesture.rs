@@ -5,8 +5,6 @@
 
 use std::time::Duration;
 
-use color_eyre::eyre;
-
 use crate::capture::{DevicePlatform, detect_platform};
 use crate::diff::DiffResult;
 use crate::{android, apple};

@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::Result;
+use eyre::Result;
 
 use crate::shell::Shell;
 use crate::{header, note, success};
@@ -103,7 +103,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 /// Ambiguity is reported rather than guessed at: attaching to the wrong
 /// application is more confusing than being asked which one.
 fn discover(shell: &Shell) -> Result<waterui_inspector_protocol::discovery::Advertisement> {
-    use color_eyre::eyre::eyre;
+    use eyre::eyre;
 
     let mut found = waterui_inspector_protocol::discovery::list()
         .map_err(|error| eyre!("could not read advertised inspector endpoints: {error}"))?;
@@ -143,7 +143,7 @@ fn discover(shell: &Shell) -> Result<waterui_inspector_protocol::discovery::Adve
 /// application publishes its token, so it can be looked up; one on a device
 /// cannot be, and that is said plainly instead.
 fn token_for(addr: SocketAddr) -> Result<String> {
-    use color_eyre::eyre::eyre;
+    use eyre::eyre;
 
     let found = waterui_inspector_protocol::discovery::list()
         .map_err(|error| eyre!("could not read advertised inspector endpoints: {error}"))?;

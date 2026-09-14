@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use color_eyre::eyre;
 use smol::fs;
 
 use crate::project::Project;
