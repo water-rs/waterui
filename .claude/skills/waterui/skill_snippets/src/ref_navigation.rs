@@ -51,6 +51,9 @@ fn library_split() -> impl View {
 fn settings_stack() -> impl View {
     text("settings")
 }
+fn search_stack() -> impl View {
+    text("search")
+}
 
 // ---------------------------------------------------------------------------
 // navigation.md § "## Tabs" — rust block 1/13
@@ -68,6 +71,7 @@ pub fn navigation_block_01() -> impl View {
         Inbox,
         Library,
         Settings,
+        Search,
     }
 
     let pane = binding(Pane::Inbox);
@@ -87,6 +91,12 @@ pub fn navigation_block_01() -> impl View {
                 label("Settings").icon(mdi::cog()),
                 settings_stack,
             ),
+            Tab::container(
+                Pane::Search,
+                label("Search").icon(mdi::magnify()),
+                search_stack,
+            )
+            .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
         ],
     )
     .style(tab_style::automatic())

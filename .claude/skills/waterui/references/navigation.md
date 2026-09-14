@@ -37,7 +37,7 @@ compensate for it with an `hstack` that imitates a bar.
 
 ```rust
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Pane { Inbox, Library, Settings }
+enum Pane { Inbox, Library, Settings, Search }
 
 let pane = binding(Pane::Inbox);
 
@@ -46,6 +46,8 @@ Tabs::new(&pane, vec![
         .badge(unread_count),
     Tab::container(Pane::Library, label("Library").icon(mdi::image_album()), library_split),
     Tab::container(Pane::Settings, label("Settings").icon(mdi::cog()), settings_stack),
+    Tab::container(Pane::Search, label("Search").icon(mdi::magnify()), search_stack)
+        .role(TabRole::Search),             // iOS: the trailing system search tab; elsewhere a regular tab
 ])
 .style(tab_style::automatic())
 ```

@@ -1126,6 +1126,20 @@ typedef enum WuiNavigationSplitStyle {
 } WuiNavigationSplitStyle;
 
 /**
+ *C ABI mirror of `TabRole`.
+ */
+typedef enum WuiTabRole {
+  /**
+   *Mirrors `TabRole::Regular`.
+   */
+  WuiTabRole_Regular,
+  /**
+   *Mirrors `TabRole::Search`.
+   */
+  WuiTabRole_Search,
+} WuiTabRole;
+
+/**
  * Native adaptive tab style.
  */
 typedef enum WuiTabStyle {
@@ -6357,6 +6371,10 @@ typedef struct WuiTab {
    * A backend whose tab item takes an image has to rasterize this itself.
    */
   struct WuiAnyView *icon;
+  /**
+   * The part the tab plays in the container's chrome.
+   */
+  enum WuiTabRole role;
 } WuiTab;
 
 /**
