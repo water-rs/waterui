@@ -4,7 +4,7 @@ use waterui::background::Material;
 use waterui::component::list::{List, ListItem};
 use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
-use waterui::shape::RoundedRectangle;
+use waterui::shape::{Circle, RoundedRectangle};
 use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
 
@@ -14,6 +14,7 @@ enum SidebarDestination {
     Scheduled,
     All,
     Flagged,
+    Urgent,
     Completed,
 }
 
@@ -24,6 +25,7 @@ impl SidebarDestination {
             Self::Scheduled => "Scheduled",
             Self::All => "All",
             Self::Flagged => "Flagged",
+            Self::Urgent => "Urgent",
             Self::Completed => "Completed",
         }
     }
@@ -34,27 +36,34 @@ impl SidebarDestination {
             Self::Scheduled => mdi::calendar_clock(),
             Self::All => mdi::inbox(),
             Self::Flagged => mdi::flag(),
-            Self::Completed => mdi::check_circle(),
+            Self::Urgent => mdi::r#bell_alert(),
+            Self::Completed => mdi::r#check(),
         }
     }
 
-    const fn icon_color(self) -> Srgb {
+    /// Tile color, matching the official Reminders smart-list palette.
+    const fn color(self) -> Srgb {
         match self {
             Self::Today => Srgb::from_hex("#4A84F6"),
-            Self::Scheduled => Srgb::from_hex("#F5B84A"),
-            Self::All => Srgb::from_hex("#8F8F96"),
+            Self::Scheduled => Srgb::from_hex("#F2483F"),
+            Self::All => Srgb::from_hex("#54545A"),
             Self::Flagged => Srgb::from_hex("#F28A34"),
-            Self::Completed => Srgb::from_hex("#30BA61"),
+            Self::Urgent => Srgb::from_hex("#E0517E"),
+            Self::Completed => Srgb::from_hex("#8E8E93"),
         }
     }
-}
 
-#[derive(Clone, Identifiable)]
-struct SidebarRow {
-    #[id]
-    id: u32,
-    dest: SidebarDestination,
-    count: i32,
+    /// Slightly darkened variant used for the selected tile.
+    const fn selected_color(self) -> Srgb {
+        match self {
+            Self::Today => Srgb::from_hex("#3A6FD4"),
+            Self::Scheduled => Srgb::from_hex("#D43C34"),
+            Self::All => Srgb::from_hex("#44444A"),
+            Self::Flagged => Srgb::from_hex("#D97A2B"),
+            Self::Urgent => Srgb::from_hex("#C9446E"),
+            Self::Completed => Srgb::from_hex("#76767B"),
+        }
+    }
 }
 
 #[derive(Clone, Identifiable)]
@@ -66,33 +75,26 @@ struct ReminderRow {
     flagged: bool,
 }
 
-fn sidebar_rows() -> [SidebarRow; 5] {
+impl SidebarDestination {
+    const fn count(self) -> i32 {
+        match self {
+            Self::Today => 6,
+            Self::Scheduled => 2,
+            Self::All => 18,
+            Self::Flagged => 1,
+            Self::Urgent => 0,
+            Self::Completed => 12,
+        }
+    }
+}
+
+/// Static user lists shown under "My Lists", mirroring the official app's
+/// colored-badge rows.
+fn user_lists() -> [(&'static str, i32, Srgb); 3] {
     [
-        SidebarRow {
-            id: 1,
-            dest: SidebarDestination::Today,
-            count: 6,
-        },
-        SidebarRow {
-            id: 2,
-            dest: SidebarDestination::Scheduled,
-            count: 2,
-        },
-        SidebarRow {
-            id: 3,
-            dest: SidebarDestination::All,
-            count: 18,
-        },
-        SidebarRow {
-            id: 4,
-            dest: SidebarDestination::Flagged,
-            count: 1,
-        },
-        SidebarRow {
-            id: 5,
-            dest: SidebarDestination::Completed,
-            count: 12,
-        },
+        ("Reminders", 37, Srgb::from_hex("#F28A34")),
+        ("Best Shot", 2, Srgb::from_hex("#4A84F6")),
+        ("Road map of water", 12, Srgb::from_hex("#4A84F6")),
     ]
 }
 
@@ -165,6 +167,7 @@ fn reminders_for(dest: SidebarDestination) -> (&'static [ReminderRow], &'static 
             }],
             &[],
         ),
+        SidebarDestination::Urgent => (&[], &[]),
         SidebarDestination::Completed => (
             &[
                 ReminderRow {
@@ -234,59 +237,97 @@ pub fn demo() -> impl View {
 }
 
 fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>) -> impl View {
-    let rows = sidebar_rows();
-    let query = search.clone().map(|value| normalized_search_query(&value));
+    use waterui::layout::grid::{grid, row};
+
+    let query = search
+        .clone()
+        .map(|value| normalized_search_query(&value))
+        .computed();
+    let tile =
+        |dest: SidebarDestination| destination_tile(dest, selection.clone(), query.clone());
 
     vstack((
-        vstack((
-            text("Reminders").title().bold().foreground(Foreground),
-            text!("Search: {search}")
-                .caption()
-                .foreground(MutedForeground),
-            text("My Lists").caption().foreground(MutedForeground),
-        ))
-        .spacing(10.0)
-        .padding_with(EdgeInsets::all(16.0)),
-        List::for_each(rows, move |row| {
-            let dest = row.dest;
-            let is_selected = selection.clone().map(move |current| current == Some(dest));
-            let selection_for_action = selection.clone();
-            let query = query.clone();
-            let bg = is_selected
-                .select(
-                    Srgb::WHITE.with_opacity(0.14),
-                    Srgb::WHITE.with_opacity(0.0),
-                )
-                .computed();
-            let count = query.map(move |query| {
-                if let Some(query) = query.as_deref() {
-                    let (today_rows, upcoming_rows) = reminders_for(dest);
-                    matching_reminder_count(today_rows, query) as i32
-                        + matching_reminder_count(upcoming_rows, query) as i32
-                } else {
-                    row.count
-                }
-            });
-
-            ListItem::new(
-                hstack((
-                    dest.icon().tint(dest.icon_color()).size(18.0, 18.0),
-                    text(dest.title()).body().foreground(Foreground),
-                    spacer(),
-                    text!("{count}").caption().foreground(MutedForeground),
-                ))
-                .padding_with(EdgeInsets::symmetric(10.0, 14.0))
-                .background(signal_color(bg))
-                .clip(RoundedRectangle::new(10.0))
-                .on_tap({
-                    let selection_for_action = selection_for_action.clone();
-                    move || selection_for_action.set(Some(dest))
-                }),
-            )
-        }),
+        // The official app presents the smart lists as a colored tile grid,
+        // not as list rows.
+        grid(
+            2,
+            [
+                row((tile(SidebarDestination::Today), tile(SidebarDestination::Scheduled))),
+                row((tile(SidebarDestination::All), tile(SidebarDestination::Flagged))),
+                row((tile(SidebarDestination::Urgent), tile(SidebarDestination::Completed))),
+            ],
+        )
+        .spacing(8.0),
+        text("My Lists")
+            .caption()
+            .foreground(MutedForeground)
+            .padding_with(EdgeInsets::new(12.0, 4.0, 4.0, 4.0)),
+        vstack(user_lists().map(|(name, count, color)| user_list_row(name, count, color)))
+            .spacing(2.0)
+            .alignment(HorizontalAlignment::Leading),
     ))
+    .alignment(HorizontalAlignment::Leading)
+    .spacing(6.0)
+    .padding_with(EdgeInsets::all(12.0))
     .width(300.0)
     .background(Material::Thick)
+}
+
+/// One colored smart-list tile: icon + count on top, name at the bottom left,
+/// exactly the geometry the official Reminders sidebar uses.
+fn destination_tile(
+    dest: SidebarDestination,
+    selection: Binding<Option<SidebarDestination>>,
+    query: Computed<Option<String>>,
+) -> impl View {
+    let is_selected = selection.clone().map(move |current| current == Some(dest));
+    let count = query.map(move |query| {
+        if let Some(query) = query.as_deref() {
+            let (today_rows, upcoming_rows) = reminders_for(dest);
+            (matching_reminder_count(today_rows, query)
+                + matching_reminder_count(upcoming_rows, query)) as i32
+        } else {
+            dest.count()
+        }
+    });
+    let bg = is_selected
+        .select(dest.selected_color(), dest.color())
+        .computed();
+
+    vstack((
+        hstack((
+            dest.icon().tint(Srgb::WHITE).size(20.0, 20.0),
+            spacer(),
+            text!("{count}").headline().bold().foreground(Srgb::WHITE),
+        )),
+        spacer(),
+        text(dest.title()).body().bold().foreground(Srgb::WHITE),
+    ))
+    .alignment(HorizontalAlignment::Leading)
+    .spacing(4.0)
+    .padding_with(EdgeInsets::all(10.0))
+    .min_height(56.0)
+    .background(signal_color(bg))
+    .clip(RoundedRectangle::new(10.0))
+    .on_tap(move || selection.set(Some(dest)))
+}
+
+/// A "My Lists" row: colored circular badge, name, trailing count.
+fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
+    hstack((
+        mdi::r#format_list_bulleted()
+            .tint(Srgb::WHITE)
+            .size(14.0, 14.0)
+            .padding_with(EdgeInsets::all(6.0))
+            .background(color)
+            .clip(Circle),
+        text(name).body().foreground(Foreground),
+        spacer(),
+        text!("{count}").caption().foreground(MutedForeground),
+    ))
+    .alignment(VerticalAlignment::Center)
+    .spacing(10.0)
+    .padding_with(EdgeInsets::symmetric(4.0, 8.0))
 }
 
 fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView {
@@ -321,14 +362,15 @@ fn placeholder_view() -> impl View {
 }
 
 fn content_header(dest: SidebarDestination) -> impl View {
-    vstack((
-        text(dest.title()).title().bold().foreground(Foreground),
-        text("Friday, February 6")
-            .caption()
-            .foreground(MutedForeground),
-    ))
-    .spacing(6.0)
-    .padding_with(EdgeInsets::new(14.0, 18.0, 12.0, 18.0))
+    // The official app shows the list name as a large bold title in the
+    // list's accent color, leading-aligned — no date line underneath.
+    text(dest.title())
+        .size(32.0)
+        .bold()
+        .foreground(dest.color())
+        .max_width(f32::INFINITY)
+        .alignment(Alignment::Leading)
+        .padding_with(EdgeInsets::new(14.0, 18.0, 12.0, 18.0))
 }
 
 fn reminder_visible(search: Binding<Str>, row: ReminderRow) -> Computed<bool> {
@@ -366,6 +408,8 @@ fn reminder_section(
             .caption()
             .bold()
             .foreground(MutedForeground)
+            .max_width(f32::INFINITY)
+            .alignment(Alignment::Leading)
             .padding_with(EdgeInsets::new(8.0, 18.0, 0.0, 18.0)),
         List::for_each(rows, move |row| {
             let visible = reminder_visible(search.clone(), row.clone());
@@ -379,7 +423,8 @@ fn reminder_section(
                         row.subtitle
                             .map(|subtitle| text(subtitle).caption().foreground(MutedForeground)),
                     ))
-                    .spacing(2.0),
+                    .spacing(2.0)
+                    .alignment(HorizontalAlignment::Leading),
                     spacer(),
                     when(row.flagged, || {
                         mdi::flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
