@@ -878,6 +878,75 @@ impl ToJavaStruct for crate::components::media::video::WuiAndroidVideoSurfaceHos
     }
 }
 
+/// `MetadataDraggableStruct(contentPtr: Long, draggablePtr: Long)`
+///
+/// The `WuiDraggable` is boxed so Kotlin can pass a stable `*mut WuiDraggable`
+/// back to `draggableGetData` / `dropDraggable`; `dropDraggable` releases both
+/// the box and the wrapper inside it.
+impl ToJavaStruct for crate::WuiMetadataDraggable {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataDraggableStruct"
+            ))
+            .expect("MetadataDraggableStruct class not found");
+        let draggable = Box::into_raw(Box::new(self.value));
+        env.new_object(
+            &class,
+            jni_sig!("(JJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(draggable as jlong),
+            ],
+        )
+        .expect("Failed to create MetadataDraggableStruct")
+    }
+}
+
+/// `MetadataDropDestinationStruct(contentPtr: Long, destinationPtr: Long)`
+///
+/// The `WuiDropDestination` is boxed for the same reason as `WuiDraggable`.
+impl ToJavaStruct for crate::WuiMetadataDropDestination {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataDropDestinationStruct"
+            ))
+            .expect("MetadataDropDestinationStruct class not found");
+        let destination = Box::into_raw(Box::new(self.value));
+        env.new_object(
+            &class,
+            jni_sig!("(JJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(destination as jlong),
+            ],
+        )
+        .expect("Failed to create MetadataDropDestinationStruct")
+    }
+}
+
+/// `DragDataStruct(tag: Int, value: String)`
+impl ToJavaStruct for crate::drag_drop::WuiDragData {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        // SAFETY: this `WuiStr` is owned here, so reclaiming the Rust string
+        // behind it happens exactly once.
+        let value: waterui::Str = unsafe { crate::IntoRust::into_rust(self.value) };
+        let text = env
+            .new_string(value.as_str())
+            .expect("Failed to create drag data string");
+        let class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/DragDataStruct"))
+            .expect("DragDataStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(ILjava/lang/String;)V"),
+            &[JValue::Int(self.tag as jint), JValue::Object(&text)],
+        )
+        .expect("Failed to create DragDataStruct")
+    }
+}
+
 /// Helper to create a `PathCommandStruct` Java object from a `WuiPathCommand`
 fn create_path_command_struct<'local>(
     env: &mut JNIEnv<'local>,
