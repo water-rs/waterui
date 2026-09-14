@@ -265,6 +265,8 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
         vstack(user_lists().map(|(name, count, color)| user_list_row(name, count, color)))
             .spacing(2.0)
             .alignment(HorizontalAlignment::Leading),
+        // Pin content to the top of the column, as the official app does.
+        spacer(),
     ))
     .alignment(HorizontalAlignment::Leading)
     .spacing(6.0)
