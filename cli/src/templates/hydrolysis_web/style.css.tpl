@@ -1,16 +1,5 @@
-html,
-body {
-  margin: 0;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: #ffffff;
-}
-
-body {
-  display: block;
-}
-
+/* Page geometry and background are set inline in index.html so the launch
+   screen paints before this stylesheet arrives. */
 #waterui-canvas {
   display: block;
   width: 100vw;

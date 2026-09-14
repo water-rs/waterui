@@ -1034,7 +1034,6 @@ define_scaffold_templates! {
     HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
     HydrolysisPreviewTestRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_test_runtime.rs.tpl"),
     HydrolysisMcpRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/mcp_runtime.rs.tpl"),
-    HydrolysisWebIndexTemplate => (Hydrolysis, "src/templates/hydrolysis/web/index.html.tpl"),
     Esp32BuildScriptTemplate => (Esp32, "src/templates/esp32/build.rs.tpl"),
     Esp32MainTemplate => (Esp32, "src/templates/esp32/src/main.rs.tpl"),
     Esp32CargoConfigTemplate => (Esp32, "src/templates/esp32/.cargo/config.toml.tpl"),

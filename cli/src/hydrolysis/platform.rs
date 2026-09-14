@@ -4,7 +4,6 @@ use std::ffi::OsString;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use askama::Template;
 use eyre::{Context, bail};
 use futures_util::FutureExt as _;
 use smol::{
@@ -23,7 +22,6 @@ use crate::{
     hydrolysis::backend::HydrolysisBackend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    templates::TemplateContext,
     toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::{command, run_command_os, which},
 };
@@ -44,11 +42,6 @@ const HYDROLYSIS_INIT_HINT: &str = "water run --platform linux --backend hydroly
 const HYDROLYSIS_INIT_HINT: &str = "water run --platform windows --backend hydrolysis";
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 const HYDROLYSIS_INIT_HINT: &str = "initialize hydrolysis backend on macOS, Linux, or Windows";
-
-const HYDROLYSIS_WEB_BOOTSTRAP_TEMPLATE: &str =
-    include_str!("../templates/hydrolysis/web/bootstrap.js.tpl");
-const HYDROLYSIS_WEB_STYLE_TEMPLATE: &str =
-    include_str!("../templates/hydrolysis/web/style.css.tpl");
 
 /// Cargo profile directory the hydrolysis backend's artifacts land in.
 async fn hydrolysis_profile_dir(
@@ -71,12 +64,6 @@ const fn hydrolysis_loader_search_path(platform: TargetPlatform) -> Option<&'sta
         TargetPlatform::Linux => Some("$ORIGIN"),
         _ => None,
     }
-}
-
-#[derive(Template)]
-#[template(path = "src/templates/hydrolysis/web/index.html.tpl", escape = "none")]
-struct HydrolysisWebIndexTemplate<'a> {
-    ctx: &'a TemplateContext,
 }
 
 /// Build hydrolysis binary for the host platform.
@@ -636,8 +623,9 @@ async fn package_hydrolysis_web_site(
     }
     fs::create_dir_all(&site_root).await?;
 
-    write_hydrolysis_web_shell(project, &site_root).await?;
+    // The shell is written after the bundle so the page knows the wasm size.
     build_hydrolysis_web_bundle(&backend_path, &site_root, debug).await?;
+    super::web_launch::write_web_shell(project, &site_root).await?;
     copy_web_assets_and_fonts(project, &site_root).await?;
 
     Ok(site_root)
@@ -687,37 +675,6 @@ async fn build_hydrolysis_web_bundle(
         );
     }
 
-    Ok(())
-}
-
-async fn write_hydrolysis_web_shell(project: &Project, site_root: &Path) -> eyre::Result<()> {
-    let app_name = project
-        .manifest()
-        .package
-        .name
-        .chars()
-        .filter(|ch| ch.is_alphanumeric())
-        .collect::<String>();
-    let ctx = TemplateContext::for_project_manifest(
-        project.manifest(),
-        project.crate_name().clone(),
-        app_name,
-        &project.resolved_framework().await?,
-    );
-
-    fs::write(
-        site_root.join("index.html"),
-        HydrolysisWebIndexTemplate { ctx: &ctx }
-            .render()
-            .map_err(|error| eyre::eyre!("Failed to render hydrolysis index template: {error}"))?,
-    )
-    .await?;
-    fs::write(
-        site_root.join("bootstrap.js"),
-        HYDROLYSIS_WEB_BOOTSTRAP_TEMPLATE,
-    )
-    .await?;
-    fs::write(site_root.join("style.css"), HYDROLYSIS_WEB_STYLE_TEMPLATE).await?;
     Ok(())
 }
 

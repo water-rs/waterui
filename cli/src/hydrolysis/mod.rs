@@ -2,3 +2,4 @@
 
 pub mod backend;
 pub mod platform;
+mod web_launch;
