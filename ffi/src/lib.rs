@@ -1283,6 +1283,8 @@ pub struct WuiShadow {
     pub offset_y: f32,
     /// Blur radius.
     pub radius: f32,
+    /// Corner radius of the element casting the shadow.
+    pub corner_radius: f32,
 }
 
 impl IntoFFI for Shadow {
@@ -1293,6 +1295,7 @@ impl IntoFFI for Shadow {
             offset_x: self.offset.x,
             offset_y: self.offset.y,
             radius: self.radius,
+            corner_radius: self.corner_radius,
         }
     }
 }

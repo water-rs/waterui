@@ -2740,6 +2740,10 @@ typedef struct WuiShadow {
    * Blur radius.
    */
   float radius;
+  /**
+   * Corner radius of the element casting the shadow.
+   */
+  float corner_radius;
 } WuiShadow;
 
 /**
