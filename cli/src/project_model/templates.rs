@@ -1151,6 +1151,51 @@ mod tests {
             Some("https://github.com/lexoliu/vello")
         );
         assert!(vello.path.is_none());
+
+        // The path-patched names are mirrored onto the framework's repository
+        // source so extracted crates' git-source dependencies resolve to the
+        // same checkout; the fork's git pin is not mirrored.
+        let repository = &patches["https://github.com/water-rs/waterui"];
+        let cargo_toml::Dependency::Detailed(core) = &repository["waterui-core"] else {
+            panic!("a repository-source patch stays a detailed dependency");
+        };
+        assert_eq!(core.path.as_deref(), Some("../waterui/core"));
+        assert!(!repository.contains_key("vello"));
+    }
+
+    #[test]
+    fn native_backend_manifest_carries_the_checkout_patch_tables() {
+        let tempdir = tempdir().expect("temporary checkout dir");
+        let checkout = tempdir.path().join("waterui");
+        std::fs::create_dir_all(&checkout).expect("checkout dir");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            include_str!("../../tests/fixtures/local_checkout_patches.toml"),
+        )
+        .expect("checkout manifest");
+
+        let ctx = ctx(
+            Some(checkout.clone()),
+            None,
+            Some(tempdir.path().join("app")),
+            crate::project::PackageType::Playground,
+        );
+        let manifest = super::render_native_backend_bin_cargo_toml(&ctx, "waterui-test-gtk4", &[])
+            .expect("generated manifest renders");
+
+        let core_path = checkout.join("core").to_string_lossy().into_owned();
+        assert!(
+            manifest.contains(&format!(
+                "[patch.crates-io.waterui-core]\npath = \"{core_path}\""
+            )),
+            "{manifest}"
+        );
+        assert!(
+            manifest.contains(&format!(
+                "[patch.\"https://github.com/water-rs/waterui\".waterui-core]\npath = \"{core_path}\""
+            )),
+            "{manifest}"
+        );
     }
 
     #[test]
@@ -2559,7 +2604,7 @@ fn render_native_backend_bin_cargo_toml(
     }
 
     manifest.workspace = Some(Workspace::default());
-    manifest.patch = ctx.framework.patches();
+    manifest.patch = generated_crate_patches(ctx)?;
 
     toml::to_string_pretty(&manifest)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
@@ -3585,7 +3630,69 @@ fn collect_workspace_patches(project_root: &Path) -> io::Result<cargo_toml::Patc
             }
         }
     }
+    patch_framework_git_source(&mut patches);
     Ok(patches)
+}
+
+/// The canonical repository extracted `WaterUI` crates declare their
+/// `waterui-*` dependencies against — the source a `[patch]` table must name
+/// to redirect those dependencies.
+fn framework_git_source() -> String {
+    env!("CARGO_PKG_REPOSITORY")
+        .trim_end_matches(".git")
+        .to_string()
+}
+
+/// Mirror a patch set's `crates-io` path entries onto the framework's
+/// repository source.
+///
+/// Extracted backend/component crates declare their `waterui-*` dependencies
+/// as `git = "<repo>"`, which a `[patch.crates-io]` table cannot redirect —
+/// Cargo only patches the source a dependency actually names. Without the
+/// repository-source table the graph carries a second copy of every framework
+/// crate and `View` splits across the two (#758). Only path entries are
+/// mirrored — they name crates living in the checkout the table was read
+/// from, so a dependency on that name from the framework's repository must
+/// resolve to the same tree; entries patched to another source (a fork's git
+/// pin) are left alone.
+fn patch_framework_git_source(patches: &mut cargo_toml::PatchSet) {
+    let path_entries: Vec<(String, String)> = patches
+        .get("crates-io")
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, dependency)| match dependency {
+            cargo_toml::Dependency::Detailed(detail) => detail
+                .path
+                .as_ref()
+                .map(|path| (name.clone(), path.clone())),
+            _ => None,
+        })
+        .collect();
+    if path_entries.is_empty() {
+        return;
+    }
+    let repository_source = patches.entry(framework_git_source()).or_default();
+    for (name, path) in path_entries {
+        repository_source.insert(
+            name,
+            cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+                path: Some(path),
+                ..cargo_toml::DependencyDetail::default()
+            })),
+        );
+    }
+}
+
+/// The `[patch]` tables a generated crate resolves the framework with: the
+/// checkout's own when `waterui_path` names a checkout — carrying the
+/// repository-source mirror [`collect_workspace_patches`] synthesizes — and
+/// the resolved channel's otherwise, whose resolution rebases the same table
+/// onto the channel's revision.
+fn generated_crate_patches(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
+    ctx.waterui_workspace_root().map_or_else(
+        || Ok(ctx.framework.patches()),
+        |root| collect_workspace_patches(&root),
+    )
 }
 
 /// The `[patch]` tables of the `WaterUI` checkout at `waterui_path`, rebased
@@ -3615,6 +3722,7 @@ pub fn local_framework_patches(
             }
         }
     }
+    patch_framework_git_source(&mut patches);
     Ok(patches)
 }
 
@@ -3930,7 +4038,10 @@ pub mod ffi {
                 .dependencies
                 .insert(name.to_owned(), Dependency::Detailed(Box::new(dependency)));
         }
-        manifest.patch = ctx.framework.patches();
+        manifest.patch = match ctx.waterui_workspace_root() {
+            Some(root) => smol::unblock(move || super::collect_workspace_patches(&root)).await?,
+            None => ctx.framework.patches(),
+        };
 
         // This crate roots the workspace that also holds preview modules. A preview
         // module is loaded into the support application and resolves its `WaterUI`

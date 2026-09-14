@@ -478,6 +478,7 @@ waterui-form = { path = "components/foundation/form" }
 waterui-icon = { path = "components/foundation/icon" }
 waterui-inspector-protocol = { path = "components/devtools/inspector/protocol" }
 waterui-locale = { path = "utils/locale" }
+waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }
 waterkit-clipboard = { path = "kit/platform/clipboard" }
 # The extracted image, visualizer and video-gpu crates depend on the registry

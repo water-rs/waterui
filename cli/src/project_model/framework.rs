@@ -657,23 +657,13 @@ impl ResolvedFramework {
             &lock,
         )
         .await?;
-        let mut patches: PatchSet = root
+        let patches: PatchSet = root
             .get("patch")
             .cloned()
             .map(toml::Value::try_into)
             .transpose()?
             .unwrap_or_default();
-        patches.retain(|source, _| source.trim_end_matches(".git") != repository);
-        for dependencies in patches.values_mut() {
-            for dependency in dependencies.values_mut() {
-                if let Dependency::Detailed(detail) = dependency
-                    && detail.path.take().is_some()
-                {
-                    detail.git = Some(repository.to_owned());
-                    detail.rev = Some(revision.clone());
-                }
-            }
-        }
+        let patches = rebase_patches_onto_source(patches, repository, &revision);
         let packages = resolve_packages(&scaffold, &lock, repository, &revision)?;
         Ok((
             Self {
@@ -1076,6 +1066,44 @@ async fn latest_certification(slug: &str) -> Result<Certification> {
     Ok(certification)
 }
 
+/// Rebase a fetched root manifest's `[patch]` tables onto the channel's own
+/// source: path entries become `git + rev` at the resolved revision.
+///
+/// Every name a path entry carried is additionally patched on the repository
+/// source itself. Extracted crates (`waterui-gtk`, …) declare their
+/// `waterui-*` dependencies as `git = "<repo>"`, which a `[patch.crates-io]`
+/// table cannot redirect — Cargo only patches the source a dependency
+/// actually names — so without the repository-source table the graph carries
+/// a second framework beside the channel's and `View` splits across the two
+/// (#758).
+fn rebase_patches_onto_source(mut patches: PatchSet, repository: &str, revision: &str) -> PatchSet {
+    patches.retain(|source, _| source.trim_end_matches(".git") != repository);
+    let mut path_patched_names = Vec::new();
+    for dependencies in patches.values_mut() {
+        for (name, dependency) in dependencies.iter_mut() {
+            if let Dependency::Detailed(detail) = dependency
+                && detail.path.take().is_some()
+            {
+                detail.git = Some(repository.to_owned());
+                detail.rev = Some(revision.to_owned());
+                path_patched_names.push(name.clone());
+            }
+        }
+    }
+    let repository_source = patches.entry(repository.to_owned()).or_default();
+    for name in path_patched_names {
+        repository_source.insert(
+            name,
+            Dependency::Detailed(Box::new(DependencyDetail {
+                git: Some(repository.to_owned()),
+                rev: Some(revision.to_owned()),
+                ..DependencyDetail::default()
+            })),
+        );
+    }
+    patches
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1397,5 +1425,74 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                 .to_string()
                 .contains("does not match")
         );
+    }
+
+    #[test]
+    fn rebase_patches_onto_source_redirects_git_source_dependencies() {
+        let mut patches = PatchSet::default();
+        let mut crates_io = std::collections::BTreeMap::new();
+        crates_io.insert(
+            "waterui-core".to_string(),
+            Dependency::Detailed(Box::new(DependencyDetail {
+                path: Some("core".to_string()),
+                ..DependencyDetail::default()
+            })),
+        );
+        crates_io.insert(
+            "vello".to_string(),
+            Dependency::Detailed(Box::new(DependencyDetail {
+                git: Some("https://github.com/lexoliu/vello".to_string()),
+                rev: Some("5e5f538556be16527f67379b105af82f408b747d".to_string()),
+                ..DependencyDetail::default()
+            })),
+        );
+        patches.insert("crates-io".to_string(), crates_io);
+        patches.insert(
+            "https://github.com/water-rs/waterui".to_string(),
+            std::collections::BTreeMap::new(),
+        );
+
+        let rebased = rebase_patches_onto_source(
+            patches,
+            "https://github.com/water-rs/waterui",
+            "475b4bb884a5f4e2b1156f1af74c40feaf71fdc1",
+        );
+
+        // The crates-io path entry became a git pin at the channel revision.
+        let Dependency::Detailed(core) = &rebased["crates-io"]["waterui-core"] else {
+            panic!("a path patch stays a detailed dependency");
+        };
+        assert!(core.path.is_none());
+        assert_eq!(
+            core.git.as_deref(),
+            Some("https://github.com/water-rs/waterui")
+        );
+        assert_eq!(
+            core.rev.as_deref(),
+            Some("475b4bb884a5f4e2b1156f1af74c40feaf71fdc1")
+        );
+
+        // The repository source gained the same names so extracted crates'
+        // git-source dependencies resolve to the channel revision.
+        let Dependency::Detailed(core) =
+            &rebased["https://github.com/water-rs/waterui"]["waterui-core"]
+        else {
+            panic!("the repository-source patch keeps a detailed dependency");
+        };
+        assert_eq!(
+            core.rev.as_deref(),
+            Some("475b4bb884a5f4e2b1156f1af74c40feaf71fdc1")
+        );
+
+        // Dependencies patched to another source stay untouched and are not
+        // mirrored onto the repository source.
+        let Dependency::Detailed(vello) = &rebased["crates-io"]["vello"] else {
+            panic!("a git patch stays a detailed dependency");
+        };
+        assert_eq!(
+            vello.git.as_deref(),
+            Some("https://github.com/lexoliu/vello")
+        );
+        assert!(!rebased["https://github.com/water-rs/waterui"].contains_key("vello"));
     }
 }
