@@ -722,11 +722,6 @@ async fn copy_android_build_outputs(
     fs::create_dir_all(&output_dir).await?;
     copy_file(&source_lib, &output_dir.join("libwaterui_app.so")).await?;
 
-    let libcxx_path = ndk_libcxx_path(ndk_path, abi);
-    if libcxx_path.exists() {
-        copy_file(&libcxx_path, &output_dir.join("libc++_shared.so")).await?;
-    }
-
     if options.linkage() == RustLinkage::SharedRuntime {
         let triple = AndroidPlatform::new(abi).triple();
         let libraries = RustDynamicLibraries::resolve(lib_dir, &triple).await?;
@@ -736,7 +731,77 @@ async fn copy_android_build_outputs(
             .await?;
     }
 
+    // `libc++_shared.so` only belongs in the package when a staged native
+    // library actually links the C++ STL — Rust-only builds never reference it,
+    // and shipping it unconditionally cost ~9 MB per ABI of dead weight.
+    let libcxx_target = output_dir.join("libc++_shared.so");
+    if staged_libs_need_libcxx(&output_dir).await? {
+        let libcxx_path = ndk_libcxx_path(ndk_path, abi);
+        if libcxx_path.exists() {
+            copy_file(&libcxx_path, &libcxx_target).await?;
+        }
+    } else if libcxx_target.exists() {
+        // Drop the copy an earlier build staged; nothing links it now.
+        fs::remove_file(&libcxx_target).await?;
+    }
+
     Ok(())
+}
+
+/// True when any `.so` staged in `output_dir` lists `libc++_shared.so` in its
+/// `DT_NEEDED` entries.
+///
+/// An unreadable or unparsable library counts as needing it: including the STL
+/// when in doubt is the same behavior the packaging had before, and a corrupt
+/// native library is going to fail loudly on the device anyway.
+async fn staged_libs_need_libcxx(output_dir: &Path) -> eyre::Result<bool> {
+    let output_dir = output_dir.to_path_buf();
+    unblock(move || {
+        let mut needs = false;
+        for entry in std::fs::read_dir(&output_dir)? {
+            let path = entry?.path();
+            if path.extension() != Some(std::ffi::OsStr::new("so")) {
+                continue;
+            }
+            let needed = std::fs::read(&path)
+                .ok()
+                .and_then(|data| elf_needs_libcxx(&data))
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        library = %path.display(),
+                        "could not parse staged library; assuming it needs libc++_shared.so"
+                    );
+                    true
+                });
+            needs |= needed;
+        }
+        Ok(needs)
+    })
+    .await
+}
+
+/// `true` when the ELF data's dynamic section `DT_NEEDED`s `libc++_shared.so`;
+/// `None` when the data is not a parseable ELF image at all.
+fn elf_needs_libcxx(data: &[u8]) -> Option<bool> {
+    use object::read::elf::{Dyn as _, ElfFile, FileHeader};
+
+    fn scan<Elf>(data: &[u8]) -> Option<bool>
+    where
+        Elf: FileHeader<Endian = object::Endianness>,
+    {
+        let file = ElfFile::<Elf>::parse(data).ok()?;
+        let endian = file.endian();
+        let sections = file.elf_section_table();
+        let (dyns, strings_index) = sections.dynamic(endian, data).ok()??;
+        let strings = sections.strings(endian, data, strings_index).ok()?;
+        Some(dyns.iter().any(|d| {
+            d.tag32(endian) == Some(object::elf::DT_NEEDED)
+                && d.string(endian, strings).ok() == Some(&b"libc++_shared.so"[..])
+        }))
+    }
+
+    scan::<object::elf::FileHeader64<object::Endianness>>(data)
+        .or_else(|| scan::<object::elf::FileHeader32<object::Endianness>>(data))
 }
 
 // ============================================================================
@@ -879,4 +944,20 @@ async fn generate_font_registration_kotlin(
     debug!("Generated {}", kotlin_path.display());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::elf_needs_libcxx;
+
+    #[test]
+    fn elf_needs_libcxx_rejects_non_elf_data() {
+        // Verified against real NDK binaries during development (a clang++
+        // shared object reports `Some(true)`, `libc++_shared.so` itself
+        // `Some(false)`); the committed test covers only the reject path so it
+        // needs no fixtures.
+        assert_eq!(elf_needs_libcxx(b"not an elf"), None);
+        assert_eq!(elf_needs_libcxx(&[]), None);
+        assert_eq!(elf_needs_libcxx(&[0x7f, b'E', b'L', b'F']), None);
+    }
 }
