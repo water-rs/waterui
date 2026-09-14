@@ -2556,6 +2556,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-layout-example"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+]
+
+[[package]]
+name = "edge-list-example"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+]
+
+[[package]]
+name = "edge-text-example"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+]
+
+[[package]]
 name = "edit-distance"
 version = "2.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
