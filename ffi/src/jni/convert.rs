@@ -559,7 +559,7 @@ impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityState {
     }
 }
 
-/// `MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float)`
+/// `MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float, cornerRadius: Float)`
 impl ToJavaStruct for crate::WuiMetadataShadow {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -567,13 +567,14 @@ impl ToJavaStruct for crate::WuiMetadataShadow {
             .expect("MetadataShadowStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJFFF)V"),
+            jni_sig!("(JJFFFF)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.color as jlong),
                 JValue::Float(self.value.offset_x),
                 JValue::Float(self.value.offset_y),
                 JValue::Float(self.value.radius),
+                JValue::Float(self.value.corner_radius),
             ],
         )
         .expect("Failed to create MetadataShadowStruct")

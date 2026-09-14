@@ -962,11 +962,13 @@ impl View for StackedSnackbarView {
             theme.shadow_color.clone(),
             Vector::new(0.0, theme.shadow_offset_y),
             theme.shadow_radius,
+            theme.corner_radius,
         );
         let ambient_shadow = Shadow::new(
             theme.ambient_shadow_color.clone(),
             Vector::new(0.0, theme.ambient_shadow_offset_y),
             theme.ambient_shadow_radius,
+            theme.corner_radius,
         );
 
         // The appear hook runs after this subtree's first flush, once the animated

@@ -135,11 +135,13 @@ where
             tokens.shadow_color.clone(),
             Vector::new(0.0, tokens.shadow_offset_y),
             tokens.shadow_radius,
+            tokens.corner_radius,
         );
         let ambient_shadow = Shadow::new(
             tokens.ambient_shadow_color.clone(),
             Vector::new(0.0, tokens.ambient_shadow_offset_y),
             tokens.ambient_shadow_radius,
+            tokens.corner_radius,
         );
         AnyView::new(
             vstack((self.title, self.subtitle, self.content))
