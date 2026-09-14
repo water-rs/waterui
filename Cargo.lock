@@ -10933,15 +10933,19 @@ name = "waterui-chromium"
 version = "0.1.2"
 dependencies = [
  "async-channel",
+ "base64 0.23.1",
  "chromiumoxide_cdp",
  "chromiumoxide_types",
+ "executor-core",
  "futures",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tracing",
  "waterui-core",
  "waterui-layout",
  "waterui-url",
+ "waterui-webview",
 ]
 
 [[package]]
@@ -11765,6 +11769,7 @@ dependencies = [
  "cookie",
  "executor-core",
  "hydrolysis-m3",
+ "percent-encoding",
  "serde",
  "serde_json",
  "suiteki",

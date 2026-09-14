@@ -25,7 +25,7 @@ pub struct ChromiumProfile {
 }
 
 /// Configuration shared by visible and headless Chromium pages.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, Default)]
 pub struct ChromiumConfiguration {
     /// Initial page URL. A missing URL opens `about:blank`.
     pub url: Option<Url>,
@@ -37,6 +37,29 @@ pub struct ChromiumConfiguration {
     pub language: Option<String>,
     /// User-agent override.
     pub user_agent: Option<String>,
+    /// The server behind the page's `https://waterui.localhost` asset origin.
+    ///
+    /// Set, the page intercepts every request on that origin through CDP
+    /// `Fetch` and answers it from `server` — the same
+    /// [`AssetServer`](waterui_webview::AssetServer) contract a
+    /// [`WebView`](waterui_webview::WebView) opened with
+    /// [`WebView::open_assets`](waterui_webview::WebView::open_assets) serves.
+    /// Chromium grants a secure context to `https` alone, which is why this
+    /// engine's asset origin is the `https` spelling.
+    pub asset_server: Option<waterui_webview::AssetServer>,
+}
+
+impl std::fmt::Debug for ChromiumConfiguration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChromiumConfiguration")
+            .field("url", &self.url)
+            .field("profile", &self.profile)
+            .field("proxy", &self.proxy)
+            .field("language", &self.language)
+            .field("user_agent", &self.user_agent)
+            .field("asset_server", &self.asset_server.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 impl ChromiumConfiguration {
@@ -243,14 +266,19 @@ impl AnyChromiumPageHandle {
 pub struct ChromiumPage {
     handle: AnyChromiumPageHandle,
     cdp: CdpSession,
+    asset_origin: Option<Url>,
 }
 
 impl_debug!(ChromiumPage);
 
 impl ChromiumPage {
-    pub(crate) fn new(handle: AnyChromiumPageHandle) -> Self {
+    pub(crate) fn new(handle: AnyChromiumPageHandle, asset_origin: Option<Url>) -> Self {
         let cdp = handle.inner.cdp();
-        Self { handle, cdp }
+        Self {
+            handle,
+            cdp,
+            asset_origin,
+        }
     }
 
     /// Returns the page presentation mode.
@@ -263,6 +291,13 @@ impl ChromiumPage {
     #[must_use]
     pub const fn cdp(&self) -> &CdpSession {
         &self.cdp
+    }
+
+    /// The origin this page serves bundled assets under —
+    /// `https://waterui.localhost` when it was opened with an asset server.
+    #[must_use]
+    pub const fn asset_origin(&self) -> Option<&Url> {
+        self.asset_origin.as_ref()
     }
 
     /// Navigates the main frame.

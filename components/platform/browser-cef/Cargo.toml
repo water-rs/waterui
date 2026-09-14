@@ -21,7 +21,7 @@ chromium = [
     "dep:waterui-chromium",
     "dep:waterui-watcher-set",
 ]
-real-engine = ["cef-runtime", "webview"]
+real-engine = ["cef-runtime", "webview", "chromium"]
 webview = [
     "dep:cookie",
     "dep:keycode",
@@ -76,6 +76,8 @@ base64 = "0.23"
 executor-core = { workspace = true, features = ["async-executor"] }
 tiny_http = "0.12"
 tracing-subscriber.workspace = true
+# The shared real-engine assertions; `real-engine` already selects `webview`.
+waterui-webview = { workspace = true, features = ["conformance"] }
 
 [[test]]
 name = "real_engine"

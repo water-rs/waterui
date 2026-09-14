@@ -1780,6 +1780,18 @@ typedef struct WuiAnyViews WuiAnyViews;
 typedef struct WuiAppliedFilterState WuiAppliedFilterState;
 
 /**
+ * The [`AssetServer`] a native web view owns.
+ *
+ * `FfiWebViewController` boxes the server a `WebView` was opened with and hands
+ * the pointer to the backend's [`WuiCreateWebViewFn`] inside
+ * [`WuiWebViewConfig`]. The backend holds it for the life of the native view,
+ * answers the engine's interception facility through
+ * [`waterui_webview_asset_server_respond`], and frees it with
+ * [`waterui_webview_asset_server_free`] when the view dies.
+ */
+typedef struct WuiAssetServer WuiAssetServer;
+
+/**
  * Opaque CEF state the native backend owns for the surface's lifetime.
  *
  * Keeps the page handle every input and navigation entry point addresses, plus
@@ -6578,6 +6590,29 @@ typedef struct WuiBridgeRequest {
 } WuiBridgeRequest;
 
 /**
+ * A type alias representing binary data as a byte array.
+ */
+typedef struct WuiArray_u8 WuiData;
+
+/**
+ * What the asset origin answered — the FFI shape of [`AssetResponse`].
+ */
+typedef struct WuiAssetResponse {
+  /**
+   * The HTTP status code.
+   */
+  uint16_t status;
+  /**
+   * The response headers as `"Name: value"` lines joined by `\n`.
+   */
+  struct WuiStr headers;
+  /**
+   * The response body.
+   */
+  WuiData body;
+} WuiAssetResponse;
+
+/**
  * FFI representation of a `WebView` event.
  */
 typedef struct WuiWebViewEvent {
@@ -6812,15 +6847,44 @@ typedef struct WuiWebViewHandle {
    */
   void (*call_async_javascript)(void*, struct WuiStr, struct WuiJsCallback);
   /**
+   * The origin this view serves bundled assets under, when it was created
+   * with a `WuiAssetServer`: the engine's own answer — `waterui://localhost`
+   * on the `WebKit` family and CEF, `https://waterui.localhost` where only
+   * `https` can be a secure context. An empty string means the view was
+   * opened without an asset server, and a `None` entry point means the
+   * backend has no interception facility to stand one on — which
+   * `WebView::open_assets` reports as the configuration error it is.
+   */
+  struct WuiStr (*asset_origin)(const void*);
+  /**
    * Release the native handle.
    */
   void (*drop)(void*);
 } WuiWebViewHandle;
 
 /**
- * Type for the native function that creates a new `WebView`.
+ * The creation-time inputs a native view is opened with.
+ *
+ * Engines register their interception facility while the view is constructed,
+ * so the asset server arrives here rather than through a handle method that
+ * could only run after the fact.
  */
-typedef struct WuiWebViewHandle (*WuiCreateWebViewFn)(void);
+typedef struct WuiWebViewConfig {
+  /**
+   * The asset server the view's local asset origin answers through, or null
+   * when the view serves no bundled assets. Ownership passes to the native
+   * view; it frees the pointer with `waterui_webview_asset_server_free`.
+   */
+  struct WuiAssetServer *asset_server;
+} WuiWebViewConfig;
+
+/**
+ * Type for the native function that creates a new `WebView`.
+ *
+ * Receives the creation-time [`WuiWebViewConfig`]; ownership of every owning
+ * pointer inside it passes to the backend.
+ */
+typedef struct WuiWebViewHandle (*WuiCreateWebViewFn)(struct WuiWebViewConfig);
 
 /**
  * FFI representation of a `Metadata<AppliedFilter>`.
@@ -10820,6 +10884,54 @@ struct WuiTypeId waterui_webview_id(void);
  * (i.e., it does not downcast to `FfiWebViewHandle`).
  */
 void *waterui_webview_native_handle(struct WuiWebView *webview);
+
+/**
+ * Serves one request the native engine intercepted on the asset origin.
+ *
+ * Callable from any thread — the server behind `server` is `Send + Sync`, and
+ * engines invoke this from whatever thread their network stack uses (a
+ * `WKURLSchemeHandler` callback, a `WebViewClient` worker thread, a `WebKit` URI
+ * scheme task, a CEF IO thread). GET and HEAD are the only methods served —
+ * anything else is refused with `405` without consulting the server — and a
+ * path that escapes the asset root is refused with `404`, so a backend must
+ * route every intercepted request through here rather than only the shapes it
+ * expects.
+ *
+ * # Safety
+ *
+ * - `server` must be a live pointer the backend received inside
+ *   [`WuiWebViewConfig`]; it is borrowed for the call, not consumed.
+ * - `method`, `path` and `query` are owning `WuiStr`s and are consumed; an
+ *   empty `query` means the request carried none.
+ * - The returned response is owned by the caller and freed with
+ *   [`waterui_webview_asset_response_free`] once its fields have been read.
+ */
+struct WuiAssetResponse waterui_webview_asset_server_respond(const struct WuiAssetServer *server,
+                                                             struct WuiStr method,
+                                                             struct WuiStr path,
+                                                             struct WuiStr query);
+
+/**
+ * Frees a [`WuiAssetResponse`] produced by [`waterui_webview_asset_server_respond`].
+ *
+ * # Safety
+ *
+ * `response` must be an owning handle from that function, freed once.
+ */
+void waterui_webview_asset_response_free(struct WuiAssetResponse response);
+
+/**
+ * Releases the [`WuiAssetServer`] a native view was created with.
+ *
+ * The backend calls this when the native view dies; a null pointer is a no-op
+ * so the same teardown path serves views opened without assets.
+ *
+ * # Safety
+ *
+ * `server` must be null or a pointer the backend received inside
+ * [`WuiWebViewConfig`] that has not been freed.
+ */
+void waterui_webview_asset_server_free(struct WuiAssetServer *server);
 
 /**
  * Installs a `WebViewController` into the environment from a native factory function.

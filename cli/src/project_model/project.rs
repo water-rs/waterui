@@ -64,6 +64,7 @@ pub struct Project {
     crate_name: CrateName,
     cargo_layout: Shared<BoxFuture<'static, Result<CargoLayout, String>>>,
     linked_packages: Arc<async_lock::OnceCell<Result<BTreeMap<String, String>, String>>>,
+    enabled_features: Arc<async_lock::OnceCell<Result<BTreeSet<String>, String>>>,
     managed_backends_root: PathBuf,
 }
 
@@ -521,6 +522,38 @@ impl Project {
         }
     }
 
+    /// Whether the application's graph turns on the standard `WebView`
+    /// component.
+    ///
+    /// The signal is a `webview` feature enabled inside the application's own
+    /// subtree — the facade's `webview` feature, or an engine crate's `webview`
+    /// hookup — resolved by `cargo tree --edges features`. The
+    /// `waterui-webview` *package* cannot be the signal: engines link it for
+    /// the shared asset-server types a `ChromiumPage` answers over CDP
+    /// (#586), so its presence no longer means the component is used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo cannot resolve the application graph or
+    /// omits a package referenced by that graph.
+    pub async fn uses_standard_webview(&self) -> eyre::Result<bool> {
+        let project_root = self.root.clone();
+        let cargo_layout = self.cargo_layout.clone();
+        let features = self
+            .enabled_features
+            .get_or_init(|| async move {
+                cargo_layout.await?;
+                resolve_enabled_features(project_root)
+                    .await
+                    .map_err(|error| error.to_string())
+            })
+            .await;
+        match features {
+            Ok(features) => Ok(features.contains("webview")),
+            Err(error) => Err(eyre::eyre!(error.clone())),
+        }
+    }
+
     /// Resolve and validate the standard `WebView` engine for a build.
     ///
     /// The application's own dependency graph is the selection: linking
@@ -529,9 +562,10 @@ impl Project {
     /// bridges. Nothing in `Water.toml` names an engine, because nothing else
     /// could keep the packaged runtime and the code that loads it in step.
     ///
-    /// Returns `None` when the application does not link `waterui-webview`, so
-    /// an engine crate reaching the graph through some other component never
-    /// adds a `WebView` runtime to the package on its own.
+    /// Returns `None` when no `webview` feature is enabled in the
+    /// application's graph, so an engine crate reaching the graph through some
+    /// other component never adds a `WebView` runtime to the package on its
+    /// own.
     ///
     /// # Errors
     ///
@@ -543,7 +577,7 @@ impl Project {
         platform: TargetPlatform,
         backend: TargetBackend,
     ) -> eyre::Result<Option<ResolvedWebViewBackend>> {
-        if !self.links_runtime_package("waterui-webview").await? {
+        if !self.uses_standard_webview().await? {
             return Ok(None);
         }
         let engine = self.linked_browser_engine().await?;
@@ -895,7 +929,7 @@ impl Project {
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
         let webview_enabled = self
-            .links_runtime_package("waterui-webview")
+            .uses_standard_webview()
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
         let chromium_enabled = self
@@ -1108,6 +1142,7 @@ impl Project {
             crate_name,
             cargo_layout,
             linked_packages: Arc::new(async_lock::OnceCell::new()),
+            enabled_features: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
         })
     }
@@ -1525,6 +1560,7 @@ impl Project {
             crate_name,
             cargo_layout,
             linked_packages: Arc::new(async_lock::OnceCell::new()),
+            enabled_features: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
         };
 
@@ -1702,9 +1738,9 @@ async fn resolve_cargo_layout(
     })
 }
 
-async fn resolve_linked_runtime_packages(
-    project_root: PathBuf,
-) -> eyre::Result<BTreeMap<String, String>> {
+/// Run `cargo tree` for the application package rooted at `project_root`'s
+/// manifest, over the given edge kinds, and return the `{p}`-formatted tree.
+async fn cargo_tree(project_root: &Path, edges: &str) -> eyre::Result<String> {
     let manifest_path = project_root.join("Cargo.toml");
     let metadata_manifest = manifest_path.clone();
     let metadata = unblock(move || {
@@ -1737,12 +1773,12 @@ async fn resolve_linked_runtime_packages(
         .arg("--package")
         .arg(package_spec)
         .arg("--edges")
-        .arg("normal")
+        .arg(edges)
         .arg("--prefix")
         .arg("none")
         .arg("--format")
         .arg("{p}")
-        .current_dir(&project_root)
+        .current_dir(project_root)
         .output()
         .await?;
     if !output.status.success() {
@@ -1753,9 +1789,15 @@ async fn resolve_linked_runtime_packages(
         ));
     }
 
+    String::from_utf8(output.stdout)
+        .map_err(|error| eyre::eyre!("Cargo runtime dependency graph is not UTF-8: {error}"))
+}
+
+async fn resolve_linked_runtime_packages(
+    project_root: PathBuf,
+) -> eyre::Result<BTreeMap<String, String>> {
+    let tree = cargo_tree(&project_root, "normal").await?;
     let mut linked = BTreeMap::new();
-    let tree = String::from_utf8(output.stdout)
-        .map_err(|error| eyre::eyre!("Cargo runtime dependency graph is not UTF-8: {error}"))?;
     for package in tree.lines() {
         let name = package
             .split_ascii_whitespace()
@@ -1767,8 +1809,26 @@ async fn resolve_linked_runtime_packages(
     Ok(linked)
 }
 
+/// Feature names turned on inside the application's subtree. With `--edges
+/// features`, `cargo tree` reports each enabled feature as a
+/// `<package> feature "<name>"` node; only the names are kept, since the
+/// question asked of this set is always "is a feature named X enabled".
+async fn resolve_enabled_features(project_root: PathBuf) -> eyre::Result<BTreeSet<String>> {
+    let tree = cargo_tree(&project_root, "features").await?;
+    let mut features = BTreeSet::new();
+    for node in tree.lines() {
+        if let Some(feature) = node
+            .split_once(" feature \"")
+            .and_then(|(_, rest)| rest.strip_suffix('"'))
+        {
+            features.insert(feature.to_string());
+        }
+    }
+    Ok(features)
+}
+
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -2228,7 +2288,8 @@ mod webview_backend_tests {
     use std::path::Path;
 
     use super::{
-        ResolvedWebViewBackend, TargetBackend, TargetPlatform, resolve_linked_runtime_packages,
+        ResolvedWebViewBackend, TargetBackend, TargetPlatform, resolve_enabled_features,
+        resolve_linked_runtime_packages,
     };
 
     /// An application that links no engine crate uses whatever the platform
@@ -2358,13 +2419,22 @@ mod webview_backend_tests {
         );
         // A Chromium-only application shows no standard `WebView`, so
         // `webview_enabled` must be false for it: the Apple scaffold reads this
-        // graph to decide whether to link the `WaterUICefWebView` framework, and
-        // the CEF crate's `chromium` feature used to drag `waterui-webview` in
-        // for nothing more than a watcher registry and an accessibility helper.
+        // graph to decide whether to link the `WaterUICefWebView` framework.
+        // The `waterui-webview` package is present — `waterui-chromium` links
+        // it for the shared asset-server types — so the signal is the `webview`
+        // feature, which nothing in this subtree turns on.
         assert!(
-            !chromium.contains_key("waterui-webview"),
-            "a Chromium-only application must not link the standard WebView \
-             component: {chromium:#?}"
+            chromium.contains_key("waterui-webview"),
+            "waterui-chromium shares the webview asset-server types: {chromium:#?}"
+        );
+        let chromium_features = smol::block_on(resolve_enabled_features(
+            repository.join("examples/chromium"),
+        ))
+        .expect("Chromium example feature graph must resolve");
+        assert!(
+            !chromium_features.contains("webview"),
+            "a Chromium-only application must not enable the standard WebView \
+             component: {chromium_features:#?}"
         );
 
         let webview = smol::block_on(resolve_linked_runtime_packages(
@@ -2374,6 +2444,14 @@ mod webview_backend_tests {
         assert!(
             webview.contains_key("waterui-webview"),
             "WebView example graph: {webview:#?}"
+        );
+        let webview_features = smol::block_on(resolve_enabled_features(
+            repository.join("examples/webview"),
+        ))
+        .expect("WebView example feature graph must resolve");
+        assert!(
+            webview_features.contains("webview"),
+            "the WebView example enables the facade `webview` feature: {webview_features:#?}"
         );
         assert!(
             !webview.contains_key("waterui-browser-cef"),

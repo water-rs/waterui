@@ -44,11 +44,11 @@ use executor_core::LocalExecutor;
 use executor_core::async_executor::AsyncLocalExecutor;
 use serde_json::Value;
 use tiny_http::{Header, Response, Server};
-use waterui_browser_wpe::{WpePage, WpeRuntime, WpeRuntimePaths, WpeWebViewHandle};
+use waterui_browser_wpe::{WpeController, WpePage, WpeRuntime, WpeRuntimePaths, WpeWebViewHandle};
 use waterui_url::Url;
 use waterui_webview::{
     BackendEvent, IntoJsReply, JsReply, Json, ScriptInjectionTime, ScriptMessageHandler,
-    WatcherGuard, WebViewEvent, WebViewHandle as _,
+    WatcherGuard, WebViewController, WebViewEvent, WebViewHandle as _,
 };
 
 /// Names the staged WPE runtime root these tests drive.
@@ -101,6 +101,9 @@ struct RealEngine {
     server: Server,
     base: String,
     handle: WpeWebViewHandle,
+    /// The controller a renderer would open further views through — the
+    /// asset-origin conformance case opens its own page with one.
+    controller: WebViewController,
     executor: TestExecutor,
     events: Rc<RefCell<Vec<BackendEvent>>>,
     reports: Rc<RefCell<Vec<Value>>>,
@@ -154,13 +157,14 @@ impl RealEngine {
         let executor = TestExecutor(Rc::new(AsyncLocalExecutor::new()));
         executor_core::init_local_executor(executor.clone());
 
-        let page = WpePage::new(WpeRuntime::initialize(&runtime_paths()));
+        let runtime = WpeRuntime::initialize(&runtime_paths());
+        let page = WpePage::new(runtime.clone());
         // A viewport the engine would lay a document out in; the default is the
         // one-pixel toplevel the bridge creates a view with.
         page.resize(1024, 768, 1.0);
         // Exactly what `WpeController::open` builds: the handle installs the
         // transport adapter and the shared document-start bridge script.
-        let handle = WpeWebViewHandle::new(page);
+        let handle = WpeWebViewHandle::new(page, None);
 
         let events = Rc::new(RefCell::new(Vec::new()));
         let guard = handle.watch({
@@ -219,6 +223,9 @@ impl RealEngine {
             server,
             base,
             handle,
+            // The page above and the views this opens share the one runtime, so
+            // `step`'s pump serves both.
+            controller: WebViewController::new(WpeController::new(runtime)),
             executor,
             events,
             reports,
@@ -472,5 +479,15 @@ fn integers_beyond_two_to_the_fifty_third_cross_intact_both_ways() {
     assert_eq!(
         echoed.pointer("/small").and_then(Value::as_u64),
         Some(REPRESENTABLE)
+    );
+}
+
+/// The engine's asset origin serves the bundled site the shared conformance
+/// case drives — module script, stylesheet and WASM — as a secure context.
+#[test]
+fn the_asset_origin_serves_bundled_content() {
+    let engine = RealEngine::start();
+    engine.block_on(
+        waterui_webview::conformance::asset_origin_serves_bundled_content(&engine.controller),
     );
 }

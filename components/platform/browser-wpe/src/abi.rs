@@ -6,7 +6,7 @@
 
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 pub const MAX_PLANES: usize = 4;
 
 #[repr(C)]
@@ -53,6 +53,22 @@ pub type MessageCallback =
     unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> WaterWpeBytes;
 pub type ResultCallback = unsafe extern "C" fn(*mut c_void, bool, *const c_char, usize);
 
+/// One answer to a `waterui://localhost` request. `headers` is `"Name: value"`
+/// lines joined by `\n`; each [`WaterWpeBytes`] releases its own storage
+/// through `destroy`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WaterWpeAssetResponse {
+    pub status: c_uint,
+    pub headers: WaterWpeBytes,
+    pub body: WaterWpeBytes,
+}
+
+/// Answers one request on the page's asset origin from the engine's own
+/// method and URI.
+pub type AssetCallback =
+    unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> WaterWpeAssetResponse;
+
 pub struct WpeApi {
     pub abi_version: unsafe extern "C" fn() -> c_uint,
     pub runtime_new: unsafe extern "C" fn(*mut *mut c_char) -> *mut WaterWpeRuntime,
@@ -69,6 +85,8 @@ pub struct WpeApi {
         *mut *mut c_char,
     ) -> *mut WaterWpePage,
     pub page_free: unsafe extern "C" fn(*mut WaterWpePage),
+    pub page_set_asset_server:
+        unsafe extern "C" fn(*mut WaterWpePage, AssetCallback, *mut c_void, DestroyNotify),
     pub page_load_uri: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
     pub page_go_back: unsafe extern "C" fn(*mut WaterWpePage),
     pub page_go_forward: unsafe extern "C" fn(*mut WaterWpePage),
@@ -139,6 +157,7 @@ impl WpeApi {
                 string_free: symbol(library, b"water_wpe_string_free\0"),
                 page_new: symbol(library, b"water_wpe_page_new\0"),
                 page_free: symbol(library, b"water_wpe_page_free\0"),
+                page_set_asset_server: symbol(library, b"water_wpe_page_set_asset_server\0"),
                 page_load_uri: symbol(library, b"water_wpe_page_load_uri\0"),
                 page_go_back: symbol(library, b"water_wpe_page_go_back\0"),
                 page_go_forward: symbol(library, b"water_wpe_page_go_forward\0"),

@@ -29,7 +29,8 @@ use waterui_core::{AnyView, Metadata, Retain, Signal, binding};
 use waterui_testing::{Role, UiBuilder};
 use waterui_webview::{
     BackendEvent, Cookie, CustomWebViewController, OriginPolicy, ScriptInjectionTime,
-    ScriptMessageHandler, Url, WatcherGuard, WatcherSet, WebView, WebViewController, WebViewHandle,
+    ScriptMessageHandler, Url, WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController,
+    WebViewHandle,
 };
 
 const DOCS_URL: &str = "https://waterui.dev/docs";
@@ -62,7 +63,7 @@ impl TestController {
 }
 
 impl CustomWebViewController for TestController {
-    fn open(&self) -> impl WebViewHandle {
+    fn open(&self, _config: WebViewConfig) -> impl WebViewHandle {
         self.opens.set(self.opens.get() + 1);
         TestHandle {
             navigations: Rc::clone(&self.navigations),
@@ -117,6 +118,11 @@ impl WebViewHandle for TestHandle {
     fn set_bridge_origins(&self, _policy: OriginPolicy) {}
 
     fn set_cookie(&self, _cookie: Cookie<'static>) {}
+
+    /// No engine means no interception facility an asset origin could stand on.
+    fn asset_origin(&self) -> Option<Url> {
+        None
+    }
 
     fn set_redirects_enabled(&self, _enabled: impl Signal<Output = bool>) {}
 
