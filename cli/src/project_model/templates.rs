@@ -3359,13 +3359,14 @@ pub mod hydrolysis {
                         NativeBackendDependencySpec::new(
                             "waterui",
                             // Hydrolysis draws every pixel itself, so it has no
-                            // native player to bridge. Selecting the self-drawn
-                            // realization is the application's call, and its
-                            // composition root installs it. A realization in a
-                            // crate of its own — `waterui-map-gpu` — is a
-                            // direct dependency of the application, which
-                            // installs it in its own `app(env)`.
-                            &["video-gpu"],
+                            // native player to bridge — but whether the
+                            // self-drawn realization is linked is the
+                            // application's call: it declares `video-gpu` on
+                            // its own `waterui` dependency, and feature
+                            // unification carries that choice into this graph.
+                            // Forcing it here would push the decoder stack
+                            // into applications that never render video.
+                            &[],
                             NativeBackendDependencySource::WateruiRoot,
                         ),
                     )?

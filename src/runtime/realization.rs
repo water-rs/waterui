@@ -24,19 +24,22 @@ use waterui_core::Environment;
 /// building an `App` — an offscreen preview harness, for one — calls this
 /// itself.
 #[cfg_attr(
-    not(feature = "video-gpu"),
+    any(not(feature = "video-gpu"), target_vendor = "apple"),
     expect(
         clippy::missing_const_for_fn,
-        reason = "the body is empty only in the feature configuration being linted; selecting a realization makes it install one"
+        reason = "the body is empty only in the configuration being linted; selecting a realization on a platform with no native player makes it install one"
     )
 )]
 pub fn install(env: &mut Environment) {
-    #[cfg(feature = "video-gpu")]
+    // Apple bridges AVPlayer: even if the application enabled `video-gpu`
+    // unconditionally, the self-drawn player must not shadow the native
+    // realization there.
+    #[cfg(all(feature = "video-gpu", not(target_vendor = "apple")))]
     waterui_video_gpu::install(env);
     let _ = env;
 }
 
-#[cfg(all(test, feature = "video-gpu"))]
+#[cfg(all(test, feature = "video-gpu", not(target_vendor = "apple")))]
 mod tests {
     use waterui_core::{Environment, view::Hook};
 

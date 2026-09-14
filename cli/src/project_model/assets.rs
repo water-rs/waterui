@@ -1054,16 +1054,18 @@ pub async fn capability_ffi_features(project: &Project) -> eyre::Result<Vec<Stri
     Ok(features)
 }
 
-/// Returns the `waterui` features that select `WaterUI`'s own realizations of
-/// the semantic components the facade carries, for a platform with no native
-/// primitive to bridge.
+/// Returns the `waterui-ffi` features that select `WaterUI`'s own realizations
+/// of the semantic components the facade carries, for a platform with no
+/// native primitive to bridge.
 ///
 /// Apple bridges `AVPlayer`, so an Apple build asks for none of these and links
 /// no player. Every other platform draws the video itself, and the
 /// application's composition root — `waterui::app::App` — is what installs it,
 /// so the choice travels as a facade feature rather than as a backend
-/// dependency. The realization follows the capability the app already opted
-/// into: an app with no GPU stack gets no GPU player.
+/// dependency. The realization is opt-in: linking it pulls decoders such as
+/// rav1d and symphonia into the artifact, so the FFI build selects it only when
+/// the application declared `waterui`'s `video-gpu` feature (or the
+/// `waterui-video-gpu` crate) in its own dependency graph.
 ///
 /// Realizations that live in their own crates — `waterui-map-gpu` — are not
 /// here. The application depends on such a crate directly and installs it from
@@ -1075,8 +1077,10 @@ pub async fn capability_ffi_features(project: &Project) -> eyre::Result<Vec<Stri
 /// Returns an error when `cargo metadata` cannot be read.
 pub async fn self_drawn_realization_features(project: &Project) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
-    if capability_enabled(project, "gpu").await? {
-        features.push("waterui/video-gpu".to_string());
+    let opted_in = package_feature_enabled(project, "waterui", "video-gpu").await?
+        || project.links_runtime_package("waterui-video-gpu").await?;
+    if opted_in {
+        features.push("waterui-ffi/video".to_string());
     }
     Ok(features)
 }
