@@ -55,7 +55,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let (width, height) = args.viewport()?;
     let scale_factor = args.scale()?;
-    let server_name = super::read_project_crate_name(&project_path).await?;
+    let server_name = waterui_cli::project::read_project_crate_name(&project_path).await?;
     let sccache_path = super::detect_sccache_path(shell).await;
 
     info!(

@@ -10980,6 +10980,7 @@ dependencies = [
  "remove_dir_all",
  "resvg",
  "roxmltree 0.21.1",
+ "schemars 1.2.2",
  "semver",
  "serde",
  "serde_json",

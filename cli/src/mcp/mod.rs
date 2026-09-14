@@ -7,6 +7,7 @@
 //! contract in `waterui-mcp-protocol` and forwards `tools/call` to the child
 //! once it is up.
 
+pub mod preview;
 mod proxy;
 
 use std::io;
@@ -56,6 +57,11 @@ pub struct McpSessionRequest {
 /// Returns an error when the stdio transport fails. A child that fails to
 /// build does not fail the session — `tools/call` reports the build error to
 /// the model until `restart` retries it.
+///
+/// # Panics
+///
+/// Panics if a static tool registration fails — a programming error, not a
+/// runtime condition.
 pub async fn serve_mcp(request: McpSessionRequest) -> Result<()> {
     let McpSessionRequest {
         project_path,
@@ -67,14 +73,20 @@ pub async fn serve_mcp(request: McpSessionRequest) -> Result<()> {
     } = request;
 
     let proxy = Arc::new(ChildProxy::new(
-        project_path,
+        project_path.clone(),
         width,
         height,
         scale_factor,
-        sccache_path,
+        sccache_path.clone(),
     ));
     let mut tools = Tools::new();
     register_session_tools(&mut tools, Arc::clone(&proxy));
+    // `preview` is served by this front — it renders through the preview
+    // machinery rather than the running app, and must answer before the
+    // child's first build finishes.
+    tools
+        .register(preview::PreviewTool::new(project_path, sccache_path))
+        .expect("static tool registration cannot fail");
 
     // Schedule the first build before the server starts so it is already
     // compiling while `initialize` is being answered.

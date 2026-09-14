@@ -6,8 +6,8 @@ use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
 
 use crate::shell::Shell;
-use crate::toolchain_checks;
 use crate::{header, success};
+use waterui_cli::toolchain_checks;
 use waterui_cli::{
     android::platform::{AndroidAbi, AndroidPlatform},
     apple::platform::{build_rust_lib, package_apple},

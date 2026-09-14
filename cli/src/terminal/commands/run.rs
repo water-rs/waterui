@@ -11,8 +11,8 @@ use jiff::Timestamp;
 
 use super::detect_sccache_path;
 use crate::shell::Shell;
-use crate::toolchain_checks;
 use crate::{error, header, line, note, success, warn};
+use waterui_cli::toolchain_checks;
 use waterui_cli::{
     android::{
         device::{AndroidDevice, AndroidEmulator},

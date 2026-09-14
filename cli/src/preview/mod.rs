@@ -6,12 +6,15 @@
 //! - [`protocol`]: Message definitions for preview support app communication
 //! - `inputs`: Content fingerprinting for preview build caching
 //! - `launcher`: Preview support app lifecycle management
+//! - [`request`]: Preview argument resolution shared by `water preview` and
+//!   the `water mcp` `preview` tool
 
 mod app_client;
 pub(crate) mod hydrolysis;
 mod inputs;
 mod launcher;
 pub mod protocol;
+pub mod request;
 
 pub use app_client::{PreviewAppClient, PreviewProbe};
 pub use hydrolysis::{
@@ -21,3 +24,6 @@ pub use hydrolysis::{
 };
 pub use launcher::{PreviewSession, launch_preview_session};
 pub use protocol::{PreviewPlatform, Size};
+pub use request::{
+    CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewPlatform, PreviewRequest, PreviewTarget,
+};

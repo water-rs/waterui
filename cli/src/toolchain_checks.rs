@@ -1,10 +1,11 @@
-//! Shared toolchain checks for terminal commands.
+//! Shared toolchain checks for the terminal commands and the `water mcp`
+//! `preview` tool.
 
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail};
 
-use waterui_cli::{
+use crate::{
     android::{
         AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
         AndroidSdkPlatforms, Java, Kotlin,
@@ -123,6 +124,10 @@ async fn android_failure_message<I: Installation>(
     .join("\n")
 }
 
+/// Verify Xcode and the requested Apple SDK are installed.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
 pub async fn check_apple(sdk: AppleSdk) -> Result<()> {
     let xcode = Xcode;
     if let Err(e) = xcode.check().await {
@@ -134,10 +139,18 @@ pub async fn check_apple(sdk: AppleSdk) -> Result<()> {
     Ok(())
 }
 
+/// Verify the Android toolchain covers building and packaging for all ABIs.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
 pub async fn check_android_build_or_package() -> Result<()> {
     check_android_build_or_package_for_abis(ALL_ABIS).await
 }
 
+/// Verify the Android toolchain covers building and packaging for `required_abis`.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
 pub async fn check_android_build_or_package_for_abis(required_abis: &[AndroidAbi]) -> Result<()> {
     let sdk = AndroidSdk;
     if let Err(e) = sdk.check().await {
@@ -213,6 +226,10 @@ pub async fn check_android_build_or_package_for_abis(required_abis: &[AndroidAbi
     Ok(())
 }
 
+/// Verify the Android toolchain covers running an app (adds `adb` to the build requirements).
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
 pub async fn check_android_run() -> Result<()> {
     check_android_build_or_package().await?;
     let platform_tools = AndroidPlatformTools;
@@ -225,6 +242,10 @@ pub async fn check_android_run() -> Result<()> {
     Ok(())
 }
 
+/// Verify the GTK4 toolchain is installed.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
 pub async fn check_gtk4() -> Result<()> {
     let toolchain = Gtk4Toolchain;
     if let Err(e) = toolchain.check().await {
@@ -233,6 +254,10 @@ pub async fn check_gtk4() -> Result<()> {
     Ok(())
 }
 
+/// Verify the host toolchain components Hydrolysis builds need.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
 pub async fn check_hydrolysis() -> Result<()> {
     let llvm = WindowsArm64LlvmToolchain;
     if let Err(e) = llvm.check().await {
@@ -244,6 +269,10 @@ pub async fn check_hydrolysis() -> Result<()> {
     Ok(())
 }
 
+/// Verify the web toolchain is installed.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
 pub async fn check_web() -> Result<()> {
     let toolchain: WebToolchain = Default::default();
     if let Err(error) = toolchain.check().await {
