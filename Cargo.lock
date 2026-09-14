@@ -4607,14 +4607,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "image-example"
-version = "0.1.0"
-dependencies = [
- "waterui",
- "waterui-media",
-]
-
-[[package]]
 name = "image-webp"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
