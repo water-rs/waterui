@@ -39,8 +39,69 @@ pub use page::{
     AcceleratedFrameSink, CefInputModifiers, CefKeyInput, CefPageHandle, CefPointerButton,
     CefPopupRect, CefTextRange,
 };
+#[cfg(target_os = "windows")]
+pub use runtime::install_bootstrap_sandbox_info;
 pub use runtime::{
     CefRuntime, CefRuntimeConfiguration, CefRuntimePaths, PumpDeadline, run_packaged_subprocess,
 };
 #[cfg(feature = "webview")]
 pub use webview::CefWebViewHandle;
+
+/// Exports the `RunWinMain` and `RunConsoleMain` entry points a Windows CEF
+/// application DLL must provide for the bootstrap launcher.
+///
+/// CEF no longer ships a static `cef_sandbox` library for Windows. The
+/// application executable is a renamed copy of `bootstrap.exe`
+/// (`/SUBSYSTEM:WINDOWS`) or `bootstrapc.exe` (`/SUBSYSTEM:CONSOLE`) from the
+/// distribution; it creates the OS-sandbox information object in-process,
+/// loads the application DLL that shares its file name, and calls one of these
+/// entry points with that object. The macro installs it through
+/// [`install_bootstrap_sandbox_info`](crate::install_bootstrap_sandbox_info)
+/// and then runs the real entry function:
+///
+/// ```ignore
+/// waterui_browser_cef::cef_bootstrap_main!(main);
+///
+/// fn main() {
+///     // Ordinary application entry point.
+/// }
+/// ```
+///
+/// Both symbols are exported so the same DLL works under either launcher.
+/// Subprocesses re-enter through the same pair: `browser_subprocess_path`
+/// resolves to the renamed launcher, which loads this DLL again with a
+/// sandbox object restricted for that subprocess type.
+#[cfg(target_os = "windows")]
+#[macro_export]
+macro_rules! cef_bootstrap_main {
+    ($main:path) => {
+        /// Called by `bootstrap.exe` (`/SUBSYSTEM:WINDOWS`). Do not invoke
+        /// directly; the bootstrap launcher owns this entry point.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn RunWinMain(
+            _instance: *mut ::core::ffi::c_void,
+            _command_line: *mut ::core::ffi::c_void,
+            _show_command: ::core::ffi::c_int,
+            sandbox_info: *mut ::core::ffi::c_void,
+            _version_info: *mut ::core::ffi::c_void,
+        ) -> ::core::ffi::c_int {
+            $crate::install_bootstrap_sandbox_info(sandbox_info);
+            $main();
+            0
+        }
+
+        /// Called by `bootstrapc.exe` (`/SUBSYSTEM:CONSOLE`). Do not invoke
+        /// directly; the bootstrap launcher owns this entry point.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn RunConsoleMain(
+            _argc: ::core::ffi::c_int,
+            _argv: *mut *mut ::core::ffi::c_char,
+            sandbox_info: *mut ::core::ffi::c_void,
+            _version_info: *mut ::core::ffi::c_void,
+        ) -> ::core::ffi::c_int {
+            $crate::install_bootstrap_sandbox_info(sandbox_info);
+            $main();
+            0
+        }
+    };
+}
