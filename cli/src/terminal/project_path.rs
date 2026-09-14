@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{Result, WrapErr};
+use eyre::{Result, WrapErr};
 
 pub fn canonicalize(path: &Path) -> Result<PathBuf> {
     dunce::canonicalize(path)

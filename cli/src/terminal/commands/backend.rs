@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use clap::{Args as ClapArgs, Subcommand, ValueEnum};
-use color_eyre::eyre::{Result, bail};
 use dialoguer::{Confirm, theme::ColorfulTheme};
+use eyre::{Result, bail};
 
 use crate::shell::Shell;
 use crate::{header, line, note, success, warn};

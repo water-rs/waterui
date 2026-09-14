@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use color_eyre::eyre::{self, WrapErr};
+use eyre::WrapErr;
 use fs4::{FileExt, TryLockError};
 use serde::{Deserialize, Serialize};
 use smol::fs;

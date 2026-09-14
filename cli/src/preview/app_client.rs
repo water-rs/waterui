@@ -7,8 +7,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use color_eyre::eyre::WrapErr as _;
-use color_eyre::eyre::{Result, bail};
+use eyre::WrapErr as _;
+use eyre::{Result, bail};
 use futures_util::{FutureExt as _, pin_mut, select};
 use smol::Timer;
 use smol::net::TcpStream;
@@ -220,7 +220,7 @@ impl PreviewAppClient {
     ) -> Result<Vec<u8>> {
         self.render_with_dylib_source(dylib_id, dylib_bytes, symbol, width, height)
             .await
-            .map_err(|e| color_eyre::eyre::eyre!("Preview app error: {e}"))
+            .map_err(|e| eyre::eyre!("Preview app error: {e}"))
     }
 
     /// Render a view symbol, loading dylib bytes from file only when needed.

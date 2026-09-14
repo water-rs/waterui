@@ -2,7 +2,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use color_eyre::eyre::{Result, bail, eyre};
+use eyre::{Result, bail, eyre};
 use tracing::info;
 
 #[allow(clippy::redundant_pub_crate)]

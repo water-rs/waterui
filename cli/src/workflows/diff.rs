@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use color_eyre::eyre::{self, eyre};
+use eyre::eyre;
 use image::{ImageBuffer, Rgba, RgbaImage};
 
 /// Bounding box of changed region.

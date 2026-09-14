@@ -1,4 +1,4 @@
-use color_eyre::eyre::{self, eyre};
+use eyre::eyre;
 use smol::channel::{Receiver, Sender};
 use smol::io::AsyncWriteExt;
 use smol::process::Command;

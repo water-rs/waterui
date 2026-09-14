@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 
 use crate::{

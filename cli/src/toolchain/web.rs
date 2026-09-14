@@ -1,7 +1,5 @@
 //! Web toolchain checks and installations.
 
-use color_eyre::eyre;
-
 use crate::{
     toolchain::{Installation, Toolchain, ToolchainError},
     utils::{run_command, run_command_output_os, which},

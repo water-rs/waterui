@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{self, Context};
+use eyre::Context;
 use image::ImageEncoder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};

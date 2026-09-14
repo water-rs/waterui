@@ -17,7 +17,7 @@ use std::sync::Arc;
 use aither_core::llm::tool::Tools;
 use aither_mcp::McpServer;
 use aither_mcp::transport::StdioTransport;
-use color_eyre::eyre::{Context as _, Result};
+use eyre::{Context as _, Result};
 use serde::Serialize;
 use tracing::info;
 use waterui_mcp_protocol::{INSTRUCTIONS, register_session_tools};
@@ -107,7 +107,7 @@ pub async fn serve_mcp(request: McpSessionRequest) -> Result<()> {
     proxy.shutdown().await;
     info!("water mcp: session ended");
 
-    result.map_err(|error| color_eyre::eyre::eyre!("MCP stdio server failed: {error}"))
+    result.map_err(|error| eyre::eyre!("MCP stdio server failed: {error}"))
 }
 
 /// The Hydrolysis platform of this host — `water mcp` always builds the app

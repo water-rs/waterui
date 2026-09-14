@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{Result, bail};
+use eyre::{Result, bail};
 
 use crate::{
     android::{

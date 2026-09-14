@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use cargo_toml::Manifest as CargoManifest;
-use color_eyre::eyre::{Context, Result, bail};
+use eyre::{Context, Result, bail};
 use futures_util::{FutureExt as _, pin_mut, select};
 #[cfg(feature = "preview")]
 use notify::{RecursiveMode, Watcher as _};
@@ -173,7 +173,7 @@ impl PreviewSession {
                 prefer_local_path,
             )
             .await
-            .map_err(|e| color_eyre::eyre::eyre!("Preview app error: {e}"))
+            .map_err(|e| eyre::eyre!("Preview app error: {e}"))
     }
 
     /// Shutdown the preview app if this session launched it.
@@ -388,7 +388,7 @@ async fn prepare_preview_module_linkage(
         return Ok(());
     }
     let build_lib_dir = built_path.parent().ok_or_else(|| {
-        color_eyre::eyre::eyre!(
+        eyre::eyre!(
             "Preview dylib path has no output directory: {}",
             built_path.display()
         )
@@ -547,7 +547,7 @@ pub async fn launch_preview_session(
     );
     let expected_fingerprint = requirements.runtime_fingerprint.clone();
     let tcp_config = PreviewTcpConfig::from_env()
-        .map_err(|e| color_eyre::eyre::eyre!(e))
+        .map_err(|e| eyre::eyre!(e))
         .wrap_err("Invalid preview TCP config")?;
 
     let connect_start = Instant::now();
@@ -670,7 +670,7 @@ async fn launch_preview_app_for_platform(
 async fn launch_preview_on_macos(project: &Project) -> Result<Running> {
     let backend = project
         .apple_backend()
-        .ok_or_else(|| color_eyre::eyre::eyre!("Apple backend not configured"))?;
+        .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
     let device = Local;
     device.launch().await?;
     info!("Building and running preview app on macOS...");
@@ -682,13 +682,13 @@ async fn launch_preview_on_macos(project: &Project) -> Result<Running> {
             preview_run_options(),
         )
         .await
-        .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))
+        .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"))
 }
 
 async fn launch_preview_on_ios_simulator(project: &Project) -> Result<Running> {
     let backend = project
         .apple_backend()
-        .ok_or_else(|| color_eyre::eyre::eyre!("Apple backend not configured"))?;
+        .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
     let simulator = select_preview_ios_simulator().await?;
     simulator.launch().await?;
     info!("Building and running preview app on iOS Simulator...");
@@ -700,7 +700,7 @@ async fn launch_preview_on_ios_simulator(project: &Project) -> Result<Running> {
             preview_run_options(),
         )
         .await
-        .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))
+        .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"))
 }
 
 async fn select_preview_ios_simulator() -> Result<crate::apple::device::AppleSimulator> {
@@ -710,15 +710,13 @@ async fn select_preview_ios_simulator() -> Result<crate::apple::device::AppleSim
         .find(|simulator| simulator.state == "Booted")
         .cloned()
         .or_else(|| simulators.into_iter().next())
-        .ok_or_else(|| {
-            color_eyre::eyre::eyre!("No iOS simulator available. Please create one in Xcode.")
-        })
+        .ok_or_else(|| eyre::eyre!("No iOS simulator available. Please create one in Xcode."))
 }
 
 async fn launch_preview_on_android(project: &Project) -> Result<Running> {
     let backend = project
         .android_backend()
-        .ok_or_else(|| color_eyre::eyre::eyre!("Android backend not configured"))?;
+        .ok_or_else(|| eyre::eyre!("Android backend not configured"))?;
 
     if let Some(device) = crate::android::device::AndroidDevice::scan()
         .await?
@@ -730,21 +728,21 @@ async fn launch_preview_on_android(project: &Project) -> Result<Running> {
         return project
             .run_android_with_options(backend, device, preview_run_options())
             .await
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"));
+            .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"));
     }
 
     let avd_name = crate::android::platform::AndroidPlatform::list_avds()
         .await?
         .into_iter()
         .next()
-        .ok_or_else(|| color_eyre::eyre::eyre!("No Android devices or emulators available."))?;
+        .ok_or_else(|| eyre::eyre!("No Android devices or emulators available."))?;
     let emulator = crate::android::device::AndroidEmulator::open(avd_name).await?;
     emulator.launch().await?;
     info!("Building and running preview app on Android emulator...");
     project
         .run_android_with_options(backend, emulator, preview_run_options())
         .await
-        .map_err(|e| color_eyre::eyre::eyre!("Failed to run preview app: {e}"))
+        .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"))
 }
 
 async fn build_preview_session_from_launch(
@@ -1260,7 +1258,7 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
     // Create as normal playground project
     let project = Project::create(path, options)
         .await
-        .map_err(|e| color_eyre::eyre::eyre!("Failed to create preview app: {e}"))?;
+        .map_err(|e| eyre::eyre!("Failed to create preview app: {e}"))?;
 
     // Mark the preview app as accessory/headless.
     let mut manifest = WaterManifest::open(project.root().join("Water.toml")).await?;
@@ -1334,7 +1332,7 @@ async fn resolve_preview_requirements(
             .as_std_path()
             .parent()
             .map(Path::to_path_buf)
-            .ok_or_else(|| color_eyre::eyre::eyre!("Failed to derive waterui package root path"))?;
+            .ok_or_else(|| eyre::eyre!("Failed to derive waterui package root path"))?;
         let fingerprint = compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
         info!(
             waterui_root = %waterui_root.display(),
@@ -1391,7 +1389,7 @@ async fn resolve_preview_requirements_from_manifest(
     let manifest = crate::project::Manifest::open(project_path.join("Water.toml"))
         .await
         .map_err(|error| {
-            color_eyre::eyre::eyre!(
+            eyre::eyre!(
                 "Failed to read Water.toml for preview requirements at {}: {error}",
                 project_path.display()
             )
@@ -1483,15 +1481,16 @@ fn resolved_package_features(
     metadata: &cargo_metadata::Metadata,
     package: &cargo_metadata::Package,
 ) -> Result<Vec<String>> {
-    let resolve = metadata.resolve.as_ref().ok_or_else(|| {
-        color_eyre::eyre::eyre!("Cargo metadata omitted its dependency resolution graph")
-    })?;
+    let resolve = metadata
+        .resolve
+        .as_ref()
+        .ok_or_else(|| eyre::eyre!("Cargo metadata omitted its dependency resolution graph"))?;
     let node = resolve
         .nodes
         .iter()
         .find(|node| node.id == package.id)
         .ok_or_else(|| {
-            color_eyre::eyre::eyre!(
+            eyre::eyre!(
                 "Cargo metadata omitted the resolution node for package `{}`",
                 package.name
             )
@@ -1510,9 +1509,10 @@ fn resolved_package_features(
 }
 
 fn resolved_graph_fingerprint(metadata: &cargo_metadata::Metadata) -> Result<String> {
-    let resolve = metadata.resolve.as_ref().ok_or_else(|| {
-        color_eyre::eyre::eyre!("Cargo metadata omitted its dependency resolution graph")
-    })?;
+    let resolve = metadata
+        .resolve
+        .as_ref()
+        .ok_or_else(|| eyre::eyre!("Cargo metadata omitted its dependency resolution graph"))?;
     let mut units = resolve
         .nodes
         .iter()
@@ -1574,7 +1574,7 @@ async fn runtime_identity_from_waterui_root(waterui_root: &Path) -> Result<Strin
         .get("package")
         .and_then(toml::Value::as_table)
         .ok_or_else(|| {
-            color_eyre::eyre::eyre!(
+            eyre::eyre!(
                 "Invalid waterui-core manifest at {}: missing package section",
                 core_manifest_path.display()
             )
@@ -1583,7 +1583,7 @@ async fn runtime_identity_from_waterui_root(waterui_root: &Path) -> Result<Strin
         .get("name")
         .and_then(toml::Value::as_str)
         .ok_or_else(|| {
-            color_eyre::eyre::eyre!(
+            eyre::eyre!(
                 "Invalid waterui-core manifest at {}: missing package.name",
                 core_manifest_path.display()
             )
@@ -1599,7 +1599,7 @@ async fn runtime_identity_from_waterui_root(waterui_root: &Path) -> Result<Strin
         .get("version")
         .and_then(toml::Value::as_str)
         .ok_or_else(|| {
-            color_eyre::eyre::eyre!(
+            eyre::eyre!(
                 "Invalid waterui-core manifest at {}: missing package.version",
                 core_manifest_path.display()
             )
@@ -1613,9 +1613,9 @@ fn select_unique_package<'a>(
     name: &str,
 ) -> Result<&'a cargo_metadata::Package> {
     let mut matches = metadata.packages.iter().filter(|p| p.name == name);
-    let first = matches.next().ok_or_else(|| {
-        color_eyre::eyre::eyre!("Could not resolve package `{name}` from metadata")
-    })?;
+    let first = matches
+        .next()
+        .ok_or_else(|| eyre::eyre!("Could not resolve package `{name}` from metadata"))?;
     if matches.next().is_some() {
         bail!(
             "Multiple `{name}` packages were resolved. Preview requires a single resolved `{name}` package to guarantee compatibility."

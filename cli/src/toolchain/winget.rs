@@ -1,7 +1,5 @@
 //! Shared helper for Windows package installation via winget.
 
-use color_eyre::eyre;
-
 use crate::utils::{run_command, run_command_output_os, which};
 
 /// Errors from winget-backed installation.

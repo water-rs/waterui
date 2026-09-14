@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use askama::Template;
-use color_eyre::eyre::{self, bail};
+use eyre::bail;
 use fs_extra::dir::CopyOptions;
 use smol::fs;
 #[cfg(target_os = "macos")]

@@ -13,7 +13,7 @@
 
 use std::str::FromStr;
 
-use color_eyre::eyre::{Result, eyre};
+use eyre::{Result, eyre};
 use target_lexicon::{Architecture, Riscv32Architecture, Triple};
 
 /// The instruction set architecture of an ESP32-class chip.
@@ -189,7 +189,7 @@ impl Esp32Chip {
 }
 
 impl FromStr for Esp32Chip {
-    type Err = color_eyre::eyre::Error;
+    type Err = eyre::Error;
 
     fn from_str(value: &str) -> Result<Self> {
         match value {

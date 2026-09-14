@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 
-use color_eyre::eyre;
-
 use crate::{
     brew::Brew,
     toolchain::{Installation, Toolchain, ToolchainError},

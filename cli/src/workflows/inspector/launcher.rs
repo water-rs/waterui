@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use color_eyre::eyre::{Context as _, Result, bail};
+use eyre::{Context as _, Result, bail};
 use tracing::info;
 
 use crate::device::{Device, Local, RunOptions, Running};
@@ -104,19 +104,19 @@ pub async fn launch_inspector_session(
         InspectorPlatform::Macos => {
             let backend = project
                 .apple_backend()
-                .ok_or_else(|| color_eyre::eyre::eyre!("Apple backend not configured"))?;
+                .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
             let device = Local;
             device.launch().await?;
             info!("Building and running inspector app on macOS...");
             project
                 .run_with_options(backend, TargetPlatform::MacOS, device, run_options)
                 .await
-                .map_err(|e| color_eyre::eyre::eyre!("Failed to run inspector app: {e}"))?
+                .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
         }
         InspectorPlatform::IosSimulator => {
             let backend = project
                 .apple_backend()
-                .ok_or_else(|| color_eyre::eyre::eyre!("Apple backend not configured"))?;
+                .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
             let simulators = crate::apple::device::AppleSimulator::scan_ios().await?;
             let simulator = simulators
                 .iter()
@@ -124,9 +124,7 @@ pub async fn launch_inspector_session(
                 .cloned()
                 .or_else(|| simulators.into_iter().next())
                 .ok_or_else(|| {
-                    color_eyre::eyre::eyre!(
-                        "No iOS simulator available. Please create one in Xcode."
-                    )
+                    eyre::eyre!("No iOS simulator available. Please create one in Xcode.")
                 })?;
 
             simulator.launch().await?;
@@ -139,12 +137,12 @@ pub async fn launch_inspector_session(
                     run_options,
                 )
                 .await
-                .map_err(|e| color_eyre::eyre::eyre!("Failed to run inspector app: {e}"))?
+                .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
         }
         InspectorPlatform::Android => {
             let backend = project
                 .android_backend()
-                .ok_or_else(|| color_eyre::eyre::eyre!("Android backend not configured"))?;
+                .ok_or_else(|| eyre::eyre!("Android backend not configured"))?;
 
             let devices = crate::android::device::AndroidDevice::scan().await?;
             if let Some(device) = devices.into_iter().next() {
@@ -153,19 +151,20 @@ pub async fn launch_inspector_session(
                 project
                     .run_android_with_options(backend, device, run_options)
                     .await
-                    .map_err(|e| color_eyre::eyre::eyre!("Failed to run inspector app: {e}"))?
+                    .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
             } else {
                 let avds = crate::android::platform::AndroidPlatform::list_avds().await?;
-                let avd_name = avds.into_iter().next().ok_or_else(|| {
-                    color_eyre::eyre::eyre!("No Android devices or emulators available.")
-                })?;
+                let avd_name = avds
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| eyre::eyre!("No Android devices or emulators available."))?;
                 let emulator = crate::android::device::AndroidEmulator::open(avd_name).await?;
                 emulator.launch().await?;
                 info!("Building and running inspector app on Android emulator...");
                 project
                     .run_android_with_options(backend, emulator, run_options)
                     .await
-                    .map_err(|e| color_eyre::eyre::eyre!("Failed to run inspector app: {e}"))?
+                    .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
             }
         }
     };
@@ -217,7 +216,7 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
 
     let project = Project::create(path, options)
         .await
-        .map_err(|e| color_eyre::eyre::eyre!("Failed to create inspector app: {e}"))?;
+        .map_err(|e| eyre::eyre!("Failed to create inspector app: {e}"))?;
 
     let mut manifest = WaterManifest::open(project.root().join("Water.toml")).await?;
     manifest.package.accessory = false;
@@ -274,7 +273,7 @@ async fn resolve_inspector_requirements(project_path: &Path) -> Result<Inspector
             .as_std_path()
             .parent()
             .map(Path::to_path_buf)
-            .ok_or_else(|| color_eyre::eyre::eyre!("Failed to derive waterui package root path"))?;
+            .ok_or_else(|| eyre::eyre!("Failed to derive waterui package root path"))?;
         let fingerprint = compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
         return Ok(InspectorRequirements {
             waterui_path: Some(waterui_root),
@@ -303,9 +302,9 @@ fn select_unique_package<'a>(
     name: &str,
 ) -> Result<&'a cargo_metadata::Package> {
     let mut matches = metadata.packages.iter().filter(|p| p.name == name);
-    let first = matches.next().ok_or_else(|| {
-        color_eyre::eyre::eyre!("Could not resolve package `{name}` from metadata")
-    })?;
+    let first = matches
+        .next()
+        .ok_or_else(|| eyre::eyre!("Could not resolve package `{name}` from metadata"))?;
     if matches.next().is_some() {
         bail!(
             "Multiple `{name}` packages were resolved. Inspector requires a single resolved `{name}` package."

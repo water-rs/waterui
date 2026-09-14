@@ -1,6 +1,5 @@
 //! Rust toolchain checks and remediation.
 
-use color_eyre::eyre;
 use semver::Version;
 
 use crate::{

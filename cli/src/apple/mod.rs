@@ -13,7 +13,7 @@ pub mod local;
 pub mod local {
     use std::path::Path;
 
-    use color_eyre::eyre::{self, eyre};
+    use eyre::eyre;
 
     /// Information about a macOS window.
     #[derive(Debug, Clone)]

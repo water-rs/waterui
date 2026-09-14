@@ -7,8 +7,8 @@ use std::{
 };
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::{self, Result, bail};
 use dialoguer::{Confirm, theme::ColorfulTheme};
+use eyre::{Result, bail};
 use futures_util::{StreamExt, stream};
 use ignore::{DirEntry, WalkBuilder};
 use indicatif::{ProgressBar, ProgressStyle};

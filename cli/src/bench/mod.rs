@@ -12,7 +12,7 @@ pub mod report;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use color_eyre::eyre::{Result, WrapErr as _, bail};
+use eyre::{Result, WrapErr as _, bail};
 
 use waterui_preview_protocol::bench::{
     BENCH_MAX_CLIP_LAYERS_ENV, BENCH_MAX_GPU_SURFACE_LAYERS_ENV, BENCH_MAX_MEAN_US_ENV,

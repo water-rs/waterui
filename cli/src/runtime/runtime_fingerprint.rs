@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use color_eyre::eyre::{Context as _, Result, bail};
+use eyre::{Context as _, Result, bail};
 use sha2::{Digest as _, Sha256};
 use tracing::info;
 

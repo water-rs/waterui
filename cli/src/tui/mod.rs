@@ -17,8 +17,6 @@
 
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre;
-
 use crate::{
     build::{RustBuild, RustLinkage},
     project::Project,
@@ -128,7 +126,7 @@ pub fn exec(binary: &Path) -> eyre::Result<()> {
     let _ = std::io::stdout().flush();
     #[cfg(unix)]
     {
-        use color_eyre::eyre::WrapErr as _;
+        use eyre::WrapErr as _;
         use std::os::unix::process::CommandExt as _;
         Err(std::process::Command::new(binary).exec())
             .wrap_err_with(|| format!("failed to launch the TUI binary {}", binary.display()))

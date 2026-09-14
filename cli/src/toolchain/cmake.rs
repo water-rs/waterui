@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 
-use color_eyre::eyre;
-
 use crate::{
     brew::Brew,
     toolchain::linux::{has_supported_package_manager, install_named_packages},

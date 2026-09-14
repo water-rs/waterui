@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{self, eyre};
+use eyre::eyre;
 use jiff::Timestamp;
 
 use crate::device::Device;

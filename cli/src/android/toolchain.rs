@@ -6,7 +6,7 @@ use std::{
     process::Output,
 };
 
-use color_eyre::eyre::{self, WrapErr};
+use eyre::WrapErr;
 use url::Url;
 use walkdir::WalkDir;
 use waterui_assets_core::{download_remote_bytes, write_bytes_atomically};

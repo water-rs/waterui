@@ -7,7 +7,7 @@
 //! never drift apart.
 
 use clap::ValueEnum;
-use color_eyre::eyre::{Result, bail};
+use eyre::{Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -142,10 +142,10 @@ pub fn parse_frame(s: &str) -> Result<(f32, f32)> {
 
     let width: f32 = parts[0]
         .parse()
-        .map_err(|_| color_eyre::eyre::eyre!("Invalid frame width"))?;
+        .map_err(|_| eyre::eyre!("Invalid frame width"))?;
     let height: f32 = parts[1]
         .parse()
-        .map_err(|_| color_eyre::eyre::eyre!("Invalid frame height"))?;
+        .map_err(|_| eyre::eyre!("Invalid frame height"))?;
 
     if !width.is_finite() || width <= 0.0 {
         bail!("Invalid frame width: must be a positive finite number");

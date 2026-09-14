@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -165,7 +164,7 @@ pub enum FailToInitBackend {
     /// Invalid backend configuration prevented scaffolding (e.g. an
     /// unsupported chip in `[backends.esp32]`).
     #[error("Invalid backend configuration: {0}")]
-    Config(#[source] color_eyre::eyre::Error),
+    Config(#[source] eyre::Error),
 }
 
 /// Trait for backends in a `WaterUI` project.

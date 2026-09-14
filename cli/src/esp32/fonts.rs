@@ -22,7 +22,7 @@
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{self, WrapErr, eyre};
+use eyre::{WrapErr, eyre};
 use fontcull_klippa::{Plan, SubsetFlags, parse_unicodes, subset_font};
 use fontcull_write_fonts::read::FontRef;
 use fontcull_write_fonts::read::collections::IntSet;

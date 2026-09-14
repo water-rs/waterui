@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use color_eyre::eyre::{self, eyre};
+use eyre::eyre;
 use jiff::Timestamp;
 use serde::Deserialize;
 use smol::{
@@ -496,7 +496,7 @@ impl Device for AppleDevice {
         }
     }
 
-    async fn launch(&self) -> color_eyre::eyre::Result<()> {
+    async fn launch(&self) -> eyre::Result<()> {
         match self {
             Self::Simulator(simulator) => simulator.launch().await,
             Self::Current(_) => {
@@ -592,7 +592,7 @@ impl Device for AppleSimulator {
     }
 
     /// Launch the Apple simulator (boot it)
-    async fn launch(&self) -> color_eyre::eyre::Result<()> {
+    async fn launch(&self) -> eyre::Result<()> {
         // Only boot if not already booted
         if self.state != "Booted" {
             run_command("xcrun", ["simctl", "boot", &self.udid]).await?;

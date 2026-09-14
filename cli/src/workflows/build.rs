@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use color_eyre::eyre::{self, bail};
+use eyre::bail;
 use futures_util::StreamExt as _;
 use smol::{process::Command, unblock};
 use target_lexicon::{Environment, OperatingSystem, Triple};

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use askama::Template;
-use color_eyre::eyre::{Context as _, Result, bail};
+use eyre::{Context as _, Result, bail};
 
 use crate::backend::reinit_backend;
 use crate::build::{BuildOptions, RustLinkage};

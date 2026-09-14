@@ -9,7 +9,6 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use color_eyre::eyre;
 use smol::{process::Command, unblock};
 
 /// Locate an executable in the system's PATH.

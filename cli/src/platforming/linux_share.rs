@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use askama::Template;
-use color_eyre::eyre::{self};
+use eyre;
 use smol::fs;
 
 use crate::project::Project;

@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use color_eyre::eyre::{self, Context as _, bail, eyre};
+use eyre::{Context as _, bail, eyre};
 use smol::fs;
 #[cfg(feature = "esp32")]
 use smol::unblock;

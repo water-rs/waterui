@@ -1,7 +1,5 @@
 //! Linux system package toolchain checks.
 
-use color_eyre::eyre;
-
 use crate::{
     toolchain::{Installation, Toolchain, ToolchainError, UnfixableToolchain},
     utils::{run_command, run_command_output_os, which},

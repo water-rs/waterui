@@ -9,7 +9,7 @@ use std::{
 };
 
 use askama::Template;
-use color_eyre::eyre::{self, bail};
+use eyre::bail;
 use smol::{fs, unblock};
 use target_lexicon::{Aarch64Architecture, Architecture, Triple};
 

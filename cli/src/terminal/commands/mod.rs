@@ -60,24 +60,24 @@ pub mod preview;
 pub mod run;
 
 /// Parse a viewport size from a `WIDTHxHEIGHT` string into whole pixels.
-fn parse_viewport(s: &str) -> color_eyre::eyre::Result<(u32, u32)> {
+fn parse_viewport(s: &str) -> eyre::Result<(u32, u32)> {
     let parts: Vec<&str> = s.split('x').collect();
     if parts.len() != 2 {
-        color_eyre::eyre::bail!("Invalid viewport format: expected WIDTHxHEIGHT (e.g., 390x844)");
+        eyre::bail!("Invalid viewport format: expected WIDTHxHEIGHT (e.g., 390x844)");
     }
 
     let width: u32 = parts[0]
         .parse()
-        .map_err(|_| color_eyre::eyre::eyre!("Invalid viewport width"))?;
+        .map_err(|_| eyre::eyre!("Invalid viewport width"))?;
     let height: u32 = parts[1]
         .parse()
-        .map_err(|_| color_eyre::eyre::eyre!("Invalid viewport height"))?;
+        .map_err(|_| eyre::eyre!("Invalid viewport height"))?;
 
     if width == 0 {
-        color_eyre::eyre::bail!("Invalid viewport width: must be positive");
+        eyre::bail!("Invalid viewport width: must be positive");
     }
     if height == 0 {
-        color_eyre::eyre::bail!("Invalid viewport height: must be positive");
+        eyre::bail!("Invalid viewport height: must be positive");
     }
 
     Ok((width, height))

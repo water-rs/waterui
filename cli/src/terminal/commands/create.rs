@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
-use color_eyre::eyre::{Result, bail, eyre};
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
+use eyre::{Result, bail, eyre};
 use heck::{ToKebabCase, ToSnakeCase};
 
 use crate::shell::Shell;

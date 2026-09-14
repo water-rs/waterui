@@ -1,7 +1,5 @@
 //! Brew toolchain manager for `WaterUI` CLI
 
-use color_eyre::eyre;
-
 use crate::{
     toolchain::{Installation, Toolchain, ToolchainError},
     utils::{run_command, which},

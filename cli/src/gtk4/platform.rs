@@ -6,7 +6,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{self, bail};
+use eyre::bail;
 use smol::fs;
 use tracing::info;
 
