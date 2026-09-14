@@ -190,7 +190,7 @@ pub struct Overlay<Base, Layer> {
     layer: Layer,
 }
 
-impl<Base, Layer> Overlay<Base, Layer> {
+impl<Base: View, Layer: View> Overlay<Base, Layer> {
     /// Creates a new overlay using the provided base view and overlay layer.
     #[must_use]
     pub const fn new(base: Base, layer: Layer) -> Self {
@@ -236,7 +236,7 @@ where
 
 /// Convenience constructor for creating an [`Overlay`] with the default alignment.
 #[must_use]
-pub const fn overlay<Base, Layer>(base: Base, layer: Layer) -> Overlay<Base, Layer> {
+pub const fn overlay<Base: View, Layer: View>(base: Base, layer: Layer) -> Overlay<Base, Layer> {
     Overlay::new(base, layer)
 }
 

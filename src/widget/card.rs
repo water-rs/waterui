@@ -87,7 +87,7 @@ pub struct Card<Content> {
     style: CardStyle,
 }
 
-impl<Content> Card<Content> {
+impl<Content: View> Card<Content> {
     // Creates a new card with the specified content.
 
     /// # Arguments
@@ -163,6 +163,6 @@ where
 ///
 /// # Arguments
 /// * `content` - The main content of the card.
-pub const fn card<Content>(content: Content) -> Card<Content> {
+pub const fn card<Content: View>(content: Content) -> Card<Content> {
     Card::new(content)
 }
