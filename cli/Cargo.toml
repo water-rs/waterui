@@ -73,7 +73,7 @@ dialoguer = { version = "0.12", default-features = false }
 indicatif = "0.18"
 anstream = "1.0"              # Auto-detected ANSI output stream
 anstyle = "1"                 # ANSI styling without manual escape codes
-ctrlc = "3.5"
+ctrlc = { version = "3.5", features = ["termination"] }
 whoami = "2.1"
 heck = "0.5"                  # Case conversion (kebab-case, snake_case, etc.)
 

@@ -95,7 +95,9 @@ fn main() -> Result<()> {
 
     let shell = shell::Shell::new(cli.json);
 
-    // Set up Ctrl+C handler
+    // Cancel on Ctrl+C, and on SIGTERM/SIGHUP through the same path (the
+    // `termination` feature of `ctrlc`): a plain `kill` then still drops the
+    // running command, which is what stops the app and its log stream.
     let cancelled = Arc::new(AtomicBool::new(false));
     {
         let cancelled = Arc::clone(&cancelled);
