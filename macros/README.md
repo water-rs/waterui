@@ -130,7 +130,7 @@ Implements the `Project` trait, enabling decomposition of struct bindings into s
 - Tuple structs
 - Unit structs
 
-**Example from `/Users/lexoliu/Coding/waterui/derive/src/lib.rs` documentation:**
+**Example from `derive/src/lib.rs` documentation:**
 
 ```rust
 use waterui::reactive::{Binding, binding, project::Project};

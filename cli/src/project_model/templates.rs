@@ -1320,7 +1320,7 @@ mod tests {
         };
         assert_eq!(
             vello.git.as_deref(),
-            Some("https://github.com/lexoliu/vello")
+            Some("https://github.com/testerliu/vello")
         );
         assert!(vello.path.is_none());
 
@@ -1418,16 +1418,16 @@ mod tests {
     #[test]
     fn absolute_backend_project_path_uses_real_project_root() {
         let project_root = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\lexo\demo")
+            PathBuf::from(r"C:\Users\tester\demo")
         } else {
-            PathBuf::from("/Users/lexo/demo")
+            PathBuf::from("/Users/tester/demo")
         };
         let backend_project_path = if cfg!(windows) {
             PathBuf::from(
-                r"C:\Users\lexo\.water\build_cache\drive-C\Users\lexo\demo\managed_backends\apple",
+                r"C:\Users\tester\.water\build_cache\drive-C\Users\tester\demo\managed_backends\apple",
             )
         } else {
-            PathBuf::from("/Users/lexo/.water/build_cache/Users/lexo/demo/managed_backends/apple")
+            PathBuf::from("/Users/tester/.water/build_cache/Users/tester/demo/managed_backends/apple")
         };
 
         let mut ctx = ctx(

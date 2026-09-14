@@ -771,17 +771,17 @@ mod tests {
     fn project_build_cache_dir_uses_absolute_project_path_components() {
         let cache_root = Path::new("/tmp/water-cache-root");
         let project_root = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\lexo\demo")
+            PathBuf::from(r"C:\Users\tester\demo")
         } else {
-            PathBuf::from("/Users/lexo/demo")
+            PathBuf::from("/Users/tester/demo")
         };
 
         let cache_dir = project_build_cache_dir_in(&project_root, cache_root);
 
         let expected = if cfg!(windows) {
-            cache_root.join("drive-C/Users/lexo/demo/managed_backends")
+            cache_root.join("drive-C/Users/tester/demo/managed_backends")
         } else {
-            cache_root.join("Users/lexo/demo/managed_backends")
+            cache_root.join("Users/tester/demo/managed_backends")
         };
         assert_eq!(cache_dir, expected);
     }
