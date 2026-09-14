@@ -1,9 +1,7 @@
 //! GTK4 toolchain checking.
 
-use smol::process::Command;
-
 use crate::toolchain::{
-    Toolchain, ToolchainError, UnfixableToolchain,
+    Host, Toolchain, ToolchainError, UnfixableToolchain,
     linux::{
         LinuxSystemPackagesInstallation, LinuxSystemToolchain, gtk4_pkg_config_repair_installation,
     },
@@ -46,7 +44,7 @@ const REQUIRED_PROBES: &[PkgConfigProbe] = &[
 impl Toolchain for Gtk4Toolchain {
     type Installation = LinuxSystemPackagesInstallation;
 
-    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+    async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
         if !cfg!(target_os = "linux") {
             return Err(ToolchainError::Unfixable(UnfixableToolchain::new(
                 "GTK4 backend is only supported on Linux",
@@ -54,9 +52,9 @@ impl Toolchain for Gtk4Toolchain {
             )));
         }
 
-        if !check_pkg_config_exists().await {
+        if !check_pkg_config_exists(host).await {
             let linux_toolchain = LinuxSystemToolchain;
-            return match linux_toolchain.check().await {
+            return match linux_toolchain.check(host).await {
                 Ok(()) => Err(ToolchainError::Unfixable(UnfixableToolchain::new(
                     "pkg-config not found",
                     "Install pkg-config and ensure it is in PATH, then re-run `water doctor`.",
@@ -68,18 +66,18 @@ impl Toolchain for Gtk4Toolchain {
             };
         }
 
-        let missing = missing_pkg_config_probes().await;
+        let missing = missing_pkg_config_probes(host).await;
         if missing.is_empty() {
             return Ok(());
         }
 
         let linux_toolchain = LinuxSystemToolchain;
-        return match linux_toolchain.check().await {
+        return match linux_toolchain.check(host).await {
             Err(ToolchainError::Fixable(installation)) => {
                 Err(ToolchainError::Fixable(installation))
             }
             Err(ToolchainError::Unfixable(e)) => Err(ToolchainError::Unfixable(e)),
-            Ok(()) => match gtk4_pkg_config_repair_installation(&missing).await {
+            Ok(()) => match gtk4_pkg_config_repair_installation(host, &missing).await {
                 Ok(installation) => Err(ToolchainError::Fixable(installation)),
                 Err(error) => {
                     let missing = missing.join(", ");
@@ -98,41 +96,40 @@ impl Toolchain for Gtk4Toolchain {
 }
 
 /// Check if pkg-config is available.
-async fn check_pkg_config_exists() -> bool {
-    Command::new("pkg-config")
-        .arg("--version")
-        .output()
+async fn check_pkg_config_exists(host: &Host) -> bool {
+    host.output("pkg-config", ["--version"])
         .await
         .is_ok_and(|o| o.status.success())
 }
 
-async fn check_module_exists(module: &str) -> bool {
-    Command::new("pkg-config")
-        .args(["--exists", module])
-        .status()
+async fn check_module_exists(host: &Host, module: &str) -> bool {
+    host.output("pkg-config", ["--exists", module])
         .await
-        .is_ok_and(|s| s.success())
+        .is_ok_and(|o| o.status.success())
 }
 
-async fn check_module_min_version(module: &str, min_version: &str) -> bool {
-    Command::new("pkg-config")
-        .arg(format!("--atleast-version={min_version}"))
-        .arg(module)
-        .status()
-        .await
-        .is_ok_and(|s| s.success())
+async fn check_module_min_version(host: &Host, module: &str, min_version: &str) -> bool {
+    host.output(
+        "pkg-config",
+        [
+            format!("--atleast-version={min_version}"),
+            module.to_owned(),
+        ],
+    )
+    .await
+    .is_ok_and(|o| o.status.success())
 }
 
-async fn missing_pkg_config_probes() -> Vec<String> {
+async fn missing_pkg_config_probes(host: &Host) -> Vec<String> {
     let mut missing = Vec::new();
 
     for probe in REQUIRED_PROBES {
-        if !check_module_exists(probe.module).await {
+        if !check_module_exists(host, probe.module).await {
             missing.push(probe.display());
             continue;
         }
         if let Some(min_version) = probe.min_version
-            && !check_module_min_version(probe.module, min_version).await
+            && !check_module_min_version(host, probe.module, min_version).await
         {
             missing.push(probe.display());
         }
@@ -173,5 +170,124 @@ mod tests {
             min_version: None,
         };
         assert_eq!(probe.display(), "gtk4");
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::Gtk4Toolchain;
+    use crate::toolchain::testing::TestMachine;
+    use crate::toolchain::{Toolchain, ToolchainError};
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn off_linux_is_unfixable() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(Gtk4Toolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "GTK4 outside Linux must be unfixable: {result:?}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    mod linux {
+        use super::*;
+
+        const APT_PACKAGES: &str = "pkg-config libgtk-4-dev libpango1.0-dev libwayland-dev \
+             wayland-protocols libasound2-dev libva-dev libgbm-dev libxcb1-dev \
+             libclang-dev libfontconfig-dev";
+
+        /// Machine with pkg-config and both GTK probes satisfied, and an apt
+        /// package set that leaves `LinuxSystemToolchain` satisfied as well.
+        fn complete_machine() -> TestMachine {
+            let machine = TestMachine::new();
+            for tool in ["apt-get", "dpkg-query", "pkg-config"] {
+                machine.install(tool);
+            }
+            machine.respond_pkg_config_module("gtk4", "4.18.0");
+            machine.respond_pkg_config_module("pango", "1.56.0");
+            machine.respond_pkg_config_module("libva", "1.20.0");
+            machine.respond_pkg_config_var("libva_version", "2.20.0");
+            machine.respond_pkg_config_module("libpipewire-0.3", "0.3.65");
+            machine
+        }
+
+        #[test]
+        fn ok_when_probes_and_packages_satisfied() {
+            let machine = complete_machine();
+            let host = machine.host([(
+                String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+                APT_PACKAGES.to_string(),
+            )]);
+            smol::block_on(Gtk4Toolchain.check(&host))
+                .expect("satisfied gtk4/pango probes plus complete apt set must be ok");
+        }
+
+        #[test]
+        fn missing_probe_with_apt_is_fixable() {
+            let machine = TestMachine::new();
+            for tool in ["apt-get", "dpkg-query", "pkg-config"] {
+                machine.install(tool);
+            }
+            let host = machine.host([(
+                String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+                String::from("pkg-config"),
+            )]);
+            let result = smol::block_on(Gtk4Toolchain.check(&host));
+            assert!(
+                matches!(result, Err(ToolchainError::Fixable(_))),
+                "missing gtk4 probes under apt must produce a fixable install: {result:?}"
+            );
+        }
+
+        #[test]
+        fn missing_probes_fixable_via_repair_when_packages_complete() {
+            let machine = complete_machine();
+            // Drop the gtk4 module response: `--exists gtk4` now fails while
+            // every apt package still reports installed, so the fix must come
+            // from the repair-installation path. `PKG_CONFIG_GTK4` is the
+            // response key the dispatcher derives for `gtk4` — the raw name.
+            std::fs::remove_file(machine.responses().join("PKG_CONFIG_gtk4"))
+                .expect("remove staged gtk4 module response");
+            let host = machine.host([(
+                String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+                APT_PACKAGES.to_string(),
+            )]);
+            let result = smol::block_on(Gtk4Toolchain.check(&host));
+            assert!(
+                matches!(result, Err(ToolchainError::Fixable(_))),
+                "complete packages + missing gtk4 probe must repair via package mapping: {result:?}"
+            );
+        }
+
+        #[test]
+        fn unfixable_without_package_manager() {
+            let machine = TestMachine::new();
+            machine.install("pkg-config");
+            let host = machine.host(Vec::<(String, String)>::new());
+            let result = smol::block_on(Gtk4Toolchain.check(&host));
+            assert!(
+                matches!(result, Err(ToolchainError::Unfixable(_))),
+                "no package manager must be unfixable: {result:?}"
+            );
+        }
+
+        #[test]
+        fn unfixable_when_pkg_config_missing_but_packages_installed() {
+            let machine = TestMachine::new();
+            machine.install("apt-get");
+            machine.install("dpkg-query");
+            let host = machine.host([(
+                String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+                APT_PACKAGES.to_string(),
+            )]);
+            let result = smol::block_on(Gtk4Toolchain.check(&host));
+            assert!(
+                matches!(result, Err(ToolchainError::Unfixable(_))),
+                "installed packages without pkg-config must be unfixable: {result:?}"
+            );
+        }
     }
 }

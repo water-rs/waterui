@@ -3,10 +3,9 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::{
-    toolchain::winget::{WingetInstallError, ensure_package_installed},
-    toolchain::{Installation, Toolchain, ToolchainError},
-    utils::which,
+use crate::toolchain::{
+    Host, Installation, Toolchain, ToolchainError,
+    winget::{WingetInstallError, ensure_package_installed},
 };
 
 const LLVM_WINGET_PACKAGE_ID: &str = "LLVM.LLVM";
@@ -38,12 +37,13 @@ impl WindowsArm64LlvmToolchain {
     /// Returns an error if this host requires LLVM tools and they cannot be located.
     pub async fn cargo_envs(
         &self,
+        host: &Host,
     ) -> Result<Vec<(String, OsString)>, ToolchainError<WindowsArm64LlvmInstallation>> {
         if !Self::required_on_host() {
             return Ok(Vec::new());
         }
 
-        let tools = ensure_llvm_tools_available().await?;
+        let tools = ensure_llvm_tools_available(host).await?;
         Ok(vec![
             (
                 format!("CC_{TARGET_UNDERSCORE}"),
@@ -76,12 +76,12 @@ impl WindowsArm64LlvmToolchain {
 impl Toolchain for WindowsArm64LlvmToolchain {
     type Installation = WindowsArm64LlvmInstallation;
 
-    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+    async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
         if !Self::required_on_host() {
             return Ok(());
         }
 
-        ensure_llvm_tools_available().await.map(|_| ())
+        ensure_llvm_tools_available(host).await.map(|_| ())
     }
 }
 
@@ -114,12 +114,12 @@ pub enum FailToInstallWindowsArm64Llvm {
 impl Installation for WindowsArm64LlvmInstallation {
     type Error = FailToInstallWindowsArm64Llvm;
 
-    async fn install(&self) -> Result<(), Self::Error> {
-        ensure_package_installed(LLVM_WINGET_PACKAGE_ID)
+    async fn install(&self, host: &Host) -> Result<(), Self::Error> {
+        ensure_package_installed(host, LLVM_WINGET_PACKAGE_ID)
             .await
             .map_err(map_winget_error_for_windows_arm64_llvm)?;
 
-        let tools = resolve_llvm_tools().await;
+        let tools = resolve_llvm_tools(host).await;
         if tools.is_complete() {
             Ok(())
         } else {
@@ -166,14 +166,15 @@ impl ResolvedLlvmTools {
     }
 }
 
-async fn ensure_llvm_tools_available()
--> Result<CompleteLlvmTools, ToolchainError<WindowsArm64LlvmInstallation>> {
-    let resolved = resolve_llvm_tools().await;
+async fn ensure_llvm_tools_available(
+    host: &Host,
+) -> Result<CompleteLlvmTools, ToolchainError<WindowsArm64LlvmInstallation>> {
+    let resolved = resolve_llvm_tools(host).await;
     if let Some(complete) = resolved.clone().into_complete() {
         return Ok(complete);
     }
 
-    if which("winget").await.is_ok() {
+    if host.which("winget").await.is_ok() {
         Err(ToolchainError::fixable(WindowsArm64LlvmInstallation))
     } else {
         let missing = resolved.missing_components().join(", ");
@@ -186,17 +187,18 @@ async fn ensure_llvm_tools_available()
     }
 }
 
-async fn resolve_llvm_tools() -> ResolvedLlvmTools {
-    let clang_cl = find_executable("clang-cl", DEFAULT_CLANG_CL_PATH).await;
-    let llvm_lib = find_executable("llvm-lib", DEFAULT_LLVM_LIB_PATH).await;
+async fn resolve_llvm_tools(host: &Host) -> ResolvedLlvmTools {
+    let clang_cl = find_executable(host, "clang-cl", DEFAULT_CLANG_CL_PATH).await;
+    let llvm_lib = find_executable(host, "llvm-lib", DEFAULT_LLVM_LIB_PATH).await;
     ResolvedLlvmTools { clang_cl, llvm_lib }
 }
 
 async fn find_executable(
+    host: &Host,
     binary_name: &'static str,
     fallback_path: &'static str,
 ) -> Option<PathBuf> {
-    if let Ok(path) = which(binary_name).await {
+    if let Ok(path) = host.which(binary_name).await {
         return Some(path);
     }
 
@@ -263,5 +265,56 @@ mod tests {
             llvm_lib: None,
         };
         assert_eq!(missing_llvm_lib.missing_components(), vec!["llvm-lib"]);
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::WindowsArm64LlvmToolchain;
+    use crate::toolchain::Toolchain;
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    use crate::toolchain::ToolchainError;
+    use crate::toolchain::testing::TestMachine;
+
+    #[test]
+    #[cfg(not(all(target_os = "windows", target_arch = "aarch64")))]
+    fn not_required_outside_windows_arm64() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(WindowsArm64LlvmToolchain.check(&host))
+            .expect("LLVM tooling is only required on Windows ARM64");
+        let envs = smol::block_on(WindowsArm64LlvmToolchain.cargo_envs(&host))
+            .expect("cargo envs off Windows ARM64 must not probe tools");
+        assert!(envs.is_empty());
+    }
+
+    #[test]
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    fn ok_when_llvm_tools_on_path() {
+        let machine = TestMachine::new();
+        machine.install("clang-cl");
+        machine.install("llvm-lib");
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(WindowsArm64LlvmToolchain.check(&host))
+            .expect("clang-cl and llvm-lib on PATH must satisfy the check");
+    }
+
+    #[test]
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    fn missing_tools_classify_by_winget_presence() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(WindowsArm64LlvmToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "missing LLVM tools without winget must be unfixable: {result:?}"
+        );
+        machine.install("winget");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(WindowsArm64LlvmToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Fixable(_))),
+            "missing LLVM tools with winget must be fixable: {result:?}"
+        );
     }
 }

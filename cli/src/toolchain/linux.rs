@@ -1,8 +1,8 @@
 //! Linux system package toolchain checks.
 
 use crate::{
-    toolchain::{Installation, Toolchain, ToolchainError, UnfixableToolchain},
-    utils::{CommandError, run_command, run_command_output_os, which},
+    toolchain::{Host, Installation, Toolchain, ToolchainError, UnfixableToolchain},
+    utils::CommandError,
 };
 
 /// Linux system dependencies required by `waterui` desktop/media builds.
@@ -50,8 +50,11 @@ impl LinuxSystemPackagesInstallation {
     ///
     /// # Errors
     /// Returns an error when no supported package manager is available.
-    pub async fn from_packages(packages: Vec<String>) -> Result<Self, UnfixableToolchain> {
-        let Some(manager) = LinuxPackageManager::detect().await else {
+    pub async fn from_packages(
+        host: &Host,
+        packages: Vec<String>,
+    ) -> Result<Self, UnfixableToolchain> {
+        let Some(manager) = LinuxPackageManager::detect(host).await else {
             return Err(UnfixableToolchain::new(
                 "Unable to detect Linux package manager",
                 unsupported_manager_hint(),
@@ -121,16 +124,16 @@ enum NativeProbeError {
 impl Installation for LinuxSystemPackagesInstallation {
     type Error = FailToInstallLinuxSystemPackages;
 
-    async fn install(&self) -> Result<(), Self::Error> {
+    async fn install(&self, host: &Host) -> Result<(), Self::Error> {
         if !cfg!(target_os = "linux") {
             return Err(FailToInstallLinuxSystemPackages::UnsupportedPlatform);
         }
 
-        let Some(manager) = LinuxPackageManager::detect().await else {
+        let Some(manager) = LinuxPackageManager::detect(host).await else {
             return Err(FailToInstallLinuxSystemPackages::UnsupportedPackageManager);
         };
 
-        install_missing_packages(manager, &self.missing_packages).await?;
+        install_missing_packages(host, manager, &self.missing_packages).await?;
         Ok(())
     }
 }
@@ -138,12 +141,12 @@ impl Installation for LinuxSystemPackagesInstallation {
 impl Toolchain for LinuxSystemToolchain {
     type Installation = LinuxSystemPackagesInstallation;
 
-    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+    async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
         if !cfg!(target_os = "linux") {
             return Ok(());
         }
 
-        let Some(manager) = LinuxPackageManager::detect().await else {
+        let Some(manager) = LinuxPackageManager::detect(host).await else {
             return Err(ToolchainError::unfixable(
                 "Unable to detect Linux package manager",
                 unsupported_manager_hint(),
@@ -153,12 +156,15 @@ impl Toolchain for LinuxSystemToolchain {
         let required_packages = manager.required_packages();
         let mut missing_packages = Vec::new();
         for &package in required_packages {
-            let installed = manager.check_installed(package).await.map_err(|error| {
-                ToolchainError::unfixable(
-                    format!("Failed checking Linux package `{package}`: {error}"),
-                    manager.install_hint(&required_packages_to_owned(required_packages)),
-                )
-            })?;
+            let installed = manager
+                .check_installed(host, package)
+                .await
+                .map_err(|error| {
+                    ToolchainError::unfixable(
+                        format!("Failed checking Linux package `{package}`: {error}"),
+                        manager.install_hint(&required_packages_to_owned(required_packages)),
+                    )
+                })?;
             if !installed {
                 missing_packages.push(package.to_string());
             }
@@ -170,7 +176,7 @@ impl Toolchain for LinuxSystemToolchain {
             ));
         }
 
-        check_versioned_native_libraries(manager).await
+        check_versioned_native_libraries(host, manager).await
     }
 }
 
@@ -184,16 +190,16 @@ enum LinuxPackageManager {
 }
 
 impl LinuxPackageManager {
-    async fn detect() -> Option<Self> {
-        if which("apt-get").await.is_ok() {
+    async fn detect(host: &Host) -> Option<Self> {
+        if host.which("apt-get").await.is_ok() {
             Some(Self::Apt)
-        } else if which("dnf").await.is_ok() {
+        } else if host.which("dnf").await.is_ok() {
             Some(Self::Dnf)
-        } else if which("pacman").await.is_ok() {
+        } else if host.which("pacman").await.is_ok() {
             Some(Self::Pacman)
-        } else if which("zypper").await.is_ok() {
+        } else if host.which("zypper").await.is_ok() {
             Some(Self::Zypper)
-        } else if which("apk").await.is_ok() {
+        } else if host.which("apk").await.is_ok() {
             Some(Self::Apk)
         } else {
             None
@@ -295,12 +301,12 @@ impl LinuxPackageManager {
         }
     }
 
-    async fn check_installed(self, package: &str) -> Result<bool, CommandError> {
+    async fn check_installed(self, host: &Host, package: &str) -> Result<bool, CommandError> {
         let output = match self {
-            Self::Apt => run_command_output_os("dpkg-query", ["-W", package]).await?,
-            Self::Dnf | Self::Zypper => run_command_output_os("rpm", ["-q", package]).await?,
-            Self::Pacman => run_command_output_os("pacman", ["-Q", package]).await?,
-            Self::Apk => run_command_output_os("apk", ["info", "-e", package]).await?,
+            Self::Apt => host.output("dpkg-query", ["-W", package]).await?,
+            Self::Dnf | Self::Zypper => host.output("rpm", ["-q", package]).await?,
+            Self::Pacman => host.output("pacman", ["-Q", package]).await?,
+            Self::Apk => host.output("apk", ["info", "-e", package]).await?,
         };
         Ok(output.status.success())
     }
@@ -489,9 +495,10 @@ impl VersionedNativeLibrary {
 
 /// Check the native libraries whose Rust bindings have a minimum version.
 async fn check_versioned_native_libraries(
+    host: &Host,
     manager: LinuxPackageManager,
 ) -> Result<(), ToolchainError<LinuxSystemPackagesInstallation>> {
-    if !pkg_config_available().await {
+    if !pkg_config_available(host).await {
         return Err(ToolchainError::unfixable(
             "pkg-config not found",
             "Install pkg-config and ensure it is in PATH, then re-run `water doctor`.",
@@ -501,7 +508,7 @@ async fn check_versioned_native_libraries(
     let mut missing_packages = Vec::new();
     for &library in VERSIONED_NATIVE_LIBRARIES {
         let package = manager.package_for_native_library(library.module);
-        let status = probe_native_library(library).await.map_err(|error| {
+        let status = probe_native_library(host, library).await.map_err(|error| {
             ToolchainError::unfixable(
                 format!(
                     "Failed checking `{}` with pkg-config: {error}",
@@ -549,17 +556,20 @@ async fn check_versioned_native_libraries(
 }
 
 /// Returns `true` when `pkg-config` can be executed.
-async fn pkg_config_available() -> bool {
-    run_command_output_os("pkg-config", ["--version"])
+async fn pkg_config_available(host: &Host) -> bool {
+    host.output("pkg-config", ["--version"])
         .await
         .is_ok_and(|output| output.status.success())
 }
 
 /// Ask `pkg-config` for a module's version and compare it against the floor.
 async fn probe_native_library(
+    host: &Host,
     library: VersionedNativeLibrary,
 ) -> Result<NativeLibraryStatus, NativeProbeError> {
-    let output = run_command_output_os("pkg-config", ["--modversion", library.module]).await?;
+    let output = host
+        .output("pkg-config", ["--modversion", library.module])
+        .await?;
     if !output.status.success() {
         return Ok(NativeLibraryStatus::ModuleMissing);
     }
@@ -576,11 +586,12 @@ async fn probe_native_library(
 
     let release = match library.release_version_variable {
         Some(variable) => {
-            let output = run_command_output_os(
-                "pkg-config",
-                [format!("--variable={variable}").as_str(), library.module],
-            )
-            .await?;
+            let output = host
+                .output(
+                    "pkg-config",
+                    [format!("--variable={variable}").as_str(), library.module],
+                )
+                .await?;
             let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
             (output.status.success() && !value.is_empty()).then_some(value)
         }
@@ -629,19 +640,25 @@ fn parse_version(version: &str) -> Result<Vec<u64>, DottedVersionError> {
         .collect()
 }
 
-async fn run_with_optional_sudo(command: &str, args: &[String]) -> Result<(), CommandError> {
-    if which("sudo").await.is_ok() {
+async fn run_with_optional_sudo(
+    host: &Host,
+    command: &str,
+    args: &[String],
+) -> Result<(), CommandError> {
+    if host.which("sudo").await.is_ok() {
         let mut sudo_args = Vec::with_capacity(args.len() + 1);
         sudo_args.push(command.to_string());
         sudo_args.extend(args.iter().cloned());
-        run_command("sudo", sudo_args.iter().map(String::as_str)).await?;
+        host.run("sudo", sudo_args.iter().map(String::as_str))
+            .await?;
     } else {
-        run_command(command, args.iter().map(String::as_str)).await?;
+        host.run(command, args.iter().map(String::as_str)).await?;
     }
     Ok(())
 }
 
 async fn install_missing_packages(
+    host: &Host,
     manager: LinuxPackageManager,
     packages: &[String],
 ) -> Result<(), CommandError> {
@@ -652,17 +669,17 @@ async fn install_missing_packages(
     match manager {
         LinuxPackageManager::Apt => {
             if packages.iter().any(|package| package.ends_with(":amd64")) {
-                ensure_apt_foreign_architecture("amd64").await?;
+                ensure_apt_foreign_architecture(host, "amd64").await?;
             }
-            run_with_optional_sudo("apt-get", &[String::from("update")]).await?;
+            run_with_optional_sudo(host, "apt-get", &[String::from("update")]).await?;
             let mut args = vec![String::from("install"), String::from("-y")];
             args.extend(packages.iter().cloned());
-            run_with_optional_sudo("apt-get", &args).await?;
+            run_with_optional_sudo(host, "apt-get", &args).await?;
         }
         LinuxPackageManager::Dnf => {
             let mut args = vec![String::from("install"), String::from("-y")];
             args.extend(packages.iter().cloned());
-            run_with_optional_sudo("dnf", &args).await?;
+            run_with_optional_sudo(host, "dnf", &args).await?;
         }
         LinuxPackageManager::Pacman => {
             let mut args = vec![
@@ -671,7 +688,7 @@ async fn install_missing_packages(
                 String::from("--needed"),
             ];
             args.extend(packages.iter().cloned());
-            run_with_optional_sudo("pacman", &args).await?;
+            run_with_optional_sudo(host, "pacman", &args).await?;
         }
         LinuxPackageManager::Zypper => {
             let mut args = vec![
@@ -680,24 +697,28 @@ async fn install_missing_packages(
                 String::from("--auto-agree-with-licenses"),
             ];
             args.extend(packages.iter().cloned());
-            run_with_optional_sudo("zypper", &args).await?;
+            run_with_optional_sudo(host, "zypper", &args).await?;
         }
         LinuxPackageManager::Apk => {
             let mut args = vec![String::from("add")];
             args.extend(packages.iter().cloned());
-            run_with_optional_sudo("apk", &args).await?;
+            run_with_optional_sudo(host, "apk", &args).await?;
         }
     }
 
     Ok(())
 }
 
-async fn ensure_apt_foreign_architecture(architecture: &str) -> Result<(), CommandError> {
-    let output = run_command("dpkg", ["--print-foreign-architectures"]).await?;
+async fn ensure_apt_foreign_architecture(
+    host: &Host,
+    architecture: &str,
+) -> Result<(), CommandError> {
+    let output = host.run("dpkg", ["--print-foreign-architectures"]).await?;
     if output.lines().any(|line| line.trim() == architecture) {
         return Ok(());
     }
     run_with_optional_sudo(
+        host,
         "dpkg",
         &[String::from("--add-architecture"), architecture.to_string()],
     )
@@ -733,8 +754,8 @@ fn unsupported_manager_hint() -> String {
 }
 
 /// Returns `true` when a supported Linux package manager is available.
-pub async fn has_supported_package_manager() -> bool {
-    LinuxPackageManager::detect().await.is_some()
+pub async fn has_supported_package_manager(host: &Host) -> bool {
+    LinuxPackageManager::detect(host).await.is_some()
 }
 
 /// Build an installation plan that repairs missing GTK pkg-config probes.
@@ -745,9 +766,10 @@ pub async fn has_supported_package_manager() -> bool {
 /// Returns an error if no package manager is available or if a probe cannot be
 /// mapped to an installable system package.
 pub async fn gtk4_pkg_config_repair_installation(
+    host: &Host,
     missing_modules: &[String],
 ) -> Result<LinuxSystemPackagesInstallation, UnfixableToolchain> {
-    let Some(manager) = LinuxPackageManager::detect().await else {
+    let Some(manager) = LinuxPackageManager::detect(host).await else {
         return Err(UnfixableToolchain::new(
             "Unable to detect Linux package manager",
             unsupported_manager_hint(),
@@ -769,7 +791,7 @@ pub async fn gtk4_pkg_config_repair_installation(
         }
     }
 
-    LinuxSystemPackagesInstallation::from_packages(packages).await
+    LinuxSystemPackagesInstallation::from_packages(host, packages).await
 }
 
 /// Install named packages with the detected Linux package manager.
@@ -778,9 +800,10 @@ pub async fn gtk4_pkg_config_repair_installation(
 /// Returns an error when no supported package manager is available, or when
 /// installation fails.
 pub async fn install_named_packages(
+    host: &Host,
     packages: &[&'static str],
 ) -> Result<(), LinuxPackageManagerError> {
-    let Some(manager) = LinuxPackageManager::detect().await else {
+    let Some(manager) = LinuxPackageManager::detect(host).await else {
         return Err(LinuxPackageManagerError::UnsupportedPackageManager);
     };
 
@@ -788,7 +811,7 @@ pub async fn install_named_packages(
         .iter()
         .map(|package| (*package).to_string())
         .collect();
-    install_missing_packages(manager, &packages).await?;
+    install_missing_packages(host, manager, &packages).await?;
     Ok(())
 }
 
@@ -797,8 +820,8 @@ pub async fn install_named_packages(
 /// # Errors
 /// Returns an error when no supported package manager is available, or when
 /// installation fails.
-pub async fn install_java_jdk() -> Result<(), LinuxPackageManagerError> {
-    let Some(manager) = LinuxPackageManager::detect().await else {
+pub async fn install_java_jdk(host: &Host) -> Result<(), LinuxPackageManagerError> {
+    let Some(manager) = LinuxPackageManager::detect(host).await else {
         return Err(LinuxPackageManagerError::UnsupportedPackageManager);
     };
 
@@ -811,7 +834,7 @@ pub async fn install_java_jdk() -> Result<(), LinuxPackageManagerError> {
         LinuxPackageManager::Apk => vec![String::from("openjdk21-jdk")],
     };
 
-    install_missing_packages(manager, &packages).await?;
+    install_missing_packages(host, manager, &packages).await?;
     Ok(())
 }
 
@@ -1013,6 +1036,131 @@ mod tests {
         assert_eq!(
             LinuxPackageManager::Dnf.package_for_gtk_pkg_config_probe("pango>=1.50"),
             Some("pango-devel")
+        );
+    }
+}
+
+/// Host-driven checks exercise the real `check` code path through fake
+/// package-manager binaries. They only make sense where `check` probes:
+/// on non-Linux hosts it returns `Ok(())` unconditionally.
+#[cfg(all(test, target_os = "linux"))]
+mod host_tests {
+    use super::LinuxSystemToolchain;
+    use crate::toolchain::testing::TestMachine;
+    use crate::toolchain::{Toolchain, ToolchainError};
+
+    const APT_PACKAGES: &str = "pkg-config libgtk-4-dev libpango1.0-dev libwayland-dev \
+         wayland-protocols libasound2-dev libva-dev libgbm-dev libxcb1-dev \
+         libclang-dev libfontconfig-dev";
+
+    /// A machine whose apt package set is complete and whose pkg-config
+    /// reports in-range versions for the version-checked native libraries.
+    fn complete_apt_machine() -> TestMachine {
+        let machine = TestMachine::new();
+        for tool in ["apt-get", "dpkg-query", "pkg-config"] {
+            machine.install(tool);
+        }
+        machine.respond_pkg_config_module("libva", "1.20.0");
+        machine.respond_pkg_config_var("libva_version", "2.20.0");
+        machine.respond_pkg_config_module("libpipewire-0.3", "0.3.65");
+        machine
+    }
+
+    #[test]
+    fn unfixable_without_package_manager() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(LinuxSystemToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "no package manager must be unfixable: {result:?}"
+        );
+    }
+
+    #[test]
+    fn ok_when_apt_packages_and_library_versions_satisfy_floors() {
+        let machine = complete_apt_machine();
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+            APT_PACKAGES.to_string(),
+        )]);
+        smol::block_on(LinuxSystemToolchain.check(&host))
+            .expect("complete apt package set must satisfy the check");
+    }
+
+    #[test]
+    fn fixable_installation_lists_only_missing_packages() {
+        let machine = complete_apt_machine();
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+            String::from("pkg-config libgtk-4-dev"),
+        )]);
+        let Err(ToolchainError::Fixable(installation)) =
+            smol::block_on(LinuxSystemToolchain.check(&host))
+        else {
+            panic!("missing apt packages must produce a fixable installation");
+        };
+        assert_eq!(installation.package_manager_name(), "apt-get");
+        let missing = installation.missing_packages();
+        assert!(missing.iter().any(|package| package == "libva-dev"));
+        assert!(!missing.iter().any(|package| package == "libgtk-4-dev"));
+    }
+
+    #[test]
+    fn unfixable_when_pkg_config_missing() {
+        let machine = TestMachine::new();
+        machine.install("apt-get");
+        machine.install("dpkg-query");
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+            APT_PACKAGES.to_string(),
+        )]);
+        let result = smol::block_on(LinuxSystemToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "absent pkg-config must be an unfixable diagnostic: {result:?}"
+        );
+    }
+
+    #[test]
+    fn unfixable_when_libva_below_floor() {
+        let machine = complete_apt_machine();
+        // Re-stage libva at the Ubuntu 22.04 version: VA-API 1.14 is below
+        // the cros-libva floor of 1.19.
+        machine.respond_pkg_config_module("libva", "1.14.0");
+        machine.respond_pkg_config_var("libva_version", "2.14.0");
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+            APT_PACKAGES.to_string(),
+        )]);
+        let result = smol::block_on(LinuxSystemToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "an outdated libva must be unfixable (reinstalling changes nothing): {result:?}"
+        );
+    }
+
+    #[test]
+    fn fixable_when_versioned_module_absent_from_pkg_config() {
+        let machine = TestMachine::new();
+        for tool in ["apt-get", "dpkg-query", "pkg-config"] {
+            machine.install(tool);
+        }
+        // Only libva is staged; libpipewire-0.3 is unknown to pkg-config.
+        machine.respond_pkg_config_module("libva", "1.20.0");
+        machine.respond_pkg_config_var("libva_version", "2.20.0");
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+            APT_PACKAGES.to_string(),
+        )]);
+        let Err(ToolchainError::Fixable(installation)) =
+            smol::block_on(LinuxSystemToolchain.check(&host))
+        else {
+            panic!("an absent libpipewire module must map to an installable package");
+        };
+        assert_eq!(
+            installation.missing_packages(),
+            &[String::from("libpipewire-0.3-dev")]
         );
     }
 }

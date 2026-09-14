@@ -1,6 +1,6 @@
 //! Shared helper for Windows package installation via winget.
 
-use crate::utils::{CommandError, run_command, run_command_output_os, which};
+use crate::{toolchain::Host, utils::CommandError};
 
 /// Errors from winget-backed installation.
 #[derive(Debug, thiserror::Error)]
@@ -26,31 +26,79 @@ const WINGET_COMMON_FLAGS: &[&str] = &[
 ];
 
 /// Install a package via winget if it is not already installed.
-pub async fn ensure_package_installed(package_id: &'static str) -> Result<(), WingetInstallError> {
-    if which("winget").await.is_err() {
+pub async fn ensure_package_installed(
+    host: &Host,
+    package_id: &'static str,
+) -> Result<(), WingetInstallError> {
+    if host.which("winget").await.is_err() {
         return Err(WingetInstallError::WingetNotFound);
     }
 
-    if is_package_installed(package_id).await? {
+    if is_package_installed(host, package_id).await? {
         return Ok(());
     }
 
     let mut args = vec!["install", "--id", package_id];
     args.extend(WINGET_COMMON_FLAGS);
-    run_command("winget", args)
+    host.run("winget", args)
         .await
         .map_err(WingetInstallError::CommandFailed)?;
 
-    if is_package_installed(package_id).await? {
+    if is_package_installed(host, package_id).await? {
         Ok(())
     } else {
         Err(WingetInstallError::NotInstalled { package_id })
     }
 }
 
-async fn is_package_installed(package_id: &'static str) -> Result<bool, WingetInstallError> {
-    let output = run_command_output_os("winget", ["list", "--id", package_id, "--exact"])
+async fn is_package_installed(
+    host: &Host,
+    package_id: &'static str,
+) -> Result<bool, WingetInstallError> {
+    let output = host
+        .output("winget", ["list", "--id", package_id, "--exact"])
         .await
         .map_err(WingetInstallError::CommandFailed)?;
     Ok(output.status.success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WingetInstallError, ensure_package_installed};
+    use crate::toolchain::testing::TestMachine;
+
+    #[test]
+    fn winget_absent_reports_winget_not_found() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(ensure_package_installed(&host, "Kitware.CMake"));
+        assert!(
+            matches!(result, Err(WingetInstallError::WingetNotFound)),
+            "no winget on PATH must report WingetNotFound: {result:?}"
+        );
+    }
+
+    #[test]
+    fn installed_package_skips_install() {
+        let machine = TestMachine::new();
+        machine.install("winget");
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_WINGET_INSTALLED"),
+            String::from("Kitware.CMake"),
+        )]);
+        smol::block_on(ensure_package_installed(&host, "Kitware.CMake"))
+            .expect("an installed package must short-circuit to ok");
+    }
+
+    #[test]
+    fn package_still_missing_after_install_is_an_error() {
+        let machine = TestMachine::new();
+        machine.install("winget");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(ensure_package_installed(&host, "Kitware.CMake"));
+        assert!(
+            matches!(result, Err(WingetInstallError::NotInstalled { .. })),
+            "a package that never lists must surface NotInstalled: {result:?}"
+        );
+    }
 }

@@ -4,10 +4,7 @@ use std::convert::Infallible;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    toolchain::{Toolchain, ToolchainError},
-    utils::{run_command, which},
-};
+use crate::toolchain::{Host, Toolchain, ToolchainError};
 
 /// Represents the complete Apple toolchain consisting of Xcode and an Apple SDK
 pub type AppleToolchain = (Xcode, AppleSdk);
@@ -18,9 +15,12 @@ pub struct Xcode;
 
 impl Toolchain for Xcode {
     type Installation = Infallible;
-    async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
+    async fn check(
+        &self,
+        host: &Host,
+    ) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
         // Check if Xcode is installed and available
-        if which("xcodebuild").await.is_ok() && which("xcode-select").await.is_ok() {
+        if host.which("xcodebuild").await.is_ok() && host.which("xcode-select").await.is_ok() {
             Ok(())
         } else {
             Err(ToolchainError::unfixable(
@@ -86,9 +86,14 @@ impl std::fmt::Display for AppleSdk {
 
 impl Toolchain for AppleSdk {
     type Installation = Infallible;
-    async fn check(&self) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
+    async fn check(
+        &self,
+        host: &Host,
+    ) -> Result<(), crate::toolchain::ToolchainError<Self::Installation>> {
         // Check if the required Apple SDK is available
-        let result = run_command("xcrun", ["--sdk", self.sdk_name(), "--show-sdk-path"]).await;
+        let result = host
+            .run("xcrun", ["--sdk", self.sdk_name(), "--show-sdk-path"])
+            .await;
 
         if result.is_err() {
             return Err(ToolchainError::unfixable(
@@ -100,5 +105,54 @@ impl Toolchain for AppleSdk {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppleSdk, Xcode};
+    use crate::toolchain::testing::TestMachine;
+    use crate::toolchain::{Toolchain, ToolchainError};
+
+    #[test]
+    fn xcode_ok_when_tools_on_path() {
+        let machine = TestMachine::new();
+        machine.install("xcodebuild");
+        machine.install("xcode-select");
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(Xcode.check(&host)).expect("xcodebuild + xcode-select on PATH must be ok");
+    }
+
+    #[test]
+    fn xcode_missing_is_unfixable() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(Xcode.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "Xcode requires a manual App Store install: {result:?}"
+        );
+    }
+
+    #[test]
+    fn apple_sdk_ok_when_xcrun_reports_path() {
+        let machine = TestMachine::new();
+        machine.install("xcrun");
+        machine.respond("XCRUN_SDK_PATH", "/fake/SDKs/iPhoneOS.sdk\n");
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(AppleSdk::Ios.check(&host))
+            .expect("an SDK path from xcrun must satisfy the check");
+    }
+
+    #[test]
+    fn apple_sdk_missing_is_unfixable() {
+        let machine = TestMachine::new();
+        machine.install("xcrun");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(AppleSdk::Ios.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "xcrun without an SDK path must be unfixable: {result:?}"
+        );
     }
 }

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::capture::{DevicePlatform, detect_platform};
 use crate::diff::DiffResult;
+use crate::toolchain::Host;
 use crate::{android, apple};
 
 /// Special device ID for macOS local machine.
@@ -57,19 +58,20 @@ pub struct GestureResult {
 }
 
 /// Capture screenshot bytes for a device.
-async fn capture_screenshot_bytes(device_id: &str) -> eyre::Result<Vec<u8>> {
+async fn capture_screenshot_bytes(host: &Host, device_id: &str) -> eyre::Result<Vec<u8>> {
     if device_id == LOCAL_DEVICE_ID {
-        apple::local::screenshot_bytes().await
+        apple::local::screenshot_bytes(host).await
     } else {
         match detect_platform(device_id) {
-            DevicePlatform::Ios => apple::device::screenshot_bytes(device_id).await,
-            DevicePlatform::Android => android::device::screenshot_bytes(device_id).await,
+            DevicePlatform::Ios => apple::device::screenshot_bytes(host, device_id).await,
+            DevicePlatform::Android => android::device::screenshot_bytes(host, device_id).await,
         }
     }
 }
 
 /// Execute a gesture with optional diff capture.
 async fn execute_with_diff<F, Fut>(
+    host: &Host,
     device_id: &str,
     options: &GestureOptions,
     gesture_fn: F,
@@ -85,7 +87,7 @@ where
     }
 
     // Capture before screenshot
-    let before = capture_screenshot_bytes(device_id).await?;
+    let before = capture_screenshot_bytes(host, device_id).await?;
 
     // Execute the gesture
     gesture_fn().await?;
@@ -95,7 +97,7 @@ where
     smol::Timer::after(Duration::from_millis(u64::from(delay))).await;
 
     // Capture after screenshot
-    let after = capture_screenshot_bytes(device_id).await?;
+    let after = capture_screenshot_bytes(host, device_id).await?;
 
     // Compute diff
     let diff_result = crate::diff::compare_images(&before, &after)?;
@@ -123,18 +125,19 @@ where
 ///
 /// Returns an error if the tap fails or the device is not available.
 pub async fn tap(
+    host: &Host,
     device_id: &str,
     x: u32,
     y: u32,
     options: &GestureOptions,
 ) -> eyre::Result<GestureResult> {
-    execute_with_diff(device_id, options, || async {
+    execute_with_diff(host, device_id, options, || async {
         if device_id == LOCAL_DEVICE_ID {
-            apple::local::tap(x, y).await
+            apple::local::tap(host, x, y).await
         } else {
             match detect_platform(device_id) {
-                DevicePlatform::Ios => apple::device::tap(device_id, x, y).await,
-                DevicePlatform::Android => android::device::tap(device_id, x, y).await,
+                DevicePlatform::Ios => apple::device::tap(host, device_id, x, y).await,
+                DevicePlatform::Android => android::device::tap(host, device_id, x, y).await,
             }
         }
     })
@@ -155,20 +158,23 @@ pub async fn tap(
 ///
 /// Returns an error if the swipe fails or the device is not available.
 pub async fn swipe(
+    host: &Host,
     device_id: &str,
     from: (u32, u32),
     to: (u32, u32),
     duration_ms: Option<u32>,
     options: &GestureOptions,
 ) -> eyre::Result<GestureResult> {
-    execute_with_diff(device_id, options, || async {
+    execute_with_diff(host, device_id, options, || async {
         if device_id == LOCAL_DEVICE_ID {
-            apple::local::swipe(from, to, duration_ms).await
+            apple::local::swipe(host, from, to, duration_ms).await
         } else {
             match detect_platform(device_id) {
-                DevicePlatform::Ios => apple::device::swipe(device_id, from, to, duration_ms).await,
+                DevicePlatform::Ios => {
+                    apple::device::swipe(host, device_id, from, to, duration_ms).await
+                }
                 DevicePlatform::Android => {
-                    android::device::swipe(device_id, from, to, duration_ms).await
+                    android::device::swipe(host, device_id, from, to, duration_ms).await
                 }
             }
         }
@@ -188,17 +194,18 @@ pub async fn swipe(
 ///
 /// Returns an error if the text input fails or the device is not available.
 pub async fn text(
+    host: &Host,
     device_id: &str,
     input: &str,
     options: &GestureOptions,
 ) -> eyre::Result<GestureResult> {
-    execute_with_diff(device_id, options, || async {
+    execute_with_diff(host, device_id, options, || async {
         if device_id == LOCAL_DEVICE_ID {
-            apple::local::text(input).await
+            apple::local::text(host, input).await
         } else {
             match detect_platform(device_id) {
-                DevicePlatform::Ios => apple::device::text(device_id, input).await,
-                DevicePlatform::Android => android::device::text(device_id, input).await,
+                DevicePlatform::Ios => apple::device::text(host, device_id, input).await,
+                DevicePlatform::Android => android::device::text(host, device_id, input).await,
             }
         }
     })
@@ -210,7 +217,7 @@ pub async fn text(
 /// # Errors
 ///
 /// Returns an error if the device is not found or not available.
-pub async fn verify_device(device_id: &str) -> eyre::Result<DevicePlatform> {
+pub async fn verify_device(host: &Host, device_id: &str) -> eyre::Result<DevicePlatform> {
     if device_id == LOCAL_DEVICE_ID {
         // Local device is always available on macOS
         #[cfg(target_os = "macos")]
@@ -220,5 +227,5 @@ pub async fn verify_device(device_id: &str) -> eyre::Result<DevicePlatform> {
         return Err(eyre::eyre!("Local device is only available on macOS"));
     }
 
-    crate::capture::verify_device(device_id).await
+    crate::capture::verify_device(host, device_id).await
 }

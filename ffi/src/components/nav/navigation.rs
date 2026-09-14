@@ -11,7 +11,9 @@ use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_graphics::color::ResolvedColor;
-use waterui_navigation::tab::{NativeTabStyle, Tab, TabIcon, TabsLayout};
+use waterui_navigation::tab::{
+    NativeTabStyle, Tab, TabBarMinimizeBehavior, TabIcon, TabRole, TabsLayout,
+};
 use waterui_navigation::{
     Bar, ColumnWidth, CustomNavigationController, NativeNavigationSplitStyle,
     NativeNavigationTransition, NavigationController, NavigationDestinationState,
@@ -725,6 +727,26 @@ impl From<NativeTabStyle> for WuiTabStyle {
     }
 }
 
+// Apple backends present a `Search` tab as the system search tab; a backend
+// without the concept presents it as a regular tab.
+into_ffi! {TabRole, non_exhaustive,
+    pub enum WuiTabRole {
+        Regular,
+        Search,
+    }
+}
+
+// A platform whose tab chrome does not collapse on scroll ignores the
+// behavior.
+into_ffi! {TabBarMinimizeBehavior, non_exhaustive,
+    pub enum WuiTabBarMinimizeBehavior {
+        Automatic,
+        Never,
+        OnScrollDown,
+        OnScrollUp,
+    }
+}
+
 /// FFI representation of the `Tabs` component.
 #[repr(C)]
 #[derive(Debug)]
@@ -737,6 +759,9 @@ pub struct WuiTabs {
 
     /// Native adaptive tab style.
     pub style: WuiTabStyle,
+
+    /// How the bar behaves while content scrolls.
+    pub minimize_behavior: WuiTabBarMinimizeBehavior,
 }
 
 opaque!(WuiTabContent, AnyViewBuilder<NavigationView>, tab_content);
@@ -771,6 +796,9 @@ pub struct WuiTab {
     /// Set when the icon is not a platform symbol — a packaged icon set, say.
     /// A backend whose tab item takes an image has to rasterize this itself.
     pub icon: *mut WuiAnyView,
+
+    /// The part the tab plays in the container's chrome.
+    pub role: WuiTabRole,
 }
 
 /// Creates a navigation view from tab content.
@@ -819,6 +847,7 @@ impl IntoFFI for Tab<Id> {
             enabled: self.enabled.into_ffi(),
             system_icon,
             icon,
+            role: self.role.into_ffi(),
         }
     }
 }
@@ -830,6 +859,7 @@ impl IntoFFI for TabsLayout {
             selection: self.selection.into_ffi(),
             tabs: self.tabs.into_ffi(),
             style: self.style.into(),
+            minimize_behavior: self.minimize_behavior.into_ffi(),
         }
     }
 }

@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use crate::{
     brew::Brew,
-    toolchain::{Installation, Toolchain, ToolchainError},
-    utils::{CommandError, which},
+    toolchain::{Host, Installation, Toolchain, ToolchainError},
+    utils::CommandError,
 };
 
 /// Toolchain for `meson`.
@@ -17,16 +17,16 @@ impl Meson {
     ///
     /// # Errors
     /// Returns an error if `meson` is not found in PATH.
-    pub async fn path(&self) -> Result<PathBuf, which::Error> {
-        which("meson").await
+    pub async fn path(&self, host: &Host) -> Result<PathBuf, which::Error> {
+        host.which("meson").await
     }
 }
 
 impl Toolchain for Meson {
     type Installation = MesonInstallation;
 
-    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
-        if which("meson").await.is_ok() {
+    async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
+        if host.which("meson").await.is_ok() {
             Ok(())
         } else {
             Err(ToolchainError::fixable(MesonInstallation))
@@ -57,16 +57,64 @@ pub enum FailToInstallMeson {
 impl Installation for MesonInstallation {
     type Error = FailToInstallMeson;
 
-    async fn install(&self) -> Result<(), Self::Error> {
+    async fn install(&self, host: &Host) -> Result<(), Self::Error> {
         if cfg!(target_os = "macos") {
             let brew = Brew::default();
-            brew.check()
+            brew.check(host)
                 .await
                 .map_err(|_| FailToInstallMeson::BrewNotFound)?;
-            brew.install("meson").await?;
+            brew.install(host, "meson").await?;
             Ok(())
         } else {
             Err(FailToInstallMeson::UnsupportedPlatform)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Meson, MesonInstallation};
+    use crate::toolchain::testing::TestMachine;
+    use crate::toolchain::{Installation, Toolchain, ToolchainError};
+
+    #[test]
+    fn ok_when_meson_on_path() {
+        let machine = TestMachine::new();
+        machine.install("meson");
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(Meson.check(&host)).expect("meson on PATH must be ok");
+    }
+
+    #[test]
+    fn missing_meson_is_fixable() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(Meson.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Fixable(_))),
+            "missing meson must always be fixable: {result:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn install_runs_brew() {
+        let machine = TestMachine::new();
+        machine.install("brew");
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(MesonInstallation.install(&host))
+            .expect("brew install meson must succeed on a host that provides brew");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn install_fails_off_macos() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(MesonInstallation.install(&host));
+        assert!(
+            matches!(result, Err(super::FailToInstallMeson::UnsupportedPlatform)),
+            "meson install must fail fast outside macOS: {result:?}"
+        );
     }
 }

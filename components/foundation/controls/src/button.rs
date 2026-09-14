@@ -271,6 +271,17 @@ pub enum ButtonStyle {
     /// A prominent button with filled background color.
     /// Use for primary actions that should stand out.
     BorderedProminent,
+    /// A Liquid Glass capsule: the button floats over its content in the
+    /// platform's glass, taking its highlight from what is behind it.
+    ///
+    /// Glass is an Apple primitive. Backends without it render this as their
+    /// bordered style, since the emphasis is the same.
+    Glass,
+    /// A Liquid Glass capsule filled with the accent color, for the primary
+    /// action among glass controls.
+    ///
+    /// Backends without glass render this as their bordered-prominent style.
+    GlassProminent,
 }
 
 /// How large a button is drawn.

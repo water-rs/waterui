@@ -7,7 +7,7 @@ use eyre::Result;
 
 use crate::shell::Shell;
 use crate::{error, line, note, success};
-use waterui_cli::{android, apple, capture, gesture};
+use waterui_cli::{android, apple, capture, gesture, toolchain::Host};
 
 /// Arguments for the device command.
 #[derive(ClapArgs, Debug)]
@@ -212,7 +212,7 @@ async fn run_capture(shell: &Shell, args: CaptureArgs) -> Result<()> {
             .output
             .unwrap_or_else(capture::generate_screenshot_filename);
 
-        match waterui_cli::apple::local::screenshot(&output).await {
+        match waterui_cli::apple::local::screenshot(&Host::current(), &output).await {
             Ok(()) => {
                 success!(
                     shell,
@@ -229,7 +229,7 @@ async fn run_capture(shell: &Shell, args: CaptureArgs) -> Result<()> {
     }
 
     // Verify the device exists
-    let platform = match capture::verify_device(device_id).await {
+    let platform = match capture::verify_device(&Host::current(), device_id).await {
         Ok(p) => p,
         Err(e) => {
             error!(shell, "Device not found: {e}");
@@ -248,7 +248,7 @@ async fn run_capture(shell: &Shell, args: CaptureArgs) -> Result<()> {
         capture::DevicePlatform::Android => "Android device",
     };
 
-    match capture::screenshot(device_id, &output).await {
+    match capture::screenshot(&Host::current(), device_id, &output).await {
         Ok(()) => {
             success!(
                 shell,
@@ -321,7 +321,7 @@ async fn run_capture_by_pid(
             };
             let path = dir.join(&filename);
 
-            match screenshot_window(window.window_id, &path).await {
+            match screenshot_window(&Host::current(), window.window_id, &path).await {
                 Ok(()) => {
                     success!(
                         shell,
@@ -361,7 +361,7 @@ async fn run_capture_by_pid(
         let window = &normal_windows[index];
         let output_path = output.unwrap_or_else(capture::generate_screenshot_filename);
 
-        match screenshot_window(window.window_id, &output_path).await {
+        match screenshot_window(&Host::current(), window.window_id, &output_path).await {
             Ok(()) => {
                 success!(
                     shell,
@@ -409,13 +409,14 @@ fn print_diff_result(
 /// Run the tap subcommand.
 async fn run_tap(shell: &Shell, args: TapArgs) -> Result<()> {
     let device_id = &args.id;
+    let host = Host::current();
 
     // Verify device exists
-    gesture::verify_device(device_id).await?;
+    gesture::verify_device(&host, device_id).await?;
 
     let options = build_gesture_options(args.diff, args.diff_output.clone(), args.delay);
 
-    match gesture::tap(device_id, args.x, args.y, &options).await {
+    match gesture::tap(&host, device_id, args.x, args.y, &options).await {
         Ok(result) => {
             success!(shell, "Tap at ({}, {})", args.x, args.y);
             print_diff_result(shell, &result, args.diff_output.as_deref());
@@ -431,13 +432,23 @@ async fn run_tap(shell: &Shell, args: TapArgs) -> Result<()> {
 /// Run the swipe subcommand.
 async fn run_swipe(shell: &Shell, args: SwipeArgs) -> Result<()> {
     let device_id = &args.id;
+    let host = Host::current();
 
     // Verify device exists
-    gesture::verify_device(device_id).await?;
+    gesture::verify_device(&host, device_id).await?;
 
     let options = build_gesture_options(args.diff, args.diff_output.clone(), args.delay);
 
-    match gesture::swipe(device_id, args.from, args.to, args.duration, &options).await {
+    match gesture::swipe(
+        &host,
+        device_id,
+        args.from,
+        args.to,
+        args.duration,
+        &options,
+    )
+    .await
+    {
         Ok(result) => {
             success!(
                 shell,
@@ -460,13 +471,14 @@ async fn run_swipe(shell: &Shell, args: SwipeArgs) -> Result<()> {
 /// Run the text subcommand.
 async fn run_text(shell: &Shell, args: TextArgs) -> Result<()> {
     let device_id = &args.id;
+    let host = Host::current();
 
     // Verify device exists
-    gesture::verify_device(device_id).await?;
+    gesture::verify_device(&host, device_id).await?;
 
     let options = build_gesture_options(args.diff, args.diff_output.clone(), args.delay);
 
-    match gesture::text(device_id, &args.input, &options).await {
+    match gesture::text(&host, device_id, &args.input, &options).await {
         Ok(result) => {
             success!(shell, "Text input: \"{}\"", args.input);
             print_diff_result(shell, &result, args.diff_output.as_deref());
@@ -489,9 +501,10 @@ async fn run_describe(shell: &Shell, args: DescribeArgs) -> Result<()> {
     }
 
     // Get platform and call appropriate describe function
+    let host = Host::current();
     let json = match capture::detect_platform(device_id) {
-        capture::DevicePlatform::Ios => apple::device::describe(device_id).await?,
-        capture::DevicePlatform::Android => android::device::describe(device_id).await?,
+        capture::DevicePlatform::Ios => apple::device::describe(&host, device_id).await?,
+        capture::DevicePlatform::Android => android::device::describe(&host, device_id).await?,
     };
 
     if shell.is_json() {

@@ -1,0 +1,30 @@
+{
+  "devices" : {
+    "com.apple.CoreSimulator.SimRuntime.iOS-18-4" : [
+      {
+        "availabilityError" : "",
+        "dataPath" : "/fake/Library/Developer/CoreSimulator/Devices/3E8B0C4F-0000-4000-8000-000000000001/data",
+        "dataPathSize" : 0,
+        "deviceTypeIdentifier" : "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        "isAvailable" : true,
+        "lastBootedAt" : "2026-01-01T00:00:00Z",
+        "logPath" : "/fake/Library/Logs/CoreSimulator/3E8B0C4F-0000-4000-8000-000000000001",
+        "name" : "iPhone 16",
+        "state" : "Shutdown",
+        "udid" : "3E8B0C4F-0000-4000-8000-000000000001"
+      }
+    ]
+  },
+  "runtimes" : [
+    {
+      "buildversion" : "22E238",
+      "identifier" : "com.apple.CoreSimulator.SimRuntime.iOS-18-4",
+      "isAvailable" : true,
+      "isInternal" : false,
+      "name" : "iOS 18.4",
+      "platform" : "iOS",
+      "runtimeRoot" : "/Library/Developer/CoreSimulator/Volumes/iOS_22E238/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 18.4.simruntime/Contents/Resources/RuntimeRoot",
+      "version" : "18.4"
+    }
+  ]
+}

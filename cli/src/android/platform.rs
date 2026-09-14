@@ -3,13 +3,10 @@
 //! This module provides utility functions for building and packaging Android apps.
 //! These functions are used by `AndroidBackend` to implement the `Backend` trait.
 
-use std::{
-    env,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use askama::Template;
-use eyre::bail;
+use eyre::{self, bail};
 use smol::{fs, unblock};
 use target_lexicon::{Aarch64Architecture, Architecture, Triple};
 
@@ -29,7 +26,7 @@ use crate::{
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     templates::FontRegistrationTemplateEntry,
-    toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
+    toolchain::{Host, ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::copy_file,
 };
 
@@ -39,8 +36,8 @@ fn gradle_cmd(gradlew: &Path, backend_path: &Path, task: &str) -> smol::process:
     cmd
 }
 
-fn apply_gradle_proxy_env(cmd: &mut smol::process::Command) -> eyre::Result<()> {
-    let proxy_properties = java_proxy_properties_from_env()?;
+fn apply_gradle_proxy_env(host: &Host, cmd: &mut smol::process::Command) -> eyre::Result<()> {
+    let proxy_properties = java_proxy_properties_from_env(host)?;
     if proxy_properties.is_empty() {
         return Ok(());
     }
@@ -48,7 +45,7 @@ fn apply_gradle_proxy_env(cmd: &mut smol::process::Command) -> eyre::Result<()> 
     cmd.args(&proxy_properties);
 
     let mut gradle_opts = proxy_properties.join(" ");
-    if let Ok(existing) = env::var("GRADLE_OPTS")
+    if let Some(existing) = host.env_string("GRADLE_OPTS")
         && !existing.trim().is_empty()
     {
         gradle_opts.push(' ');
@@ -366,8 +363,10 @@ impl AndroidPlatform {
             .resolved_framework()
             .await?
             .android_min_api_level()?;
-        let build_context = resolve_android_build_context(abi, &triple, min_api_level).await?;
-        let build = configure_android_rust_build(project, &triple, &build_context, &options)
+        let host = Host::current();
+        let build_context =
+            resolve_android_build_context(&host, abi, &triple, min_api_level).await?;
+        let build = configure_android_rust_build(&host, project, &triple, &build_context, &options)
             .await?
             .with_target_dir(project.water_target_dir(options.linkage()).await?);
 
@@ -436,14 +435,15 @@ impl AndroidPlatform {
         cmd.env("WATERUI_SKIP_RUST_BUILD", "1")
             .env("WATERUI_ANDROID_ABIS", &abis_str);
 
-        if let Some(java_home) = Java::detect_home().await {
+        let host = Host::current();
+        if let Some(java_home) = Java::detect_home(&host).await {
             cmd.env("JAVA_HOME", java_home);
         }
-        if let Some(sdk_path) = AndroidSdk::detect_path() {
+        if let Some(sdk_path) = AndroidSdk::detect_path(&host) {
             cmd.env("ANDROID_HOME", &sdk_path)
                 .env("ANDROID_SDK_ROOT", &sdk_path);
         }
-        apply_gradle_proxy_env(&mut cmd)?;
+        apply_gradle_proxy_env(&host, &mut cmd)?;
 
         let output = cmd.output().await?;
 
@@ -457,18 +457,15 @@ impl AndroidPlatform {
         Ok(Artifact::new(project.bundle_identifier(), path))
     }
 
-    /// List available Android Virtual Devices (emulators).
+    /// List available Android Virtual Devices (emulators) on `host`.
     ///
     /// # Errors
     /// Returns an error if the emulator tool is not found.
-    pub async fn list_avds() -> eyre::Result<Vec<String>> {
-        let emulator_path =
-            AndroidSdk::emulator_path().ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
+    pub async fn list_avds(host: &Host) -> eyre::Result<Vec<String>> {
+        let emulator_path = AndroidSdk::emulator_path(host)
+            .ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
 
-        let output = smol::process::Command::new(&emulator_path)
-            .arg("-list-avds")
-            .output()
-            .await?;
+        let output = host.output(&emulator_path, ["-list-avds"]).await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let avds: Vec<String> = stdout
@@ -482,11 +479,12 @@ impl AndroidPlatform {
 }
 
 async fn resolve_android_build_context(
+    host: &Host,
     abi: AndroidAbi,
     triple: &Triple,
     api_level: u32,
 ) -> eyre::Result<AndroidBuildContext> {
-    let ndk_path = AndroidNdk::detect_path().ok_or_else(|| {
+    let ndk_path = AndroidNdk::detect_path(host).ok_or_else(|| {
         eyre::eyre!("Android NDK not found. Please install it via Android Studio.")
     })?;
     let linker = ndk_linker_path(&ndk_path, abi, api_level);
@@ -507,10 +505,10 @@ async fn resolve_android_build_context(
     }
     let target_underscore = triple.to_string().replace('-', "_");
     let target_upper = target_underscore.to_uppercase();
-    let llvm_envs = resolve_windows_arm64_llvm_envs().await?;
-    let (java_home, java_bin_dir) = resolve_java_home().await?;
-    let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = resolve_kotlin_home().await?;
-    let (sdk_path, android_jar) = resolve_android_sdk_paths().await?;
+    let llvm_envs = resolve_windows_arm64_llvm_envs(host).await?;
+    let (java_home, java_bin_dir) = resolve_java_home(host).await?;
+    let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = resolve_kotlin_home(host).await?;
+    let (sdk_path, android_jar) = resolve_android_sdk_paths(host).await?;
     let wrapper_toolchain = create_android_toolchain_wrapper(&ndk_path, abi, api_level).await?;
 
     Ok(AndroidBuildContext {
@@ -534,9 +532,11 @@ async fn resolve_android_build_context(
     })
 }
 
-async fn resolve_windows_arm64_llvm_envs() -> eyre::Result<Vec<(String, std::ffi::OsString)>> {
+async fn resolve_windows_arm64_llvm_envs(
+    host: &Host,
+) -> eyre::Result<Vec<(String, std::ffi::OsString)>> {
     WindowsArm64LlvmToolchain
-        .cargo_envs()
+        .cargo_envs(host)
         .await
         .map_err(|error| match error {
             ToolchainError::Fixable(_) => eyre::eyre!(
@@ -548,8 +548,8 @@ async fn resolve_windows_arm64_llvm_envs() -> eyre::Result<Vec<(String, std::ffi
         })
 }
 
-async fn resolve_java_home() -> eyre::Result<(PathBuf, PathBuf)> {
-    let java_home = Java::detect_home().await.ok_or_else(|| {
+async fn resolve_java_home(host: &Host) -> eyre::Result<(PathBuf, PathBuf)> {
+    let java_home = Java::detect_home(host).await.ok_or_else(|| {
         eyre::eyre!(
             "Java runtime not found. Install a JDK (or Android Studio JBR), then re-run `water doctor --fix`."
         )
@@ -558,8 +558,8 @@ async fn resolve_java_home() -> eyre::Result<(PathBuf, PathBuf)> {
     Ok((java_home, java_bin_dir))
 }
 
-async fn resolve_kotlin_home() -> eyre::Result<(PathBuf, PathBuf, PathBuf)> {
-    let kotlin_compiler = Kotlin::detect_path().await.ok_or_else(|| {
+async fn resolve_kotlin_home(host: &Host) -> eyre::Result<(PathBuf, PathBuf, PathBuf)> {
+    let kotlin_compiler = Kotlin::detect_path(host).await.ok_or_else(|| {
         eyre::eyre!(
             "Kotlin compiler (kotlinc) not found. Install Android Studio or set `KOTLIN_HOME`, then re-run `water doctor`."
         )
@@ -579,19 +579,25 @@ async fn resolve_kotlin_home() -> eyre::Result<(PathBuf, PathBuf, PathBuf)> {
     Ok((kotlin_compiler, kotlin_bin_dir, kotlin_home))
 }
 
-async fn resolve_android_sdk_paths() -> eyre::Result<(PathBuf, PathBuf)> {
-    let sdk_path = AndroidSdk::detect_path().ok_or_else(|| {
-        eyre::eyre!("Android SDK not found. Please install it via Android Studio.")
-    })?;
-    let android_jar = unblock(AndroidSdk::android_jar_path)
-        .await
-        .ok_or_else(|| {
+/// Resolve the SDK root and its newest `android.jar` on `host`.
+///
+/// `AndroidSdk::android_jar_path` walks `platforms/` on disk, so the whole
+/// resolution runs on a blocking thread instead of the executor.
+async fn resolve_android_sdk_paths(host: &Host) -> eyre::Result<(PathBuf, PathBuf)> {
+    let host = host.clone();
+    smol::unblock(move || {
+        let sdk_path = AndroidSdk::detect_path(&host).ok_or_else(|| {
+            eyre::eyre!("Android SDK not found. Please install it via Android Studio.")
+        })?;
+        let android_jar = AndroidSdk::android_jar_path(&host).ok_or_else(|| {
             eyre::eyre!(
                 "Android platforms not found in SDK at {}. Install an Android platform (SDK) in Android Studio.",
                 sdk_path.display()
             )
         })?;
-    Ok((sdk_path, android_jar))
+        Ok((sdk_path, android_jar))
+    })
+    .await
 }
 
 /// The `waterui-ffi` features an Android runtime is compiled with.
@@ -613,6 +619,7 @@ pub(crate) async fn android_ffi_dependency_features(
 }
 
 async fn configure_android_rust_build(
+    host: &Host,
     project: &Project,
     triple: &Triple,
     context: &AndroidBuildContext,
@@ -682,7 +689,8 @@ async fn configure_android_rust_build(
         )
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{triple}"), "1");
 
-    let current_path = std::env::var_os("PATH")
+    let current_path = host
+        .env("PATH")
         .ok_or_else(|| eyre::eyre!("PATH environment variable is not set"))?;
     let mut paths: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
     paths.insert(0, context.java_bin_dir.clone());
@@ -827,16 +835,17 @@ pub async fn clean_android(project: &Project) -> eyre::Result<()> {
     }
 
     // Set JAVA_HOME to Android Studio's bundled JDK to avoid JDK version conflicts
+    let host = Host::current();
     let mut cmd = gradle_cmd(&gradlew, &backend_path, "clean");
 
-    if let Some(java_home) = Java::detect_home().await {
+    if let Some(java_home) = Java::detect_home(&host).await {
         cmd.env("JAVA_HOME", java_home);
     }
-    if let Some(sdk_path) = AndroidSdk::detect_path() {
+    if let Some(sdk_path) = AndroidSdk::detect_path(&host) {
         cmd.env("ANDROID_HOME", &sdk_path)
             .env("ANDROID_SDK_ROOT", &sdk_path);
     }
-    apply_gradle_proxy_env(&mut cmd)?;
+    apply_gradle_proxy_env(&host, &mut cmd)?;
 
     let output = cmd.output().await?;
 

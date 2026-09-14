@@ -4,7 +4,6 @@
 //! These functions are used by `AppleBackend` to implement the `Backend` trait.
 
 use std::collections::BTreeSet;
-use std::env;
 use std::ffi::OsString;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -28,6 +27,7 @@ use crate::{
     platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::{BrowserRuntimePlan, Project, ResolvedWebViewBackend},
     templates::FontRegistrationTemplateEntry,
+    toolchain::Host,
     utils::{copy_file, run_command_os},
 };
 
@@ -597,12 +597,6 @@ pub async fn package_apple(
     let app_resources_dir = project_path.join(&backend.scheme);
     copy_assets_and_fonts(project, &app_resources_dir).await?;
 
-    // Tell Xcode not to call `water build` again (we already built)
-    // SAFETY: CLI runs on main thread before spawning build processes
-    unsafe {
-        env::set_var("WATERUI_SKIP_RUST_BUILD", "1");
-    }
-
     let configuration = if options.is_debug() {
         "Debug"
     } else {
@@ -737,15 +731,14 @@ pub async fn package_apple(
         args.push(format!("OTHER_SWIFT_FLAGS={}", swift_conditions.join(" ")).into());
     }
 
-    run_command_os("xcodebuild", args).await?;
-
-    // Reset the environment variable
-    // SAFETY: `set_var` is unsound only when another thread is touching the
-    // environment concurrently; this runs during single-threaded CLI setup, before
-    // any worker is spawned.
-    unsafe {
-        env::set_var("WATERUI_SKIP_RUST_BUILD", "0");
-    }
+    // Tell Xcode's run-script phases not to call `water build` again (the
+    // Rust library is already built). The flag is scoped to the xcodebuild
+    // child and propagates to its script phases; it must never be set on
+    // this process.
+    Host::current()
+        .with_env("WATERUI_SKIP_RUST_BUILD", "1")
+        .run("xcodebuild", args)
+        .await?;
 
     if !app_path.exists() {
         bail!(
