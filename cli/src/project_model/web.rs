@@ -374,7 +374,7 @@ impl Drop for WebDevServer {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        signal_dev_server_tree(&child, true);
+        signal_dev_server_tree(&mut child, true);
         std::thread::spawn(move || {
             let mut exited = false;
             for _ in 0..40 {
@@ -385,7 +385,7 @@ impl Drop for WebDevServer {
                 }
             }
             if !exited {
-                signal_dev_server_tree(&child, false);
+                signal_dev_server_tree(&mut child, false);
             }
             let _ = child.wait();
         });
@@ -449,13 +449,13 @@ impl WebDevServer {
                     }
                 }
                 Some(Err(error)) => {
-                    signal_dev_server_tree(&child, false);
+                    signal_dev_server_tree(&mut child, false);
                     let _ = smol::unblock(move || child.wait()).await;
                     bail!("failed to read `{pm} run {script}` output: {error}");
                 }
                 None => {
                     let status = child.try_wait().ok().flatten();
-                    signal_dev_server_tree(&child, false);
+                    signal_dev_server_tree(&mut child, false);
                     let _ = smol::unblock(move || child.wait()).await;
                     match status {
                         Some(status) => bail!(
@@ -496,7 +496,7 @@ impl WebDevServer {
 /// process group, so a group signal reaches the bundler the package manager
 /// re-execs as well. `graceful` selects SIGTERM over SIGKILL.
 #[cfg(unix)]
-fn signal_dev_server_tree(child: &std::process::Child, graceful: bool) {
+fn signal_dev_server_tree(child: &mut std::process::Child, graceful: bool) {
     let signal = if graceful {
         nix::sys::signal::Signal::SIGTERM
     } else {
