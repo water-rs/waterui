@@ -87,6 +87,18 @@ jobs:
           # One writer per OS cache key: the schedule.
           save-if: ${{ github.event_name == 'schedule' }}
 
+      # Compile-time dependencies of the CLI itself — libudev for serialport
+      # (esp32) and OpenSSL for native-tls. These belong to building the
+      # binary under the runner account, not to anything doctor manages for
+      # the fresh user.
+      - name: Install CLI build dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libudev-dev libssl-dev pkg-config
+
       - name: Install the CLI under test
         shell: bash
         run: cargo install --locked --path cli
@@ -143,11 +155,18 @@ jobs:
             Export-Clixml -Path "$env:RUNNER_TEMP\e2e-cred.xml"
           Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile "$env:RUNNER_TEMP\rustup-init.exe"
           # rustup-init runs AS the fresh user so `~/.cargo` lands in its own
-          # profile; first execution also materializes that profile.
+          # profile; -LoadUserProfile materializes that profile — without it
+          # %USERPROFILE% points at a directory that does not exist yet.
           $p = Start-Process -FilePath "$env:RUNNER_TEMP\rustup-init.exe" `
             -ArgumentList '-y','--default-toolchain','none','--no-modify-path' `
-            -Credential (Import-Clixml "$env:RUNNER_TEMP\e2e-cred.xml") -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "rustup-init failed as $env:E2E_USER" }
+            -Credential (Import-Clixml "$env:RUNNER_TEMP\e2e-cred.xml") `
+            -LoadUserProfile -Wait -PassThru `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\rustup-init.out" `
+            -RedirectStandardError "$env:RUNNER_TEMP\rustup-init.err"
+          if ($null -eq $p.ExitCode -or $p.ExitCode -ne 0) {
+            Get-Content "$env:RUNNER_TEMP\rustup-init.out","$env:RUNNER_TEMP\rustup-init.err" -ErrorAction SilentlyContinue
+            throw "rustup-init failed as $env:E2E_USER"
+          }
           New-Item -ItemType Directory -Force "C:\Users\$env:E2E_USER\.cargo\bin" | Out-Null
           Copy-Item "$env:CARGO_HOME\bin\water.exe" "C:\Users\$env:E2E_USER\.cargo\bin\water.exe" -Force
 
@@ -271,7 +290,7 @@ jobs:
           $p = Start-Process -FilePath pwsh `
             -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:RUNNER_TEMP\cli-e2e.ps1" `
             -Credential (Import-Clixml "$env:RUNNER_TEMP\e2e-cred.xml") `
-            -WorkingDirectory "C:\Users\$env:E2E_USER" -Wait -PassThru
+            -LoadUserProfile -WorkingDirectory "C:\Users\$env:E2E_USER" -Wait -PassThru
           if ($null -eq $p.ExitCode -or $p.ExitCode -ne 0) { exit 1 }
 
       # A process that reports Started but exits immediately is not a passing
