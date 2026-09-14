@@ -117,8 +117,10 @@ jobs:
           sudo dscl . -passwd "/Users/$E2E_USER" "$E2E_PASS"
           sudo dscl . -append /Groups/admin GroupMembership "$E2E_USER"
           sudo createhomedir -c -u "$E2E_USER"
-          # The fresh user path-depends on the checkout under test.
+          # The fresh user path-depends on the checkout under test: it needs
+          # read on the tree and traverse (+x) on every ancestor directory.
           sudo chmod -R a+rX "$GITHUB_WORKSPACE"
+          p="$GITHUB_WORKSPACE"; while [ "$p" != "/" ]; do sudo chmod o+x "$p"; p="$(dirname "$p")"; done
           # Homebrew refuses to run as anyone but the owner of its prefix; the
           # hosted image installed it for `runner`, so hand the prefix to the
           # test user on this disposable machine.
@@ -136,8 +138,10 @@ jobs:
           # doctor's apt fixes invoke `sudo`; the disposable test user gets
           # passwordless sudo for them.
           echo "$E2E_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee "/etc/sudoers.d/$E2E_USER" >/dev/null
-          # The fresh user path-depends on the checkout under test.
+          # The fresh user path-depends on the checkout under test: it needs
+          # read on the tree and traverse (+x) on every ancestor directory.
           sudo chmod -R a+rX "$GITHUB_WORKSPACE"
+          p="$GITHUB_WORKSPACE"; while [ "$p" != "/" ]; do sudo chmod o+x "$p"; p="$(dirname "$p")"; done
           sudo -u "$E2E_USER" -H bash -lc 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --no-modify-path'
           sudo install -o "$E2E_USER" -m 0755 "$CARGO_HOME/bin/water" "/home/$E2E_USER/.cargo/bin/water"
           # xvfb is the run harness only — not a doctor-managed dependency.
@@ -157,23 +161,33 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member $env:E2E_USER
           [pscredential]::new("$env:COMPUTERNAME\$env:E2E_USER", $pw) |
             Export-Clixml -Path "$env:RUNNER_TEMP\e2e-cred.xml"
-          Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile "$env:RUNNER_TEMP\rustup-init.exe"
           # rustup-init runs AS the fresh user so `~/.cargo` lands in its own
           # profile; -LoadUserProfile materializes that profile — without it
           # %USERPROFILE% points at a directory that does not exist yet.
-          # Explicitly-set env vars are inherited by the child, so the job's
-          # CARGO_HOME/RUSTUP_HOME (runneradmin's) must be cleared or rustup
-          # installs into the wrong account's directories.
+          # The hosted image defines a machine-level CARGO_HOME/RUSTUP_HOME
+          # pointing at runneradmin's profile, and a credentialed child's
+          # environment is rebuilt from the registry, not inherited — so the
+          # bootstrap script overrides them inside the child's own process.
+          # Cross-account files live in C:\Windows\Temp (world read/write);
+          # the runner's private RUNNER_TEMP is not readable by the user.
+          $share = 'C:\Windows\Temp\cli-e2e'
+          New-Item -ItemType Directory -Force $share | Out-Null
+          Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile "$share\rustup-init.exe"
+          $bootstrap = @"
+          `$env:CARGO_HOME = "`$env:USERPROFILE\.cargo"
+          `$env:RUSTUP_HOME = "`$env:USERPROFILE\.rustup"
+          & "$share\rustup-init.exe" -y --default-toolchain none --no-modify-path
+          "@
+          Set-Content -Path "$share\rustup-bootstrap.ps1" -Value $bootstrap -Encoding UTF8
           $cliBin = "$env:CARGO_HOME\bin\water.exe"
-          Remove-Item Env:CARGO_HOME, Env:RUSTUP_HOME -ErrorAction SilentlyContinue
-          $p = Start-Process -FilePath "$env:RUNNER_TEMP\rustup-init.exe" `
-            -ArgumentList '-y','--default-toolchain','none','--no-modify-path' `
+          $p = Start-Process -FilePath pwsh `
+            -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$share\rustup-bootstrap.ps1" `
             -Credential (Import-Clixml "$env:RUNNER_TEMP\e2e-cred.xml") `
             -LoadUserProfile -Wait -PassThru `
-            -RedirectStandardOutput "$env:RUNNER_TEMP\rustup-init.out" `
-            -RedirectStandardError "$env:RUNNER_TEMP\rustup-init.err"
+            -RedirectStandardOutput "$share\rustup-init.out" `
+            -RedirectStandardError "$share\rustup-init.err"
           if ($null -eq $p.ExitCode -or $p.ExitCode -ne 0) {
-            Get-Content "$env:RUNNER_TEMP\rustup-init.out","$env:RUNNER_TEMP\rustup-init.err" -ErrorAction SilentlyContinue
+            Get-Content "$share\rustup-init.out","$share\rustup-init.err" -ErrorAction SilentlyContinue
             throw "rustup-init failed as $env:E2E_USER"
           }
           New-Item -ItemType Directory -Force "C:\Users\$env:E2E_USER\.cargo\bin" | Out-Null
@@ -232,8 +246,21 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # A credentialed child's environment is rebuilt from the registry —
+          # job-level env vars do not reach it. The expanded header injects
+          # this job's platform/backend/checkout path into the script.
+          $header = @"
+          `$env:E2E_PLATFORM = "$env:E2E_PLATFORM"
+          `$env:E2E_BACKEND = "$env:E2E_BACKEND"
+          `$wateruiSrc = "$($env:GITHUB_WORKSPACE -replace '\\','/')"
+          "@
           $e2e = @'
           $ErrorActionPreference = 'Continue'
+          # The image's machine-level CARGO_HOME/RUSTUP_HOME point at
+          # runneradmin's profile; this account's rustup/cargo state lives
+          # under its own profile.
+          $env:CARGO_HOME = "$env:USERPROFILE\.cargo"
+          $env:RUSTUP_HOME = "$env:USERPROFILE\.rustup"
           $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
           $logs = "$env:USERPROFILE\e2e-logs"
           New-Item -ItemType Directory -Force $logs | Out-Null
@@ -258,10 +285,10 @@ jobs:
           # Scaffold against the checkout under test — the nightly signal is
           # this commit, not a released framework. (The dev channel's patch
           # rebase is separately broken — #807.)
-          water create e2eapp --mode app --backends $env:E2E_BACKEND --waterui-path "$env:GITHUB_WORKSPACE" 2>&1 |
+          water create e2eapp --mode app --backends $env:E2E_BACKEND --waterui-path $wateruiSrc 2>&1 |
             Tee-Object "$logs\create-app.log"
           if ($LASTEXITCODE -or -not (Test-Path "e2eapp\Water.toml")) { Fail "water create app failed" }
-          water create e2eplay --mode playground --waterui-path "$env:GITHUB_WORKSPACE" 2>&1 |
+          water create e2eplay --mode playground --waterui-path $wateruiSrc 2>&1 |
             Tee-Object "$logs\create-play.log"
           if ($LASTEXITCODE -or -not (Test-Path "e2eplay\Water.toml")) { Fail "water create playground failed" }
 
@@ -302,13 +329,9 @@ jobs:
             Fail "water run launched but the app died within the grace window"
           }
           '@
-          Set-Content -Path "$env:RUNNER_TEMP\cli-e2e.ps1" -Value $e2e -Encoding UTF8
-          # Keep the job's CARGO_HOME/RUSTUP_HOME (runneradmin's) out of the
-          # fresh user's process — doctor's rustup calls must land in its own
-          # profile.
-          Remove-Item Env:CARGO_HOME, Env:RUSTUP_HOME -ErrorAction SilentlyContinue
+          Set-Content -Path 'C:\Windows\Temp\cli-e2e\cli-e2e.ps1' -Value ($header + $e2e) -Encoding UTF8
           $p = Start-Process -FilePath pwsh `
-            -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:RUNNER_TEMP\cli-e2e.ps1" `
+            -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\Windows\Temp\cli-e2e\cli-e2e.ps1' `
             -Credential (Import-Clixml "$env:RUNNER_TEMP\e2e-cred.xml") `
             -LoadUserProfile -WorkingDirectory "C:\Users\$env:E2E_USER" -Wait -PassThru
           if ($null -eq $p.ExitCode -or $p.ExitCode -ne 0) { exit 1 }
