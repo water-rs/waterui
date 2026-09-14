@@ -383,6 +383,10 @@ where
     fn body(self, env: &Environment) -> impl View {
         render_list_config(ConfigurableView::config(self), env)
     }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
 }
 
 // ============================================================================
@@ -468,6 +472,10 @@ where
 {
     fn body(self, env: &Environment) -> impl View {
         render_list_config(ConfigurableView::config(self), env)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
     }
 }
 
