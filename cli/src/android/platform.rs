@@ -21,6 +21,7 @@ use crate::{
     android::{
         ANDROID_MIN_API_LEVEL,
         backend::AndroidBackend,
+        output_metadata::{OutputKind, packaged_artifact},
         toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin, java_proxy_properties_from_env},
     },
     assets::{self, ResolvedFont},
@@ -453,29 +454,13 @@ impl AndroidPlatform {
             "gradlew"
         });
 
-        let (command_name, path) = if options.is_distribution() && !options.is_debug() {
-            (
-                "bundleRelease",
-                backend_path.join("app/build/outputs/bundle/release/app-release.aab"),
-            )
-        } else if !options.is_distribution() && !options.is_debug() {
-            (
-                "assembleRelease",
-                backend_path.join("app/build/outputs/apk/release/app-release.apk"),
-            )
-        } else if !options.is_distribution() && options.is_debug() {
-            (
-                "assembleDebug",
-                backend_path.join("app/build/outputs/apk/debug/app-debug.apk"),
-            )
-        } else if options.is_distribution() && options.is_debug() {
-            (
-                "bundleDebug",
-                backend_path.join("app/build/outputs/bundle/debug/app-debug.aab"),
-            )
-        } else {
-            unreachable!()
-        };
+        let (command_name, output_kind, variant) =
+            match (options.is_distribution(), options.is_debug()) {
+                (true, false) => ("bundleRelease", OutputKind::Bundle, "release"),
+                (false, false) => ("assembleRelease", OutputKind::Apk, "release"),
+                (false, true) => ("assembleDebug", OutputKind::Apk, "debug"),
+                (true, true) => ("bundleDebug", OutputKind::Bundle, "debug"),
+            };
 
         // Join ABIs with comma for the environment variable
         let abis_str = abis
@@ -507,6 +492,7 @@ impl AndroidPlatform {
             bail!("Gradle build failed:\n{}\n{}", stdout.trim(), stderr.trim());
         }
 
+        let path = packaged_artifact(&backend_path, output_kind, variant).await?;
         Ok(Artifact::new(project.bundle_identifier(), path))
     }
 

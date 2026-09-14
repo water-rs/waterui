@@ -7,6 +7,8 @@ pub(crate) const ANDROID_MIN_API_LEVEL: u32 = 26;
 pub mod backend;
 /// Android device detection and management.
 pub mod device;
+/// Gradle package task output discovery.
+pub(crate) mod output_metadata;
 /// Android platform configuration.
 pub mod platform;
 pub(crate) mod toolchain;
