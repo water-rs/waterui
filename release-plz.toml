@@ -205,10 +205,3 @@ version_group = "waterui"
 [[package]]
 name = "waterui-backend-core"
 version_group = "waterui"
-
-# Tooling
-
-[[package]]
-name = "waterui-cli"
-version_group = "waterui"
-git_tag_name = "waterui-cli-v{{ version }}"

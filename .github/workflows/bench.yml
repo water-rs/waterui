@@ -83,12 +83,11 @@ jobs:
               - "examples/list/**"
               # The harness that measures them: the `#[waterui::bench]`
               # expansion, the `PerfApp` frame pump and in-process budget
-              # evaluation, the `water bench` runner, and the report / env-var
-              # contract the runner and the harness share.
+              # evaluation, and the report / env-var contract the runner and
+              # the harness share. The `water bench` runner itself lives in
+              # water-rs/cli now; its changes gate there.
               - "macros/**"
               - "testing/**"
-              - "cli/src/bench/**"
-              - "cli/src/terminal/commands/bench.rs"
               - "components/devtools/preview/protocol/**"
               # What renders every measured frame. Both benches install the
               # Material 3 theme and are driven by the Hydrolysis GPU renderer
@@ -178,26 +177,45 @@ jobs:
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-dxc
       - uses: taiki-e/install-action@nextest
-      - name: Build water CLI
-        run: cargo build -p waterui-cli
-      - name: Resolve water binary path
+      # `water bench` ships from water-rs/cli now; the legs install its `dev`
+      # head instead of building a workspace member. The job's rust-cache
+      # block is restore-only (`save-if: false`) and covers `~/.cargo/bin`
+      # but not cargo's install ledger, so a restored binary is one cargo
+      # refuses to overwrite — the binary rides its own actions/cache entry
+      # keyed on the resolved cli commit instead: a hit skips the compile
+      # entirely, a `dev` move misses and rebuilds.
+      - name: Resolve the water-rs/cli dev commit
+        id: cli-rev
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            echo "WATER_BIN=target/debug/water.exe" >> "$GITHUB_ENV"
-          else
-            echo "WATER_BIN=target/debug/water" >> "$GITHUB_ENV"
-          fi
+          echo "rev=$(git ls-remote https://github.com/water-rs/cli refs/heads/dev | cut -f1)" \
+            >> "$GITHUB_OUTPUT"
+      - name: Restore the water binary
+        id: water-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/water
+            ~/.cargo/bin/water.exe
+          key: water-cli-${{ runner.os }}-${{ steps.cli-rev.outputs.rev }}
+      - name: Install the water CLI
+        if: steps.water-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          rm -f "$HOME/.cargo/bin/water" "$HOME/.cargo/bin/water.exe"
+          cargo install --locked \
+            --git https://github.com/water-rs/cli --branch dev \
+            waterui-cli
       - name: Bench examples/stress
         shell: bash
         run: |
-          "$WATER_BIN" bench --path examples/stress ${{ matrix.bench-shape }} \
+          water bench --path examples/stress ${{ matrix.bench-shape }} \
             --report-dir bench-reports/stress \
             --gha bench-gha-stress.json
       - name: Bench examples/list
         shell: bash
         run: |
-          "$WATER_BIN" bench --path examples/list ${{ matrix.bench-shape }} \
+          water bench --path examples/list ${{ matrix.bench-shape }} \
             --report-dir bench-reports/list \
             --gha bench-gha-list.json
       # `water bench --gha` writes one customSmallerIsBetter JSON array per
