@@ -75,6 +75,8 @@ pub trait ToolDispatch: Send + Sync + 'static {
     fn screenshot(&self, args: ScreenshotArgs) -> impl Future<Output = ToolResult> + Send;
     /// Relaunch the app and return the fresh tree.
     fn restart(&self, args: RestartArgs) -> impl Future<Output = ToolResult> + Send;
+    /// Advance the virtual animation clock.
+    fn advance(&self, args: AdvanceArgs) -> impl Future<Output = ToolResult> + Send;
 }
 
 /// Read the accessibility tree: every node's id, role, label, value, state
@@ -140,6 +142,11 @@ pub struct ActArgs {
     /// ignored by other actions.
     #[serde(default)]
     pub value: Option<String>,
+    /// Settle the runtime before returning (default `true`). Pass `false` to
+    /// queue the action without settling, so `advance` and `screenshot` can
+    /// observe the transient it triggers.
+    #[serde(default)]
+    pub settle: Option<bool>,
 }
 
 /// The accessibility actions `act` can dispatch.
@@ -213,6 +220,11 @@ pub struct PointerArgs {
     /// Number of intermediate positions for `drag`.
     #[serde(default)]
     pub steps: Option<u16>,
+    /// Settle the runtime before returning (default `true`). Pass `false` to
+    /// queue the event without settling, so `advance` and `screenshot` can
+    /// observe the transient it triggers.
+    #[serde(default)]
+    pub settle: Option<bool>,
 }
 
 /// The pointer events `pointer` can dispatch.
@@ -247,6 +259,12 @@ pub struct KeyArgs {
     /// Modifiers held during the press: `shift`, `ctrl`, `alt`, `meta`.
     #[serde(default)]
     pub modifiers: Vec<String>,
+    /// Settle the runtime before returning (default `true`). Pass `false` to
+    /// queue the press without settling, so `advance` and `screenshot` can
+    /// observe the transient it triggers — a focus ring appearing on `Tab`, a
+    /// sheet dismissing on `Escape`.
+    #[serde(default)]
+    pub settle: Option<bool>,
 }
 
 /// Type text into the focused text input, then return the settled tree.
@@ -254,6 +272,11 @@ pub struct KeyArgs {
 pub struct TypeTextArgs {
     /// The text to insert.
     pub text: String,
+    /// Settle the runtime before returning (default `true`). Pass `false` to
+    /// queue the input without settling, so `advance` and `screenshot` can
+    /// observe the transient it triggers.
+    #[serde(default)]
+    pub settle: Option<bool>,
 }
 
 /// Wait until every given expectation holds, then return `fulfilled` — or
@@ -283,6 +306,9 @@ pub struct ValueEqArgs {
 }
 
 /// Capture the current frame as a PNG image.
+///
+/// The capture is itself a pump: every `screenshot` advances the virtual
+/// animation clock by one 16ms frame.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ScreenshotArgs {}
 
@@ -293,6 +319,26 @@ pub struct ScreenshotArgs {}
 /// before the restart no longer refer to live nodes.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RestartArgs {}
+
+/// Advance the virtual animation clock by `duration_ms`, then report whether
+/// the app is `animating` or `settled`, followed by the tree.
+///
+/// Mutating tools settle the runtime before returning, so their animations
+/// run to completion — combine `settle: false` on an input tool with
+/// `advance` to step through a transition deterministically. The clock moves
+/// in fixed 16ms frames regardless of host scheduling.
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct AdvanceArgs {
+    /// Virtual milliseconds to advance; defaults to one frame (16ms). `0`
+    /// polls the current animation status without pumping.
+    pub duration_ms: Option<u64>,
+    /// Return the PNG frame rendered at exactly the landed instant instead of
+    /// the tree — repeat with `duration_ms: 16` for a per-frame flipbook. At
+    /// least one frame always elapses: the capture is the last pump of the
+    /// advance.
+    pub screenshot: Option<bool>,
+}
 
 session_tool!(
     /// The `snapshot` tool.
@@ -330,9 +376,13 @@ session_tool!(
     /// The `restart` tool.
     Restart, "restart", RestartArgs, restart
 );
+session_tool!(
+    /// The `advance` tool.
+    Advance, "advance", AdvanceArgs, advance
+);
 
 /// The registered tool names, in registration order.
-pub const SESSION_TOOL_NAMES: [&str; 9] = [
+pub const SESSION_TOOL_NAMES: [&str; 10] = [
     "snapshot",
     "find",
     "act",
@@ -342,9 +392,10 @@ pub const SESSION_TOOL_NAMES: [&str; 9] = [
     "wait",
     "screenshot",
     "restart",
+    "advance",
 ];
 
-/// Registers the nine session tools against `dispatch`.
+/// Registers the ten session tools against `dispatch`.
 ///
 /// # Panics
 ///
@@ -376,6 +427,9 @@ pub fn register_session_tools(tools: &mut Tools, dispatch: Arc<impl ToolDispatch
         .register(Screenshot::new(dispatch.clone()))
         .expect("static tool registration cannot fail");
     tools
-        .register(Restart::new(dispatch))
+        .register(Restart::new(dispatch.clone()))
+        .expect("static tool registration cannot fail");
+    tools
+        .register(Advance::new(dispatch))
         .expect("static tool registration cannot fail");
 }
