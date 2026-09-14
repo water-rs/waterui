@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use askama::Template;
 use eyre::Context;
 use image::ImageEncoder;
 use serde::Serialize;
@@ -189,14 +189,16 @@ pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::
 
     let icon = load_project_icon(&manifest)?;
     let icon_background = icon.edge_color()?;
+    let launch = launch_assets_from(project, &manifest)?;
 
     let theme = project.manifest().theme.as_ref();
-    write_android_theme_files(theme, icon_background, backend_path).await?;
+    write_android_theme_files(theme, icon_background, &launch, backend_path).await?;
 
     // Older CLI versions staged the foreground as a vector drawable; a PNG
     // and an XML with the same resource name cannot coexist.
     remove_file_if_exists(res_root.join("drawable/ic_launcher_foreground.xml")).await?;
     write_android_icon_resources(&icon, icon_background, backend_path).await?;
+    write_android_launch_artwork(&launch, backend_path).await?;
 
     Ok(())
 }
@@ -687,9 +689,84 @@ async fn write_android_icon_resources(
     Ok(())
 }
 
+/// One `<color>` resource.
+#[derive(Debug, PartialEq, Eq)]
+struct AndroidColor {
+    name: &'static str,
+    value: HexColor,
+}
+
+/// One theme attribute bound to a color resource.
+#[derive(Debug, PartialEq, Eq)]
+struct AndroidThemeItem {
+    attr: &'static str,
+    color_name: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/android_res/colors.xml.tpl", escape = "xml")]
+struct AndroidColorsTemplate {
+    colors: Vec<AndroidColor>,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/android_res/themes.xml.tpl", escape = "xml")]
+struct AndroidThemesTemplate {
+    theme_items: Vec<AndroidThemeItem>,
+    launch_background: bool,
+    launch_artwork: bool,
+}
+
+#[derive(Template)]
+#[template(
+    path = "src/templates/android_res/ic_launch_artwork.xml.tpl",
+    escape = "xml"
+)]
+struct AndroidLaunchArtworkTemplate;
+
+/// The theme slots and the resources they bind to, in the order the
+/// generated `colors.xml` and `themes.xml` list them.
+const fn android_theme_slots(
+    theme: &ThemeConfig,
+) -> [(&'static str, &'static str, Option<HexColor>); 8] {
+    [
+        (
+            "android:colorBackground",
+            "waterui_background",
+            theme.background,
+        ),
+        ("colorSurface", "waterui_surface", theme.surface),
+        (
+            "colorSurfaceVariant",
+            "waterui_surface_variant",
+            theme.surface_variant,
+        ),
+        ("colorOutline", "waterui_border", theme.border),
+        ("colorOnSurface", "waterui_foreground", theme.foreground),
+        (
+            "colorOnSurfaceVariant",
+            "waterui_muted_foreground",
+            theme.muted_foreground,
+        ),
+        ("colorPrimary", "waterui_accent", theme.accent),
+        (
+            "colorOnPrimary",
+            "waterui_accent_foreground",
+            theme.accent_foreground,
+        ),
+    ]
+}
+
+/// The color behind an adaptive icon's foreground: the artwork's own edge
+/// color so the two layers join seamlessly, else `fallback`.
+fn android_adaptive_background(edge: Option<[u8; 3]>, fallback: HexColor) -> HexColor {
+    edge.map_or(fallback, HexColor::from_rgb)
+}
+
 async fn write_android_theme_files(
     theme: Option<&ThemeConfig>,
     icon_background: Option<[u8; 3]>,
+    launch: &LaunchAssets,
     backend_path: &Path,
 ) -> eyre::Result<()> {
     let values_dir = backend_path.join(ANDROID_VALUES_DIR);
@@ -697,108 +774,125 @@ async fn write_android_theme_files(
     fs::create_dir_all(&values_dir).await?;
     fs::create_dir_all(&values_night_dir).await?;
 
-    let colors_xml = build_android_colors_xml(theme, icon_background);
-    let themes_xml = build_android_themes_xml(theme);
-    fs::write(values_dir.join("colors.xml"), &colors_xml).await?;
-    fs::write(values_dir.join("themes.xml"), &themes_xml).await?;
-    fs::write(values_night_dir.join("themes.xml"), &themes_xml).await?;
+    let colors = android_colors(theme, icon_background, launch)?;
+    fs::write(values_dir.join("colors.xml"), render_android(&colors.day)?).await?;
+    match colors.night {
+        Some(night) => {
+            fs::write(values_night_dir.join("colors.xml"), render_android(&night)?).await?;
+        }
+        None => remove_file_if_exists(values_night_dir.join("colors.xml")).await?,
+    }
+
+    let plan = launch.plan();
+    let themes = AndroidThemesTemplate {
+        theme_items: theme.map_or_else(Vec::new, |theme| {
+            android_theme_slots(theme)
+                .into_iter()
+                .filter(|(_, _, value)| value.is_some())
+                .map(|(attr, color_name, _)| AndroidThemeItem { attr, color_name })
+                .collect()
+        }),
+        launch_background: plan.background(ColorScheme::Light).is_some(),
+        launch_artwork: launch.has_artwork(),
+    };
+    fs::write(values_dir.join("themes.xml"), render_android(&themes)?).await?;
+    // The theme is appearance-neutral: every color it names resolves through
+    // `values-night/colors.xml`, so a night copy of it would only be a
+    // duplicate. Earlier CLIs wrote one; drop it.
+    remove_file_if_exists(values_night_dir.join("themes.xml")).await?;
     Ok(())
 }
 
-fn build_android_colors_xml(
+fn render_android<T: Template>(template: &T) -> eyre::Result<String> {
+    template
+        .render()
+        .map_err(|error| eyre::eyre!("Failed to render Android resource: {error}"))
+}
+
+/// The day color table and, when the dark launch background differs, the
+/// night table that overrides it.
+struct AndroidColorTables {
+    day: AndroidColorsTemplate,
+    night: Option<AndroidColorsTemplate>,
+}
+
+fn android_colors(
     theme: Option<&ThemeConfig>,
     icon_background: Option<[u8; 3]>,
-) -> String {
-    let mut xml = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n");
-    // The adaptive-icon background must match the icon's own background so
-    // the two layers join seamlessly; the theme accent only stands in when
-    // no background color can be derived from the icon.
-    let background = icon_background.map_or_else(
-        || {
-            theme
-                .and_then(|value| value.accent)
-                .unwrap_or(DEFAULT_ACCENT)
-        },
-        HexColor::from_rgb,
-    );
-    let _ = writeln!(
-        &mut xml,
-        "    <color name=\"ic_launcher_background\">{background}</color>"
-    );
+    launch: &LaunchAssets,
+) -> eyre::Result<AndroidColorTables> {
+    let accent = theme
+        .and_then(|theme| theme.accent)
+        .unwrap_or(DEFAULT_ACCENT);
+    let mut colors = vec![AndroidColor {
+        name: "ic_launcher_background",
+        value: android_adaptive_background(icon_background, accent),
+    }];
     if let Some(theme) = theme {
-        write_android_color(&mut xml, "waterui_background", theme.background);
-        write_android_color(&mut xml, "waterui_surface", theme.surface);
-        write_android_color(&mut xml, "waterui_surface_variant", theme.surface_variant);
-        write_android_color(&mut xml, "waterui_border", theme.border);
-        write_android_color(&mut xml, "waterui_foreground", theme.foreground);
-        write_android_color(&mut xml, "waterui_muted_foreground", theme.muted_foreground);
-        write_android_color(&mut xml, "waterui_accent", theme.accent);
-        write_android_color(
-            &mut xml,
-            "waterui_accent_foreground",
-            theme.accent_foreground,
+        colors.extend(
+            android_theme_slots(theme)
+                .into_iter()
+                .filter_map(|(_, name, value)| value.map(|value| AndroidColor { name, value })),
         );
     }
-    xml.push_str("</resources>\n");
-    xml
+
+    let plan = launch.plan();
+    let launch_background = plan.background(ColorScheme::Light).copied();
+    if let Some(background) = launch_background {
+        colors.push(AndroidColor {
+            name: "waterui_launch_background",
+            value: background,
+        });
+    }
+    if let Some(artwork) = launch.artwork() {
+        colors.push(AndroidColor {
+            name: "ic_launch_artwork_background",
+            value: android_adaptive_background(
+                artwork.edge_color()?,
+                launch_background.unwrap_or(accent),
+            ),
+        });
+    }
+
+    let night = plan
+        .has_distinct_dark_background()
+        .then(|| plan.background(ColorScheme::Dark).copied())
+        .flatten()
+        .map(|dark| AndroidColorsTemplate {
+            colors: vec![AndroidColor {
+                name: "waterui_launch_background",
+                value: dark,
+            }],
+        });
+    Ok(AndroidColorTables {
+        day: AndroidColorsTemplate { colors },
+        night,
+    })
 }
 
-fn write_android_color(xml: &mut String, name: &str, value: Option<HexColor>) {
-    if let Some(value) = value {
-        let _ = writeln!(xml, "    <color name=\"{name}\">{value}</color>");
-    }
-}
-
-fn build_android_themes_xml(theme: Option<&ThemeConfig>) -> String {
-    let mut xml = String::from(
-        "<resources>\n    <style name=\"Theme.WaterUIApp\" parent=\"Theme.Material3.DayNight.NoActionBar\">\n",
-    );
-    if let Some(theme) = theme {
-        maybe_theme_item(
-            &mut xml,
-            "android:colorBackground",
-            theme.background,
-            "waterui_background",
-        );
-        maybe_theme_item(&mut xml, "colorSurface", theme.surface, "waterui_surface");
-        maybe_theme_item(
-            &mut xml,
-            "colorSurfaceVariant",
-            theme.surface_variant,
-            "waterui_surface_variant",
-        );
-        maybe_theme_item(&mut xml, "colorOutline", theme.border, "waterui_border");
-        maybe_theme_item(
-            &mut xml,
-            "colorOnSurface",
-            theme.foreground,
-            "waterui_foreground",
-        );
-        maybe_theme_item(
-            &mut xml,
-            "colorOnSurfaceVariant",
-            theme.muted_foreground,
-            "waterui_muted_foreground",
-        );
-        maybe_theme_item(&mut xml, "colorPrimary", theme.accent, "waterui_accent");
-        maybe_theme_item(
-            &mut xml,
-            "colorOnPrimary",
-            theme.accent_foreground,
-            "waterui_accent_foreground",
-        );
-    }
-    xml.push_str("    </style>\n</resources>\n");
-    xml
-}
-
-fn maybe_theme_item(xml: &mut String, attr: &str, value: Option<HexColor>, color_name: &str) {
-    if value.is_some() {
-        let _ = writeln!(
-            xml,
-            "        <item name=\"{attr}\">@color/{color_name}</item>"
-        );
-    }
+/// Stages `Launch.*` as the adaptive splash icon: Android masks the splash
+/// icon to a circle, so the artwork goes through the same safe-zone
+/// placement as the launcher icon.
+async fn write_android_launch_artwork(
+    launch: &LaunchAssets,
+    backend_path: &Path,
+) -> eyre::Result<()> {
+    let drawable_dir = backend_path.join(ANDROID_DRAWABLE_DIR);
+    let icon_xml = drawable_dir.join("ic_launch_artwork.xml");
+    let foreground_png = drawable_dir.join("ic_launch_artwork_foreground.png");
+    let Some(artwork) = launch.artwork() else {
+        remove_file_if_exists(icon_xml).await?;
+        remove_file_if_exists(foreground_png).await?;
+        return Ok(());
+    };
+    fs::create_dir_all(&drawable_dir).await?;
+    write_png(
+        &render_android_foreground(artwork, artwork.edge_color()?)?,
+        &foreground_png,
+    )
+    .await?;
+    fs::write(icon_xml, render_android(&AndroidLaunchArtworkTemplate)?).await?;
+    Ok(())
 }
 
 fn component_string(value: u8) -> String {
@@ -816,6 +910,7 @@ async fn write_png(image: &image::RgbaImage, path: &Path) -> eyre::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui_assets_planner::LaunchConfig;
 
     #[test]
     fn android_icon_resources_write_launcher_pngs() {
@@ -902,21 +997,106 @@ mod tests {
     }
 
     #[test]
-    fn colors_xml_uses_derived_icon_background_over_accent() {
+    fn android_colors_derive_the_launcher_background_and_carry_the_launch_colors() {
         let theme = ThemeConfig {
             accent: Some(DEFAULT_ACCENT),
             ..ThemeConfig::default()
         };
-        let xml = build_android_colors_xml(Some(&theme), Some([255, 255, 255]));
-        assert!(
-            xml.contains("<color name=\"ic_launcher_background\">#FFFFFF</color>"),
-            "derived icon background must win over the accent color:\n{xml}"
+        let no_launch = LaunchAssets {
+            plan: LaunchPlan::resolve(None, None, &empty_manifest()),
+            artwork: None,
+            app_icon: IconSource::default_logo(),
+        };
+        let colors = android_colors(Some(&theme), Some([255, 255, 255]), &no_launch)
+            .expect("colors must build");
+        assert_eq!(
+            colors.day.colors[0],
+            AndroidColor {
+                name: "ic_launcher_background",
+                value: HexColor::from_rgb([255, 255, 255])
+            },
+            "derived icon background must win over the accent color"
         );
+        assert!(colors.night.is_none());
+        let xml = colors.day.render().expect("colors.xml renders");
+        assert!(
+            xml.contains("<color name=\"waterui_accent\">#0A84FF</color>"),
+            "{xml}"
+        );
+        assert!(!xml.contains("waterui_launch_background"));
 
-        let xml = build_android_colors_xml(Some(&theme), None);
-        assert!(
-            xml.contains("<color name=\"ic_launcher_background\">#0A84FF</color>"),
-            "accent must remain the launcher background when none can be derived:\n{xml}"
+        let colors = android_colors(Some(&theme), None, &no_launch).expect("colors must build");
+        assert_eq!(colors.day.colors[0].value, DEFAULT_ACCENT);
+
+        let launch = LaunchAssets {
+            plan: LaunchPlan::resolve(
+                Some(&LaunchConfig {
+                    background: Some(HexColor::from_rgb([0x0B, 0x1E, 0x3F])),
+                    background_dark: Some(HexColor::from_rgb([0, 0, 0])),
+                }),
+                None,
+                &empty_manifest(),
+            ),
+            artwork: Some(IconSource::default_logo()),
+            app_icon: IconSource::default_logo(),
+        };
+        let colors = android_colors(None, None, &launch).expect("colors must build");
+        let day = colors.day.render().expect("colors.xml renders");
+        assert!(day.contains("<color name=\"waterui_launch_background\">#0B1E3F</color>"));
+        assert!(day.contains("<color name=\"ic_launch_artwork_background\">"));
+        let night = colors
+            .night
+            .expect("distinct dark background needs a night table");
+        assert_eq!(
+            night.colors,
+            vec![AndroidColor {
+                name: "waterui_launch_background",
+                value: HexColor::from_rgb([0, 0, 0])
+            }]
         );
+    }
+
+    #[test]
+    fn android_themes_bind_only_configured_slots_and_the_launch_theme() {
+        let xml = AndroidThemesTemplate {
+            theme_items: vec![AndroidThemeItem {
+                attr: "colorPrimary",
+                color_name: "waterui_accent",
+            }],
+            launch_background: true,
+            launch_artwork: false,
+        }
+        .render()
+        .expect("themes.xml renders");
+        assert!(xml.contains("<item name=\"colorPrimary\">@color/waterui_accent</item>"));
+        assert!(!xml.contains("colorSurface"));
+        assert!(xml.contains("parent=\"Theme.SplashScreen\""));
+        assert!(
+            xml.contains("<item name=\"postSplashScreenTheme\">@style/Theme.WaterUIApp</item>")
+        );
+        assert!(xml.contains("windowSplashScreenBackground"));
+        assert!(!xml.contains("windowSplashScreenAnimatedIcon"));
+
+        let xml = AndroidThemesTemplate {
+            theme_items: Vec::new(),
+            launch_background: false,
+            launch_artwork: true,
+        }
+        .render()
+        .expect("themes.xml renders");
+        assert!(!xml.contains("windowSplashScreenBackground"));
+        assert!(xml.contains(
+            "<item name=\"windowSplashScreenAnimatedIcon\">@drawable/ic_launch_artwork</item>"
+        ));
+    }
+
+    fn empty_manifest() -> BundleManifest {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("Water.toml"),
+            "[package]\nname = 'Demo'\nbundle_identifier = 'dev.waterui.demo'\n",
+        )
+        .expect("write Water.toml");
+        plan_bundle(temp.path(), "assets").expect("plan bundle")
     }
 }
