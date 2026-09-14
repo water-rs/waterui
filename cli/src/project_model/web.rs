@@ -12,7 +12,7 @@ use std::process::Stdio;
 use askama::Template;
 use color_eyre::eyre::{self, Context, bail};
 use serde::{Deserialize, Serialize};
-use smol::process::{Child, Command};
+use smol::process::Command;
 use waterui_assets_planner::{BUNDLE_META_PREFIX, BundleMountMeta};
 
 use crate::artifact_symbols::{ArtifactSymbols, build_host_rlib};
@@ -354,17 +354,42 @@ pub fn dev_url_from_line(line: &str) -> Option<url::Url> {
     })
 }
 
-/// A running `<pm> run <script>` child whose printed dev-server URL has been
-/// captured.
+/// A running `<pm> run <script>` process group whose printed dev-server URL
+/// has been captured.
 ///
-/// Dropping the guard kills the child (`kill_on_drop`): `water run` holds it
-/// across the app's lifetime, so a normal exit, an app exit, and the Ctrl-C
-/// future-drop path all terminate the dev server.
+/// The child leads its own process group, so dropping the guard terminates
+/// the whole tree — `bun run dev` re-execs `node vite`, which a lone
+/// `kill_on_drop` on the direct child would orphan. `water run` holds the
+/// guard across the app's lifetime, so a normal exit, an app exit, and the
+/// Ctrl-C future-drop path all stop the dev server.
 #[derive(Debug)]
 pub struct WebDevServer {
     url: url::Url,
-    _child: Child,
+    child: Option<std::process::Child>,
     _drain: smol::Task<()>,
+}
+
+impl Drop for WebDevServer {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        signal_dev_server_tree(&child, true);
+        std::thread::spawn(move || {
+            let mut exited = false;
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    exited = true;
+                    break;
+                }
+            }
+            if !exited {
+                signal_dev_server_tree(&child, false);
+            }
+            let _ = child.wait();
+        });
+    }
 }
 
 impl WebDevServer {
@@ -394,19 +419,26 @@ impl WebDevServer {
         use smol::stream::StreamExt as _;
 
         let pm = package_manager.binary();
-        let mut child = package_manager
-            .run(script)
+        // `std::process::Command`, not `smol`'s: the child must lead its own
+        // process group so the guard's drop can signal the whole tree.
+        let mut command = std::process::Command::new(pm);
+        command
+            .arg("run")
+            .arg(script)
             .current_dir(root)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
-            .wrap_err_with(|| {
-                format!("failed to spawn `{pm} run {script}` in {}", root.display())
-            })?;
+            .stderr(Stdio::inherit());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
+        let mut child = command.spawn().wrap_err_with(|| {
+            format!("failed to spawn `{pm} run {script}` in {}", root.display())
+        })?;
         let stdout = child.stdout.take().expect("stdout is piped");
-        let mut lines = BufReader::new(stdout).lines();
+        let mut lines = BufReader::new(smol::Unblock::new(stdout)).lines();
 
         let url = loop {
             match lines.next().await {
@@ -417,16 +449,19 @@ impl WebDevServer {
                     }
                 }
                 Some(Err(error)) => {
+                    signal_dev_server_tree(&child, false);
+                    let _ = smol::unblock(move || child.wait()).await;
                     bail!("failed to read `{pm} run {script}` output: {error}");
                 }
                 None => {
-                    let status = child.status().await;
-                    let _ = child.kill();
+                    let status = child.try_wait().ok().flatten();
+                    signal_dev_server_tree(&child, false);
+                    let _ = smol::unblock(move || child.wait()).await;
                     match status {
-                        Ok(status) => bail!(
+                        Some(status) => bail!(
                             "`{pm} run {script}` exited with {status} without printing a dev-server URL"
                         ),
-                        Err(_) => bail!(
+                        None => bail!(
                             "`{pm} run {script}` closed its output without printing a dev-server URL"
                         ),
                     }
@@ -445,7 +480,7 @@ impl WebDevServer {
 
         Ok(Self {
             url,
-            _child: child,
+            child: Some(child),
             _drain: drain,
         })
     }
@@ -455,6 +490,29 @@ impl WebDevServer {
     pub const fn url(&self) -> &url::Url {
         &self.url
     }
+}
+
+/// Signal the dev-server process tree. The spawned child leads its own
+/// process group, so a group signal reaches the bundler the package manager
+/// re-execs as well. `graceful` selects SIGTERM over SIGKILL.
+#[cfg(unix)]
+fn signal_dev_server_tree(child: &std::process::Child, graceful: bool) {
+    let signal = if graceful {
+        nix::sys::signal::Signal::SIGTERM
+    } else {
+        nix::sys::signal::Signal::SIGKILL
+    };
+    let pgid = nix::unistd::Pid::from_raw(
+        i32::try_from(child.id()).expect("process identifiers fit in i32"),
+    );
+    let _ = nix::sys::signal::killpg(pgid, signal);
+}
+
+/// Signal the dev-server process tree. Without process groups only the
+/// direct child can be reached.
+#[cfg(not(unix))]
+fn signal_dev_server_tree(child: &mut std::process::Child, _graceful: bool) {
+    let _ = child.kill();
 }
 
 /// Echo one line of dev-server output on the CLI's terminal channel — the
