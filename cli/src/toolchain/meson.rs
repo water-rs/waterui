@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::{
     brew::Brew,
     toolchain::{Installation, Toolchain, ToolchainError},
-    utils::which,
+    utils::{CommandError, which},
 };
 
 /// Toolchain for `meson`.
@@ -17,8 +17,8 @@ impl Meson {
     ///
     /// # Errors
     /// Returns an error if `meson` is not found in PATH.
-    pub async fn path(&self) -> eyre::Result<PathBuf> {
-        which("meson").await.map_err(|e| eyre::eyre!(e))
+    pub async fn path(&self) -> Result<PathBuf, which::Error> {
+        which("meson").await
     }
 }
 
@@ -44,9 +44,9 @@ pub enum FailToInstallMeson {
     /// Homebrew not found error.
     #[error("Homebrew not found. Please install Homebrew to proceed.")]
     BrewNotFound,
-    /// Other installation errors.
+    /// The Homebrew installation command failed.
     #[error("Failed to install meson via Homebrew: {0}")]
-    Other(eyre::Report),
+    BrewInstall(#[from] CommandError),
     /// Unsupported platform error.
     #[error(
         "Automatic installation of meson is not supported on this platform. Please install meson manually."
@@ -63,9 +63,7 @@ impl Installation for MesonInstallation {
             brew.check()
                 .await
                 .map_err(|_| FailToInstallMeson::BrewNotFound)?;
-            brew.install("meson")
-                .await
-                .map_err(FailToInstallMeson::Other)?;
+            brew.install("meson").await?;
             Ok(())
         } else {
             Err(FailToInstallMeson::UnsupportedPlatform)

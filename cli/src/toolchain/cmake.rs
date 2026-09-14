@@ -4,10 +4,12 @@ use std::path::PathBuf;
 
 use crate::{
     brew::Brew,
-    toolchain::linux::{has_supported_package_manager, install_named_packages},
+    toolchain::linux::{
+        LinuxPackageManagerError, has_supported_package_manager, install_named_packages,
+    },
     toolchain::winget::{WingetInstallError, ensure_package_installed},
     toolchain::{Installation, Toolchain, ToolchainError},
-    utils::which,
+    utils::{CommandError, which},
 };
 
 /// Toolchain for `CMake`
@@ -19,8 +21,8 @@ impl Cmake {
     ///
     /// # Errors
     /// - If `CMake` is not found in the system PATH.
-    pub async fn path(&self) -> eyre::Result<PathBuf> {
-        which("cmake").await.map_err(|e| eyre::eyre!(e))
+    pub async fn path(&self) -> Result<PathBuf, which::Error> {
+        which("cmake").await
     }
 }
 
@@ -79,9 +81,9 @@ pub enum FailToInstallCmake {
     #[error("Homebrew not found. Please install Homebrew to proceed.")]
     BrewNotFound,
 
-    /// Other installation errors.
+    /// An installation command failed.
     #[error("Failed to install CMake: {0}")]
-    Other(eyre::Report),
+    Command(#[from] CommandError),
 
     /// winget is required for Windows automatic installation.
     #[error(
@@ -116,9 +118,7 @@ impl Installation for CmakeInstallation {
             brew.check()
                 .await
                 .map_err(|_| FailToInstallCmake::BrewNotFound)?;
-            brew.install("cmake")
-                .await
-                .map_err(FailToInstallCmake::Other)?;
+            brew.install("cmake").await?;
 
             Ok(())
         } else if cfg!(target_os = "windows") {
@@ -135,12 +135,12 @@ impl Installation for CmakeInstallation {
     }
 }
 
-fn map_linux_error_for_cmake(error: eyre::Report) -> FailToInstallCmake {
-    let message = error.to_string();
-    if message.contains("No supported Linux package manager found") {
-        FailToInstallCmake::UnsupportedPackageManager
-    } else {
-        FailToInstallCmake::Other(error)
+fn map_linux_error_for_cmake(error: LinuxPackageManagerError) -> FailToInstallCmake {
+    match error {
+        LinuxPackageManagerError::UnsupportedPackageManager => {
+            FailToInstallCmake::UnsupportedPackageManager
+        }
+        LinuxPackageManagerError::Command(source) => FailToInstallCmake::Command(source),
     }
 }
 

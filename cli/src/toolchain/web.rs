@@ -2,7 +2,7 @@
 
 use crate::{
     toolchain::{Installation, Toolchain, ToolchainError},
-    utils::{run_command, run_command_output_os, which},
+    utils::{CommandError, run_command, run_command_output_os, which},
 };
 
 /// Rust `wasm32-unknown-unknown` target support.
@@ -60,7 +60,7 @@ impl Toolchain for Wasm32UnknownUnknownTarget {
 }
 
 impl Installation for Wasm32UnknownUnknownTargetInstallation {
-    type Error = eyre::Report;
+    type Error = CommandError;
 
     async fn install(&self) -> Result<(), Self::Error> {
         run_command("rustup", ["target", "add", "wasm32-unknown-unknown"])
@@ -90,7 +90,7 @@ impl Toolchain for WasmPack {
 }
 
 impl Installation for WasmPackInstallation {
-    type Error = eyre::Report;
+    type Error = CommandError;
 
     async fn install(&self) -> Result<(), Self::Error> {
         run_command("cargo", ["install", "wasm-pack"])

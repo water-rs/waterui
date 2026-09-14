@@ -6,10 +6,12 @@ use smol::process::Command;
 
 use crate::{
     brew::Brew,
-    toolchain::linux::{has_supported_package_manager, install_named_packages},
+    toolchain::linux::{
+        LinuxPackageManagerError, has_supported_package_manager, install_named_packages,
+    },
     toolchain::winget::{WingetInstallError, ensure_package_installed},
     toolchain::{Installation, Toolchain, ToolchainError},
-    utils::{sccache_install_hint, which},
+    utils::{CommandError, sccache_install_hint, which},
 };
 
 /// Route a Cargo invocation's compiles through `sccache`.
@@ -37,8 +39,8 @@ impl Sccache {
     ///
     /// # Errors
     /// Returns an error if `sccache` is not found in the system PATH.
-    pub async fn path(&self) -> eyre::Result<PathBuf> {
-        which("sccache").await.map_err(|e| eyre::eyre!(e))
+    pub async fn path(&self) -> Result<PathBuf, which::Error> {
+        which("sccache").await
     }
 
     /// Check if sccache is available without returning an error.
@@ -109,9 +111,9 @@ pub enum FailToInstallSccache {
     #[error("Homebrew not found. Please install Homebrew to proceed.")]
     BrewNotFound,
 
-    /// Other installation errors.
+    /// An installation command failed.
     #[error("Failed to install sccache: {0}")]
-    Other(eyre::Report),
+    Command(#[from] CommandError),
 
     /// winget is required for Windows automatic installation.
     #[error(
@@ -147,9 +149,7 @@ impl Installation for SccacheInstallation {
             brew.check()
                 .await
                 .map_err(|_| FailToInstallSccache::BrewNotFound)?;
-            brew.install("sccache")
-                .await
-                .map_err(FailToInstallSccache::Other)?;
+            brew.install("sccache").await?;
 
             Ok(())
         } else if cfg!(target_os = "windows") {
@@ -166,12 +166,12 @@ impl Installation for SccacheInstallation {
     }
 }
 
-fn map_linux_error_for_sccache(error: eyre::Report) -> FailToInstallSccache {
-    let message = error.to_string();
-    if message.contains("No supported Linux package manager found") {
-        FailToInstallSccache::UnsupportedPackageManager
-    } else {
-        FailToInstallSccache::Other(error)
+fn map_linux_error_for_sccache(error: LinuxPackageManagerError) -> FailToInstallSccache {
+    match error {
+        LinuxPackageManagerError::UnsupportedPackageManager => {
+            FailToInstallSccache::UnsupportedPackageManager
+        }
+        LinuxPackageManagerError::Command(source) => FailToInstallSccache::Command(source),
     }
 }
 

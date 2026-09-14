@@ -2,7 +2,7 @@
 
 use crate::{
     toolchain::{Installation, Toolchain, ToolchainError, UnfixableToolchain},
-    utils::{run_command, run_command_output_os, which},
+    utils::{CommandError, run_command, run_command_output_os, which},
 };
 
 /// Linux system dependencies required by `waterui` desktop/media builds.
@@ -76,9 +76,46 @@ pub enum FailToInstallLinuxSystemPackages {
     /// No supported package manager was detected.
     #[error("No supported Linux package manager found (apt-get, dnf, pacman, zypper, apk).")]
     UnsupportedPackageManager,
-    /// Package installation failed.
+    /// A package-manager command failed.
     #[error("Failed to install Linux system packages: {0}")]
-    Other(eyre::Report),
+    CommandFailed(#[from] CommandError),
+}
+
+/// Errors from Linux package-manager operations.
+#[derive(Debug, thiserror::Error)]
+pub enum LinuxPackageManagerError {
+    /// No supported package manager was detected.
+    #[error("No supported Linux package manager found (apt-get, dnf, pacman, zypper, apk).")]
+    UnsupportedPackageManager,
+    /// A package-manager command failed.
+    #[error(transparent)]
+    Command(#[from] CommandError),
+}
+
+/// A dotted-numeric version string could not be parsed.
+#[derive(Debug, thiserror::Error)]
+#[error("`{version}` is not a dotted-numeric version: {source}")]
+struct DottedVersionError {
+    version: String,
+    #[source]
+    source: std::num::ParseIntError,
+}
+
+/// Probing a versioned native library with `pkg-config` failed.
+#[derive(Debug, thiserror::Error)]
+enum NativeProbeError {
+    /// The `pkg-config` invocation failed.
+    #[error(transparent)]
+    Command(#[from] CommandError),
+    /// `pkg-config --modversion` succeeded but printed nothing.
+    #[error("`pkg-config --modversion {module}` printed nothing")]
+    EmptyModVersion {
+        /// The probed pkg-config module.
+        module: &'static str,
+    },
+    /// The reported version is not dotted-numeric.
+    #[error(transparent)]
+    Version(#[from] DottedVersionError),
 }
 
 impl Installation for LinuxSystemPackagesInstallation {
@@ -93,9 +130,8 @@ impl Installation for LinuxSystemPackagesInstallation {
             return Err(FailToInstallLinuxSystemPackages::UnsupportedPackageManager);
         };
 
-        install_missing_packages(manager, &self.missing_packages)
-            .await
-            .map_err(FailToInstallLinuxSystemPackages::Other)
+        install_missing_packages(manager, &self.missing_packages).await?;
+        Ok(())
     }
 }
 
@@ -259,7 +295,7 @@ impl LinuxPackageManager {
         }
     }
 
-    async fn check_installed(self, package: &str) -> eyre::Result<bool> {
+    async fn check_installed(self, package: &str) -> Result<bool, CommandError> {
         let output = match self {
             Self::Apt => run_command_output_os("dpkg-query", ["-W", package]).await?,
             Self::Dnf | Self::Zypper => run_command_output_os("rpm", ["-q", package]).await?,
@@ -522,17 +558,16 @@ async fn pkg_config_available() -> bool {
 /// Ask `pkg-config` for a module's version and compare it against the floor.
 async fn probe_native_library(
     library: VersionedNativeLibrary,
-) -> eyre::Result<NativeLibraryStatus> {
+) -> Result<NativeLibraryStatus, NativeProbeError> {
     let output = run_command_output_os("pkg-config", ["--modversion", library.module]).await?;
     if !output.status.success() {
         return Ok(NativeLibraryStatus::ModuleMissing);
     }
     let installed = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if installed.is_empty() {
-        return Err(eyre::eyre!(
-            "`pkg-config --modversion {}` printed nothing",
-            library.module
-        ));
+        return Err(NativeProbeError::EmptyModVersion {
+            module: library.module,
+        });
     }
 
     if version_at_least(&installed, library.minimum_version)? {
@@ -565,7 +600,7 @@ async fn probe_native_library(
 ///
 /// # Errors
 /// Returns an error when either version has a non-numeric component.
-fn version_at_least(installed: &str, minimum: &str) -> eyre::Result<bool> {
+fn version_at_least(installed: &str, minimum: &str) -> Result<bool, DottedVersionError> {
     let installed = parse_version(installed)?;
     let minimum = parse_version(minimum)?;
     let len = installed.len().max(minimum.len());
@@ -580,18 +615,21 @@ fn version_at_least(installed: &str, minimum: &str) -> eyre::Result<bool> {
 }
 
 /// Split a dotted-numeric version into its components.
-fn parse_version(version: &str) -> eyre::Result<Vec<u64>> {
+fn parse_version(version: &str) -> Result<Vec<u64>, DottedVersionError> {
     version
         .split('.')
         .map(|component| {
-            component.parse::<u64>().map_err(|error| {
-                eyre::eyre!("`{version}` is not a dotted-numeric version: {error}")
-            })
+            component
+                .parse::<u64>()
+                .map_err(|source| DottedVersionError {
+                    version: version.to_owned(),
+                    source,
+                })
         })
         .collect()
 }
 
-async fn run_with_optional_sudo(command: &str, args: &[String]) -> eyre::Result<()> {
+async fn run_with_optional_sudo(command: &str, args: &[String]) -> Result<(), CommandError> {
     if which("sudo").await.is_ok() {
         let mut sudo_args = Vec::with_capacity(args.len() + 1);
         sudo_args.push(command.to_string());
@@ -606,7 +644,7 @@ async fn run_with_optional_sudo(command: &str, args: &[String]) -> eyre::Result<
 async fn install_missing_packages(
     manager: LinuxPackageManager,
     packages: &[String],
-) -> eyre::Result<()> {
+) -> Result<(), CommandError> {
     if packages.is_empty() {
         return Ok(());
     }
@@ -654,7 +692,7 @@ async fn install_missing_packages(
     Ok(())
 }
 
-async fn ensure_apt_foreign_architecture(architecture: &str) -> eyre::Result<()> {
+async fn ensure_apt_foreign_architecture(architecture: &str) -> Result<(), CommandError> {
     let output = run_command("dpkg", ["--print-foreign-architectures"]).await?;
     if output.lines().any(|line| line.trim() == architecture) {
         return Ok(());
@@ -739,18 +777,19 @@ pub async fn gtk4_pkg_config_repair_installation(
 /// # Errors
 /// Returns an error when no supported package manager is available, or when
 /// installation fails.
-pub async fn install_named_packages(packages: &[&'static str]) -> eyre::Result<()> {
+pub async fn install_named_packages(
+    packages: &[&'static str],
+) -> Result<(), LinuxPackageManagerError> {
     let Some(manager) = LinuxPackageManager::detect().await else {
-        return Err(eyre::eyre!(
-            "No supported Linux package manager found (apt-get, dnf, pacman, zypper, apk)."
-        ));
+        return Err(LinuxPackageManagerError::UnsupportedPackageManager);
     };
 
     let packages: Vec<String> = packages
         .iter()
         .map(|package| (*package).to_string())
         .collect();
-    install_missing_packages(manager, &packages).await
+    install_missing_packages(manager, &packages).await?;
+    Ok(())
 }
 
 /// Install a JDK package using the detected Linux package manager.
@@ -758,11 +797,9 @@ pub async fn install_named_packages(packages: &[&'static str]) -> eyre::Result<(
 /// # Errors
 /// Returns an error when no supported package manager is available, or when
 /// installation fails.
-pub async fn install_java_jdk() -> eyre::Result<()> {
+pub async fn install_java_jdk() -> Result<(), LinuxPackageManagerError> {
     let Some(manager) = LinuxPackageManager::detect().await else {
-        return Err(eyre::eyre!(
-            "No supported Linux package manager found (apt-get, dnf, pacman, zypper, apk)."
-        ));
+        return Err(LinuxPackageManagerError::UnsupportedPackageManager);
     };
 
     let packages: Vec<String> = match manager {
@@ -774,7 +811,8 @@ pub async fn install_java_jdk() -> eyre::Result<()> {
         LinuxPackageManager::Apk => vec![String::from("openjdk21-jdk")],
     };
 
-    install_missing_packages(manager, &packages).await
+    install_missing_packages(manager, &packages).await?;
+    Ok(())
 }
 
 #[cfg(test)]

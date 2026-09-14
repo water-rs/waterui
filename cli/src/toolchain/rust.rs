@@ -4,7 +4,7 @@ use semver::Version;
 
 use crate::{
     toolchain::{Installation, Toolchain, ToolchainError},
-    utils::{run_command, which},
+    utils::{CommandError, run_command, which},
 };
 
 const REQUIRED_RUST_VERSION: &str = env!("CARGO_PKG_RUST_VERSION");
@@ -75,14 +75,14 @@ pub enum FailToInstallRustToolchain {
     RustupNotFound,
     /// Failed to install stable toolchain.
     #[error("Failed to install Rust stable toolchain: {0}")]
-    InstallStableToolchain(eyre::Report),
+    InstallStableToolchain(#[source] CommandError),
     /// Failed to update the active toolchain.
     #[error("Failed to update active Rust toolchain `{toolchain}`: {source}")]
     UpdateToolchain {
         /// Active rustup toolchain that failed to update.
         toolchain: String,
         /// Underlying command error.
-        source: eyre::Report,
+        source: CommandError,
     },
     /// Failed to add host target.
     #[error("Failed to add Rust host target `{target}`: {source}")]
@@ -90,7 +90,46 @@ pub enum FailToInstallRustToolchain {
         /// Target triple that failed to install.
         target: String,
         /// Underlying command error.
-        source: eyre::Report,
+        source: CommandError,
+    },
+}
+
+/// Parsing rustup/rustc output or a version string failed.
+#[derive(Debug, thiserror::Error)]
+enum RustParseError {
+    /// `rustup show active-toolchain` printed no toolchain token.
+    #[error("expected `<toolchain> (<reason>)` output")]
+    ActiveToolchain,
+    /// `rustc --version` printed no version token.
+    #[error("expected `rustc <version>` output")]
+    RustcVersion,
+    /// `rustc -vV` printed no `host:` line.
+    #[error("missing `host:` line")]
+    HostLine,
+    /// The version string was empty.
+    #[error("version is empty")]
+    EmptyVersion,
+    /// The version string had no numeric core.
+    #[error("missing numeric core version")]
+    MissingCoreVersion,
+    /// The version had an unsupported component count.
+    #[error("expected 1-3 numeric components, found {count} in `{input}`")]
+    InvalidComponentCount {
+        /// The number of dotted components found.
+        count: usize,
+        /// The offending input.
+        input: String,
+    },
+    /// The normalized version failed semver parsing.
+    #[error("failed to parse version `{input}` as `{normalized}`: {source}")]
+    InvalidVersion {
+        /// The offending input.
+        input: String,
+        /// The normalized form that was attempted.
+        normalized: String,
+        /// The semver parse error.
+        #[source]
+        source: semver::Error,
     },
 }
 
@@ -400,7 +439,7 @@ async fn check_installed_targets(
     Err(ToolchainError::fixable(installation))
 }
 
-async fn installed_rustup_targets() -> eyre::Result<Vec<String>> {
+async fn installed_rustup_targets() -> Result<Vec<String>, CommandError> {
     let installed = run_command("rustup", ["target", "list", "--installed"]).await?;
     Ok(installed
         .lines()
@@ -410,28 +449,28 @@ async fn installed_rustup_targets() -> eyre::Result<Vec<String>> {
         .collect())
 }
 
-fn required_rust_version() -> eyre::Result<Version> {
+fn required_rust_version() -> Result<Version, RustParseError> {
     parse_semver_version(REQUIRED_RUST_VERSION)
 }
 
-fn parse_active_toolchain(output: &str) -> eyre::Result<String> {
+fn parse_active_toolchain(output: &str) -> Result<String, RustParseError> {
     output
         .split_whitespace()
         .next()
         .filter(|toolchain| !toolchain.is_empty())
         .map(ToOwned::to_owned)
-        .ok_or_else(|| eyre::eyre!("expected `<toolchain> (<reason>)` output"))
+        .ok_or(RustParseError::ActiveToolchain)
 }
 
-fn parse_rustc_version(output: &str) -> eyre::Result<Version> {
+fn parse_rustc_version(output: &str) -> Result<Version, RustParseError> {
     let version_token = output
         .split_whitespace()
         .nth(1)
-        .ok_or_else(|| eyre::eyre!("expected `rustc <version>` output"))?;
+        .ok_or(RustParseError::RustcVersion)?;
     parse_semver_version(version_token)
 }
 
-fn parse_host_target(output: &str) -> eyre::Result<String> {
+fn parse_host_target(output: &str) -> Result<String, RustParseError> {
     output
         .lines()
         .find_map(|line| {
@@ -440,20 +479,18 @@ fn parse_host_target(output: &str) -> eyre::Result<String> {
                 .filter(|target| !target.is_empty())
                 .map(ToOwned::to_owned)
         })
-        .ok_or_else(|| eyre::eyre!("missing `host:` line"))
+        .ok_or(RustParseError::HostLine)
 }
 
-fn parse_semver_version(input: &str) -> eyre::Result<Version> {
+fn parse_semver_version(input: &str) -> Result<Version, RustParseError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(eyre::eyre!("version is empty"));
+        return Err(RustParseError::EmptyVersion);
     }
 
     let normalized_input = trimmed.strip_prefix('v').unwrap_or(trimmed);
     let mut split = normalized_input.splitn(2, '-');
-    let core = split
-        .next()
-        .ok_or_else(|| eyre::eyre!("missing numeric core version"))?;
+    let core = split.next().ok_or(RustParseError::MissingCoreVersion)?;
     let prerelease = split.next();
 
     let mut components: Vec<&str> = core.split('.').collect();
@@ -467,9 +504,10 @@ fn parse_semver_version(input: &str) -> eyre::Result<Version> {
         }
         3 => {}
         count => {
-            return Err(eyre::eyre!(
-                "expected 1-3 numeric components, found {count} in `{input}`"
-            ));
+            return Err(RustParseError::InvalidComponentCount {
+                count,
+                input: input.to_owned(),
+            });
         }
     }
 
@@ -479,8 +517,10 @@ fn parse_semver_version(input: &str) -> eyre::Result<Version> {
         normalized.push_str(prerelease);
     }
 
-    Version::parse(&normalized).map_err(|error| {
-        eyre::eyre!("failed to parse version `{input}` as `{normalized}`: {error}")
+    Version::parse(&normalized).map_err(|source| RustParseError::InvalidVersion {
+        input: input.to_owned(),
+        normalized,
+        source,
     })
 }
 

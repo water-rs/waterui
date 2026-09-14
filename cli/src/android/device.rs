@@ -8,7 +8,7 @@ use tracing::{debug, error};
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::{Output, Stdio};
+use std::process::{ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ use crate::{
     device::{
         ApplicationExit, Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running,
     },
-    utils::{parse_whitespace_separated_u32s, run_command_os, run_command_output_os},
+    utils::{CommandError, parse_whitespace_separated_u32s, run_command_os, run_command_output_os},
 };
 
 /// Panic information extracted from logcat.
@@ -38,7 +38,37 @@ enum AndroidRuntimeEvent {
 const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const ANDROID_ACTIVITY_FINISHED_MARKER: &str = "WATERUI_ACTIVITY_FINISHED";
 
-async fn run_bounded_adb_output<A, S>(adb: &Path, args: A, operation: &str) -> eyre::Result<Output>
+/// An `adb` device command could not be spawned, timed out, or exited unsuccessfully.
+#[derive(Debug, thiserror::Error)]
+enum AdbCommandError {
+    /// The `adb` process could not be spawned.
+    #[error(transparent)]
+    Spawn(#[from] CommandError),
+    /// The command did not finish within the bound.
+    #[error("{operation} timed out after {seconds} seconds")]
+    Timeout {
+        /// Human-readable name of the operation.
+        operation: String,
+        /// The bound that elapsed.
+        seconds: u64,
+    },
+    /// The command exited with a non-zero status.
+    #[error("{operation} failed with status {status}{details}")]
+    Failed {
+        /// Human-readable name of the operation.
+        operation: String,
+        /// The process exit status.
+        status: ExitStatus,
+        /// Formatted stdout/stderr tail.
+        details: String,
+    },
+}
+
+async fn run_bounded_adb_output<A, S>(
+    adb: &Path,
+    args: A,
+    operation: &str,
+) -> Result<Output, AdbCommandError>
 where
     A: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -47,13 +77,18 @@ where
         .into_iter()
         .map(|argument| argument.as_ref().to_os_string())
         .collect::<Vec<_>>();
-    let command = Box::pin(run_command_output_os(adb, &args));
-    let timeout = Box::pin(async {
+    let operation = operation.to_owned();
+    let command = Box::pin(async move {
+        run_command_output_os(adb, &args)
+            .await
+            .map_err(AdbCommandError::from)
+    });
+    let timeout = Box::pin(async move {
         smol::Timer::after(ADB_DEVICE_COMMAND_TIMEOUT).await;
-        Err(eyre!(
-            "{operation} timed out after {} seconds",
-            ADB_DEVICE_COMMAND_TIMEOUT.as_secs()
-        ))
+        Err(AdbCommandError::Timeout {
+            operation,
+            seconds: ADB_DEVICE_COMMAND_TIMEOUT.as_secs(),
+        })
     });
 
     match futures_util::future::select(command, timeout).await {
@@ -62,7 +97,11 @@ where
     }
 }
 
-async fn run_bounded_adb_command<A, S>(adb: &Path, args: A, operation: &str) -> eyre::Result<String>
+async fn run_bounded_adb_command<A, S>(
+    adb: &Path,
+    args: A,
+    operation: &str,
+) -> Result<String, AdbCommandError>
 where
     A: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -81,10 +120,11 @@ where
     } else {
         String::new()
     };
-    Err(eyre!(
-        "{operation} failed with status {}{details}",
-        output.status
-    ))
+    Err(AdbCommandError::Failed {
+        operation: operation.to_owned(),
+        status: output.status,
+        details,
+    })
 }
 
 /// Represents an Android device (physical or emulator).
