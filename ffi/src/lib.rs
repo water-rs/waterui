@@ -2088,21 +2088,20 @@ ffi_view!(ResolvedMenu, WuiMenu, menu);
 // Used to make views draggable or drop destinations
 
 use crate::drag_drop::{WuiDraggable, WuiDropDestination};
-#[cfg(feature = "c-api")]
 use waterui::drag_drop::{Draggable, DropDestination};
 
 /// Type alias for `Metadata<Draggable>` FFI struct
 pub type WuiMetadataDraggable = WuiMetadata<WuiDraggable>;
 
 // Generate waterui_metadata_draggable_id() and waterui_force_as_metadata_draggable()
-#[cfg(feature = "c-api")]
+// Ungated at the call site: the macro emits the c-api and android-jni halves
+// under their own cfgs, and Android consumes both exports.
 ffi_metadata!(Draggable, WuiMetadataDraggable, draggable);
 
 /// Type alias for `Metadata<DropDestination>` FFI struct
 pub type WuiMetadataDropDestination = WuiMetadata<WuiDropDestination>;
 
 // Generate waterui_metadata_drop_destination_id() and waterui_force_as_metadata_drop_destination()
-#[cfg(feature = "c-api")]
 ffi_metadata!(
     DropDestination,
     WuiMetadataDropDestination,
