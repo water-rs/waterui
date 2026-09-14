@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
 use color_eyre::eyre::{Result, bail};
-use futures::StreamExt;
+use futures_util::StreamExt;
 
 #[cfg(target_os = "macos")]
 use jiff::Timestamp;
@@ -668,7 +668,7 @@ async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
     note!(shell, "Serving at http://{}/", server.address());
     note!(shell, "Press Ctrl+C to stop the web server");
     let _server = server;
-    futures::future::pending::<()>().await;
+    futures_util::future::pending::<()>().await;
     unreachable!("web dev server future should be cancelled by Ctrl+C")
 }
 

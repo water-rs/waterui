@@ -12,7 +12,7 @@ use std::sync::{
 
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
-use futures::future::{self, Either};
+use futures_util::future::{self, Either};
 use tracing_subscriber::EnvFilter;
 
 use commands::{

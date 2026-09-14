@@ -10740,12 +10740,21 @@ dependencies = [
  "hex",
  "memmap2",
  "sha2",
- "tempfile",
  "tracing",
+ "waterui-assets-core",
  "waterui-core",
  "waterui-media",
  "waterui-url",
  "waterui-video",
+]
+
+[[package]]
+name = "waterui-assets-core"
+version = "0.1.0"
+dependencies = [
+ "blocking",
+ "tempfile",
+ "waterui-url",
 ]
 
 [[package]]
@@ -10756,7 +10765,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
- "waterui-assets",
+ "waterui-assets-core",
  "waterui-assets-planner",
 ]
 
@@ -10771,7 +10780,7 @@ dependencies = [
  "thiserror 2.0.20",
  "toml 1.1.6+spec-1.1.0",
  "walkdir",
- "waterui-assets",
+ "waterui-assets-core",
 ]
 
 [[package]]
@@ -10953,8 +10962,8 @@ dependencies = [
  "fontcull-write-fonts",
  "fs4",
  "fs_extra",
- "futures",
  "futures-lite",
+ "futures-util",
  "heck",
  "hex",
  "icns",
@@ -10989,7 +10998,7 @@ dependencies = [
  "ttf-parser",
  "url",
  "walkdir",
- "waterui-assets",
+ "waterui-assets-core",
  "waterui-assets-planner",
  "waterui-inspector-protocol",
  "waterui-mcp-protocol",

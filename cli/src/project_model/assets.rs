@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use smol::fs;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
-use waterui_assets::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
+use waterui_assets_core::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 
 use crate::project::Project;
 use crate::project_model::project_types::PermissionKey;
@@ -1194,7 +1194,7 @@ mod tests {
             "https://example.com/font.ttf",
         ] {
             assert!(
-                waterui_assets::ensure_http_allowed(url).is_ok(),
+                waterui_assets_core::ensure_http_allowed(url).is_ok(),
                 "expected to allow {url}"
             );
         }
@@ -1208,7 +1208,7 @@ mod tests {
             "http://127.0.0.1.evil.com/font.ttf",
         ] {
             assert!(
-                waterui_assets::ensure_http_allowed(url).is_err(),
+                waterui_assets_core::ensure_http_allowed(url).is_err(),
                 "expected to reject {url}"
             );
         }

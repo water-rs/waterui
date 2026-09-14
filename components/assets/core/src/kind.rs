@@ -36,7 +36,7 @@ impl AssetKind {
     /// # Examples
     ///
     /// ```
-    /// use waterui_assets::AssetKind;
+    /// use waterui_assets_core::AssetKind;
     ///
     /// assert_eq!(AssetKind::from_extension("png"), AssetKind::Image);
     /// assert_eq!(AssetKind::from_extension("mp4"), AssetKind::Video);

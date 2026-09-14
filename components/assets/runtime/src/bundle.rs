@@ -274,11 +274,6 @@ impl FontAsset {
     }
 }
 
-/// File name of the window icon the CLI stages into the bundle root for
-/// self-drawn desktop backends. Dot-prefixed so it can never collide with a
-/// project asset's logical path.
-pub const WINDOW_ICON_FILE: &str = ".window-icon.png";
-
 /// Resolves the root directory of the staged asset bundle.
 ///
 /// Honors `WATERUI_ASSETS_ROOT`, then probes executable-relative locations

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use color_eyre::eyre::WrapErr as _;
 use color_eyre::eyre::{Result, bail};
-use futures::{FutureExt as _, pin_mut, select};
+use futures_util::{FutureExt as _, pin_mut, select};
 use smol::Timer;
 use smol::net::TcpStream;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};

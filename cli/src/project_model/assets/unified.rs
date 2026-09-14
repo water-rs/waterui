@@ -7,7 +7,7 @@ use image::ImageEncoder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use smol::fs;
-use waterui_assets::AssetKind;
+use waterui_assets_core::AssetKind;
 use waterui_assets_planner::{AssetRole, BundleManifest, PlannedAsset, ThemeConfig, plan_bundle};
 
 #[cfg(target_os = "macos")]
@@ -133,7 +133,7 @@ pub async fn stage_for_gtk(project: &Project, resources_dir: &Path) -> eyre::Res
     let icon = load_project_icon(&manifest)?;
     write_png(
         &icon.render(WINDOW_ICON_SIZE)?,
-        &assets_dest.join(waterui_assets::WINDOW_ICON_FILE),
+        &assets_dest.join(waterui_assets_core::WINDOW_ICON_FILE),
     )
     .await?;
 

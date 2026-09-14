@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use cargo_toml::Manifest as CargoManifest;
 use color_eyre::eyre::{Context, Result, bail};
-use futures::{FutureExt as _, pin_mut, select};
+use futures_util::{FutureExt as _, pin_mut, select};
 #[cfg(feature = "preview")]
 use notify::{RecursiveMode, Watcher as _};
 use sha2::Digest as _;
@@ -937,12 +937,12 @@ async fn wait_for_registered_preview_ready(
             return ConnectionWaitResult::Timeout(rejection);
         }
 
-        let sleep = futures::FutureExt::fuse(smol::Timer::after(POLL_INTERVAL.min(remaining)));
+        let sleep = futures_util::FutureExt::fuse(smol::Timer::after(POLL_INTERVAL.min(remaining)));
         let running_event = running.next().fuse();
         #[cfg(feature = "preview")]
-        let registry_event = futures::FutureExt::fuse(event_rx.recv());
+        let registry_event = futures_util::FutureExt::fuse(event_rx.recv());
         #[cfg(not(feature = "preview"))]
-        let registry_event = futures::FutureExt::fuse(futures::future::pending::<()>());
+        let registry_event = futures_util::FutureExt::fuse(futures_util::future::pending::<()>());
         pin_mut!(sleep);
         pin_mut!(running_event);
         pin_mut!(registry_event);
@@ -1002,7 +1002,7 @@ async fn wait_for_polled_preview_ready(
             return ConnectionWaitResult::Timeout(rejection);
         }
 
-        let sleep = futures::FutureExt::fuse(smol::Timer::after(poll_interval.min(remaining)));
+        let sleep = futures_util::FutureExt::fuse(smol::Timer::after(poll_interval.min(remaining)));
         let running_event = running.next().fuse();
         pin_mut!(sleep);
         pin_mut!(running_event);
