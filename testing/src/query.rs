@@ -4,6 +4,7 @@ use crate::semantics::Role;
 
 /// Chainable query builder bound to a mounted app session.
 #[derive(Debug)]
+#[must_use = "a query does nothing until a terminal call such as `tap`, `assert_exists`, or `wait_for_existence`"]
 pub struct Query<'a> {
     pub(crate) app: &'a mut SemanticApp,
     pub(crate) selector: Selector,
@@ -11,105 +12,90 @@ pub struct Query<'a> {
 
 impl Query<'_> {
     /// Restricts the query to nodes with the given accessibility role.
-    #[must_use]
     pub fn role(mut self, role: Role) -> Self {
         self.selector = self.selector.role(role);
         self
     }
 
     /// Restricts the query to nodes with the given automation identifier.
-    #[must_use]
     pub fn identifier(mut self, identifier: impl Into<String>) -> Self {
         self.selector = self.selector.identifier(identifier);
         self
     }
 
     /// Restricts the query to nodes with exactly matching labels.
-    #[must_use]
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.selector = self.selector.label(label);
         self
     }
 
     /// Restricts the query to nodes whose labels contain the provided text.
-    #[must_use]
     pub fn label_contains(mut self, label: impl Into<String>) -> Self {
         self.selector = self.selector.label_contains(label);
         self
     }
 
     /// Restricts the query to descendants of an element.
-    #[must_use]
     pub fn within(mut self, handle: &ElementRef) -> Self {
         self.selector = self.selector.within(handle.clone());
         self
     }
 
     /// Restricts the query to direct children of an element.
-    #[must_use]
     pub fn children_of(mut self, handle: &ElementRef) -> Self {
         self.selector = self.selector.children_of(handle.clone());
         self
     }
 
     /// Restricts the query to nodes with the requested enabled state.
-    #[must_use]
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.selector = self.selector.enabled(enabled);
         self
     }
 
     /// Restricts the query to nodes with the requested selected state.
-    #[must_use]
     pub fn selected(mut self, selected: bool) -> Self {
         self.selector = self.selector.selected(selected);
         self
     }
 
     /// Restricts the query to nodes with the requested checked state.
-    #[must_use]
     pub fn checked(mut self, checked: bool) -> Self {
         self.selector = self.selector.checked(checked);
         self
     }
 
     /// Restricts the query to nodes with an indeterminate checked state.
-    #[must_use]
     pub fn mixed(mut self) -> Self {
         self.selector = self.selector.mixed();
         self
     }
 
     /// Restricts the query to nodes with the requested expanded state.
-    #[must_use]
     pub fn expanded(mut self, expanded: bool) -> Self {
         self.selector = self.selector.expanded(expanded);
         self
     }
 
     /// Restricts the query to nodes with the requested busy state.
-    #[must_use]
     pub fn busy(mut self, busy: bool) -> Self {
         self.selector = self.selector.busy(busy);
         self
     }
 
     /// Restricts the query to nodes with exactly matching values.
-    #[must_use]
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.selector = self.selector.value(value);
         self
     }
 
     /// Restricts the query to nodes whose values contain the provided text.
-    #[must_use]
     pub fn value_contains(mut self, value: impl Into<String>) -> Self {
         self.selector = self.selector.value_contains(value);
         self
     }
 
     /// Includes or excludes hidden nodes.
-    #[must_use]
     pub fn hidden(mut self, hidden: bool) -> Self {
         self.selector = self.selector.hidden(hidden);
         self

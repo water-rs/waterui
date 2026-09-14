@@ -443,6 +443,9 @@ impl WindowPresentation {
 /// [`WindowState::Closed`] to any other state. Closing the window resets the
 /// retained presentation binding so a subsequent open creates a new native
 /// window.
+///
+/// The returned view is invisible and must be placed in the tree, or the
+/// window is never presented.
 pub fn conditional_window<F>(presentation: &WindowPresentation, creator: F) -> impl View + use<F>
 where
     F: Fn(Binding<WindowState>) -> Window + 'static,
