@@ -1,4 +1,3 @@
-use waterui::Identifiable;
 use waterui::app::App;
 use waterui::background::Material;
 use waterui::component::list::{List, ListItem};
@@ -6,6 +5,7 @@ use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
 use waterui::shape::{Circle, RoundedRectangle};
 use waterui::widget::condition::when;
+use waterui::Identifiable;
 use waterui_icons_material_icon as mdi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -243,8 +243,7 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
         .clone()
         .map(|value| normalized_search_query(&value))
         .computed();
-    let tile =
-        |dest: SidebarDestination| destination_tile(dest, selection.clone(), query.clone());
+    let tile = |dest: SidebarDestination| destination_tile(dest, selection.clone(), query.clone());
 
     vstack((
         // The official app presents the smart lists as a colored tile grid,
@@ -252,9 +251,18 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
         grid(
             2,
             [
-                row((tile(SidebarDestination::Today), tile(SidebarDestination::Scheduled))),
-                row((tile(SidebarDestination::All), tile(SidebarDestination::Flagged))),
-                row((tile(SidebarDestination::Urgent), tile(SidebarDestination::Completed))),
+                row((
+                    tile(SidebarDestination::Today),
+                    tile(SidebarDestination::Scheduled),
+                )),
+                row((
+                    tile(SidebarDestination::All),
+                    tile(SidebarDestination::Flagged),
+                )),
+                row((
+                    tile(SidebarDestination::Urgent),
+                    tile(SidebarDestination::Completed),
+                )),
             ],
         )
         .spacing(8.0),
