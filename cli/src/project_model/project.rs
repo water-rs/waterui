@@ -2138,6 +2138,7 @@ mod channel_tests {
             let mut metadata = toml::toml! {
                 [package.metadata.waterui]
                 minimum-cli-version = "0.1.4"
+                android-min-api-level = 26
             };
             metadata["package"]["metadata"]["waterui"]["minimum-cli-version"] =
                 toml::Value::String(minimum.to_string());

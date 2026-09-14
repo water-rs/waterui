@@ -96,6 +96,8 @@ jobs:
               - "ffi/**"
               - "backends/apple"
               - "backends/android"
+              - "Cargo.toml"
+              - ".github/scripts/**"
             deps:
               - "**/Cargo.toml"
               - "**/Cargo.lock"
@@ -258,20 +260,28 @@ jobs:
           # the probe below a tree with the clang wrappers but no clang (#284).
           # A miss costs ~79 s against ~53 s for a hit, on a 9-12 minute job.
           local-cache: false
+      # The Android API floor lives in the root manifest's
+      # `[package.metadata.waterui]` table — the channel `cargo metadata`
+      # reads without scraping source, and the same table every published
+      # `framework.json` carries verbatim.
+      - name: Read the framework's Android API floor
+        run: |
+          set -euo pipefail
+          api="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "waterui") | .metadata.waterui["android-min-api-level"] | numbers')"
+          if ! [[ "$api" =~ ^[0-9]+$ ]]; then
+            echo "::error file=Cargo.toml::package.metadata.waterui.android-min-api-level must be an integer API level (got '$api')"
+            exit 1
+          fi
+          echo "WATERUI_ANDROID_MIN_API_LEVEL=$api" >> "$GITHUB_ENV"
       # `ring` compiles C for the target, so the NDK's clang wrapper is
       # required even though clippy itself never links. The wrapper is named
-      # after the API level, which the CLI already owns — read it from there
-      # instead of freezing a second copy of the number in this file.
+      # after the API level the framework declares.
       - name: Point cargo at the NDK toolchain
         env:
           ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
-          api="$(sed -n 's/^pub(crate) const ANDROID_MIN_API_LEVEL: u32 = \([0-9][0-9]*\);$/\1/p' cli/src/android/mod.rs)"
-          if [ -z "$api" ]; then
-            echo "::error file=cli/src/android/mod.rs::could not read ANDROID_MIN_API_LEVEL"
-            exit 1
-          fi
+          api="$WATERUI_ANDROID_MIN_API_LEVEL"
           bin="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
           # The wrapper is a shell script that execs `clang` beside it, so a
           # half-restored NDK fails inside a `cc` build script six minutes
@@ -290,6 +300,29 @@ jobs:
             echo "CXX_aarch64_linux_android=$bin/aarch64-linux-android$api-clang++"
             echo "AR_aarch64_linux_android=$bin/llvm-ar"
           } >> "$GITHUB_ENV"
+      # The backend submodule declares its own `minSdk` — it builds standalone
+      # and cannot read the framework manifest — but the two must agree, or a
+      # scaffolded app's floor is one the runtime does not support. The value
+      # is read from Gradle's own evaluation of the build script, never by
+      # scraping it.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify the runtime's minSdk agrees with the framework floor
+        working-directory: backends/android
+        run: |
+          set -euo pipefail
+          min_sdk="$(./gradlew -q --no-daemon --init-script "$GITHUB_WORKSPACE/.github/scripts/android-min-sdk.init.gradle" :runtime:waterUiMinSdk | sed -n 's/^WATERUI_MIN_SDK=//p')"
+          if [ -z "$min_sdk" ]; then
+            echo "::error::could not evaluate the Android runtime's minSdk from Gradle"
+            exit 1
+          fi
+          if [ "$min_sdk" != "$WATERUI_ANDROID_MIN_API_LEVEL" ]; then
+            echo "::error::backends/android runtime minSdk ($min_sdk) does not match the framework's android-min-api-level ($WATERUI_ANDROID_MIN_API_LEVEL)"
+            exit 1
+          fi
       - name: Clippy (aarch64-linux-android)
         run: cargo clippy -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
 

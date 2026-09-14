@@ -502,13 +502,13 @@ impl TemplateContext {
         self.bundle_identifier.android_package_name().to_string()
     }
 
+    /// The Android API floor the selected framework's metadata declares —
+    /// rendered into the scaffolded app's `minSdk`.
     #[must_use]
-    #[expect(
-        clippy::unused_self,
-        reason = "Askama invokes template context values through instance methods"
-    )]
-    pub const fn android_min_api_level(&self) -> u32 {
-        crate::android::ANDROID_MIN_API_LEVEL
+    pub fn android_min_api_level(&self) -> u32 {
+        self.framework
+            .android_min_api_level()
+            .unwrap_or_else(|error| panic!("{error:#}"))
     }
 
     #[must_use]
@@ -1541,7 +1541,14 @@ mod tests {
 
     #[test]
     fn android_build_gradle_uses_embedded_remote_backend_revision() {
-        let ctx = app_ctx();
+        let mut ctx = app_ctx();
+        // A sentinel floor proves the scaffold renders the resolved
+        // framework's `android-min-api-level`, not a CLI-owned constant.
+        let mut persisted: toml::Value =
+            toml::from_str(&toml::to_string(&ctx.framework).unwrap()).unwrap();
+        persisted["metadata"]["android-min-api-level"] = toml::Value::Integer(30);
+        ctx.framework = persisted.try_into().unwrap();
+
         let template = embedded::ANDROID
             .get_file("app/build.gradle.kts.tpl")
             .expect("android build.gradle template must exist")
@@ -1556,7 +1563,7 @@ mod tests {
         )
         .expect("android build.gradle render");
 
-        assert!(rendered.contains("minSdk = 26"));
+        assert!(rendered.contains("minSdk = 30"));
         assert!(rendered.contains(&jitpack_dependency_coordinate(
             ctx.framework.scaffold_value("android-backend-url"),
             ctx.framework.scaffold_value("android-backend-revision"),
