@@ -446,28 +446,19 @@ fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNa
             continue;
         }
 
-        let mut has_combined_swift = false;
-        let mut archives_in_dir = Vec::new();
+        // A `lib*.a` in a build script's `out/` dir is an artifact the crate
+        // ships for linking, with or without a Swift bridge alongside it.
         for out_entry in std::fs::read_dir(&out_dir)? {
             let out_entry = out_entry?;
             let path = out_entry.path();
-            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if path.extension().is_some_and(|ext| ext == "swift")
-                && file_name.starts_with("Combined")
+            if path.extension().is_some_and(|ext| ext == "a")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("lib"))
             {
-                has_combined_swift = true;
-            }
-            if path.extension().is_some_and(|ext| ext == "a") && file_name.starts_with("lib") {
-                archives_in_dir.push(path);
-            }
-        }
-
-        if has_combined_swift {
-            for archive in &archives_in_dir {
-                archive_paths.insert(archive.clone());
-                if let Some(flag) = static_archive_link_flag(archive) {
+                archive_paths.insert(path.clone());
+                if let Some(flag) = static_archive_link_flag(&path) {
                     push_unique_flag(&mut linker_flags, flag);
                 }
             }
