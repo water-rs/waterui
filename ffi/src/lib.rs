@@ -12,7 +12,6 @@
 //! This library aims to minimize the unsafe code needed when working with FFI while
 //! maintaining performance and flexibility.
 
-#![cfg_attr(not(feature = "std"), no_std)]
 #[cfg(not(feature = "std"))]
 compile_error!("waterui-ffi requires the `std` feature.");
 #[cfg(all(feature = "c-api", feature = "android-jni"))]

@@ -7,6 +7,7 @@
 
 extern crate std;
 
+#[cfg(target_os = "android")]
 pub mod android_runtime;
 pub mod components;
 pub mod convert;

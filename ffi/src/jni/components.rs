@@ -15,9 +15,9 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 
 use jni::objects::{Global, JClass, JObject, JObjectArray, JValue};
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 use jni::sys::jboolean;
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 use jni::sys::jdouble;
 use jni::sys::{jfloat, jint, jintArray, jlong, jobject, jobjectArray};
 use jni::{Env, EnvUnowned, jni_sig, jni_str};
@@ -33,15 +33,15 @@ use crate::components::layout::WuiLayout;
 use waterui_graphics::color::ResolvedColor;
 use waterui_text::font::{FontWeight, ResolvedFont};
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 use ndk_sys::ANativeWindow;
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 struct AndroidNativeWindow {
     ptr: *mut ANativeWindow,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 impl AndroidNativeWindow {
     /// Acquires the `ANativeWindow` behind a Java `Surface`.
     ///
@@ -62,7 +62,7 @@ impl AndroidNativeWindow {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 impl Drop for AndroidNativeWindow {
     fn drop(&mut self) {
         // SAFETY: `ptr` is the non-null reference `from_surface` acquired, and `Drop`
@@ -71,7 +71,7 @@ impl Drop for AndroidNativeWindow {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", feature = "gpu"))]
 fn require_native_window(
     window: Option<AndroidNativeWindow>,
     function: &str,

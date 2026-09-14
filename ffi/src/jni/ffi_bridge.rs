@@ -10,7 +10,9 @@ extern crate alloc;
 extern crate std;
 
 use core::ffi::c_void;
-use jni::objects::{Global, JClass, JObject, JValue};
+#[cfg(feature = "gpu")]
+use jni::objects::Global;
+use jni::objects::{JClass, JObject, JValue};
 use jni::sys::{jint, jlong, jobject};
 use jni::{Env, EnvUnowned, jni_sig, jni_str};
 
