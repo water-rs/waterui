@@ -1432,10 +1432,6 @@ struct ReactiveFontState {
     binding: waterui::Binding<ResolvedFont>,
 }
 
-struct ReactiveEdgeInsetsState {
-    binding: waterui::Binding<waterui_layout::padding::EdgeInsets>,
-}
-
 /// Borrows one of the reactive state objects the Android runtime creates below.
 ///
 /// # Safety
@@ -1546,72 +1542,6 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveColorSche
     // SAFETY: Kotlin passes back the owning handle `createReactive*State` returned,
     // and the runtime drops each state once.
     unsafe { drop(Box::from_raw(state_ptr as *mut ReactiveColorSchemeState)) };
-}
-
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveEdgeInsetsState<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    top: jfloat,
-    bottom: jfloat,
-    leading: jfloat,
-    trailing: jfloat,
-) -> jlong {
-    let state = ReactiveEdgeInsetsState {
-        binding: waterui::reactive::binding(waterui_layout::padding::EdgeInsets::new(
-            top, bottom, leading, trailing,
-        )),
-    };
-    Box::into_raw(Box::new(state)) as jlong
-}
-
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveEdgeInsetsStateToComputed<
-    'local,
->(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) -> jlong {
-    // SAFETY: Kotlin passes back the handle `createReactive*State` returned for this
-    // state type, which the runtime drops only through `dropReactive*State`.
-    let state = unsafe { reactive_state::<ReactiveEdgeInsetsState>(state_ptr) };
-    let computed = state.binding.computed();
-    computed.into_ffi() as jlong
-}
-
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropReactiveEdgeInsetsState<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) {
-    // SAFETY: Kotlin passes back the owning handle `createReactive*State` returned,
-    // and the runtime drops each state once.
-    unsafe { drop(Box::from_raw(state_ptr as *mut ReactiveEdgeInsetsState)) };
-}
-
-/// Installs the window's safe area into the environment.
-///
-/// The root view publishes here instead of padding itself: a padded root can
-/// never let a bottom bar's background reach under the gesture bar, which is
-/// what Android's edge-to-edge contract asks for.
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallSafeArea<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    env_ptr: jlong,
-    signal_ptr: jlong,
-) {
-    // SAFETY: Kotlin passes back the live app environment handle and the owning
-    // computed handle it created for the insets, whose ownership moves into the
-    // environment.
-    unsafe {
-        crate::runtime::safe_area::waterui_env_install_safe_area(
-            env_ptr as *mut crate::WuiEnv,
-            signal_ptr as *mut crate::reactive::WuiComputed<waterui_layout::padding::EdgeInsets>,
-        );
-    }
 }
 
 #[unsafe(no_mangle)]

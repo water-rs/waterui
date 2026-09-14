@@ -1599,14 +1599,6 @@ typedef struct Computed_Delivery Computed_Delivery;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
-typedef struct Computed_EdgeInsets Computed_EdgeInsets;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
 typedef struct Computed_HorizontalAlignment Computed_HorizontalAlignment;
 
 /**
@@ -1977,14 +1969,6 @@ typedef struct WuiWatcher_DateTime WuiWatcher_DateTime;
  * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
  */
 typedef struct WuiWatcher_Delivery WuiWatcher_Delivery;
-
-/**
- * FFI-owned wrapper around a native watcher callback.
- *
- * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
- * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
- */
-typedef struct WuiWatcher_EdgeInsets WuiWatcher_EdgeInsets;
 
 /**
  * FFI-owned wrapper around a native watcher callback.
@@ -4204,38 +4188,6 @@ typedef struct WuiInspectorNode {
    */
   uintptr_t children_len;
 } WuiInspectorNode;
-
-/**
- * C ABI mirror of [`EdgeInsets`]: the four edge distances of a rectangle, in
- * logical points.
- */
-typedef struct WuiEdgeInsets {
-  /**
-   * Inset from the top edge.
-   */
-  float top;
-  /**
-   * Inset from the bottom edge.
-   */
-  float bottom;
-  /**
-   * Inset from the leading (left in LTR) edge.
-   */
-  float leading;
-  /**
-   * Inset from the trailing (right in LTR) edge.
-   */
-  float trailing;
-} WuiEdgeInsets;
-
-/**
- * FFI-owned wrapper around a [`waterui::Computed`] signal.
- *
- * Opaque to native code; accessed only through the `waterui_read_computed_*`,
- * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
- * by the `ffi_computed!` macro.
- */
-typedef struct Computed_EdgeInsets WuiComputed_EdgeInsets;
 
 /**
  * FFI-owned wrapper around a [`waterui::Computed`] signal.
@@ -9207,86 +9159,6 @@ void waterui_inspector_publish_tree(const struct WuiEnv *env,
                                     uint64_t focus,
                                     const struct WuiInspectorNode *nodes,
                                     uintptr_t len);
-
-/**
- * Reads the current value from a computed
- * # Safety
- * The computed pointer must be valid and point to a properly initialized computed object.
- */
-struct WuiEdgeInsets waterui_read_computed_edge_insets(const WuiComputed_EdgeInsets *computed);
-
-/**
- * Watches for changes in a computed
- * # Safety
- * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher pointer will be consumed and freed when the returned guard is dropped.
- */
-struct WuiWatcherGuard *waterui_watch_computed_edge_insets(const WuiComputed_EdgeInsets *computed,
-                                                           struct WuiWatcher_EdgeInsets *watcher);
-
-/**
- * Drops a computed
- * # Safety
- * The caller must ensure that `computed` is a valid pointer.
- */
-void waterui_drop_computed_edge_insets(WuiComputed_EdgeInsets *computed);
-
-/**
- * Creates a watcher from native callbacks.
- *
- * # Safety
- *
- * All function pointers must be valid and `data` must remain valid
- * until `drop` is called exactly once.
- */
-struct WuiWatcher_EdgeInsets *waterui_new_watcher_edge_insets(void *data,
-                                                              void (*call)(void*,
-                                                                           struct WuiEdgeInsets,
-                                                                           struct WuiWatcherMetadata*),
-                                                              void (*drop)(void*));
-
-/**
- * Creates a computed signal from native callbacks.
- * # Safety
- * All function pointers must be valid and follow the expected calling conventions.
- */
-WuiComputed_EdgeInsets *waterui_new_computed_edge_insets(void *data,
-                                                         struct WuiEdgeInsets (*get)(const void*),
-                                                         struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                          struct WuiWatcher_EdgeInsets*),
-                                                         void (*drop)(void*));
-
-/**
- * Installs the window's safe area insets into the environment.
- *
- * Backends without a safe-area concept install nothing; the Rust side then
- * reads zero insets, which is the right answer for a desktop window.
- *
- * # Safety
- * The signal pointer must be an owning pointer from
- * `waterui_new_computed_edge_insets`, and `env` a valid handle that is not
- * otherwise borrowed for this call.
- */
-void waterui_env_install_safe_area(struct WuiEnv *env, WuiComputed_EdgeInsets *signal);
-
-/**
- *Delivers `value` to a `EdgeInsets` watcher.
- *
- * # Safety
- * The watcher pointer must be a valid handle that is alive for this
- * call.
- */
-void waterui_call_watcher_edge_insets(const struct WuiWatcher_EdgeInsets *watcher,
-                                      struct WuiEdgeInsets value);
-
-/**
- *Releases a `EdgeInsets` watcher.
- *
- * # Safety
- * The watcher pointer must be an owning pointer from the matching
- * constructor that has not already been dropped.
- */
-void waterui_drop_watcher_edge_insets(struct WuiWatcher_EdgeInsets *watcher);
 
 /**
  * Reads the current value from a computed
