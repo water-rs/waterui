@@ -2015,6 +2015,46 @@ mod tests {
     }
 
     #[test]
+    fn generated_manifests_carry_the_release_profile() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_root = temp.path().join("project");
+        let ffi_dir = temp
+            .path()
+            .join("cache")
+            .join("managed_backends")
+            .join("ffi");
+        let ctx = ctx(
+            Some(PathBuf::from("../waterui")),
+            Some(ffi_dir.clone()),
+            Some(project_root),
+            crate::project::PackageType::Playground,
+        );
+
+        smol::block_on(crate::templates::ffi::scaffold(
+            &ffi_dir,
+            &ctx,
+            "playground-ffi",
+        ))
+        .expect("ffi scaffold should succeed");
+
+        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
+            .expect("ffi Cargo.toml should be written")
+            .parse::<toml::Table>()
+            .expect("ffi Cargo.toml should parse");
+        let release = &manifest["profile"]["release"];
+
+        // Generated crates are their own workspace roots, so a plain
+        // `cargo build --release` used to ship unoptimized, unstripped
+        // artifacts — on Android, a libwaterui_app.so roughly 3x the size of
+        // the same source built under the workspace release profile.
+        assert_eq!(release["lto"].as_bool(), Some(true));
+        assert_eq!(release["codegen-units"].as_integer(), Some(1));
+        assert_eq!(release["opt-level"].as_str(), Some("z"));
+        assert_eq!(release["strip"].as_bool(), Some(true));
+        assert_eq!(release["panic"].as_str(), Some("abort"));
+    }
+
+    #[test]
     fn playground_android_manifest_enables_picture_in_picture_by_default() {
         let ctx = playground_ctx();
         let template = embedded::ANDROID
@@ -2367,7 +2407,7 @@ impl From<GeneratedDependencyDetail> for SupportDependencyDetail {
     }
 }
 
-/// Build the `[profile.dev]` section every generated crate carries.
+/// Build the `[profile.*]` sections every generated crate carries.
 ///
 /// Generated crates declare `[workspace]`, which makes each of them its own
 /// workspace root: they inherit nothing from the repository or the user's project,
@@ -2386,7 +2426,7 @@ impl From<GeneratedDependencyDetail> for SupportDependencyDetail {
 ///
 /// Line tables are kept for the generated crate itself so panics still resolve to
 /// file and line.
-fn generated_dev_profile() -> cargo_toml::Profiles {
+fn generated_profiles() -> cargo_toml::Profiles {
     let mut dev = cargo_toml::Profile {
         debug: Some(cargo_toml::DebugSetting::Lines),
         ..Default::default()
@@ -2397,19 +2437,35 @@ fn generated_dev_profile() -> cargo_toml::Profiles {
     dev.package
         .insert("*".to_string(), toml::Value::Table(dependency_override));
 
+    // Generated crates are their own workspace roots, so without this section a
+    // `cargo build --release` (what `water package` runs) fell back to Cargo's
+    // default release profile: no LTO, no stripping, opt-level 3. On Android
+    // that shipped a libwaterui_app.so three times the size of the same source
+    // built inside the workspace. These settings mirror the workspace root's
+    // [profile.release].
+    let release = cargo_toml::Profile {
+        lto: Some(cargo_toml::LtoSetting::Fat),
+        codegen_units: Some(1),
+        opt_level: Some(toml::Value::String("z".to_string())),
+        strip: Some(cargo_toml::StripSetting::Symbols),
+        panic: Some("abort".to_string()),
+        ..Default::default()
+    };
+
     cargo_toml::Profiles {
         dev: Some(dev),
+        release: Some(release),
         ..Default::default()
     }
 }
 
-/// Serialized form of [`generated_dev_profile`], hashed into support-app
+/// Serialized form of [`generated_profiles`], hashed into support-app
 /// template fingerprints: the scaffold `Cargo.toml` is generated
 /// programmatically rather than from an embedded template file, so cached
 /// scaffolds (preview/inspector support apps) would otherwise keep a stale
 /// profile when the generated section changes.
-fn generated_dev_profile_fingerprint() -> String {
-    toml::to_string(&generated_dev_profile()).expect("generated dev profile must serialize to TOML")
+fn generated_profiles_fingerprint() -> String {
+    toml::to_string(&generated_profiles()).expect("generated profiles must serialize to TOML")
 }
 
 async fn write_support_cargo_toml(
@@ -2440,7 +2496,7 @@ async fn write_support_cargo_toml(
             // dependency graph twice more for products nothing ever loads.
             crate_type: vec!["rlib".to_string()],
         },
-        profile: generated_dev_profile(),
+        profile: generated_profiles(),
         features,
         dependencies,
         workspace: SupportWorkspaceSection {},
@@ -2539,7 +2595,7 @@ fn render_native_backend_bin_cargo_toml(
     let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
     package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
     manifest.package = Some(package);
-    manifest.profile = generated_dev_profile();
+    manifest.profile = generated_profiles();
 
     manifest.dependencies.insert(
         ctx.crate_name.to_string(),
@@ -2585,7 +2641,7 @@ struct GeneratedCargoManifest<T> {
     bins: Vec<GeneratedBinSection>,
     /// Every generated crate declares `[workspace]` and therefore inherits no
     /// profile from the repository or the user's project — see
-    /// [`generated_dev_profile`] for why the dev profile has to be carried
+    /// [`generated_profiles`] for why the dev profile has to be carried
     /// here. Backend scaffolds that omitted this built the entire rendering
     /// stack at `opt-level` 0 with full debug info, which is what made debug
     /// `water run` drop frames.
@@ -3065,7 +3121,7 @@ pub mod hydrolysis {
             package,
             lib: super::generated_lib(&["cdylib", "rlib"]),
             bins,
-            profile: super::generated_dev_profile(),
+            profile: super::generated_profiles(),
             features: BTreeMap::from([
                 ("waterui-preview-mode".to_string(), Vec::new()),
                 ("waterui-preview-test-mode".to_string(), Vec::new()),
@@ -3446,7 +3502,7 @@ pub mod tui {
         // The launcher is its own workspace root and therefore inherits no
         // profile — a TUI built at opt-level 0 cannot push frames, so the dev
         // profile has to be carried here like every other generated crate.
-        manifest.profile = super::generated_dev_profile();
+        manifest.profile = super::generated_profiles();
 
         manifest.dependencies.insert(
             ctx.crate_name.to_string(),
@@ -3800,7 +3856,7 @@ pub mod ffi {
     use super::{
         NativeBackendDependencySource, NativeBackendDependencySpec, Path, TemplateContext,
         TemplateNamespace, cargo_semver, embedded, fs, generated_dependency_from_spec,
-        generated_dev_profile, io, scaffold_dir, write_file_if_changed,
+        generated_profiles, io, scaffold_dir, write_file_if_changed,
     };
 
     /// Write all FFI companion templates to the given directory.
@@ -3883,7 +3939,7 @@ pub mod ffi {
         package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
         package.autobins = false;
         manifest.package = Some(package);
-        manifest.profile = generated_dev_profile();
+        manifest.profile = generated_profiles();
 
         // Apple links `lib<ffi>.a` and Android loads `lib<ffi>.so`, so the manifest
         // declares only that union; nothing ever consumes an `rlib` of this crate.
@@ -4093,7 +4149,7 @@ pub mod root {
             package: super::generated_package(ctx.crate_name.as_str(), vec![ctx.author.clone()]),
             lib: super::generated_lib(&["lib"]),
             bins: Vec::new(),
-            profile: super::generated_dev_profile(),
+            profile: super::generated_profiles(),
             features: BTreeMap::from([(
                 "dev".to_string(),
                 vec!["waterui/dynamic_linking".to_string()],
@@ -4172,7 +4228,7 @@ pub mod preview {
                 dirs_to_process.push(subdir);
             }
         }
-        hasher.update(super::generated_dev_profile_fingerprint().as_bytes());
+        hasher.update(super::generated_profiles_fingerprint().as_bytes());
         hex::encode(hasher.finalize())
     }
 
@@ -4485,7 +4541,7 @@ pub mod inspector {
     };
 
     /// Hash of embedded inspector template files and the programmatically
-    /// generated scaffold inputs (see `generated_dev_profile_fingerprint`).
+    /// generated scaffold inputs (see `generated_profiles_fingerprint`).
     #[must_use]
     pub fn template_fingerprint() -> String {
         use sha2::Digest as _;
@@ -4501,7 +4557,7 @@ pub mod inspector {
                 dirs_to_process.push(subdir);
             }
         }
-        hasher.update(super::generated_dev_profile_fingerprint().as_bytes());
+        hasher.update(super::generated_profiles_fingerprint().as_bytes());
         hex::encode(hasher.finalize())
     }
 
