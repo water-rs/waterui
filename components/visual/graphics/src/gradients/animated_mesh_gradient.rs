@@ -207,8 +207,8 @@ mod shader_types {
     }
 }
 
-use shader_types::AnimatedMeshUniforms;
 use crate::shader_types::{ShaderVec2, ShaderVec4};
+use shader_types::AnimatedMeshUniforms;
 
 struct AnimatedMeshRenderer {
     config: AnimatedMeshGradientConfig,
