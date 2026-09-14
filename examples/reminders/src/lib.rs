@@ -1,3 +1,4 @@
+use waterui::Identifiable;
 use waterui::app::App;
 use waterui::background::Material;
 use waterui::component::list::{List, ListItem};
@@ -5,7 +6,6 @@ use waterui::prelude::theme_color::{Foreground, MutedForeground};
 use waterui::prelude::*;
 use waterui::shape::{Circle, RoundedRectangle};
 use waterui::widget::condition::when;
-use waterui::Identifiable;
 use waterui_icons_material_icon as mdi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
