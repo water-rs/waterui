@@ -689,7 +689,7 @@ async fn launch_preview_on_ios_simulator(project: &Project) -> Result<Running> {
     let backend = project
         .apple_backend()
         .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
-    let simulator = select_preview_ios_simulator().await?;
+    let simulator = crate::apple::device::AppleSimulator::select_ios(project, None).await?;
     simulator.launch().await?;
     info!("Building and running preview app on iOS Simulator...");
     project
@@ -701,16 +701,6 @@ async fn launch_preview_on_ios_simulator(project: &Project) -> Result<Running> {
         )
         .await
         .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"))
-}
-
-async fn select_preview_ios_simulator() -> Result<crate::apple::device::AppleSimulator> {
-    let simulators = crate::apple::device::AppleSimulator::scan_ios().await?;
-    simulators
-        .iter()
-        .find(|simulator| simulator.state == "Booted")
-        .cloned()
-        .or_else(|| simulators.into_iter().next())
-        .ok_or_else(|| eyre::eyre!("No iOS simulator available. Please create one in Xcode."))
 }
 
 async fn launch_preview_on_android(project: &Project) -> Result<Running> {

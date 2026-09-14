@@ -8,10 +8,12 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use semver::Version;
 use smol::{process::Command, unblock};
+use thiserror::Error;
 
 /// An external command could not be executed or exited unsuccessfully.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 pub enum CommandError {
     /// The command could not be spawned.
     #[error("failed to spawn `{program}`: {source}")]
@@ -229,6 +231,89 @@ fn format_failure_stream(label: &str, bytes: &[u8]) -> String {
     report
 }
 
+/// Parse a version that may omit the minor and/or patch components.
+///
+/// `semver::Version` requires all three components, but version reporters
+/// commonly provide only major.minor — `rustc` accepts `1.88`, and
+/// `simctl`/`IPHONEOS_DEPLOYMENT_TARGET` use `26.0`-style iOS versions. Missing
+/// trailing components are padded with zeros. A leading `v` and a
+/// `-prerelease` suffix are also accepted.
+///
+/// # Errors
+/// - If the input is empty, has more than three numeric components, or is not
+///   valid semver after normalization.
+pub(crate) fn parse_semver_version(input: &str) -> Result<Version, VersionParseError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(VersionParseError::EmptyVersion);
+    }
+
+    let normalized_input = trimmed.strip_prefix('v').unwrap_or(trimmed);
+    let mut split = normalized_input.splitn(2, '-');
+    let core = split.next().ok_or(VersionParseError::MissingCoreVersion)?;
+    let prerelease = split.next();
+
+    let mut components: Vec<&str> = core.split('.').collect();
+    match components.len() {
+        1 => {
+            components.push("0");
+            components.push("0");
+        }
+        2 => {
+            components.push("0");
+        }
+        3 => {}
+        count => {
+            return Err(VersionParseError::InvalidComponentCount {
+                count,
+                input: input.to_owned(),
+            });
+        }
+    }
+
+    let mut normalized = components.join(".");
+    if let Some(prerelease) = prerelease {
+        normalized.push('-');
+        normalized.push_str(prerelease);
+    }
+
+    Version::parse(&normalized).map_err(|source| VersionParseError::InvalidVersion {
+        input: input.to_owned(),
+        normalized,
+        source,
+    })
+}
+
+/// A version string `parse_semver_version` could not normalize.
+#[derive(Debug, Error)]
+pub(crate) enum VersionParseError {
+    /// The version string was empty.
+    #[error("version is empty")]
+    EmptyVersion,
+    /// The version string had no numeric core.
+    #[error("missing numeric core version")]
+    MissingCoreVersion,
+    /// The version had an unsupported component count.
+    #[error("expected 1-3 numeric components, found {count} in `{input}`")]
+    InvalidComponentCount {
+        /// The number of dotted components found.
+        count: usize,
+        /// The offending input.
+        input: String,
+    },
+    /// The normalized version failed semver parsing.
+    #[error("failed to parse version `{input}` as `{normalized}`: {source}")]
+    InvalidVersion {
+        /// The offending input.
+        input: String,
+        /// The normalized form that was attempted.
+        normalized: String,
+        /// The semver parse error.
+        #[source]
+        source: semver::Error,
+    },
+}
+
 /// Parse whitespace-separated u32 values (e.g., process IDs).
 pub(crate) fn parse_whitespace_separated_u32s(input: &str) -> Vec<u32> {
     input
@@ -251,9 +336,36 @@ pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Resu
 
 #[cfg(test)]
 mod tests {
+    use semver::Version;
+
     use super::{
-        MAX_REPORTED_OUTPUT_LINES, format_failure_stream, parse_whitespace_separated_u32s,
+        MAX_REPORTED_OUTPUT_LINES, format_failure_stream, parse_semver_version,
+        parse_whitespace_separated_u32s,
     };
+
+    #[test]
+    fn parse_semver_version_accepts_major_minor() {
+        let parsed = parse_semver_version("1.88").expect("version should parse");
+        assert_eq!(parsed, Version::new(1, 88, 0));
+    }
+
+    #[test]
+    fn parse_semver_version_pads_deployment_target_style() {
+        let parsed = parse_semver_version("26.0").expect("version should parse");
+        assert_eq!(parsed, Version::new(26, 0, 0));
+    }
+
+    #[test]
+    fn parse_semver_version_orders_release_lines() {
+        let ios_18 = parse_semver_version("18.5").expect("version should parse");
+        let ios_26 = parse_semver_version("26.5").expect("version should parse");
+        assert!(ios_26 > ios_18);
+    }
+
+    #[test]
+    fn parse_semver_version_rejects_extra_components() {
+        assert!(parse_semver_version("1.2.3.4").is_err());
+    }
 
     #[test]
     fn failure_report_surfaces_diagnostics_elided_from_the_tail() {

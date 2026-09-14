@@ -248,7 +248,7 @@ pub trait Device: Sized + Send {
     ///
     /// Each device type knows how to discover its own kind:
     /// - `Local::scan()` → always returns `vec![Local]`
-    /// - `AppleSimulator::scan()` → uses `simctl list devices`
+    /// - `AppleSimulator::scan()` → uses `simctl list`
     /// - `AndroidDevice::scan()` → uses `adb devices`
     fn scan() -> impl Future<Output = eyre::Result<Vec<Self>>> + Send;
 }
