@@ -11158,6 +11158,7 @@ dependencies = [
  "image",
  "keyboard-types",
  "kurbo 0.13.1",
+ "libc",
  "mp4parse",
  "naga 30.0.1",
  "nami",
