@@ -29,43 +29,72 @@ pub mod view_renderer;
 #[cfg(all(feature = "gpu", not(any(target_os = "macos", target_os = "ios"))))]
 fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
-    device: &wgpu::Device,
+    gpu: &waterui_graphics::shared_context::SharedGpuContext,
     config: &wgpu::SurfaceConfiguration,
     context: &'static str,
 ) -> Option<wgpu::SurfaceTexture> {
+    let device = &gpu.device;
     match checked_surface_acquire(surface, device) {
         Ok(
             wgpu::CurrentSurfaceTexture::Success(output)
             | wgpu::CurrentSurfaceTexture::Suboptimal(output),
         ) => Some(output),
-        Ok(wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated) => {
-            tracing::debug!(context, "surface lost or outdated; reconfiguring");
-            checked_surface_configure(surface, device, config, context);
-            match checked_surface_acquire(surface, device) {
-                Ok(
-                    wgpu::CurrentSurfaceTexture::Success(output)
-                    | wgpu::CurrentSurfaceTexture::Suboptimal(output),
-                ) => Some(output),
-                Ok(wgpu::CurrentSurfaceTexture::Occluded) => {
-                    tracing::debug!(context, "surface is occluded; skipping frame");
-                    None
-                }
-                Ok(status) => panic!("{context}: acquire after reconfigure failed: {status:?}"),
-                Err(error) => {
-                    panic!("{context}: acquire after reconfigure failed: {error} with {config:?}")
-                }
-            }
-        }
-        Ok(wgpu::CurrentSurfaceTexture::Timeout) => panic!("{context}: surface timeout"),
         Ok(wgpu::CurrentSurfaceTexture::Occluded) => {
             tracing::debug!(context, "surface is occluded; skipping frame");
             None
         }
-        Ok(wgpu::CurrentSurfaceTexture::Validation) => {
-            panic!("{context}: surface acquisition failed validation with {config:?}")
+        Ok(wgpu::CurrentSurfaceTexture::Timeout) => panic!("{context}: surface timeout"),
+        // `Lost`/`Outdated` name the stale swapchain; `Validation` is what a
+        // dead device reports, and `Err` carries whatever the error scope
+        // caught. Every one of them earns one reconfigure + retry — on a lost
+        // device the configure fails and names the real cause.
+        Ok(
+            status @ (wgpu::CurrentSurfaceTexture::Lost
+            | wgpu::CurrentSurfaceTexture::Outdated
+            | wgpu::CurrentSurfaceTexture::Validation),
+        ) => retry_surface_acquire(surface, gpu, config, context, format_args!("{status:?}")),
+        Err(error) => retry_surface_acquire(surface, gpu, config, context, format_args!("{error}")),
+    }
+}
+
+/// One reconfigure-and-retry for a failed swapchain acquire, after ruling out
+/// a dead device: when the device-lost callback has already fired, surface
+/// state is unrecoverable and the panic must name that cause instead of the
+/// generic acquire status.
+#[cfg(all(feature = "gpu", not(any(target_os = "macos", target_os = "ios"))))]
+fn retry_surface_acquire(
+    surface: &wgpu::Surface<'_>,
+    gpu: &waterui_graphics::shared_context::SharedGpuContext,
+    config: &wgpu::SurfaceConfiguration,
+    context: &'static str,
+    first_failure: std::fmt::Arguments<'_>,
+) -> Option<wgpu::SurfaceTexture> {
+    if let Some(reason) = gpu.device_lost_reason() {
+        panic!(
+            "{context}: GPU device was lost ({reason}); the surface cannot be \
+             reconfigured onto a dead device — the runtime must be recreated"
+        );
+    }
+    let device = &gpu.device;
+    tracing::debug!(
+        context,
+        "surface acquire failed ({first_failure}); reconfiguring and retrying"
+    );
+    checked_surface_configure(surface, device, config, context);
+    match checked_surface_acquire(surface, device) {
+        Ok(
+            wgpu::CurrentSurfaceTexture::Success(output)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(output),
+        ) => Some(output),
+        Ok(wgpu::CurrentSurfaceTexture::Occluded) => {
+            tracing::debug!(context, "surface is occluded; skipping frame");
+            None
+        }
+        Ok(status) => {
+            panic!("{context}: acquire after reconfigure failed: {status:?} with {config:?}")
         }
         Err(error) => {
-            panic!("{context}: surface acquisition failed: {error} with {config:?}")
+            panic!("{context}: acquire after reconfigure failed: {error} with {config:?}")
         }
     }
 }
