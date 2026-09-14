@@ -14,6 +14,7 @@ web/pkg
 # Personal/temporary files
 *.skill
 bugreport*.zip
+.vscode/
 .worktrees/
 .wrangler/
 node_modules/
