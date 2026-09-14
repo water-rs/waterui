@@ -1482,8 +1482,17 @@ fn font_weight_from_ordinal(weight: jint) -> FontWeight {
     }
 }
 
-fn resolved_system_font(size: jfloat, weight: jint) -> ResolvedFont {
-    ResolvedFont::new(size, font_weight_from_ordinal(weight))
+fn resolved_system_font(
+    size: jfloat,
+    weight: jint,
+    line_height: jfloat,
+    letter_spacing: jfloat,
+) -> ResolvedFont {
+    let mut font = ResolvedFont::new(size, font_weight_from_ordinal(weight));
+    // `0.0` encodes "natural metrics" on the wire, matching `WuiResolvedFont`.
+    font.line_height = (line_height > 0.0).then_some(line_height);
+    font.letter_spacing = letter_spacing;
+    font
 }
 
 #[unsafe(no_mangle)]
@@ -1678,9 +1687,16 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveFontSta
     _class: JClass<'local>,
     size: jfloat,
     weight: jint,
+    line_height: jfloat,
+    letter_spacing: jfloat,
 ) -> jlong {
     let state = ReactiveFontState {
-        binding: waterui::reactive::binding(resolved_system_font(size, weight)),
+        binding: waterui::reactive::binding(resolved_system_font(
+            size,
+            weight,
+            line_height,
+            letter_spacing,
+        )),
     };
     Box::into_raw(Box::new(state)) as jlong
 }
@@ -1704,11 +1720,18 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveFontStateSet<
     state_ptr: jlong,
     size: jfloat,
     weight: jint,
+    line_height: jfloat,
+    letter_spacing: jfloat,
 ) {
     // SAFETY: Kotlin passes back the handle `createReactive*State` returned for this
     // state type, which the runtime drops only through `dropReactive*State`.
     let state = unsafe { reactive_state::<ReactiveFontState>(state_ptr) };
-    state.binding.set(resolved_system_font(size, weight));
+    state.binding.set(resolved_system_font(
+        size,
+        weight,
+        line_height,
+        letter_spacing,
+    ));
 }
 
 #[unsafe(no_mangle)]

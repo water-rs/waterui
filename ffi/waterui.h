@@ -4275,6 +4275,14 @@ typedef struct WuiResolvedFont {
    * The design the platform face is chosen from when `family` is empty.
    */
   enum WuiFontDesign design;
+  /**
+   * Absolute line height in points; `0.0` keeps the face's natural metrics.
+   */
+  float line_height;
+  /**
+   * Additional spacing between adjacent glyphs in points.
+   */
+  float letter_spacing;
 } WuiResolvedFont;
 
 /**
