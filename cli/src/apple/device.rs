@@ -4,8 +4,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eyre::eyre;
+use eyre::{Context as _, bail, eyre};
 use jiff::Timestamp;
+use semver::Version;
 use serde::Deserialize;
 use smol::{
     Timer,
@@ -20,12 +21,15 @@ use tracing::{debug as trace_debug, info, warn};
 use std::path::Path;
 
 use crate::{
+    apple::platform::apple_deployment_target,
     debug,
     device::{
         ApplicationExit, Artifact, Device, DeviceEvent, FailToRun, Local, LogLevel, Running,
         format_panic_message,
     },
-    utils::run_command,
+    platform::TargetPlatform,
+    project::Project,
+    utils::{parse_semver_version, run_command},
 };
 
 use smol::channel::Receiver;
@@ -584,9 +588,18 @@ pub struct AppleSimulator {
     /// Runtime identifier key from `simctl` (e.g. `com.apple.CoreSimulator.SimRuntime.iOS-26-2`).
     ///
     /// This is not part of the simulator device object itself; it comes from the map key in
-    /// `xcrun simctl list devices --json`.
+    /// `xcrun simctl list --json`.
     #[serde(skip)]
     pub runtime_identifier: Option<String>,
+
+    /// Version of the runtime this simulator runs (e.g. iOS 26.5 -> `26.5.0`).
+    ///
+    /// Like [`Self::runtime_identifier`], this is attached by `scan()` from the
+    /// `runtimes` list of `xcrun simctl list --json`, not deserialized from the
+    /// device object. `None` when `simctl` reports no usable version for the
+    /// runtime — such a simulator can never satisfy a deployment target.
+    #[serde(skip)]
+    pub runtime_version: Option<Version>,
 }
 
 impl Device for AppleSimulator {
@@ -658,16 +671,41 @@ impl Device for AppleSimulator {
 
     async fn scan() -> eyre::Result<Vec<Self>> {
         #[derive(Deserialize)]
-        struct Root {
-            devices: HashMap<String, Vec<AppleSimulator>>,
+        struct Runtime {
+            identifier: String,
+            version: Option<String>,
         }
 
-        let content = run_command("xcrun", ["simctl", "list", "devices", "--json"]).await?;
+        #[derive(Deserialize)]
+        struct Root {
+            devices: HashMap<String, Vec<AppleSimulator>>,
+            runtimes: Vec<Runtime>,
+        }
+
+        let content = run_command("xcrun", ["simctl", "list", "--json"]).await?;
 
         let root = serde_json::from_str::<Root>(&content)?;
+
+        let mut runtime_versions = HashMap::with_capacity(root.runtimes.len());
+        for runtime in root.runtimes {
+            let Some(version) = runtime.version.as_deref() else {
+                warn!("simctl runtime {} reports no version", runtime.identifier);
+                continue;
+            };
+            match parse_semver_version(version) {
+                Ok(version) => {
+                    runtime_versions.insert(runtime.identifier, version);
+                }
+                Err(error) => {
+                    warn!("Ignoring simctl runtime {}: {error}", runtime.identifier);
+                }
+            }
+        }
+
         let mut simulators = Vec::new();
         for (runtime_identifier, sims) in root.devices {
             for mut sim in sims {
+                sim.runtime_version = runtime_versions.get(&runtime_identifier).cloned();
                 sim.runtime_identifier = Some(runtime_identifier.clone());
                 simulators.push(sim);
             }
@@ -767,6 +805,177 @@ impl AppleSimulator {
             .filter(|s| s.data_path.exists())
             .collect())
     }
+
+    /// Whether this simulator's runtime can run an app that requires `deployment_target`.
+    ///
+    /// A simulator `simctl` reported no runtime version for is treated as
+    /// incapable: selection must never pick a runtime it cannot prove satisfies
+    /// the app's deployment target.
+    #[must_use]
+    pub fn supports_deployment_target(&self, deployment_target: &Version) -> bool {
+        self.runtime_version
+            .as_ref()
+            .is_some_and(|runtime| runtime >= deployment_target)
+    }
+
+    /// Select the iOS simulator to run `project`'s app on.
+    ///
+    /// Reads the app's `IPHONEOS_DEPLOYMENT_TARGET` from the project and
+    /// considers only simulators whose runtime satisfies it, so an app is never
+    /// built for minutes only to be rejected by `simctl install`.
+    ///
+    /// `device` is the `--device` query: a UDID, or a device name. A matched
+    /// simulator whose runtime is below the target is rejected; a name matching
+    /// several qualifying simulators is an error listing the candidates. With
+    /// `None`, the first booted qualifying simulator wins, else the first
+    /// qualifying one.
+    ///
+    /// # Errors
+    /// Returns an error when the deployment target cannot be read from the
+    /// project, when `simctl` cannot be queried, when a `device` query matches
+    /// nothing or only simulators below the target or several qualifying ones,
+    /// or when no simulator satisfies the target.
+    pub async fn select_ios(project: &Project, device: Option<&str>) -> eyre::Result<Self> {
+        let (_, target) = apple_deployment_target(project, TargetPlatform::IOSSimulator).await?;
+        let deployment_target = parse_semver_version(&target).wrap_err_with(|| {
+            format!("Failed to parse the project's IPHONEOS_DEPLOYMENT_TARGET `{target}`")
+        })?;
+        let simulators = Self::scan_ios().await?;
+        Self::select(&simulators, &deployment_target, device)
+    }
+
+    /// Select a simulator from `simulators` able to run an app that requires
+    /// `deployment_target`.
+    fn select(
+        simulators: &[Self],
+        deployment_target: &Version,
+        device: Option<&str>,
+    ) -> eyre::Result<Self> {
+        if let Some(query) = device {
+            return Self::select_matching(simulators, deployment_target, query);
+        }
+
+        simulators
+            .iter()
+            .filter(|sim| sim.supports_deployment_target(deployment_target))
+            .min_by_key(|sim| usize::from(sim.state != "Booted"))
+            .cloned()
+            .ok_or_else(|| no_qualifying_simulator_error(simulators, deployment_target))
+    }
+
+    /// Resolve an explicit `--device` query — a UDID or a device name — against
+    /// `simulators`, honoring `deployment_target`.
+    fn select_matching(
+        simulators: &[Self],
+        deployment_target: &Version,
+        query: &str,
+    ) -> eyre::Result<Self> {
+        let matches: Vec<&Self> = simulators
+            .iter()
+            .filter(|sim| sim.udid == query || sim.name == query)
+            .collect();
+        if matches.is_empty() {
+            bail!("Device not found: {query}");
+        }
+
+        let qualifying: Vec<&Self> = matches
+            .iter()
+            .copied()
+            .filter(|sim| sim.supports_deployment_target(deployment_target))
+            .collect();
+        match qualifying.as_slice() {
+            [sim] => Ok((*sim).clone()),
+            [] => Err(unqualified_simulator_error(
+                &matches,
+                deployment_target,
+                query,
+            )),
+            candidates => Err(ambiguous_simulator_error(
+                candidates,
+                deployment_target,
+                query,
+            )),
+        }
+    }
+
+    /// `iOS <version>` when `simctl` reported one, else the raw runtime identifier.
+    fn runtime_label(&self) -> String {
+        self.runtime_version.as_ref().map_or_else(
+            || {
+                self.runtime_identifier
+                    .clone()
+                    .unwrap_or_else(|| String::from("an unknown runtime"))
+            },
+            |version| format!("iOS {version}"),
+        )
+    }
+}
+
+/// One line per simulator: `name (udid) — iOS version`.
+fn simulator_candidates<'a>(simulators: impl IntoIterator<Item = &'a AppleSimulator>) -> String {
+    use std::fmt::Write as _;
+    simulators.into_iter().fold(String::new(), |mut out, sim| {
+        write!(
+            out,
+            "\n  {} ({}) — {}",
+            sim.name,
+            sim.udid,
+            sim.runtime_label()
+        )
+        .expect("writing to a String cannot fail");
+        out
+    })
+}
+
+/// Error for an explicit `--device` query whose matches all run a runtime below
+/// `deployment_target`.
+fn unqualified_simulator_error(
+    matches: &[&AppleSimulator],
+    deployment_target: &Version,
+    query: &str,
+) -> eyre::Report {
+    if let [sim] = matches {
+        return eyre!(
+            "Simulator \"{}\" ({}) runs {}, but this app requires iOS {deployment_target} (IPHONEOS_DEPLOYMENT_TARGET)",
+            sim.name,
+            sim.udid,
+            sim.runtime_label(),
+        );
+    }
+    eyre!(
+        "Device \"{query}\" matches {} simulators, but none can run this app, which requires iOS {deployment_target} (IPHONEOS_DEPLOYMENT_TARGET):{}",
+        matches.len(),
+        simulator_candidates(matches.iter().copied()),
+    )
+}
+
+/// Error for a `--device` name matching several simulators that all satisfy
+/// `deployment_target`: picking silently would ignore which device the user meant.
+fn ambiguous_simulator_error(
+    candidates: &[&AppleSimulator],
+    deployment_target: &Version,
+    query: &str,
+) -> eyre::Report {
+    eyre!(
+        "Device \"{query}\" matches {} simulators that can run this app (iOS {deployment_target} or newer); select one by UDID:{}",
+        candidates.len(),
+        simulator_candidates(candidates.iter().copied()),
+    )
+}
+
+/// Error for automatic selection when nothing in `simulators` satisfies
+/// `deployment_target`.
+fn no_qualifying_simulator_error(
+    simulators: &[AppleSimulator],
+    deployment_target: &Version,
+) -> eyre::Report {
+    if simulators.is_empty() {
+        return eyre!("No iOS simulators available. Create one in Xcode.");
+    }
+    eyre!(
+        "No iOS simulator can run this app: it requires iOS {deployment_target} (IPHONEOS_DEPLOYMENT_TARGET). Available simulators:{}",
+        simulator_candidates(simulators.iter()),
+    )
 }
 
 /// Capture a screenshot from an iOS simulator.
@@ -968,7 +1177,39 @@ pub async fn describe(udid: &str) -> eyre::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_simctl_launch_pid;
+    use std::path::PathBuf;
+
+    use semver::Version;
+
+    use super::{AppleSimulator, parse_simctl_launch_pid};
+    use crate::utils::parse_semver_version;
+
+    fn ios_simulator(name: &str, udid: &str, state: &str, runtime: &str) -> AppleSimulator {
+        AppleSimulator {
+            data_path: PathBuf::new(),
+            data_path_size: None,
+            log_path: PathBuf::new(),
+            log_path_size: None,
+            udid: udid.to_string(),
+            is_available: true,
+            device_type_identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro"
+                .to_string(),
+            state: state.to_string(),
+            name: name.to_string(),
+            last_booted_at: None,
+            runtime_identifier: Some(format!(
+                "com.apple.CoreSimulator.SimRuntime.iOS-{}",
+                runtime.replace('.', "-")
+            )),
+            runtime_version: Some(
+                parse_semver_version(runtime).expect("test runtime version should parse"),
+            ),
+        }
+    }
+
+    fn target(version: &str) -> Version {
+        parse_semver_version(version).expect("test target should parse")
+    }
 
     #[test]
     fn parses_simctl_launch_pid_from_bundle_prefix() {
@@ -986,5 +1227,96 @@ mod tests {
     fn returns_none_when_no_pid_present() {
         let stdout = "com.example.app: not-a-pid\n";
         assert_eq!(parse_simctl_launch_pid(stdout), None);
+    }
+
+    #[test]
+    fn simulator_below_target_does_not_qualify() {
+        let sim = ios_simulator("iPhone 16 Pro", "UDID-18", "Booted", "18.5");
+        assert!(!sim.supports_deployment_target(&target("26.0")));
+        assert!(sim.supports_deployment_target(&target("18.5")));
+        assert!(sim.supports_deployment_target(&target("17.0")));
+    }
+
+    #[test]
+    fn simulator_without_runtime_version_never_qualifies() {
+        let mut sim = ios_simulator("iPhone 16 Pro", "UDID-X", "Booted", "18.5");
+        sim.runtime_version = None;
+        assert!(!sim.supports_deployment_target(&target("1.0")));
+    }
+
+    #[test]
+    fn automatic_selection_prefers_booted_qualifying_simulator() {
+        let sims = vec![
+            ios_simulator("iPhone 16 Pro", "UDID-18-BOOTED", "Booted", "18.5"),
+            ios_simulator("iPhone 16 Pro", "UDID-26-BOOTED", "Booted", "26.5"),
+            ios_simulator("iPhone 16 Pro", "UDID-26-SHUTDOWN", "Shutdown", "26.5"),
+        ];
+        let selected = AppleSimulator::select(&sims, &target("26.0"), None)
+            .expect("a qualifying booted simulator exists");
+        assert_eq!(selected.udid, "UDID-26-BOOTED");
+    }
+
+    #[test]
+    fn automatic_selection_falls_back_to_shutdown_qualifying_simulator() {
+        let sims = vec![
+            ios_simulator("iPhone 16 Pro", "UDID-18-BOOTED", "Booted", "18.5"),
+            ios_simulator("iPhone 16 Pro", "UDID-26-SHUTDOWN", "Shutdown", "26.5"),
+        ];
+        let selected = AppleSimulator::select(&sims, &target("26.0"), None)
+            .expect("a qualifying simulator exists");
+        assert_eq!(selected.udid, "UDID-26-SHUTDOWN");
+    }
+
+    #[test]
+    fn automatic_selection_names_target_when_nothing_qualifies() {
+        let sims = vec![ios_simulator("iPhone 16 Pro", "UDID-18", "Booted", "18.5")];
+        let error = AppleSimulator::select(&sims, &target("26.0"), None).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("26.0.0"), "{message}");
+        assert!(message.contains("UDID-18"), "{message}");
+    }
+
+    #[test]
+    fn explicit_device_below_target_is_rejected() {
+        let sims = vec![ios_simulator("iPhone 16 Pro", "UDID-18", "Booted", "18.5")];
+        let error = AppleSimulator::select(&sims, &target("26.0"), Some("UDID-18")).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("iPhone 16 Pro"), "{message}");
+        assert!(message.contains("UDID-18"), "{message}");
+        assert!(message.contains("18.5"), "{message}");
+        assert!(message.contains("26.0.0"), "{message}");
+    }
+
+    #[test]
+    fn explicit_name_selects_the_qualifying_simulator() {
+        // Two same-named simulators on different runtimes: only the one
+        // satisfying the target is a usable pick.
+        let sims = vec![
+            ios_simulator("iPhone 16 Pro", "UDID-18", "Booted", "18.5"),
+            ios_simulator("iPhone 16 Pro", "UDID-26", "Shutdown", "26.5"),
+        ];
+        let selected = AppleSimulator::select(&sims, &target("26.0"), Some("iPhone 16 Pro"))
+            .expect("exactly one match qualifies");
+        assert_eq!(selected.udid, "UDID-26");
+    }
+
+    #[test]
+    fn explicit_name_matching_several_qualifying_simulators_is_ambiguous() {
+        let sims = vec![
+            ios_simulator("iPhone 16 Pro", "UDID-26-A", "Booted", "26.5"),
+            ios_simulator("iPhone 16 Pro", "UDID-26-B", "Shutdown", "26.5"),
+        ];
+        let error =
+            AppleSimulator::select(&sims, &target("26.0"), Some("iPhone 16 Pro")).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("UDID-26-A"), "{message}");
+        assert!(message.contains("UDID-26-B"), "{message}");
+    }
+
+    #[test]
+    fn explicit_device_not_found() {
+        let sims = vec![ios_simulator("iPhone 16 Pro", "UDID-26", "Booted", "26.5")];
+        let error = AppleSimulator::select(&sims, &target("26.0"), Some("iPhone 17")).unwrap_err();
+        assert!(error.to_string().contains("iPhone 17"));
     }
 }

@@ -4,7 +4,7 @@ use semver::Version;
 
 use crate::{
     toolchain::{Installation, Toolchain, ToolchainError},
-    utils::{CommandError, run_command, which},
+    utils::{CommandError, parse_semver_version, run_command, which},
 };
 
 const REQUIRED_RUST_VERSION: &str = env!("CARGO_PKG_RUST_VERSION");
@@ -106,31 +106,9 @@ enum RustParseError {
     /// `rustc -vV` printed no `host:` line.
     #[error("missing `host:` line")]
     HostLine,
-    /// The version string was empty.
-    #[error("version is empty")]
-    EmptyVersion,
-    /// The version string had no numeric core.
-    #[error("missing numeric core version")]
-    MissingCoreVersion,
-    /// The version had an unsupported component count.
-    #[error("expected 1-3 numeric components, found {count} in `{input}`")]
-    InvalidComponentCount {
-        /// The number of dotted components found.
-        count: usize,
-        /// The offending input.
-        input: String,
-    },
-    /// The normalized version failed semver parsing.
-    #[error("failed to parse version `{input}` as `{normalized}`: {source}")]
-    InvalidVersion {
-        /// The offending input.
-        input: String,
-        /// The normalized form that was attempted.
-        normalized: String,
-        /// The semver parse error.
-        #[source]
-        source: semver::Error,
-    },
+    /// The version string could not be normalized to semver.
+    #[error(transparent)]
+    Version(#[from] crate::utils::VersionParseError),
 }
 
 impl Installation for RustToolchainInstallation {
@@ -450,7 +428,7 @@ async fn installed_rustup_targets() -> Result<Vec<String>, CommandError> {
 }
 
 fn required_rust_version() -> Result<Version, RustParseError> {
-    parse_semver_version(REQUIRED_RUST_VERSION)
+    Ok(parse_semver_version(REQUIRED_RUST_VERSION)?)
 }
 
 fn parse_active_toolchain(output: &str) -> Result<String, RustParseError> {
@@ -467,7 +445,7 @@ fn parse_rustc_version(output: &str) -> Result<Version, RustParseError> {
         .split_whitespace()
         .nth(1)
         .ok_or(RustParseError::RustcVersion)?;
-    parse_semver_version(version_token)
+    Ok(parse_semver_version(version_token)?)
 }
 
 fn parse_host_target(output: &str) -> Result<String, RustParseError> {
@@ -480,48 +458,6 @@ fn parse_host_target(output: &str) -> Result<String, RustParseError> {
                 .map(ToOwned::to_owned)
         })
         .ok_or(RustParseError::HostLine)
-}
-
-fn parse_semver_version(input: &str) -> Result<Version, RustParseError> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err(RustParseError::EmptyVersion);
-    }
-
-    let normalized_input = trimmed.strip_prefix('v').unwrap_or(trimmed);
-    let mut split = normalized_input.splitn(2, '-');
-    let core = split.next().ok_or(RustParseError::MissingCoreVersion)?;
-    let prerelease = split.next();
-
-    let mut components: Vec<&str> = core.split('.').collect();
-    match components.len() {
-        1 => {
-            components.push("0");
-            components.push("0");
-        }
-        2 => {
-            components.push("0");
-        }
-        3 => {}
-        count => {
-            return Err(RustParseError::InvalidComponentCount {
-                count,
-                input: input.to_owned(),
-            });
-        }
-    }
-
-    let mut normalized = components.join(".");
-    if let Some(prerelease) = prerelease {
-        normalized.push('-');
-        normalized.push_str(prerelease);
-    }
-
-    Version::parse(&normalized).map_err(|source| RustParseError::InvalidVersion {
-        input: input.to_owned(),
-        normalized,
-        source,
-    })
 }
 
 fn is_no_active_toolchain_error(error: &str) -> bool {
@@ -537,14 +473,7 @@ mod tests {
 
     use super::{
         RustToolchainInstallation, parse_active_toolchain, parse_host_target, parse_rustc_version,
-        parse_semver_version,
     };
-
-    #[test]
-    fn parse_semver_version_accepts_major_minor() {
-        let parsed = parse_semver_version("1.88").expect("version should parse");
-        assert_eq!(parsed, Version::new(1, 88, 0));
-    }
 
     #[test]
     fn parse_rustc_version_accepts_prerelease() {

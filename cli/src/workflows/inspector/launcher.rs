@@ -117,15 +117,8 @@ pub async fn launch_inspector_session(
             let backend = project
                 .apple_backend()
                 .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
-            let simulators = crate::apple::device::AppleSimulator::scan_ios().await?;
-            let simulator = simulators
-                .iter()
-                .find(|s| s.state == "Booted")
-                .cloned()
-                .or_else(|| simulators.into_iter().next())
-                .ok_or_else(|| {
-                    eyre::eyre!("No iOS simulator available. Please create one in Xcode.")
-                })?;
+            let simulator =
+                crate::apple::device::AppleSimulator::select_ios(&project, None).await?;
 
             simulator.launch().await?;
             info!("Building and running inspector app on iOS Simulator...");

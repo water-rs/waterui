@@ -400,6 +400,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         shell,
         context.platform,
         context.backend,
+        &context.project,
         args.device.as_deref(),
     )
     .await?;
@@ -689,10 +690,11 @@ async fn select_run_device(
     shell: &Shell,
     platform: TargetPlatform,
     backend: TargetBackend,
+    project: &Project,
     device_id: Option<&str>,
 ) -> Result<DeviceSelection> {
     let spinner = shell.spinner("Scanning for devices...");
-    let device = find_device(platform, backend, device_id).await?;
+    let device = find_device(platform, backend, project, device_id).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -1052,6 +1054,7 @@ async fn check_toolchain_for_backend(
 async fn find_device(
     platform: TargetPlatform,
     backend: TargetBackend,
+    project: &Project,
     device_id: Option<&str>,
 ) -> Result<SelectedDevice> {
     // For native desktop Rust backends, always use Local device regardless of platform.
@@ -1060,34 +1063,9 @@ async fn find_device(
     }
 
     match platform {
-        TargetPlatform::Ios => {
-            let devices = AppleSimulator::scan_ios().await?;
-
-            if let Some(id) = device_id {
-                // Find specific device
-                for sim in devices {
-                    if sim.udid == id || sim.name == id {
-                        return Ok(SelectedDevice::AppleSimulator(sim));
-                    }
-                }
-                bail!("Device not found: {id}");
-            }
-
-            // Find first booted or first available
-            let mut first_available = None;
-            for sim in devices {
-                if sim.state == "Booted" {
-                    return Ok(SelectedDevice::AppleSimulator(sim));
-                }
-                if first_available.is_none() {
-                    first_available = Some(sim);
-                }
-            }
-
-            first_available
-                .map(SelectedDevice::AppleSimulator)
-                .ok_or_else(|| eyre::eyre!("No iOS simulators available"))
-        }
+        TargetPlatform::Ios => Ok(SelectedDevice::AppleSimulator(
+            AppleSimulator::select_ios(project, device_id).await?,
+        )),
         TargetPlatform::Macos => {
             // macOS with Apple backend uses the local machine
             Ok(SelectedDevice::Local(Local))
