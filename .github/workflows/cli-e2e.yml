@@ -226,7 +226,10 @@ jobs:
 
           # Scaffold against the checkout under test — the nightly signal is
           # this commit, not a released framework. (The dev channel's patch
-          # rebase is separately broken — #807.)
+          # rebase is separately broken — #807.) The checkout is owned by the
+          # runner account; the fresh user must mark it safe or git refuses to
+          # read the submodule pins `water create` resolves through.
+          git config --global --add safe.directory '*'
           water create e2eapp --mode app --backends "$E2E_BACKEND" --waterui-path "$WATERUI_SRC" \
             2>&1 | tee e2e-logs/create-app.log || fail "water create app failed"
           [ -f e2eapp/Water.toml ] || fail "e2eapp scaffold has no Water.toml"
@@ -285,7 +288,10 @@ jobs:
 
           # Scaffold against the checkout under test — the nightly signal is
           # this commit, not a released framework. (The dev channel's patch
-          # rebase is separately broken — #807.)
+          # rebase is separately broken — #807.) The checkout is owned by the
+          # runner account; mark it safe for this user or git refuses to read
+          # the submodule pins `water create` resolves through.
+          git config --global --add safe.directory '*'
           water create e2eapp --mode app --backends $env:E2E_BACKEND --waterui-path $wateruiSrc 2>&1 |
             Tee-Object "$logs\create-app.log"
           if ($LASTEXITCODE -or -not (Test-Path "e2eapp\Water.toml")) { Fail "water create app failed" }
