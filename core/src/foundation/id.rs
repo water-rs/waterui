@@ -46,6 +46,11 @@ impl TryFrom<i32> for Id {
 ///
 /// Implementors of this trait can provide a specific ID type and a way to retrieve
 /// the ID from an instance.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no stable WaterUI identity",
+    label = "expected a type implementing `Identifiable`",
+    note = "Collections such as `ForEach` and `List` diff items by id, so each item needs `Identifiable`: derive it with `#[derive(Identifiable)]` and `#[id]` on the identifier field (`use waterui::Identifiable;` — the derive is not in the prelude), for a type you do not own, wrap the value with `.use_id(..)` / `.self_id()`."
+)]
 pub trait Identifiable {
     /// The type of ID to use, which must implement Hash and Ord traits.
     type Id: Hash + Ord + Clone;

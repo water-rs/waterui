@@ -1,0 +1,61 @@
+error[E0277]: `ApiClient` cannot be extracted from a WaterUI environment
+  --> tests/ui/first_contact/extractor.rs:10:5
+   |
+10 |     use_env(|_client: ApiClient| text!("offline"))
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected a type implementing `Extractor`
+   |
+help: the trait `Extractor` is not implemented for `ApiClient`
+  --> tests/ui/first_contact/extractor.rs:7:1
+   |
+ 7 | struct ApiClient;
+   | ^^^^^^^^^^^^^^^^
+   = note: Handler and `use_env` parameters must be extractors: `State<T>` reads a value injected with `.state(&value)`, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, tuples combine extractors, and `impl_extractor!` makes a `Clone` type extractable.
+   = help: the following other types implement trait `Extractor`:
+             (A, B)
+             (A, B, C)
+             (A, B, C, D)
+             (A, B, C, D, E)
+             (A, B, C, D, E, F)
+             (A, B, C, D, E, F, G)
+             (A, B, C, D, E, F, G, H)
+             DragData
+           and $N others
+note: required by a bound in `use_env`
+  --> $WORKSPACE/core/src/foundation/env.rs
+   |
+   | pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> V>
+   |        ------- required by a bound in this function
+   | where
+   |     E: Extractor,
+   |        ^^^^^^^^^ required by this bound in `use_env`
+
+error[E0277]: `ApiClient` cannot be extracted from a WaterUI environment
+ --> tests/ui/first_contact/extractor.rs:9:16
+  |
+9 | fn broken() -> impl View {
+  |                ^^^^^^^^^ expected a type implementing `Extractor`
+  |
+help: the trait `Extractor` is not implemented for `ApiClient`
+ --> tests/ui/first_contact/extractor.rs:7:1
+  |
+7 | struct ApiClient;
+  | ^^^^^^^^^^^^^^^^
+  = note: Handler and `use_env` parameters must be extractors: `State<T>` reads a value injected with `.state(&value)`, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, tuples combine extractors, and `impl_extractor!` makes a `Clone` type extractable.
+  = help: the following other types implement trait `Extractor`:
+            (A, B)
+            (A, B, C)
+            (A, B, C, D)
+            (A, B, C, D, E)
+            (A, B, C, D, E, F)
+            (A, B, C, D, E, F, G)
+            (A, B, C, D, E, F, G, H)
+            DragData
+          and $N others
+note: required by a bound in `use_env`
+ --> $WORKSPACE/core/src/foundation/env.rs
+  |
+  | pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> V>
+  |        ------- required by a bound in this function
+  | where
+  |     E: Extractor,
+  |        ^^^^^^^^^ required by this bound in `use_env`

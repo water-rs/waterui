@@ -1,0 +1,70 @@
+error[E0277]: `waterui::nami::collection::List<Row>` is not a WaterUI view collection
+  --> tests/ui/first_contact/views.rs:19:18
+   |
+19 |     Lazy::vstack(rows)
+   |     ------------ ^^^^ expected a collection of views
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = help: the trait `Views` is not implemented for `waterui::nami::collection::List<Row>`
+   = note: `Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `Lazy::for_each` / `List::for_each` — whose items must implement `Identifiable`.
+   = help: the following other types implement trait `Views`:
+             AnyViews<V>
+             BuiltViews
+             ForEach<C, F, V>
+             SharedAnyViews<V>
+             Vec<V>
+             [V; N]
+             waterui::views::Constant<V>
+             waterui::views::Map<C, F>
+note: required by a bound in `waterui::component::lazy::Lazy::vstack`
+  --> $WORKSPACE/src/component/lazy.rs
+   |
+   |     pub fn vstack<V: View>(contents: impl Views<View = V> + 'static) -> impl View {
+   |                                           ^^^^^^^^^^^^^^^ required by this bound in `Lazy::vstack`
+
+error[E0277]: `waterui::nami::collection::List<Row>` is not a WaterUI view collection
+  --> tests/ui/first_contact/views.rs:19:5
+   |
+19 |     Lazy::vstack(rows)
+   |     ^^^^^^^^^^^^^^^^^^ expected a collection of views
+   |
+   = help: the trait `Views` is not implemented for `waterui::nami::collection::List<Row>`
+   = note: `Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `Lazy::for_each` / `List::for_each` — whose items must implement `Identifiable`.
+   = help: the following other types implement trait `Views`:
+             AnyViews<V>
+             BuiltViews
+             ForEach<C, F, V>
+             SharedAnyViews<V>
+             Vec<V>
+             [V; N]
+             waterui::views::Constant<V>
+             waterui::views::Map<C, F>
+note: required by a bound in `waterui::component::lazy::Lazy::vstack`
+  --> $WORKSPACE/src/component/lazy.rs
+   |
+   |     pub fn vstack<V: View>(contents: impl Views<View = V> + 'static) -> impl View {
+   |                                           ^^^^^^^^^^^^^^^ required by this bound in `Lazy::vstack`
+
+error[E0277]: `waterui::nami::collection::List<Row>` is not a WaterUI view collection
+  --> tests/ui/first_contact/views.rs:17:16
+   |
+17 | fn broken() -> impl View {
+   |                ^^^^^^^^^ expected a collection of views
+   |
+   = help: the trait `Views` is not implemented for `waterui::nami::collection::List<Row>`
+   = note: `Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `Lazy::for_each` / `List::for_each` — whose items must implement `Identifiable`.
+   = help: the following other types implement trait `Views`:
+             AnyViews<V>
+             BuiltViews
+             ForEach<C, F, V>
+             SharedAnyViews<V>
+             Vec<V>
+             [V; N]
+             waterui::views::Constant<V>
+             waterui::views::Map<C, F>
+note: required by a bound in `waterui::component::lazy::Lazy::vstack`
+  --> $WORKSPACE/src/component/lazy.rs
+   |
+   |     pub fn vstack<V: View>(contents: impl Views<View = V> + 'static) -> impl View {
+   |                                           ^^^^^^^^^^^^^^^ required by this bound in `Lazy::vstack`

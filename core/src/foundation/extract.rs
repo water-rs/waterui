@@ -17,6 +17,11 @@ use anyhow::Error;
 ///
 /// Types implementing this trait can be extracted from an Environment instance.
 /// This is useful for dependency injection and accessing shared resources.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be extracted from a WaterUI environment",
+    label = "expected a type implementing `Extractor`",
+    note = "Handler and `use_env` parameters must be extractors: `State<T>` reads a value injected with `.state(&value)`, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, tuples combine extractors, and `impl_extractor!` makes a `Clone` type extractable."
+)]
 pub trait Extractor: 'static + Sized {
     /// Attempts to extract an instance of `Self` from the given environment.
     ///
