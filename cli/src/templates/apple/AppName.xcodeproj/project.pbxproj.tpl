@@ -26,6 +26,9 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		D01867602E6C7BBB00802E96 /* {{ ctx.app_name }} */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFolders = (
+				waterui_assets,
+			);
 			path = {{ ctx.app_name }};
 			sourceTree = "<group>";
 		};

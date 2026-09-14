@@ -3053,10 +3053,7 @@ async fn write_generated_cargo_toml(base_dir: &Path, toml_string: String) -> io:
 
 /// Apple backend templates.
 pub mod apple {
-    use super::{Path, TemplateContext, TemplateNamespace, embedded, io, scaffold_dir};
-    // Only the unix arm below marks the build script executable.
-    #[cfg(unix)]
-    use super::fs;
+    use super::{Path, TemplateContext, TemplateNamespace, embedded, fs, io, scaffold_dir};
 
     /// Write all Apple templates to the given directory.
     ///
@@ -3065,6 +3062,11 @@ pub mod apple {
     /// Returns an error if file operations fail.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
         scaffold_dir(TemplateNamespace::Apple, &embedded::APPLE, base_dir, ctx).await?;
+
+        // The synchronized group lists `waterui_assets` as an explicit folder
+        // so Xcode copies it into the bundle with its structure intact; the
+        // directory must exist before the first staging run or the sync errors.
+        fs::create_dir_all(base_dir.join(&ctx.app_name).join("waterui_assets")).await?;
 
         // Make build-rust.sh executable
         #[cfg(unix)]
