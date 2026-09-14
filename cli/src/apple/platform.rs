@@ -898,9 +898,11 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
 /// [`assets::capability_enabled`]: crate::project_model::assets::capability_enabled
 async fn apple_swift_conditions(project: &Project) -> eyre::Result<Vec<String>> {
     /// Default-off capabilities, named when the app's graph carries them.
-    const OPTIONAL_COMPONENTS: &[(&str, &str)] = &[("map", "WATERUI_MAP")];
+    const OPTIONAL_COMPONENTS: &[(&str, &str)] =
+        &[("map", "WATERUI_MAP"), ("webview", "WATERUI_WEBVIEW")];
     /// Default-on capabilities, named when the app's graph drops them.
-    const DEFAULT_COMPONENTS: &[(&str, &str)] = &[("gpu", "WATERUI_NO_GPU")];
+    const DEFAULT_COMPONENTS: &[(&str, &str)] =
+        &[("gpu", "WATERUI_NO_GPU"), ("media", "WATERUI_NO_MEDIA")];
 
     let mut conditions = Vec::new();
     for (capability, condition) in OPTIONAL_COMPONENTS {

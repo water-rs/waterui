@@ -16,6 +16,7 @@ pub mod ffi_bridge;
 pub mod inspector;
 pub mod navigation;
 pub mod reactive;
+#[cfg(feature = "webview")]
 pub mod webview_bridge;
 
 pub use convert::JniPrimitive;

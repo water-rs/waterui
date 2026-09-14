@@ -1013,6 +1013,25 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
         package: "waterui-map",
         feature: None,
     },
+    // The `Video`/`Media` playback FFI surface and the `waterkit_audio`
+    // keep-alive behind it. `waterui-video` is an optional dependency of the
+    // facade (`media`/`video` features), so linking it *is* the opt-in — an app
+    // that never plays media stops rooting the codec/streaming graph through
+    // `waterui_video_*` exports.
+    Capability {
+        name: "media",
+        package: "waterui-video",
+        feature: None,
+    },
+    // The `WebView` FFI surface (bridge script, JS replies, cookie jar).
+    // `waterui-webview` is optional on the facade and the browser-cef crate
+    // reaches it through its own `webview` feature, so a plain `links` check
+    // covers both entry points.
+    Capability {
+        name: "webview",
+        package: "waterui-webview",
+        feature: None,
+    },
 ];
 
 /// Returns whether this app's resolved graph carries the named capability.
