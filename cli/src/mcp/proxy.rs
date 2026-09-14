@@ -29,8 +29,8 @@ use smol::Task;
 use smol::process::Child;
 use tracing::{debug, error, info};
 use waterui_mcp_protocol::{
-    ActArgs, FindArgs, KeyArgs, PointerArgs, RestartArgs, ScreenshotArgs, SnapshotArgs,
-    ToolDispatch, TypeTextArgs, WaitArgs,
+    ActArgs, AdvanceArgs, FindArgs, KeyArgs, PointerArgs, RestartArgs, ScreenshotArgs,
+    SnapshotArgs, ToolDispatch, TypeTextArgs, WaitArgs,
 };
 use waterui_preview_protocol::hydrolysis::{MCP_RUN_CONFIG_ENV, McpRunConfig};
 
@@ -257,6 +257,10 @@ impl ToolDispatch for ChildProxy {
     async fn restart(&self, _args: RestartArgs) -> ToolResult {
         self.rebuild().await;
         self.forward_call("snapshot", SnapshotArgs::default()).await
+    }
+
+    fn advance(&self, args: AdvanceArgs) -> impl Future<Output = ToolResult> + Send {
+        self.forward_call("advance", args)
     }
 }
 

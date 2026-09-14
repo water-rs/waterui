@@ -7,11 +7,15 @@ use std::time::Duration;
 use accesskit::{Action, ActionData, NodeId as AccessibilityNodeId};
 use aither_core::llm::tool::ToolResult;
 use async_channel::Sender;
-use waterui_testing::{DragOptions, NodeId, OffscreenApp, Role, Selector, WaitOptions, WaitResult};
+use waterui_testing::{
+    DragOptions, KeyCode, NodeId, OffscreenApp, Role, Selector, VIRTUAL_FRAME, WaitOptions,
+    WaitResult,
+};
 
 use waterui_mcp_protocol::{
-    ActAction, ActArgs, FindArgs, KeyArgs, PointerArgs, PointerKind, RestartArgs, ScreenshotArgs,
-    SelectorArgs, SnapshotArgs, SnapshotFormat, ToolDispatch, TypeTextArgs, WaitArgs,
+    ActAction, ActArgs, AdvanceArgs, FindArgs, KeyArgs, PointerArgs, PointerKind, RestartArgs,
+    ScreenshotArgs, SelectorArgs, SnapshotArgs, SnapshotFormat, ToolDispatch, TypeTextArgs,
+    WaitArgs,
 };
 
 use crate::tree;
@@ -61,6 +65,8 @@ pub enum Command {
     TypeText {
         /// Text to type.
         text: String,
+        /// Settle after dispatching.
+        settle: Option<bool>,
         /// Reply channel.
         reply: Reply,
     },
@@ -78,6 +84,13 @@ pub enum Command {
     },
     /// Remount the app.
     Restart {
+        /// Reply channel.
+        reply: Reply,
+    },
+    /// Advance the virtual animation clock.
+    Advance {
+        /// Duration and capture flag.
+        args: AdvanceArgs,
         /// Reply channel.
         reply: Reply,
     },
@@ -177,6 +190,7 @@ impl ToolDispatch for SessionHandle {
             handle
                 .request(|reply| Command::TypeText {
                     text: args.text,
+                    settle: args.settle,
                     reply,
                 })
                 .await
@@ -212,6 +226,16 @@ impl ToolDispatch for SessionHandle {
         async move {
             handle
                 .request(|reply| Command::Restart { reply })
+                .await
+                .unwrap_or_else(|error| ToolResult::error(error.to_string()))
+        }
+    }
+
+    fn advance(&self, args: AdvanceArgs) -> impl Future<Output = ToolResult> + Send {
+        let handle = self.clone();
+        async move {
+            handle
+                .request(|reply| Command::Advance { args, reply })
                 .await
                 .unwrap_or_else(|error| ToolResult::error(error.to_string()))
         }
@@ -379,9 +403,13 @@ impl<'a> Session<'a> {
             Command::Key { args, reply } => {
                 let _ = reply.try_send(self.key(&args));
             }
-            Command::TypeText { text, reply } => {
-                self.app.text_input(text);
-                let _ = reply.try_send(self.tree_text());
+            Command::TypeText {
+                text,
+                settle,
+                reply,
+            } => {
+                self.app.queue_text_input(text);
+                let _ = reply.try_send(self.finish_input(settle));
             }
             Command::Wait { args, reply } => {
                 let _ = reply.try_send(self.wait(&args));
@@ -392,6 +420,9 @@ impl<'a> Session<'a> {
             Command::Restart { reply } => {
                 self.app = (self.mount)();
                 let _ = reply.try_send(self.tree_text());
+            }
+            Command::Advance { args, reply } => {
+                let _ = reply.try_send(self.advance(&args));
             }
         }
     }
@@ -454,27 +485,28 @@ impl<'a> Session<'a> {
                 args.action.as_str(),
             ));
         }
-        if !self.app.perform_action(node_id, action, data) {
+        let handled = self.app.queue_action(node_id, action, data);
+        if !handled {
             return ToolResult::error(format!(
                 "the runtime did not handle `{}` on node #{}",
                 args.action.as_str(),
                 args.node
             ));
         }
-        self.tree_text()
+        self.finish_input(args.settle)
     }
 
     fn pointer(&mut self, args: &PointerArgs) -> ToolResult {
         match args.kind {
-            PointerKind::Tap => self.app.tap_at(args.x, args.y),
-            PointerKind::Down => self.app.pointer_down_at(args.x, args.y),
-            PointerKind::Up => self.app.pointer_up_at(args.x, args.y),
-            PointerKind::Move => {
-                self.app.queue_pointer_move(args.x, args.y);
-                self.app.settle();
+            PointerKind::Tap => {
+                self.app.queue_pointer_down(args.x, args.y);
+                self.app.queue_pointer_up(args.x, args.y);
             }
-            PointerKind::Hover => self.app.hover_at(args.x, args.y),
-            PointerKind::SecondaryClick => self.app.secondary_click_at(args.x, args.y),
+            PointerKind::Down => self.app.queue_pointer_down(args.x, args.y),
+            PointerKind::Up => self.app.queue_pointer_up(args.x, args.y),
+            PointerKind::Move => self.app.queue_pointer_move(args.x, args.y),
+            PointerKind::Hover => self.app.queue_hover_at(args.x, args.y),
+            PointerKind::SecondaryClick => self.app.queue_secondary_click(args.x, args.y),
             PointerKind::Drag => {
                 let (Some(to_x), Some(to_y)) = (args.to_x, args.to_y) else {
                     return ToolResult::error("`drag` requires `to_x` and `to_y`");
@@ -486,10 +518,10 @@ impl<'a> Session<'a> {
                         ..DragOptions::default()
                     });
                 self.app
-                    .drag_from_to_with(args.x, args.y, to_x, to_y, steps);
+                    .queue_drag_from_to_with(args.x, args.y, to_x, to_y, steps);
             }
             PointerKind::Scroll => {
-                self.app.scroll_at(
+                self.app.queue_scroll_at(
                     args.x,
                     args.y,
                     args.dx.unwrap_or(0.0),
@@ -498,7 +530,7 @@ impl<'a> Session<'a> {
                 );
             }
         }
-        self.tree_text()
+        self.finish_input(args.settle)
     }
 
     fn key(&mut self, args: &KeyArgs) -> ToolResult {
@@ -517,12 +549,51 @@ impl<'a> Session<'a> {
             }
         }
         let mut chars = args.key.chars();
-        if let (Some(ch), None) = (chars.next(), chars.next()) {
-            self.app.press_character_key_with(ch.to_string(), modifiers);
+        let key = if let (Some(ch), None) = (chars.next(), chars.next()) {
+            KeyCode::Character(ch.to_string())
         } else {
-            self.app.press_named_key_with(args.key.clone(), modifiers);
+            KeyCode::Named(args.key.clone())
+        };
+        self.app.queue_key_press(key, modifiers);
+        self.finish_input(args.settle)
+    }
+
+    /// Answers an input dispatch: `settle` (the default) pumps the runtime to
+    /// quiescence and returns the fresh tree; `settle: false` leaves the
+    /// queued input's transient observable to `advance` and `screenshot`.
+    fn finish_input(&mut self, settle: Option<bool>) -> ToolResult {
+        if settle.unwrap_or(true) {
+            self.app.settle();
+            self.tree_text()
+        } else {
+            ToolResult::text(
+                "queued (not settled); use `advance` or `screenshot` to observe the transient",
+            )
         }
-        self.tree_text()
+    }
+
+    fn advance(&mut self, args: &AdvanceArgs) -> ToolResult {
+        let duration = args
+            .duration_ms
+            .map_or(VIRTUAL_FRAME, Duration::from_millis);
+        if args.screenshot.unwrap_or(false) {
+            // The readback pump inside `snapshot` is the last frame of the
+            // advance, so the image lands exactly `duration` past the previous
+            // instant.
+            self.app.pump_for(duration.saturating_sub(VIRTUAL_FRAME));
+            return self.screenshot();
+        }
+        self.app.pump_for(duration);
+        let status = if self.app.is_settled() {
+            "settled"
+        } else {
+            "animating"
+        };
+        ToolResult::text(format!(
+            "advanced {}ms; {status}\n\n{}",
+            duration.as_millis(),
+            tree::render_text(&self.app)
+        ))
     }
 
     fn wait(&mut self, args: &WaitArgs) -> ToolResult {

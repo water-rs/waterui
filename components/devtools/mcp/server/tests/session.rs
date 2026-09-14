@@ -142,15 +142,51 @@ fn mcp_session_drives_a_mounted_app() {
 
     let shot = call_tool(&mut client, "screenshot", serde_json::json!({}));
     assert!(!shot.is_error);
-    // aither-mcp 0.4.0 renders binary tool results as a text placeholder; the
-    // image-content fix is merged as lexoliu/aither#53 but unreleased — this
-    // assertion flips to `Content::Image` when aither-mcp >= 0.4.1 is picked
-    // up.
-    assert!(
-        tool_text(&shot).starts_with("[binary tool result: image/png"),
-        "screenshot content: {:?}",
-        shot.content
+    let [Content::Image(image)] = shot.content.as_slice() else {
+        panic!("expected image content, got {:?}", shot.content);
+    };
+    assert_eq!(image.mime_type, "image/png");
+
+    // `settle: false` queues the action without running the runtime to
+    // quiescence; `advance` then steps the virtual clock until it lands.
+    let queued = call_tool(
+        &mut client,
+        "act",
+        serde_json::json!({"node": node, "action": "click", "settle": false}),
     );
+    assert!(!queued.is_error);
+    assert!(
+        tool_text(&queued).contains("queued"),
+        "unsettled act response: {}",
+        tool_text(&queued)
+    );
+
+    let advanced = call_tool(
+        &mut client,
+        "advance",
+        serde_json::json!({"duration_ms": 1000}),
+    );
+    assert!(!advanced.is_error);
+    let text = tool_text(&advanced);
+    assert!(
+        text.contains("advanced 1000ms; settled"),
+        "advance text: {text}"
+    );
+    assert!(
+        text.contains("count: 2"),
+        "advance should land the queued click: {text}"
+    );
+
+    let frame = call_tool(
+        &mut client,
+        "advance",
+        serde_json::json!({"duration_ms": 16, "screenshot": true}),
+    );
+    assert!(!frame.is_error);
+    let [Content::Image(image)] = frame.content.as_slice() else {
+        panic!("expected image content, got {:?}", frame.content);
+    };
+    assert_eq!(image.mime_type, "image/png");
 
     block_on(client.close()).expect("close transport");
     server_thread

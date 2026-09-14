@@ -23,6 +23,20 @@ screen; everything you see and do goes through its accessibility tree.
 - Every mutating tool returns the settled accessibility tree, so no follow-up
   `snapshot` is needed.
 
+## Debugging animations
+
+- Settling runs a triggered animation to completion before the tool returns.
+  Pass `settle: false` to `pointer`, `key`, `type_text`, or `act` to queue the
+  input without settling, keeping the transient observable.
+- `advance(duration_ms)` steps the virtual frame clock deterministically —
+  16ms per frame — and reports `animating` or `settled` plus the tree.
+  `advance(0)` just polls that status.
+- `advance(duration_ms, screenshot: true)` returns the PNG rendered at exactly
+  that instant; repeat with `duration_ms: 16` for a per-frame flipbook. A bare
+  `screenshot` is also a pump — every capture advances the clock by one frame.
+- Typical loop: `pointer tap settle=false` → `advance(16, screenshot=true)`
+  repeated until `advance` reports `settled`.
+
 ## Waiting
 
 - Use `wait` with `exists` / `not_exists` / `value_eq` expectations instead of
