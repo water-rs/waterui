@@ -19,7 +19,6 @@ use std::str::FromStr;
 
 use crate::{
     android::{
-        ANDROID_MIN_API_LEVEL,
         backend::AndroidBackend,
         output_metadata::{OutputKind, packaged_artifact},
         toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin, java_proxy_properties_from_env},
@@ -99,17 +98,14 @@ fn ndk_ar_path(ndk_path: &Path) -> PathBuf {
     ndk_bin_dir(ndk_path).join("llvm-ar")
 }
 
-fn ndk_clang_path(ndk_path: &Path, abi: AndroidAbi, cxx: bool) -> PathBuf {
+fn ndk_clang_path(ndk_path: &Path, abi: AndroidAbi, cxx: bool, api_level: u32) -> PathBuf {
     let suffix = if cxx { "clang++" } else { "clang" };
-    ndk_bin_dir(ndk_path).join(format!(
-        "{}{ANDROID_MIN_API_LEVEL}-{suffix}",
-        abi.ndk_target()
-    ))
+    ndk_bin_dir(ndk_path).join(format!("{}{api_level}-{suffix}", abi.ndk_target()))
 }
 
 /// Get the NDK clang linker path for the given ABI.
-fn ndk_linker_path(ndk_path: &Path, abi: AndroidAbi) -> PathBuf {
-    ndk_clang_path(ndk_path, abi, false)
+fn ndk_linker_path(ndk_path: &Path, abi: AndroidAbi, api_level: u32) -> PathBuf {
+    ndk_clang_path(ndk_path, abi, false, api_level)
 }
 
 /// Create a wrapper `CMake` toolchain file that sets `ANDROID_ABI` before including
@@ -120,6 +116,7 @@ fn ndk_linker_path(ndk_path: &Path, abi: AndroidAbi) -> PathBuf {
 async fn create_android_toolchain_wrapper(
     ndk_path: &Path,
     abi: AndroidAbi,
+    api_level: u32,
 ) -> eyre::Result<PathBuf> {
     // Create wrapper in a temp directory that persists for the build
     let wrapper_dir = std::env::temp_dir().join("waterui-cmake-toolchains");
@@ -131,9 +128,9 @@ async fn create_android_toolchain_wrapper(
     let content = format!(
         include_str!("android_toolchain_wrapper.cmake.tpl"),
         abi = abi.as_str(),
-        api_level = ANDROID_MIN_API_LEVEL,
+        api_level = api_level,
         ndk_toolchain = ndk_toolchain.display(),
-        asm_compiler = ndk_clang_path(ndk_path, abi, false).display(),
+        asm_compiler = ndk_clang_path(ndk_path, abi, false, api_level).display(),
     );
     fs::write(&wrapper_path, content).await?;
 
@@ -141,8 +138,8 @@ async fn create_android_toolchain_wrapper(
 }
 
 /// Get the NDK clang++ (C++ compiler) path for the given ABI.
-fn ndk_cxx_path(ndk_path: &Path, abi: AndroidAbi) -> PathBuf {
-    ndk_clang_path(ndk_path, abi, true)
+fn ndk_cxx_path(ndk_path: &Path, abi: AndroidAbi, api_level: u32) -> PathBuf {
+    ndk_clang_path(ndk_path, abi, true, api_level)
 }
 
 /// Get the path to `libc++_shared.so` in the NDK.
@@ -365,7 +362,11 @@ impl AndroidPlatform {
 
         let abi = self.abi();
         let triple = self.triple();
-        let build_context = resolve_android_build_context(abi, &triple).await?;
+        let min_api_level = project
+            .resolved_framework()
+            .await?
+            .android_min_api_level()?;
+        let build_context = resolve_android_build_context(abi, &triple, min_api_level).await?;
         let build = configure_android_rust_build(project, &triple, &build_context, &options)
             .await?
             .with_target_dir(project.water_target_dir(options.linkage()).await?);
@@ -483,20 +484,34 @@ impl AndroidPlatform {
 async fn resolve_android_build_context(
     abi: AndroidAbi,
     triple: &Triple,
+    api_level: u32,
 ) -> eyre::Result<AndroidBuildContext> {
     let ndk_path = AndroidNdk::detect_path().ok_or_else(|| {
         eyre::eyre!("Android NDK not found. Please install it via Android Studio.")
     })?;
-    let linker = ndk_linker_path(&ndk_path, abi);
+    let linker = ndk_linker_path(&ndk_path, abi, api_level);
     let ar = ndk_ar_path(&ndk_path);
-    let cxx = ndk_cxx_path(&ndk_path, abi);
+    let cxx = ndk_cxx_path(&ndk_path, abi, api_level);
+    // The toolchain gate only proves the NDK's host toolchain executes; the
+    // wrapper for the framework's floor is a separate fact, and a missing one
+    // otherwise surfaces minutes later as a linker cargo cannot find.
+    for wrapper in [&linker, &cxx] {
+        if !wrapper.is_file() {
+            eyre::bail!(
+                "the Android NDK at {} ships no compiler wrapper for API {api_level} \
+                 ({}); the framework's android-min-api-level needs an NDK that targets it",
+                ndk_path.display(),
+                wrapper.display()
+            );
+        }
+    }
     let target_underscore = triple.to_string().replace('-', "_");
     let target_upper = target_underscore.to_uppercase();
     let llvm_envs = resolve_windows_arm64_llvm_envs().await?;
     let (java_home, java_bin_dir) = resolve_java_home().await?;
     let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = resolve_kotlin_home().await?;
     let (sdk_path, android_jar) = resolve_android_sdk_paths().await?;
-    let wrapper_toolchain = create_android_toolchain_wrapper(&ndk_path, abi).await?;
+    let wrapper_toolchain = create_android_toolchain_wrapper(&ndk_path, abi, api_level).await?;
 
     Ok(AndroidBuildContext {
         abi,
@@ -515,7 +530,7 @@ async fn resolve_android_build_context(
         sdk_path,
         android_jar,
         wrapper_toolchain,
-        android_platform: format!("android-{ANDROID_MIN_API_LEVEL}"),
+        android_platform: format!("android-{api_level}"),
     })
 }
 

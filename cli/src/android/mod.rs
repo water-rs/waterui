@@ -1,8 +1,5 @@
 //! Android platform support.
 
-/// Oldest Android API level supported by the native runtime and its `AAudio` backend.
-pub(crate) const ANDROID_MIN_API_LEVEL: u32 = 26;
-
 /// Android backend implementation.
 pub mod backend;
 /// Android device detection and management.

@@ -53,6 +53,9 @@ categories = ["gui"]
 [package.metadata.waterui]
 # The lowest CLI version that may consume this framework revision.
 minimum-cli-version = "0.2.1"
+# The Android API floor the native runtime supports; the backend's Gradle
+# `minSdk` must agree.
+android-min-api-level = 26
 # Git repositories the native backends are pinned from; the submodule of the
 # same name under `backends/` supplies each `{name}-backend-revision` pin.
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"

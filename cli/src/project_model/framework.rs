@@ -256,7 +256,10 @@ impl ResolvedFramework {
         project_root: &Path,
     ) -> Result<Self> {
         if let Some(framework) = &manifest.framework {
-            return Ok(framework.clone());
+            return framework.clone().validated().wrap_err(
+                "the recorded framework selection predates a metadata key this CLI \
+                 requires; re-run `water channel` to resolve it again",
+            );
         }
         let Some(waterui_path) = &manifest.waterui_path else {
             bail!(
@@ -305,7 +308,7 @@ impl ResolvedFramework {
             );
         }
         complete_scaffold(&mut scaffold, &submodules, &lock)?;
-        Ok(Self {
+        Self {
             source: Source::Local {
                 root: root.to_path_buf(),
             },
@@ -314,7 +317,17 @@ impl ResolvedFramework {
             scaffold,
             packages: BTreeMap::new(),
             patches: PatchSet::default(),
-        })
+        }
+        .validated()
+    }
+
+    /// Hold the framework to the metadata keys the CLI reads later without a
+    /// `Result` in hand — the scaffold's `minSdk` above all. A framework that
+    /// reaches a template context has passed here, so a template accessor
+    /// failing on it is an internal invariant, not an input error.
+    fn validated(self) -> Result<Self> {
+        self.android_min_api_level()?;
+        Ok(self)
     }
 
     /// Resolve a certified framework manifest (`framework.json`) from disk —
@@ -358,6 +371,44 @@ impl ResolvedFramework {
         self.scaffold
             .get(key)
             .unwrap_or_else(|| panic!("resolved framework carries no `{key}` scaffold metadata"))
+    }
+
+    /// The Android API floor the selected framework's native runtime
+    /// supports — the `android-min-api-level` its
+    /// `[package.metadata.waterui]` table declares. The backend's Gradle
+    /// `minSdk` declares the same floor independently; CI holds the two to
+    /// agreement.
+    ///
+    /// # Errors
+    /// Returns an error when the resolved framework's metadata does not
+    /// declare a valid `android-min-api-level` integer.
+    pub(crate) fn android_min_api_level(&self) -> Result<u32> {
+        const KEY: &str = "package.metadata.waterui.android-min-api-level";
+        let origin = match &self.source {
+            Source::Stable { release } => release.as_ref().map_or_else(
+                || "the stable framework manifest".to_owned(),
+                |release| format!("the framework manifest certified by {}", release.tag),
+            ),
+            Source::Dev {
+                repository,
+                revision,
+                ..
+            }
+            | Source::Nightly {
+                repository,
+                revision,
+                ..
+            } => format!("the framework manifest at {repository}@{revision}"),
+            Source::Local { root } => format!("{}", root.join("Cargo.toml").display()),
+        };
+        let value = self
+            .metadata
+            .get("android-min-api-level")
+            .ok_or_else(|| eyre!("{origin} does not declare {KEY}"))?;
+        value
+            .as_integer()
+            .and_then(|level| u32::try_from(level).ok())
+            .ok_or_else(|| eyre!("{origin} declares an invalid {KEY}: {value}"))
     }
 
     pub(crate) fn patches(&self) -> PatchSet {
@@ -831,7 +882,8 @@ impl ResolvedFramework {
                 scaffold,
                 packages,
                 patches,
-            },
+            }
+            .validated()?,
             lockfile,
         ))
     }
@@ -1299,7 +1351,9 @@ pub(crate) mod test_fixtures {
                 }),
             },
             minimum_cli_version: None,
-            metadata: toml::Table::new(),
+            metadata: toml::toml! {
+                android-min-api-level = 26
+            },
             scaffold,
             packages: BTreeMap::new(),
             patches: PatchSet::default(),
@@ -1670,7 +1724,9 @@ mod tests {
                 lock_sha256: hex::encode(Sha256::digest(&bytes)),
             },
             minimum_cli_version: None,
-            metadata: toml::Table::new(),
+            metadata: toml::toml! {
+                android-min-api-level = 26
+            },
             packages: resolve_packages(&scaffold, lock, repository, &revision).unwrap(),
             scaffold,
             patches: PatchSet::default(),
@@ -1716,6 +1772,22 @@ mod tests {
         metadata["minimum-cli-version"] = toml::Value::String(">=0.1.4".into());
         assert!(minimum_cli_version(&metadata).is_err());
         assert!(minimum_cli_version(&toml::Table::new()).unwrap().is_none());
+    }
+
+    #[test]
+    fn android_min_api_level_is_required_framework_metadata() {
+        assert_eq!(stable_framework().android_min_api_level().unwrap(), 26);
+
+        let mut missing = stable_framework();
+        missing.metadata.remove("android-min-api-level");
+        let error = missing.android_min_api_level().unwrap_err().to_string();
+        assert!(error.contains("android-min-api-level"), "{error}");
+        assert!(error.contains("v0.4.1"), "{error}");
+
+        let mut invalid = stable_framework();
+        invalid.metadata["android-min-api-level"] = toml::Value::String("26".to_owned());
+        let error = invalid.android_min_api_level().unwrap_err().to_string();
+        assert!(error.contains("android-min-api-level"), "{error}");
     }
 
     #[test]
@@ -2095,7 +2167,9 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             lockfiles: BTreeMap::from([("Cargo.lock".to_owned(), "f".repeat(64))]),
             submodules: BTreeMap::new(),
             scaffold: BTreeMap::new(),
-            metadata: toml::Table::new(),
+            metadata: toml::toml! {
+                android-min-api-level = 26
+            },
         }
     }
 
@@ -2189,6 +2263,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             },
             "metadata": {
                 "minimum-cli-version": "0.1.0",
+                "android-min-api-level": 26,
             },
         });
         std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();

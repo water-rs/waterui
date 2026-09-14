@@ -2171,8 +2171,35 @@ async fn verify_android_platform_tools_executable(
     ))
 }
 
+/// An `aarch64-linux-android<api>-clang` wrapper from the first NDK prebuilt
+/// host toolchain that ships one (its lowest API level, so the probe is
+/// deterministic). Every API-level wrapper execs the same `clang`, so one
+/// running proves the toolchain executes on this host. This check has no
+/// resolved framework to read a floor from; the wrapper for the floor a build
+/// targets is required on the build path in `platform.rs`.
 fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
-    use super::ANDROID_MIN_API_LEVEL;
+    let wrapper_suffix = if cfg!(target_os = "windows") {
+        "-clang.cmd"
+    } else {
+        "-clang"
+    };
+    let clang_wrapper = |bin_dir: &Path| {
+        std::fs::read_dir(bin_dir)
+            .ok()?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let api_level = entry
+                    .file_name()
+                    .to_str()?
+                    .strip_prefix("aarch64-linux-android")?
+                    .strip_suffix(wrapper_suffix)?
+                    .parse::<u32>()
+                    .ok()?;
+                Some((api_level, entry.path()))
+            })
+            .min_by_key(|(api_level, _)| *api_level)
+            .map(|(_, path)| path)
+    };
 
     let prebuilt_dir = ndk_path.join("toolchains/llvm/prebuilt");
     let entries = std::fs::read_dir(&prebuilt_dir).ok()?;
@@ -2183,22 +2210,9 @@ fn ndk_host_clang_path(ndk_path: &Path) -> Option<PathBuf> {
         .collect::<Vec<_>>();
     candidates.sort();
 
-    for candidate in candidates {
-        let executable = format!(
-            "aarch64-linux-android{ANDROID_MIN_API_LEVEL}-clang{}",
-            if cfg!(target_os = "windows") {
-                ".cmd"
-            } else {
-                ""
-            }
-        );
-        let clang = candidate.join("bin").join(executable);
-        if clang.exists() {
-            return Some(clang);
-        }
-    }
-
-    None
+    candidates
+        .iter()
+        .find_map(|candidate| clang_wrapper(&candidate.join("bin")))
 }
 
 async fn verify_ndk_host_toolchain_executable(
@@ -2206,7 +2220,7 @@ async fn verify_ndk_host_toolchain_executable(
 ) -> Result<(), ToolchainError<AndroidNdkInstallation>> {
     let clang_path = ndk_host_clang_path(ndk_path).ok_or_else(|| {
         ToolchainError::unfixable(
-            "Android NDK toolchain is incomplete (`clang` was not found under toolchains/llvm/prebuilt).",
+            "Android NDK toolchain is incomplete (no `aarch64-linux-android*-clang` wrapper was found under toolchains/llvm/prebuilt).",
             android_ndk_install_suggestion(),
         )
     })?;
