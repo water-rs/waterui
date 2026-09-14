@@ -155,6 +155,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_spacerId<'local>(
     super::with_env(&mut env, |env| type_id_to_java(env, type_id).into_raw())
 }
 
+#[cfg(feature = "webview")]
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webViewId<'local>(
     mut env: EnvUnowned<'local>,
@@ -164,6 +165,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webViewId<'local>(
     super::with_env(&mut env, |env| type_id_to_java(env, type_id).into_raw())
 }
 
+#[cfg(feature = "webview")]
 #[unsafe(no_mangle)]
 /// Forces an owned view handle into its `WebView` descriptor.
 ///
@@ -303,6 +305,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallGpuRuntime<
 }
 
 /// Install web view controller in the environment.
+#[cfg(feature = "webview")]
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallWebViewController<'local>(
     mut env: EnvUnowned<'local>,

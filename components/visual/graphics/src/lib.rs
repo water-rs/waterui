@@ -14,7 +14,6 @@ pub mod color;
 mod effects;
 #[cfg(feature = "gpu")]
 mod gpu;
-#[cfg(feature = "gpu")]
 mod gradients;
 #[cfg(feature = "gpu")]
 mod image;
@@ -32,6 +31,9 @@ pub use gpu::{
 };
 #[cfg(feature = "gpu")]
 pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
+pub use gradients::gradient::{
+    Gradient, GradientConfig, GradientType, ResolvedGradient, ResolvedGradientStop,
+};
 #[cfg(feature = "gpu")]
 pub use image::{image_analysis, image_decode, image_generator};
 #[cfg(feature = "cpu-scene")]
@@ -78,9 +80,7 @@ pub use animated_mesh_gradient::{
     ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig,
 };
 #[cfg(feature = "gpu")]
-pub use gradient_renderer::{
-    Gradient, GradientConfig, GradientType, MeshGradient, ResolvedGradient, ResolvedGradientStop,
-};
+pub use gradient_renderer::MeshGradient;
 
 #[cfg(feature = "gpu")]
 pub use view_effect::{

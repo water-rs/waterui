@@ -1896,6 +1896,7 @@ impl ToJavaStruct for crate::components::picture::WuiPicture {
 }
 
 /// `*mut WuiWebView -> WebViewStruct(webviewPtr)`
+#[cfg(feature = "webview")]
 impl ToJavaStruct for *mut crate::components::webview::WuiWebView {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
