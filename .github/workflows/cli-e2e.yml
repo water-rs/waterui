@@ -354,8 +354,11 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          # The fresh user's home itself is not traversable by default — the
+          # console user needs +x on it to reach the project inside.
+          sudo chmod a+x "/Users/$E2E_USER"
           sudo chmod -R a+rwX "/Users/$E2E_USER/e2eplay" "/Users/$E2E_USER/e2e-logs"
-          cd "/Users/$E2E_USER/e2eplay"
+          cd "/Users/$E2E_USER/e2eplay" || exit 1
           water run > "$RUNNER_TEMP/run-play.log" 2>&1 &
           run_pid=$!
           started=1
@@ -373,7 +376,10 @@ jobs:
           fi
           kill "$run_pid" 2>/dev/null; sleep 2; kill -9 "$run_pid" 2>/dev/null
           pkill -f 'e2eplay' 2>/dev/null || true
-          cp "$RUNNER_TEMP/run-play.log" "/Users/$E2E_USER/e2e-logs/run-play.log"
+          cp "$RUNNER_TEMP/run-play.log" "/Users/$E2E_USER/e2e-logs/run-play.log" || true
+          if [ "$started" -ne 0 ]; then
+            tail -30 "$RUNNER_TEMP/run-play.log" 2>/dev/null || true
+          fi
           if [ "$started" -eq 1 ]; then
             echo "::error::water run never reported 'Application started'"
           fi
