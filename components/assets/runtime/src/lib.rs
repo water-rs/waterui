@@ -47,7 +47,6 @@ mod data;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 mod large_file;
 
-pub use waterui_assets_core::{AssetError, AssetKind, WINDOW_ICON_FILE};
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub use bundle::{
     AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFileAsset, VideoAsset, bundle_root,
@@ -55,10 +54,11 @@ pub use bundle::{
 pub use data::Data;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub use large_file::LargeFile;
-#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-pub use waterui_assets_core::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 #[cfg(all(feature = "std", target_arch = "wasm32"))]
 pub use waterui_assets_core::download_remote_bytes;
+pub use waterui_assets_core::{AssetError, AssetKind, WINDOW_ICON_FILE};
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+pub use waterui_assets_core::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 #[cfg(feature = "std")]
 pub use waterui_assets_core::{ensure_http_allowed, is_loopback_http_url, is_remote_url};
 
