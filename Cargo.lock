@@ -10807,7 +10807,7 @@ version = "0.1.2"
 dependencies = [
  "heck",
  "serde",
- "syn 3.0.3",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "toml 1.1.6+spec-1.1.0",

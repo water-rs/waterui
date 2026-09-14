@@ -406,7 +406,7 @@ impl AndroidPlatform {
         let backend_path = project.backend_path::<AndroidBackend>();
 
         // Copy project assets and dependency fonts
-        copy_assets_and_fonts(project, &backend_path).await?;
+        copy_assets_and_fonts(project, &backend_path, None).await?;
 
         let gradlew = backend_path.join(if cfg!(windows) {
             "gradlew.bat"
@@ -872,16 +872,21 @@ pub const fn is_android_platform(platform: TargetPlatform) -> bool {
 // ============================================================================
 
 /// Copy project assets and dependency fonts to the Android assets directory.
-async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::Result<()> {
+async fn copy_assets_and_fonts(
+    project: &Project,
+    backend_path: &Path,
+    sccache_path: Option<&Path>,
+) -> eyre::Result<()> {
     let assets_dir = backend_path.join("app/src/main/assets");
 
     // Stage project assets using platform-native conventions.
-    assets::stage_project_assets_for_android(project, backend_path).await?;
+    let manifest =
+        assets::stage_project_assets_for_android(project, backend_path, sccache_path).await?;
 
     // Scan and resolve dependency fonts
     let font_declarations = assets::scan_fonts(project).await?;
     let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
-    resolved_fonts.extend(assets::scan_project_font_assets(project)?);
+    resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 
     if !resolved_fonts.is_empty() {
         // Copy fonts to assets/fonts/

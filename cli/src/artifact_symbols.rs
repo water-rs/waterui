@@ -257,4 +257,25 @@ mod tests {
             );
         });
     }
+
+    /// `#[used]` is linker-retained (`no_dead_strip` on Mach-O), so every
+    /// `waterui_meta_*` static is `#[cfg(debug_assertions)]`: a release rlib
+    /// must carry none. Discovery never reads the target build anyway — the
+    /// CLI builds a dev-profile host rlib.
+    #[test]
+    fn release_rlib_carries_no_meta_statics() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meta_static");
+        let status = std::process::Command::new("cargo")
+            .args(["build", "--lib", "--release"])
+            .current_dir(&fixture)
+            .status()
+            .expect("cargo build --release runs");
+        assert!(status.success(), "the release fixture build must succeed");
+        let symbols = ArtifactSymbols::read(&fixture.join("target/release/libmeta_static.rlib"))
+            .expect("release rlib should parse");
+        assert!(
+            symbols.leaves_with_prefix("waterui_meta_").is_empty(),
+            "a release rlib must not carry waterui_meta_* statics"
+        );
+    }
 }
