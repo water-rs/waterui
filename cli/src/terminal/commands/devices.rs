@@ -10,6 +10,8 @@ use crate::shell::Shell;
 use crate::{header, line};
 use smol::future::zip;
 use smol::process::Command;
+#[cfg(feature = "esp32")]
+use waterui_cli::esp32::platform::{SerialPortSummary, scan_serial_ports};
 use waterui_cli::{
     android::{
         AndroidSdk,
@@ -17,7 +19,6 @@ use waterui_cli::{
     },
     apple::device::AppleSimulator,
     device::Device,
-    esp32::platform::{SerialPortSummary, scan_serial_ports},
 };
 
 /// Target platform for device listing.
@@ -64,8 +65,13 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             display_macos_devices(shell);
         }
         TargetPlatform::Esp32 => {
-            let ports = scan_serial_ports().await?;
-            display_esp32_devices(shell, &ports);
+            #[cfg(feature = "esp32")]
+            {
+                let ports = scan_serial_ports().await?;
+                display_esp32_devices(shell, &ports);
+            }
+            #[cfg(not(feature = "esp32"))]
+            bail!("ESP32 serial port scanning requires the `esp32` feature of waterui-cli");
         }
         TargetPlatform::All => {
             // Fast-fail only when adb is unavailable.
@@ -78,7 +84,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                     scan_ios_devices(),
                     scan_android_devices(AndroidSdk::emulator_path(), adb_path),
                 ),
-                scan_serial_ports(),
+                scan_esp32_ports(),
             )
             .await;
 
@@ -93,7 +99,10 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                 display_android_devices(shell, &avds, &devices, &running_avds);
             }
             display_macos_devices(shell);
+            #[cfg(feature = "esp32")]
             display_esp32_devices(shell, &serial_ports?);
+            #[cfg(not(feature = "esp32"))]
+            let _ = serial_ports;
         }
     }
 
@@ -138,15 +147,20 @@ async fn run_json(shell: &Shell, args: Args) -> Result<()> {
             esp32: None,
         },
         TargetPlatform::Esp32 => {
-            let ports = scan_serial_ports().await?;
-            DevicesJsonOutput {
-                ty: "devices",
-                platform: "esp32",
-                ios: None,
-                android: None,
-                macos: None,
-                esp32: Some(json_esp32_devices(&ports)),
+            #[cfg(feature = "esp32")]
+            {
+                let ports = scan_serial_ports().await?;
+                DevicesJsonOutput {
+                    ty: "devices",
+                    platform: "esp32",
+                    ios: None,
+                    android: None,
+                    macos: None,
+                    esp32: Some(json_esp32_devices(&ports)),
+                }
             }
+            #[cfg(not(feature = "esp32"))]
+            bail!("ESP32 serial port scanning requires the `esp32` feature of waterui-cli");
         }
         TargetPlatform::All => {
             // Fast-fail only when adb is unavailable.
@@ -156,11 +170,18 @@ async fn run_json(shell: &Shell, args: Args) -> Result<()> {
                     scan_ios_devices(),
                     scan_android_devices(AndroidSdk::emulator_path(), adb_path),
                 ),
-                scan_serial_ports(),
+                scan_esp32_ports(),
             )
             .await;
             let ios_devices = ios_devices?;
             let (avds, devices, running_avds) = android_result?;
+            #[cfg(feature = "esp32")]
+            let esp32 = Some(json_esp32_devices(&serial_ports?));
+            #[cfg(not(feature = "esp32"))]
+            let esp32: Option<Vec<JsonEsp32Device>> = {
+                let _ = serial_ports;
+                None
+            };
 
             DevicesJsonOutput {
                 ty: "devices",
@@ -171,7 +192,7 @@ async fn run_json(shell: &Shell, args: Args) -> Result<()> {
                     id: "local".to_string(),
                     name: "Current Machine".to_string(),
                 }]),
-                esp32: Some(json_esp32_devices(&serial_ports?)),
+                esp32,
             }
         }
     };
@@ -294,7 +315,19 @@ fn display_macos_devices(shell: &Shell) {
     line!(shell, "  ● Current Machine");
 }
 
+#[cfg(feature = "esp32")]
+async fn scan_esp32_ports() -> Result<Vec<SerialPortSummary>> {
+    scan_serial_ports().await
+}
+
+#[cfg(not(feature = "esp32"))]
+#[expect(clippy::unused_async)]
+async fn scan_esp32_ports() -> Result<Vec<()>> {
+    Ok(Vec::new())
+}
+
 /// Display ESP32 serial ports.
+#[cfg(feature = "esp32")]
 fn display_esp32_devices(shell: &Shell, ports: &[SerialPortSummary]) {
     header!(shell, "ESP32 (serial)");
 
@@ -422,6 +455,7 @@ fn json_android_section(
     JsonAndroidSection { emulators, devices }
 }
 
+#[cfg(feature = "esp32")]
 fn json_esp32_devices(ports: &[SerialPortSummary]) -> Vec<JsonEsp32Device> {
     ports
         .iter()

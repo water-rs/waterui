@@ -19,6 +19,18 @@ use crate::{
     templates::{self, Esp32TemplateEntry, TemplateContext},
 };
 
+#[cfg(feature = "esp32")]
+fn subset_font(path: &Path, ranges: &str, output_dir: &Path) -> eyre::Result<PathBuf> {
+    crate::esp32::fonts::subset_into(path, ranges, output_dir)
+}
+
+#[cfg(not(feature = "esp32"))]
+fn subset_font(_path: &Path, _ranges: &str, _output_dir: &Path) -> eyre::Result<PathBuf> {
+    color_eyre::eyre::bail!(
+        "[backends.esp32] font_ranges requires the `esp32` feature of waterui-cli"
+    )
+}
+
 /// Configuration for the ESP32 backend in a `WaterUI` project.
 ///
 /// `[backends.esp32]` in `Water.toml`
@@ -151,7 +163,7 @@ impl Esp32Backend {
                 let path = if ranges.is_empty() {
                     path
                 } else {
-                    crate::esp32::fonts::subset_into(&path, &ranges, harness_fonts_dir)?
+                    subset_font(&path, &ranges, harness_fonts_dir)?
                 };
                 Ok(path.to_string_lossy().into_owned())
             })

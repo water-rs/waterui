@@ -20,7 +20,7 @@ use waterui_assets_core::{AtomicWriteOutcome, download_remote_bytes, write_bytes
 use crate::project::Project;
 use crate::project_model::project_types::PermissionKey;
 
-mod icon;
+pub mod icon;
 mod unified;
 mod web;
 

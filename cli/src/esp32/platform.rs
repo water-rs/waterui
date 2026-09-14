@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use color_eyre::eyre::{self, Context as _, bail, eyre};
-use smol::{fs, unblock};
+use smol::fs;
+#[cfg(feature = "esp32")]
+use smol::unblock;
 use tracing::info;
 
 use crate::{
@@ -28,6 +30,7 @@ const ESP32_INIT_HINT: &str = "water run --platform esp32s3";
 ///
 /// `0x303a` is Espressif's native USB (USB-Serial-JTAG); the others are the
 /// `CP210x`, `CH34x`, and FTDI UART bridges used on classic devkits.
+#[cfg(feature = "esp32")]
 const ESP_USB_VENDOR_IDS: [u16; 4] = [0x303a, 0x10c4, 0x1a86, 0x0403];
 
 /// Check if a platform is supported by the ESP32 backend.
@@ -40,6 +43,7 @@ pub const fn is_esp32_platform(platform: TargetPlatform) -> bool {
 }
 
 /// Summary of a host serial port for device listing and board auto-detection.
+#[cfg(feature = "esp32")]
 #[derive(Debug, Clone)]
 pub struct SerialPortSummary {
     /// Host path of the serial port (e.g. `/dev/cu.usbmodem101`).
@@ -56,6 +60,7 @@ pub struct SerialPortSummary {
 ///
 /// # Errors
 /// Returns an error when the host serial subsystem cannot be enumerated.
+#[cfg(feature = "esp32")]
 pub async fn scan_serial_ports() -> eyre::Result<Vec<SerialPortSummary>> {
     let ports = unblock(serialport::available_ports)
         .await
@@ -87,6 +92,7 @@ pub async fn scan_serial_ports() -> eyre::Result<Vec<SerialPortSummary>> {
 ///
 /// # Errors
 /// Returns an error when the host serial subsystem cannot be enumerated.
+#[cfg(feature = "esp32")]
 pub async fn detect_esp_serial_port() -> eyre::Result<Option<String>> {
     let mut candidates: Vec<SerialPortSummary> = scan_serial_ports()
         .await?
@@ -329,9 +335,12 @@ pub async fn run_esp32(
         Some("qemu") => qemu_esp32(project, chip, &elf).await,
         Some(port) => flash_and_monitor(project, &elf, Some(port)).await,
         None => {
-            if let Some(port) = detect_esp_serial_port().await? {
-                info!("Flashing ESP32 board on {port}");
-                return flash_and_monitor(project, &elf, Some(&port)).await;
+            #[cfg(feature = "esp32")]
+            {
+                if let Some(port) = detect_esp_serial_port().await? {
+                    info!("Flashing ESP32 board on {port}");
+                    return flash_and_monitor(project, &elf, Some(&port)).await;
+                }
             }
             if locate_qemu(chip).await.is_some() {
                 info!("No ESP32 board connected; running under QEMU");

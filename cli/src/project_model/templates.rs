@@ -3839,14 +3839,20 @@ pub mod root {
         generate_cargo_toml(base_dir, ctx).await?;
 
         let assets_readme = format!("{assets_dir}/README.md");
-        // The WaterUI logo is the starting app icon; the planner picks up any
-        // root-level `Icon.*` asset, so replacing the file rebrands the app.
-        let assets_icon = format!("{assets_dir}/Icon.svg");
-        let templates = ROOT_TEMPLATES
+        let templates: Vec<(&str, String)> = ROOT_TEMPLATES
             .iter()
             .map(|(template, dest)| (*template, (*dest).to_string()))
             .chain(core::iter::once(("assets_readme.md.tpl", assets_readme)))
-            .chain(core::iter::once(("icon.svg", assets_icon)));
+            .collect();
+        // The WaterUI logo is the starting app icon; the planner picks up any
+        // root-level `Icon.*` asset, so replacing the file rebrands the app.
+        // Builds without SVG support scaffold a rendered PNG instead.
+        #[cfg(feature = "svg-icons")]
+        let templates = {
+            let mut templates = templates;
+            templates.push(("icon.svg", format!("{assets_dir}/Icon.svg")));
+            templates
+        };
 
         // Process remaining templates
         for (template_name, dest) in templates {
@@ -3869,6 +3875,22 @@ pub mod root {
                 )?;
                 write_file_if_changed(&dest_path, rendered.as_bytes()).await?;
             }
+        }
+
+        #[cfg(not(feature = "svg-icons"))]
+        {
+            use crate::project_model::assets::icon::{IconSource, encode_png};
+            let icon = encode_png(
+                &IconSource::default_logo()
+                    .render(1024)
+                    .map_err(io::Error::other)?,
+            )
+            .map_err(io::Error::other)?;
+            let dest = base_dir.join(format!("{assets_dir}/Icon.png"));
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            fs::write(dest, icon).await?;
         }
         Ok(())
     }
