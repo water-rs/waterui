@@ -117,6 +117,8 @@ jobs:
           sudo dscl . -passwd "/Users/$E2E_USER" "$E2E_PASS"
           sudo dscl . -append /Groups/admin GroupMembership "$E2E_USER"
           sudo createhomedir -c -u "$E2E_USER"
+          # The fresh user path-depends on the checkout under test.
+          sudo chmod -R a+rX "$GITHUB_WORKSPACE"
           # Homebrew refuses to run as anyone but the owner of its prefix; the
           # hosted image installed it for `runner`, so hand the prefix to the
           # test user on this disposable machine.
@@ -134,6 +136,8 @@ jobs:
           # doctor's apt fixes invoke `sudo`; the disposable test user gets
           # passwordless sudo for them.
           echo "$E2E_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee "/etc/sudoers.d/$E2E_USER" >/dev/null
+          # The fresh user path-depends on the checkout under test.
+          sudo chmod -R a+rX "$GITHUB_WORKSPACE"
           sudo -u "$E2E_USER" -H bash -lc 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --no-modify-path'
           sudo install -o "$E2E_USER" -m 0755 "$CARGO_HOME/bin/water" "/home/$E2E_USER/.cargo/bin/water"
           # xvfb is the run harness only — not a doctor-managed dependency.
@@ -157,6 +161,11 @@ jobs:
           # rustup-init runs AS the fresh user so `~/.cargo` lands in its own
           # profile; -LoadUserProfile materializes that profile — without it
           # %USERPROFILE% points at a directory that does not exist yet.
+          # Explicitly-set env vars are inherited by the child, so the job's
+          # CARGO_HOME/RUSTUP_HOME (runneradmin's) must be cleared or rustup
+          # installs into the wrong account's directories.
+          $cliBin = "$env:CARGO_HOME\bin\water.exe"
+          Remove-Item Env:CARGO_HOME, Env:RUSTUP_HOME -ErrorAction SilentlyContinue
           $p = Start-Process -FilePath "$env:RUNNER_TEMP\rustup-init.exe" `
             -ArgumentList '-y','--default-toolchain','none','--no-modify-path' `
             -Credential (Import-Clixml "$env:RUNNER_TEMP\e2e-cred.xml") `
@@ -168,14 +177,15 @@ jobs:
             throw "rustup-init failed as $env:E2E_USER"
           }
           New-Item -ItemType Directory -Force "C:\Users\$env:E2E_USER\.cargo\bin" | Out-Null
-          Copy-Item "$env:CARGO_HOME\bin\water.exe" "C:\Users\$env:E2E_USER\.cargo\bin\water.exe" -Force
+          Copy-Item $cliBin "C:\Users\$env:E2E_USER\.cargo\bin\water.exe" -Force
 
       - name: Doctor, scaffold, build and package as the fresh user (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          sudo -u "$E2E_USER" -H env E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" bash -s <<'SCRIPT'
+          sudo -u "$E2E_USER" -H env E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" \
+            WATERUI_SRC="$GITHUB_WORKSPACE" bash -s <<'SCRIPT'
           set -uo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
           mkdir -p "$HOME/e2e-logs"
@@ -199,10 +209,13 @@ jobs:
           # Android device, no AVD) may remain missing.
           water doctor 2>&1 | tee e2e-logs/doctor-after.log
 
-          water create e2eapp --mode app --backends "$E2E_BACKEND" --channel dev \
+          # Scaffold against the checkout under test — the nightly signal is
+          # this commit, not a released framework. (The dev channel's patch
+          # rebase is separately broken — #807.)
+          water create e2eapp --mode app --backends "$E2E_BACKEND" --waterui-path "$WATERUI_SRC" \
             2>&1 | tee e2e-logs/create-app.log || fail "water create app failed"
           [ -f e2eapp/Water.toml ] || fail "e2eapp scaffold has no Water.toml"
-          water create e2eplay --mode playground --channel dev \
+          water create e2eplay --mode playground --waterui-path "$WATERUI_SRC" \
             2>&1 | tee e2e-logs/create-play.log || fail "water create playground failed"
           [ -f e2eplay/Water.toml ] || fail "e2eplay scaffold has no Water.toml"
 
@@ -242,10 +255,13 @@ jobs:
 
           water doctor 2>&1 | Tee-Object "$logs\doctor-after.log"
 
-          water create e2eapp --mode app --backends $env:E2E_BACKEND --channel dev 2>&1 |
+          # Scaffold against the checkout under test — the nightly signal is
+          # this commit, not a released framework. (The dev channel's patch
+          # rebase is separately broken — #807.)
+          water create e2eapp --mode app --backends $env:E2E_BACKEND --waterui-path "$env:GITHUB_WORKSPACE" 2>&1 |
             Tee-Object "$logs\create-app.log"
           if ($LASTEXITCODE -or -not (Test-Path "e2eapp\Water.toml")) { Fail "water create app failed" }
-          water create e2eplay --mode playground --channel dev 2>&1 |
+          water create e2eplay --mode playground --waterui-path "$env:GITHUB_WORKSPACE" 2>&1 |
             Tee-Object "$logs\create-play.log"
           if ($LASTEXITCODE -or -not (Test-Path "e2eplay\Water.toml")) { Fail "water create playground failed" }
 
@@ -287,6 +303,10 @@ jobs:
           }
           '@
           Set-Content -Path "$env:RUNNER_TEMP\cli-e2e.ps1" -Value $e2e -Encoding UTF8
+          # Keep the job's CARGO_HOME/RUSTUP_HOME (runneradmin's) out of the
+          # fresh user's process — doctor's rustup calls must land in its own
+          # profile.
+          Remove-Item Env:CARGO_HOME, Env:RUSTUP_HOME -ErrorAction SilentlyContinue
           $p = Start-Process -FilePath pwsh `
             -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:RUNNER_TEMP\cli-e2e.ps1" `
             -Credential (Import-Clixml "$env:RUNNER_TEMP\e2e-cred.xml") `
