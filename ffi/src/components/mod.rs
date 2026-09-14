@@ -35,9 +35,9 @@ pub use layouting::{layout, lazy, list};
 #[cfg(feature = "media")]
 pub use media::video;
 pub use nav::navigation;
-pub use platform::{dynamic, icon};
 #[cfg(feature = "webview")]
 pub use platform::webview;
+pub use platform::{dynamic, icon};
 pub use typography::text;
 #[cfg(all(feature = "android-jni", feature = "gpu"))]
 pub(crate) use visual::gpu_runtime;

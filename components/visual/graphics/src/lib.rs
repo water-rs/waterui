@@ -29,11 +29,11 @@ pub use gpu::{
     gpu_surface, input, pipeline, reactive_color, shader_source, shader_surface, shared_context,
     texture,
 };
-#[cfg(feature = "gpu")]
-pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
 pub use gradients::gradient::{
     Gradient, GradientConfig, GradientType, ResolvedGradient, ResolvedGradientStop,
 };
+#[cfg(feature = "gpu")]
+pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
 #[cfg(feature = "gpu")]
 pub use image::{image_analysis, image_decode, image_generator};
 #[cfg(feature = "cpu-scene")]
