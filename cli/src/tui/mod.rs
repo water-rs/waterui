@@ -35,7 +35,7 @@ async fn launcher_dir(project: &Project) -> eyre::Result<PathBuf> {
         .join("tui"))
 }
 
-fn template_context(project: &Project, dir: &Path) -> TemplateContext {
+async fn template_context(project: &Project, dir: &Path) -> eyre::Result<TemplateContext> {
     let manifest = project.manifest();
     let app_name = manifest
         .package
@@ -43,15 +43,20 @@ fn template_context(project: &Project, dir: &Path) -> TemplateContext {
         .chars()
         .filter(|c| c.is_alphanumeric())
         .collect::<String>();
-    TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
-        .with_backend_project_path(dir.to_path_buf())
-        .with_project_root_path(project.root().to_path_buf())
+    Ok(TemplateContext::for_project_manifest(
+        manifest,
+        project.crate_name().clone(),
+        app_name,
+        &project.resolved_framework().await?,
+    )
+    .with_backend_project_path(dir.to_path_buf())
+    .with_project_root_path(project.root().to_path_buf()))
 }
 
 /// Whether the generated launcher's sources differ from what the current
 /// templates would produce for this project.
-fn requires_regeneration(project: &Project, dir: &Path) -> eyre::Result<bool> {
-    let ctx = template_context(project, dir);
+async fn requires_regeneration(project: &Project, dir: &Path) -> eyre::Result<bool> {
+    let ctx = template_context(project, dir).await?;
     for (relative, expected) in
         templates::tui::rendered_outputs(&ctx, project.tui_backend_crate_name().as_str())?
     {
@@ -72,8 +77,8 @@ fn requires_regeneration(project: &Project, dir: &Path) -> eyre::Result<bool> {
 /// fails, or the launcher's sources cannot be written.
 pub async fn ensure_launcher(project: &Project) -> eyre::Result<PathBuf> {
     let dir = launcher_dir(project).await?;
-    if requires_regeneration(project, &dir)? {
-        let ctx = template_context(project, &dir);
+    if requires_regeneration(project, &dir).await? {
+        let ctx = template_context(project, &dir).await?;
         templates::tui::scaffold(&dir, &ctx, project.tui_backend_crate_name().as_str()).await?;
     }
     Ok(dir)

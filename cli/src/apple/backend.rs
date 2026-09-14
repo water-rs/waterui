@@ -175,14 +175,21 @@ impl Backend for AppleBackend {
             .linked_browser_engine()
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
-        let ctx =
-            TemplateContext::for_project_manifest(manifest, crate_name_for_template, app_name)
-                .with_backend_project_path(project.backend_path::<Self>())
-                .with_project_root_path(project.root().to_path_buf())
-                .with_ios_permissions(ios_permissions)
-                .with_webview_enabled(webview_enabled)
-                .with_chromium_enabled(chromium_enabled)
-                .with_browser_engine(browser_engine);
+        let ctx = TemplateContext::for_project_manifest(
+            manifest,
+            crate_name_for_template,
+            app_name,
+            &project
+                .resolved_framework()
+                .await
+                .map_err(crate::backend::FailToInitBackend::Config)?,
+        )
+        .with_backend_project_path(project.backend_path::<Self>())
+        .with_project_root_path(project.root().to_path_buf())
+        .with_ios_permissions(ios_permissions)
+        .with_webview_enabled(webview_enabled)
+        .with_chromium_enabled(chromium_enabled)
+        .with_browser_engine(browser_engine);
 
         templates::apple::scaffold(&project.backend_path::<Self>(), &ctx)
             .await

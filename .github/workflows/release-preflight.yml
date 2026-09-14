@@ -155,6 +155,20 @@ jobs:
           while IFS= read -r crate; do
             cp "$crate" "$reg/$(basename "$(dirname "$crate")")-$(basename "$crate")"
           done < <(find "$reg/index/crates" -name '*.crate')
+      # The stable channel resolves a `framework.json` published on the
+      # framework's GitHub release — which does not exist yet. The gate
+      # certifies the candidate with the same generator the release job runs
+      # and hands it to `water create` directly; this is also the generator's
+      # own end-to-end test.
+      - name: Certify the candidate framework manifest
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          tag="v$(cargo metadata --format-version 1 --no-deps \
+            --manifest-path Cargo.toml \
+            | jq -r '.packages[] | select(.name == "waterui") | .version')"
+          python3 .github/scripts/framework_manifest.py stable \
+            --tag "$tag" --revision "$GITHUB_SHA"
       - name: Install the packaged CLI and scaffold a project
         run: |
           set -euo pipefail
@@ -182,7 +196,8 @@ jobs:
             --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
             | jq -r '.packages[] | select(.name == "waterui-cli") | .version')
           cargo install waterui-cli --version "$cli_version"
-          water create gate --mode playground
+          water create gate --mode playground \
+            --framework-manifest "$GITHUB_WORKSPACE/framework.json"
       - name: Resolve and build the scaffolded project
         run: |
           set -euo pipefail

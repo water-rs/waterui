@@ -204,6 +204,8 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
         package_type: PackageType::Playground,
         waterui_path: waterui_path.clone(),
         channel: None,
+        framework_manifest: None,
+        framework: None,
         author: String::new(),
     };
 
@@ -217,11 +219,11 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
 
     let ctx = TemplateContext::for_support_playground(
         "WaterUI Inspector",
-        "WaterUIInspector",
         project.crate_name().clone(),
         crate::project_types::BundleIdentifier::try_from("dev.waterui.inspector")
             .expect("inspector support bundle identifier must be valid"),
         waterui_path,
+        &project.resolved_framework().await?,
         false,
         None,
     );

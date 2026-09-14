@@ -702,6 +702,7 @@ async fn write_hydrolysis_web_shell(project: &Project, site_root: &Path) -> eyre
         project.manifest(),
         project.crate_name().clone(),
         app_name,
+        &project.resolved_framework().await?,
     );
 
     fs::write(

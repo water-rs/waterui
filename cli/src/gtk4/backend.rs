@@ -76,14 +76,17 @@ impl Gtk4Backend {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
-        Ok(
-            TemplateContext::for_project_manifest(manifest, project.crate_name().clone(), app_name)
-                .with_backend_project_path(project.backend_path::<Self>())
-                .with_project_root_path(project.root().to_path_buf())
-                .with_webview_enabled(project.links_runtime_package("waterui-webview").await?)
-                .with_chromium_enabled(project.links_runtime_package("waterui-chromium").await?)
-                .with_browser_engine(project.linked_browser_engine().await?),
+        Ok(TemplateContext::for_project_manifest(
+            manifest,
+            project.crate_name().clone(),
+            app_name,
+            &project.resolved_framework().await?,
         )
+        .with_backend_project_path(project.backend_path::<Self>())
+        .with_project_root_path(project.root().to_path_buf())
+        .with_webview_enabled(project.links_runtime_package("waterui-webview").await?)
+        .with_chromium_enabled(project.links_runtime_package("waterui-chromium").await?)
+        .with_browser_engine(project.linked_browser_engine().await?))
     }
 }
 

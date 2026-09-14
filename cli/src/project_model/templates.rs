@@ -8,7 +8,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::build_info::{PREVIEW_VERSION, WATERUI_FFI_VERSION};
 use askama::Template;
 
 use crate::framework::ResolvedFramework;
@@ -284,6 +283,7 @@ impl TemplateContext {
     pub fn for_create_options(
         options: &crate::project::CreateOptions,
         crate_name: CrateName,
+        framework: &ResolvedFramework,
     ) -> Self {
         let waterui_path = options.waterui_path.clone();
         Self {
@@ -297,7 +297,7 @@ impl TemplateContext {
                 .map(|path| path.join("backends/android")),
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
-            framework: ResolvedFramework::stable(),
+            framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
             backend_project_path: None,
             project_root_path: None,
@@ -318,6 +318,7 @@ impl TemplateContext {
         manifest: &crate::project::Manifest,
         crate_name: CrateName,
         app_name: impl Into<String>,
+        framework: &ResolvedFramework,
     ) -> Self {
         Self {
             app_display_name: manifest.package.name.clone(),
@@ -328,10 +329,7 @@ impl TemplateContext {
             android_backend_path: None,
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
-            framework: manifest
-                .framework
-                .clone()
-                .unwrap_or_else(ResolvedFramework::stable),
+            framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
             backend_project_path: None,
             project_root_path: None,
@@ -350,10 +348,10 @@ impl TemplateContext {
     #[must_use]
     pub fn for_support_playground(
         app_display_name: impl Into<String>,
-        app_name: impl Into<String>,
         crate_name: CrateName,
         bundle_identifier: BundleIdentifier,
         waterui_path: Option<PathBuf>,
+        framework: &ResolvedFramework,
         accessory: bool,
         preview_runtime_fingerprint: Option<String>,
     ) -> Self {
@@ -369,16 +367,17 @@ impl TemplateContext {
         // different graphics stack than the module it loads, and the module
         // fails to `dlopen` against symbols that no longer match.
         let project_root_path = waterui_path.clone();
+        let app_display_name = app_display_name.into();
         Self {
-            app_display_name: app_display_name.into(),
-            app_name: app_name.into(),
+            app_name: app_display_name.replace(' ', ""),
+            app_display_name,
             crate_name,
             bundle_identifier,
             author: String::new(),
             android_backend_path,
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
-            framework: ResolvedFramework::stable(),
+            framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
             backend_project_path: None,
             project_root_path,
@@ -999,15 +998,11 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserTemplateContext, Esp32TemplateEntry, PREVIEW_VERSION, ResolvedWebViewBackend,
-        TemplateContext, TemplateNamespace, embedded, gtk4, jitpack_dependency_coordinate,
+        BrowserTemplateContext, Esp32TemplateEntry, ResolvedWebViewBackend, TemplateContext,
+        TemplateNamespace, embedded, gtk4, jitpack_dependency_coordinate,
         normalize_path_for_config, preview_ffi, render_scaffold_template,
     };
-    use crate::build_info::{
-        ANDROID_BACKEND, APPLE_BACKEND, GTK_BACKEND_VERSION, HYDROLYSIS_M3_VERSION,
-        PREVIEW_PROTOCOL_VERSION, WATERUI_BROWSER_CEF_VERSION, WATERUI_CORE_VERSION,
-    };
-    use crate::framework::ResolvedFramework;
+    use crate::framework::test_fixtures::stable_framework;
     use crate::project_types::{BundleIdentifier, CrateName};
     use include_dir::Dir;
     use std::path::PathBuf;
@@ -1029,7 +1024,7 @@ mod tests {
             android_backend_path: None,
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
-            framework: ResolvedFramework::stable(),
+            framework: stable_framework(),
             browser: BrowserTemplateContext::default(),
             backend_project_path,
             project_root_path,
@@ -1051,15 +1046,20 @@ mod tests {
     fn playground_ctx() -> TemplateContext {
         TemplateContext::for_support_playground(
             "WaterUIApp",
-            "WaterUIApp",
             CrateName::try_from("waterui_app").expect("test crate name must be valid"),
             BundleIdentifier::try_from("dev.waterui.playground")
                 .expect("test bundle identifier must be valid"),
             Some(PathBuf::from("../..")),
+            &stable_framework(),
             false,
             None,
         )
         .with_backend_project_path(PathBuf::from("managed_backends/apple"))
+    }
+
+    /// The `=<version>` requirement the fixture framework pins `key` at.
+    fn pinned(key: &str) -> String {
+        format!("={}", stable_framework().scaffold_value(key))
     }
 
     fn render_esp32(relative: &str, ctx: &TemplateContext) -> String {
@@ -1454,8 +1454,8 @@ mod tests {
         // build time and leaves exactly one matching file in BUILT_PRODUCTS_DIR.
         assert!(!rendered.contains("libwaterui_app"));
         assert!(rendered.contains("LIBRARY_SEARCH_PATHS = \"$(BUILT_PRODUCTS_DIR)\";"));
-        assert!(rendered.contains(APPLE_BACKEND.repository_url));
-        assert!(rendered.contains(APPLE_BACKEND.revision));
+        assert!(rendered.contains(ctx.framework.scaffold_value("apple-backend-url")));
+        assert!(rendered.contains(ctx.framework.scaffold_value("apple-backend-revision")));
         assert!(rendered.contains("kind = revision;"));
     }
 
@@ -1558,8 +1558,8 @@ mod tests {
 
         assert!(rendered.contains("minSdk = 26"));
         assert!(rendered.contains(&jitpack_dependency_coordinate(
-            ANDROID_BACKEND.repository_url,
-            ANDROID_BACKEND.revision,
+            ctx.framework.scaffold_value("android-backend-url"),
+            ctx.framework.scaffold_value("android-backend-revision"),
         )));
     }
 
@@ -1645,7 +1645,7 @@ mod tests {
         let manifest: toml::Value = toml::from_str(&cargo_toml).unwrap();
         assert_eq!(
             manifest["dependencies"]["waterui-gtk"]["version"].as_str(),
-            Some(format!("={GTK_BACKEND_VERSION}").as_str())
+            Some(pinned("waterui-gtk-version").as_str())
         );
         assert!(!cargo_toml.contains("webview-default"));
     }
@@ -1703,28 +1703,28 @@ mod tests {
             &manifest["target"]["cfg(not(target_arch = \"wasm32\"))"]["dependencies"];
         assert_eq!(
             native_dependencies["waterui-preview"]["version"].as_str(),
-            Some(format!("={PREVIEW_VERSION}").as_str()),
+            Some(pinned("waterui-preview-version").as_str()),
         );
         assert_eq!(
             native_dependencies["waterui-preview-protocol"]["version"].as_str(),
-            Some(format!("={PREVIEW_PROTOCOL_VERSION}").as_str()),
+            Some(pinned("waterui-preview-protocol-version").as_str()),
         );
         // Each of these is a separately versioned package. Borrowing a sibling's
-        // constant reads fine while the numbers happen to coincide and emits an
+        // pin reads fine while the numbers happen to coincide and emits an
         // unresolvable requirement the moment one of them bumps on its own.
         assert_eq!(
             native_dependencies["waterui-core"]["version"].as_str(),
-            Some(format!("={WATERUI_CORE_VERSION}").as_str()),
+            Some(pinned("waterui-core-version").as_str()),
         );
         assert_eq!(
             native_dependencies["hydrolysis-m3"]["version"].as_str(),
-            Some(format!("={HYDROLYSIS_M3_VERSION}").as_str()),
+            Some(pinned("hydrolysis-m3-version").as_str()),
         );
         // The subprocess helper dispatches into Chromium directly, so the
         // generated crate depends on the engine the application chose.
         assert_eq!(
             native_dependencies["waterui-browser-cef"]["version"].as_str(),
-            Some(format!("={WATERUI_BROWSER_CEF_VERSION}").as_str()),
+            Some(pinned("waterui-browser-cef-version").as_str()),
         );
         let features = native_dependencies["hydrolysis"]["features"]
             .as_array()
@@ -1858,7 +1858,7 @@ mod tests {
             .expect("preview Cargo.toml should parse");
         assert_eq!(
             manifest["dependencies"]["waterui-preview"]["version"].as_str(),
-            Some(format!("={PREVIEW_VERSION}").as_str())
+            Some(pinned("waterui-preview-version").as_str())
         );
         let dev_features = manifest["features"]["dev"]
             .as_array()
@@ -2429,9 +2429,17 @@ pub async fn framework_updates(
     let mut updates = Vec::new();
     for (namespace, templates, directory, app_name) in native.into_iter().flatten() {
         let context = |manifest: &crate::project::Manifest| {
-            TemplateContext::for_project_manifest(manifest, crate_name.clone(), app_name.clone())
-                .with_backend_project_path(directory.clone())
-                .with_project_root_path(root.to_path_buf())
+            TemplateContext::for_project_manifest(
+                manifest,
+                crate_name.clone(),
+                app_name.clone(),
+                manifest
+                    .framework
+                    .as_ref()
+                    .expect("channel updates have a resolved framework"),
+            )
+            .with_backend_project_path(directory.clone())
+            .with_project_root_path(root.to_path_buf())
         };
         let before: BTreeMap<_, _> = render_dir_outputs(namespace, templates, &context(previous))?
             .into_iter()
@@ -4638,9 +4646,9 @@ pub mod preview_ffi {
     use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product};
 
     use super::{
-        PREVIEW_VERSION, Path, TemplateContext, TemplateNamespace, WATERUI_FFI_VERSION,
-        cargo_semver, cargo_version_req, compute_native_backend_dependency_path, embedded, fs, io,
-        scaffold_dir, write_file_if_changed,
+        Path, TemplateContext, TemplateNamespace, cargo_semver,
+        compute_native_backend_dependency_path, embedded, fs, io, scaffold_dir,
+        write_file_if_changed,
     };
 
     /// Preview ABI exported to Apple support applications.
@@ -4699,11 +4707,11 @@ pub mod preview_ffi {
         );
 
         let ffi_dependency = ctx.waterui_path.as_ref().map_or_else(
-            || DependencyDetail {
-                version: Some(cargo_version_req(WATERUI_FFI_VERSION)),
-                optional: true,
-                default_features: false,
-                ..Default::default()
+            || {
+                let mut dependency = ctx.framework.dependency("waterui-ffi");
+                dependency.optional = true;
+                dependency.default_features = false;
+                dependency
             },
             |waterui_path| DependencyDetail {
                 path: Some(compute_native_backend_dependency_path(
@@ -4742,11 +4750,9 @@ pub mod preview_ffi {
                 ..Default::default()
             }
         } else {
-            DependencyDetail {
-                version: Some(cargo_version_req(PREVIEW_VERSION)),
-                optional: true,
-                ..Default::default()
-            }
+            let mut dependency = ctx.framework.dependency("waterui-preview");
+            dependency.optional = true;
+            dependency
         };
         manifest.dependencies.insert(
             "waterui-preview".to_string(),

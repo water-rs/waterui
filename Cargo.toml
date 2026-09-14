@@ -45,8 +45,22 @@ description = "A modern UI framework for Rust"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
 
+# WaterUI framework release policy shared by the `water` CLI and release
+# automation. This table is the framework's own scaffold metadata: the
+# `framework_manifest.py` generator copies it verbatim into the published
+# `framework.json`, and `water create --channel dev`/`--waterui-path` derive
+# the same facts from the checked-out manifest directly.
 [package.metadata.waterui]
-minimum-cli-version = "0.1.4"
+# The lowest CLI version that may consume this framework revision.
+minimum-cli-version = "0.2.1"
+# Git repositories the native backends are pinned from; the submodule of the
+# same name under `backends/` supplies each `{name}-backend-revision` pin.
+apple-backend-url = "https://github.com/water-rs/apple-backend.git"
+android-backend-url = "https://github.com/water-rs/android-backend.git"
+# Crates released from their own repositories whose requirement a scaffolded
+# project pins; the requirement string itself is read from
+# `[workspace.dependencies]` below.
+scaffold-packages = ["hydrolysis", "hydrolysis-m3", "waterui-dew", "waterui-gtk"]
 
 [lib]
 path = "facade.rs"
