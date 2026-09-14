@@ -18,10 +18,10 @@
 mod tools;
 
 pub use tools::{
-    Act, ActAction, ActArgs, Advance, AdvanceArgs, Find, FindArgs, Key, KeyArgs, Pointer,
-    PointerArgs, PointerKind, Restart, RestartArgs, SESSION_TOOL_NAMES, Screenshot, ScreenshotArgs,
-    SelectorArgs, Snapshot, SnapshotArgs, SnapshotFormat, ToolDispatch, TypeText, TypeTextArgs,
-    ValueEqArgs, Wait, WaitArgs, register_session_tools,
+    Act, ActAction, ActArgs, Advance, AdvanceArgs, ExpectArgs, Find, FindArgs, Key, KeyArgs,
+    Pointer, PointerArgs, PointerKind, Restart, RestartArgs, SESSION_TOOL_NAMES, Screenshot,
+    ScreenshotArgs, ScrollUnit, SelectorArgs, Snapshot, SnapshotArgs, SnapshotFormat, ToolDispatch,
+    TypeText, TypeTextArgs, ValueEqArgs, Wait, WaitArgs, register_session_tools,
 };
 
 /// Server instructions handed to the client during `initialize`.

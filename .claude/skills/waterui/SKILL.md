@@ -28,6 +28,7 @@ beyond pointers.
 | Colors, theme tokens, dark mode, icons, shapes, gradients, Material 3 | [references/styling.md](references/styling.md) |
 | Translations, plurals, locale switching, formatting, RTL | [references/i18n.md](references/i18n.md) |
 | `#[waterui::test]`, `#[waterui::bench]`, `#[preview]`, snapshots | [references/testing.md](references/testing.md) |
+| `water mcp` tool surface, animation stepping, agent drive loop | [references/mcp.md](references/mcp.md) |
 | `water` CLI, `Water.toml`, Cargo features, assets, permissions, platforms, embedded | [references/project.md](references/project.md) |
 | Compile errors, silent bugs, and their fixes | [references/troubleshooting.md](references/troubleshooting.md) |
 
@@ -494,7 +495,10 @@ Once connected, the loop is: `snapshot` to read the tree, `act` (or `pointer` / 
 `type_text`) by node id — every mutating tool returns the settled tree, so no follow-up
 `snapshot` is needed — `screenshot` when layout or appearance matters, `wait` for
 conditions instead of polling, then edit the source and `restart` to rebuild and relaunch
-with the changes. Node ids are stable across turns within a session.
+with the changes. Node ids are stable across turns within a session. The full tool
+surface — state-filtered selectors, element-anchored pointer input, `settle: false` +
+`advance` for stepping through animations frame by frame — is in
+[references/mcp.md](references/mcp.md).
 
 `preview` renders a `#[preview]` function or an `expr` expression (e.g. `text("hi")`) and
 returns the PNG image content directly — use it to check one component without driving the
