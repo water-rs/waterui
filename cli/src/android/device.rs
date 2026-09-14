@@ -254,7 +254,10 @@ async fn run_on_android(
 ) -> Result<Running, FailToRun> {
     let adb = AndroidSdk::adb_path(host)
         .ok_or_else(|| FailToRun::Run(eyre!("Android SDK not found or adb not installed")))?;
-    let env_vars = collect_android_env_vars(device_id, &options);
+    let env_vars = options
+        .env_vars()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect::<Vec<_>>();
 
     install_android_artifact(host, &adb, device_id, artifact.path()).await?;
     launch_android_app(
@@ -294,30 +297,6 @@ async fn run_on_android(
     Ok(running)
 }
 
-/// Collects the environment the app process starts with, delivered as
-/// `waterui.env.*` intent extras.
-///
-/// Emulators default to `WGPU_BACKEND=gl` because guest Vulkan in the Android
-/// emulator's gfxstream translation is unreliable (its swapchain presentation
-/// flips GPU surfaces vertically, and older images ship no guest Vulkan at
-/// all). The trade-off is real: wgpu's GLES backend has no compute shaders,
-/// so vello-backed components (icons, the GPU map) cannot render under this
-/// default — test those on a physical device. Force a backend for one launch
-/// with `adb shell am start ... --es waterui.env.WGPU_BACKEND vulkan`;
-/// anything already present in `options` wins over the default. Physical
-/// devices are never touched — they get whatever wgpu picks, normally Vulkan.
-fn collect_android_env_vars(device_id: &str, options: &RunOptions) -> Vec<(String, String)> {
-    let mut env_vars = options
-        .env_vars()
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect::<Vec<_>>();
-    if device_id.starts_with("emulator-") && !env_vars.iter().any(|(key, _)| key == "WGPU_BACKEND")
-    {
-        env_vars.push(("WGPU_BACKEND".to_string(), "gl".to_string()));
-    }
-    env_vars
-}
-
 async fn install_android_artifact(
     host: &Host,
     adb: &Path,
@@ -345,6 +324,9 @@ async fn install_android_artifact(
     )))
 }
 
+/// The environment the app process starts with, delivered as `waterui.env.*`
+/// intent extras; the generated `MainActivity` applies each of them with
+/// `Os.setenv` before loading the native library.
 fn build_android_start_args(
     device_id: &str,
     artifact: &Artifact,

@@ -49,6 +49,7 @@ gpu = [
     "dep:naga",
     "dep:ash",
     "dep:wgpu-hal",
+    "dep:libc",
 ]
 
 [dependencies]
@@ -94,6 +95,8 @@ num-traits = { version = "0.2", default-features = false }
 # `Adapter::request_device`, and that is spelled in `ash`/`wgpu-hal` terms.
 ash = { workspace = true, optional = true }
 wgpu-hal = { workspace = true, features = ["vulkan"], optional = true }
+# `__system_property_get` is how the GPU path recognises an emulator guest.
+libc = { version = "0.2", optional = true }
 
 [build-dependencies]
 naga = { version = "30.0.1", features = ["wgsl-in"], optional = true }

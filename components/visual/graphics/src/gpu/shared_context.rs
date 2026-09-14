@@ -445,11 +445,44 @@ fn open_android_device(
         .map_err(|error| SharedContextError::DeviceCreationFailed(error.to_string()))
 }
 
+/// Whether the guest is an Android emulator (ranchu/goldfish/Cuttlefish).
+///
+/// Debug builds turn on `wgpu::InstanceFlags::DEBUG`, which makes naga tag every
+/// SPIR-V module with `OpSource SourceLanguage::WGSL`. gfxstream's guest SPIR-V
+/// validator predates that enumerator, so the first `vkCreateShaderModule`
+/// carrying it kills the emulator's whole graphics stack. Clearing the flag on
+/// emulators keeps the debug build usable; `WGPU_DEBUG` set explicitly still
+/// wins for anyone who needs to debug shaders on an emulator.
+#[cfg(target_os = "android")]
+fn guest_is_emulator() -> bool {
+    // SAFETY: `__system_property_get` only writes into `value` for the duration
+    // of the call, the property names are valid C strings, and `value` stays
+    // NUL-terminated afterwards.
+    unsafe {
+        let mut value = [0 as libc::c_char; libc::PROP_VALUE_MAX as usize];
+        for name in [c"ro.kernel.qemu", c"ro.boot.qemu"] {
+            if libc::__system_property_get(name.as_ptr(), value.as_mut_ptr()) > 0 {
+                return true;
+            }
+        }
+        libc::__system_property_get(c"ro.hardware".as_ptr(), value.as_mut_ptr());
+        let hardware = core::ffi::CStr::from_ptr(value.as_ptr()).to_string_lossy();
+        ["ranchu", "goldfish", "cutf"]
+            .iter()
+            .any(|prefix| hardware.starts_with(prefix))
+    }
+}
+
 #[cfg(target_os = "android")]
 async fn request_instance_and_adapter()
 -> Result<(wgpu::Instance, wgpu::Adapter), SharedContextError> {
-    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
     descriptor.backends = wgpu::Backends::VULKAN.with_env();
+    if std::env::var_os("WGPU_DEBUG").is_none() && guest_is_emulator() {
+        descriptor.flags -= wgpu::InstanceFlags::DEBUG
+            | wgpu::InstanceFlags::VALIDATION
+            | wgpu::InstanceFlags::GPU_BASED_VALIDATION;
+    }
     let instance = wgpu::Instance::new(descriptor);
     let adapter = request_adapter(&instance)
         .await
