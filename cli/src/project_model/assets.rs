@@ -16,6 +16,7 @@ use smol::fs;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 use waterui_assets_core::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
+use waterui_assets_planner::BundleManifest;
 
 use crate::project::Project;
 use crate::project_model::project_types::PermissionKey;
@@ -801,19 +802,26 @@ fn sha256_hex(s: &str) -> String {
 }
 
 /// Stage project assets for Apple packaging (Asset Catalog + raw resources).
+///
+/// `sccache_path` feeds the host library build whose symbol table carries the
+/// `include_bundle!` mount metadata; pass `None` when no sccache binary was
+/// detected. Returns the staged manifest so callers can scan it (fonts, for
+/// example) without rebuilding the host artifact.
 pub async fn stage_project_assets_for_apple(
     project: &Project,
     dest_dir: &Path,
-) -> eyre::Result<()> {
-    unified::stage_for_apple(project, dest_dir).await
+    sccache_path: Option<&Path>,
+) -> eyre::Result<BundleManifest> {
+    unified::stage_for_apple(project, dest_dir, sccache_path).await
 }
 
 /// Stage project assets for Android packaging (res + assets/raw).
 pub async fn stage_project_assets_for_android(
     project: &Project,
     backend_path: &Path,
-) -> eyre::Result<()> {
-    unified::stage_for_android(project, backend_path).await
+    sccache_path: Option<&Path>,
+) -> eyre::Result<BundleManifest> {
+    unified::stage_for_android(project, backend_path, sccache_path).await
 }
 
 /// Render the project's macOS `.icns` app icon for hand-assembled bundles.
@@ -839,12 +847,14 @@ pub async fn stage_hicolor_icons(project: &Project, icons_root: &Path) -> eyre::
 pub async fn stage_project_assets_for_gtk(
     project: &Project,
     resources_dir: &Path,
-) -> eyre::Result<()> {
-    unified::stage_for_gtk(project, resources_dir).await
+    sccache_path: Option<&Path>,
+) -> eyre::Result<BundleManifest> {
+    unified::stage_for_gtk(project, resources_dir, sccache_path).await
 }
 
-pub fn scan_project_font_assets(project: &Project) -> eyre::Result<Vec<ResolvedFont>> {
-    unified::scan_project_fonts(project)
+/// Resolves the fonts declared inside an already-staged bundle manifest.
+pub fn scan_project_font_assets(manifest: &BundleManifest) -> eyre::Result<Vec<ResolvedFont>> {
+    unified::scan_project_fonts(manifest)
 }
 
 pub use unified::LaunchAssets;

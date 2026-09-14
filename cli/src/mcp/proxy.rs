@@ -295,7 +295,12 @@ async fn build_and_drive(
 async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)> {
     let platform = host_platform();
     let project = ensure_hydrolysis_backend_ready(&config.project_path).await?;
-    stage_hydrolysis_resources(&project, HydrolysisPreviewTheme::Material3).await?;
+    stage_hydrolysis_resources(
+        &project,
+        HydrolysisPreviewTheme::Material3,
+        config.sccache_path.as_deref(),
+    )
+    .await?;
 
     let mut build_options = BuildOptions::development(false);
     if let Some(sccache_path) = &config.sccache_path {

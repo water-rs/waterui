@@ -123,7 +123,7 @@ pub async fn render_preview_with_hydrolysis(
     } = request;
     let project = ensure_hydrolysis_backend_ready(project_path).await?;
     write_preview_bindings(&project, source, theme, None).await?;
-    stage_hydrolysis_resources(&project, theme).await?;
+    stage_hydrolysis_resources(&project, theme, sccache_path.as_deref()).await?;
 
     let mut build_options = BuildOptions::development(false);
     if let Some(sccache_path) = sccache_path {
@@ -167,7 +167,7 @@ pub async fn test_preview_with_hydrolysis(
     } = request;
     let project = ensure_hydrolysis_backend_ready(project_path).await?;
     write_preview_bindings(&project, source, theme, Some(automation_body)).await?;
-    stage_hydrolysis_resources(&project, theme).await?;
+    stage_hydrolysis_resources(&project, theme, sccache_path.as_deref()).await?;
 
     let mut build_options = BuildOptions::development(false);
     if let Some(sccache_path) = sccache_path {
@@ -199,16 +199,18 @@ pub async fn test_preview_with_hydrolysis(
 pub async fn stage_hydrolysis_resources(
     project: &Project,
     theme: HydrolysisPreviewTheme,
+    sccache_path: Option<&Path>,
 ) -> Result<()> {
     let resources_dir = project
         .backend_path::<HydrolysisBackend>()
         .join("resources");
-    assets::stage_project_assets_for_gtk(project, &resources_dir).await?;
+    let manifest =
+        assets::stage_project_assets_for_gtk(project, &resources_dir, sccache_path).await?;
 
     let mut font_declarations = assets::scan_fonts(project).await?;
     font_declarations.extend(theme.font_declarations());
     let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
-    resolved_fonts.extend(assets::scan_project_font_assets(project)?);
+    resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
     if resolved_fonts.is_empty() {
         return Ok(());
     }

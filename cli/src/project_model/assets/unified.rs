@@ -1,16 +1,17 @@
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use askama::Template;
-use eyre::Context;
+use eyre::{Context, bail};
 use image::ImageEncoder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use smol::fs;
 use waterui_assets_core::AssetKind;
 use waterui_assets_planner::{
-    AssetRole, BundleManifest, ColorScheme, HexColor, LaunchPlan, PlannedAsset, ThemeConfig,
-    plan_bundle,
+    AssetRole, BUNDLE_META_PREFIX, BundleManifest, BundleMount, BundleMountMeta, ColorScheme,
+    HexColor, LaunchPlan, PlannedAsset, ThemeConfig, plan_mount,
 };
 
 #[cfg(target_os = "macos")]
@@ -19,6 +20,7 @@ use super::icon::{
     IconSource, LINUX_HICOLOR_SIZES, WINDOW_ICON_SIZE, encode_png, render_android_foreground,
     render_apple_icon,
 };
+use crate::artifact_symbols::{ArtifactSymbols, build_host_rlib};
 use crate::project::Project;
 
 const ASSET_ROOT_DIR: &str = "waterui_assets";
@@ -40,8 +42,12 @@ const ANDROID_MIPMAP_DIRS: &[(&str, u32)] = &[
     ("mipmap-xxxhdpi", 192),
 ];
 
-pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result<()> {
-    let manifest = build_manifest(project)?;
+pub async fn stage_for_apple(
+    project: &Project,
+    dest_dir: &Path,
+    sccache_path: Option<&Path>,
+) -> eyre::Result<BundleManifest> {
+    let manifest = build_manifest(project, sccache_path).await?;
     let assets_dest = dest_dir.join(ASSET_ROOT_DIR);
     reset_dir(&assets_dest).await?;
     copy_manifest_assets(&manifest, &assets_dest).await?;
@@ -88,7 +94,7 @@ pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result
         write_apple_launch_image(artwork, &xcassets_dest).await?;
     }
 
-    Ok(())
+    Ok(manifest)
 }
 
 /// The project's launch screen, resolved, with the artwork it shows.
@@ -147,7 +153,7 @@ impl LaunchAssets {
 /// Fails when the assets cannot be planned or an artwork file cannot be
 /// decoded.
 pub fn launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
-    let manifest = build_manifest(project)?;
+    let manifest = build_main_manifest(project)?;
     launch_assets_from(project, &manifest)
 }
 
@@ -175,8 +181,12 @@ fn load_project_icon(manifest: &BundleManifest) -> eyre::Result<IconSource> {
     )
 }
 
-pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::Result<()> {
-    let manifest = build_manifest(project)?;
+pub async fn stage_for_android(
+    project: &Project,
+    backend_path: &Path,
+    sccache_path: Option<&Path>,
+) -> eyre::Result<BundleManifest> {
+    let manifest = build_manifest(project, sccache_path).await?;
     let assets_dest = backend_path
         .join("app/src/main/assets")
         .join(ASSET_ROOT_DIR);
@@ -200,7 +210,7 @@ pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::
     write_android_icon_resources(&icon, icon_background, backend_path).await?;
     write_android_launch_artwork(&launch, backend_path).await?;
 
-    Ok(())
+    Ok(manifest)
 }
 
 /// Renders the project's macOS `.icns` app icon for hand-assembled bundles
@@ -214,7 +224,9 @@ pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::
 /// Fails when the icon asset cannot be loaded or rendered.
 #[cfg(target_os = "macos")]
 pub fn macos_icns(project: &Project) -> eyre::Result<Vec<u8>> {
-    let manifest = build_manifest(project)?;
+    // Only the main mount can claim the AppIcon role, so enumerating
+    // `include_bundle!` mounts is unnecessary here.
+    let manifest = build_main_manifest(project)?;
     let icon = load_project_icon(&manifest)?;
     encode_macos_icns(&icon)
 }
@@ -226,13 +238,17 @@ pub fn macos_icns(project: &Project) -> eyre::Result<Vec<u8>> {
 ///
 /// Fails when the icon asset cannot be loaded or rendered.
 pub fn windows_ico(project: &Project) -> eyre::Result<Vec<u8>> {
-    let manifest = build_manifest(project)?;
+    let manifest = build_main_manifest(project)?;
     let icon = load_project_icon(&manifest)?;
     super::icon::encode_windows_ico(&icon)
 }
 
-pub async fn stage_for_gtk(project: &Project, resources_dir: &Path) -> eyre::Result<()> {
-    let manifest = build_manifest(project)?;
+pub async fn stage_for_gtk(
+    project: &Project,
+    resources_dir: &Path,
+    sccache_path: Option<&Path>,
+) -> eyre::Result<BundleManifest> {
+    let manifest = build_manifest(project, sccache_path).await?;
     let assets_dest = resources_dir.join(ASSET_ROOT_DIR);
     reset_dir(&assets_dest).await?;
     copy_manifest_assets(&manifest, &assets_dest).await?;
@@ -250,14 +266,14 @@ pub async fn stage_for_gtk(project: &Project, resources_dir: &Path) -> eyre::Res
 
     remove_file_if_exists(resources_dir.join("resources.gresource")).await?;
     remove_file_if_exists(resources_dir.join("resources.gresource.xml")).await?;
-    Ok(())
+    Ok(manifest)
 }
 
 /// Installs the app icon into a freedesktop hicolor icon-theme tree rooted at
 /// `icons_root`, named after the bundle identifier so desktop entries and
 /// GTK icon-name lookup resolve it.
 pub async fn stage_hicolor_icons(project: &Project, icons_root: &Path) -> eyre::Result<()> {
-    let manifest = build_manifest(project)?;
+    let manifest = build_main_manifest(project)?;
     let icon = load_project_icon(&manifest)?;
     let name = format!("{}.png", project.bundle_identifier());
     for &size in LINUX_HICOLOR_SIZES {
@@ -267,8 +283,9 @@ pub async fn stage_hicolor_icons(project: &Project, icons_root: &Path) -> eyre::
     Ok(())
 }
 
-pub fn scan_project_fonts(project: &Project) -> eyre::Result<Vec<super::ResolvedFont>> {
-    let manifest = build_manifest(project)?;
+/// Resolves the fonts inside an already-staged manifest; the staging call
+/// that produced it owns the artifact enumeration, so this stays pure.
+pub fn scan_project_fonts(manifest: &BundleManifest) -> eyre::Result<Vec<super::ResolvedFont>> {
     manifest
         .assets
         .iter()
@@ -283,8 +300,69 @@ pub fn scan_project_fonts(project: &Project) -> eyre::Result<Vec<super::Resolved
         .collect()
 }
 
-fn build_manifest(project: &Project) -> eyre::Result<BundleManifest> {
-    plan_bundle(project.root(), project.assets_path()).map_err(Into::into)
+/// Plans only the main application asset root.
+///
+/// Enough for the icon paths: `include_bundle!` mounts are sibling namespaces
+/// that can never claim the `AppIcon` role.
+fn build_main_manifest(project: &Project) -> eyre::Result<BundleManifest> {
+    Ok(BundleManifest {
+        crate_root: project.root().to_path_buf(),
+        assets_root: project.assets_dir(),
+        mounts: Vec::new(),
+        assets: plan_main_assets(project)?,
+    })
+}
+
+fn plan_main_assets(project: &Project) -> eyre::Result<Vec<PlannedAsset>> {
+    let assets_dir = project.assets_dir();
+    if assets_dir.is_dir() {
+        Ok(plan_mount(&assets_dir, "")?)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+/// Plans the full manifest: the main asset root plus every `include_bundle!`
+/// mount enumerated from the compiled library's `waterui_meta_bundle_*`
+/// statics.
+async fn build_manifest(
+    project: &Project,
+    sccache_path: Option<&Path>,
+) -> eyre::Result<BundleManifest> {
+    let mut assets = plan_main_assets(project)?;
+
+    let rlib = build_host_rlib(project.root(), sccache_path).await?;
+    let symbols = ArtifactSymbols::read(&rlib)?;
+    // The main root is always planned; a second `assets` declaration is a
+    // duplicate mount.
+    let mut seen = BTreeSet::new();
+    let mut mounts = Vec::new();
+    for leaf in symbols.leaves_with_prefix(BUNDLE_META_PREFIX) {
+        let meta = BundleMountMeta::from_payload(&symbols.static_bytes(&leaf)?)?;
+        // The `assets` mount is the main root, already planned above.
+        if meta.mount == "assets" {
+            continue;
+        }
+        if !seen.insert(meta.mount.clone()) {
+            bail!(
+                "include_bundle mount '{}' is declared more than once",
+                meta.mount
+            );
+        }
+        assets.extend(plan_mount(&meta.path, &meta.mount)?);
+        mounts.push(BundleMount {
+            name: meta.mount,
+            root: meta.path,
+        });
+    }
+
+    assets.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
+    Ok(BundleManifest {
+        crate_root: project.root().to_path_buf(),
+        assets_root: project.assets_dir(),
+        mounts,
+        assets,
+    })
 }
 
 async fn copy_manifest_assets(manifest: &BundleManifest, dest_root: &Path) -> eyre::Result<()> {
@@ -1091,12 +1169,11 @@ mod tests {
     }
 
     fn empty_manifest() -> BundleManifest {
-        let temp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            temp.path().join("Water.toml"),
-            "[package]\nname = 'Demo'\nbundle_identifier = 'dev.waterui.demo'\n",
-        )
-        .expect("write Water.toml");
-        plan_bundle(temp.path(), "assets").expect("plan bundle")
+        BundleManifest {
+            crate_root: PathBuf::new(),
+            assets_root: PathBuf::new(),
+            mounts: Vec::new(),
+            assets: Vec::new(),
+        }
     }
 }

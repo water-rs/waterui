@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn luminance_spans_black_to_white() {
-        assert_eq!(HexColor::from_rgb([0, 0, 0]).relative_luminance(), 0.0);
+        assert!(HexColor::from_rgb([0, 0, 0]).relative_luminance().abs() < 1e-9);
         assert!((HexColor::from_rgb([255, 255, 255]).relative_luminance() - 1.0).abs() < 1e-9);
         let navy = HexColor::from_rgb([0x0B, 0x1E, 0x3F]).relative_luminance();
         assert!(navy < 0.05, "navy is dark: {navy}");

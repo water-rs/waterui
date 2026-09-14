@@ -10,9 +10,16 @@
 
 use waterui::asset;
 
-// `include_bundle!` must parse its own documented syntax; the expansion is
-// deliberately inert, so this only asserts the parser accepts `as = <mount>`.
-waterui::include_bundle!("assets/web", as = web);
+// `include_bundle!` expands to a `web` mount module whose `BUNDLE` and
+// accessors are staged by the CLI from the emitted `waterui_meta_bundle_web`
+// static. `CARGO_MANIFEST_DIR` is the `waterui` package root (`src/`).
+waterui::include_bundle!("tests/fixtures/web", as = web);
+
+#[test]
+fn include_bundle_expands_mount_module() {
+    let _: waterui::Bundle = web::BUNDLE;
+    let _: waterui::DataAsset = web::hello();
+}
 
 #[test]
 fn asset_macro_expands_for_every_kind() {
