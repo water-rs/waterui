@@ -16,11 +16,7 @@ use waterui::shape::{RoundedRectangle, ShapeExt};
 /// keeps the concrete type finite while stressing deep layout passes.
 fn deep_nest(depth: u32) -> AnyView {
     if depth == 0 {
-        return AnyView::new(
-            text("depth 0")
-                .caption()
-                .foreground(MutedForeground),
-        );
+        return AnyView::new(text("depth 0").caption().foreground(MutedForeground));
     }
     let inner = deep_nest(depth - 1);
     if depth % 2 == 0 {
@@ -46,16 +42,22 @@ struct Cell {
 
 /// 16x10 grid of colored squares built eagerly — 160 real views in one pass.
 fn dense_grid() -> impl View {
-    VStack::for_each((0..16u32).map(|id| Cell { id }).collect::<Vec<_>>(), |row| {
-        HStack::for_each((0..10u32).map(|id| Cell { id }).collect::<Vec<_>>(), move |col| {
-            let hue = (row.id * 10 + col.id) as f32 / 160.0;
-            let (r, g, b) = hsl(hue, 0.7, 0.55);
-            RoundedRectangle::new(0.2)
-                .fill(Color::srgb_f32(r, g, b))
-                .size(28.0, 18.0)
-        })
-        .spacing(4.0)
-    })
+    VStack::for_each(
+        (0..16u32).map(|id| Cell { id }).collect::<Vec<_>>(),
+        |row| {
+            HStack::for_each(
+                (0..10u32).map(|id| Cell { id }).collect::<Vec<_>>(),
+                move |col| {
+                    let hue = (row.id * 10 + col.id) as f32 / 160.0;
+                    let (r, g, b) = hsl(hue, 0.7, 0.55);
+                    RoundedRectangle::new(0.2)
+                        .fill(Color::srgb_f32(r, g, b))
+                        .size(28.0, 18.0)
+                },
+            )
+            .spacing(4.0)
+        },
+    )
     .spacing(4.0)
     .alignment(HorizontalAlignment::Leading)
 }
@@ -88,16 +90,15 @@ fn constraint_edges() -> impl View {
         ))
         .spacing(8.0),
         hstack((
-            text("min 200:")
-                .caption(),
-            text("x").min_width(200.0).min_height(24.0).background(
-                Color::srgb_hex("#DBEAFE"),
-            ),
+            text("min 200:").caption(),
+            text("x")
+                .min_width(200.0)
+                .min_height(24.0)
+                .background(Color::srgb_hex("#DBEAFE")),
         ))
         .spacing(8.0),
         hstack((
-            text("max 60:")
-                .caption(),
+            text("max 60:").caption(),
             text("this label is far too long to fit").max_width(60.0),
         ))
         .spacing(8.0),

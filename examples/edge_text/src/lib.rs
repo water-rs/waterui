@@ -23,7 +23,9 @@ fn section(title: &'static str, content: impl View) -> impl View {
 fn unbroken() -> impl View {
     section(
         "Unbroken 160-char string",
-        text("abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789"),
+        text(
+            "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789",
+        ),
     )
 }
 
@@ -81,7 +83,9 @@ fn size_extremes() -> impl View {
 fn long_paragraph() -> impl View {
     section(
         "Wrapping paragraph",
-        text("The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump! Sphinx of black quartz, judge my vow. 敏捷的棕色狐狸跳过懒狗。素早い茶色のキツネが怠けた犬を飛び越える。"),
+        text(
+            "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump! Sphinx of black quartz, judge my vow. 敏捷的棕色狐狸跳过懒狗。素早い茶色のキツネが怠けた犬を飛び越える。",
+        ),
     )
 }
 

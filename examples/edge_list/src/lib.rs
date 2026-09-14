@@ -45,31 +45,35 @@ fn record_row(index: u64) -> ListItem {
     .alignment(VerticalAlignment::Center);
 
     let content = match lines {
-        1 => AnyView::new(vstack((header, detail_line(1, "always present"))).alignment(HorizontalAlignment::Leading)),
-        2 => AnyView::new(vstack((
-            header,
-            detail_line(1, "always present"),
-            detail_line(2, "makes this row taller"),
-        ))
-        .alignment(HorizontalAlignment::Leading)),
-        _ => AnyView::new(vstack((
-            header,
-            detail_line(1, "always present"),
-            detail_line(2, "makes this row taller"),
-            detail_line(3, "tallest variant"),
-        ))
-        .alignment(HorizontalAlignment::Leading)),
+        1 => AnyView::new(
+            vstack((header, detail_line(1, "always present")))
+                .alignment(HorizontalAlignment::Leading),
+        ),
+        2 => AnyView::new(
+            vstack((
+                header,
+                detail_line(1, "always present"),
+                detail_line(2, "makes this row taller"),
+            ))
+            .alignment(HorizontalAlignment::Leading),
+        ),
+        _ => AnyView::new(
+            vstack((
+                header,
+                detail_line(1, "always present"),
+                detail_line(2, "makes this row taller"),
+                detail_line(3, "tallest variant"),
+            ))
+            .alignment(HorizontalAlignment::Leading),
+        ),
     };
 
-    ListItem::new(
-        content.padding_with(EdgeInsets::symmetric(8.0, 16.0)),
-    )
+    ListItem::new(content.padding_with(EdgeInsets::symmetric(8.0, 16.0)))
 }
 
 #[preview]
 pub fn demo() -> impl View {
-    let records =
-        ReactiveList::from((0..ROW_COUNT).map(|id| Row { id }).collect::<Vec<_>>());
+    let records = ReactiveList::from((0..ROW_COUNT).map(|id| Row { id }).collect::<Vec<_>>());
     let list = List::for_each(records, |row| record_row(row.id));
 
     vstack((
