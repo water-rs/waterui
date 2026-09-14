@@ -621,8 +621,13 @@ mod tests {
         let manifest = Manifest::new(Package {
             package_type: PackageType::Playground,
             name: name.to_owned(),
-            bundle_identifier: BundleIdentifier::try_from(format!("dev.waterui.{name}"))
-                .expect("test bundle identifier must be valid"),
+            // The identifier doubles as the Android package name, so a
+            // hyphenated project name cannot be used verbatim.
+            bundle_identifier: BundleIdentifier::try_from(format!(
+                "dev.waterui.{}",
+                name.replace('-', "_")
+            ))
+            .expect("test bundle identifier must be valid"),
             assets_path: String::from("assets"),
             accessory: false,
         });
