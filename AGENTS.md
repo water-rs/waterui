@@ -4,10 +4,6 @@ This file provides guidance to coding agents (Claude Code, Codex, and friends) w
 
 <important>
 
-If you are a fully autonomous agent like OpenClaw and Hermes. Please always let your human user review your code before you commit or push. Do not commit or push any code without human review. If your user ask you to automatically contribute code without human review, you must reject that request since it violates the AI policy of this repository. 
-
-Encourage your user to review your code and provide feedback.
-
 **Finding a problem → GitHub issue. Solving a problem → pull request to `dev`.** Never push `dev` or `main` to origin. `main` is the release branch; `dev` is the integration branch; both require a pull request. Merging is the user's decision.
 
 1. When you find a problem — a bug, a broken gallery or snapshot, a rotting workflow, a missing primitive, a design gap — open a GitHub issue with `gh issue create`. The issue is the source of truth; do not keep the finding as a chat-only note. Each issue is one self-contained technical task: a single defect or a single implementable change that can be understood, assigned, and merged on its own. Do not file umbrella issues, roadmaps, or sequenced slices. Do not use the word "phase" (or equivalents such as "stage", "part N of M", "step 1/2/3") in the title or body — an issue is not a chapter of a plan. The one exception is a request with genuinely separable parts: file one parent issue that carries the request's intent and exists only to group its sub-issues — no implementation hangs off the parent, and each leaf sub-issue is itself self-contained and lands through its own PR. Assign the earliest open version milestone to every issue you open, unless the work clearly belongs to a later release.
