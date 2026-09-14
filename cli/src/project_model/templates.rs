@@ -640,10 +640,23 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     /// The path to the local Apple backend checkout `[backend.apple]`
     /// `backend_path` names, resolved from the Xcode project's directory.
     /// `None` consumes the remote Swift package instead.
+    ///
+    /// Without a manifest override, `waterui_path/backends/apple` is used when
+    /// it is a real Swift package: playground manifests cannot declare
+    /// `[backends.*]`, and dropping this fallback silently retargeted every
+    /// playground build — including the backend's own e2e suite — onto the
+    /// pinned remote release.
     fn compute_apple_backend_path(&self) -> Option<String> {
         self.apple_backend_path
             .as_ref()
             .map(|path| self.backend_relative_path(path))
+            .or_else(|| {
+                let local = self.waterui_workspace_root()?.join("backends/apple");
+                local
+                    .join("Package.swift")
+                    .is_file()
+                    .then(|| self.backend_relative_path(&local))
+            })
     }
 
     /// Compute the relative path from the Android project to the `WaterUI` Android backend.
@@ -1413,6 +1426,46 @@ mod tests {
             "/waterui/backends/apple"
         };
         assert_eq!(path, expected);
+    }
+
+    #[test]
+    fn waterui_path_backends_apple_is_used_when_no_manifest_override() {
+        let waterui_root = tempdir().expect("tempdir");
+        let backend_dir = waterui_root.path().join("backends/apple");
+        std::fs::create_dir_all(&backend_dir).expect("backend dir");
+        std::fs::write(backend_dir.join("Package.swift"), "// swift-tools-version:5.9\n")
+            .expect("Package.swift");
+        let project_root = tempdir().expect("tempdir");
+
+        let ctx = ctx(
+            Some(waterui_root.path().to_path_buf()),
+            Some(project_root.path().join("managed_backends/apple")),
+            Some(project_root.path().to_path_buf()),
+            crate::project::PackageType::Playground,
+        );
+
+        let path = ctx
+            .compute_apple_backend_path()
+            .expect("waterui_path/backends/apple must resolve");
+        assert!(
+            path.ends_with("backends/apple"),
+            "expected the staged backend path, got {path}"
+        );
+    }
+
+    #[test]
+    fn missing_local_apple_backend_falls_back_to_remote_package() {
+        let waterui_root = tempdir().expect("tempdir");
+        std::fs::create_dir_all(waterui_root.path().join("backends")).expect("backends dir");
+
+        let ctx = ctx(
+            Some(waterui_root.path().to_path_buf()),
+            Some(PathBuf::from("managed_backends/apple")),
+            None,
+            crate::project::PackageType::Playground,
+        );
+
+        assert!(ctx.compute_apple_backend_path().is_none());
     }
 
     #[test]
