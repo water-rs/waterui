@@ -108,7 +108,7 @@ pub mod prelude {
     };
 
     // Background types (explicit to avoid module name conflict with layout::background)
-    pub use super::background::{Background, Material};
+    pub use super::background::{Background, Glass, GlassStyle, Material};
 
     // Asset types
     #[cfg(feature = "assets")]

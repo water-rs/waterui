@@ -2147,6 +2147,76 @@ ffi_ignorable_metadata!(
     material_background
 );
 
+// ========== IgnorableMetadata<GlassBackground> FFI ==========
+// Used to put Liquid Glass behind content on platforms that have it (Apple)
+
+#[cfg(feature = "c-api")]
+use waterui::background::{GlassBackground, GlassStyle};
+
+/// FFI-safe representation of a Liquid Glass style.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+#[cfg(feature = "c-api")]
+pub enum WuiGlassStyle {
+    /// Regular glass, legible over anything.
+    Regular = 0,
+    /// Clear glass, for surfaces over media.
+    Clear = 1,
+}
+
+#[cfg(feature = "c-api")]
+impl IntoFFI for GlassStyle {
+    type FFI = WuiGlassStyle;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Self::Regular => WuiGlassStyle::Regular,
+            Self::Clear => WuiGlassStyle::Clear,
+        }
+    }
+}
+
+/// FFI-safe representation of `IgnorableMetadata<GlassBackground>`
+#[repr(C)]
+#[derive(Debug)]
+#[cfg(feature = "c-api")]
+pub struct WuiIgnorableMetadataGlassBackground {
+    /// The view content wrapped by this metadata
+    pub content: *mut WuiAnyView,
+    /// The glass style
+    pub style: WuiGlassStyle,
+    /// Whether the glass reacts to touch and pointer interaction
+    pub interactive: bool,
+    /// Tint color (as opaque pointer - needs environment to resolve); null when untinted
+    pub tint: *mut WuiColor,
+    /// The outline of the glass surface, drawn by the effect itself rather than a mask
+    pub shape: crate::shape::WuiShapeKind,
+}
+
+#[cfg(feature = "c-api")]
+impl IntoFFI for waterui_core::IgnorableMetadata<GlassBackground> {
+    type FFI = WuiIgnorableMetadataGlassBackground;
+
+    fn into_ffi(self) -> Self::FFI {
+        let glass = self.value.0;
+        WuiIgnorableMetadataGlassBackground {
+            content: self.content.into_ffi(),
+            style: glass.style().into_ffi(),
+            interactive: glass.is_interactive(),
+            tint: glass.tint_color().cloned().into_ffi(),
+            shape: glass.shape_kind().into_ffi(),
+        }
+    }
+}
+
+// Generate waterui_ignorable_metadata_glass_background_id() and
+// waterui_force_as_ignorable_metadata_glass_background()
+#[cfg(feature = "c-api")]
+ffi_ignorable_metadata!(
+    GlassBackground,
+    WuiIgnorableMetadataGlassBackground,
+    glass_background
+);
+
 // ========== Metadata<Hittable> FFI ==========
 // Controls whether a view responds to hit testing (touch/click events)
 

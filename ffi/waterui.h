@@ -175,6 +175,20 @@ typedef enum WuiMaterial {
 } WuiMaterial;
 
 /**
+ * FFI-safe representation of a Liquid Glass style.
+ */
+typedef enum WuiGlassStyle {
+  /**
+   * Regular glass, legible over anything.
+   */
+  WuiGlassStyle_Regular = 0,
+  /**
+   * Clear glass, for surfaces over media.
+   */
+  WuiGlassStyle_Clear = 1,
+} WuiGlassStyle;
+
+/**
  * C ABI mirror of [`GradientType`], the discriminator for a resolved gradient's shape.
  */
 typedef enum WuiGradientType {
@@ -3511,6 +3525,32 @@ typedef struct WuiIgnorableMetadataMaterialBackground {
    */
   enum WuiMaterial material;
 } WuiIgnorableMetadataMaterialBackground;
+
+/**
+ * FFI-safe representation of `IgnorableMetadata<GlassBackground>`
+ */
+typedef struct WuiIgnorableMetadataGlassBackground {
+  /**
+   * The view content wrapped by this metadata
+   */
+  struct WuiAnyView *content;
+  /**
+   * The glass style
+   */
+  enum WuiGlassStyle style;
+  /**
+   * Whether the glass reacts to touch and pointer interaction
+   */
+  bool interactive;
+  /**
+   * Tint color (as opaque pointer - needs environment to resolve); null when untinted
+   */
+  struct WuiColor *tint;
+  /**
+   * The outline of the glass surface, drawn by the effect itself rather than a mask
+   */
+  struct WuiShapeKind shape;
+} WuiIgnorableMetadataGlassBackground;
 
 /**
  * FFI-safe representation of Hittable metadata.
@@ -7899,6 +7939,21 @@ struct WuiTypeId waterui_ignorable_metadata_material_background_id(void);
  * that contains an `IgnorableMetadata<$ty>`.
  */
 struct WuiIgnorableMetadataMaterialBackground waterui_force_as_ignorable_metadata_material_background(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
+struct WuiTypeId waterui_ignorable_metadata_glass_background_id(void);
+
+/**
+ * Force-casts an `AnyView` to this ignorable metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains an `IgnorableMetadata<$ty>`.
+ */
+struct WuiIgnorableMetadataGlassBackground waterui_force_as_ignorable_metadata_glass_background(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
