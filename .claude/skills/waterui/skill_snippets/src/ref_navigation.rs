@@ -100,6 +100,7 @@ pub fn navigation_block_01() -> impl View {
         ],
     )
     .style(tab_style::automatic())
+    .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown) // iOS 26 collapses the bar while scrolling; ignored elsewhere
 }
 
 // ---------------------------------------------------------------------------
