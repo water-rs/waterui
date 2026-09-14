@@ -202,6 +202,27 @@ pub fn styling_block_07() {
         // any view is a valid background
         view.background(RoundedRectangle::new(0.18).fill(Surface))
     };
+
+    // ---- glass ----
+    use waterui::background::Glass;
+    use waterui::prelude::theme_color::Accent;
+
+    let view = Divider;
+    let _ = {
+        view.background(Glass::regular()) // capsule pill, the default
+    };
+    let view = Divider;
+    let _ = {
+        view.background(Glass::clear().interactive(true)) // over media; reacts to touch
+    };
+    let view = Divider;
+    let _ = {
+        view.background(
+            Glass::regular()
+                .tint(Accent)
+                .shape(RoundedRectangle::new(0.2)),
+        )
+    };
 }
 
 // ---------------------------------------------------------------------------

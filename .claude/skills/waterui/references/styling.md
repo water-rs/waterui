@@ -155,6 +155,21 @@ view.background(Material::Regular)        // platform blur material
 view.background(RoundedRectangle::new(0.18).fill(Surface))   // any view is a valid background
 ```
 
+`Material` is the content-layer frosted pane (SwiftUI's `.regularMaterial`); Liquid Glass
+is a separate type, `Glass`, because it is a different surface with its own parameters,
+not a sixth thickness. Glass carries its own outline — a capsule unless you say
+otherwise — because a mask over glass would destroy its refraction; do not `.clip()` it.
+Apple backends project it onto `UIGlassEffect` / `NSGlassEffectView`; other backends
+approximate or ignore it.
+
+```rust
+use waterui::background::Glass;
+
+view.background(Glass::regular())                       // capsule pill, the default
+view.background(Glass::clear().interactive(true))       // over media; reacts to touch
+view.background(Glass::regular().tint(Accent).shape(RoundedRectangle::new(0.2)))
+```
+
 Gradients come in **two families that share names — pick the import deliberately**:
 
 - `waterui::gradient::*` (prelude): background-descriptor types (`LinearGradient`,
