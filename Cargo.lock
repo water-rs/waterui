@@ -7315,6 +7315,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "reply-example"
+version = "0.1.0"
+dependencies = [
+ "hydrolysis-m3",
+ "waterui",
+ "waterui-icons-material-icon",
+ "waterui-testing",
+]
+
+[[package]]
 name = "rfd"
 version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
