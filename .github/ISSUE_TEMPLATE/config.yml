@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and discussions
+    url: https://github.com/water-rs/waterui/discussions
+    about: Usage questions, ideas, and early designs belong in GitHub Discussions.
+  - name: API documentation
+    url: https://docs.rs/waterui
+    about: Crate API reference for the latest published release.
