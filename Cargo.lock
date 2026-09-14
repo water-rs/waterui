@@ -10797,6 +10797,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+ "trybuild",
  "waterui-assets-core",
  "waterui-assets-planner",
 ]
@@ -10874,6 +10875,7 @@ dependencies = [
  "serde",
  "serde_json",
  "suiteki",
+ "tempfile",
  "thiserror 2.0.20",
  "tiny_http",
  "tracing",
@@ -11794,6 +11796,7 @@ dependencies = [
  "serde",
  "serde_json",
  "suiteki",
+ "tempfile",
  "thiserror 2.0.20",
  "tracing",
  "waterui",

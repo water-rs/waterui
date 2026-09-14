@@ -23,12 +23,14 @@
 //! ```
 
 pub mod assets;
+mod bundled;
 mod controller;
 
 pub use assets::{
     ASSET_HOST, ASSET_HTTPS_HOST, ASSET_HTTPS_ORIGIN, ASSET_ORIGIN, ASSET_SCHEME, AssetMethod,
     AssetRequest, AssetResponse, AssetServer, WebViewConfig,
 };
+pub use bundled::{DEFAULT_CSP, DirectoryServer, dev_url};
 pub use controller::*;
 pub use cookie::Cookie;
 use std::{cell::Cell, fmt, rc::Rc};

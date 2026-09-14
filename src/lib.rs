@@ -183,6 +183,12 @@ pub use waterui_assets::{
     AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset, LargeFile,
     LargeFileAsset, VideoAsset,
 };
+/// `include_web!("web")` — the one-macro web frontend. Its expansion speaks
+/// [`webview`](crate::webview)'s asset-origin API and serves a staged
+/// [`Bundle`], so it is exported only when both features are on.
+#[doc(inline)]
+#[cfg(all(feature = "webview", feature = "assets"))]
+pub use waterui_assets_macros::include_web;
 #[doc(inline)]
 #[cfg(feature = "assets")]
 pub use waterui_assets_macros::{asset, assets, include_bundle};
