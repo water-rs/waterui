@@ -1433,8 +1433,11 @@ mod tests {
         let waterui_root = tempdir().expect("tempdir");
         let backend_dir = waterui_root.path().join("backends/apple");
         std::fs::create_dir_all(&backend_dir).expect("backend dir");
-        std::fs::write(backend_dir.join("Package.swift"), "// swift-tools-version:5.9\n")
-            .expect("Package.swift");
+        std::fs::write(
+            backend_dir.join("Package.swift"),
+            "// swift-tools-version:5.9\n",
+        )
+        .expect("Package.swift");
         let project_root = tempdir().expect("tempdir");
 
         let ctx = ctx(
