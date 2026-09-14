@@ -21,15 +21,17 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      # A released CLI scaffolds each backend at the `v<version>` tag of its
-      # repository, where <version> is the CLI's own package version
-      # (cli/build.rs renders `v$CARGO_PKG_VERSION`), so the tag has to exist
-      # before `release` publishes. Each backend is pinned at the submodule
-      # commits that CLI version was cut at: its own release tag when one
-      # already exists, else the checkout this run is releasing. The PAT needs
-      # `contents: write` on both backend repositories — the workflow's own
-      # GITHUB_TOKEN cannot push to them.
-      - name: Push the release tag to each backend
+      # A released CLI scaffolds the Android backend at the submodule commit
+      # `framework.json` records; the `v<version>` tag — where <version> is the
+      # CLI's own package version — makes that commit reachable by name. The
+      # Apple backend releases on its own cadence and needs no wave tag: a
+      # generated project pins the `apple-backend-version` the manifest
+      # declares. The backend is pinned at the submodule commit that CLI
+      # version was cut at: its own release tag when one already exists, else
+      # the checkout this run is releasing. The PAT needs `contents: write` on
+      # the backend repository — the workflow's own GITHUB_TOKEN cannot push
+      # to it.
+      - name: Push the release tag to the backend
         env:
           GH_TOKEN: ${{ secrets.SUBMODULE_UPDATE_PAT }}
         run: |
@@ -45,7 +47,7 @@ jobs:
             pins="HEAD"
           fi
 
-          for path in backends/apple backends/android; do
+          for path in backends/android; do
             url="$(git config -f .gitmodules --get "submodule.${path}.url")"
             repo="${url#https://github.com/}"
             repo="${repo%.git}"

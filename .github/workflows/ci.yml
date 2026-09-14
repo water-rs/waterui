@@ -94,7 +94,6 @@ jobs:
           filters: |
             ffi:
               - "ffi/**"
-              - "backends/apple"
               - "backends/android"
               - "Cargo.toml"
               - ".github/scripts/**"

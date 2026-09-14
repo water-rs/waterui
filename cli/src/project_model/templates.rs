@@ -245,6 +245,13 @@ pub struct TemplateContext {
     pub author: String,
     /// Path to the Android backend (relative or absolute)
     pub android_backend_path: Option<PathBuf>,
+    /// `[backend.apple] backend_path` — a local Apple backend checkout that
+    /// replaces the remote Swift package reference.
+    pub apple_backend_path: Option<PathBuf>,
+    /// `[backend.apple] branch` — pin the remote package to a branch.
+    pub apple_backend_branch: Option<String>,
+    /// `[backend.apple] revision` — pin the remote package to a revision.
+    pub apple_backend_revision: Option<String>,
     /// Whether to use remote dev backend (`JitPack`) instead of local
     pub use_remote_dev_backend: bool,
     /// Path to local `WaterUI` repository (for dev mode)
@@ -295,6 +302,9 @@ impl TemplateContext {
             android_backend_path: waterui_path
                 .as_ref()
                 .map(|path| path.join("backends/android")),
+            apple_backend_path: None,
+            apple_backend_branch: None,
+            apple_backend_revision: None,
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
             framework: framework.clone(),
@@ -320,6 +330,7 @@ impl TemplateContext {
         app_name: impl Into<String>,
         framework: &ResolvedFramework,
     ) -> Self {
+        let apple = manifest.backends.apple();
         Self {
             app_display_name: manifest.package.name.clone(),
             app_name: app_name.into(),
@@ -327,6 +338,11 @@ impl TemplateContext {
             bundle_identifier: manifest.package.bundle_identifier.clone(),
             author: String::new(),
             android_backend_path: None,
+            apple_backend_path: apple
+                .and_then(|backend| backend.backend_path.as_deref())
+                .map(PathBuf::from),
+            apple_backend_branch: apple.and_then(|backend| backend.branch.clone()),
+            apple_backend_revision: apple.and_then(|backend| backend.revision.clone()),
             use_remote_dev_backend: manifest.waterui_path.is_none(),
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
             framework: framework.clone(),
@@ -375,6 +391,9 @@ impl TemplateContext {
             bundle_identifier,
             author: String::new(),
             android_backend_path,
+            apple_backend_path: None,
+            apple_backend_branch: None,
+            apple_backend_revision: None,
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
             framework: framework.clone(),
@@ -557,17 +576,17 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
         PathBuf::from(path_str.replace("AppName", &self.app_name))
     }
 
-    /// Compute the relative path from the backend project to a `WaterUI` backend.
+    /// Compute the path a generated backend project's config references for
+    /// `target`, resolved from the backend project's directory.
     ///
-    /// This accounts for the project being in a generated backend subdirectory.
-    fn compute_relative_backend_path(&self, backend_subdir: &str) -> Option<String> {
-        let waterui_path = self.waterui_path.as_ref()?;
-
-        // If `waterui_path` is absolute, use it directly. This avoids producing invalid
-        // paths like `../../../..//Users/...` in generated config files.
-        if waterui_path.is_absolute() {
-            let absolute_backend_path = waterui_path.join("backends").join(backend_subdir);
-            return Some(normalize_path_for_config(&absolute_backend_path));
+    /// `target` is absolute, or relative to the project root the way
+    /// `waterui_path` and `[backend.apple] backend_path` are. This accounts
+    /// for the project being in a generated backend subdirectory.
+    fn backend_relative_path(&self, target: &Path) -> String {
+        // If `target` is absolute, use it directly. This avoids producing
+        // invalid paths like `../../../..//Users/...` in generated config files.
+        if target.is_absolute() {
+            return normalize_path_for_config(target);
         }
 
         if let Some(backend_project_path) = self
@@ -581,10 +600,7 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
                     backend_project_path.display()
                 )
             });
-            let absolute_backend_path = project_root
-                .join(waterui_path)
-                .join("backends")
-                .join(backend_subdir);
+            let absolute_backend_path = project_root.join(target);
             let relative_path = pathdiff::diff_paths(&absolute_backend_path, backend_project_path)
                 .unwrap_or_else(|| {
                     panic!(
@@ -593,7 +609,7 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
                         absolute_backend_path.display()
                     )
                 });
-            return Some(normalize_path_for_config(&relative_path));
+            return normalize_path_for_config(&relative_path);
         }
 
         // Count how many levels deep the project is from the project root.
@@ -603,23 +619,31 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
             .as_ref()
             .map_or(1, |p| p.components().count());
 
-        // Build the relative path: go up `project_depth` levels, then to waterui_path/backends/<backend>.
-        // Use `PathBuf` joins to avoid accidental `//` sequences and to keep behavior consistent
-        // across platforms.
+        // Build the relative path: go up `project_depth` levels, then down to
+        // the target. Use `PathBuf` joins to avoid accidental `//` sequences
+        // and to keep behavior consistent across platforms.
         let mut backend_path = PathBuf::new();
         for _ in 0..project_depth {
             backend_path.push("..");
         }
-        backend_path.push(waterui_path);
-        backend_path.push("backends");
-        backend_path.push(backend_subdir);
+        backend_path.push(target);
 
-        Some(normalize_path_for_config(&backend_path))
+        normalize_path_for_config(&backend_path)
     }
 
-    /// Compute the relative path from the Xcode project to the `WaterUI` Swift backend.
+    /// Compute the relative path from the backend project to a `WaterUI` backend.
+    fn compute_relative_backend_path(&self, backend_subdir: &str) -> Option<String> {
+        let waterui_path = self.waterui_path.as_ref()?;
+        Some(self.backend_relative_path(&waterui_path.join("backends").join(backend_subdir)))
+    }
+
+    /// The path to the local Apple backend checkout `[backend.apple]`
+    /// `backend_path` names, resolved from the Xcode project's directory.
+    /// `None` consumes the remote Swift package instead.
     fn compute_apple_backend_path(&self) -> Option<String> {
-        self.compute_relative_backend_path("apple")
+        self.apple_backend_path
+            .as_ref()
+            .map(|path| self.backend_relative_path(path))
     }
 
     /// Compute the relative path from the Android project to the `WaterUI` Android backend.
@@ -699,6 +723,34 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
         )
     }
 
+    /// The `SwiftPM` requirement the generated `XCRemoteSwiftPackageReference`
+    /// pins the Apple backend at: a `[backend.apple]` override first —
+    /// `branch`, then `revision` — the framework's declared
+    /// `apple-backend-version` next, and the `apple-backend-revision` gitlink
+    /// pin a framework older than the submodule's removal carries last.
+    fn apple_backend_requirement(&self) -> String {
+        if let (Some(_), Some(_)) = (&self.apple_backend_branch, &self.apple_backend_revision) {
+            panic!("`[backend.apple]` sets both `branch` and `revision`; pick one");
+        }
+        self.apple_backend_branch
+            .as_ref()
+            .map(|branch| format!("kind = branch;\n\t\t\t\tbranch = \"{branch}\";"))
+            .or_else(|| {
+                self.apple_backend_revision
+                    .as_ref()
+                    .map(|revision| format!("kind = revision;\n\t\t\t\trevision = \"{revision}\";"))
+            })
+            .or_else(|| {
+                self.framework.apple_backend_version().map(|version| {
+                    format!("kind = exactVersion;\n\t\t\t\tversion = \"{version}\";")
+                })
+            })
+            .unwrap_or_else(|| {
+                let revision = self.framework.scaffold_value("apple-backend-revision");
+                format!("kind = revision;\n\t\t\t\trevision = \"{revision}\";")
+            })
+    }
+
     /// Generate the `XCode` package reference section for the project file.
     fn swift_package_reference_section(&self) -> String {
         const PACKAGE_ID: &str = "D01867782E6C82CA00802E96";
@@ -713,13 +765,12 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
                     \t\t\tisa = XCRemoteSwiftPackageReference;\n\
                     \t\t\trepositoryURL = \"{}\";\n\
                     \t\t\trequirement = {{\n\
-                    \t\t\t\tkind = revision;\n\
-                    \t\t\t\trevision = \"{}\";\n\
+                    \t\t\t\t{}\n\
                     \t\t\t}};\n\
                     \t\t}};\n\
                     /* End XCRemoteSwiftPackageReference section */",
                     self.framework.scaffold_value("apple-backend-url"),
-                    self.framework.scaffold_value("apple-backend-revision"),
+                    self.apple_backend_requirement(),
                 )
             },
             |backend_path| {
@@ -1022,6 +1073,9 @@ mod tests {
                 .expect("test bundle identifier must be valid"),
             author: String::new(),
             android_backend_path: None,
+            apple_backend_path: None,
+            apple_backend_branch: None,
+            apple_backend_revision: None,
             use_remote_dev_backend: waterui_path.is_none(),
             waterui_path,
             framework: stable_framework(),
@@ -1318,38 +1372,40 @@ mod tests {
     }
 
     #[test]
-    fn relative_waterui_path_produces_clean_relative_backend_path() {
-        let ctx = ctx(
-            Some(PathBuf::from("../..")),
+    fn relative_apple_backend_path_produces_clean_relative_backend_path() {
+        let mut ctx = ctx(
+            None,
             Some(PathBuf::from("managed_backends/apple")),
             None,
             crate::project::PackageType::App,
         );
+        ctx.apple_backend_path = Some(PathBuf::from("../apple-backend"));
 
         let path = ctx
-            .compute_relative_backend_path("apple")
+            .compute_apple_backend_path()
             .expect("expected relative backend path");
 
-        assert_eq!(path, "../../../../backends/apple");
+        assert_eq!(path, "../../../apple-backend");
         assert!(!path.contains("//"));
     }
 
     #[test]
-    fn absolute_waterui_path_is_used_directly() {
+    fn absolute_apple_backend_path_is_used_directly() {
         let abs = if cfg!(windows) {
-            PathBuf::from(r"C:\waterui")
+            PathBuf::from(r"C:\waterui\backends\apple")
         } else {
-            PathBuf::from("/waterui")
+            PathBuf::from("/waterui/backends/apple")
         };
 
-        let ctx = ctx(
-            Some(abs),
+        let mut ctx = ctx(
+            None,
             Some(PathBuf::from("apple")),
             None,
             crate::project::PackageType::App,
         );
+        ctx.apple_backend_path = Some(abs);
         let path = ctx
-            .compute_relative_backend_path("apple")
+            .compute_apple_backend_path()
             .expect("expected backend path");
 
         let expected = if cfg!(windows) {
@@ -1375,18 +1431,19 @@ mod tests {
             PathBuf::from("/Users/lexo/.water/build_cache/Users/lexo/demo/managed_backends/apple")
         };
 
-        let ctx = ctx(
-            Some(PathBuf::from("../waterui")),
+        let mut ctx = ctx(
+            None,
             Some(backend_project_path.clone()),
             Some(project_root.clone()),
             crate::project::PackageType::Playground,
         );
+        ctx.apple_backend_path = Some(PathBuf::from("../waterui/backends/apple"));
 
         let path = ctx
-            .compute_relative_backend_path("apple")
+            .compute_apple_backend_path()
             .expect("expected backend path");
         let expected_backend_path = pathdiff::diff_paths(
-            project_root.join("../waterui").join("backends/apple"),
+            project_root.join("../waterui/backends/apple"),
             &backend_project_path,
         )
         .expect("backend diff path");
@@ -1455,8 +1512,8 @@ mod tests {
         assert!(!rendered.contains("libwaterui_app"));
         assert!(rendered.contains("LIBRARY_SEARCH_PATHS = \"$(BUILT_PRODUCTS_DIR)\";"));
         assert!(rendered.contains(ctx.framework.scaffold_value("apple-backend-url")));
-        assert!(rendered.contains(ctx.framework.scaffold_value("apple-backend-revision")));
-        assert!(rendered.contains("kind = revision;"));
+        assert!(rendered.contains(ctx.framework.apple_backend_version().unwrap()));
+        assert!(rendered.contains("kind = exactVersion;"));
     }
 
     #[test]

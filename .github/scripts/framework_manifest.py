@@ -23,9 +23,11 @@ import tomllib
 
 
 # The submodules whose checkout carries a native backend repository; each
-# basename keys the `{name}-backend-url`/`{name}-backend-revision` scaffold
-# entries, matching BACKEND_SUBMODULES on the Rust side.
-BACKEND_SUBMODULES = ("backends/apple", "backends/android")
+# basename keys the `{name}-backend-revision` scaffold entry, matching
+# BACKEND_SUBMODULES on the Rust side. Backends released on their own cadence
+# — Apple, since #839 — carry a `{name}-backend-version` literal in
+# `[package.metadata.waterui]` instead.
+BACKEND_SUBMODULES = ("backends/android",)
 
 
 def git(*args):
@@ -56,7 +58,9 @@ def lockfile_hashes(submodules):
 def framework_scaffold(framework):
     """The scaffold table the framework manifest itself declares: each
     `scaffold-packages` entry's `[workspace.dependencies]` requirement and
-    each backend's `{name}-backend-url` from `[package.metadata.waterui]`.
+    every backend coordinate — `{name}-backend-url`, plus the
+    `{name}-backend-version` of a backend pinned by release rather than
+    gitlink — from `[package.metadata.waterui]`.
     Identical to `framework_scaffold` in the CLI for the same tree."""
     metadata = framework["package"]["metadata"]["waterui"]
     workspace = framework["workspace"]["dependencies"]
@@ -66,9 +70,9 @@ def framework_scaffold(framework):
         scaffold[f"{name}-version"] = (
             dependency if isinstance(dependency, str) else dependency["version"]
         )
-    for path in BACKEND_SUBMODULES:
-        name = path.rsplit("/", 1)[-1]
-        scaffold[f"{name}-backend-url"] = metadata[f"{name}-backend-url"]
+    for key, value in metadata.items():
+        if key.endswith("-backend-url") or key.endswith("-backend-version"):
+            scaffold[key] = value
     return scaffold
 
 

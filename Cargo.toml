@@ -56,9 +56,12 @@ minimum-cli-version = "0.2.1"
 # The Android API floor the native runtime supports; the backend's Gradle
 # `minSdk` must agree.
 android-min-api-level = 26
-# Git repositories the native backends are pinned from; the submodule of the
-# same name under `backends/` supplies each `{name}-backend-revision` pin.
+# Git repositories the native backends are pinned from. The Apple backend
+# releases on its own cadence, so a generated project pins the declared
+# compatible `apple-backend-version` tag; the Android backend still rides the
+# `backends/android` gitlink, which supplies its `{name}-backend-revision` pin.
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
+apple-backend-version = "0.2.0"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from

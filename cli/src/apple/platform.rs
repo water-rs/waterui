@@ -6,7 +6,6 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsString;
-use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use askama::Template;
@@ -301,13 +300,22 @@ fn unique_xcode_build_setting(contents: &str, key: &str) -> eyre::Result<String>
 // Validation
 // ============================================================================
 
-async fn validate_local_apple_backend(project: &Project) -> eyre::Result<()> {
-    let Some(waterui_path) = project.manifest().waterui_path.as_deref() else {
+/// The local Apple backend `[backend.apple] backend_path` names is the
+/// checkout the generated project references — validate it is a real Swift
+/// package. `waterui_path` alone no longer supplies one: the framework
+/// checkout carries no `backends/apple` tree since the submodule was dropped.
+fn validate_local_apple_backend(project: &Project) -> eyre::Result<()> {
+    let Some(backend_path) = project
+        .manifest()
+        .backends
+        .apple()
+        .and_then(|backend| backend.backend_path.as_deref())
+    else {
         return Ok(());
     };
 
-    let waterui_root = {
-        let candidate = PathBuf::from(waterui_path);
+    let backend_root = {
+        let candidate = PathBuf::from(backend_path);
         if candidate.is_absolute() {
             candidate
         } else {
@@ -315,43 +323,18 @@ async fn validate_local_apple_backend(project: &Project) -> eyre::Result<()> {
         }
     };
 
-    let package_manifest = waterui_root.join("backends/apple/Package.swift");
+    let package_manifest = backend_root.join("Package.swift");
     if package_manifest.exists() {
         return Ok(());
     }
 
-    let gitmodules_path = waterui_root.join(".gitmodules");
-    let submodule_hint = if gitmodules_path.exists() {
-        fs::read_to_string(&gitmodules_path)
-            .await
-            .ok()
-            .filter(|c| c.contains("backends/apple"))
-            .map(|_| {
-                format!(
-                    "It looks like `backends/apple` is a git submodule; run `git submodule update --init --recursive` in `{}`.",
-                    waterui_root.display()
-                )
-            })
-    } else {
-        None
-    };
-
-    let mut message = format!(
-        "Local Apple backend Swift package manifest not found at `{}`.\n\
-         This is typically caused by an incomplete local WaterUI checkout (e.g. missing submodules) or an incorrect `waterui_path` in `Water.toml`.\n",
-        package_manifest.display()
+    bail!(
+        "`[backend.apple] backend_path` points at `{}`, which has no `Package.swift` — \
+         the Apple backend lives in its own repository now; point it at an \
+         `apple-backend` checkout, or remove `backend_path` to consume the pinned \
+         release from SwiftPM.",
+        backend_root.display()
     );
-
-    if let Some(hint) = submodule_hint {
-        writeln!(&mut message, "{hint}\n").unwrap();
-    } else {
-        writeln!(
-            &mut message,
-            "If you're using a local WaterUI checkout, ensure `backends/apple/` exists and contains `Package.swift`."
-        ).unwrap();
-    }
-
-    bail!("{message}");
 }
 
 async fn ensure_apple_linker_flags(
@@ -591,7 +574,7 @@ pub async fn package_apple(
         );
     }
 
-    validate_local_apple_backend(project).await?;
+    validate_local_apple_backend(project)?;
 
     // Copy project assets and fonts
     let app_resources_dir = project_path.join(&backend.scheme);
