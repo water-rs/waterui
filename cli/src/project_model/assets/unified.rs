@@ -333,6 +333,15 @@ async fn build_manifest(
 
     let rlib = build_host_rlib(project.root(), sccache_path).await?;
     let symbols = ArtifactSymbols::read(&rlib)?;
+    // The declared frontend toolchain is a manifest concern: `[web]` absent
+    // means bun, and the declared manager is never substituted.
+    let package_manager = project
+        .manifest()
+        .web
+        .as_ref()
+        .map_or_else(crate::web::PackageManager::default, |web| {
+            web.package_manager
+        });
     // The main root is always planned; a second `assets` declaration is a
     // duplicate mount.
     let mut seen = BTreeSet::new();
@@ -348,6 +357,13 @@ async fn build_manifest(
                 "include_bundle mount '{}' is declared more than once",
                 meta.mount
             );
+        }
+        // An `include_web!` mount carries the toolchain project that produces
+        // its output directory; build it before staging. Staging runs once
+        // per `water` invocation — callers reuse the returned manifest — so
+        // the frontend build rides that same exactly-once guarantee.
+        if meta.project.is_some() {
+            crate::web::build_frontend(package_manager, &meta).await?;
         }
         assets.extend(plan_mount(&meta.path, &meta.mount)?);
         mounts.push(BundleMount {

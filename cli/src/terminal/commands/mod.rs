@@ -56,11 +56,13 @@ pub mod device;
 pub mod devices;
 pub mod doctor;
 pub mod gc;
+pub mod init;
 pub mod inspector;
 pub mod mcp;
 pub mod package;
 pub mod preview;
 pub mod run;
+pub mod web;
 
 /// Parse a viewport size from a `WIDTHxHEIGHT` string into whole pixels.
 fn parse_viewport(s: &str) -> eyre::Result<(u32, u32)> {

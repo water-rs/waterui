@@ -30,7 +30,7 @@ use crate::{
         linux::LinuxSystemToolchain,
         rust::RustToolchain,
         sccache::Sccache,
-        web::{Wasm32UnknownUnknownTarget, WasmPack},
+        web::{PackageManagerToolchain, Wasm32UnknownUnknownTarget, WasmPack},
         windows_arm64_llvm::WindowsArm64LlvmToolchain,
     },
 };
@@ -247,6 +247,8 @@ pub mod ids {
     pub const GTK4: &str = "gtk4";
     /// `sccache` compile cache.
     pub const SCCACHE: &str = "sccache";
+    /// The `[web] package_manager` the current project's `Water.toml` declares.
+    pub const WEB_PACKAGE_MANAGER: &str = "web-package-manager";
 
     /// Every doctor item id in emission order.
     ///
@@ -276,6 +278,7 @@ pub mod ids {
         LINUX_SYSTEM_PACKAGES,
         GTK4,
         SCCACHE,
+        WEB_PACKAGE_MANAGER,
     ];
 }
 
@@ -697,8 +700,43 @@ pub async fn doctor(host: &Host) -> Vec<DoctorItem> {
         Sccache,
     )
     .await;
+    push_web_package_manager_check(host, &mut items).await;
 
     items
+}
+
+/// Checks the `[web] package_manager` the current directory's `Water.toml`
+/// declares. Only the declared manager is probed — a project on `pnpm` is
+/// never reported healthy because `bun` happens to be installed.
+async fn push_web_package_manager_check(host: &Host, items: &mut Vec<DoctorItem>) {
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    let Ok(manifest_text) = smol::fs::read_to_string(cwd.join("Water.toml")).await else {
+        return;
+    };
+    let Ok(manifest) = toml::from_str::<crate::project::Manifest>(&manifest_text) else {
+        return;
+    };
+    let Some(web) = manifest.web else {
+        return;
+    };
+    let package_manager = web.package_manager;
+    let name: &'static str = match package_manager {
+        crate::web::PackageManager::Bun => "bun (web package manager)",
+        crate::web::PackageManager::Pnpm => "pnpm (web package manager)",
+        crate::web::PackageManager::Npm => "npm (web package manager)",
+        crate::web::PackageManager::Yarn => "yarn (web package manager)",
+    };
+    push_toolchain_check(
+        host,
+        items,
+        ids::WEB_PACKAGE_MANAGER,
+        name,
+        package_manager.install_hint(),
+        PackageManagerToolchain(package_manager),
+    )
+    .await;
 }
 
 async fn push_rust_toolchain_check(host: &Host, items: &mut Vec<DoctorItem>) {
@@ -752,7 +790,14 @@ mod tests {
         let machine = TestMachine::new();
         let host = machine.host(Vec::<(String, String)>::new());
         let items = smol::block_on(doctor(&host));
-        assert_eq!(ids_of(&items), ids::ALL);
+        // `WEB_PACKAGE_MANAGER` only emits when the current directory's
+        // `Water.toml` declares a `[web]` section; the test CWD has none.
+        let expected: Vec<&'static str> = ids::ALL
+            .iter()
+            .copied()
+            .filter(|id| *id != ids::WEB_PACKAGE_MANAGER)
+            .collect();
+        assert_eq!(ids_of(&items), expected);
     }
 
     #[test]

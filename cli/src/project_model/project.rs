@@ -810,6 +810,15 @@ pub enum FailToCreateProject {
     /// The project directory already exists.
     #[error("Directory already exists: {0}")]
     DirectoryExists(PathBuf),
+    /// The directory is already a `WaterUI` project.
+    #[error("{0} is already a WaterUI project (Water.toml exists)")]
+    AlreadyProject(PathBuf),
+    /// The directory already contains a Cargo manifest that scaffolding
+    /// would overwrite.
+    #[error(
+        "{0} already contains a Cargo.toml; merge the generated scaffold manually or remove it first"
+    )]
+    CargoManifestExists(PathBuf),
     /// Failed to create project directory.
     #[error("Failed to create directory: {0}")]
     CreateDir(std::io::Error),
@@ -860,6 +869,19 @@ pub struct CreateOptions {
     pub framework: Option<ResolvedFramework>,
     /// Author name for Cargo.toml.
     pub author: String,
+    /// The declared web frontend: `Some` generates the `include_web!` root
+    /// view and writes `[web] package_manager`.
+    pub web: Option<WebScaffold>,
+}
+
+/// How `create`/`init` wires a declared web frontend into the scaffold.
+#[derive(Debug, Clone)]
+pub struct WebScaffold {
+    /// The package manager written to `[web] package_manager`.
+    pub package_manager: web::PackageManager,
+    /// The `include_web!` argument: `"web"` for the conventional layout, or a
+    /// path relative to the project root for a frontend referenced in place.
+    pub include_arg: String,
 }
 
 impl CreateOptions {
@@ -1031,7 +1053,7 @@ impl Project {
     /// - `FailToCreateProject::SaveManifest`: If saving the manifest fails.
     pub async fn create(
         path: impl AsRef<Path>,
-        mut options: CreateOptions,
+        options: CreateOptions,
     ) -> Result<Self, FailToCreateProject> {
         let path = path.as_ref().to_path_buf();
 
@@ -1040,6 +1062,36 @@ impl Project {
             return Err(FailToCreateProject::DirectoryExists(path));
         }
 
+        Self::scaffold_project(path, options).await
+    }
+
+    /// Initialize a `WaterUI` project inside an existing directory
+    /// (`water init`): the same scaffold as [`Project::create`] without the
+    /// directory-creation step.
+    ///
+    /// # Errors
+    /// - `FailToCreateProject::AlreadyProject`: If `Water.toml` already exists.
+    /// - `FailToCreateProject::CargoManifestExists`: If `Cargo.toml` already
+    ///   exists and would be overwritten.
+    /// - the [`Project::create`] scaffold errors.
+    pub async fn init(
+        path: impl AsRef<Path>,
+        options: CreateOptions,
+    ) -> Result<Self, FailToCreateProject> {
+        let path = path.as_ref().to_path_buf();
+        if path.join("Water.toml").exists() {
+            return Err(FailToCreateProject::AlreadyProject(path));
+        }
+        if path.join("Cargo.toml").exists() {
+            return Err(FailToCreateProject::CargoManifestExists(path));
+        }
+        Self::scaffold_project(path, options).await
+    }
+
+    async fn scaffold_project(
+        path: PathBuf,
+        mut options: CreateOptions,
+    ) -> Result<Self, FailToCreateProject> {
         // Derive crate name from display name
         let crate_name = options.crate_name()?;
         let (framework, lockfile) = options
@@ -1047,7 +1099,9 @@ impl Project {
             .await
             .map_err(FailToCreateProject::Framework)?;
 
-        // Create project directory
+        // Framework validation precedes directory creation so a rejected
+        // local checkout leaves nothing behind; on `init` the directory
+        // already exists and this is a no-op.
         smol::fs::create_dir_all(&path)
             .await
             .map_err(FailToCreateProject::CreateDir)?;
@@ -1109,6 +1163,9 @@ impl Project {
             app: None,
             theme: None,
             launch: None,
+            web: options.web.as_ref().map(|scaffold| web::WebConfig {
+                package_manager: scaffold.package_manager,
+            }),
         };
 
         // Save Water.toml
@@ -1847,6 +1904,7 @@ use crate::{
     project_types::{BundleIdentifier, CrateName, PermissionKey},
     templates::{self, TemplateContext},
     utils::command,
+    web,
 };
 
 /// Configuration for a `WaterUI` project persisted to `Water.toml`.
@@ -1877,6 +1935,9 @@ pub struct Manifest {
     /// The launch screen shown until the app's first frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<LaunchConfig>,
+    /// Web-frontend toolchain declarations (`[web]`); only the CLI reads this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web: Option<web::WebConfig>,
 }
 
 /// Permission entry for playground projects.
@@ -1969,6 +2030,7 @@ impl Manifest {
             app: None,
             theme: None,
             launch: None,
+            web: None,
         }
     }
 }
@@ -2221,6 +2283,7 @@ mod channel_tests {
                 framework_manifest: None,
                 framework: None,
                 author: String::new(),
+                web: None,
             };
             let error = Project::create(&project_root, options)
                 .await
@@ -2534,6 +2597,7 @@ mod scaffold_tests {
                 // GitHub; a unit test resolves a fixture in place instead.
                 framework: Some(crate::framework::test_fixtures::stable_framework()),
                 author: "Lexo Liu".to_string(),
+                web: None,
             },
         ))
         .expect("project creation must succeed");
