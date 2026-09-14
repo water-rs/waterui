@@ -8,6 +8,8 @@
 mod app;
 #[cfg(target_os = "macos")]
 mod application_mac;
+#[cfg(feature = "webview")]
+mod assets;
 #[cfg(any(feature = "chromium", feature = "webview"))]
 mod cdp;
 #[cfg(any(feature = "chromium", feature = "webview"))]

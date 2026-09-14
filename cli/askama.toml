@@ -1,2 +1,9 @@
 [general]
 dirs = ["templates", ".", "src/templates", "src"]
+
+# The scaffold templates keep the `.tpl` suffix and are rendered unescaped by
+# `define_scaffold_templates!`; the Hydrolysis web page is the one template
+# that interpolates user-supplied text into HTML, so it escapes as HTML.
+[[escaper]]
+path = "askama::filters::Html"
+extensions = ["tpl"]

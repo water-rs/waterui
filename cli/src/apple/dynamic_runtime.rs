@@ -11,6 +11,12 @@ pub const FILE_NAME: &str = "libwaterui_dylib.dylib";
 pub const INSTALL_NAME: &str = "@rpath/libwaterui_dylib.dylib";
 
 pub fn build_path(lib_dir: &Path) -> PathBuf {
+    // Cargo emits a dependency's final dylib artifact in `deps/` on stable and
+    // at the profile directory root on current nightlies; accept both.
+    let root = lib_dir.join(FILE_NAME);
+    if root.is_file() {
+        return root;
+    }
     lib_dir.join("deps").join(FILE_NAME)
 }
 

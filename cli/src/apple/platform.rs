@@ -428,47 +428,39 @@ fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNa
             continue;
         }
 
-        let out_dir = crate_build_dir.join("out");
-        if !out_dir.is_dir() {
-            continue;
-        }
-
-        let mut has_combined_swift = false;
-        let mut archives_in_dir = Vec::new();
-        for out_entry in std::fs::read_dir(&out_dir)? {
-            let out_entry = out_entry?;
-            let path = out_entry.path();
-            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if path.extension().is_some_and(|ext| ext == "swift")
-                && file_name.starts_with("Combined")
-            {
-                has_combined_swift = true;
-            }
-            if path.extension().is_some_and(|ext| ext == "a") && file_name.starts_with("lib") {
-                archives_in_dir.push(path);
-            }
-        }
-
-        if has_combined_swift {
-            for archive in &archives_in_dir {
-                archive_paths.insert(archive.clone());
-                if let Some(flag) = static_archive_link_flag(archive) {
-                    push_unique_flag(&mut linker_flags, flag);
-                }
-            }
-        }
-
-        // Framework and linker-argument declarations apply to the final link
-        // for every crate in the graph — a plain Rust build script such as
-        // system-configuration-sys produces no Swift archive but still declares
-        // `cargo:rustc-link-lib=framework=SystemConfiguration`.
+        // Every crate that ran a build script may have emitted
+        // `cargo:rustc-link-*` directives; `-sys` crates like
+        // `system-configuration-sys` emit only those, with no archive or Swift
+        // bridge artifact to show for it, so the parse cannot be gated on
+        // outputs.
         let output_path = crate_build_dir.join("output");
         if output_path.exists() {
             let output = std::fs::read_to_string(&output_path)?;
             for flag in apple_linker_flags_from_build_output(&output) {
                 push_unique_flag(&mut linker_flags, flag);
+            }
+        }
+
+        let out_dir = crate_build_dir.join("out");
+        if !out_dir.is_dir() {
+            continue;
+        }
+
+        // A `lib*.a` in a build script's `out/` dir is an artifact the crate
+        // ships for linking, with or without a Swift bridge alongside it.
+        for out_entry in std::fs::read_dir(&out_dir)? {
+            let out_entry = out_entry?;
+            let path = out_entry.path();
+            if path.extension().is_some_and(|ext| ext == "a")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("lib"))
+            {
+                archive_paths.insert(path.clone());
+                if let Some(flag) = static_archive_link_flag(&path) {
+                    push_unique_flag(&mut linker_flags, flag);
+                }
             }
         }
     }
@@ -897,9 +889,11 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
 /// [`assets::capability_enabled`]: crate::project_model::assets::capability_enabled
 async fn apple_swift_conditions(project: &Project) -> eyre::Result<Vec<String>> {
     /// Default-off capabilities, named when the app's graph carries them.
-    const OPTIONAL_COMPONENTS: &[(&str, &str)] = &[("map", "WATERUI_MAP")];
+    const OPTIONAL_COMPONENTS: &[(&str, &str)] =
+        &[("map", "WATERUI_MAP"), ("webview", "WATERUI_WEBVIEW")];
     /// Default-on capabilities, named when the app's graph drops them.
-    const DEFAULT_COMPONENTS: &[(&str, &str)] = &[("gpu", "WATERUI_NO_GPU")];
+    const DEFAULT_COMPONENTS: &[(&str, &str)] =
+        &[("gpu", "WATERUI_NO_GPU"), ("media", "WATERUI_NO_MEDIA")];
 
     let mut conditions = Vec::new();
     for (capability, condition) in OPTIONAL_COMPONENTS {
@@ -1028,10 +1022,54 @@ mod tests {
         assert_eq!(
             link_inputs.linker_flags,
             vec![
-                "-lHelper".to_string(),
                 "-framework AppKit".to_string(),
                 "-rpath".to_string(),
-                "/usr/lib/swift".to_string()
+                "/usr/lib/swift".to_string(),
+                "-lHelper".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn collects_link_flags_from_crates_without_swift_or_archives() {
+        // A `-sys` crate that only emits `cargo:rustc-link-lib` directives has
+        // nothing in `out/`; its flags must still reach the linker.
+        let dir = tempdir().expect("tempdir");
+        let lib_dir = dir.path().join("aarch64-apple-darwin/release");
+        let sys_build_dir = lib_dir.join("build/system-configuration-sys-1234");
+        std::fs::create_dir_all(sys_build_dir.join("out")).expect("create out dir");
+        std::fs::write(
+            sys_build_dir.join("output"),
+            "cargo:rustc-link-lib=framework=SystemConfiguration\n",
+        )
+        .expect("write build output");
+
+        // A crate can also ship an archive with no Swift bridge at all; the
+        // archive and its `-l` flag must still be collected.
+        let plain_build_dir = lib_dir.join("build/some-native-5678");
+        let plain_out_dir = plain_build_dir.join("out");
+        std::fs::create_dir_all(&plain_out_dir).expect("create out dir");
+        std::fs::write(plain_out_dir.join("libwrapper.a"), "").expect("write archive");
+        std::fs::write(
+            plain_build_dir.join("output"),
+            "cargo:rustc-link-lib=static=wrapper\n",
+        )
+        .expect("write build output");
+
+        let link_inputs =
+            collect_apple_native_link_inputs_sync(&lib_dir).expect("collect native link inputs");
+
+        assert_eq!(
+            link_inputs.archives,
+            vec![plain_out_dir.join("libwrapper.a")]
+        );
+        let mut flags = link_inputs.linker_flags;
+        flags.sort_unstable();
+        assert_eq!(
+            flags,
+            vec![
+                "-framework SystemConfiguration".to_string(),
+                "-lwrapper".to_string()
             ]
         );
     }

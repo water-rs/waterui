@@ -217,6 +217,13 @@ pub struct Args {
     #[arg(long)]
     native_logs: bool,
 
+    /// Set an environment variable inside the launched application, as
+    /// `KEY=VALUE`. Repeatable. Delivered through each platform's launch
+    /// channel: `SIMCTL_CHILD_*` on Apple platforms and `waterui.env.*` intent
+    /// extras on Android, where `Os.setenv` applies them before the app starts.
+    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_env_assignment)]
+    env: Vec<(String, String)>,
+
     /// Run the app in this terminal with the experimental TUI backend.
     ///
     /// The terminal becomes the application surface: `water` hands the TTY to
@@ -228,6 +235,20 @@ pub struct Args {
         conflicts_with_all = ["platform", "backend", "device", "logs", "native_logs"]
     )]
     tui: bool,
+}
+
+/// Parses one `--env KEY=VALUE` argument into its key and value.
+///
+/// The key may not be empty or contain `=`; everything after the first `=` is
+/// the value, so values may hold further `=` characters.
+fn parse_env_assignment(raw: &str) -> Result<(String, String), String> {
+    let (key, value) = raw
+        .split_once('=')
+        .ok_or_else(|| String::from("expected KEY=VALUE"))?;
+    if key.is_empty() {
+        return Err(String::from("expected KEY=VALUE with a non-empty key"));
+    }
+    Ok((key.to_string(), value.to_string()))
 }
 
 /// Log level for filtering device logs (CLI argument wrapper).
@@ -733,6 +754,10 @@ async fn build_run_config(
     }
     run_options.set_native_logs(args.native_logs);
     run_options.describe_project(project);
+    // Explicit `--env` wins over the derived project defaults above.
+    for (key, value) in &args.env {
+        run_options.insert_env_var(key.clone(), value.clone());
+    }
 
     BuildRunConfig {
         run_options,
@@ -1316,11 +1341,29 @@ fn handle_device_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendAvailability, TargetBackend, TargetPlatform, handle_device_event, resolve_backend,
-        resolve_default_backend_for_project, resolve_platform,
-        validate_desktop_backend_platform_on_host, validate_device_arg,
+        BackendAvailability, TargetBackend, TargetPlatform, handle_device_event,
+        parse_env_assignment, resolve_backend, resolve_default_backend_for_project,
+        resolve_platform, validate_desktop_backend_platform_on_host, validate_device_arg,
     };
     use waterui_cli::device::{ApplicationExit, DeviceEvent};
+
+    #[test]
+    fn env_assignment_splits_on_first_equals() {
+        assert_eq!(
+            parse_env_assignment("A=b=c").expect("value may hold '='"),
+            (String::from("A"), String::from("b=c"))
+        );
+        assert_eq!(
+            parse_env_assignment("EMPTY=").expect("empty value is fine"),
+            (String::from("EMPTY"), String::new())
+        );
+    }
+
+    #[test]
+    fn env_assignment_rejects_malformed_pairs() {
+        assert!(parse_env_assignment("NOEQUALS").is_err());
+        assert!(parse_env_assignment("=novalue").is_err());
+    }
 
     #[test]
     fn rejects_device_with_desktop_backend() {

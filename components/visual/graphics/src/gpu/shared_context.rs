@@ -77,6 +77,12 @@ pub struct SharedGpuContext {
     /// builds one at all.
     scene_renderer: Arc<SharedSceneRenderer>,
     submission_completion_driver: GpuSubmissionCompletionDriver,
+    /// The reason the device was lost, recorded by the device-lost callback.
+    ///
+    /// `get_current_texture` collapses a dead device into a bare `Validation`
+    /// status with no scoped error, so the acquire path reads this to name the
+    /// real cause instead of panicking on a shape that cannot be reconfigured.
+    device_lost: Arc<Mutex<Option<String>>>,
 }
 
 /// Which engine rasterizes scenes on a given device.
@@ -304,10 +310,16 @@ impl SharedGpuContext {
             .map_err(|error| SharedContextError::DeviceCreationFailed(error.to_string()))?;
 
         // Device loss otherwise surfaces only as a bare `Validation` status on the
-        // next swapchain acquire, with the reason discarded; log it at the moment
-        // it happens so the failure names its cause.
-        device.set_device_lost_callback(|reason, message| {
+        // next swapchain acquire, with the reason discarded; record it so the
+        // failure names its cause.
+        let device_lost = Arc::new(Mutex::new(None::<String>));
+        let lost_slot = Arc::clone(&device_lost);
+        device.set_device_lost_callback(move |reason, message| {
             tracing::error!(?reason, message, "WaterUI GPU runtime device was lost");
+            *lost_slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(format!("{reason:?}: {message}"));
         });
 
         let device = Arc::new(device);
@@ -323,6 +335,7 @@ impl SharedGpuContext {
             shader_cache: Arc::new(WgslModuleCache::new()),
             scene_renderer: Arc::new(SharedSceneRenderer::new(scene_engine)),
             submission_completion_driver,
+            device_lost,
         })
     }
 
@@ -337,6 +350,18 @@ impl SharedGpuContext {
     #[doc(hidden)]
     pub fn submission_completion_driver(&self) -> GpuSubmissionCompletionDriver {
         self.submission_completion_driver.clone()
+    }
+
+    /// The device-lost reason recorded by the callback, once the driver reports
+    /// one. A `Some` here means every device-bound resource on this context is
+    /// dead: swapchain acquire, configure and pipeline use all fail until a new
+    /// runtime is created.
+    #[must_use]
+    pub fn device_lost_reason(&self) -> Option<String> {
+        self.device_lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 

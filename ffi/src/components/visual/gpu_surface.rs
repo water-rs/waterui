@@ -964,7 +964,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 
     let Some(output) = super::acquire_surface_texture(
         attached_surface(state, "waterui_gpu_surface_render"),
-        &state.runtime.context().device,
+        state.runtime.context(),
         attached_config(state, "waterui_gpu_surface_render"),
         "waterui_gpu_surface_render",
     ) else {

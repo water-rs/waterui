@@ -15,6 +15,7 @@ pub mod controls;
 pub mod data;
 mod layouting;
 /// FFI bindings for media playback components such as video.
+#[cfg(feature = "media")]
 pub mod media;
 mod nav;
 /// FFI bindings for platform-integration components (icons, web views, dynamic content).
@@ -31,9 +32,12 @@ pub use data::map::{WuiAnnotation, WuiCoordinate, WuiRegion};
 #[cfg(feature = "c-api")]
 pub use layouting::table;
 pub use layouting::{layout, lazy, list};
+#[cfg(feature = "media")]
 pub use media::video;
 pub use nav::navigation;
-pub use platform::{dynamic, icon, webview};
+#[cfg(feature = "webview")]
+pub use platform::webview;
+pub use platform::{dynamic, icon};
 pub use typography::text;
 #[cfg(all(feature = "android-jni", feature = "gpu"))]
 pub(crate) use visual::gpu_runtime;

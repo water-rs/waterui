@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use askama::Template;
 use eyre::Context;
 use image::ImageEncoder;
 use serde::Serialize;
@@ -9,7 +9,8 @@ use sha2::{Digest, Sha256};
 use smol::fs;
 use waterui_assets_core::AssetKind;
 use waterui_assets_planner::{
-    AssetRole, BundleManifest, HexColor, PlannedAsset, ThemeConfig, plan_bundle,
+    AssetRole, BundleManifest, ColorScheme, HexColor, LaunchPlan, PlannedAsset, ThemeConfig,
+    plan_bundle,
 };
 
 #[cfg(target_os = "macos")]
@@ -23,6 +24,11 @@ use crate::project::Project;
 const ASSET_ROOT_DIR: &str = "waterui_assets";
 /// The accent every platform falls back to when `[theme]` names none.
 const DEFAULT_ACCENT: HexColor = HexColor::from_rgb([0x0A, 0x84, 0xFF]);
+/// Point size of the iOS launch image, rendered at 1x, 2x and 3x.
+const APPLE_LAUNCH_IMAGE_POINTS: u32 = 128;
+/// Asset-catalog names the generated Xcode project refers to.
+const APPLE_LAUNCH_BACKGROUND_SET: &str = "LaunchBackground";
+const APPLE_LAUNCH_IMAGE_SET: &str = "LaunchImage";
 const ANDROID_VALUES_DIR: &str = "app/src/main/res/values";
 const ANDROID_VALUES_NIGHT_DIR: &str = "app/src/main/res/values-night";
 const ANDROID_DRAWABLE_DIR: &str = "app/src/main/res/drawable";
@@ -52,9 +58,112 @@ pub async fn stage_for_apple(project: &Project, dest_dir: &Path) -> eyre::Result
 
     let icon = load_project_icon(&manifest)?;
     write_apple_app_icon(&icon, &xcassets_dest).await?;
-    write_apple_accent_color(accent, &xcassets_dest).await?;
+    write_apple_color_set(
+        "AccentColor",
+        accent.unwrap_or(DEFAULT_ACCENT),
+        None,
+        &xcassets_dest,
+    )
+    .await?;
+
+    // The launch screen: a color set with a dark appearance when one differs,
+    // and the artwork as a universal image set. Neither exists when nothing
+    // is configured, and the generated project then names neither.
+    let launch = launch_assets_from(project, &manifest)?;
+    let plan = launch.plan();
+    if let Some(background) = plan.background(ColorScheme::Light) {
+        let dark = plan
+            .has_distinct_dark_background()
+            .then(|| plan.background(ColorScheme::Dark).copied())
+            .flatten();
+        write_apple_color_set(
+            APPLE_LAUNCH_BACKGROUND_SET,
+            *background,
+            dark,
+            &xcassets_dest,
+        )
+        .await?;
+    }
+    if let Some(artwork) = launch.artwork() {
+        write_apple_launch_image(artwork, &xcassets_dest).await?;
+    }
 
     Ok(())
+}
+
+/// The project's launch screen, resolved, with the artwork it shows.
+pub struct LaunchAssets {
+    plan: LaunchPlan,
+    artwork: Option<IconSource>,
+    app_icon: IconSource,
+}
+
+impl LaunchAssets {
+    /// The resolved `[launch]` colors and artwork path.
+    #[must_use]
+    pub const fn plan(&self) -> &LaunchPlan {
+        &self.plan
+    }
+
+    /// Whether a `Launch.*` artwork exists.
+    #[must_use]
+    pub const fn has_artwork(&self) -> bool {
+        self.artwork.is_some()
+    }
+
+    /// The `Launch.*` artwork, for platforms whose default is no artwork
+    /// (iOS) or the OS's own (Android).
+    #[must_use]
+    pub(super) const fn artwork(&self) -> Option<&IconSource> {
+        self.artwork.as_ref()
+    }
+
+    /// The `Launch.*` artwork, or the app icon where that is the platform's
+    /// default (the web).
+    #[must_use]
+    pub(super) const fn artwork_or_app_icon(&self) -> &IconSource {
+        match &self.artwork {
+            Some(artwork) => artwork,
+            None => &self.app_icon,
+        }
+    }
+
+    /// The `Launch.*` artwork or the app icon, rendered `size` pixels square
+    /// as PNG bytes.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the artwork cannot be rendered or encoded.
+    pub fn artwork_or_app_icon_png(&self, size: u32) -> eyre::Result<Vec<u8>> {
+        encode_png(&self.artwork_or_app_icon().render(size)?)
+    }
+}
+
+/// Resolves the project's launch screen: `[launch]` over `[theme]`, and the
+/// root `Launch.*` artwork.
+///
+/// # Errors
+///
+/// Fails when the assets cannot be planned or an artwork file cannot be
+/// decoded.
+pub fn launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
+    let manifest = build_manifest(project)?;
+    launch_assets_from(project, &manifest)
+}
+
+fn launch_assets_from(project: &Project, manifest: &BundleManifest) -> eyre::Result<LaunchAssets> {
+    let water = project.manifest();
+    let plan = LaunchPlan::resolve(water.launch.as_ref(), water.theme.as_ref(), manifest);
+    let artwork = plan
+        .image()
+        .map(|path| IconSource::load(path))
+        .transpose()?;
+    let app_icon = load_project_icon(manifest)?;
+    Ok(LaunchAssets {
+        plan,
+        artwork,
+        app_icon,
+    })
 }
 
 /// Loads the project's `Icon.*` asset, or the bundled `WaterUI` logo when the
@@ -80,14 +189,16 @@ pub async fn stage_for_android(project: &Project, backend_path: &Path) -> eyre::
 
     let icon = load_project_icon(&manifest)?;
     let icon_background = icon.edge_color()?;
+    let launch = launch_assets_from(project, &manifest)?;
 
     let theme = project.manifest().theme.as_ref();
-    write_android_theme_files(theme, icon_background, backend_path).await?;
+    write_android_theme_files(theme, icon_background, &launch, backend_path).await?;
 
     // Older CLI versions staged the foreground as a vector drawable; a PNG
     // and an XML with the same resource name cannot coexist.
     remove_file_if_exists(res_root.join("drawable/ic_launcher_foreground.xml")).await?;
     write_android_icon_resources(&icon, icon_background, backend_path).await?;
+    write_android_launch_artwork(&launch, backend_path).await?;
 
     Ok(())
 }
@@ -310,68 +421,141 @@ fn detect_font_family(path: &Path) -> eyre::Result<String> {
     Ok(family)
 }
 
-async fn write_apple_accent_color(
-    accent: Option<HexColor>,
+/// Writes a named color set with a universal color and, when given, a dark
+/// appearance.
+async fn write_apple_color_set(
+    name: &str,
+    light: HexColor,
+    dark: Option<HexColor>,
     xcassets_dest: &Path,
 ) -> eyre::Result<()> {
     #[derive(Serialize)]
-    struct Components<'a> {
-        red: &'a str,
-        green: &'a str,
-        blue: &'a str,
-        alpha: &'a str,
+    struct Components {
+        red: String,
+        green: String,
+        blue: String,
+        alpha: &'static str,
     }
 
     #[derive(Serialize)]
-    struct Color<'a> {
+    struct Color {
         #[serde(rename = "color-space")]
-        color_space: &'a str,
-        components: Components<'a>,
+        color_space: &'static str,
+        components: Components,
     }
 
     #[derive(Serialize)]
-    struct ColorItem<'a> {
-        idiom: &'a str,
-        color: Color<'a>,
+    struct Appearance {
+        appearance: &'static str,
+        value: &'static str,
     }
 
     #[derive(Serialize)]
-    struct Info<'a> {
+    struct ColorItem {
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        appearances: Vec<Appearance>,
+        idiom: &'static str,
+        color: Color,
+    }
+
+    #[derive(Serialize)]
+    struct Info {
         version: u8,
-        author: &'a str,
+        author: &'static str,
     }
 
     #[derive(Serialize)]
-    struct Contents<'a> {
-        colors: Vec<ColorItem<'a>>,
-        info: Info<'a>,
+    struct Contents {
+        colors: Vec<ColorItem>,
+        info: Info,
     }
 
-    let [red, green, blue] = accent.unwrap_or(DEFAULT_ACCENT).rgb();
-    let accent_dir = xcassets_dest.join("AccentColor.colorset");
-    fs::create_dir_all(&accent_dir).await?;
-    let red = component_string(red);
-    let green = component_string(green);
-    let blue = component_string(blue);
-    let json = serde_json::to_vec_pretty(&Contents {
-        colors: vec![ColorItem {
+    fn item(color: HexColor, appearances: Vec<Appearance>) -> ColorItem {
+        let [red, green, blue] = color.rgb();
+        ColorItem {
+            appearances,
             idiom: "universal",
             color: Color {
                 color_space: "srgb",
                 components: Components {
-                    red: &red,
-                    green: &green,
-                    blue: &blue,
+                    red: component_string(red),
+                    green: component_string(green),
+                    blue: component_string(blue),
                     alpha: "1.000000",
                 },
             },
-        }],
+        }
+    }
+
+    let mut colors = vec![item(light, Vec::new())];
+    if let Some(dark) = dark {
+        colors.push(item(
+            dark,
+            vec![Appearance {
+                appearance: "luminosity",
+                value: "dark",
+            }],
+        ));
+    }
+    let set_dir = xcassets_dest.join(format!("{name}.colorset"));
+    fs::create_dir_all(&set_dir).await?;
+    let json = serde_json::to_vec_pretty(&Contents {
+        colors,
         info: Info {
             version: 1,
             author: "water",
         },
     })?;
-    fs::write(accent_dir.join("Contents.json"), json).await?;
+    fs::write(set_dir.join("Contents.json"), json).await?;
+    Ok(())
+}
+
+/// Writes the launch artwork as a universal image set at 1x, 2x and 3x of
+/// its point size; iOS centers it at that size inside the safe area.
+async fn write_apple_launch_image(source: &IconSource, xcassets_dest: &Path) -> eyre::Result<()> {
+    #[derive(Serialize)]
+    struct ImageItem {
+        idiom: &'static str,
+        scale: &'static str,
+        filename: String,
+    }
+
+    #[derive(Serialize)]
+    struct Info {
+        version: u8,
+        author: &'static str,
+    }
+
+    #[derive(Serialize)]
+    struct Contents {
+        images: Vec<ImageItem>,
+        info: Info,
+    }
+
+    let set_dir = xcassets_dest.join(format!("{APPLE_LAUNCH_IMAGE_SET}.imageset"));
+    reset_dir(&set_dir).await?;
+    let mut images = Vec::new();
+    for (scale, factor) in [("1x", 1_u32), ("2x", 2), ("3x", 3)] {
+        let filename = format!("{APPLE_LAUNCH_IMAGE_SET}@{scale}.png");
+        write_png(
+            &source.render(APPLE_LAUNCH_IMAGE_POINTS * factor)?,
+            &set_dir.join(&filename),
+        )
+        .await?;
+        images.push(ImageItem {
+            idiom: "universal",
+            scale,
+            filename,
+        });
+    }
+    let json = serde_json::to_vec_pretty(&Contents {
+        images,
+        info: Info {
+            version: 1,
+            author: "water",
+        },
+    })?;
+    fs::write(set_dir.join("Contents.json"), json).await?;
     Ok(())
 }
 
@@ -505,9 +689,84 @@ async fn write_android_icon_resources(
     Ok(())
 }
 
+/// One `<color>` resource.
+#[derive(Debug, PartialEq, Eq)]
+struct AndroidColor {
+    name: &'static str,
+    value: HexColor,
+}
+
+/// One theme attribute bound to a color resource.
+#[derive(Debug, PartialEq, Eq)]
+struct AndroidThemeItem {
+    attr: &'static str,
+    color_name: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/android_res/colors.xml.tpl", escape = "xml")]
+struct AndroidColorsTemplate {
+    colors: Vec<AndroidColor>,
+}
+
+#[derive(Template)]
+#[template(path = "src/templates/android_res/themes.xml.tpl", escape = "xml")]
+struct AndroidThemesTemplate {
+    theme_items: Vec<AndroidThemeItem>,
+    launch_background: bool,
+    launch_artwork: bool,
+}
+
+#[derive(Template)]
+#[template(
+    path = "src/templates/android_res/ic_launch_artwork.xml.tpl",
+    escape = "xml"
+)]
+struct AndroidLaunchArtworkTemplate;
+
+/// The theme slots and the resources they bind to, in the order the
+/// generated `colors.xml` and `themes.xml` list them.
+const fn android_theme_slots(
+    theme: &ThemeConfig,
+) -> [(&'static str, &'static str, Option<HexColor>); 8] {
+    [
+        (
+            "android:colorBackground",
+            "waterui_background",
+            theme.background,
+        ),
+        ("colorSurface", "waterui_surface", theme.surface),
+        (
+            "colorSurfaceVariant",
+            "waterui_surface_variant",
+            theme.surface_variant,
+        ),
+        ("colorOutline", "waterui_border", theme.border),
+        ("colorOnSurface", "waterui_foreground", theme.foreground),
+        (
+            "colorOnSurfaceVariant",
+            "waterui_muted_foreground",
+            theme.muted_foreground,
+        ),
+        ("colorPrimary", "waterui_accent", theme.accent),
+        (
+            "colorOnPrimary",
+            "waterui_accent_foreground",
+            theme.accent_foreground,
+        ),
+    ]
+}
+
+/// The color behind an adaptive icon's foreground: the artwork's own edge
+/// color so the two layers join seamlessly, else `fallback`.
+fn android_adaptive_background(edge: Option<[u8; 3]>, fallback: HexColor) -> HexColor {
+    edge.map_or(fallback, HexColor::from_rgb)
+}
+
 async fn write_android_theme_files(
     theme: Option<&ThemeConfig>,
     icon_background: Option<[u8; 3]>,
+    launch: &LaunchAssets,
     backend_path: &Path,
 ) -> eyre::Result<()> {
     let values_dir = backend_path.join(ANDROID_VALUES_DIR);
@@ -515,108 +774,125 @@ async fn write_android_theme_files(
     fs::create_dir_all(&values_dir).await?;
     fs::create_dir_all(&values_night_dir).await?;
 
-    let colors_xml = build_android_colors_xml(theme, icon_background);
-    let themes_xml = build_android_themes_xml(theme);
-    fs::write(values_dir.join("colors.xml"), &colors_xml).await?;
-    fs::write(values_dir.join("themes.xml"), &themes_xml).await?;
-    fs::write(values_night_dir.join("themes.xml"), &themes_xml).await?;
+    let colors = android_colors(theme, icon_background, launch)?;
+    fs::write(values_dir.join("colors.xml"), render_android(&colors.day)?).await?;
+    match colors.night {
+        Some(night) => {
+            fs::write(values_night_dir.join("colors.xml"), render_android(&night)?).await?;
+        }
+        None => remove_file_if_exists(values_night_dir.join("colors.xml")).await?,
+    }
+
+    let plan = launch.plan();
+    let themes = AndroidThemesTemplate {
+        theme_items: theme.map_or_else(Vec::new, |theme| {
+            android_theme_slots(theme)
+                .into_iter()
+                .filter(|(_, _, value)| value.is_some())
+                .map(|(attr, color_name, _)| AndroidThemeItem { attr, color_name })
+                .collect()
+        }),
+        launch_background: plan.background(ColorScheme::Light).is_some(),
+        launch_artwork: launch.has_artwork(),
+    };
+    fs::write(values_dir.join("themes.xml"), render_android(&themes)?).await?;
+    // The theme is appearance-neutral: every color it names resolves through
+    // `values-night/colors.xml`, so a night copy of it would only be a
+    // duplicate. Earlier CLIs wrote one; drop it.
+    remove_file_if_exists(values_night_dir.join("themes.xml")).await?;
     Ok(())
 }
 
-fn build_android_colors_xml(
+fn render_android<T: Template>(template: &T) -> eyre::Result<String> {
+    template
+        .render()
+        .map_err(|error| eyre::eyre!("Failed to render Android resource: {error}"))
+}
+
+/// The day color table and, when the dark launch background differs, the
+/// night table that overrides it.
+struct AndroidColorTables {
+    day: AndroidColorsTemplate,
+    night: Option<AndroidColorsTemplate>,
+}
+
+fn android_colors(
     theme: Option<&ThemeConfig>,
     icon_background: Option<[u8; 3]>,
-) -> String {
-    let mut xml = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n");
-    // The adaptive-icon background must match the icon's own background so
-    // the two layers join seamlessly; the theme accent only stands in when
-    // no background color can be derived from the icon.
-    let background = icon_background.map_or_else(
-        || {
-            theme
-                .and_then(|value| value.accent)
-                .unwrap_or(DEFAULT_ACCENT)
-        },
-        HexColor::from_rgb,
-    );
-    let _ = writeln!(
-        &mut xml,
-        "    <color name=\"ic_launcher_background\">{background}</color>"
-    );
+    launch: &LaunchAssets,
+) -> eyre::Result<AndroidColorTables> {
+    let accent = theme
+        .and_then(|theme| theme.accent)
+        .unwrap_or(DEFAULT_ACCENT);
+    let mut colors = vec![AndroidColor {
+        name: "ic_launcher_background",
+        value: android_adaptive_background(icon_background, accent),
+    }];
     if let Some(theme) = theme {
-        write_android_color(&mut xml, "waterui_background", theme.background);
-        write_android_color(&mut xml, "waterui_surface", theme.surface);
-        write_android_color(&mut xml, "waterui_surface_variant", theme.surface_variant);
-        write_android_color(&mut xml, "waterui_border", theme.border);
-        write_android_color(&mut xml, "waterui_foreground", theme.foreground);
-        write_android_color(&mut xml, "waterui_muted_foreground", theme.muted_foreground);
-        write_android_color(&mut xml, "waterui_accent", theme.accent);
-        write_android_color(
-            &mut xml,
-            "waterui_accent_foreground",
-            theme.accent_foreground,
+        colors.extend(
+            android_theme_slots(theme)
+                .into_iter()
+                .filter_map(|(_, name, value)| value.map(|value| AndroidColor { name, value })),
         );
     }
-    xml.push_str("</resources>\n");
-    xml
+
+    let plan = launch.plan();
+    let launch_background = plan.background(ColorScheme::Light).copied();
+    if let Some(background) = launch_background {
+        colors.push(AndroidColor {
+            name: "waterui_launch_background",
+            value: background,
+        });
+    }
+    if let Some(artwork) = launch.artwork() {
+        colors.push(AndroidColor {
+            name: "ic_launch_artwork_background",
+            value: android_adaptive_background(
+                artwork.edge_color()?,
+                launch_background.unwrap_or(accent),
+            ),
+        });
+    }
+
+    let night = plan
+        .has_distinct_dark_background()
+        .then(|| plan.background(ColorScheme::Dark).copied())
+        .flatten()
+        .map(|dark| AndroidColorsTemplate {
+            colors: vec![AndroidColor {
+                name: "waterui_launch_background",
+                value: dark,
+            }],
+        });
+    Ok(AndroidColorTables {
+        day: AndroidColorsTemplate { colors },
+        night,
+    })
 }
 
-fn write_android_color(xml: &mut String, name: &str, value: Option<HexColor>) {
-    if let Some(value) = value {
-        let _ = writeln!(xml, "    <color name=\"{name}\">{value}</color>");
-    }
-}
-
-fn build_android_themes_xml(theme: Option<&ThemeConfig>) -> String {
-    let mut xml = String::from(
-        "<resources>\n    <style name=\"Theme.WaterUIApp\" parent=\"Theme.Material3.DayNight.NoActionBar\">\n",
-    );
-    if let Some(theme) = theme {
-        maybe_theme_item(
-            &mut xml,
-            "android:colorBackground",
-            theme.background,
-            "waterui_background",
-        );
-        maybe_theme_item(&mut xml, "colorSurface", theme.surface, "waterui_surface");
-        maybe_theme_item(
-            &mut xml,
-            "colorSurfaceVariant",
-            theme.surface_variant,
-            "waterui_surface_variant",
-        );
-        maybe_theme_item(&mut xml, "colorOutline", theme.border, "waterui_border");
-        maybe_theme_item(
-            &mut xml,
-            "colorOnSurface",
-            theme.foreground,
-            "waterui_foreground",
-        );
-        maybe_theme_item(
-            &mut xml,
-            "colorOnSurfaceVariant",
-            theme.muted_foreground,
-            "waterui_muted_foreground",
-        );
-        maybe_theme_item(&mut xml, "colorPrimary", theme.accent, "waterui_accent");
-        maybe_theme_item(
-            &mut xml,
-            "colorOnPrimary",
-            theme.accent_foreground,
-            "waterui_accent_foreground",
-        );
-    }
-    xml.push_str("    </style>\n</resources>\n");
-    xml
-}
-
-fn maybe_theme_item(xml: &mut String, attr: &str, value: Option<HexColor>, color_name: &str) {
-    if value.is_some() {
-        let _ = writeln!(
-            xml,
-            "        <item name=\"{attr}\">@color/{color_name}</item>"
-        );
-    }
+/// Stages `Launch.*` as the adaptive splash icon: Android masks the splash
+/// icon to a circle, so the artwork goes through the same safe-zone
+/// placement as the launcher icon.
+async fn write_android_launch_artwork(
+    launch: &LaunchAssets,
+    backend_path: &Path,
+) -> eyre::Result<()> {
+    let drawable_dir = backend_path.join(ANDROID_DRAWABLE_DIR);
+    let icon_xml = drawable_dir.join("ic_launch_artwork.xml");
+    let foreground_png = drawable_dir.join("ic_launch_artwork_foreground.png");
+    let Some(artwork) = launch.artwork() else {
+        remove_file_if_exists(icon_xml).await?;
+        remove_file_if_exists(foreground_png).await?;
+        return Ok(());
+    };
+    fs::create_dir_all(&drawable_dir).await?;
+    write_png(
+        &render_android_foreground(artwork, artwork.edge_color()?)?,
+        &foreground_png,
+    )
+    .await?;
+    fs::write(icon_xml, render_android(&AndroidLaunchArtworkTemplate)?).await?;
+    Ok(())
 }
 
 fn component_string(value: u8) -> String {
@@ -634,6 +910,7 @@ async fn write_png(image: &image::RgbaImage, path: &Path) -> eyre::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui_assets_planner::LaunchConfig;
 
     #[test]
     fn android_icon_resources_write_launcher_pngs() {
@@ -665,21 +942,161 @@ mod tests {
     }
 
     #[test]
-    fn colors_xml_uses_derived_icon_background_over_accent() {
+    fn apple_color_set_carries_a_dark_appearance_only_when_given() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        smol::block_on(async {
+            let light = HexColor::from_rgb([0x0B, 0x1E, 0x3F]);
+            let dark = HexColor::from_rgb([0, 0, 0]);
+            write_apple_color_set("LaunchBackground", light, Some(dark), temp.path())
+                .await
+                .expect("color set with dark appearance");
+            let json: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(temp.path().join("LaunchBackground.colorset/Contents.json"))
+                    .expect("contents"),
+            )
+            .expect("valid json");
+            let colors = json["colors"].as_array().expect("colors");
+            assert_eq!(colors.len(), 2);
+            assert!(colors[0].get("appearances").is_none());
+            assert_eq!(colors[0]["color"]["components"]["red"], "0.043137");
+            assert_eq!(colors[1]["appearances"][0]["value"], "dark");
+            assert_eq!(colors[1]["color"]["components"]["red"], "0.000000");
+
+            write_apple_color_set("AccentColor", light, None, temp.path())
+                .await
+                .expect("color set without dark appearance");
+            let json: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(temp.path().join("AccentColor.colorset/Contents.json"))
+                    .expect("contents"),
+            )
+            .expect("valid json");
+            assert_eq!(json["colors"].as_array().expect("colors").len(), 1);
+        });
+    }
+
+    #[test]
+    fn apple_launch_image_is_written_at_three_scales() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        smol::block_on(async {
+            write_apple_launch_image(&IconSource::default_logo(), temp.path())
+                .await
+                .expect("launch image set");
+            let set = temp.path().join("LaunchImage.imageset");
+            for (scale, factor) in [("1x", 1), ("2x", 2), ("3x", 3)] {
+                let decoded = image::open(set.join(format!("LaunchImage@{scale}.png")))
+                    .expect("launch image must decode");
+                assert_eq!(decoded.width(), APPLE_LAUNCH_IMAGE_POINTS * factor);
+                assert_eq!(decoded.height(), decoded.width());
+            }
+            let json: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(set.join("Contents.json")).expect("contents"),
+            )
+            .expect("valid json");
+            assert_eq!(json["images"].as_array().expect("images").len(), 3);
+        });
+    }
+
+    #[test]
+    fn android_colors_derive_the_launcher_background_and_carry_the_launch_colors() {
         let theme = ThemeConfig {
             accent: Some(DEFAULT_ACCENT),
             ..ThemeConfig::default()
         };
-        let xml = build_android_colors_xml(Some(&theme), Some([255, 255, 255]));
-        assert!(
-            xml.contains("<color name=\"ic_launcher_background\">#FFFFFF</color>"),
-            "derived icon background must win over the accent color:\n{xml}"
+        let no_launch = LaunchAssets {
+            plan: LaunchPlan::resolve(None, None, &empty_manifest()),
+            artwork: None,
+            app_icon: IconSource::default_logo(),
+        };
+        let colors = android_colors(Some(&theme), Some([255, 255, 255]), &no_launch)
+            .expect("colors must build");
+        assert_eq!(
+            colors.day.colors[0],
+            AndroidColor {
+                name: "ic_launcher_background",
+                value: HexColor::from_rgb([255, 255, 255])
+            },
+            "derived icon background must win over the accent color"
         );
+        assert!(colors.night.is_none());
+        let xml = colors.day.render().expect("colors.xml renders");
+        assert!(
+            xml.contains("<color name=\"waterui_accent\">#0A84FF</color>"),
+            "{xml}"
+        );
+        assert!(!xml.contains("waterui_launch_background"));
 
-        let xml = build_android_colors_xml(Some(&theme), None);
-        assert!(
-            xml.contains("<color name=\"ic_launcher_background\">#0A84FF</color>"),
-            "accent must remain the launcher background when none can be derived:\n{xml}"
+        let colors = android_colors(Some(&theme), None, &no_launch).expect("colors must build");
+        assert_eq!(colors.day.colors[0].value, DEFAULT_ACCENT);
+
+        let launch = LaunchAssets {
+            plan: LaunchPlan::resolve(
+                Some(&LaunchConfig {
+                    background: Some(HexColor::from_rgb([0x0B, 0x1E, 0x3F])),
+                    background_dark: Some(HexColor::from_rgb([0, 0, 0])),
+                }),
+                None,
+                &empty_manifest(),
+            ),
+            artwork: Some(IconSource::default_logo()),
+            app_icon: IconSource::default_logo(),
+        };
+        let colors = android_colors(None, None, &launch).expect("colors must build");
+        let day = colors.day.render().expect("colors.xml renders");
+        assert!(day.contains("<color name=\"waterui_launch_background\">#0B1E3F</color>"));
+        assert!(day.contains("<color name=\"ic_launch_artwork_background\">"));
+        let night = colors
+            .night
+            .expect("distinct dark background needs a night table");
+        assert_eq!(
+            night.colors,
+            vec![AndroidColor {
+                name: "waterui_launch_background",
+                value: HexColor::from_rgb([0, 0, 0])
+            }]
         );
+    }
+
+    #[test]
+    fn android_themes_bind_only_configured_slots_and_the_launch_theme() {
+        let xml = AndroidThemesTemplate {
+            theme_items: vec![AndroidThemeItem {
+                attr: "colorPrimary",
+                color_name: "waterui_accent",
+            }],
+            launch_background: true,
+            launch_artwork: false,
+        }
+        .render()
+        .expect("themes.xml renders");
+        assert!(xml.contains("<item name=\"colorPrimary\">@color/waterui_accent</item>"));
+        assert!(!xml.contains("colorSurface"));
+        assert!(xml.contains("parent=\"Theme.SplashScreen\""));
+        assert!(
+            xml.contains("<item name=\"postSplashScreenTheme\">@style/Theme.WaterUIApp</item>")
+        );
+        assert!(xml.contains("windowSplashScreenBackground"));
+        assert!(!xml.contains("windowSplashScreenAnimatedIcon"));
+
+        let xml = AndroidThemesTemplate {
+            theme_items: Vec::new(),
+            launch_background: false,
+            launch_artwork: true,
+        }
+        .render()
+        .expect("themes.xml renders");
+        assert!(!xml.contains("windowSplashScreenBackground"));
+        assert!(xml.contains(
+            "<item name=\"windowSplashScreenAnimatedIcon\">@drawable/ic_launch_artwork</item>"
+        ));
+    }
+
+    fn empty_manifest() -> BundleManifest {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("Water.toml"),
+            "[package]\nname = 'Demo'\nbundle_identifier = 'dev.waterui.demo'\n",
+        )
+        .expect("write Water.toml");
+        plan_bundle(temp.path(), "assets").expect("plan bundle")
     }
 }

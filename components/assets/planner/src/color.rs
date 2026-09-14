@@ -36,6 +36,24 @@ impl HexColor {
     pub const fn from_rgb(rgb: [u8; 3]) -> Self {
         Self(rgb)
     }
+
+    /// WCAG relative luminance, 0 for black and 1 for white.
+    #[must_use]
+    pub fn relative_luminance(self) -> f64 {
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= 0.039_28 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let [red, green, blue] = self.0;
+        0.0722f64.mul_add(
+            linear(blue),
+            0.7152f64.mul_add(linear(green), 0.2126 * linear(red)),
+        )
+    }
 }
 
 impl FromStr for HexColor {
@@ -102,6 +120,14 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn luminance_spans_black_to_white() {
+        assert_eq!(HexColor::from_rgb([0, 0, 0]).relative_luminance(), 0.0);
+        assert!((HexColor::from_rgb([255, 255, 255]).relative_luminance() - 1.0).abs() < 1e-9);
+        let navy = HexColor::from_rgb([0x0B, 0x1E, 0x3F]).relative_luminance();
+        assert!(navy < 0.05, "navy is dark: {navy}");
     }
 
     #[test]

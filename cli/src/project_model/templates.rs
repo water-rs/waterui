@@ -123,6 +123,16 @@ pub struct FontRegistrationTemplateEntry {
     pub file_name: String,
 }
 
+/// What the launch screen staged into the Apple asset catalog contains, so
+/// the generated Xcode project names only the assets that exist.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LaunchTemplateEntry {
+    /// A `LaunchBackground` color set was staged (a background is configured).
+    pub has_background: bool,
+    /// A `LaunchImage` image set was staged (`Launch.*` exists).
+    pub has_image: bool,
+}
+
 /// ESP32 harness parameters substituted into the generated firmware crate.
 ///
 /// `chip` is the single source of truth; the firmware fields are derived from
@@ -282,6 +292,8 @@ pub struct TemplateContext {
     pub package_type: crate::project::PackageType,
     /// ESP32 harness parameters used by the esp32 templates.
     pub esp32: Esp32TemplateEntry,
+    /// The launch screen assets the Apple templates refer to.
+    pub launch: LaunchTemplateEntry,
 }
 
 impl TemplateContext {
@@ -319,6 +331,7 @@ impl TemplateContext {
             preview_app_dependency: None,
             package_type: options.package_type,
             esp32: Esp32TemplateEntry::default(),
+            launch: LaunchTemplateEntry::default(),
         }
     }
 
@@ -357,6 +370,7 @@ impl TemplateContext {
             preview_app_dependency: None,
             package_type: manifest.package.package_type,
             esp32: Esp32TemplateEntry::default(),
+            launch: LaunchTemplateEntry::default(),
         }
     }
 
@@ -408,6 +422,7 @@ impl TemplateContext {
             preview_app_dependency: None,
             package_type: crate::project::PackageType::Playground,
             esp32: Esp32TemplateEntry::default(),
+            launch: LaunchTemplateEntry::default(),
         }
     }
 
@@ -501,6 +516,13 @@ impl TemplateContext {
     #[must_use]
     pub fn with_ios_permissions(mut self, permissions: Vec<IosPermissionTemplateEntry>) -> Self {
         self.ios_permissions = permissions;
+        self
+    }
+
+    /// Name the launch screen assets staged into the Apple asset catalog.
+    #[must_use]
+    pub const fn with_launch(mut self, launch: LaunchTemplateEntry) -> Self {
+        self.launch = launch;
         self
     }
 
@@ -640,10 +662,23 @@ use_remote_dev_backend=false requires waterui_path or android_backend_path"
     /// The path to the local Apple backend checkout `[backend.apple]`
     /// `backend_path` names, resolved from the Xcode project's directory.
     /// `None` consumes the remote Swift package instead.
+    ///
+    /// Without a manifest override, `waterui_path/backends/apple` is used when
+    /// it is a real Swift package: playground manifests cannot declare
+    /// `[backends.*]`, and dropping this fallback silently retargeted every
+    /// playground build — including the backend's own e2e suite — onto the
+    /// pinned remote release.
     fn compute_apple_backend_path(&self) -> Option<String> {
         self.apple_backend_path
             .as_ref()
             .map(|path| self.backend_relative_path(path))
+            .or_else(|| {
+                let local = self.waterui_workspace_root()?.join("backends/apple");
+                local
+                    .join("Package.swift")
+                    .is_file()
+                    .then(|| self.backend_relative_path(&local))
+            })
     }
 
     /// Compute the relative path from the Android project to the `WaterUI` Android backend.
@@ -1017,6 +1052,7 @@ define_scaffold_templates! {
     AssetsReadmeTemplate => (Root, "src/templates/assets_readme.md.tpl"),
     AppleProjectTemplate => (Apple, "src/templates/apple/AppName.xcodeproj/project.pbxproj.tpl"),
     AppleAppTemplate => (Apple, "src/templates/apple/AppName/AppNameApp.swift.tpl"),
+    AppleInfoPlistTemplate => (Apple, "src/templates/apple/AppName/Info.plist.tpl"),
     AppleBuildScriptTemplate => (Apple, "src/templates/apple/build-rust.sh.tpl"),
     AndroidGradleAppTemplate => (Android, "src/templates/android/app/build.gradle.kts.tpl"),
     AndroidManifestTemplate => (Android, "src/templates/android/app/src/main/AndroidManifest.xml.tpl"),
@@ -1034,7 +1070,6 @@ define_scaffold_templates! {
     HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
     HydrolysisPreviewTestRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_test_runtime.rs.tpl"),
     HydrolysisMcpRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/mcp_runtime.rs.tpl"),
-    HydrolysisWebIndexTemplate => (Hydrolysis, "src/templates/hydrolysis/web/index.html.tpl"),
     Esp32BuildScriptTemplate => (Esp32, "src/templates/esp32/build.rs.tpl"),
     Esp32MainTemplate => (Esp32, "src/templates/esp32/src/main.rs.tpl"),
     Esp32CargoConfigTemplate => (Esp32, "src/templates/esp32/.cargo/config.toml.tpl"),
@@ -1049,8 +1084,8 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserTemplateContext, Esp32TemplateEntry, ResolvedWebViewBackend, TemplateContext,
-        TemplateNamespace, embedded, gtk4, jitpack_dependency_coordinate,
+        BrowserTemplateContext, Esp32TemplateEntry, LaunchTemplateEntry, ResolvedWebViewBackend,
+        TemplateContext, TemplateNamespace, embedded, gtk4, jitpack_dependency_coordinate,
         normalize_path_for_config, preview_ffi, render_scaffold_template,
     };
     use crate::framework::test_fixtures::stable_framework;
@@ -1090,6 +1125,7 @@ mod tests {
             preview_app_dependency: None,
             package_type,
             esp32: Esp32TemplateEntry::default(),
+            launch: LaunchTemplateEntry::default(),
         }
     }
 
@@ -1417,6 +1453,49 @@ mod tests {
     }
 
     #[test]
+    fn waterui_path_backends_apple_is_used_when_no_manifest_override() {
+        let waterui_root = tempdir().expect("tempdir");
+        let backend_dir = waterui_root.path().join("backends/apple");
+        std::fs::create_dir_all(&backend_dir).expect("backend dir");
+        std::fs::write(
+            backend_dir.join("Package.swift"),
+            "// swift-tools-version:5.9\n",
+        )
+        .expect("Package.swift");
+        let project_root = tempdir().expect("tempdir");
+
+        let ctx = ctx(
+            Some(waterui_root.path().to_path_buf()),
+            Some(project_root.path().join("managed_backends/apple")),
+            Some(project_root.path().to_path_buf()),
+            crate::project::PackageType::Playground,
+        );
+
+        let path = ctx
+            .compute_apple_backend_path()
+            .expect("waterui_path/backends/apple must resolve");
+        assert!(
+            path.ends_with("backends/apple"),
+            "expected the staged backend path, got {path}"
+        );
+    }
+
+    #[test]
+    fn missing_local_apple_backend_falls_back_to_remote_package() {
+        let waterui_root = tempdir().expect("tempdir");
+        std::fs::create_dir_all(waterui_root.path().join("backends")).expect("backends dir");
+
+        let ctx = ctx(
+            Some(waterui_root.path().to_path_buf()),
+            Some(PathBuf::from("managed_backends/apple")),
+            None,
+            crate::project::PackageType::Playground,
+        );
+
+        assert!(ctx.compute_apple_backend_path().is_none());
+    }
+
+    #[test]
     fn absolute_backend_project_path_uses_real_project_root() {
         let project_root = if cfg!(windows) {
             PathBuf::from(r"C:\Users\lexo\demo")
@@ -1514,6 +1593,66 @@ mod tests {
         assert!(rendered.contains(ctx.framework.scaffold_value("apple-backend-url")));
         assert!(rendered.contains(ctx.framework.apple_backend_version().unwrap()));
         assert!(rendered.contains("kind = exactVersion;"));
+    }
+
+    #[test]
+    fn apple_project_names_only_the_launch_assets_that_were_staged() {
+        let render = |ctx: &TemplateContext, file: &str| {
+            let template = embedded::APPLE
+                .get_file(file)
+                .expect("apple template must exist")
+                .contents_utf8()
+                .expect("apple template must be utf-8");
+            render_scaffold_template(
+                TemplateNamespace::Apple,
+                std::path::Path::new(file),
+                template,
+                ctx,
+            )
+            .expect("apple template render")
+        };
+        let project = "AppName.xcodeproj/project.pbxproj.tpl";
+        let info_plist = "AppName/Info.plist.tpl";
+
+        let bare = app_ctx();
+        let rendered = render(&bare, project);
+        assert!(rendered.contains(&format!(
+            "INFOPLIST_FILE = \"{}/Info.plist\";",
+            bare.app_name
+        )));
+        assert!(rendered.contains("GENERATE_INFOPLIST_FILE = YES;"));
+        // UILaunchScreen has no INFOPLIST_KEY_ build setting for its sub-keys;
+        // Xcode silently drops such keys, so the project must not carry them.
+        assert!(!rendered.contains("INFOPLIST_KEY_UILaunchScreen"));
+        // Info.plist lives in the synchronized app folder; without this
+        // exception Xcode also copies it as a bundle resource and the build
+        // fails with two producers of the app's Info.plist.
+        assert!(
+            rendered.contains("membershipExceptions = (\n\t\t\t\tInfo.plist,\n\t\t\t);"),
+            "{rendered}"
+        );
+        let plist = render(&bare, info_plist);
+        assert!(
+            plist.contains("<key>UILaunchScreen</key>\n\t<dict>\n\t</dict>"),
+            "{plist}"
+        );
+
+        let configured = app_ctx().with_launch(LaunchTemplateEntry {
+            has_background: true,
+            has_image: true,
+        });
+        let plist = render(&configured, info_plist);
+        assert!(plist.contains("<key>UIColorName</key>\n\t\t<string>LaunchBackground</string>"));
+        assert!(plist.contains("<key>UIImageName</key>\n\t\t<string>LaunchImage</string>"));
+        assert!(plist.contains("<key>UIImageRespectsSafeAreaInsets</key>\n\t\t<true/>"));
+
+        let color_only = app_ctx().with_launch(LaunchTemplateEntry {
+            has_background: true,
+            has_image: false,
+        });
+        let plist = render(&color_only, info_plist);
+        assert!(plist.contains("LaunchBackground"));
+        assert!(!plist.contains("LaunchImage"));
     }
 
     #[test]
