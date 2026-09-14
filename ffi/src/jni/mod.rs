@@ -10,6 +10,7 @@ extern crate std;
 pub mod android_runtime;
 pub mod components;
 pub mod convert;
+pub mod drag_drop;
 pub mod ffi_bridge;
 pub mod inspector;
 pub mod navigation;
