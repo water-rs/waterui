@@ -428,38 +428,25 @@ fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNa
             continue;
         }
 
-        // Every crate that ran a build script may have emitted
-        // `cargo:rustc-link-*` directives; `-sys` crates like
-        // `system-configuration-sys` emit only those, with no archive or Swift
-        // bridge artifact to show for it, so the parse cannot be gated on
-        // outputs.
-        let output_path = crate_build_dir.join("output");
-        if output_path.exists() {
-            let output = std::fs::read_to_string(&output_path)?;
-            for flag in apple_linker_flags_from_build_output(&output) {
-                push_unique_flag(&mut linker_flags, flag);
-            }
-        }
-
-        let out_dir = crate_build_dir.join("out");
-        if !out_dir.is_dir() {
-            continue;
-        }
-
-        // A `lib*.a` in a build script's `out/` dir is an artifact the crate
-        // ships for linking, with or without a Swift bridge alongside it.
-        for out_entry in std::fs::read_dir(&out_dir)? {
-            let out_entry = out_entry?;
-            let path = out_entry.path();
-            if path.extension().is_some_and(|ext| ext == "a")
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("lib"))
-            {
-                archive_paths.insert(path.clone());
-                if let Some(flag) = static_archive_link_flag(&path) {
-                    push_unique_flag(&mut linker_flags, flag);
+        // Stable names each unit dir `<pkg>-<hash>`; current nightly nests one
+        // level deeper under `<pkg>/<hash>` (#901). A top-level dir that is a
+        // build-script unit is processed directly, otherwise its hash subdirs
+        // are.
+        if is_build_script_unit_dir(&crate_build_dir) {
+            collect_link_inputs_from_unit_dir(
+                &crate_build_dir,
+                &mut archive_paths,
+                &mut linker_flags,
+            )?;
+        } else {
+            for sub_entry in std::fs::read_dir(&crate_build_dir)?.flatten() {
+                let sub_dir = sub_entry.path();
+                if sub_dir.is_dir() && is_build_script_unit_dir(&sub_dir) {
+                    collect_link_inputs_from_unit_dir(
+                        &sub_dir,
+                        &mut archive_paths,
+                        &mut linker_flags,
+                    )?;
                 }
             }
         }
@@ -469,6 +456,59 @@ fn collect_apple_native_link_inputs_sync(lib_dir: &Path) -> eyre::Result<AppleNa
         archives: archive_paths.into_iter().collect(),
         linker_flags,
     })
+}
+
+/// A build-script unit dir carries the script's captured stdout — `output` on
+/// stable, `run/stdout` on current nightly. Compile units get an `out/` dir
+/// for their own artifacts too, so `out/` alone is not proof of a
+/// build-script unit under nightly.
+fn is_build_script_unit_dir(dir: &Path) -> bool {
+    dir.join("output").is_file() || dir.join("run").join("stdout").is_file()
+}
+
+fn collect_link_inputs_from_unit_dir(
+    unit_dir: &Path,
+    archive_paths: &mut BTreeSet<PathBuf>,
+    linker_flags: &mut Vec<String>,
+) -> eyre::Result<()> {
+    // Every crate that ran a build script may have emitted
+    // `cargo:rustc-link-*` directives; `-sys` crates like
+    // `system-configuration-sys` emit only those, with no archive or Swift
+    // bridge artifact to show for it, so the parse cannot be gated on
+    // outputs.
+    for output_path in [unit_dir.join("output"), unit_dir.join("run").join("stdout")] {
+        if output_path.is_file() {
+            let output = std::fs::read_to_string(&output_path)?;
+            for flag in apple_linker_flags_from_build_output(&output) {
+                push_unique_flag(linker_flags, flag);
+            }
+        }
+    }
+
+    // For a build-script unit, `out/` is OUT_DIR (nightly records it in
+    // `run/root-output`), so a `lib*.a` inside is an artifact the crate ships
+    // for linking, with or without a Swift bridge alongside it.
+    let out_dir = unit_dir.join("out");
+    if !out_dir.is_dir() {
+        return Ok(());
+    }
+
+    for out_entry in std::fs::read_dir(&out_dir)? {
+        let out_entry = out_entry?;
+        let path = out_entry.path();
+        if path.extension().is_some_and(|ext| ext == "a")
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("lib"))
+        {
+            archive_paths.insert(path.clone());
+            if let Some(flag) = static_archive_link_flag(&path) {
+                push_unique_flag(linker_flags, flag);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn static_archive_link_flag(archive_path: &Path) -> Option<String> {
@@ -1089,6 +1129,35 @@ mod tests {
             "cargo:rustc-link-lib=framework=SystemConfiguration\n",
         )
         .expect("write build output");
+
+        let link_inputs =
+            collect_apple_native_link_inputs_sync(&lib_dir).expect("collect native link inputs");
+
+        assert!(link_inputs.archives.is_empty());
+        assert_eq!(
+            link_inputs.linker_flags,
+            vec!["-framework SystemConfiguration".to_string()]
+        );
+    }
+    #[test]
+    fn collects_link_inputs_from_nightly_build_layout() {
+        // Nightly cargo nests unit dirs as `build/<pkg>/<hash>` and records the
+        // script's captured stdout at `run/stdout` instead of `output` (#901).
+        let dir = tempdir().expect("tempdir");
+        let lib_dir = dir.path().join("aarch64-apple-darwin/debug");
+        let sys_unit = lib_dir.join("build/system-configuration-sys/1234abcd");
+        std::fs::create_dir_all(sys_unit.join("run")).expect("create run dir");
+        std::fs::write(
+            sys_unit.join("run/stdout"),
+            "cargo:rustc-link-lib=framework=SystemConfiguration\n",
+        )
+        .expect("write build stdout");
+
+        // A compile unit's `out/` holds its own artifacts, not OUT_DIR — it
+        // must not be mined for archives.
+        let compile_unit = lib_dir.join("build/plain-crate/5678efgh");
+        std::fs::create_dir_all(compile_unit.join("out")).expect("create out dir");
+        std::fs::write(compile_unit.join("out/libplain_crate.a"), "").expect("write archive");
 
         let link_inputs =
             collect_apple_native_link_inputs_sync(&lib_dir).expect("collect native link inputs");
