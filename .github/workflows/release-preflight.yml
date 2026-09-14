@@ -169,11 +169,31 @@ jobs:
             | jq -r '.packages[] | select(.name == "waterui") | .version')"
           python3 .github/scripts/framework_manifest.py stable \
             --tag "$tag" --revision "$GITHUB_SHA"
-      - name: Install the packaged CLI and scaffold a project
+      # `water create gate` certifies the release the way users meet it: with
+      # the newest published `waterui-cli` on crates.io satisfying this tree's
+      # `minimum-cli-version`. The CLI lives in water-rs/cli and releases on
+      # its own cadence — a `waterui-cli` version identical to this
+      # workspace's no longer exists to install.
+      - name: Install the published CLI and scaffold a project
         run: |
           set -euo pipefail
           scratch="$RUNNER_TEMP/resolve-gate"
           consumer="$scratch/consumer"
+          # The install must resolve the real crates.io, so it runs before the
+          # local-registry replacement below exists — and the replacement
+          # must not live in $CARGO_HOME either, where every cargo invocation
+          # (including this install) would see it.
+          floor="$(cargo metadata --format-version 1 --no-deps \
+            --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
+            | jq -r '.packages[] | select(.name == "waterui") | .metadata.waterui["minimum-cli-version"]')"
+          if [[ -z "$floor" || "$floor" == "null" ]]; then
+            echo "::error file=Cargo.toml::package.metadata.waterui.minimum-cli-version is missing"
+            exit 1
+          fi
+          if ! cargo install waterui-cli --version ">=$floor"; then
+            echo "::error::no published waterui-cli satisfies the framework's minimum-cli-version (>=$floor)"
+            exit 1
+          fi
           mkdir -p "$consumer/.cargo"
           cat > "$consumer/.cargo/config.toml" <<-EOF
           [source.crates-io]
@@ -182,20 +202,7 @@ jobs:
           [source.local-registry]
           local-registry = "$scratch/registry"
           EOF
-          # `cargo install` discovers config starting at $CARGO_HOME, not the
-          # project directory, so the replacement must also live there.
-          cat >> "$CARGO_HOME/config.toml" <<-EOF
-          [source.crates-io]
-          replace-with = "local-registry"
-
-          [source.local-registry]
-          local-registry = "$scratch/registry"
-          EOF
           cd "$consumer"
-          cli_version=$(cargo metadata --format-version 1 --no-deps \
-            --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
-            | jq -r '.packages[] | select(.name == "waterui-cli") | .version')
-          cargo install waterui-cli --version "$cli_version"
           water create gate --mode playground \
             --framework-manifest "$GITHUB_WORKSPACE/framework.json"
       - name: Resolve and build the scaffolded project

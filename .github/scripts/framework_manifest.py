@@ -4,8 +4,8 @@ The manifest records the worktree's submodule pins, its lockfile hashes, the
 scaffold table the root manifest's `[package.metadata.waterui]` declares, and
 that metadata table verbatim. The Rust side derives exactly the same scaffold
 table for a tree (`framework_scaffold` in
-cli/src/project_model/framework.rs) — the two must not drift, so this script
-never reads anything under cli/.
+https://github.com/water-rs/cli/blob/dev/src/project_model/framework.rs) — the
+two must not drift, so this script never reads anything from the CLI.
 
 `stable` certifies the framework release tag release-plz published
 (`v<version>`), or — under release preflight, where the release does not

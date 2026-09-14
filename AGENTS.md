@@ -142,7 +142,7 @@ Keep the change set strictly scoped to the task.
 
 - Keep top-level folders semantic and minimal. Do not add generic crate buckets (`crates/`), implementation-detail roots (`internal/`, `facade/`), or top-level folders whose only purpose is a single package manifest. Put crates under the existing domain folder (`components/`, `utils/`, `backends/`, `kit/`, etc. — icon sets live under `components/icon/`) or under `src/` when they describe the root `waterui` package itself. Crate families that share a non-`waterui` prefix belong under one family directory such as `utils/filtrate/`, not as repeated sibling folders like `filtrate-core` / `filtrate-derive`.
 
-- **This repository is the non-self-drawn core, and nothing else.** What stays here is the part of WaterUI that needs every native backend to cooperate: `waterui-core` and the reactive, layout and text foundations, the FFI contract and the Apple/Android/GTK bridges, `waterui-backend-core`, the CLI, and the components whose realization is a native primitive on each platform. Everything self-drawn — the renderers (`hydrolysis`, `hydrolysis_m3`, `waterui-dew`) and every component that paints its own pixels (`waterui-svg`, `waterui-math`, `waterui-mermaid`, the crates listed in the next bullet) — lives in its own repository under `water-rs` and iterates on its own schedule. Releases are the boundary's stable form: a split repository depends on the framework as published on crates.io, and this tree consumes the split repository from crates.io, so the `[workspace.dependencies]` requirement names a published version. Between releases the two sides move on git: an unreleased change in a split repository is consumed here through a `[patch.crates-io]` entry pinned to the exact commit on that repository's `dev` (`git = "https://github.com/water-rs/<repo>", rev = "<sha>"`, as the `hydrolysis` entries do), and an unreleased framework change is consumed there the same way against this repository's `dev`. Always a `rev`, never a moving `branch` and never a `path` patch, so the graph stays reproducible; the CLI's `dev` channel resolves the same way. A framework pull request never carries split-repository code, and neither repository blocks the other. **Never ask the user to publish, release, tag, or bump a version as a prerequisite for your work.** A release is the user's decision on the user's schedule; unless the user has stated a release plan in the current task, the only way to consume an unreleased change is the git pin above, and "waiting for a release" is never a state a task ends in. When a pull request needs a scaffold pin such as `hydrolysis-version` to move to a version that does not exist yet, record that fact once in the pull request for whoever cuts the release, and finish the work. A new self-drawn component starts as its own repository, created from the `hydrolysis` template, and is never added to this tree.
+- **This repository is the non-self-drawn core, and nothing else.** What stays here is the part of WaterUI that needs every native backend to cooperate: `waterui-core` and the reactive, layout and text foundations, the FFI contract and the Apple/Android/GTK bridges, `waterui-backend-core`, and the components whose realization is a native primitive on each platform. The `water` CLI is not part of it: it lives in water-rs/cli, pins the framework crates it links at one `water-rs/waterui` revision, and resolves everything else about the framework at run time through the channels below. Everything self-drawn — the renderers (`hydrolysis`, `hydrolysis_m3`, `waterui-dew`) and every component that paints its own pixels (`waterui-svg`, `waterui-math`, `waterui-mermaid`, the crates listed in the next bullet) — lives in its own repository under `water-rs` and iterates on its own schedule. Releases are the boundary's stable form: a split repository depends on the framework as published on crates.io, and this tree consumes the split repository from crates.io, so the `[workspace.dependencies]` requirement names a published version. Between releases the two sides move on git: an unreleased change in a split repository is consumed here through a `[patch.crates-io]` entry pinned to the exact commit on that repository's `dev` (`git = "https://github.com/water-rs/<repo>", rev = "<sha>"`, as the `hydrolysis` entries do), and an unreleased framework change is consumed there the same way against this repository's `dev`. Always a `rev`, never a moving `branch` and never a `path` patch, so the graph stays reproducible; the CLI's `dev` channel resolves the same way. A framework pull request never carries split-repository code, and neither repository blocks the other. **Never ask the user to publish, release, tag, or bump a version as a prerequisite for your work.** A release is the user's decision on the user's schedule; unless the user has stated a release plan in the current task, the only way to consume an unreleased change is the git pin above, and "waiting for a release" is never a state a task ends in. When a pull request needs a scaffold pin such as `hydrolysis-version` to move to a version that does not exist yet, record that fact once in the pull request for whoever cuts the release, and finish the work. A new self-drawn component starts as its own repository, created from the `hydrolysis` template, and is never added to this tree.
 - **Before adding a component crate, check whether the workspace already depends on one.** Several components were split into their own repositories and come back in from crates.io, so they are invisible when you search `components/` — `waterui-barcode` (QR and the other symbologies), `waterui-chart`, `waterui-map-gpu`, `waterui-canvas`, `waterui-particle`, `waterui-image`, `waterui-video-gpu`, `waterui-visualizer`, `waterui-math`, `filtrate`, `shaderloom`, `nami`, `merman`. `waterui-mermaid` lives in water-rs/mermaid too, but its merman fork dependencies are git-only, so nothing here can consume it from crates.io — a git dependency is the only way to reach it. Read `[workspace.dependencies]` in the root `Cargo.toml`; each entry names a component that already exists, and a split component's example lives in that component's repository rather than in `examples/`. Extending one of those means a change in its own repository and a version bump here, never a second crate in this tree — and a QR-only type beside `Barcode` would be the parallel-type mistake Principle 1 rules out, since the symbology is an attribute of one semantic component.
 - Prefer modern, cutting-edge tooling over legacy defaults when we choose or scaffold a toolchain — `bun` over `npm`/`yarn`, `uv` over `pip`/`pipenv`, and similarly for other categories. This is about the defaults we generate, never about overriding a project's declared toolchain: a lockfile or manifest in the user's project is the source of truth and is always respected.
 - Do not drag unrelated files into the diff.
@@ -161,8 +161,8 @@ Keep the change set strictly scoped to the task.
 - Workflow files under `.github/workflows/` may be changed WITHOUT asking when the change is a pure performance optimization that preserves coverage: cache keys and `save-if`/`cache-targets` tuning, job splitting or reordering, timeouts, runner sizing, moving a non-gating leg off the critical path onto a schedule, or adding a fast lane. A slow pipeline is a defect to fix, not a fact to endure. What still requires explicit authorization is any DEGRADATION: removing or skipping tests, dropping a platform or feature combination, loosening a lint gate, disabling a check, or trading correctness signal for speed. When in doubt about which side a change falls on, ask.
 - GitHub Actions workflows should stay minimal and declarative. Do not put heavy release logic, repository analysis, packaging validation, or hand-rolled orchestration scripts into workflow YAML when a maintained community tool can own that behavior.
 - Cross-Backend Regression is a CI pipeline concern, not user-facing README documentation. Keep references to it in CI/developer-maintainer context rather than public product docs.
-- Prefer maintained community actions and purpose-built tools over custom shell/Python scripts in workflows. Release publishing should be delegated to `release-plz`; only the CLI binary prebuild/release-asset handoff is expected to require extra workflow glue.
-- A published CLI scaffolds projects against the `framework.json` that `.github/scripts/framework_manifest.py` certifies: the release job attaches it to each `v<version>` framework release, and `water channel nightly` reads the same shape from the last certified nightly prerelease. The manifest's scaffold table is derived from the framework, never from the CLI: extracted-crate requirements (`hydrolysis-version`, `waterui-gtk-version`, …) come from the root `Cargo.toml`'s `[workspace.dependencies]`, backend coordinates (`*-backend-url`, plus `{name}-backend-version` for a backend pinned by release rather than gitlink) and `minimum-cli-version` live in its `[package.metadata.waterui]` table — which the manifest also carries verbatim as `metadata` — and each gitlinked backend's pinned commit comes from the revision's submodule gitlinks. The only scaffold fact the CLI owns is `android-kotlin-version` in `cli/Cargo.toml`'s `[package.metadata.waterui-scaffold]`; `cli/build.rs` fails the build if a framework-owned key lands there. `water create` derives the same table from a `waterui_path` checkout's own root manifest, and `--framework-manifest <path>` pins a project to a certified manifest read from disk (release preflight uses it before the release exists). A CLI released with stale literals handing every new project an old framework (#548) is impossible because the CLI carries no framework literals at all.
+- Prefer maintained community actions and purpose-built tools over custom shell/Python scripts in workflows. Release publishing should be delegated to `release-plz`; the only extra workflow glue this repository carries is the `framework.json` attachment on a facade release.
+- A published CLI scaffolds projects against the `framework.json` that `.github/scripts/framework_manifest.py` certifies: the release job attaches it to each `v<version>` framework release, and `water channel nightly` reads the same shape from the last certified nightly prerelease. The manifest's scaffold table is derived from the framework, never from the CLI: extracted-crate requirements (`hydrolysis-version`, `waterui-gtk-version`, …) come from the root `Cargo.toml`'s `[workspace.dependencies]`, backend coordinates (`*-backend-url`, plus `{name}-backend-version` for a backend pinned by release rather than gitlink) and `minimum-cli-version` live in its `[package.metadata.waterui]` table — which the manifest also carries verbatim as `metadata` — and each gitlinked backend's pinned commit comes from the revision's submodule gitlinks. The only scaffold fact the CLI owns is `android-kotlin-version` in its own manifest's `[package.metadata.waterui-scaffold]` (water-rs/cli); its `build.rs` fails the build if a framework-owned key lands there. `water create` derives the same table from a `waterui_path` checkout's own root manifest, and `--framework-manifest <path>` pins a project to a certified manifest read from disk (release preflight uses it before the release exists). A CLI released with stale literals handing every new project an old framework (#548) is impossible because the CLI carries no framework literals at all.
 - Do not patch around repository-state problems by adding workflow preflight scripts or CI workarounds. Fix the source tree, manifests, submodules, or release configuration at the real source of truth.
 - Do not add crate-level, file-level, or module-level `allow` attributes to skip lint failures during cleanup. Treat lint as code-quality feedback and fix the underlying code, API shape, docs, or type invariants instead.
 - If a lint is a genuine false positive or conflicts with the intended architecture/readability, prefer a narrowly scoped item-level `allow`/`expect` with a concrete reason over contorting the code to satisfy the lint. WaterUI is a main-thread UI framework, so UI-local `spawn_local` futures that capture non-`Send` view state are a valid example. Do not use broad lint exceptions, and do not add exceptions without evidence.
@@ -252,12 +252,11 @@ Keep the change set strictly scoped to the task.
 ## Build Commands
 
 ```bash
-# Install CLI from source (required for `water run` to work)
-# You must reinstall cli to path after modifying it if you wanna debug it.
-cargo install --path cli
-
-# Build CLI for development (faster iteration, but not in PATH)
-cargo build -p waterui-cli
+# Install the `water` CLI (required for `water run` to work). It lives in
+# water-rs/cli; a change to it is a pull request there, not here.
+cargo install waterui-cli
+# …or its integration branch:
+cargo install --locked --git https://github.com/water-rs/cli waterui-cli
 
 # Build entire workspace
 cargo build --workspace
@@ -267,7 +266,6 @@ cargo nextest run --workspace
 
 # Run tests for specific crate
 cargo nextest run -p waterui-core
-cargo nextest run -p waterui-cli
 
 # Run workspace doctests separately from nextest
 cargo test --doc --workspace
@@ -383,9 +381,9 @@ WaterUI ships two self-drawn (non-native) renderers at deliberately opposite des
 - Modest, power-frugal frame rates: 30/60fps (the runtime ticks at ~16ms). Do not target 120fps here.
 - Lean, feature-gated dependency graph: firmware builds strip `gpu`/`widgets`/`gestures` and other heavy deps (`default-features = false`). Dew is `std`-based via its embedded RTOS, not bare-metal `no_std`. Do not pull GPU / `wgpu` / heavyweight crates into Dew's firmware graph.
 
-### CLI (`cli/`)
+### CLI (water-rs/cli)
 
-The `water` CLI orchestrates builds across platforms:
+The `water` CLI orchestrates builds across platforms and lives in its own repository, https://github.com/water-rs/cli, with its own `AGENTS.md`, CI, nightly end-to-end suite and release cadence:
 
 - `water create` - Scaffold new project (supports `--mode playground` for quick experiments)
 - `water run` - Build and deploy to device/simulator
@@ -395,13 +393,7 @@ The `water` CLI orchestrates builds across platforms:
 - `water doctor` - Check development environment
 - `water devices` - List available devices and simulators
 
-**CLI Architecture Notes:**
-- Entry point: `cli/src/terminal/main.rs` - Uses `clap` for parsing, `smol` async runtime
-- Commands in `cli/src/terminal/commands/` - Each command is async and returns `Result<()>`
-- Platform abstraction: `TargetPlatform` enum in `cli/src/platforming/platform.rs` and `Backend` trait in `cli/src/platforming/backend.rs` implemented by `AppleBackend`, `AndroidBackend`, `Gtk4Backend`, `HydrolysisBackend`, and `Esp32Backend`
-- Shell output: `cli/src/terminal/shell.rs` - An explicit `Shell` instance passed to commands, with human-readable (ANSI) or JSON modes
-
-Note: `/terminal/*` (waterui-cli binary) only provide a friendly interface for CLI commands. All real logic should be implemented in the waterui-cli library part.
+What this repository owns of that contract is the framework side: `[package.metadata.waterui]` in the root manifest (`minimum-cli-version`, backend coordinates, the Android API floor, `scaffold-packages`), the `framework.json` the release attaches, and the `waterui_meta_*` metadata symbols the macros emit for the CLI to read. A CLI defect is an issue in water-rs/cli; a fact the CLI cannot obtain from the framework is an issue here.
 
 ### FFI Contract
 
@@ -505,11 +497,8 @@ waterui_ffi::export!();  // Generates FFI entry points
   that previously shipped behind green Rust checks: replies crossing as
   base64, a frozen `waterui` object breaking `state`/`watch`, and integers
   past 2^53 losing low bits in either direction.
-- The CLI has unit tests in both its library modules and terminal commands. Run scoped checks with `cargo nextest run -p waterui-cli`, narrowing with `-E` for the affected behavior.
 - Use `tracing::debug!` and `water run --logs debug` for debugging runtime issues
 
 ### Error Handling
 
-- All command functions return `Result<(), eyre::Report>` for rich error context
-- Custom error enums use `thiserror` derive macro
-- Shell provides `success!()`, `error!()`, `warn!()`, `note!()` macros for user feedback
+- Custom error enums use `thiserror` derive macro; the error type applications see is the `waterui_core::Error` re-export

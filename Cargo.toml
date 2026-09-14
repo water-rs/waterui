@@ -15,7 +15,6 @@ members = [
     "ffi",
     "ffi/generator",
     "macros",
-    "cli",
     "examples/*",
     ".claude/skills/waterui/skill_snippets",
     "backends/core",
@@ -469,11 +468,6 @@ codegen-units = 1
 opt-level = "z"    # Optimize for size
 strip = true       # Strip symbols
 panic = "abort"    # Smaller panic handling
-
-# The profile that 'dist' will build with
-[profile.dist]
-inherits = "release"
-lto = "thin"
 
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.

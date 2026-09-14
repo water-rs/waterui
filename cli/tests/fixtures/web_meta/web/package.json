@@ -1,8 +1,0 @@
-{
-  "name": "web-meta-fixture",
-  "private": true,
-  "scripts": {
-    "dev": "true",
-    "build": "true"
-  }
-}
