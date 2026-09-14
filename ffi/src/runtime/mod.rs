@@ -4,7 +4,6 @@ pub mod app;
 pub mod id;
 pub mod inspector;
 /// FFI bindings for publishing the window's safe area to Rust-laid-out layers.
-pub mod safe_area;
 pub mod theme;
 /// FFI bindings for erased, identity-aware view collections (`WuiAnyViews`).
 pub mod views;

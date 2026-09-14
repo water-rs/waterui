@@ -53,7 +53,6 @@ use waterui_core::{SignalExt, View};
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
-use waterui_layout::safe_area::SafeAreaInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{Alignment, hstack};
 use waterui_layout::{AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
@@ -150,9 +149,9 @@ pub struct SnackbarTheme {
     pub content_padding: EdgeInsets,
     /// Margin between the bar and the window's safe area.
     ///
-    /// This is spacing only. The hardware insets — notch, status bar, home
-    /// indicator — come from [`SafeAreaInsets`] and are added on top, so a
-    /// theme never has to guess them.
+    /// This is spacing only. The backend places the host clear of the
+    /// hardware — notch, status bar, home indicator — so a theme never has to
+    /// guess those insets.
     pub viewport_padding: EdgeInsets,
     /// Gap between message and action.
     pub content_spacing: f32,
@@ -1005,13 +1004,9 @@ impl View for StackedSnackbarView {
             .offset(0.0, item.stack_offset.with(enter_animation)),
         )
         .alignment(position.to_alignment())
-        // Clear of the hardware first, then of the window edge by the theme's
-        // own margin. The backend publishes the insets and republishes them on
-        // rotation, so this pads reactively instead of rebuilding the bar.
-        .padding_with(SafeAreaInsets::resolve_with_margin(
-            env,
-            theme.viewport_padding,
-        ))
+        // The backend places this host clear of the hardware; the theme's own
+        // margin keeps the bar off the window edge.
+        .padding_with(theme.viewport_padding)
     }
 }
 

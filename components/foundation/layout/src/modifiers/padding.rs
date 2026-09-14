@@ -11,9 +11,8 @@ use crate::{
 
 /// Layout that insets its single child by the configured edge values.
 ///
-/// The insets are reactive, so a window that republishes its safe area on
-/// rotation (see [`SafeAreaInsets`](super::safe_area::SafeAreaInsets)) moves the
-/// padded content without the subtree being rebuilt.
+/// The insets are reactive, so a change to them moves the padded content
+/// without the subtree being rebuilt.
 #[derive(Debug, Clone)]
 pub struct PaddingLayout {
     edges: Computed<EdgeInsets>,
