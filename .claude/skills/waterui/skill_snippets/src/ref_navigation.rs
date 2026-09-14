@@ -54,6 +54,9 @@ fn settings_stack() -> impl View {
 fn search_stack() -> impl View {
     text("search")
 }
+fn now_playing_bar() -> impl View {
+    text("now playing")
+}
 
 // ---------------------------------------------------------------------------
 // navigation.md § "## Tabs" — rust block 1/13
@@ -100,6 +103,8 @@ pub fn navigation_block_01() -> impl View {
         ],
     )
     .style(tab_style::automatic())
+    .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown) // iOS 26 collapses the bar while scrolling; ignored elsewhere
+    .bottom_accessory(now_playing_bar()) // iOS 26 glass bar above the tab bar (mini-player slot); not shown elsewhere
 }
 
 // ---------------------------------------------------------------------------

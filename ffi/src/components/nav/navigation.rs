@@ -11,7 +11,9 @@ use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
 use waterui_graphics::color::ResolvedColor;
-use waterui_navigation::tab::{NativeTabStyle, Tab, TabIcon, TabRole, TabsLayout};
+use waterui_navigation::tab::{
+    NativeTabStyle, Tab, TabBarMinimizeBehavior, TabIcon, TabRole, TabsLayout,
+};
 use waterui_navigation::{
     Bar, ColumnWidth, CustomNavigationController, NativeNavigationSplitStyle,
     NativeNavigationTransition, NavigationController, NavigationDestinationState,
@@ -734,6 +736,17 @@ into_ffi! {TabRole, non_exhaustive,
     }
 }
 
+// A platform whose tab chrome does not collapse on scroll ignores the
+// behavior.
+into_ffi! {TabBarMinimizeBehavior, non_exhaustive,
+    pub enum WuiTabBarMinimizeBehavior {
+        Automatic,
+        Never,
+        OnScrollDown,
+        OnScrollUp,
+    }
+}
+
 /// FFI representation of the `Tabs` component.
 #[repr(C)]
 #[derive(Debug)]
@@ -746,6 +759,15 @@ pub struct WuiTabs {
 
     /// Native adaptive tab style.
     pub style: WuiTabStyle,
+
+    /// How the bar behaves while content scrolls.
+    pub minimize_behavior: WuiTabBarMinimizeBehavior,
+
+    /// A view the platform floats above the tab bar, or null.
+    ///
+    /// An iOS primitive (`UITabBarController.bottomAccessory`); a backend
+    /// without the slot does not show it.
+    pub bottom_accessory: *mut WuiAnyView,
 }
 
 opaque!(WuiTabContent, AnyViewBuilder<NavigationView>, tab_content);
@@ -843,6 +865,10 @@ impl IntoFFI for TabsLayout {
             selection: self.selection.into_ffi(),
             tabs: self.tabs.into_ffi(),
             style: self.style.into(),
+            minimize_behavior: self.minimize_behavior.into_ffi(),
+            bottom_accessory: self
+                .bottom_accessory
+                .map_or(core::ptr::null_mut(), IntoFFI::into_ffi),
         }
     }
 }

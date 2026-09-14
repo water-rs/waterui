@@ -118,6 +118,28 @@ pub struct SelectorArgs {
     pub identifier: Option<String>,
     /// Exact current value.
     pub value: Option<String>,
+    /// Substring the value must contain.
+    pub value_contains: Option<String>,
+    /// Required enabled state.
+    pub enabled: Option<bool>,
+    /// Required selected state.
+    pub selected: Option<bool>,
+    /// Required checked state — `true`/`false`; use `mixed` for
+    /// indeterminate.
+    pub checked: Option<bool>,
+    /// `true` matches only indeterminate checkable nodes.
+    pub mixed: Option<bool>,
+    /// Required expanded state.
+    pub expanded: Option<bool>,
+    /// Required busy state.
+    pub busy: Option<bool>,
+    /// `true` also matches hidden nodes; they are excluded by default.
+    pub hidden: Option<bool>,
+    /// Restrict matches to descendants of this node id.
+    pub within: Option<u64>,
+    /// Restrict matches to direct children of this node id. Mutually
+    /// exclusive with `within`.
+    pub children_of: Option<u64>,
 }
 
 /// Find nodes matching the criteria and return their node lines. Fails when
@@ -135,7 +157,9 @@ pub struct FindArgs {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ActArgs {
     /// Target node id from a `snapshot` or `find` line (`#42` → `42`).
-    pub node: u64,
+    /// Required for every action except `clear_focus`, which is app-level and
+    /// ignores it.
+    pub node: Option<u64>,
     /// The action to perform.
     pub action: ActAction,
     /// The value for `set_value` and `replace_text`; required for them,
@@ -173,6 +197,14 @@ pub enum ActAction {
     ScrollForward,
     /// Scroll the node backward (up/left).
     ScrollBackward,
+    /// Scroll the node left.
+    ScrollLeft,
+    /// Scroll the node right.
+    ScrollRight,
+    /// Scroll any scrollable containers to make the node visible.
+    ScrollIntoView,
+    /// Release the app's keyboard/UI focus. App-level — `node` is not used.
+    ClearFocus,
 }
 
 impl ActAction {
@@ -190,22 +222,31 @@ impl ActAction {
             Self::Collapse => "collapse",
             Self::ScrollForward => "scroll_forward",
             Self::ScrollBackward => "scroll_backward",
+            Self::ScrollLeft => "scroll_left",
+            Self::ScrollRight => "scroll_right",
+            Self::ScrollIntoView => "scroll_into_view",
+            Self::ClearFocus => "clear_focus",
         }
     }
 }
 
-/// Dispatch a pointer event at viewport coordinates, then return the settled
-/// tree. Coordinates are logical pixels, matching the `bounds=` values in
-/// `snapshot` output.
+/// Dispatch a pointer event, then return the settled tree.
+///
+/// Coordinates are logical pixels matching the `bounds=` values in
+/// `snapshot` output — or fractions of a node's bounds when
+/// `node`/`to_node` anchor them.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct PointerArgs {
     /// Which pointer event to dispatch.
     pub kind: PointerKind,
-    /// X coordinate in logical pixels.
+    /// X coordinate in logical pixels — or a `0`–`1` fraction of the `node`
+    /// bounds when `node` is set.
     pub x: f32,
-    /// Y coordinate in logical pixels.
+    /// Y coordinate in logical pixels — or a `0`–`1` fraction of the `node`
+    /// bounds when `node` is set.
     pub y: f32,
-    /// Drag end X — required when `kind` is `drag`.
+    /// Drag end X — required when `kind` is `drag`. A `0`–`1` fraction of the
+    /// `to_node` (or `node`) bounds when an anchor is set.
     #[serde(default)]
     pub to_x: Option<f32>,
     /// Drag end Y — required when `kind` is `drag`.
@@ -220,6 +261,21 @@ pub struct PointerArgs {
     /// Number of intermediate positions for `drag`.
     #[serde(default)]
     pub steps: Option<u16>,
+    /// Anchor node id: `x`/`y` become fractions of its bounds (`0.5, 0.5` is
+    /// the center). Fractions outside `0`–`1` extrapolate past the edge.
+    #[serde(default)]
+    pub node: Option<u64>,
+    /// Anchor node id for the drag end point — `to_x`/`to_y` become fractions
+    /// of its bounds. Falls back to `node` when unset.
+    #[serde(default)]
+    pub to_node: Option<u64>,
+    /// Magnification factor — required when `kind` is `magnify`.
+    #[serde(default)]
+    pub factor: Option<f32>,
+    /// Scroll delta unit — `pixel` (default) or `line`; used when `kind` is
+    /// `scroll`.
+    #[serde(default)]
+    pub unit: Option<ScrollUnit>,
     /// Settle the runtime before returning (default `true`). Pass `false` to
     /// queue the event without settling, so `advance` and `screenshot` can
     /// observe the transient it triggers.
@@ -245,8 +301,21 @@ pub enum PointerKind {
     SecondaryClick,
     /// Drag from `x`,`y` to `to_x`,`to_y`.
     Drag,
-    /// Scroll wheel at the point, by `dx`/`dy` pixels.
+    /// Scroll wheel at the point, by `dx`/`dy` in `unit`s.
     Scroll,
+    /// Pinch/magnify centered at the point, by `factor`.
+    Magnify,
+}
+
+/// The unit a `scroll` pointer event's `dx`/`dy` deltas are measured in.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollUnit {
+    /// Logical pixels (default) — a smooth wheel or trackpad pan.
+    #[default]
+    Pixel,
+    /// Text lines — a discrete clicky wheel.
+    Line,
 }
 
 /// Press a key, then return the settled tree.
@@ -286,13 +355,32 @@ pub struct TypeTextArgs {
 #[serde(default)]
 pub struct WaitArgs {
     /// Fulfilled once a matching node exists.
-    pub exists: Option<SelectorArgs>,
+    pub exists: Option<ExpectArgs>,
     /// Fulfilled once no matching node exists.
-    pub not_exists: Option<SelectorArgs>,
+    pub not_exists: Option<ExpectArgs>,
     /// Fulfilled once a matching node's value equals `value`.
     pub value_eq: Option<ValueEqArgs>,
+    /// Fulfilled once a matching node holds keyboard/UI focus.
+    pub focus: Option<ExpectArgs>,
+    /// `true` requires the non-inverted expectations to fulfill in the order
+    /// given; a later one fulfilling first reports `incorrect_order`.
+    pub enforce_order: Option<bool>,
     /// Timeout in milliseconds; defaults to 5000.
     pub timeout_ms: Option<u64>,
+}
+
+/// A selector plus an optional inversion flag.
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct ExpectArgs {
+    /// The match criteria, inlined into the tool arguments.
+    #[serde(flatten)]
+    pub selector: SelectorArgs,
+    /// `true` makes the expectation forbidden: it never fulfills, and the
+    /// wait fails with `inverted_fulfillment` the moment it becomes true. A
+    /// wait holding only inverted expectations runs the full timeout and
+    /// reports `fulfilled` if none of them ever held.
+    pub inverted: Option<bool>,
 }
 
 /// A selector plus the value a matching node must reach.
@@ -303,6 +391,9 @@ pub struct ValueEqArgs {
     pub selector: SelectorArgs,
     /// The expected value.
     pub value: String,
+    /// `true` makes the expectation forbidden; see [`ExpectArgs::inverted`].
+    #[serde(default)]
+    pub inverted: Option<bool>,
 }
 
 /// Capture the current frame as a PNG image.

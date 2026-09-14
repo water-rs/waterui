@@ -132,6 +132,27 @@ pub enum TabRole {
     Search,
 }
 
+/// How the tab bar behaves while the selected tab's content scrolls.
+///
+/// A platform convention, not a semantic requirement: iOS 26 can collapse the
+/// tab bar into a compact glass pill as the user scrolls and expand it again
+/// on the way back. `Automatic` is the platform's own default — on iOS the bar
+/// stays expanded until an app opts in. Platforms whose tab chrome does not
+/// collapse ignore the behavior.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabBarMinimizeBehavior {
+    /// The platform's default.
+    #[default]
+    Automatic,
+    /// The bar never minimizes.
+    Never,
+    /// The bar minimizes while scrolling down and expands when scrolling back up.
+    OnScrollDown,
+    /// The bar minimizes while scrolling up and expands when scrolling back down.
+    OnScrollUp,
+}
+
 /// One stable native tab.
 #[non_exhaustive]
 pub struct Tab<T> {
@@ -248,6 +269,10 @@ pub struct TabsLayout {
     pub tabs: Vec<Tab<Id>>,
     /// Native adaptive style.
     pub style: NativeTabStyle,
+    /// How the bar behaves while content scrolls.
+    pub minimize_behavior: TabBarMinimizeBehavior,
+    /// A view the platform floats above the tab bar, when it has such a slot.
+    pub bottom_accessory: Option<AnyView>,
 }
 
 impl TabsLayout {
@@ -258,6 +283,8 @@ impl TabsLayout {
             selection,
             tabs,
             style: NativeTabStyle::Automatic,
+            minimize_behavior: TabBarMinimizeBehavior::Automatic,
+            bottom_accessory: None,
         }
     }
 
@@ -265,6 +292,20 @@ impl TabsLayout {
     #[must_use]
     pub fn style(mut self, style: impl TabStyle) -> Self {
         self.style = style.into_native();
+        self
+    }
+
+    /// Sets how the bar behaves while content scrolls.
+    #[must_use]
+    pub const fn minimize_behavior(mut self, behavior: TabBarMinimizeBehavior) -> Self {
+        self.minimize_behavior = behavior;
+        self
+    }
+
+    /// Sets the view the platform floats above the tab bar.
+    #[must_use]
+    pub fn bottom_accessory(mut self, accessory: impl View) -> Self {
+        self.bottom_accessory = Some(AnyView::new(accessory));
         self
     }
 }
@@ -281,6 +322,8 @@ pub struct Tabs<T: 'static> {
     selection: Binding<T>,
     items: Vec<Tab<T>>,
     style: NativeTabStyle,
+    minimize_behavior: TabBarMinimizeBehavior,
+    bottom_accessory: Option<AnyView>,
 }
 
 impl<T> core::fmt::Debug for Tabs<T> {
@@ -288,6 +331,8 @@ impl<T> core::fmt::Debug for Tabs<T> {
         f.debug_struct("Tabs")
             .field("tabs", &self.items.len())
             .field("style", &self.style)
+            .field("minimize_behavior", &self.minimize_behavior)
+            .field("bottom_accessory", &self.bottom_accessory.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -299,12 +344,38 @@ impl<T: Ord + Clone + 'static> Tabs<T> {
             selection: selection.clone(),
             items: tabs,
             style: NativeTabStyle::Automatic,
+            minimize_behavior: TabBarMinimizeBehavior::Automatic,
+            bottom_accessory: None,
         }
     }
 
     /// Sets native adaptive tab presentation.
     pub fn style(mut self, style: impl TabStyle) -> Self {
         self.style = style.into_native();
+        self
+    }
+
+    /// Sets how the bar behaves while content scrolls.
+    ///
+    /// See [`TabBarMinimizeBehavior`]; platforms whose tab chrome does not
+    /// collapse ignore it.
+    pub const fn minimize_behavior(mut self, behavior: TabBarMinimizeBehavior) -> Self {
+        self.minimize_behavior = behavior;
+        self
+    }
+
+    /// Sets a view the platform floats above the tab bar.
+    ///
+    /// The slot iOS 26 keeps for persistent content such as a now-playing
+    /// mini-player: a glass bar that stays above the tab bar and collapses
+    /// inline with it. The accessory is an arbitrary view; the platform gives
+    /// it the capsule, placement and collapse behavior.
+    ///
+    /// This is an iOS primitive. macOS has no counterpart and does not show
+    /// the accessory; Android ignores it. Content that must be visible on
+    /// every platform belongs in the tab's own view tree.
+    pub fn bottom_accessory(mut self, accessory: impl View) -> Self {
+        self.bottom_accessory = Some(AnyView::new(accessory));
         self
     }
 
@@ -325,6 +396,8 @@ impl<T: Ord + Clone + 'static> Tabs<T> {
             selection: mapping.binding(&self.selection),
             tabs,
             style: self.style,
+            minimize_behavior: self.minimize_behavior,
+            bottom_accessory: self.bottom_accessory,
         }
     }
 }

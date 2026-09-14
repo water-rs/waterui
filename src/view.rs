@@ -283,7 +283,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text("Hello").overlay(Color::red().with_opacity(0.5));
     /// ```
-    fn overlay<V>(self, overlay: V) -> Overlay<Self, V> {
+    fn overlay<V: View>(self, overlay: V) -> Overlay<Self, V> {
         Overlay::new(self, overlay)
     }
 

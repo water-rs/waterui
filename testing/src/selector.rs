@@ -141,14 +141,16 @@ impl Selector {
         self
     }
 
+    /// Restricts matches to descendants of `handle`.
     #[must_use]
-    pub(crate) fn within(mut self, handle: ElementRef) -> Self {
+    pub fn within(mut self, handle: ElementRef) -> Self {
         self.scope = Some(QueryScope::descendants(handle));
         self
     }
 
+    /// Restricts matches to direct children of `handle`.
     #[must_use]
-    pub(crate) fn children_of(mut self, handle: ElementRef) -> Self {
+    pub fn children_of(mut self, handle: ElementRef) -> Self {
         self.scope = Some(QueryScope::children(handle));
         self
     }

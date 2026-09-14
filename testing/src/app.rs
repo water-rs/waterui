@@ -655,6 +655,33 @@ impl SemanticApp {
         }
     }
 
+    /// Creates a UI-focus expectation: fulfilled once the selector resolves to
+    /// the element holding Hydrolysis UI focus.
+    #[must_use]
+    pub const fn expect_ui_focus(&self, selector: Selector) -> Expectation {
+        Expectation {
+            kind: ExpectationKind::UiFocus(selector),
+            inverted: false,
+        }
+    }
+
+    /// Resolves a node id to an [`ElementRef`] bound to the current tree, or
+    /// `None` when the id is absent.
+    ///
+    /// External drivers hold node ids rather than query results; this is the
+    /// entry point that turns one into a handle usable for scoped queries
+    /// ([`Selector::within`], [`Selector::children_of`]) and element-relative
+    /// pointer work.
+    pub fn element(&mut self, id: NodeId) -> Option<ElementRef> {
+        self.sync_tree();
+        let node = self.tree.node(id)?.clone();
+        Some(ElementRef {
+            node_id: id,
+            node,
+            revision: self.tree.revision(),
+        })
+    }
+
     /// Waits for expectations using XCTest-like semantics.
     pub fn wait_for(&mut self, expectations: &[Expectation], options: WaitOptions) -> WaitResult {
         const MIN_IDLE_BACKOFF: Duration = Duration::from_millis(1);
@@ -832,6 +859,7 @@ impl SemanticApp {
                 }
                 self.tree[ids[0]].value() == Some(value.as_str())
             }
+            ExpectationKind::UiFocus(selector) => self.matches_ui_focus(selector),
         }
     }
 
@@ -869,7 +897,8 @@ impl SemanticApp {
         self.tree.matching(selector)
     }
 
-    pub(crate) fn resolve_elements(&mut self, selector: &Selector) -> ElementSet {
+    /// Resolves every element matching `selector` against the current tree.
+    pub fn resolve_elements(&mut self, selector: &Selector) -> ElementSet {
         let ids = self.matching_ids(selector);
         let elements = ids
             .into_iter()
@@ -969,13 +998,21 @@ impl SemanticApp {
         )
     }
 
-    /// Clears the latest Hydrolysis-managed UI focus target.
+    /// Clears the latest Hydrolysis-managed UI focus target, then settles
+    /// resulting updates.
     ///
     /// A no-op when nothing holds UI focus.
     pub fn clear_ui_focus(&mut self) {
-        if self.driver.clear_ui_focus(&self.env) {
+        if self.queue_clear_ui_focus() {
             self.settle();
         }
+    }
+
+    /// Clears the latest Hydrolysis-managed UI focus target without the
+    /// semantic settle used by [`Self::clear_ui_focus`]. Returns whether a
+    /// focus target was released.
+    pub fn queue_clear_ui_focus(&mut self) -> bool {
+        self.driver.clear_ui_focus(&self.env)
     }
 
     /// Moves the pointer to viewport coordinates without pressing a button,
@@ -1146,9 +1183,19 @@ impl SemanticApp {
         self.driver.key_press(key, modifiers, &self.env);
     }
 
-    pub(crate) fn magnify_at(&mut self, x: f32, y: f32, factor: f32) {
-        self.driver.magnify_at(x, y, factor, &self.env);
+    /// Dispatches a magnification (pinch) gesture centered at viewport
+    /// coordinates and settles resulting updates.
+    pub fn magnify_at(&mut self, x: f32, y: f32, factor: f32) {
+        self.queue_magnify_at(x, y, factor);
         self.settle();
+    }
+
+    /// Dispatches a magnification (pinch) gesture without the semantic settle
+    /// used by [`Self::magnify_at`]. The event is processed by the next pump,
+    /// so a zoom transient stays observable to [`OffscreenApp::pump_for`] and
+    /// [`OffscreenApp::snapshot`].
+    pub fn queue_magnify_at(&mut self, x: f32, y: f32, factor: f32) {
+        self.driver.magnify_at(x, y, factor, &self.env);
     }
 
     /// Pumps virtual frames until the runtime reports quiescence — no queued

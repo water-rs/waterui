@@ -50,6 +50,8 @@ Tabs::new(&pane, vec![
         .role(TabRole::Search),             // iOS: the trailing system search tab; elsewhere a regular tab
 ])
 .style(tab_style::automatic())
+.minimize_behavior(TabBarMinimizeBehavior::OnScrollDown)   // iOS 26 collapses the bar while scrolling; ignored elsewhere
+.bottom_accessory(now_playing_bar())        // iOS 26 glass bar above the tab bar (mini-player slot); not shown elsewhere
 ```
 
 **Use `Tab::container`, not a plain tab, whenever a tab has pushable content.** The

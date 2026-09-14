@@ -976,10 +976,11 @@ async fn ensure_meson_installed_for_build() -> Result<(), String> {
     use crate::toolchain::meson::Meson;
     use crate::toolchain::{Installation as _, Toolchain as _, ToolchainError};
 
-    match Meson.check().await {
+    let host = crate::toolchain::Host::current();
+    match Meson.check(&host).await {
         Ok(()) => Ok(()),
         Err(ToolchainError::Fixable(installation)) => {
-            installation.install().await.map_err(|e| e.to_string())
+            installation.install(&host).await.map_err(|e| e.to_string())
         }
         Err(ToolchainError::Unfixable(e)) => Err(e.to_string()),
     }

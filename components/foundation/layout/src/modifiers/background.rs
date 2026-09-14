@@ -108,7 +108,7 @@ pub struct BackgroundView<Content, Bg> {
     background: Bg,
 }
 
-impl<Content, Bg> BackgroundView<Content, Bg> {
+impl<Content: View, Bg: View> BackgroundView<Content, Bg> {
     /// Creates a new background view with the provided content and background.
     #[must_use]
     pub const fn new(content: Content, background: Bg) -> Self {
@@ -143,7 +143,7 @@ where
 
 /// Convenience constructor for creating a [`BackgroundView`].
 #[must_use]
-pub const fn background<Content, Bg>(
+pub const fn background<Content: View, Bg: View>(
     content: Content,
     background: Bg,
 ) -> BackgroundView<Content, Bg> {

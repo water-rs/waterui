@@ -3260,7 +3260,7 @@ pub mod android {
         }
 
         // Generate local.properties with Android SDK path
-        if let Some(sdk_path) = AndroidSdk::detect_path() {
+        if let Some(sdk_path) = AndroidSdk::detect_path(&crate::toolchain::Host::current()) {
             let local_props = base_dir.join("local.properties");
             let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
             write_file_if_changed(&local_props, content.as_bytes()).await?;

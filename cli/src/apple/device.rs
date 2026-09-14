@@ -12,7 +12,7 @@ use smol::{
     Timer,
     channel::Sender,
     io::{AsyncBufReadExt, BufReader},
-    process::{Command, Stdio},
+    process::Stdio,
     spawn,
     stream::StreamExt,
 };
@@ -29,7 +29,8 @@ use crate::{
     },
     platform::TargetPlatform,
     project::Project,
-    utils::{parse_semver_version, run_command},
+    toolchain::Host,
+    utils::parse_semver_version,
 };
 
 use smol::channel::Receiver;
@@ -43,8 +44,13 @@ struct PanicInfo {
     location: Option<String>,
 }
 
-async fn install_simulator_artifact(udid: &str, artifact_path: &Path) -> Result<(), FailToRun> {
-    let install_output = Command::new("xcrun")
+async fn install_simulator_artifact(
+    host: &Host,
+    udid: &str,
+    artifact_path: &Path,
+) -> Result<(), FailToRun> {
+    let install_output = host
+        .command("xcrun")
         .args(["simctl", "install", udid])
         .arg(artifact_path)
         .stdout(Stdio::piped())
@@ -91,11 +97,12 @@ fn simulator_env_vars(options: &crate::device::RunOptions) -> Vec<(String, Strin
 }
 
 async fn launch_simulator_app(
+    host: &Host,
     udid: &str,
     bundle_id: &str,
     env_vars: &[(String, String)],
 ) -> Result<u32, FailToRun> {
-    let mut launch = Command::new("xcrun");
+    let mut launch = host.command("xcrun");
     launch
         .arg("simctl")
         .arg("launch")
@@ -127,11 +134,13 @@ async fn launch_simulator_app(
     })
 }
 
-fn spawn_simulator_termination(udid: String, bundle_id: String) {
+fn spawn_simulator_termination(host: &Host, udid: String, bundle_id: String) {
+    let host = host.clone();
     let spawn_result = std::thread::Builder::new()
         .name("waterui-simctl-terminate".to_string())
         .spawn(move || {
-            match std::process::Command::new("xcrun")
+            match host
+                .std_command("xcrun")
                 .args(["simctl", "terminate", &udid, &bundle_id])
                 .output()
             {
@@ -166,12 +175,14 @@ struct SimulatorExitContext {
 }
 
 fn spawn_simulator_exit_monitor(
+    host: &Host,
     sender: Sender<DeviceEvent>,
     panic_rx: Receiver<PanicInfo>,
     context: SimulatorExitContext,
 ) {
+    let host = host.clone();
     spawn(async move {
-        wait_for_pid_exit(context.pid).await;
+        wait_for_pid_exit(&host, context.pid).await;
 
         if let Ok(info) = panic_rx.try_recv() {
             let _ = sender.try_send(DeviceEvent::Crashed(format_panic_message(
@@ -181,23 +192,14 @@ fn spawn_simulator_exit_monitor(
             return;
         }
 
-        if let Some(report) = poll_for_crash_report(
-            &context.device_name,
-            &context.device_identifier,
-            &context.bundle_id,
-            &context.process_name,
-            Some(context.pid),
-            context.start_time,
-            Duration::from_secs(10),
-        )
-        .await
+        if let Some(report) = poll_for_crash_report(&host, &context, Duration::from_secs(10)).await
         {
             let _ = sender.try_send(DeviceEvent::Crashed(report.to_string()));
             return;
         }
 
         if let Some(panic_msg) =
-            fetch_recent_panic_logs(context.start_instant, Some(context.pid)).await
+            fetch_recent_panic_logs(&host, context.start_instant, Some(context.pid)).await
         {
             let _ = sender.try_send(DeviceEvent::Crashed(panic_msg));
             return;
@@ -219,6 +221,7 @@ fn spawn_simulator_exit_monitor(
 /// task only holds its stdout, so the caller retains the handle in its
 /// [`Running`] to end the stream with the run instead of leaving it behind.
 fn start_log_stream(
+    host: &Host,
     sender: Sender<DeviceEvent>,
     log_level: Option<LogLevel>,
     pid: u32,
@@ -237,7 +240,7 @@ fn start_log_stream(
         format!("processID == {pid} AND subsystem == \"dev.waterui\"")
     };
 
-    let mut log_cmd = Command::new("log");
+    let mut log_cmd = host.command("log");
     log_cmd
         .arg("stream")
         .arg("--predicate")
@@ -335,7 +338,11 @@ fn extract_panic_info_from_log(line: &str) -> Option<PanicInfo> {
 ///
 /// This uses `log show` to retrieve logs from the last few seconds that contain panic info.
 /// Returns the panic message if found, along with location and payload.
-async fn fetch_recent_panic_logs(started_at: Instant, pid: Option<u32>) -> Option<String> {
+async fn fetch_recent_panic_logs(
+    host: &Host,
+    started_at: Instant,
+    pid: Option<u32>,
+) -> Option<String> {
     let last = started_at.elapsed() + Duration::from_secs(2);
     let last_arg = format!("{}s", last.as_secs().max(5));
 
@@ -343,10 +350,19 @@ async fn fetch_recent_panic_logs(started_at: Instant, pid: Option<u32>) -> Optio
             "processID == {pid} AND subsystem == \"dev.waterui\" AND eventMessage CONTAINS \"panic\""
         ));
 
-    let output = Command::new("log")
-        .args(["show", "--predicate", &predicate, "--style", "compact"])
-        .args(["--last", &last_arg])
-        .output()
+    let output = host
+        .output(
+            "log",
+            [
+                "show",
+                "--predicate",
+                predicate.as_str(),
+                "--style",
+                "compact",
+                "--last",
+                last_arg.as_str(),
+            ],
+        )
         .await
         .ok()?;
 
@@ -394,19 +410,15 @@ async fn fetch_recent_panic_logs(started_at: Instant, pid: Option<u32>) -> Optio
 }
 
 async fn poll_for_crash_report(
-    device_name: &str,
-    device_identifier: &str,
-    bundle_id: &str,
-    process_name: &str,
-    pid: Option<u32>,
-    since: Timestamp,
+    host: &Host,
+    context: &SimulatorExitContext,
     timeout: Duration,
 ) -> Option<debug::CrashReport> {
     trace_debug!(
         "Polling for crash report: bundle_id={}, process_name={}, pid={:?}, timeout={:?}",
-        bundle_id,
-        process_name,
-        pid,
+        context.bundle_id,
+        context.process_name,
+        context.pid,
         timeout
     );
 
@@ -415,12 +427,13 @@ async fn poll_for_crash_report(
     loop {
         poll_count += 1;
         if let Some(report) = debug::find_macos_ips_crash_report_since(
-            device_name,
-            device_identifier,
-            bundle_id,
-            process_name,
-            pid,
-            since,
+            host,
+            &context.device_name,
+            &context.device_identifier,
+            &context.bundle_id,
+            &context.process_name,
+            Some(context.pid),
+            context.start_time,
         )
         .await
         {
@@ -465,8 +478,8 @@ fn parse_simctl_launch_pid(stdout: &str) -> Option<u32> {
     None
 }
 
-async fn is_pid_alive(pid: u32) -> bool {
-    Command::new("kill")
+async fn is_pid_alive(host: &Host, pid: u32) -> bool {
+    host.command("kill")
         .arg("-0")
         .arg(pid.to_string())
         .stdout(Stdio::null())
@@ -476,8 +489,8 @@ async fn is_pid_alive(pid: u32) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-async fn wait_for_pid_exit(pid: u32) {
-    while is_pid_alive(pid).await {
+async fn wait_for_pid_exit(host: &Host, pid: u32) {
+    while is_pid_alive(host, pid).await {
         Timer::after(Duration::from_millis(200)).await;
     }
 }
@@ -503,9 +516,9 @@ impl Device for AppleDevice {
         }
     }
 
-    async fn launch(&self) -> eyre::Result<()> {
+    async fn launch(&self, host: &Host) -> eyre::Result<()> {
         match self {
-            Self::Simulator(simulator) => simulator.launch().await,
+            Self::Simulator(simulator) => simulator.launch(host).await,
             Self::Current(_) => {
                 // No need to launch anything for MacOS physical device
                 // This is the current machine
@@ -516,21 +529,22 @@ impl Device for AppleDevice {
 
     async fn run(
         &self,
+        host: &Host,
         artifact: Artifact,
         options: crate::device::RunOptions,
     ) -> Result<crate::device::Running, crate::device::FailToRun> {
         match self {
-            Self::Simulator(simulator) => simulator.run(artifact, options).await,
-            Self::Current(mac_os) => mac_os.run(artifact, options).await,
+            Self::Simulator(simulator) => simulator.run(host, artifact, options).await,
+            Self::Current(mac_os) => mac_os.run(host, artifact, options).await,
         }
     }
 
-    async fn scan() -> eyre::Result<Vec<Self>> {
+    async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
         // Aggregate all available Apple devices: simulators + local
         let mut devices = Vec::new();
 
         // Add available simulators
-        let simulators = AppleSimulator::scan().await?;
+        let simulators = AppleSimulator::scan(host).await?;
         for sim in simulators {
             devices.push(Self::Simulator(Box::new(sim)));
         }
@@ -608,10 +622,11 @@ impl Device for AppleSimulator {
     }
 
     /// Launch the Apple simulator (boot it)
-    async fn launch(&self) -> eyre::Result<()> {
+    async fn launch(&self, host: &Host) -> eyre::Result<()> {
         // Only boot if not already booted
         if self.state != "Booted" {
-            run_command("xcrun", ["simctl", "boot", &self.udid]).await?;
+            host.run("xcrun", ["simctl", "boot", self.udid.as_str()])
+                .await?;
         }
         Ok(())
     }
@@ -621,11 +636,12 @@ impl Device for AppleSimulator {
     /// Please launch the device before calling this method
     async fn run(
         &self,
+        host: &Host,
         artifact: Artifact,
         options: crate::device::RunOptions,
     ) -> Result<crate::device::Running, crate::device::FailToRun> {
         info!("Installing app on apple simulator {}", self.name);
-        install_simulator_artifact(&self.udid, artifact.path()).await?;
+        install_simulator_artifact(host, &self.udid, artifact.path()).await?;
 
         info!("Launching app on apple simulator {}", self.name);
 
@@ -636,23 +652,26 @@ impl Device for AppleSimulator {
         let log_level = options.log_level();
         let native_logs = options.native_logs();
         let env_vars = simulator_env_vars(&options);
-        let pid = launch_simulator_app(&self.udid, &bundle_id, &env_vars).await?;
+        let pid = launch_simulator_app(host, &self.udid, &bundle_id, &env_vars).await?;
 
         // Create a Running instance - termination will use simctl terminate
+        let host_for_termination = host.clone();
         let udid = self.udid.clone();
         let bundle_id_for_termination = bundle_id.clone();
         let (mut running, sender) = Running::new(move || {
-            spawn_simulator_termination(udid, bundle_id_for_termination);
+            spawn_simulator_termination(&host_for_termination, udid, bundle_id_for_termination);
         });
 
         // Start log streaming and get panic info receiver
         // Uses WaterUI subsystem predicate by default, or processID if native_logs is enabled
-        let (panic_rx, log_child) = start_log_stream(sender.clone(), log_level, pid, native_logs)
-            .map_err(FailToRun::Launch)?;
+        let (panic_rx, log_child) =
+            start_log_stream(host, sender.clone(), log_level, pid, native_logs)
+                .map_err(FailToRun::Launch)?;
         running.retain(log_child);
 
         // Monitor the actual app process and classify crash vs normal exit.
         spawn_simulator_exit_monitor(
+            host,
             sender,
             panic_rx,
             SimulatorExitContext {
@@ -669,7 +688,7 @@ impl Device for AppleSimulator {
         Ok(running)
     }
 
-    async fn scan() -> eyre::Result<Vec<Self>> {
+    async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
         #[derive(Deserialize)]
         struct Runtime {
             identifier: String,
@@ -682,7 +701,7 @@ impl Device for AppleSimulator {
             runtimes: Vec<Runtime>,
         }
 
-        let content = run_command("xcrun", ["simctl", "list", "--json"]).await?;
+        let content = host.run("xcrun", ["simctl", "list", "--json"]).await?;
 
         let root = serde_json::from_str::<Root>(&content)?;
 
@@ -720,7 +739,7 @@ impl AppleSimulator {
     ///
     /// # Errors
     /// Returns an error if `simctl` cannot be queried for available simulators.
-    pub async fn scan_ios() -> eyre::Result<Vec<Self>> {
+    pub async fn scan_ios(host: &Host) -> eyre::Result<Vec<Self>> {
         let ios_filter = |s: &Self| {
             s.is_available
                 && s.runtime_identifier
@@ -728,7 +747,7 @@ impl AppleSimulator {
                     .is_some_and(|r| r.contains("SimRuntime.iOS-"))
         };
 
-        let simulators = Self::scan().await?;
+        let simulators = Self::scan(host).await?;
         let mut ios_sims: Vec<Self> = simulators.into_iter().filter(ios_filter).collect();
         let mut healthy: Vec<Self> = ios_sims
             .iter()
@@ -748,12 +767,16 @@ impl AppleSimulator {
         );
 
         // Best-effort cleanup first: remove stale entries from unavailable runtimes.
-        if let Err(error) = run_command("xcrun", ["simctl", "delete", "unavailable"]).await {
+        if let Err(error) = host.run("xcrun", ["simctl", "delete", "unavailable"]).await {
             warn!("Failed to delete unavailable simulators: {error}");
         }
 
         // Re-scan after cleanup.
-        ios_sims = Self::scan().await?.into_iter().filter(ios_filter).collect();
+        ios_sims = Self::scan(host)
+            .await?
+            .into_iter()
+            .filter(ios_filter)
+            .collect();
         healthy = ios_sims
             .iter()
             .filter(|s| s.data_path.exists())
@@ -772,17 +795,18 @@ impl AppleSimulator {
             && let Some(runtime) = template.runtime_identifier.as_deref()
         {
             let generated_name = format!("{} (WaterUI)", template.name);
-            match run_command(
-                "xcrun",
-                [
-                    "simctl",
-                    "create",
-                    &generated_name,
-                    &template.device_type_identifier,
-                    runtime,
-                ],
-            )
-            .await
+            match host
+                .run(
+                    "xcrun",
+                    [
+                        "simctl",
+                        "create",
+                        &generated_name,
+                        &template.device_type_identifier,
+                        runtime,
+                    ],
+                )
+                .await
             {
                 Ok(udid) => {
                     info!(
@@ -798,7 +822,7 @@ impl AppleSimulator {
         }
 
         // Final re-scan: return only healthy simulators.
-        Ok(Self::scan()
+        Ok(Self::scan(host)
             .await?
             .into_iter()
             .filter(ios_filter)
@@ -835,12 +859,16 @@ impl AppleSimulator {
     /// project, when `simctl` cannot be queried, when a `device` query matches
     /// nothing or only simulators below the target or several qualifying ones,
     /// or when no simulator satisfies the target.
-    pub async fn select_ios(project: &Project, device: Option<&str>) -> eyre::Result<Self> {
+    pub async fn select_ios(
+        host: &Host,
+        project: &Project,
+        device: Option<&str>,
+    ) -> eyre::Result<Self> {
         let (_, target) = apple_deployment_target(project, TargetPlatform::IOSSimulator).await?;
         let deployment_target = parse_semver_version(&target).wrap_err_with(|| {
             format!("Failed to parse the project's IPHONEOS_DEPLOYMENT_TARGET `{target}`")
         })?;
-        let simulators = Self::scan_ios().await?;
+        let simulators = Self::scan_ios(host).await?;
         Self::select(&simulators, &deployment_target, device)
     }
 
@@ -987,8 +1015,8 @@ fn no_qualifying_simulator_error(
 ///
 /// Returns an error if the screenshot command fails or the simulator
 /// is not available.
-pub async fn screenshot(udid: &str, output: &Path) -> eyre::Result<()> {
-    run_command(
+pub async fn screenshot(host: &Host, udid: &str, output: &Path) -> eyre::Result<()> {
+    host.run(
         "xcrun",
         [
             "simctl",
@@ -1011,13 +1039,10 @@ pub async fn screenshot(udid: &str, output: &Path) -> eyre::Result<()> {
 /// # Errors
 ///
 /// Returns an error if the screenshot command fails or the simulator is not available.
-pub async fn screenshot_bytes(udid: &str) -> eyre::Result<Vec<u8>> {
+pub async fn screenshot_bytes(host: &Host, udid: &str) -> eyre::Result<Vec<u8>> {
     // Use "-" to output to stdout
-    let output = Command::new("xcrun")
-        .args(["simctl", "io", udid, "screenshot", "-"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+    let output = host
+        .output("xcrun", ["simctl", "io", udid, "screenshot", "-"])
         .await?;
 
     if !output.status.success() {
@@ -1031,10 +1056,8 @@ pub async fn screenshot_bytes(udid: &str) -> eyre::Result<Vec<u8>> {
 /// Check if IDB (iOS Development Bridge) is installed.
 ///
 /// IDB is required for gesture automation on iOS simulators.
-async fn check_idb_installed() -> eyre::Result<()> {
-    let output = Command::new("which").arg("idb").output().await?;
-
-    if !output.status.success() {
+async fn check_idb_installed(host: &Host) -> eyre::Result<()> {
+    if host.which("idb").await.is_err() {
         eyre::bail!(
             "IDB (iOS Development Bridge) is not installed.\n\n\
             Gesture commands require IDB for iOS simulator automation.\n\n\
@@ -1061,12 +1084,14 @@ async fn check_idb_installed() -> eyre::Result<()> {
 /// # Errors
 ///
 /// Returns an error if IDB is not installed or the tap fails.
-pub async fn tap(udid: &str, x: u32, y: u32) -> eyre::Result<()> {
-    check_idb_installed().await?;
+pub async fn tap(host: &Host, udid: &str, x: u32, y: u32) -> eyre::Result<()> {
+    check_idb_installed(host).await?;
 
-    let output = Command::new("idb")
-        .args(["ui", "tap", "--udid", udid, &x.to_string(), &y.to_string()])
-        .output()
+    let output = host
+        .output(
+            "idb",
+            ["ui", "tap", "--udid", udid, &x.to_string(), &y.to_string()],
+        )
         .await?;
 
     if !output.status.success() {
@@ -1092,12 +1117,13 @@ pub async fn tap(udid: &str, x: u32, y: u32) -> eyre::Result<()> {
 ///
 /// Returns an error if IDB is not installed or the swipe fails.
 pub async fn swipe(
+    host: &Host,
     udid: &str,
     from: (u32, u32),
     to: (u32, u32),
     duration_ms: Option<u32>,
 ) -> eyre::Result<()> {
-    check_idb_installed().await?;
+    check_idb_installed(host).await?;
 
     let mut args = vec![
         "ui".to_string(),
@@ -1117,7 +1143,7 @@ pub async fn swipe(
         args.push(format!("{duration_sec:.2}"));
     }
 
-    let output = Command::new("idb").args(&args).output().await?;
+    let output = host.output("idb", args).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1134,12 +1160,11 @@ pub async fn swipe(
 /// # Errors
 ///
 /// Returns an error if IDB is not installed or the text input fails.
-pub async fn text(udid: &str, input: &str) -> eyre::Result<()> {
-    check_idb_installed().await?;
+pub async fn text(host: &Host, udid: &str, input: &str) -> eyre::Result<()> {
+    check_idb_installed(host).await?;
 
-    let output = Command::new("idb")
-        .args(["ui", "text", "--udid", udid, input])
-        .output()
+    let output = host
+        .output("idb", ["ui", "text", "--udid", udid, input])
         .await?;
 
     if !output.status.success() {
@@ -1158,12 +1183,11 @@ pub async fn text(udid: &str, input: &str) -> eyre::Result<()> {
 /// # Errors
 ///
 /// Returns an error if IDB is not installed or the command fails.
-pub async fn describe(udid: &str) -> eyre::Result<String> {
-    check_idb_installed().await?;
+pub async fn describe(host: &Host, udid: &str) -> eyre::Result<String> {
+    check_idb_installed(host).await?;
 
-    let output = Command::new("idb")
-        .args(["ui", "describe-all", "--udid", udid, "--json"])
-        .output()
+    let output = host
+        .output("idb", ["ui", "describe-all", "--udid", udid, "--json"])
         .await?;
 
     if !output.status.success() {

@@ -535,7 +535,7 @@ fn usize_to_f32(value: usize) -> f32 {
         .expect("HStackLayout: child count must be representable as f32")
 }
 
-impl<C> HStack<(C,)> {
+impl<C: TupleViews> HStack<(C,)> {
     /// Creates a horizontal stack with the provided alignment, spacing, and
     /// children.
     pub fn new(alignment: VerticalAlignment, spacing: f32, contents: C) -> Self {
@@ -581,7 +581,7 @@ where
 }
 
 /// Convenience constructor that centres children and uses the default spacing.
-pub fn hstack<C>(contents: C) -> HStack<(C,)> {
+pub fn hstack<C: TupleViews>(contents: C) -> HStack<(C,)> {
     HStack::new(VerticalAlignment::Center, 10.0, contents)
 }
 

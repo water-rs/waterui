@@ -34,7 +34,7 @@ pub struct Floating<Content> {
     style: Option<FloatingStyle>,
 }
 
-impl<Content> Floating<Content> {
+impl<Content: View> Floating<Content> {
     /// Creates a floating view that reads its style from the environment.
     #[must_use]
     pub const fn new(content: Content) -> Self {

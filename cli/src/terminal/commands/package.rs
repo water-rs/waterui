@@ -152,7 +152,9 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Packagi
         ensure_packaging_backend_generated(shell, &project_path, project, backend).await?;
 
     let mut build_options = BuildOptions::packaging(args.release);
-    if let Some(sccache_path) = super::detect_sccache_path(shell).await {
+    if let Some(sccache_path) =
+        super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await
+    {
         build_options = build_options.with_sccache(sccache_path);
     }
 
@@ -273,7 +275,13 @@ async fn check_packaging_toolchain(
     arch: &[AndroidArch],
 ) -> Result<()> {
     let spinner = shell.spinner("Checking toolchain...");
-    check_toolchain_for_backend(platform, backend, arch).await?;
+    check_toolchain_for_backend(
+        &waterui_cli::toolchain::Host::current(),
+        platform,
+        backend,
+        arch,
+    )
+    .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -499,6 +507,7 @@ fn validate_arch_args(backend: TargetBackend, arch: &[AndroidArch]) -> Result<()
 }
 
 async fn check_toolchain_for_backend(
+    host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
@@ -516,20 +525,20 @@ async fn check_toolchain_for_backend(
                     bail!("Internal error: Apple backend is not supported on {platform:?}");
                 }
             };
-            toolchain_checks::check_apple(sdk).await?;
+            toolchain_checks::check_apple(host, sdk).await?;
         }
         TargetBackend::Android => {
             if platform != TargetPlatform::Android {
                 bail!("Internal error: Android backend is not supported on {platform:?}");
             }
             let required_abis = arch.iter().map(|arch| arch.to_abi()).collect::<Vec<_>>();
-            toolchain_checks::check_android_build_or_package_for_abis(&required_abis).await?;
+            toolchain_checks::check_android_build_or_package_for_abis(host, &required_abis).await?;
         }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
                 bail!("Internal error: GTK4 backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_gtk4().await?;
+            toolchain_checks::check_gtk4(host).await?;
         }
         TargetBackend::Hydrolysis => {
             if platform != TargetPlatform::Macos
@@ -540,9 +549,9 @@ async fn check_toolchain_for_backend(
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
             if platform == TargetPlatform::Web {
-                toolchain_checks::check_web().await?;
+                toolchain_checks::check_web(host).await?;
             } else {
-                toolchain_checks::check_hydrolysis().await?;
+                toolchain_checks::check_hydrolysis(host).await?;
             }
         }
     }

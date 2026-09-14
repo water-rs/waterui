@@ -4,13 +4,18 @@ use std::convert::Infallible;
 
 pub mod cmake;
 pub mod doctor;
+pub mod host;
 pub mod linux;
 pub mod meson;
 pub mod rust;
 pub mod sccache;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod web;
 pub mod windows_arm64_llvm;
 pub(crate) mod winget;
+
+pub use host::Host;
 /// A toolchain that cannot be fixed automatically.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Unfixable toolchain: {message}\nSuggestion: {suggestion}")]
@@ -47,8 +52,8 @@ impl UnfixableToolchain {
 pub trait Installation: Send + Sync {
     /// The error type returned if installation fails.
     type Error: Into<eyre::Report> + Send;
-    /// Execute the installation plan.
-    fn install(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    /// Execute the installation plan against `host`.
+    fn install(&self, host: &Host) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
 /// Optional installation step.
@@ -57,9 +62,9 @@ pub trait Installation: Send + Sync {
 impl<I: Installation> Installation for Option<I> {
     type Error = eyre::Report;
 
-    async fn install(&self) -> Result<(), Self::Error> {
+    async fn install(&self, host: &Host) -> Result<(), Self::Error> {
         if let Some(install) = self {
-            install.install().await.map_err(Into::into)?;
+            install.install(host).await.map_err(Into::into)?;
         }
         Ok(())
     }
@@ -109,17 +114,20 @@ pub trait Toolchain: Send + Sync {
     /// The installation type returned by `fix()`.
     type Installation: Installation;
 
-    /// Check if the toolchain is properly installed.
+    /// Check if the toolchain is properly installed on `host`.
     ///
     /// Returns `Ok(())` if all components are available, or `Err` describing
     /// what is missing.
-    fn check(&self) -> impl Future<Output = Result<(), ToolchainError<Self::Installation>>> + Send;
+    fn check(
+        &self,
+        host: &Host,
+    ) -> impl Future<Output = Result<(), ToolchainError<Self::Installation>>> + Send;
 }
 
 impl Installation for Infallible {
     type Error = Self;
 
-    fn install(&self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+    fn install(&self, _host: &Host) -> impl Future<Output = Result<(), Self::Error>> + Send {
         std::future::poll_fn(|_| {
             unreachable!("an Infallible installation plan cannot be constructed")
         })
@@ -154,10 +162,10 @@ macro_rules! impl_installations {
         #[allow(non_snake_case)]
         impl<$($ty: Installation),*> Installation for ($($ty,)*) {
             type Error = eyre::Report;
-            async fn install(&self) -> Result<(), Self::Error> {
+            async fn install(&self, host: &Host) -> Result<(), Self::Error> {
                 let ($($ty,)*) = self;
                 $(
-                    $ty.install().await.map_err(|e| e.into())?;
+                    $ty.install(host).await.map_err(|e| e.into())?;
                 )*
                 Ok(())
             }
@@ -168,7 +176,7 @@ macro_rules! impl_installations {
 impl Installation for () {
     type Error = eyre::Report;
 
-    fn install(&self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+    fn install(&self, _host: &Host) -> impl Future<Output = Result<(), Self::Error>> + Send {
         std::future::ready(Ok(()))
     }
 }
@@ -184,14 +192,14 @@ macro_rules! impl_toolchains {
             // Components that are already OK produce `None` and are skipped during installation.
             type Installation = ($(Option<$ty::Installation>,)*);
 
-            async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
+            async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
                 #[allow(unused_mut)]
                 let mut any_fixable = false;
                 #[allow(unused_mut)]
                 let mut installs: Self::Installation = ($(None::<$ty::Installation>,)*);
 
                 $(
-                    match self.$idx.check().await {
+                    match self.$idx.check(host).await {
                         Ok(()) => {}
                         Err(ToolchainError::Unfixable(u)) => {
                             return Err(ToolchainError::Unfixable(u));
@@ -216,7 +224,10 @@ macro_rules! impl_toolchains {
 impl Toolchain for () {
     type Installation = ();
 
-    fn check(&self) -> impl Future<Output = Result<(), ToolchainError<Self::Installation>>> + Send {
+    fn check(
+        &self,
+        _host: &Host,
+    ) -> impl Future<Output = Result<(), ToolchainError<Self::Installation>>> + Send {
         std::future::ready(Ok(()))
     }
 }

@@ -13,6 +13,9 @@ use std::{
 
 use toml::Value;
 
+#[path = "src/android/ndk_version.rs"]
+mod ndk_version;
+
 fn main() {
     let cli_manifest_dir = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should always be set"),
@@ -36,6 +39,32 @@ fn main() {
     }
     let kotlin_version = manifest_scaffold_string(scaffold_metadata, "android-kotlin-version");
     println!("cargo:rustc-env=WATERUI_CLI_ANDROID_KOTLIN_VERSION={kotlin_version}");
+
+    // `ANDROID_NDK_VERSION` is a source literal in `android::ndk_version` so it
+    // survives `cargo publish` — a packaged CLI still knows which NDK
+    // `sdkmanager` package to install. When this build runs inside a WaterUI
+    // checkout, pin the literal to the runtime Gradle declaration so the two
+    // can never drift.
+    let runtime_gradle = cli_manifest_dir
+        .join("..")
+        .join(ndk_version::RUNTIME_BUILD_GRADLE_RELATIVE_PATH);
+    println!("cargo:rerun-if-changed={}", runtime_gradle.display());
+    if let Ok(contents) = fs::read_to_string(&runtime_gradle) {
+        let declared = ndk_version::parse_android_ndk_version_from_runtime_build_gradle(&contents)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no `ndkVersion` declaration in {}",
+                    runtime_gradle.display()
+                )
+            });
+        assert_eq!(
+            declared,
+            ndk_version::ANDROID_NDK_VERSION,
+            "cli/src/android/ndk_version.rs ANDROID_NDK_VERSION drifted from \
+             {} — update the literal with the runtime Gradle `ndkVersion`",
+            runtime_gradle.display()
+        );
+    }
 
     let cli_commit =
         git(&cli_manifest_dir, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());

@@ -4,24 +4,27 @@ use std::path::PathBuf;
 
 use crate::shell::Shell;
 use crate::{note, warn};
-use waterui_cli::{toolchain::sccache::Sccache, utils::sccache_install_hint};
+use waterui_cli::{
+    toolchain::{Host, sccache::Sccache},
+    utils::sccache_install_hint,
+};
 
-/// Whether the environment permits routing builds through `sccache`.
-fn sccache_allowed() -> bool {
-    if let Some(value) = std::env::var_os("WATERUI_DISABLE_SCCACHE") {
+/// Whether the host environment permits routing builds through `sccache`.
+fn sccache_allowed(host: &Host) -> bool {
+    if let Some(value) = host.env("WATERUI_DISABLE_SCCACHE") {
         let value = value.to_string_lossy().trim().to_ascii_lowercase();
         if matches!(value.as_str(), "1" | "true" | "yes" | "on") {
             return false;
         }
     }
     // Respect explicit wrapper from caller (e.g. passthrough wrapper in constrained envs).
-    std::env::var_os("RUSTC_WRAPPER").is_none()
+    host.env("RUSTC_WRAPPER").is_none()
 }
 
 /// Locate `sccache` for compilation caching, noting on the shell when it is
 /// skipped or missing.
-async fn detect_sccache_path(shell: &Shell) -> Option<PathBuf> {
-    if !sccache_allowed() {
+async fn detect_sccache_path(shell: &Shell, host: &Host) -> Option<PathBuf> {
+    if !sccache_allowed(host) {
         note!(
             shell,
             "Skipping sccache (explicit wrapper or WATERUI_DISABLE_SCCACHE is set)"
@@ -30,7 +33,7 @@ async fn detect_sccache_path(shell: &Shell) -> Option<PathBuf> {
     }
 
     let sccache = Sccache;
-    sccache.path().await.map_or_else(
+    sccache.path(host).await.map_or_else(
         |_| {
             warn!(
                 shell,

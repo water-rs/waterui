@@ -1158,6 +1158,28 @@ typedef enum WuiTabStyle {
 } WuiTabStyle;
 
 /**
+ *C ABI mirror of `TabBarMinimizeBehavior`.
+ */
+typedef enum WuiTabBarMinimizeBehavior {
+  /**
+   *Mirrors `TabBarMinimizeBehavior::Automatic`.
+   */
+  WuiTabBarMinimizeBehavior_Automatic,
+  /**
+   *Mirrors `TabBarMinimizeBehavior::Never`.
+   */
+  WuiTabBarMinimizeBehavior_Never,
+  /**
+   *Mirrors `TabBarMinimizeBehavior::OnScrollDown`.
+   */
+  WuiTabBarMinimizeBehavior_OnScrollDown,
+  /**
+   *Mirrors `TabBarMinimizeBehavior::OnScrollUp`.
+   */
+  WuiTabBarMinimizeBehavior_OnScrollUp,
+} WuiTabBarMinimizeBehavior;
+
+/**
  * Editing operations forwarded to Chromium's focused frame.
  */
 typedef enum WuiCefEditCommand {
@@ -6425,6 +6447,17 @@ typedef struct WuiTabs {
    * Native adaptive tab style.
    */
   enum WuiTabStyle style;
+  /**
+   * How the bar behaves while content scrolls.
+   */
+  enum WuiTabBarMinimizeBehavior minimize_behavior;
+  /**
+   * A view the platform floats above the tab bar, or null.
+   *
+   * An iOS primitive (`UITabBarController.bottomAccessory`); a backend
+   * without the slot does not show it.
+   */
+  struct WuiAnyView *bottom_accessory;
 } WuiTabs;
 
 /**

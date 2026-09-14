@@ -4,6 +4,8 @@
 pub mod backend;
 /// Android device detection and management.
 pub mod device;
+/// Embedded Android NDK version and its runtime-Gradle parser.
+pub mod ndk_version;
 /// Gradle package task output discovery.
 pub(crate) mod output_metadata;
 /// Android platform configuration.
