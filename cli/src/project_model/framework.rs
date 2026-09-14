@@ -1449,8 +1449,11 @@ pub(crate) mod test_fixtures {
     pub fn write_pre_decoupling_checkout(root: &Path) {
         write_local_checkout(root);
         write_submodule_pin(root, "backends/apple", 'b');
-        let manifest =
-            local_checkout_manifest().replace("apple-backend-version = \"0.3.0-dev.1\"\n", "");
+        let manifest = local_checkout_manifest()
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("apple-backend-version"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             !manifest.contains("apple-backend-version"),
             "the fixture manifest moved; the pre-decoupling rewrite must be revisited"
