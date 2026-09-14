@@ -330,11 +330,19 @@ jobs:
           }
           '@
           Set-Content -Path 'C:\Windows\Temp\cli-e2e\cli-e2e.ps1' -Value ($header + $e2e) -Encoding UTF8
+          # The child's console output is not attached to this step — capture
+          # it and echo it back so ::error:: lines and crash output surface.
           $p = Start-Process -FilePath pwsh `
             -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\Windows\Temp\cli-e2e\cli-e2e.ps1' `
             -Credential (Import-Clixml "$env:RUNNER_TEMP\e2e-cred.xml") `
-            -LoadUserProfile -WorkingDirectory "C:\Users\$env:E2E_USER" -Wait -PassThru
-          if ($null -eq $p.ExitCode -or $p.ExitCode -ne 0) { exit 1 }
+            -LoadUserProfile -WorkingDirectory "C:\Users\$env:E2E_USER" -Wait -PassThru `
+            -RedirectStandardOutput 'C:\Windows\Temp\cli-e2e\e2e.out' `
+            -RedirectStandardError 'C:\Windows\Temp\cli-e2e\e2e.err'
+          Get-Content 'C:\Windows\Temp\cli-e2e\e2e.out','C:\Windows\Temp\cli-e2e\e2e.err' -ErrorAction SilentlyContinue
+          if ($null -eq $p.ExitCode -or $p.ExitCode -ne 0) {
+            Write-Output "::error::fresh-user e2e script exited $($p.ExitCode)"
+            exit 1
+          }
 
       # A process that reports Started but exits immediately is not a passing
       # launch, so after the marker appears the script waits out a grace window
