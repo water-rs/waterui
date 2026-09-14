@@ -39,7 +39,7 @@ let title = text("Welcome").bold().title().foreground(Color::blue());
 
 // Reactive text that updates automatically
 let count = binding(0);
-let counter_text = text!("Count: {}", count);
+let counter_text = text!("Count: {count}");
 ```
 
 ## Core Concepts

@@ -17,6 +17,7 @@ use syn::{Expr, Ident, LitStr, Result, Token};
 
 const VALID_PLURAL_FIELDS: &[&str] = &["zero", "one", "two", "few", "many", "other"];
 const VALID_DUAL_PLURAL_FIELDS: &[&str] = &["one_one", "one_other", "other_one", "other_other"];
+const PLACEHOLDER_RULE: &str = "placeholders are bare identifiers (`{count}`), optionally with a format spec (`{blur:.1}`) or a plural marker (`{#count}`), and an expression is bound with `name = expr`";
 
 fn waterui_crate_path() -> std::result::Result<TokenStream2, TokenStream2> {
     if current_package_name().as_deref() == Some("waterui-internal") {
@@ -322,7 +323,12 @@ impl Parse for TextInput {
 }
 
 /// Parse placeholders from a format string.
-fn parse_placeholders(format_string: &str) -> Vec<Placeholder> {
+///
+/// Errors on the first placeholder that does not name a slot (`{}`, `{0}`, or
+/// any other non-identifier base): placeholders are slot keys, so one the
+/// macro cannot name must fail at compile time rather than survive expansion
+/// and render its braces literally.
+fn parse_placeholders(format_string: &str) -> std::result::Result<Vec<Placeholder>, String> {
     let mut placeholders = Vec::new();
     let mut chars = format_string.chars().peekable();
 
@@ -341,51 +347,57 @@ fn parse_placeholders(format_string: &str) -> Vec<Placeholder> {
                 false
             };
 
+            let mut raw = String::from("{");
+            if is_plural {
+                raw.push('#');
+            }
             let mut content = String::new();
             while let Some(&c) = chars.peek() {
+                raw.push(c);
+                chars.next();
                 if c == '}' {
-                    chars.next();
                     break;
                 }
                 if c == ':' {
-                    chars.next();
                     while let Some(&spec_c) = chars.peek() {
+                        raw.push(spec_c);
+                        chars.next();
                         if spec_c == '}' {
-                            chars.next();
                             break;
                         }
-                        chars.next();
                     }
                     break;
                 }
                 content.push(c);
-                chars.next();
             }
 
             let content = content.trim();
-            if content.is_empty() {
-                continue;
-            }
-
             let content = content.strip_suffix('=').unwrap_or(content);
             let base = content.split(['.', '[']).next().unwrap_or("").trim();
 
-            if is_valid_ident(base) {
-                let name = base.to_string();
-                if is_plural {
-                    placeholders.push(Placeholder::Plural(name));
-                } else {
-                    placeholders.push(Placeholder::Regular(name));
-                }
+            if !is_valid_ident(base) {
+                return Err(format!(
+                    "invalid placeholder `{raw}` in `text!` format string: {PLACEHOLDER_RULE}"
+                ));
+            }
+
+            let name = base.to_string();
+            if is_plural {
+                placeholders.push(Placeholder::Plural(name));
+            } else {
+                placeholders.push(Placeholder::Regular(name));
             }
         }
     }
 
-    placeholders
+    Ok(placeholders)
 }
 
+/// A slot key is a plain identifier: `syn` also accepts raw identifiers
+/// (`r#fn`), which `Ident::new` later panics on, and a translation catalog
+/// key is never spelled with `r#`.
 fn is_valid_ident(name: &str) -> bool {
-    syn::parse_str::<Ident>(name).is_ok()
+    !name.starts_with("r#") && syn::parse_str::<Ident>(name).is_ok()
 }
 
 fn build_zip_expr_and_pattern(
@@ -638,6 +650,11 @@ pub fn text(input: &TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+fn compile_error(message: &str) -> TokenStream2 {
+    let message = LitStr::new(message, Span::call_site());
+    quote! { compile_error!(#message) }
+}
+
 fn expand_text_macro(input: &TextInput) -> TokenStream2 {
     let waterui = match waterui_crate_path() {
         Ok(path) => path,
@@ -646,15 +663,15 @@ fn expand_text_macro(input: &TextInput) -> TokenStream2 {
 
     let key = input.format_string.value();
     let translation_key = make_key(&key, input.context.as_deref());
-    let placeholders = parse_placeholders(&key);
+    let placeholders = match parse_placeholders(&key) {
+        Ok(placeholders) => placeholders,
+        Err(err) => return compile_error(&err),
+    };
 
     // Load translations at compile time
     let bundle = match TranslationBundle::load_from_manifest_dir() {
         Ok(bundle) => bundle,
-        Err(err) => {
-            let message = LitStr::new(&err, Span::call_site());
-            return quote! { compile_error!(#message); };
-        }
+        Err(err) => return compile_error(&err),
     };
 
     let plural_names = collect_plural_names(&placeholders);
@@ -973,10 +990,7 @@ pub fn catalog(input: &TokenStream) -> TokenStream {
 
     let bundle = match TranslationBundle::load_from_manifest_dir() {
         Ok(bundle) => bundle,
-        Err(err) => {
-            let message = LitStr::new(&err, Span::call_site());
-            return TokenStream::from(quote! { compile_error!(#message); });
-        }
+        Err(err) => return TokenStream::from(compile_error(&err)),
     };
 
     let inserts: Vec<_> = bundle
@@ -1005,7 +1019,62 @@ pub fn catalog(input: &TokenStream) -> TokenStream {
 mod tests {
     use std::path::PathBuf;
 
-    use super::TranslationBundle;
+    use super::{TranslationBundle, parse_placeholders};
+
+    #[test]
+    fn parse_placeholders_accepts_named_plural_spec_and_escaped_forms() {
+        let placeholders = parse_placeholders("{{literal}} {name} {#count} {blur:.1} {a.b} {a[0]}")
+            .expect("named, plural, spec, and field-access placeholders should parse");
+        let forms: Vec<String> = placeholders
+            .iter()
+            .map(|placeholder| format!("{placeholder:?}"))
+            .collect();
+        assert_eq!(
+            forms,
+            [
+                "Regular(\"name\")",
+                "Plural(\"count\")",
+                "Regular(\"blur\")",
+                "Regular(\"a\")",
+                "Regular(\"a\")",
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_placeholders_rejects_empty_placeholder() {
+        let err = parse_placeholders("Count: {}").expect_err("`{}` should fail");
+        assert!(err.contains("`{}`"));
+        assert!(err.contains("bare identifiers"));
+    }
+
+    #[test]
+    fn parse_placeholders_rejects_positional_placeholder() {
+        let err = parse_placeholders("{0} items").expect_err("`{0}` should fail");
+        assert!(err.contains("`{0}`"));
+        assert!(err.contains("bare identifiers"));
+    }
+
+    #[test]
+    fn parse_placeholders_rejects_positional_placeholder_with_format_spec() {
+        let err = parse_placeholders(concat!("size ", "{1", ":>4}"))
+            .expect_err("positional placeholder with format spec should fail");
+        assert!(err.contains(concat!("`{1", ":>4}`")));
+        assert!(err.contains("bare identifiers"));
+    }
+
+    #[test]
+    fn parse_placeholders_rejects_raw_identifier_placeholder() {
+        let err = parse_placeholders("{r#fn}").expect_err("`{r#fn}` should fail");
+        assert!(err.contains("`{r#fn}`"));
+    }
+
+    #[test]
+    fn parse_placeholders_rejects_non_identifier_placeholder() {
+        let err = parse_placeholders("{foo-bar}").expect_err("`{foo-bar}` should fail");
+        assert!(err.contains("`{foo-bar}`"));
+        assert!(err.contains("bare identifiers"));
+    }
 
     #[test]
     fn parse_toml_requires_plural_other() {
