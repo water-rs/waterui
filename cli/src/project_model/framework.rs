@@ -1380,7 +1380,7 @@ pub(crate) mod test_fixtures {
                     "apple-backend-url".to_owned(),
                     "https://github.com/water-rs/apple-backend.git".to_owned(),
                 ),
-                ("apple-backend-version".to_owned(), "0.2.0".to_owned()),
+                ("apple-backend-version".to_owned(), "0.3.0-dev.1".to_owned()),
                 (
                     "android-backend-url".to_owned(),
                     "https://github.com/water-rs/android-backend.git".to_owned(),
@@ -1449,7 +1449,8 @@ pub(crate) mod test_fixtures {
     pub fn write_pre_decoupling_checkout(root: &Path) {
         write_local_checkout(root);
         write_submodule_pin(root, "backends/apple", 'b');
-        let manifest = local_checkout_manifest().replace("apple-backend-version = \"0.2.0\"\n", "");
+        let manifest =
+            local_checkout_manifest().replace("apple-backend-version = \"0.3.0-dev.1\"\n", "");
         assert!(
             !manifest.contains("apple-backend-version"),
             "the fixture manifest moved; the pre-decoupling rewrite must be revisited"
@@ -2398,7 +2399,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                     "apple-backend-url".to_owned(),
                     "https://github.com/water-rs/apple-backend.git".to_owned()
                 ),
-                ("apple-backend-version".to_owned(), "0.2.0".to_owned()),
+                ("apple-backend-version".to_owned(), "0.3.0-dev.1".to_owned()),
                 (
                     "android-backend-url".to_owned(),
                     "https://github.com/water-rs/android-backend.git".to_owned()
@@ -2415,7 +2416,10 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
         assert_eq!(framework.channel(), None);
         assert_eq!(framework.scaffold_value("hydrolysis-version"), "0.2.1");
-        assert_eq!(framework.scaffold_value("apple-backend-version"), "0.2.0");
+        assert_eq!(
+            framework.scaffold_value("apple-backend-version"),
+            "0.3.0-dev.1"
+        );
         assert_eq!(
             framework.scaffold_value("android-backend-revision"),
             "c".repeat(40)

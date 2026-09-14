@@ -61,7 +61,7 @@ android-min-api-level = 26
 # compatible `apple-backend-version` tag; the Android backend still rides the
 # `backends/android` gitlink, which supplies its `{name}-backend-revision` pin.
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
-apple-backend-version = "0.2.0"
+apple-backend-version = "0.3.0-dev.1"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
