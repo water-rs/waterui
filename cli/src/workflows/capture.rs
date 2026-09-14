@@ -8,6 +8,7 @@ use eyre::eyre;
 use jiff::Timestamp;
 
 use crate::device::Device;
+use crate::toolchain::Host;
 use crate::{android, apple};
 
 /// The platform type of a device based on its identifier.
@@ -56,10 +57,10 @@ pub fn generate_screenshot_filename() -> PathBuf {
 ///
 /// # Errors
 /// Returns an error if the target device cannot be reached or the screenshot command fails.
-pub async fn screenshot(device_id: &str, output: &Path) -> eyre::Result<()> {
+pub async fn screenshot(host: &Host, device_id: &str, output: &Path) -> eyre::Result<()> {
     match detect_platform(device_id) {
-        DevicePlatform::Ios => apple::device::screenshot(device_id, output).await,
-        DevicePlatform::Android => android::device::screenshot(device_id, output).await,
+        DevicePlatform::Ios => apple::device::screenshot(host, device_id, output).await,
+        DevicePlatform::Android => android::device::screenshot(host, device_id, output).await,
     }
 }
 
@@ -67,12 +68,12 @@ pub async fn screenshot(device_id: &str, output: &Path) -> eyre::Result<()> {
 ///
 /// # Errors
 /// Returns an error if the device cannot be found on the inferred platform.
-pub async fn verify_device(device_id: &str) -> eyre::Result<DevicePlatform> {
+pub async fn verify_device(host: &Host, device_id: &str) -> eyre::Result<DevicePlatform> {
     let platform = detect_platform(device_id);
 
     match platform {
         DevicePlatform::Ios => {
-            let simulators = apple::device::AppleSimulator::scan().await?;
+            let simulators = apple::device::AppleSimulator::scan(host).await?;
             if simulators.iter().any(|s| s.udid == device_id) {
                 Ok(DevicePlatform::Ios)
             } else {
@@ -80,7 +81,7 @@ pub async fn verify_device(device_id: &str) -> eyre::Result<DevicePlatform> {
             }
         }
         DevicePlatform::Android => {
-            let devices = android::device::AndroidDevice::scan().await?;
+            let devices = android::device::AndroidDevice::scan(host).await?;
             if devices.iter().any(|d| d.identifier() == device_id) {
                 Ok(DevicePlatform::Android)
             } else {

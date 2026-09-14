@@ -217,7 +217,9 @@ impl Project {
     ) -> Result<Running, FailToRun> {
         info!("Running on device");
 
-        let running = device.run(artifact, run_options).await?;
+        let running = device
+            .run(&crate::toolchain::Host::current(), artifact, run_options)
+            .await?;
         Ok(running)
     }
 

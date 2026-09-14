@@ -47,7 +47,8 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
         "`water preview test`",
     )
     .await?;
-    let sccache_path = super::detect_sccache_path(shell).await;
+    let sccache_path =
+        super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
 
     for target in targets {
         header!(shell, "Preview test: {}", target.display_name());
@@ -218,7 +219,8 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     request::check_toolchain_for_backend(request.platform, request.backend).await?;
 
     // Detect sccache for compilation caching
-    let sccache_path = super::detect_sccache_path(shell).await;
+    let sccache_path =
+        super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
 
     if request.backend == CliPreviewBackend::Hydrolysis {
         let scenario = load_hydrolysis_scenario(args.scenario.as_deref(), args.output_dir).await?;

@@ -10,8 +10,8 @@ use crate::{
         LinuxPackageManagerError, has_supported_package_manager, install_named_packages,
     },
     toolchain::winget::{WingetInstallError, ensure_package_installed},
-    toolchain::{Installation, Toolchain, ToolchainError},
-    utils::{CommandError, sccache_install_hint, which},
+    toolchain::{Host, Installation, Toolchain, ToolchainError},
+    utils::{CommandError, sccache_install_hint},
 };
 
 /// Route a Cargo invocation's compiles through `sccache`.
@@ -39,24 +39,24 @@ impl Sccache {
     ///
     /// # Errors
     /// Returns an error if `sccache` is not found in the system PATH.
-    pub async fn path(&self) -> Result<PathBuf, which::Error> {
-        which("sccache").await
+    pub async fn path(&self, host: &Host) -> Result<PathBuf, which::Error> {
+        host.which("sccache").await
     }
 
-    /// Check if sccache is available without returning an error.
-    pub async fn is_available(&self) -> bool {
-        self.path().await.is_ok()
+    /// Check if sccache is available on `host` without returning an error.
+    pub async fn is_available(&self, host: &Host) -> bool {
+        self.path(host).await.is_ok()
     }
 }
 
 impl Toolchain for Sccache {
     type Installation = SccacheInstallation;
 
-    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
-        if which("sccache").await.is_ok() {
+    async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
+        if host.which("sccache").await.is_ok() {
             Ok(())
         } else if cfg!(target_os = "windows") {
-            if which("winget").await.is_ok() {
+            if host.which("winget").await.is_ok() {
                 Err(ToolchainError::fixable(SccacheInstallation))
             } else {
                 Err(ToolchainError::unfixable(
@@ -68,7 +68,7 @@ impl Toolchain for Sccache {
                 ))
             }
         } else if cfg!(target_os = "macos") {
-            if which("brew").await.is_ok() {
+            if host.which("brew").await.is_ok() {
                 Err(ToolchainError::fixable(SccacheInstallation))
             } else {
                 Err(ToolchainError::unfixable(
@@ -80,7 +80,7 @@ impl Toolchain for Sccache {
                 ))
             }
         } else if cfg!(target_os = "linux") {
-            if has_supported_package_manager().await {
+            if has_supported_package_manager(host).await {
                 Err(ToolchainError::fixable(SccacheInstallation))
             } else {
                 Err(ToolchainError::unfixable(
@@ -142,22 +142,22 @@ pub enum FailToInstallSccache {
 impl Installation for SccacheInstallation {
     type Error = FailToInstallSccache;
 
-    async fn install(&self) -> Result<(), Self::Error> {
+    async fn install(&self, host: &Host) -> Result<(), Self::Error> {
         if cfg!(target_os = "macos") {
             let brew = Brew::default();
 
-            brew.check()
+            brew.check(host)
                 .await
                 .map_err(|_| FailToInstallSccache::BrewNotFound)?;
-            brew.install("sccache").await?;
+            brew.install(host, "sccache").await?;
 
             Ok(())
         } else if cfg!(target_os = "windows") {
-            ensure_package_installed("Mozilla.sccache")
+            ensure_package_installed(host, "Mozilla.sccache")
                 .await
                 .map_err(map_winget_error_for_sccache)
         } else if cfg!(target_os = "linux") {
-            install_named_packages(&["sccache"])
+            install_named_packages(host, &["sccache"])
                 .await
                 .map_err(map_linux_error_for_sccache)
         } else {
@@ -208,5 +208,50 @@ mod tests {
         let message = mapped.to_string();
         assert!(message.contains("Mozilla.sccache"));
         assert!(message.contains("still missing"));
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::{Sccache, SccacheInstallation};
+    use crate::toolchain::testing::TestMachine;
+    use crate::toolchain::{Toolchain, ToolchainError};
+
+    fn check(machine: &TestMachine) -> Result<(), ToolchainError<SccacheInstallation>> {
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(Sccache.check(&host))
+    }
+
+    #[test]
+    fn ok_when_sccache_on_path() {
+        let machine = TestMachine::new();
+        machine.install("sccache");
+        check(&machine).expect("sccache on PATH must be ok");
+    }
+
+    #[test]
+    fn missing_without_installer_is_unfixable() {
+        let machine = TestMachine::new();
+        let result = check(&machine);
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "missing sccache without a package manager must be unfixable: {result:?}"
+        );
+    }
+
+    #[test]
+    fn missing_with_installer_is_fixable() {
+        let machine = TestMachine::new();
+        #[cfg(target_os = "macos")]
+        machine.install("brew");
+        #[cfg(target_os = "linux")]
+        machine.install("apt-get");
+        #[cfg(target_os = "windows")]
+        machine.install("winget");
+        let result = check(&machine);
+        assert!(
+            matches!(result, Err(ToolchainError::Fixable(_))),
+            "missing sccache with a package manager must be fixable: {result:?}"
+        );
     }
 }

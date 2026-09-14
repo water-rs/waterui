@@ -1,0 +1,15 @@
+[=======================================] 100%
+Installed packages:
+  Path                                        | Version | Description              | Location
+  platforms;android-36                        | 2       | Android SDK Platform 36  | platforms/android-36
+  platform-tools                              | 36.0.0  | Android SDK Platform-Tools | platform-tools
+
+Available Packages:
+  Path                                        | Version | Description
+  platforms;android-37.0                      | 1       | Android SDK Platform 37
+  platforms;android-36.1                      | 1       | Android SDK Platform 36.1
+  build-tools;37.0.0                          | 37.0.0  | Android SDK Build-Tools 37
+  build-tools;36.0.0                          | 36.0.0  | Android SDK Build-Tools 36
+  ndk;29.0.14206865                           | 29.0.14206865 | NDK (Side by side) 29.0.14206865
+  platform-tools                              | 36.0.0  | Android SDK Platform-Tools
+  emulator                                    | 36.1.9  | Android Emulator

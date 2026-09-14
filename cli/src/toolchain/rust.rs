@@ -3,8 +3,8 @@
 use semver::Version;
 
 use crate::{
-    toolchain::{Installation, Toolchain, ToolchainError},
-    utils::{CommandError, parse_semver_version, run_command, which},
+    toolchain::{Host, Installation, Toolchain, ToolchainError},
+    utils::{CommandError, parse_semver_version},
 };
 
 const REQUIRED_RUST_VERSION: &str = env!("CARGO_PKG_RUST_VERSION");
@@ -114,23 +114,23 @@ enum RustParseError {
 impl Installation for RustToolchainInstallation {
     type Error = FailToInstallRustToolchain;
 
-    async fn install(&self) -> Result<(), Self::Error> {
+    async fn install(&self, host: &Host) -> Result<(), Self::Error> {
         if !self.has_actions() {
             return Ok(());
         }
 
-        if which("rustup").await.is_err() {
+        if host.which("rustup").await.is_err() {
             return Err(FailToInstallRustToolchain::RustupNotFound);
         }
 
         if self.install_stable_toolchain {
-            run_command("rustup", ["toolchain", "install", "stable"])
+            host.run("rustup", ["toolchain", "install", "stable"])
                 .await
                 .map_err(FailToInstallRustToolchain::InstallStableToolchain)?;
         }
 
         if let Some(toolchain) = &self.update_toolchain {
-            run_command("rustup", ["update", toolchain.as_str()])
+            host.run("rustup", ["update", toolchain.as_str()])
                 .await
                 .map_err(|source| FailToInstallRustToolchain::UpdateToolchain {
                     toolchain: toolchain.clone(),
@@ -139,7 +139,7 @@ impl Installation for RustToolchainInstallation {
         }
 
         if let Some(target) = &self.add_host_target {
-            run_command("rustup", ["target", "add", target.as_str()])
+            host.run("rustup", ["target", "add", target.as_str()])
                 .await
                 .map_err(|source| FailToInstallRustToolchain::AddHostTarget {
                     target: target.clone(),
@@ -154,20 +154,27 @@ impl Installation for RustToolchainInstallation {
 impl Toolchain for RustToolchain {
     type Installation = RustToolchainInstallation;
 
-    async fn check(&self) -> Result<(), ToolchainError<Self::Installation>> {
-        let availability = detect_rust_tool_availability().await;
+    async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
+        let availability = detect_rust_tool_availability(host).await;
         ensure_minimum_rust_tools(availability)?;
         let mut installation = RustToolchainInstallation::default();
         let active_toolchain =
-            check_active_toolchain(availability.rustup_available, &mut installation).await?;
+            check_active_toolchain(host, availability.rustup_available, &mut installation).await?;
         ensure_cargo_available(availability, &mut installation)?;
         let host_target = check_rustc_version_and_host_target(
+            host,
             availability,
             active_toolchain.as_deref(),
             &mut installation,
         )
         .await?;
-        check_installed_targets(availability.rustup_available, &installation, host_target).await?;
+        check_installed_targets(
+            host,
+            availability.rustup_available,
+            &installation,
+            host_target,
+        )
+        .await?;
 
         installation
             .has_actions()
@@ -197,15 +204,16 @@ fn ensure_minimum_rust_tools(
     Ok(())
 }
 
-async fn detect_rust_tool_availability() -> RustToolAvailability {
+async fn detect_rust_tool_availability(host: &Host) -> RustToolAvailability {
     RustToolAvailability {
-        rustup_available: which("rustup").await.is_ok(),
-        cargo_available: which("cargo").await.is_ok(),
-        rustc_available: which("rustc").await.is_ok(),
+        rustup_available: host.which("rustup").await.is_ok(),
+        cargo_available: host.which("cargo").await.is_ok(),
+        rustc_available: host.which("rustc").await.is_ok(),
     }
 }
 
 async fn check_active_toolchain(
+    host: &Host,
     rustup_available: bool,
     installation: &mut RustToolchainInstallation,
 ) -> Result<Option<String>, ToolchainError<RustToolchainInstallation>> {
@@ -213,7 +221,7 @@ async fn check_active_toolchain(
         return Ok(None);
     }
 
-    match run_command("rustup", ["show", "active-toolchain"]).await {
+    match host.run("rustup", ["show", "active-toolchain"]).await {
         Ok(output) => parse_active_toolchain(&output).map(Some).map_err(|error| {
             ToolchainError::unfixable(
                 format!("Could not parse the active rustup toolchain: {error}"),
@@ -256,6 +264,7 @@ fn ensure_cargo_available(
 }
 
 async fn check_rustc_version_and_host_target(
+    host: &Host,
     availability: RustToolAvailability,
     active_toolchain: Option<&str>,
     installation: &mut RustToolchainInstallation,
@@ -264,7 +273,7 @@ async fn check_rustc_version_and_host_target(
         return handle_missing_rustc(availability.rustup_available, installation);
     }
 
-    let version_output = run_command("rustc", ["--version"]).await.map_err(|error| {
+    let version_output = host.run("rustc", ["--version"]).await.map_err(|error| {
         let error_message = error.to_string();
         rustc_run_error(availability.rustup_available, &error_message)
     })?;
@@ -282,7 +291,7 @@ async fn check_rustc_version_and_host_target(
         return Ok(None);
     }
 
-    let rustc_verbose = run_command("rustc", ["-vV"]).await.map_err(|error| {
+    let rustc_verbose = host.run("rustc", ["-vV"]).await.map_err(|error| {
         ToolchainError::unfixable(
             format!("`rustc -vV` failed: {error}"),
             "Run `rustc -vV` manually; if it fails, reinstall rustup from https://rustup.rs.",
@@ -386,6 +395,7 @@ fn parse_host_target_value(
 }
 
 async fn check_installed_targets(
+    host: &Host,
     rustup_available: bool,
     installation: &RustToolchainInstallation,
     host_target: Option<String>,
@@ -398,7 +408,7 @@ async fn check_installed_targets(
         return Ok(());
     };
 
-    let installed_targets = installed_rustup_targets().await.map_err(|error| {
+    let installed_targets = installed_rustup_targets(host).await.map_err(|error| {
         ToolchainError::unfixable(
             format!("Failed to list installed Rust targets: {error}"),
             "Run `rustup target list --installed`; if it fails, repair rustup with `rustup self update` or reinstall rustup.",
@@ -417,8 +427,10 @@ async fn check_installed_targets(
     Err(ToolchainError::fixable(installation))
 }
 
-async fn installed_rustup_targets() -> Result<Vec<String>, CommandError> {
-    let installed = run_command("rustup", ["target", "list", "--installed"]).await?;
+async fn installed_rustup_targets(host: &Host) -> Result<Vec<String>, CommandError> {
+    let installed = host
+        .run("rustup", ["target", "list", "--installed"])
+        .await?;
     Ok(installed
         .lines()
         .map(str::trim)
@@ -507,5 +519,131 @@ mod tests {
         let summary = installation.summary();
         assert!(summary.contains("update `nightly-aarch64-apple-darwin` via rustup"));
         assert!(summary.contains("rustup target add x86_64-unknown-linux-gnu"));
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::{REQUIRED_RUST_VERSION, RustToolchain};
+    use crate::toolchain::testing::TestMachine;
+    use crate::toolchain::{Toolchain, ToolchainError};
+
+    const FAKE_TARGET: &str = "wasm32test-test-none";
+
+    /// A host with rustup/cargo/rustc fakes reporting a compliant toolchain.
+    fn complete_machine() -> TestMachine {
+        let machine = TestMachine::new();
+        for tool in ["rustup", "cargo", "rustc"] {
+            machine.install(tool);
+        }
+        machine
+    }
+
+    /// Declared vars for a complete machine: current rustc, an active
+    /// toolchain, and `FAKE_TARGET` both as the rustc host triple and among
+    /// the installed rustup targets.
+    fn complete_vars() -> Vec<(String, String)> {
+        vec![
+            (
+                String::from("WATERUI_FAKE_RUSTC_VERSION"),
+                format!("{REQUIRED_RUST_VERSION}.0"),
+            ),
+            (
+                String::from("WATERUI_FAKE_RUSTC_HOST"),
+                FAKE_TARGET.to_string(),
+            ),
+            (
+                String::from("WATERUI_FAKE_RUSTUP_ACTIVE_TOOLCHAIN"),
+                format!("stable-{FAKE_TARGET} (default)"),
+            ),
+            (
+                String::from("WATERUI_FAKE_RUSTUP_INSTALLED_TARGETS"),
+                FAKE_TARGET.to_string(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn check_unfixable_when_no_rust_tools_exist() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(RustToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "bare host must report an unfixable Rust toolchain: {result:?}"
+        );
+    }
+
+    #[test]
+    fn check_ok_on_complete_fake_toolchain() {
+        let machine = complete_machine();
+        let host = machine.host(complete_vars());
+        smol::block_on(RustToolchain.check(&host)).expect("complete fake toolchain must be ok");
+    }
+
+    #[test]
+    fn check_fixable_when_rustc_too_old() {
+        let machine = complete_machine();
+        let mut vars = complete_vars();
+        vars.retain(|(key, _)| key != "WATERUI_FAKE_RUSTC_VERSION");
+        vars.push((
+            String::from("WATERUI_FAKE_RUSTC_VERSION"),
+            String::from("1.0.0"),
+        ));
+        let host = machine.host(vars);
+        let result = smol::block_on(RustToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Fixable(_))),
+            "outdated rustc under rustup must be fixable: {result:?}"
+        );
+    }
+
+    #[test]
+    fn check_unfixable_when_rustc_too_old_without_rustup() {
+        let machine = TestMachine::new();
+        machine.install("cargo");
+        machine.install("rustc");
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_RUSTC_VERSION"),
+            String::from("1.0.0"),
+        )]);
+        let result = smol::block_on(RustToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "outdated rustc without rustup cannot be fixed automatically: {result:?}"
+        );
+    }
+
+    #[test]
+    fn check_fixable_when_no_active_toolchain() {
+        let machine = complete_machine();
+        let mut vars = complete_vars();
+        vars.push((
+            String::from("WATERUI_FAKE_RUSTUP_NO_ACTIVE_TOOLCHAIN"),
+            String::from("1"),
+        ));
+        let host = machine.host(vars);
+        let result = smol::block_on(RustToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Fixable(_))),
+            "rustup without an active toolchain must plan a stable install: {result:?}"
+        );
+    }
+
+    #[test]
+    fn check_fixable_when_host_target_not_installed() {
+        let machine = complete_machine();
+        let mut vars = complete_vars();
+        vars.retain(|(key, _)| key != "WATERUI_FAKE_RUSTUP_INSTALLED_TARGETS");
+        vars.push((
+            String::from("WATERUI_FAKE_RUSTUP_INSTALLED_TARGETS"),
+            String::from("some-other-target"),
+        ));
+        let host = machine.host(vars);
+        let result = smol::block_on(RustToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Fixable(_))),
+            "missing host target must plan `rustup target add`: {result:?}"
+        );
     }
 }

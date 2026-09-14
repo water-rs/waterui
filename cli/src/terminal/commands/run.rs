@@ -85,8 +85,12 @@ impl CrashReportContext {
 }
 
 #[cfg(target_os = "macos")]
-async fn find_latest_ips_report(ctx: &CrashReportContext) -> Option<debug::CrashReport> {
+async fn find_latest_ips_report(
+    host: &waterui_cli::toolchain::Host,
+    ctx: &CrashReportContext,
+) -> Option<debug::CrashReport> {
     debug::find_macos_ips_crash_report_since(
+        host,
         "macOS",
         &ctx.device_identifier,
         &ctx.bundle_id,
@@ -381,12 +385,13 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         return run_tui_app(shell, args).await;
     }
 
+    let host = waterui_cli::toolchain::Host::current();
     // The run context carries the opened project, the resolved device, backend
     // and build options; on Windows that future crosses clippy's `large_futures`
     // threshold (16 KiB), so it is pinned on the heap instead of the caller's stack.
     let context = Box::pin(prepare_run_context(shell, &args)).await?;
     print_run_header(shell, &context);
-    check_run_toolchain(shell, context.platform, context.backend).await?;
+    check_run_toolchain(shell, &host, context.platform, context.backend).await?;
 
     if context.platform == TargetPlatform::Web {
         return run_web_app(shell, &context.project).await;
@@ -398,13 +403,14 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     let selection = select_run_device(
         shell,
+        &host,
         context.platform,
         context.backend,
         &context.project,
         args.device.as_deref(),
     )
     .await?;
-    let config = build_run_config(shell, &args, &context.project).await;
+    let config = build_run_config(shell, &host, &args, &context.project).await;
 
     #[cfg(target_os = "macos")]
     let mut crash_ctx =
@@ -419,11 +425,11 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let running = shell
         .display_output(build_and_run(
             shell,
+            &host,
             &context.project,
             context.platform,
             context.backend,
-            selection.device,
-            selection.needs_launch,
+            selection,
             config,
         ))
         .await?;
@@ -434,7 +440,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     // Stream device events
     #[cfg(target_os = "macos")]
-    stream_running_events(shell, running, context.backend, &mut crash_ctx).await?;
+    stream_running_events(shell, &host, running, context.backend, &mut crash_ctx).await?;
     #[cfg(not(target_os = "macos"))]
     stream_running_events(shell, running, context.backend).await?;
 
@@ -461,7 +467,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     let project = Project::open(&project_path).await?;
     let launcher_dir = waterui_cli::tui::ensure_launcher(&project).await?;
 
-    let sccache_path = detect_sccache_path(shell).await;
+    let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
     let binary = shell
         .display_output(waterui_cli::tui::build(
             &project,
@@ -644,11 +650,12 @@ fn print_run_header(shell: &Shell, context: &RunContext) {
 
 async fn check_run_toolchain(
     shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
 ) -> Result<()> {
     let spinner = shell.spinner("Checking toolchain...");
-    check_toolchain_for_backend(platform, backend).await?;
+    check_toolchain_for_backend(host, platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -674,7 +681,7 @@ async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
 }
 
 async fn run_esp32_app(shell: &Shell, project: &Project, device: Option<&str>) -> Result<()> {
-    let sccache_path = detect_sccache_path(shell).await;
+    let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
     let build_options = sccache_path.map_or_else(
         || BuildOptions::development(false),
         |sccache| BuildOptions::development(false).with_sccache(sccache),
@@ -688,13 +695,14 @@ async fn run_esp32_app(shell: &Shell, project: &Project, device: Option<&str>) -
 
 async fn select_run_device(
     shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
     project: &Project,
     device_id: Option<&str>,
 ) -> Result<DeviceSelection> {
     let spinner = shell.spinner("Scanning for devices...");
-    let device = find_device(platform, backend, project, device_id).await?;
+    let device = find_device(host, platform, backend, project, device_id).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -712,8 +720,13 @@ async fn select_run_device(
     })
 }
 
-async fn build_run_config(shell: &Shell, args: &Args, project: &Project) -> BuildRunConfig {
-    let sccache_path = detect_sccache_path(shell).await;
+async fn build_run_config(
+    shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
+    args: &Args,
+    project: &Project,
+) -> BuildRunConfig {
+    let sccache_path = detect_sccache_path(shell, host).await;
     let mut run_options = RunOptions::new();
     if let Some(level) = args.logs.map(LogLevel::from) {
         run_options.set_log_level(level);
@@ -730,6 +743,7 @@ async fn build_run_config(shell: &Shell, args: &Args, project: &Project) -> Buil
 #[cfg(target_os = "macos")]
 async fn stream_running_events(
     shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
     running: Running,
     backend: TargetBackend,
     crash_ctx: &mut Option<CrashReportContext>,
@@ -752,7 +766,7 @@ async fn stream_running_events(
 
         #[cfg(target_os = "macos")]
         if let Some(ctx) = crash_ctx.as_ref() {
-            event = augment_event_with_crash_report(event, ctx).await;
+            event = augment_event_with_crash_report(host, event, ctx).await;
         }
 
         if handle_device_event(shell, event, backend_log_name)? {
@@ -781,6 +795,7 @@ async fn stream_running_events(
 
 #[cfg(target_os = "macos")]
 async fn augment_event_with_crash_report(
+    host: &waterui_cli::toolchain::Host,
     event: Option<DeviceEvent>,
     ctx: &CrashReportContext,
 ) -> Option<DeviceEvent> {
@@ -788,14 +803,14 @@ async fn augment_event_with_crash_report(
 
     match event {
         Some(DeviceEvent::Exited(exit)) => {
-            if let Some(report) = find_latest_ips_report(ctx).await {
+            if let Some(report) = find_latest_ips_report(host, ctx).await {
                 return Some(DeviceEvent::Crashed(report.to_string()));
             }
             Some(DeviceEvent::Exited(exit))
         }
         Some(DeviceEvent::Crashed(mut msg)) => {
             if !msg.contains("Crash report:")
-                && let Some(report) = find_latest_ips_report(ctx).await
+                && let Some(report) = find_latest_ips_report(host, ctx).await
             {
                 write!(msg, "\n\nCrash report: {}", report.log_path().display())
                     .expect("write to String");
@@ -809,15 +824,16 @@ async fn augment_event_with_crash_report(
 /// Build, package, and run on device.
 async fn build_and_run(
     shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
     project: &Project,
     cli_platform: TargetPlatform,
     backend: TargetBackend,
-    device: SelectedDevice,
-    needs_launch: bool,
+    selection: DeviceSelection,
     config: BuildRunConfig,
 ) -> Result<Running> {
-    let build_plan = resolve_build_plan(cli_platform, backend, &device)?;
-    let launch_task = spawn_device_launch_task(device, needs_launch);
+    let build_plan = resolve_build_plan(cli_platform, backend, &selection.device)?;
+    let launch_task =
+        spawn_device_launch_task(host.clone(), selection.device, selection.needs_launch);
 
     let _ = shell.status(">", "Building...");
     build_for_backend(project, backend, &build_plan, build_options(&config)).await?;
@@ -825,13 +841,13 @@ async fn build_and_run(
     let _ = shell.status(">", "Packaging...");
     let artifact = package_for_backend(project, backend, &build_plan).await?;
 
-    if needs_launch {
+    if selection.needs_launch {
         let _ = shell.status(">", "Waiting for device...");
     }
     let device = launch_task.await?;
 
     let _ = shell.status(">", "Running...");
-    let running = run_with_options(device, artifact, config.run_options).await?;
+    let running = run_with_options(host, device, artifact, config.run_options).await?;
 
     Ok(running)
 }
@@ -877,16 +893,17 @@ fn resolve_android_abi(
 }
 
 fn spawn_device_launch_task(
+    host: waterui_cli::toolchain::Host,
     device: SelectedDevice,
     needs_launch: bool,
 ) -> smol::Task<Result<SelectedDevice>> {
     smol::spawn(async move {
         if needs_launch {
             match &device {
-                SelectedDevice::AppleSimulator(sim) => sim.launch().await?,
-                SelectedDevice::Local(local) => local.launch().await?,
-                SelectedDevice::AndroidDevice(dev) => dev.launch().await?,
-                SelectedDevice::AndroidEmulator(emu) => emu.launch().await?,
+                SelectedDevice::AppleSimulator(sim) => sim.launch(&host).await?,
+                SelectedDevice::Local(local) => local.launch(&host).await?,
+                SelectedDevice::AndroidDevice(dev) => dev.launch(&host).await?,
+                SelectedDevice::AndroidEmulator(emu) => emu.launch(&host).await?,
             }
         }
         Ok(device)
@@ -961,15 +978,16 @@ struct BuildRunConfig {
 
 /// Run artifact on device.
 async fn run_with_options(
+    host: &waterui_cli::toolchain::Host,
     device: SelectedDevice,
     artifact: Artifact,
     run_options: RunOptions,
 ) -> Result<Running> {
     let running = match device {
-        SelectedDevice::AppleSimulator(sim) => sim.run(artifact, run_options).await?,
-        SelectedDevice::Local(local) => local.run(artifact, run_options).await?,
-        SelectedDevice::AndroidDevice(dev) => dev.run(artifact, run_options).await?,
-        SelectedDevice::AndroidEmulator(emu) => emu.run(artifact, run_options).await?,
+        SelectedDevice::AppleSimulator(sim) => sim.run(host, artifact, run_options).await?,
+        SelectedDevice::Local(local) => local.run(host, artifact, run_options).await?,
+        SelectedDevice::AndroidDevice(dev) => dev.run(host, artifact, run_options).await?,
+        SelectedDevice::AndroidEmulator(emu) => emu.run(host, artifact, run_options).await?,
     };
 
     Ok(running)
@@ -996,6 +1014,7 @@ impl SelectedDevice {
 }
 
 async fn check_toolchain_for_backend(
+    host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
 ) -> Result<()> {
@@ -1014,19 +1033,19 @@ async fn check_toolchain_for_backend(
                     bail!("Internal error: Apple backend is not supported on {platform:?}");
                 }
             };
-            toolchain_checks::check_apple(sdk).await?;
+            toolchain_checks::check_apple(host, sdk).await?;
         }
         TargetBackend::Android => {
             if platform != TargetPlatform::Android {
                 bail!("Internal error: Android backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_android_run().await?;
+            toolchain_checks::check_android_run(host).await?;
         }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
                 bail!("Internal error: GTK4 backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_gtk4().await?;
+            toolchain_checks::check_gtk4(host).await?;
         }
         TargetBackend::Hydrolysis => {
             if platform != TargetPlatform::Macos
@@ -1037,9 +1056,9 @@ async fn check_toolchain_for_backend(
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
             if platform == TargetPlatform::Web {
-                toolchain_checks::check_web().await?;
+                toolchain_checks::check_web(host).await?;
             } else {
-                toolchain_checks::check_hydrolysis().await?;
+                toolchain_checks::check_hydrolysis(host).await?;
             }
         }
         TargetBackend::Dew => {
@@ -1052,6 +1071,7 @@ async fn check_toolchain_for_backend(
 }
 
 async fn find_device(
+    host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
     project: &Project,
@@ -1064,14 +1084,14 @@ async fn find_device(
 
     match platform {
         TargetPlatform::Ios => Ok(SelectedDevice::AppleSimulator(
-            AppleSimulator::select_ios(project, device_id).await?,
+            AppleSimulator::select_ios(host, project, device_id).await?,
         )),
         TargetPlatform::Macos => {
             // macOS with Apple backend uses the local machine
             Ok(SelectedDevice::Local(Local))
         }
         TargetPlatform::Android => {
-            let devices = AndroidDevice::scan().await?;
+            let devices = AndroidDevice::scan(host).await?;
 
             if let Some(id) = device_id {
                 // Find specific device
@@ -1089,7 +1109,7 @@ async fn find_device(
             }
 
             // No connected devices - try to find an emulator AVD
-            let avds = AndroidPlatform::list_avds().await?;
+            let avds = AndroidPlatform::list_avds(host).await?;
             let avd_name = avds.into_iter().next().ok_or_else(|| {
                 eyre::eyre!(
                     "No Android devices connected and no emulators available. Create an emulator with Android Studio or `avdmanager`, or connect a device."
@@ -1097,7 +1117,7 @@ async fn find_device(
             })?;
 
             Ok(SelectedDevice::AndroidEmulator(
-                AndroidEmulator::open(avd_name).await?,
+                AndroidEmulator::open(host, avd_name).await?,
             ))
         }
         TargetPlatform::Linux => {

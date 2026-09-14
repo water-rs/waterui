@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use crate::toolchain::Host;
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
@@ -13,7 +14,6 @@ use core_graphics::window::{
     CGWindowListCopyWindowInfo, kCGNullWindowID, kCGWindowListOptionOnScreenOnly,
 };
 use eyre::eyre;
-use smol::process::Command;
 
 /// Information about a macOS window.
 #[derive(Debug, Clone)]
@@ -166,17 +166,16 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
 /// # Errors
 ///
 /// Returns an error if the screenshot fails.
-pub async fn screenshot_window(window_id: u32, output: &Path) -> eyre::Result<()> {
+pub async fn screenshot_window(host: &Host, window_id: u32, output: &Path) -> eyre::Result<()> {
     let output_str = output
         .to_str()
         .ok_or_else(|| eyre!("Invalid output path"))?;
 
-    let result = Command::new("screencapture")
-        .arg("-x") // No sound
-        .arg("-l")
-        .arg(window_id.to_string())
-        .arg(output_str)
-        .output()
+    let result = host
+        .output(
+            "screencapture",
+            ["-x", "-l", window_id.to_string().as_str(), output_str],
+        )
         .await?;
 
     if !result.status.success() {
@@ -196,15 +195,12 @@ pub async fn screenshot_window(window_id: u32, output: &Path) -> eyre::Result<()
 /// # Errors
 ///
 /// Returns an error if the screenshot fails.
-pub async fn screenshot_window_bytes(window_id: u32) -> eyre::Result<Vec<u8>> {
-    let result = Command::new("screencapture")
-        .arg("-x") // No sound
-        .arg("-l")
-        .arg(window_id.to_string())
-        .arg("-t")
-        .arg("png")
-        .arg("-") // Output to stdout
-        .output()
+pub async fn screenshot_window_bytes(host: &Host, window_id: u32) -> eyre::Result<Vec<u8>> {
+    let result = host
+        .output(
+            "screencapture",
+            ["-x", "-l", window_id.to_string().as_str(), "-t", "png", "-"],
+        )
         .await?;
 
     if !result.status.success() {
@@ -227,18 +223,14 @@ pub async fn screenshot_window_bytes(window_id: u32) -> eyre::Result<Vec<u8>> {
 /// # Errors
 ///
 /// Returns an error if the click fails.
-pub async fn tap(x: u32, y: u32) -> eyre::Result<()> {
+pub async fn tap(host: &Host, x: u32, y: u32) -> eyre::Result<()> {
     let script = format!(
         include_str!("applescript/tap.applescript.tpl"),
         x = x,
         y = y,
     );
 
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .await?;
+    let output = host.output("osascript", ["-e", script.as_str()]).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -265,7 +257,12 @@ pub async fn tap(x: u32, y: u32) -> eyre::Result<()> {
 /// # Errors
 ///
 /// Returns an error if the swipe fails.
-pub async fn swipe(from: (u32, u32), to: (u32, u32), duration_ms: Option<u32>) -> eyre::Result<()> {
+pub async fn swipe(
+    host: &Host,
+    from: (u32, u32),
+    to: (u32, u32),
+    duration_ms: Option<u32>,
+) -> eyre::Result<()> {
     let duration_sec = f64::from(duration_ms.unwrap_or(300)) / 1000.0;
 
     // AppleScript doesn't have native drag support
@@ -279,11 +276,7 @@ pub async fn swipe(from: (u32, u32), to: (u32, u32), duration_ms: Option<u32>) -
         duration_sec = duration_sec,
     );
 
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .await?;
+    let output = host.output("osascript", ["-e", script.as_str()]).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -300,7 +293,7 @@ pub async fn swipe(from: (u32, u32), to: (u32, u32), duration_ms: Option<u32>) -
 /// # Errors
 ///
 /// Returns an error if the text input fails.
-pub async fn text(input: &str) -> eyre::Result<()> {
+pub async fn text(host: &Host, input: &str) -> eyre::Result<()> {
     // Escape quotes in the input for AppleScript
     let escaped = input.replace('\\', "\\\\").replace('"', "\\\"");
 
@@ -309,11 +302,7 @@ pub async fn text(input: &str) -> eyre::Result<()> {
         escaped = escaped,
     );
 
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .await?;
+    let output = host.output("osascript", ["-e", script.as_str()]).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -333,16 +322,12 @@ pub async fn text(input: &str) -> eyre::Result<()> {
 /// # Errors
 ///
 /// Returns an error if the screenshot fails.
-pub async fn screenshot(output: &Path) -> eyre::Result<()> {
+pub async fn screenshot(host: &Host, output: &Path) -> eyre::Result<()> {
     let output_str = output
         .to_str()
         .ok_or_else(|| eyre!("Invalid output path"))?;
 
-    let result = Command::new("screencapture")
-        .arg("-x") // No sound
-        .arg(output_str)
-        .output()
-        .await?;
+    let result = host.output("screencapture", ["-x", output_str]).await?;
 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
@@ -359,14 +344,10 @@ pub async fn screenshot(output: &Path) -> eyre::Result<()> {
 /// # Errors
 ///
 /// Returns an error if the screenshot fails.
-pub async fn screenshot_bytes() -> eyre::Result<Vec<u8>> {
+pub async fn screenshot_bytes(host: &Host) -> eyre::Result<Vec<u8>> {
     // screencapture can output to stdout with -t png and using - as filename
-    let result = Command::new("screencapture")
-        .arg("-x") // No sound
-        .arg("-t")
-        .arg("png")
-        .arg("-") // Output to stdout
-        .output()
+    let result = host
+        .output("screencapture", ["-x", "-t", "png", "-"])
         .await?;
 
     if !result.status.success() {
