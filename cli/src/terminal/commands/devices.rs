@@ -10,6 +10,8 @@ use crate::shell::Shell;
 use crate::{header, line};
 use smol::future::zip;
 use smol::process::Command;
+#[cfg(feature = "esp32")]
+use waterui_cli::esp32::platform::{SerialPortSummary, scan_serial_ports};
 use waterui_cli::{
     android::{
         AndroidSdk,
@@ -18,8 +20,6 @@ use waterui_cli::{
     apple::device::AppleSimulator,
     device::Device,
 };
-#[cfg(feature = "esp32")]
-use waterui_cli::esp32::platform::{SerialPortSummary, scan_serial_ports};
 
 /// Target platform for device listing.
 #[derive(Debug, Clone, Copy, ValueEnum)]

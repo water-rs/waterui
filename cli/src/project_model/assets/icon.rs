@@ -87,9 +87,8 @@ impl IconSource {
                 path.display()
             );
         }
-        let image = image::open(path).wrap_err_with(|| {
-            format!("Failed to decode app icon source '{}'", path.display())
-        })?;
+        let image = image::open(path)
+            .wrap_err_with(|| format!("Failed to decode app icon source '{}'", path.display()))?;
         if image.width() != image.height() {
             eyre::bail!(
                 "App icon source '{}' must be square, got {}x{}",
