@@ -221,15 +221,15 @@ impl IntoRust for WuiProposalSize {
     type Rust = ProposalSize;
     unsafe fn into_rust(self) -> Self::Rust {
         ProposalSize {
-            width: if self.width.is_finite() {
+            width: if self.width.is_nan() {
+                None
+            } else {
                 Some(self.width)
-            } else {
-                None
             },
-            height: if self.height.is_finite() {
-                Some(self.height)
-            } else {
+            height: if self.height.is_nan() {
                 None
+            } else {
+                Some(self.height)
             },
         }
     }
@@ -798,8 +798,10 @@ ffi_view!(ScrollView, WuiScrollView, scroll_view);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::cell::Cell;
+    use alloc::vec;
+    use core::cell::{Cell, RefCell};
     use nami::{Computed, SignalExt, binding};
+    use waterui_layout::frame::FrameLayout;
     use waterui_layout::stack::{HStackLayout, VStackLayout};
 
     fn with_layout(layout: impl Layout + 'static, f: impl FnOnce(*mut WuiLayout)) {
@@ -905,5 +907,233 @@ mod tests {
 
         // SAFETY: `watcher` is the owning handle returned above, dropped once here.
         unsafe { waterui_layout_watcher_drop(watcher) };
+    }
+
+    fn proposal_cases() -> [Option<f32>; 4] {
+        [None, Some(0.0), Some(48.0), Some(f32::INFINITY)]
+    }
+
+    #[test]
+    fn proposal_round_trip_preserves_each_axis_probe() {
+        for width in proposal_cases() {
+            for height in proposal_cases() {
+                let proposal = ProposalSize::new(width, height);
+                // SAFETY: the decoded value is the FFI mirror produced by
+                // `into_ffi` from `proposal` itself, satisfying the `into_rust`
+                // contract.
+                let decoded = unsafe { proposal.into_ffi().into_rust() };
+                assert_eq!(decoded, proposal);
+            }
+        }
+    }
+
+    #[test]
+    fn proposal_decodes_nan_as_unspecified_without_losing_infinity() {
+        for bits in [f32::NAN.to_bits(), 0x7fc0_0001, 0xffc0_0042] {
+            // SAFETY: `WuiProposalSize` mirrors `ProposalSize` bit for bit on
+            // each axis, so decoding a value with arbitrary `f32` payloads is
+            // the contract `into_rust` defines.
+            let decoded = unsafe {
+                WuiProposalSize {
+                    width: f32::from_bits(bits),
+                    height: f32::INFINITY,
+                }
+                .into_rust()
+            };
+            assert_eq!(decoded, ProposalSize::new(None, Some(f32::INFINITY)));
+        }
+        // SAFETY: the decoded value is the FFI mirror produced by `into_ffi`
+        // from this pair, satisfying the `into_rust` contract.
+        let decoded = unsafe {
+            ProposalSize::new(Some(-0.0), Some(0.0))
+                .into_ffi()
+                .into_rust()
+        };
+        assert_eq!(decoded.width.unwrap().to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(decoded.height.unwrap().to_bits(), 0.0_f32.to_bits());
+    }
+
+    fn probe_extent(proposed: Option<f32>, minimum: f32, ideal: f32, maximum: f32) -> f32 {
+        proposed.map_or(ideal, |value| value.clamp(minimum, maximum))
+    }
+
+    #[derive(Debug)]
+    struct ProbeView;
+
+    impl SubView for ProbeView {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(Size::new(
+                probe_extent(proposal.width, 8.0, 24.0, 96.0),
+                probe_extent(proposal.height, 12.0, 36.0, 144.0),
+            ))
+            .with_horizontal(HorizontalAlignment::Leading, 3.0)
+            .with_vertical(VerticalAlignment::FirstBaseline, 5.0)
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::Both
+        }
+
+        fn priority(&self) -> i32 {
+            7
+        }
+    }
+
+    struct ProbeContext {
+        proposals: Rc<RefCell<Vec<ProposalSize>>>,
+        drops: Rc<Cell<usize>>,
+    }
+
+    unsafe extern "C" fn measure_probe(
+        context: *mut c_void,
+        proposal: WuiProposalSize,
+    ) -> WuiViewDimensions {
+        // SAFETY: the test registers this callback with a live `ProbeContext`
+        // created by `foreign_probe`, which outlives every measure call.
+        let context = unsafe { &*context.cast::<ProbeContext>() };
+        // Decode independently of `IntoRust`: the callback models a foreign
+        // backend, so it must not reuse the Rust-side decoder under test.
+        let decoded = ProposalSize::new(
+            (!proposal.width.is_nan()).then_some(proposal.width),
+            (!proposal.height.is_nan()).then_some(proposal.height),
+        );
+        context.proposals.borrow_mut().push(decoded);
+        ProbeView.measure(decoded).into_ffi()
+    }
+
+    unsafe extern "C" fn drop_probe(context: *mut c_void) {
+        // SAFETY: `context` is the boxed `ProbeContext` this callback was
+        // registered with, and the drop entry runs once.
+        let context = unsafe { Box::from_raw(context.cast::<ProbeContext>()) };
+        context.drops.set(context.drops.get() + 1);
+    }
+
+    fn foreign_probe(
+        proposals: Rc<RefCell<Vec<ProposalSize>>>,
+        drops: Rc<Cell<usize>>,
+    ) -> WuiSubView {
+        WuiSubView {
+            context: Box::into_raw(Box::new(ProbeContext { proposals, drops })).cast(),
+            vtable: WuiSubViewVTable {
+                measure: measure_probe,
+                drop: drop_probe,
+            },
+            stretch_axis: WuiStretchAxis::Both,
+            priority: 7,
+        }
+    }
+
+    const WIDTH_EXTENTS: [(Option<f32>, f32); 4] = [
+        (None, 24.0),
+        (Some(0.0), 8.0),
+        (Some(48.0), 48.0),
+        (Some(f32::INFINITY), 96.0),
+    ];
+    const HEIGHT_EXTENTS: [(Option<f32>, f32); 4] = [
+        (None, 36.0),
+        (Some(0.0), 12.0),
+        (Some(48.0), 48.0),
+        (Some(f32::INFINITY), 144.0),
+    ];
+
+    fn expected_extent(table: [(Option<f32>, f32); 4], probe: Option<f32>) -> f32 {
+        table
+            .into_iter()
+            .find_map(|(proposal, extent)| (proposal == probe).then_some(extent))
+            .expect("the tables cover every `proposal_cases` entry")
+    }
+
+    #[test]
+    fn layout_measure_preserves_probes_through_foreign_callbacks() {
+        for width in proposal_cases() {
+            for height in proposal_cases() {
+                let proposal = ProposalSize::new(width, height);
+                let expected_size = Size::new(
+                    expected_extent(WIDTH_EXTENTS, width),
+                    expected_extent(HEIGHT_EXTENTS, height),
+                );
+                let direct = measure_layout(&FrameLayout::default(), proposal, &[&ProbeView]);
+                let proposals = Rc::new(RefCell::new(Vec::new()));
+                let drops = Rc::new(Cell::new(0));
+                with_layout(
+                    FrameLayout::default(),
+                    // SAFETY: the harness hands the closure a pointer to the live
+                    // layout handle it just built; each `WuiArray` is an owning
+                    // handle the FFI call consumes once, and each returned FFI
+                    // value is decoded once and never observed again.
+                    |layout| unsafe {
+                        let measured = waterui_layout_measure(
+                            layout,
+                            proposal.into_ffi(),
+                            WuiArray::new(vec![foreign_probe(
+                                Rc::clone(&proposals),
+                                Rc::clone(&drops),
+                            )]),
+                        )
+                        .into_rust();
+                        assert_eq!(measured.size, expected_size);
+                        assert_eq!(measured.size, direct.size);
+                        assert_eq!(
+                            measured.explicit_horizontal(HorizontalAlignment::Leading),
+                            Some(3.0)
+                        );
+                        assert_eq!(
+                            measured.explicit_vertical(VerticalAlignment::FirstBaseline),
+                            Some(5.0)
+                        );
+                        assert_eq!(proposals.borrow().first(), Some(&proposal));
+                        assert_eq!(drops.get(), 1);
+
+                        let bounds = Rect::new(Point::new(13.0, -9.0), expected_size);
+                        let placed = waterui_layout_place(
+                            layout,
+                            bounds.into_ffi(),
+                            WuiArray::new(vec![foreign_probe(
+                                Rc::clone(&proposals),
+                                Rc::clone(&drops),
+                            )]),
+                        );
+                        let rects: Vec<Rect> = placed
+                            .as_slice()
+                            .iter()
+                            .map(|rect| {
+                                Rect::new(
+                                    Point::new(rect.origin.x, rect.origin.y),
+                                    Size::new(rect.size.width, rect.size.height),
+                                )
+                            })
+                            .collect();
+                        placed.consume();
+                        assert_eq!(rects, vec![bounds]);
+                        assert_eq!(rects, FrameLayout::default().place(bounds, &[&ProbeView]));
+                        assert_eq!(drops.get(), 2);
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn foreign_subview_preserves_metadata_and_measurement() {
+        let proposals = Rc::new(RefCell::new(Vec::new()));
+        let drops = Rc::new(Cell::new(0));
+        {
+            let subview = foreign_probe(Rc::clone(&proposals), Rc::clone(&drops));
+            assert_eq!(subview.priority(), 7);
+            assert_eq!(subview.stretch_axis(), StretchAxis::Both);
+            let proposal = ProposalSize::new(Some(f32::INFINITY), None);
+            let measured = subview.measure(proposal);
+            assert_eq!(measured.size, Size::new(96.0, 36.0));
+            assert_eq!(
+                measured.explicit_horizontal(HorizontalAlignment::Leading),
+                Some(3.0)
+            );
+            assert_eq!(
+                measured.explicit_vertical(VerticalAlignment::FirstBaseline),
+                Some(5.0)
+            );
+            assert_eq!(proposals.borrow().first(), Some(&proposal));
+        }
+        assert_eq!(drops.get(), 1);
     }
 }
