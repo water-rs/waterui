@@ -1833,6 +1833,25 @@ impl ToJavaStruct for crate::components::progress::WuiProgress {
     }
 }
 
+/// `WuiBadge -> BadgeStruct(valuePtr, contentPtr, colorPtr)`
+impl ToJavaStruct for crate::components::badge::WuiBadge {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/BadgeStruct"))
+            .expect("BadgeStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJJ)V"),
+            &[
+                JValue::Long(self.value as jlong),
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.color as jlong),
+            ],
+        )
+        .expect("Failed to create BadgeStruct")
+    }
+}
+
 /// `WuiGpuSurface -> GpuSurfaceStruct(rendererPtr, HDR preference, PiP host)`
 #[cfg(feature = "gpu")]
 impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
