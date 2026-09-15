@@ -104,6 +104,11 @@ impl View for ImageAsset {
     fn body(self, _env: &Environment) -> impl View {
         Photo::new(self.url())
     }
+
+    /// Resolves to `Photo`; forwards its axis.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        Photo::new(self.url()).stretch_axis()
+    }
 }
 
 /// Video asset resolved from a `WaterUI` asset bundle.
@@ -145,6 +150,11 @@ impl VideoAsset {
 impl View for VideoAsset {
     fn body(self, _env: &Environment) -> impl View {
         self.raw()
+    }
+
+    /// Resolves to `Video`; forwards its axis.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        self.raw().stretch_axis()
     }
 }
 

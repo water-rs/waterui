@@ -72,9 +72,34 @@ pub struct ZStackLayout {
 }
 
 impl Layout for ZStackLayout {
-    /// `ZStack` is content-sized by default (it does not stretch automatically).
-    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
-        StretchAxis::None
+    /// A `ZStack` is content-sized only while every child is — a child that
+    /// stretches (a `Color`, a `GpuSurface`) makes the stack stretch on the
+    /// same axes, since `place` hands such children the full bounds.
+    ///
+    /// Axis-relative answers have no direction to resolve against here:
+    /// `MainAxis` children (`Spacer`) want whatever space is offered, which in
+    /// a zstack is both axes; `CrossAxis` children (`Divider`) resolve to
+    /// their default orientation — a horizontal rule — and fill horizontally.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        let mut fills_h = false;
+        let mut fills_v = false;
+        for child in children {
+            match child {
+                StretchAxis::None => {}
+                StretchAxis::Both | StretchAxis::MainAxis => {
+                    fills_h = true;
+                    fills_v = true;
+                }
+                StretchAxis::Horizontal | StretchAxis::CrossAxis => fills_h = true,
+                StretchAxis::Vertical => fills_v = true,
+            }
+        }
+        match (fills_h, fills_v) {
+            (true, true) => StretchAxis::Both,
+            (true, false) => StretchAxis::Horizontal,
+            (false, true) => StretchAxis::Vertical,
+            (false, false) => StretchAxis::None,
+        }
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
@@ -303,6 +328,13 @@ where
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, self.contents.0)
     }
+
+    /// Resolves to `FixedContainer` over the same layout and children;
+    /// reports what that container would — matching `FixedContainer`'s
+    /// `View::stretch_axis`.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis(&self.contents.0.stretch_axes())
+    }
 }
 
 impl<C, F, V> View for ZStack<ForEach<C, F, V>>
@@ -314,6 +346,13 @@ where
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         LazyContainer::new(self.layout, self.contents)
+    }
+
+    /// Resolves to `LazyContainer`, which cannot enumerate children without
+    /// materializing them and answers its layout's axis over an empty child
+    /// set — matching `LazyContainer::stretch_axis`.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis(&[])
     }
 }
 

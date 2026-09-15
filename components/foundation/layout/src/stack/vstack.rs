@@ -498,6 +498,13 @@ where
             Axis::Vertical,
         )
     }
+
+    /// Resolves to `LazyContainer`, which cannot enumerate children without
+    /// materializing them and answers its layout's axis over an empty child
+    /// set — matching `LazyContainer::stretch_axis`.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis(&[])
+    }
 }
 
 impl<C: TupleViews + 'static> View for VStack<(C,)> {
@@ -507,6 +514,13 @@ impl<C: TupleViews + 'static> View for VStack<(C,)> {
             FixedContainer::new(self.layout, self.contents.0),
             Axis::Vertical,
         )
+    }
+
+    /// Resolves to `FixedContainer` over the same layout and children;
+    /// reports what that container would — matching `FixedContainer`'s
+    /// `View::stretch_axis`.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis(&self.contents.0.stretch_axes())
     }
 }
 

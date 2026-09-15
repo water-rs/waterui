@@ -127,6 +127,10 @@ impl waterui_core::View for ShaderSurface {
     fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {
         self.inner
     }
+
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
 }
 
 /// Creates a [`ShaderSurface`] from a shader file path.

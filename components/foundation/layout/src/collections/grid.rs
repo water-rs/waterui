@@ -393,6 +393,17 @@ impl View for Grid {
 
         FixedContainer::new(self.layout, flattened_children)
     }
+
+    /// Resolves to `FixedContainer` over the same layout and the flattened
+    /// row contents; reports what that container would.
+    fn stretch_axis(&self) -> crate::StretchAxis {
+        let child_axes = self
+            .rows
+            .iter()
+            .flat_map(|row| row.contents.iter().map(View::stretch_axis))
+            .collect::<Vec<_>>();
+        self.layout.stretch_axis(&child_axes)
+    }
 }
 
 /// Creates a new grid with the specified number of columns and rows.

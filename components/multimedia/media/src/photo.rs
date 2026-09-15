@@ -193,6 +193,13 @@ impl View for Photo {
             Retain::new((guard, source)),
         ))
     }
+
+    /// Resolves through transparent `Metadata` layers to the inner
+    /// `ReactiveImage`; forwards its axis (non-resizable by default,
+    /// both-axes after `.resizable()`).
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        self.content.stretch_axis()
+    }
 }
 
 #[derive(Default)]

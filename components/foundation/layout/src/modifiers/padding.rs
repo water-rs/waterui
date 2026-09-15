@@ -5,8 +5,8 @@ use nami::{Computed, Signal, signal::IntoComputed, watcher::BoxWatcherGuard};
 use waterui_core::{AnyView, View, layout::LayoutInvalidationCallback};
 
 use crate::{
-    HorizontalAlignment, Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView,
-    VerticalAlignment, container::FixedContainer,
+    HorizontalAlignment, Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis,
+    SubView, VerticalAlignment, container::FixedContainer,
 };
 
 /// Layout that insets its single child by the configured edge values.
@@ -19,6 +19,12 @@ pub struct PaddingLayout {
 }
 
 impl Layout for PaddingLayout {
+    /// Padding is transparent to its content: it insets the child within
+    /// whatever bounds it is given, so the child's axis is the answer.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        children.first().copied().unwrap_or_default()
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         let edges = self.edges.get();
         // The horizontal and vertical space consumed by padding.
@@ -232,6 +238,12 @@ impl Padding {
 impl View for Padding {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, vec![self.content])
+    }
+
+    /// Resolves to `FixedContainer` over the same layout and single child;
+    /// reports what that container would.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis(&[self.content.stretch_axis()])
     }
 }
 

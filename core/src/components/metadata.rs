@@ -12,6 +12,7 @@ use alloc::boxed::Box;
 use core::any::Any;
 use core::any::type_name;
 
+use crate::layout::StretchAxis;
 use crate::{AnyView, Environment, View};
 
 /// Represents a view that carries additional metadata of type `T`.
@@ -59,6 +60,12 @@ impl<T: MetadataKey> View for Metadata<T> {
     fn body(self, _env: &Environment) -> impl View {
         Self::panic_not_caught();
     }
+
+    /// Metadata is transparent for layout: the wrapper never changes how the
+    /// content sizes, so the axis answers for the content's leaf.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
+    }
 }
 
 /// A metadata wrapper that can be safely ignored by renderers if not handled explicitly.
@@ -90,6 +97,10 @@ impl<T: MetadataKey> IgnorableMetadata<T> {
 impl<T: MetadataKey> View for IgnorableMetadata<T> {
     fn body(self, _env: &Environment) -> impl View {
         self.content
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
     }
 }
 

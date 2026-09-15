@@ -134,6 +134,11 @@ where
     fn body(self, _env: &Environment) -> impl View {
         Color::new(self)
     }
+
+    /// Resolves to `Color`, which fills both axes.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
 }
 
 impl<T> WithOpacity<T> {

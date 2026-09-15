@@ -35,4 +35,10 @@ impl View for FlowingGradient {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.inner
     }
+
+    /// Resolves through `ShaderSurface` to `GpuSurface`, which stretches on
+    /// both axes.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
 }
