@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, ValueEnum};
-use eyre::{Result, bail};
+use eyre::{Context as _, Result, bail};
 use futures_util::StreamExt;
 
 #[cfg(target_os = "macos")]
@@ -20,6 +20,7 @@ use waterui_cli::{
     },
     apple::{
         device::AppleSimulator,
+        physical::ApplePhysicalDevice,
         platform::{build_rust_lib, package_apple},
         toolchain::AppleSdk,
     },
@@ -877,6 +878,7 @@ async fn build_and_run(
     config: BuildRunConfig,
 ) -> Result<(Running, Option<web::WebDevServer>)> {
     let build_plan = resolve_build_plan(cli_platform, backend, &selection.device)?;
+    let physical_ios = is_physical_ios(&selection.device);
     let launch_task =
         spawn_device_launch_task(host.clone(), selection.device, selection.needs_launch);
 
@@ -888,7 +890,7 @@ async fn build_and_run(
     // from the compiled metadata) and before packaging, so the packaged app
     // stages no web output.
     let dev_server = if config.dev_server {
-        start_web_dev_server(shell, project, config.sccache_path.as_deref()).await?
+        start_web_dev_server(shell, project, config.sccache_path.as_deref(), physical_ios).await?
     } else {
         None
     };
@@ -925,6 +927,7 @@ async fn start_web_dev_server(
     shell: &Shell,
     project: &Project,
     sccache_path: Option<&std::path::Path>,
+    expose_on_lan: bool,
 ) -> Result<Option<web::WebDevServer>> {
     let Some(meta) = web::web_mount(project, sccache_path).await? else {
         return Ok(None);
@@ -949,7 +952,7 @@ async fn start_web_dev_server(
         ">",
         format!("Starting `{} run {script}`", package_manager.binary()),
     );
-    let server = web::WebDevServer::spawn(package_manager, root, &script).await?;
+    let server = web::WebDevServer::spawn(package_manager, root, &script, expose_on_lan).await?;
     let _ = shell.status(">", format!("Dev server ready at {}", server.url()));
     Ok(Some(server))
 }
@@ -963,28 +966,20 @@ fn apply_dev_url_handoff(
     let target = match device {
         SelectedDevice::Local(_) => web::DevTarget::Desktop,
         SelectedDevice::AppleSimulator(_) => web::DevTarget::IosSimulator,
+        SelectedDevice::ApplePhysical(_) => web::DevTarget::IosDevice,
         SelectedDevice::AndroidDevice(_) | SelectedDevice::AndroidEmulator(_) => {
             web::DevTarget::Android
         }
     };
-    match web::dev_url_handoff(target, url) {
-        // Every device the CLI can select receives the URL through its launch
-        // environment: `cmd.env`/`open --env` on desktop,
-        // `SIMCTL_CHILD_WATERUI_DEV_URL` under `simctl launch`, and the
-        // `waterui.env.` intent extra on Android (where `run_on_android`
-        // additionally makes the port reachable with `adb reverse`).
-        web::DevUrlHandoff::Environment => {
-            run_options.insert_env_var(web::DEV_URL_ENV.to_string(), url.to_string());
-            Ok(())
-        }
-        // A physical iOS device needs `--waterui-dev-url=<url>` in its
-        // `devicectl` launch arguments — a channel `water run` has no launch
-        // path for yet, so this fails loudly rather than falling through to
-        // the staged bundle.
-        web::DevUrlHandoff::LaunchArgument(_) => {
-            bail!("dev-server handoff is not defined for {target:?}")
-        }
-    }
+    // Every launch path forwards `WATERUI_DEV_URL` in the environment —
+    // `cmd.env`/`open --env` on desktop, `SIMCTL_CHILD_*` under `simctl
+    // launch`, `devicectl -e` on a physical device, and the `waterui.env.`
+    // intent extra on Android (where `run_on_android` additionally makes the
+    // port reachable with `adb reverse`). A physical device cannot reach the
+    // Mac's loopback, so its URL is rewritten to the LAN address first.
+    let url = web::device_facing_url(target, url)?;
+    run_options.insert_env_var(web::DEV_URL_ENV.to_string(), url.to_string());
+    Ok(())
 }
 
 fn resolve_build_plan(
@@ -993,7 +988,15 @@ fn resolve_build_plan(
     device: &SelectedDevice,
 ) -> Result<BuildPlan> {
     let lib_platform = match cli_platform {
-        TargetPlatform::Ios => LibTargetPlatform::IOSSimulator,
+        // The device decides the iOS SDK: a physical device builds
+        // `aarch64-apple-ios` (iphoneos), a simulator `*-apple-ios-sim`.
+        TargetPlatform::Ios => {
+            if is_physical_ios(device) {
+                LibTargetPlatform::IOS
+            } else {
+                LibTargetPlatform::IOSSimulator
+            }
+        }
         TargetPlatform::Macos => LibTargetPlatform::MacOS,
         TargetPlatform::Android => LibTargetPlatform::Android,
         TargetPlatform::Linux => LibTargetPlatform::Linux,
@@ -1036,6 +1039,7 @@ fn spawn_device_launch_task(
         if needs_launch {
             match &device {
                 SelectedDevice::AppleSimulator(sim) => sim.launch(&host).await?,
+                SelectedDevice::ApplePhysical(dev) => dev.launch(&host).await?,
                 SelectedDevice::Local(local) => local.launch(&host).await?,
                 SelectedDevice::AndroidDevice(dev) => dev.launch(&host).await?,
                 SelectedDevice::AndroidEmulator(emu) => emu.launch(&host).await?,
@@ -1132,6 +1136,7 @@ async fn run_with_options(
 ) -> Result<Running> {
     let running = match device {
         SelectedDevice::AppleSimulator(sim) => sim.run(host, artifact, run_options).await?,
+        SelectedDevice::ApplePhysical(dev) => dev.run(host, artifact, run_options).await?,
         SelectedDevice::Local(local) => local.run(host, artifact, run_options).await?,
         SelectedDevice::AndroidDevice(dev) => dev.run(host, artifact, run_options).await?,
         SelectedDevice::AndroidEmulator(emu) => emu.run(host, artifact, run_options).await?,
@@ -1143,6 +1148,8 @@ async fn run_with_options(
 /// A device that can be selected for running.
 enum SelectedDevice {
     AppleSimulator(AppleSimulator),
+    /// A paired physical iOS device (USB or "Connect via network").
+    ApplePhysical(ApplePhysicalDevice),
     /// Local machine - used for desktop backends and macOS Apple backend.
     Local(Local),
     AndroidDevice(AndroidDevice),
@@ -1154,10 +1161,140 @@ impl SelectedDevice {
     fn needs_launch(&self) -> bool {
         match self {
             Self::AppleSimulator(sim) => sim.state != "Booted",
-            Self::Local(_) | Self::AndroidDevice(_) => false,
+            Self::ApplePhysical(_) | Self::Local(_) | Self::AndroidDevice(_) => false,
             Self::AndroidEmulator(_) => true,
         }
     }
+}
+
+/// Whether the selected device is a physical iOS device — the one target
+/// whose dev-server URL and launch channel differ from every other.
+const fn is_physical_ios(device: &SelectedDevice) -> bool {
+    matches!(device, SelectedDevice::ApplePhysical(_))
+}
+
+/// Select the iOS target: an explicit `--device` may name a paired physical
+/// device or a simulator; without one, simulator selection stays as it was
+/// and a physical device is only picked up when no simulator qualifies.
+async fn select_ios_device(
+    host: &waterui_cli::toolchain::Host,
+    project: &Project,
+    device_id: Option<&str>,
+) -> Result<SelectedDevice> {
+    let physical = ApplePhysicalDevice::scan(host)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!("devicectl device scan failed: {error:#}");
+            Vec::new()
+        });
+
+    if let Some(query) = device_id
+        && let Some(device) = select_physical_ios(host, &physical, project, query).await?
+    {
+        return Ok(SelectedDevice::ApplePhysical(device));
+    }
+
+    match AppleSimulator::select_ios(host, project, device_id).await {
+        Ok(sim) => Ok(SelectedDevice::AppleSimulator(sim)),
+        Err(sim_error) => {
+            // No explicit device and no qualifying simulator — fall back to a
+            // usable physical device if one is paired.
+            if device_id.is_some() {
+                return Err(sim_error);
+            }
+            let Some(device) = usable_physical_ios(host, &physical, project).await? else {
+                return Err(sim_error);
+            };
+            Ok(SelectedDevice::ApplePhysical(device))
+        }
+    }
+}
+
+/// The first paired device that can actually run the app: reachable, booted,
+/// Developer Mode on, OS at or above the deployment target.
+async fn usable_physical_ios(
+    host: &waterui_cli::toolchain::Host,
+    devices: &[ApplePhysicalDevice],
+    project: &Project,
+) -> Result<Option<ApplePhysicalDevice>> {
+    let (_, target) =
+        waterui_cli::apple::platform::apple_deployment_target(project, LibTargetPlatform::IOS)
+            .await?;
+    let deployment_target =
+        waterui_cli::utils::parse_semver_version(&target).wrap_err_with(|| {
+            format!("Failed to parse the project's IPHONEOS_DEPLOYMENT_TARGET `{target}`")
+        })?;
+    let Some(device) = devices.iter().find(|device| {
+        device.usability().is_ok() && device.supports_deployment_target(&deployment_target)
+    }) else {
+        return Ok(None);
+    };
+    // A device build must be signed; check the keychain has a development
+    // identity now rather than after a multi-minute build.
+    waterui_cli::apple::toolchain::development_team_id(host).await?;
+    Ok(Some(device.clone()))
+}
+
+/// Match a `--device` query against paired physical devices.
+///
+/// Returns `Ok(None)` when nothing matches — the query may still name a
+/// simulator. A matched device that cannot run the app (unreachable, no
+/// Developer Mode, too-old OS) is an error naming the remedy rather than a
+/// silent miss.
+async fn select_physical_ios(
+    host: &waterui_cli::toolchain::Host,
+    devices: &[ApplePhysicalDevice],
+    project: &Project,
+    query: &str,
+) -> Result<Option<ApplePhysicalDevice>> {
+    let matches: Vec<&ApplePhysicalDevice> = devices
+        .iter()
+        .filter(|device| device.identifier == query || device.udid == query || device.name == query)
+        .collect();
+    let device = match matches.as_slice() {
+        [] => return Ok(None),
+        [device] => *device,
+        candidates => {
+            use std::fmt::Write as _;
+            let list = candidates.iter().fold(String::new(), |mut out, device| {
+                write!(out, "\n  {} ({})", device.name, device.identifier)
+                    .expect("writing to a String cannot fail");
+                out
+            });
+            bail!(
+                "Device \"{query}\" matches {} devices; select one by identifier:{list}",
+                candidates.len()
+            );
+        }
+    };
+
+    if let Err(reason) = device.usability() {
+        bail!("{}", reason.remedy(device));
+    }
+
+    let (_, target) =
+        waterui_cli::apple::platform::apple_deployment_target(project, LibTargetPlatform::IOS)
+            .await?;
+    let deployment_target =
+        waterui_cli::utils::parse_semver_version(&target).wrap_err_with(|| {
+            format!("Failed to parse the project's IPHONEOS_DEPLOYMENT_TARGET `{target}`")
+        })?;
+    if !device.supports_deployment_target(&deployment_target) {
+        bail!(
+            "{} runs {}, but this app requires iOS {deployment_target} (IPHONEOS_DEPLOYMENT_TARGET)",
+            device.name,
+            device.os_version.as_ref().map_or_else(
+                || String::from("an unknown iOS version"),
+                |v| format!("iOS {v}")
+            ),
+        );
+    }
+
+    // A device build must be signed; check the keychain has a development
+    // identity now rather than after a multi-minute build.
+    waterui_cli::apple::toolchain::development_team_id(host).await?;
+
+    Ok(Some(device.clone()))
 }
 
 async fn check_toolchain_for_backend(
@@ -1230,9 +1367,7 @@ async fn find_device(
     }
 
     match platform {
-        TargetPlatform::Ios => Ok(SelectedDevice::AppleSimulator(
-            AppleSimulator::select_ios(host, project, device_id).await?,
-        )),
+        TargetPlatform::Ios => select_ios_device(host, project, device_id).await,
         TargetPlatform::Macos => {
             // macOS with Apple backend uses the local machine
             Ok(SelectedDevice::Local(Local))
@@ -1287,6 +1422,7 @@ async fn find_device(
 fn device_name(device: &SelectedDevice) -> String {
     match device {
         SelectedDevice::AppleSimulator(sim) => sim.name.clone(),
+        SelectedDevice::ApplePhysical(dev) => dev.name.clone(),
         SelectedDevice::Local(local) => local.name().to_string(),
         SelectedDevice::AndroidDevice(dev) => dev.identifier().to_string(),
         SelectedDevice::AndroidEmulator(emu) => format!("{} (emulator)", emu.avd_name()),

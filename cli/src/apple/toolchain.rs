@@ -1,7 +1,9 @@
 //! Apple toolchain module
 
 use std::convert::Infallible;
+use std::ffi::OsString;
 
+use eyre::Context as _;
 use serde::{Deserialize, Serialize};
 
 use crate::toolchain::{Host, Toolchain, ToolchainError};
@@ -67,6 +69,115 @@ impl AppleSdk {
             Self::VisionOs => "xros",
         }
     }
+}
+
+/// The development team used to sign device builds.
+///
+/// Physical-device builds must be signed in every profile — iOS refuses
+/// unsigned code outright — so `DEVELOPMENT_TEAM` cannot come from the Xcode
+/// project (which does not know the developer's team) and is resolved here
+/// instead. Preference order:
+///
+/// 1. The team Xcode last provisioned with
+///    (`IDEProvisioningTeamManagerLastSelectedTeamID`), then any other team
+///    Xcode knows an account for (`IDEProvisioningTeamByIdentifier`). A
+///    signed-in account can mint both the provisioning profile and the
+///    "Apple Development" certificate it needs, so these work even when the
+///    keychain holds no matching identity yet.
+/// 2. The team embedded in a keychain development certificate —
+///    `security find-identity -v -p codesigning` prints identities as
+///    `… "Apple Development: Liu Yuhao (6C5VGHHJ59)"` where the parenthesized
+///    suffix is the team ID. Such a team is only usable when a matching
+///    profile is already installed locally; without an Xcode account the
+///    portal cannot mint one, which is why it ranks last.
+///
+/// # Errors
+/// Fails when neither an Xcode account team nor a development certificate
+/// exists — the error tells the user where to add an account.
+pub async fn development_team_id(host: &Host) -> eyre::Result<String> {
+    if let Some(team) = xcode_account_team(host).await {
+        return Ok(team);
+    }
+    let output = host
+        .output("security", ["find-identity", "-v", "-p", "codesigning"])
+        .await
+        .wrap_err("failed to run `security find-identity`")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_development_team(&stdout).ok_or_else(|| {
+        eyre::eyre!(
+            "No signing team found. Physical iOS builds must be signed: open \
+             Xcode → Settings → Accounts and sign in an Apple ID (a free \
+             account is enough), then re-run `water run`."
+        )
+    })
+}
+
+/// A team Xcode can provision for: the account's last-selected team, or any
+/// team its accounts advertise. Reads Xcode's account registry from
+/// `~/Library/Preferences/com.apple.dt.Xcode.plist`; a missing Xcode install
+/// or unsigned-in state yields `None`.
+async fn xcode_account_team(host: &Host) -> Option<String> {
+    let plist = host
+        .home_dir()?
+        .join("Library/Preferences/com.apple.dt.Xcode.plist");
+
+    let extract = |key: &str, format: &str| {
+        let plist = plist.clone();
+        let key = key.to_string();
+        let format = format.to_string();
+        async move {
+            host.output(
+                "plutil",
+                [
+                    OsString::from("-extract"),
+                    OsString::from(key),
+                    OsString::from(format),
+                    OsString::from("-o"),
+                    OsString::from("-"),
+                    plist.into_os_string(),
+                ],
+            )
+            .await
+        }
+    };
+
+    if let Ok(output) = extract("IDEProvisioningTeamManagerLastSelectedTeamID", "raw").await
+        && output.status.success()
+    {
+        let team = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !team.is_empty() {
+            return Some(team);
+        }
+    }
+
+    let output = extract("IDEProvisioningTeamByIdentifier", "json")
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let teams: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    teams.as_object()?.keys().next().cloned()
+}
+
+/// Extract the team ID from the first development identity in
+/// `security find-identity -v -p codesigning` output.
+fn parse_development_team(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let is_development = line.contains("Apple Development:")
+            || line.contains("iPhone Developer:")
+            || line.contains("iOS Development:");
+        if !is_development {
+            continue;
+        }
+        if let Some(start) = line.rfind('(')
+            && let Some(end) = line.rfind(')')
+            && end > start
+        {
+            return Some(line[start + 1..end].to_string());
+        }
+    }
+    None
 }
 
 impl std::fmt::Display for AppleSdk {

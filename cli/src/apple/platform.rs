@@ -247,7 +247,7 @@ pub async fn build_rust_lib(
 /// # Errors
 ///
 /// Returns an error when the Xcode project does not define exactly one value.
-pub(crate) async fn apple_deployment_target(
+pub async fn apple_deployment_target(
     project: &Project,
     platform: TargetPlatform,
 ) -> eyre::Result<(&'static str, String)> {
@@ -731,7 +731,28 @@ pub async fn package_apple(
         OsString::from("build"),
     ];
 
-    if platform.is_simulator() || options.is_debug() {
+    // Physical Apple OSes refuse unsigned code in every profile, so signing
+    // is disabled only for simulators and for local macOS debug builds. For a
+    // device target the build sets automatic signing with the developer team
+    // resolved from the keychain — the generated Xcode project cannot know it.
+    let device_platform = matches!(
+        platform,
+        TargetPlatform::IOS
+            | TargetPlatform::TvOS
+            | TargetPlatform::WatchOS
+            | TargetPlatform::VisionOS
+    );
+    if device_platform {
+        let team = crate::apple::toolchain::development_team_id(&Host::current()).await?;
+        // `-allowProvisioningUpdates` lets automatic signing mint the
+        // development provisioning profile a fresh bundle id does not have
+        // yet; without it xcodebuild fails GatherProvisioningInputs.
+        args.extend([
+            OsString::from("-allowProvisioningUpdates"),
+            OsString::from("CODE_SIGN_STYLE=Automatic"),
+            OsString::from(format!("DEVELOPMENT_TEAM={team}")),
+        ]);
+    } else if platform.is_simulator() || options.is_debug() {
         args.extend([
             OsString::from("CODE_SIGNING_ALLOWED=NO"),
             OsString::from("CODE_SIGNING_REQUIRED=NO"),
@@ -775,6 +796,14 @@ pub async fn package_apple(
         .await?;
     } else {
         RustDynamicLibraries::remove_staged(&frameworks_dir, &triple).await?;
+    }
+
+    // The dylibs staged above land after `xcodebuild` signed the bundle, so
+    // they carry no signature. A device refuses them at `dyld`; sign them
+    // with the identity Xcode resolved for the app.
+    #[cfg(target_os = "macos")]
+    if device_platform {
+        crate::macos_bundle::sign_staged_device_libraries(&app_path, &frameworks_dir).await?;
     }
 
     #[cfg(target_os = "macos")]

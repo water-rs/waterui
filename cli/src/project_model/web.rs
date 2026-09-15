@@ -211,11 +211,11 @@ pub async fn build_frontend(
 /// The environment variable that carries the dev-server URL to a debug app.
 ///
 /// Every launch channel reduces to this name: desktop spawns it directly,
-/// `simctl launch` forwards it as `SIMCTL_CHILD_WATERUI_DEV_URL`, and Android
-/// ships it as the `waterui.env.WATERUI_DEV_URL` intent extra that the
-/// generated `MainActivity` turns back into an environment variable before
-/// the runtime initializes. Physical iOS devices cannot receive environment
-/// variables at all; they get [`dev_url_launch_arg`] instead.
+/// `simctl launch` forwards it as `SIMCTL_CHILD_WATERUI_DEV_URL`,
+/// `devicectl device process launch` carries it in the `-e` environment
+/// dictionary, and Android ships it as the `waterui.env.WATERUI_DEV_URL`
+/// intent extra that the generated `MainActivity` turns back into an
+/// environment variable before the runtime initializes.
 pub const DEV_URL_ENV: &str = "WATERUI_DEV_URL";
 
 /// A target `water run` can hand a dev-server URL to.
@@ -231,38 +231,54 @@ pub enum DevTarget {
     Android,
 }
 
-/// How the dev-server URL reaches the app on a given target.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DevUrlHandoff {
-    /// `WATERUI_DEV_URL` in the launch environment — the desktop, iOS
-    /// simulator, and Android launch paths all forward the run environment.
-    Environment,
-    /// `--waterui-dev-url=<url>` appended to the process-launch arguments —
-    /// the only channel a physical iOS device has.
-    LaunchArgument(String),
-}
-
-/// The handoff a target needs for the dev-server URL.
+/// The URL the target should open, rewritten when the target cannot reach
+/// this machine's loopback.
 ///
-/// Every [`DevTarget`] has a defined handoff; a launch path that cannot apply
-/// the returned one must fail loudly rather than let the app fall through to
-/// the staged bundle.
-#[must_use]
-pub fn dev_url_handoff(target: DevTarget, url: &url::Url) -> DevUrlHandoff {
-    match target {
-        DevTarget::Desktop | DevTarget::IosSimulator | DevTarget::Android => {
-            DevUrlHandoff::Environment
-        }
-        DevTarget::IosDevice => DevUrlHandoff::LaunchArgument(dev_url_launch_arg(url)),
+/// `WATERUI_DEV_URL` travels in the launch environment on every target —
+/// `devicectl device process launch -e` carries it to a physical iOS device
+/// exactly as `SIMCTL_CHILD_*` carries it to a simulator.
+///
+/// On a physical iOS device `localhost` is the phone itself, so the URL's
+/// loopback host is replaced with the Mac's LAN address — the address the
+/// device can actually route to. The dev server must be bound to a
+/// non-loopback interface for this to work; [`WebDevServer::spawn`] does
+/// that when its target is a physical device.
+///
+/// # Errors
+/// Fails for [`DevTarget::IosDevice`] when no LAN-facing IPv4 address can be
+/// determined — passing the phone a `localhost` URL would fail silently, so
+/// this errors instead.
+pub fn device_facing_url(target: DevTarget, url: &url::Url) -> eyre::Result<url::Url> {
+    if target != DevTarget::IosDevice {
+        return Ok(url.clone());
     }
+    let mut url = url.clone();
+    let host = lan_ipv4()?.to_string();
+    url.set_host(Some(&host))
+        .wrap_err_with(|| format!("dev-server URL cannot carry a LAN host: {url}"))?;
+    Ok(url)
 }
 
-/// The `--waterui-dev-url=<url>` argument a physical-iOS `devicectl device
-/// process launch` receives after `--`; `dev_url()` reads it from the process
-/// arguments.
-#[must_use]
-pub fn dev_url_launch_arg(url: &url::Url) -> String {
-    format!("--waterui-dev-url={url}")
+/// The IPv4 address this Mac presents on the LAN, found by asking the kernel
+/// which interface would carry outbound traffic.
+///
+/// `UdpSocket::connect` to a public address performs no I/O — it only forces
+/// a routing decision, and the resulting local address is the interface
+/// address a LAN peer (the iPhone) can reach.
+fn lan_ipv4() -> eyre::Result<std::net::Ipv4Addr> {
+    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
+        .wrap_err("failed to bind a UDP socket for LAN address detection")?;
+    socket
+        .connect((std::net::Ipv4Addr::new(192, 0, 0, 1), 80))
+        .wrap_err(
+            "no outbound route — cannot determine this Mac's LAN address for the iOS device",
+        )?;
+    match socket.local_addr()?.ip() {
+        std::net::IpAddr::V4(ip) if !ip.is_loopback() => Ok(ip),
+        other => Err(eyre::eyre!(
+            "the outbound interface has no usable LAN IPv4 address ({other}); connect the Mac to the same LAN as the iOS device"
+        )),
+    }
 }
 
 /// `adb -s <device> reverse tcp:<port> tcp:<port>` — maps the device's
@@ -406,6 +422,10 @@ impl WebDevServer {
     /// Fails when the process cannot be spawned or its stdout ends without a
     /// loopback dev-server URL ever appearing.
     ///
+    /// `expose_on_lan` appends `--host 0.0.0.0` to the dev script so the
+    /// bundler listens beyond loopback — required when the target is a
+    /// physical device, for which `localhost` is the device itself.
+    ///
     /// # Panics
     ///
     /// Panics if the spawned child has no piped stdout — impossible, since
@@ -414,6 +434,7 @@ impl WebDevServer {
         package_manager: PackageManager,
         root: &Path,
         script: &str,
+        expose_on_lan: bool,
     ) -> eyre::Result<Self> {
         use smol::io::{AsyncBufReadExt, BufReader};
         use smol::stream::StreamExt as _;
@@ -422,10 +443,17 @@ impl WebDevServer {
         // `std::process::Command`, not `smol`'s: the child must lead its own
         // process group so the guard's drop can signal the whole tree.
         let mut command = std::process::Command::new(pm);
+        command.arg("run").arg(script).current_dir(root);
+        if expose_on_lan {
+            // npm needs `--` to forward args to the script; bun, pnpm and
+            // yarn pass them through directly — the same convention
+            // `PackageManager::create_vite` follows.
+            if package_manager == PackageManager::Npm {
+                command.arg("--");
+            }
+            command.args(["--host", "0.0.0.0"]);
+        }
         command
-            .arg("run")
-            .arg(script)
-            .current_dir(root)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
@@ -1597,19 +1625,20 @@ mod tests {
     }
 
     #[test]
-    fn dev_url_handoff_is_environment_except_ios_device() {
+    fn device_facing_url_rewrites_loopback_for_ios_device() {
         let url: url::Url = "http://localhost:5173/".parse().unwrap();
         for target in [
             DevTarget::Desktop,
             DevTarget::IosSimulator,
             DevTarget::Android,
         ] {
-            assert_eq!(dev_url_handoff(target, &url), DevUrlHandoff::Environment);
+            assert_eq!(device_facing_url(target, &url).unwrap(), url);
         }
-        assert_eq!(
-            dev_url_handoff(DevTarget::IosDevice, &url),
-            DevUrlHandoff::LaunchArgument("--waterui-dev-url=http://localhost:5173/".to_string())
-        );
+        let rewritten = device_facing_url(DevTarget::IosDevice, &url).unwrap();
+        assert_eq!(rewritten.port(), Some(5173));
+        let host = rewritten.host_str().expect("a host");
+        let ip: std::net::Ipv4Addr = host.parse().expect("an IPv4 LAN host");
+        assert!(!ip.is_loopback());
     }
 
     #[test]

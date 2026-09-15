@@ -11,7 +11,7 @@ edition = "2024"
 minimum-cli-version = "0.1.0"
 android-min-api-level = 26
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
-apple-backend-version = "0.3.0-dev.1"
+apple-backend-version = "0.3.0-dev.2"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
 scaffold-packages = ["hydrolysis", "hydrolysis-m3", "waterui-dew", "waterui-gtk"]
 

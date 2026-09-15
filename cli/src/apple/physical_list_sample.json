@@ -1,0 +1,74 @@
+{
+  "info" : {
+    "commandType" : "devicectl.list.devices",
+    "jsonVersion" : 3,
+    "outcome" : "success",
+    "version" : "518.33"
+  },
+  "result" : {
+    "devices" : [
+      {
+        "capabilities" : [
+          {
+            "featureIdentifier" : "com.apple.coredevice.feature.connectdevice",
+            "name" : "Connect to Device"
+          }
+        ],
+        "connectionProperties" : {
+          "authenticationType" : "manualPairing",
+          "isMobileDeviceOnly" : false,
+          "lastConnectionDate" : "2026-09-14T21:52:00.000Z",
+          "pairingState" : "paired",
+          "potentialHostnames" : [
+            "Lexos-iPhone-16-Pro.coredevice.local",
+            "898E9834-79A1-5EAD-AA1A-C54E27F04456.coredevice.local",
+            "00008140-00011C210CF3001C.coredevice.local"
+          ],
+          "transportType" : "wired",
+          "tunnelState" : "disconnected",
+          "tunnelTransportProtocol" : "tcp"
+        },
+        "deviceProperties" : {
+          "bootState" : "booted",
+          "developerModeStatus" : "enabled",
+          "name" : "Lexo’s iPhone 16 Pro",
+          "osBuildUpdate" : "24A5408d",
+          "osVersionNumber" : "27.0",
+          "releaseType" : "Beta"
+        },
+        "hardwareProperties" : {
+          "cpuType" : {
+            "name" : "arm64e",
+            "subType" : 2,
+            "type" : 16777228
+          },
+          "deviceType" : "iPhone",
+          "ecid" : 312403253461020,
+          "hardwareModel" : "D93AP",
+          "marketingName" : "iPhone 16 Pro",
+          "productType" : "iPhone17,1",
+          "serialNumber" : "GRHHFXC3J4",
+          "supportedCPUFamilies" : [ "arm64e", "arm64" ],
+          "udid" : "00008140-00011C210CF3001C"
+        },
+        "identifier" : "898E9834-79A1-5EAD-AA1A-C54E27F04456",
+        "tags" : [],
+        "visibilityClass" : "default"
+      },
+      {
+        "connectionProperties" : {
+          "pairingState" : "unpaired",
+          "tunnelState" : "unavailable"
+        },
+        "deviceProperties" : {
+          "name" : "Office Apple TV"
+        },
+        "hardwareProperties" : {
+          "deviceType" : "appleTV"
+        },
+        "identifier" : "11111111-2222-3333-4444-555555555555",
+        "visibilityClass" : "default"
+      }
+    ]
+  }
+}

@@ -181,6 +181,70 @@ pub async fn sign_macos_app(
     Ok(())
 }
 
+/// Signs the libraries staged into a device bundle's `Frameworks/` directory.
+///
+/// `xcodebuild` signs what it embeds; `water package` copies the Rust dylibs
+/// into `Frameworks/` afterwards, so they reach a device with no signature at
+/// all and `dyld` refuses them. Each staged file is re-signed with the leaf
+/// identity Xcode used for the app itself, read back from the app's
+/// `Authority` chain — the generated project cannot know which of the
+/// keychain's development certificates automatic signing resolved.
+///
+/// # Errors
+///
+/// Returns an error if `codesign` cannot read the app's signature or sign a
+/// staged library.
+#[cfg(target_os = "macos")]
+pub async fn sign_staged_device_libraries(
+    app_path: &Path,
+    frameworks_dir: &Path,
+) -> eyre::Result<()> {
+    use crate::toolchain::Host;
+
+    if !frameworks_dir.exists() {
+        return Ok(());
+    }
+
+    // `codesign` reports the signature on stderr, and the `Authority=` chain
+    // only appears at `-vvv`; its first line is the leaf certificate that
+    // signed the app.
+    let output = Host::current()
+        .output(
+            "codesign",
+            [std::ffi::OsStr::new("-dvvv"), app_path.as_os_str()],
+        )
+        .await?;
+    let info = String::from_utf8_lossy(&output.stderr);
+    let identity = info
+        .lines()
+        .find_map(|line| line.strip_prefix("Authority="))
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "codesign reported no signing authority for {}",
+                app_path.display()
+            )
+        })?;
+
+    let mut staged_paths = Vec::new();
+    let mut entries = fs::read_dir(frameworks_dir).await?;
+    while let Some(entry) = entries.next().await {
+        let path = entry?.path();
+        if path.is_file()
+            || matches!(
+                path.extension().and_then(std::ffi::OsStr::to_str),
+                Some("app" | "framework")
+            )
+        {
+            staged_paths.push(path);
+        }
+    }
+    staged_paths.sort();
+    for staged in staged_paths {
+        codesign_path(&staged, identity, None).await?;
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn first_codesigning_identity(output: &str) -> Option<&str> {
     output.lines().find_map(|line| {

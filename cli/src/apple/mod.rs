@@ -106,6 +106,7 @@ pub mod local {
     }
 }
 /// Apple platform configuration.
+pub mod physical;
 pub mod platform;
 /// Apple toolchain management.
 pub mod toolchain;

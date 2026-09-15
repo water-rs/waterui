@@ -199,7 +199,7 @@ pub(crate) fn format_failure_stream(label: &str, bytes: &[u8]) -> String {
 /// # Errors
 /// - If the input is empty, has more than three numeric components, or is not
 ///   valid semver after normalization.
-pub(crate) fn parse_semver_version(input: &str) -> Result<Version, VersionParseError> {
+pub fn parse_semver_version(input: &str) -> Result<Version, VersionParseError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(VersionParseError::EmptyVersion);
@@ -243,7 +243,7 @@ pub(crate) fn parse_semver_version(input: &str) -> Result<Version, VersionParseE
 
 /// A version string `parse_semver_version` could not normalize.
 #[derive(Debug, Error)]
-pub(crate) enum VersionParseError {
+pub enum VersionParseError {
     /// The version string was empty.
     #[error("version is empty")]
     EmptyVersion,

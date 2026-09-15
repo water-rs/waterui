@@ -21,7 +21,7 @@ use tracing::{debug as trace_debug, info, warn};
 use std::path::Path;
 
 use crate::{
-    apple::platform::apple_deployment_target,
+    apple::{physical::ApplePhysicalDevice, platform::apple_deployment_target},
     debug,
     device::{
         ApplicationExit, Artifact, Device, DeviceEvent, FailToRun, Local, LogLevel, Running,
@@ -501,6 +501,9 @@ pub enum AppleDevice {
     /// An Apple Simulator device
     Simulator(Box<AppleSimulator>),
 
+    /// A paired physical iOS device reachable over USB or the LAN.
+    Physical(ApplePhysicalDevice),
+
     /// The current physical `macOS` device
     ///
     /// Apple do not provide macOS simulator, so this represents the current physical machine.
@@ -512,6 +515,7 @@ impl Device for AppleDevice {
     fn name(&self) -> &str {
         match self {
             Self::Simulator(simulator) => simulator.name(),
+            Self::Physical(device) => device.name(),
             Self::Current(mac_os) => mac_os.name(),
         }
     }
@@ -519,6 +523,7 @@ impl Device for AppleDevice {
     async fn launch(&self, host: &Host) -> eyre::Result<()> {
         match self {
             Self::Simulator(simulator) => simulator.launch(host).await,
+            Self::Physical(device) => device.launch(host).await,
             Self::Current(_) => {
                 // No need to launch anything for MacOS physical device
                 // This is the current machine
@@ -535,18 +540,26 @@ impl Device for AppleDevice {
     ) -> Result<crate::device::Running, crate::device::FailToRun> {
         match self {
             Self::Simulator(simulator) => simulator.run(host, artifact, options).await,
+            Self::Physical(device) => device.run(host, artifact, options).await,
             Self::Current(mac_os) => mac_os.run(host, artifact, options).await,
         }
     }
 
     async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
-        // Aggregate all available Apple devices: simulators + local
+        // Aggregate all available Apple devices: simulators + physical + local
         let mut devices = Vec::new();
 
         // Add available simulators
         let simulators = AppleSimulator::scan(host).await?;
         for sim in simulators {
             devices.push(Self::Simulator(Box::new(sim)));
+        }
+
+        // Add paired physical devices; a devicectl failure is non-fatal —
+        // the simulator list is still useful on its own.
+        match ApplePhysicalDevice::scan(host).await {
+            Ok(physical) => devices.extend(physical.into_iter().map(Self::Physical)),
+            Err(error) => warn!("devicectl device scan failed: {error:#}"),
         }
 
         // Add local machine

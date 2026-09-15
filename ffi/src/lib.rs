@@ -350,13 +350,26 @@ fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>) {
         .init();
 
     #[cfg(target_vendor = "apple")]
-    tracing_subscriber::registry()
-        .with(env_filter(
-            "wgpu_core=error,wgpu_hal=error,naga=error,metal=error",
-        ))
-        .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
-        .with(inspector)
-        .init();
+    {
+        // A physical iOS device's unified log is unreachable from the host —
+        // `devicectl --console` only carries the process's stderr. When
+        // `water run --logs` asked for a level, records are therefore also
+        // written to stderr; simulators ignore the copy (their stream comes
+        // from `log stream`).
+        let console_layer = std::env::var_os(LOG_LEVEL_ENV).map(|_| {
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .without_time()
+        });
+        tracing_subscriber::registry()
+            .with(env_filter(
+                "wgpu_core=error,wgpu_hal=error,naga=error,metal=error",
+            ))
+            .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
+            .with(console_layer)
+            .with(inspector)
+            .init();
+    }
 
     #[cfg(not(any(target_os = "android", target_vendor = "apple")))]
     tracing_subscriber::registry()
