@@ -1351,12 +1351,16 @@ pub trait WidgetTheme {
         _is_last: bool,
     ) {
     }
-    /// Draw one segmented picker state layer.
+    /// Draw one segmented picker state layer. `is_first`/`is_last` select the
+    /// item-shape radii the layer must be clipped to: the first item rounds
+    /// its leading side, the last its trailing side, middle items are square.
     fn draw_segmented_picker_state_layer(
         &self,
         _draw: &mut dyn DrawContext,
         _bounds: Rect,
         _selected: bool,
+        _is_first: bool,
+        _is_last: bool,
         _state: WidgetInteractionState,
     ) {
     }
