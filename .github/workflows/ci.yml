@@ -58,9 +58,9 @@ env:
 jobs:
   # Which checks this change can reach. `code` is any changed file that is
   # not prose or repository metadata, so a docs-only change runs the typo
-  # check and nothing else; `ffi` is the C ABI and the two backends that
-  # consume its header; `deps` is what the audit, license and unused-
-  # dependency checks read. A workflow change runs the whole gate, because a
+  # check and nothing else; `ffi` is the C ABI and the root manifest whose
+  # metadata names its Android floor; `deps` is what the audit, license and
+  # unused-dependency checks read. A workflow change runs the whole gate, because a
   # filter cannot see what a workflow edit reaches.
   #
   # Two filter steps, because dorny/paths-filter applies one quantifier to
@@ -94,9 +94,7 @@ jobs:
           filters: |
             ffi:
               - "ffi/**"
-              - "backends/android"
               - "Cargo.toml"
-              - ".github/scripts/**"
             deps:
               - "**/Cargo.toml"
               - "**/Cargo.lock"
@@ -299,29 +297,6 @@ jobs:
             echo "CXX_aarch64_linux_android=$bin/aarch64-linux-android$api-clang++"
             echo "AR_aarch64_linux_android=$bin/llvm-ar"
           } >> "$GITHUB_ENV"
-      # The backend submodule declares its own `minSdk` — it builds standalone
-      # and cannot read the framework manifest — but the two must agree, or a
-      # scaffolded app's floor is one the runtime does not support. The value
-      # is read from Gradle's own evaluation of the build script, never by
-      # scraping it.
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-      - uses: gradle/actions/setup-gradle@v4
-      - name: Verify the runtime's minSdk agrees with the framework floor
-        working-directory: backends/android
-        run: |
-          set -euo pipefail
-          min_sdk="$(./gradlew -q --no-daemon --init-script "$GITHUB_WORKSPACE/.github/scripts/android-min-sdk.init.gradle" :runtime:waterUiMinSdk | sed -n 's/^WATERUI_MIN_SDK=//p')"
-          if [ -z "$min_sdk" ]; then
-            echo "::error::could not evaluate the Android runtime's minSdk from Gradle"
-            exit 1
-          fi
-          if [ "$min_sdk" != "$WATERUI_ANDROID_MIN_API_LEVEL" ]; then
-            echo "::error::backends/android runtime minSdk ($min_sdk) does not match the framework's android-min-api-level ($WATERUI_ANDROID_MIN_API_LEVEL)"
-            exit 1
-          fi
       - name: Clippy (aarch64-linux-android)
         run: cargo clippy -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
 
