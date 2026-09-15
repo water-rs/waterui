@@ -35,6 +35,12 @@ pub struct WaterConfig {
     /// Managed build-cache policy.
     #[serde(default)]
     pub build_cache: BuildCacheConfig,
+    /// The device `water run` last used per target, keyed by
+    /// `"<backend>/<platform>"` (for example `"apple/ios"`). The value is the
+    /// device's stable identifier — a simulator UDID, a physical-device
+    /// identifier, an Android serial, or an AVD name.
+    #[serde(default)]
+    pub last_used_device: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -264,12 +270,25 @@ async fn ensure_global_config_in(water_home: &Path) -> eyre::Result<WaterConfig>
     }
 
     let config = WaterConfig::default();
-    let contents =
-        toml::to_string_pretty(&config).wrap_err("Failed to serialize default Water config")?;
+    write_global_config_in(water_home, &config).await?;
+    Ok(config)
+}
+
+/// Persist `config` to `~/.water/config.toml`.
+///
+/// # Errors
+/// Returns an error if the config cannot be serialized or written.
+pub async fn write_global_config(config: &WaterConfig) -> eyre::Result<()> {
+    let water_home = water_home_dir()?;
+    write_global_config_in(&water_home, config).await
+}
+
+async fn write_global_config_in(water_home: &Path, config: &WaterConfig) -> eyre::Result<()> {
+    let config_path = water_home.join(CONFIG_FILE_NAME);
+    let contents = toml::to_string_pretty(config).wrap_err("Failed to serialize Water config")?;
     fs::write(&config_path, contents)
         .await
-        .wrap_err_with(|| format!("Failed to write Water config {}", config_path.display()))?;
-    Ok(config)
+        .wrap_err_with(|| format!("Failed to write Water config {}", config_path.display()))
 }
 
 async fn ensure_project_build_cache_in(
@@ -744,7 +763,42 @@ mod tests {
     use super::{
         CLI_COMMIT, WaterConfig, ensure_global_config_in, ensure_project_build_cache_in,
         metadata_path, now_unix_seconds, project_build_cache_dir_in, remove_project_build_cache_in,
+        write_global_config_in,
     };
+
+    #[test]
+    fn global_config_round_trips_last_used_devices() {
+        smol::block_on(async {
+            let water_home = tempdir().expect("water home");
+
+            let mut config = WaterConfig::default();
+            config.last_used_device.insert(
+                "apple/ios".to_owned(),
+                "00008140-00011C210CF3001C".to_owned(),
+            );
+            config
+                .last_used_device
+                .insert("android/android".to_owned(), "emulator-5554".to_owned());
+            write_global_config_in(water_home.path(), &config)
+                .await
+                .expect("write config");
+
+            let loaded = ensure_global_config_in(water_home.path())
+                .await
+                .expect("read config back");
+            assert_eq!(
+                loaded.last_used_device.get("apple/ios").map(String::as_str),
+                Some("00008140-00011C210CF3001C")
+            );
+            assert_eq!(
+                loaded
+                    .last_used_device
+                    .get("android/android")
+                    .map(String::as_str),
+                Some("emulator-5554")
+            );
+        });
+    }
 
     #[test]
     fn ensure_global_config_writes_default_build_cache_policy() {
