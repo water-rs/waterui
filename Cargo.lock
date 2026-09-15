@@ -10581,13 +10581,11 @@ dependencies = [
 name = "waterui-layout"
 version = "0.3.2"
 dependencies = [
- "hydrolysis-m3",
  "nami",
  "num-traits",
  "waterui",
  "waterui-core",
  "waterui-graphics",
- "waterui-testing",
 ]
 
 [[package]]
@@ -10883,6 +10881,7 @@ dependencies = [
  "waterui",
  "waterui-canvas",
  "waterui-core",
+ "waterui-layout",
  "waterui-preview-protocol",
  "wgpu",
 ]
