@@ -791,7 +791,7 @@ impl CefPageHandle {
             new_request_handler(Rc::clone(&state)),
             new_display_handler(Rc::clone(&state)),
         );
-        let mut request_context = create_request_context(&runtime, &configuration);
+        let request_context = create_request_context(&runtime, &configuration);
         let initial_url = configuration
             .url
             .as_ref()
@@ -810,7 +810,7 @@ impl CefPageHandle {
                 ..Default::default()
             }),
             None,
-            Some(&mut request_context),
+            None,
         )
         .expect("CEF failed to create a shared-texture windowless browser");
         let host = browser.host().expect("CEF browser must expose its host");
