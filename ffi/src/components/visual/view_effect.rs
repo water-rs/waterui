@@ -1370,7 +1370,10 @@ fn start_view_effect_setup(state: &WuiViewEffectState, input_format: wgpu::Textu
 /// Every pipeline and texture the setup produced belonged to the dead device,
 /// so `setup` runs again against the fresh context; `setup_ready` drops for
 /// the duration and the completion redraw replaces the stale frame.
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+///
+/// Android only: platforms without an asynchronous setup path never populate
+/// `setup_formats`, so there is nothing to restart there.
+#[cfg(target_os = "android")]
 fn restart_view_effect_setup(state: &WuiViewEffectState) {
     let (input_format, output_format) = state
         .setup_formats
@@ -1385,6 +1388,12 @@ fn restart_view_effect_setup(state: &WuiViewEffectState) {
     spawn_view_effect_setup(state, input_format, output_format);
 }
 
+/// No-op on platforms that never run asynchronous effect setup: the recovery
+/// path only recreates the textures and caches the dead device owned.
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+fn restart_view_effect_setup(_state: &WuiViewEffectState) {}
+
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 fn spawn_view_effect_setup(
     state: &WuiViewEffectState,
     input_format: wgpu::TextureFormat,

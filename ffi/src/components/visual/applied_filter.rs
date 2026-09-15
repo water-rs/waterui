@@ -1390,10 +1390,11 @@ fn start_applied_filter_setup(state: &WuiAppliedFilterState, input_format: wgpu:
 /// the duration and the completion redraw replaces the stale frame.
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn restart_applied_filter_setup(state: &WuiAppliedFilterState) {
-    let (input_format, output_format) = state
-        .setup_formats
-        .get()
-        .expect("AppliedFilter recovery requires a completed earlier setup");
+    // Platforms without an asynchronous setup path never populate
+    // `setup_formats`; there is nothing to restart there.
+    let Some((input_format, output_format)) = state.setup_formats.get() else {
+        return;
+    };
     // A setup already in flight read the rebuilt context when it started, so
     // it is the recovery; starting another one would panic on the empty slot.
     if state.filter.borrow().is_none() {
