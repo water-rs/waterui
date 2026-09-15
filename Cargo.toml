@@ -63,7 +63,7 @@ apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 # 0.2.0 predates the backend's Swift 6 sendability fixes and fails under
 # Xcode 26.x; the dev-line tag carries them and the FFI sync this tree needs.
 # Pin the next `0.3.0` release once it tags.
-apple-backend-version = "0.3.0-dev.1"
+apple-backend-version = "0.3.0-dev.2"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
