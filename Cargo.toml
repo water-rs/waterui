@@ -514,14 +514,14 @@ waterkit-video-core = { path = "kit/multimedia/video/core" }
 waterkit-video-player = { path = "kit/multimedia/video/player" }
 waterkit-video-streaming = { path = "kit/multimedia/video/streaming" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
-# The registry `hydrolysis`/`hydrolysis-m3` match `ShapeKind` exhaustively, so
-# they stop compiling the moment this branch adds the fixed-radius variants;
-# the companion branches on water-rs resolve them. The `hydrolysis` pin is its
-# `dev` at the commit that also announces `waterui:first-frame` on the web
-# canvas (water-rs/hydrolysis#21), which the launch screen written by the CLI
-# waits for. Drop these entries once the releases carry both.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "447b07fdad58c503425f3ebeea0aa1bbdc037a2d" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "9a3977e296dbb236838b8a9ca069921d2953405b" }
+# The registry `hydrolysis`/`hydrolysis-m3` call
+# `draw_segmented_picker_state_layer` with the pre-position signature and lack
+# `segment_min_width` in `PickerMetrics`, so they stop compiling the moment
+# this branch changes the contract; the companion branches on water-rs
+# resolve them (water-rs/hydrolysis#37, water-rs/hydrolysis-m3#57). Drop
+# these entries once the releases carry both.
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "30fc7c97dcd6d8b863824403c0744049ec7bff05" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "c4cd817b4b5345dd8600aa4d7ab0b0ca33ed4238" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
 # storage and takes its address as the opaque class pointer.
