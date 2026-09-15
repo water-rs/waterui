@@ -683,6 +683,10 @@ pub struct PickerMetrics {
     pub popup_row_height: f64,
     /// Popup menu corner radius.
     pub popup_corner_radius: f64,
+    /// Minimum width of one segmented-picker segment, including its
+    /// `horizontal_inset` padding on both sides (M3 `ButtonDefaults.MinWidth`
+    /// is 58dp per segment; unused by non-segmented styles).
+    pub segment_min_width: f64,
 }
 
 /// Slider layout metrics.
