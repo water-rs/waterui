@@ -9665,7 +9665,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-audio"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc860ee622c4074e3abc832ccba8219f17485477d6eb6f02386b4be3cf66ba03"
 dependencies = [
  "async-channel",
  "cpal 0.18.2",
@@ -9700,7 +9702,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-build"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3c34faa4582c345b8e33295e712143765754737c0e0d0a06a2cd703474cf2a5"
 dependencies = [
  "jni 0.22.4",
  "ndk-context",
@@ -9710,7 +9714,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-camera"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67cbba6715dd7a93b4b89336635c947ae27a40d5898d26bc90c9489d93348302"
 dependencies = [
  "async-channel",
  "core-graphics-types",
@@ -9741,7 +9747,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-clipboard"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e91b785f205b4b3cb4c7af3b26fc4e4cd854409cf30069305d4a539b68a7832"
 dependencies = [
  "async-channel",
  "blocking",
@@ -9761,7 +9769,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-codec"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aa99e3c2259b1207440e69cf62fcfe80a2fa623243d96b2352bdfc7acff4306"
 dependencies = [
  "avif-parse",
  "cros-codecs",
@@ -9796,7 +9806,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-core"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a5280d613f0993df3760be41c5c7c9e76d3dec06e16b40078185390794c1528"
 dependencies = [
  "executor-core",
  "jiff",
@@ -9807,7 +9819,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-dialog"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "545c643738cc460569922defc5ac4045a30e715175fb4124f18563726b2a30d7"
 dependencies = [
  "futures",
  "jni 0.22.4",
@@ -9822,7 +9836,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-fs"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d32f1810aa4b7aab9f1d3551957fe62397ac814316d9736725cc1767511b6f5"
 dependencies = [
  "async-fs",
  "dirs 6.0.0",
@@ -9839,7 +9855,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-haptic"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31d93308984c1dc2f9cebfabf29976b049aa5fdc178b1a67a3c099290ddaf4fb"
 dependencies = [
  "futures",
  "jni 0.22.4",
@@ -9854,7 +9872,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-location"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "922f9a75cc1cc40bae9691b2c68fada62ee7838f279f5b5b0a9d771c43249486"
 dependencies = [
  "async-channel",
  "async-io",
@@ -9875,7 +9895,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-permission"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "004b16d504c77e343417f2a25fd481c32110bafe41272b533d24517d01341197"
 dependencies = [
  "async-channel",
  "futures",
@@ -9894,7 +9916,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-screen"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "934e9f9a15d494436f615ca9058da68495598eb988ef70546da1c71776b6249b"
 dependencies = [
  "async-channel",
  "blocking",
@@ -9917,7 +9941,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-video"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a319466a17112d053a7e28da52bf2f17b88958464b18f112d2fdb75c0fe3e070"
 dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
@@ -9927,7 +9953,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-video-container"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "885426d999deca96842ebd37c711b4454ed25701a65b4d663477937f1162c20d"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -9941,14 +9969,18 @@ dependencies = [
 
 [[package]]
 name = "waterkit-video-core"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e8fda94130aeea5b6ea92a819a69019ec319006d88f3e539fcb94e78040607c"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "waterkit-video-player"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bcf31aa90aec865e834b86493d40b0dbfca8a856efa0649626a0075641eebf34"
 dependencies = [
  "aes",
  "async-channel",
@@ -9970,7 +10002,9 @@ dependencies = [
 
 [[package]]
 name = "waterkit-video-streaming"
-version = "0.1.1"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "995fe4629071240709a5625deade29c95d7d0d93c594ae8dd82ec449371cd979"
 dependencies = [
  "async-fs",
  "base64 0.22.1",

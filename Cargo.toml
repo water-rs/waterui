@@ -24,7 +24,6 @@ exclude = [
   "derive",
   ".github",
   "*.png",
-  "kit",
 ]
 
 
@@ -190,18 +189,18 @@ waterui-icons-lucide = { version = "0.1.2", path = "components/icon/lucide" }
 waterui-icons-native = { version = "0.1.2", path = "components/icon/native" }
 waterui-locale = { version = "0.1.2", path = "utils/locale" }
 waterui-map = { version = "0.1.2", path = "components/data/map" }
-waterkit-location = { version = "0.1.0", path = "kit/device/location" }
-waterkit-screen = { version = "0.1.0", path = "kit/platform/screen" }
-waterkit-audio = { version = "0.1.0", path = "kit/multimedia/audio", default-features = false }
-waterkit-clipboard = { version = "0.1.0", path = "kit/platform/clipboard" }
-waterkit-permission = { version = "0.1.0", path = "kit/platform/permission" }
-waterkit-dialog = { version = "0.1.0", path = "kit/sharing/dialog" }
-waterkit-fs = { version = "0.1.0", path = "kit/platform/fs" }
-waterkit-haptic = { version = "0.1.0", path = "kit/device/haptic" }
-waterkit-camera = { version = "0.1.0", path = "kit/device/camera" }
-waterkit-codec = { version = "0.1.0", path = "kit/multimedia/codec", default-features = false }
-waterkit-video = { version = "0.1.0", path = "kit/multimedia/video", features = ["streaming"] }
-waterkit-build = { version = "0.1.0", path = "kit/utils/build" }
+waterkit-location = "0.1.2"
+waterkit-screen = "0.1.2"
+waterkit-audio = { version = "0.1.2", default-features = false }
+waterkit-clipboard = "0.1.2"
+waterkit-permission = "0.1.2"
+waterkit-dialog = "0.1.2"
+waterkit-fs = "0.1.2"
+waterkit-haptic = "0.1.2"
+waterkit-camera = "0.1.2"
+waterkit-codec = { version = "0.1.2", default-features = false }
+waterkit-video = { version = "0.1.2", features = ["streaming"] }
+waterkit-build = "0.1.2"
 waterui-backend-core = { version = "0.1.2", path = "backends/core", default-features = false }
 filtrate = "0.2.0"
 filtrate-core = "0.2.0"
@@ -500,18 +499,6 @@ waterui-inspector-protocol = { path = "components/devtools/inspector/protocol" }
 waterui-locale = { path = "utils/locale" }
 waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }
-waterkit-clipboard = { path = "kit/platform/clipboard" }
-# The extracted image, visualizer and video-gpu crates depend on the registry
-# waterkit crates; resolve those to the kit copies for the same reason.
-waterkit-audio = { path = "kit/multimedia/audio" }
-waterkit-build = { path = "kit/utils/build" }
-waterkit-fs = { path = "kit/platform/fs" }
-waterkit-codec = { path = "kit/multimedia/codec" }
-waterkit-video = { path = "kit/multimedia/video" }
-waterkit-video-container = { path = "kit/multimedia/video/container" }
-waterkit-video-core = { path = "kit/multimedia/video/core" }
-waterkit-video-player = { path = "kit/multimedia/video/player" }
-waterkit-video-streaming = { path = "kit/multimedia/video/streaming" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # The registry `hydrolysis`/`hydrolysis-m3` call
 # `draw_segmented_picker_state_layer` with the pre-position signature and lack

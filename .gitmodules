@@ -2,7 +2,3 @@
 	path = backends/android
 	url = https://github.com/water-rs/android-backend.git
 	branch = dev
-[submodule "kit"]
-	path = kit
-	url = https://github.com/water-rs/waterkit.git
-	branch = dev
