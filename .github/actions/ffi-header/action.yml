@@ -55,8 +55,7 @@ runs:
             status=1
           fi
         }
+        # Both native backends left the tree; each syncs its copy from
+        # `ffi/waterui.h` in its own CI.
         check . ffi/waterui.h
-        # The Apple backend left the tree — its copy is synced from
-        # `ffi/waterui.h` by the backend's own setup script.
-        check backends/android runtime/src/main/cpp/waterui.h
         exit "$status"

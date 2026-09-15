@@ -10,7 +10,7 @@ This file provides guidance to coding agents (Claude Code, Codex, and friends) w
 **A force-push without the user's authorization is forbidden.** `git push --force`, `--force-with-lease`, a `+refspec`, and anything else that moves a remote branch to a commit that does not descend from what it held all discard whatever another agent, another session, or the user put on that branch since — this is how a merged pull request was dropped from a stack base before the stack landed. The only force-push an agent may make on its own is to a topic branch it created in the current task, that no other pull request uses as its base, and that nobody else has pushed to, and it is made with `--force-with-lease=<branch>:<the sha you last pushed>` so it fails if that ever stops being true. When the lease fails, read what the other push added and build on it; never override it. Rewriting a branch that is the base of another pull request, a branch another session is working on, or any branch you did not create requires the user's explicit authorization in the current conversation. Bringing a branch up to date with `dev` in those situations means merging `dev` into it, which adds commits and never removes any.
 
 1. When you find a problem — a bug, a broken gallery or snapshot, a rotting workflow, a missing primitive, a design gap — open a GitHub issue with `gh issue create`. The issue is the source of truth; do not keep the finding as a chat-only note. Each issue is one self-contained technical task: a single defect or a single implementable change that can be understood, assigned, and merged on its own. Do not file umbrella issues, roadmaps, or sequenced slices. Do not use the word "phase" (or equivalents such as "stage", "part N of M", "step 1/2/3") in the title or body — an issue is not a chapter of a plan. The one exception is a request with genuinely separable parts: file one parent issue that carries the request's intent and exists only to group its sub-issues — no implementation hangs off the parent, and each leaf sub-issue is itself self-contained and lands through its own PR. Assign the earliest open version milestone to every issue you open, unless the work clearly belongs to a later release.
-2. Land the fix on a topic branch in its own git worktree (see the worktree bullet under Engagement Rules). Never `git push origin dev`. Publish the topic branch with `git push --recurse-submodules=on-demand -u origin <branch>` so required submodule commits are on the remote before the superproject.
+2. Land the fix on a topic branch in its own git worktree (see the worktree bullet under Engagement Rules). Never `git push origin dev`. Publish the topic branch with `git push -u origin <branch>`.
 3. Open the pull request with `gh pr create --base dev` and link it to the issue (`Fixes #N`). One PR solves one issue.
 
 A `dev` → `main` merge publishes everything `dev` has accumulated — including every breaking change — and each merge to `main` triggers a crates.io release. Never use a `dev` → `main` merge to transport a fix intended for the current release line (release plumbing, backend pins, scaffold versions): branch the fix off `main`, open the pull request back to `main`, then back-merge `main` into `dev` to keep `dev` in sync. A `dev` → `main` merge happens only at a deliberate version boundary, and only on explicit user instruction.
@@ -166,7 +166,7 @@ Keep the change set strictly scoped to the task.
 - Do not patch around repository-state problems by adding workflow preflight scripts or CI workarounds. Fix the source tree, manifests, submodules, or release configuration at the real source of truth.
 - Do not add crate-level, file-level, or module-level `allow` attributes to skip lint failures during cleanup. Treat lint as code-quality feedback and fix the underlying code, API shape, docs, or type invariants instead.
 - If a lint is a genuine false positive or conflicts with the intended architecture/readability, prefer a narrowly scoped item-level `allow`/`expect` with a concrete reason over contorting the code to satisfy the lint. WaterUI is a main-thread UI framework, so UI-local `spawn_local` futures that capture non-`Send` view state are a valid example. Do not use broad lint exceptions, and do not add exceptions without evidence.
-- Every task gets its own git worktree on a topic branch; the main checkout stays on `dev` and is not edited. `git worktree add -b <branch> ../waterui-wt-<task> origin/dev`, then `git submodule update --init --recursive` inside it. Warm the build with an APFS clone of a sibling checkout's build directory before the first cargo command — `cp -c -R <sibling>/target <worktree>/target` is instant and copy-on-write — and never set `CARGO_TARGET_DIR` or `build.target-dir`: the per-worktree `target/` plus the shared `sccache` is what keeps parallel worktrees from contending on Cargo locks. A backend change is a branch in the submodule pushed to that backend's own repository by URL (`git push https://github.com/water-rs/<backend>.git HEAD:refs/heads/<branch>`), never to the main checkout; the superproject commit then carries the new pin. Do not switch a submodule's branch from two worktrees at once. Remove the worktree (`git worktree remove`) once its pull request has merged.
+- Every task gets its own git worktree on a topic branch; the main checkout stays on `dev` and is not edited. `git worktree add -b <branch> ../waterui-wt-<task> origin/dev`. Warm the build with an APFS clone of a sibling checkout's build directory before the first cargo command — `cp -c -R <sibling>/target <worktree>/target` is instant and copy-on-write — and never set `CARGO_TARGET_DIR` or `build.target-dir`: the per-worktree `target/` plus the shared `sccache` is what keeps parallel worktrees from contending on Cargo locks. A backend change is a pull request in that backend's own repository; the framework then bumps its pin (`apple-backend-version` or `android-backend-revision` in `[package.metadata.waterui]`). Remove the worktree (`git worktree remove`) once its pull request has merged.
 - Use the `waterui` skill only when authoring WaterUI app/example code or checking public user-facing API usage.
 - **Building an app or example is also a framework audit.** While authoring app/example code, every point where a WaterUI component or feature does not exist and its absence costs developer experience or user experience — a primitive you had to hand-roll, a modifier that should be built in, a gap you worked around — is a GitHub issue on this repository, filed under the same rules as any other finding. Do not silently absorb the friction into the example; the example's job is to expose it.
 - The repo-local `.claude/skills/waterui/SKILL.md` is for WaterUI users. Update it only when a user-facing public authoring pattern, API usage rule, or app-level CLI usage changes.
@@ -281,9 +281,9 @@ cargo +nightly run --manifest-path ffi/generator/Cargo.toml
 # Build Apple backend (its own repository — water-rs/apple-backend)
 cd ~/Coding/water-rs/apple-backend && swift build
 
-# Build Android runtime (the wrapper lives in the submodule, not at the repo root;
+# Build Android runtime (its own repository — water-rs/android-backend;
 # `local.properties` is gitignored, so point Gradle at the SDK yourself)
-cd backends/android && ANDROID_HOME=$HOME/Library/Android/sdk ./gradlew runtime:assembleDebug
+cd ~/Coding/water-rs/android-backend && ANDROID_HOME=$HOME/Library/Android/sdk ./gradlew runtime:assembleDebug
 
 # Run demo app (after creating a project)
 water run --platform ios
@@ -348,12 +348,12 @@ Rust View Tree → Public view/backend contracts
 - `media` - Video/audio playback
 - `graphics` - Canvas drawing primitives
 
-### Backends (current checkout layout)
+### Backends
 
-The paths below describe the existing `backends/` layout, not permanent repository ownership. Follow **Repository Boundaries and Distribution** when extracting implementations or resolving their versions.
+No native backend lives in this tree. Follow **Repository Boundaries and Distribution** when resolving their versions.
 
-- **`apple/`** - Removed as a submodule; the Apple backend is the remote Swift package `water-rs/apple-backend`, pinned by `apple-backend-version` in `[package.metadata.waterui]`
-- **`android/`** - Currently a git submodule; independent Android Views + JNI Gradle project
+- **Apple** - the remote Swift package `water-rs/apple-backend`, pinned by `apple-backend-version` in `[package.metadata.waterui]`
+- **Android** - the Gradle project `water-rs/android-backend` (Android Views + JNI), pinned by `android-backend-revision` in `[package.metadata.waterui]` and consumed through JitPack
 
 The high-end self-drawn renderer is not in this directory. `hydrolysis`
 (water-rs/hydrolysis, #480) and its Material 3 widget theme `hydrolysis-m3`
@@ -455,9 +455,7 @@ waterui_ffi::export!();  // Generates FFI entry points
 
 - Rust edition 2024; the supported toolchain floor lives in `rust-version` in the root manifest, not here
 - Workspace lints enforce strict clippy rules including pedantic/nursery
-- Existing Apple/Android gitlinks describe the current checkout; use the repository-boundary policy above for the intended distribution model.
 - One git worktree per task, as described under Engagement Rules.
-- Edit retained submodules in that workspace on their matching topic branches. Preserve other sessions' work and use the workspace integration tooling rather than switching or rewriting their checkouts.
 - The FFI header `ffi/waterui.h` is checked into version control; CI verifies it's up-to-date; **never write C header by hand**
 - Add FFI exports and native bridges only when a component requires a genuine native primitive. Pure Rust compositions and self-drawn components reuse existing public contracts without inventing new C-ABI types (Principles 2 and 4).
 

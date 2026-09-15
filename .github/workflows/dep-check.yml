@@ -14,8 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -31,8 +29,8 @@ jobs:
       - name: Check Rust dependencies
         run: |
           # `cargo upgrade --dry-run` resolves the workspace in place, so it
-          # follows workspace inheritance and the submodule path dependencies
-          # that `cargo outdated`'s temporary copy could not. It prints one
+          # follows workspace inheritance and the patch tables that
+          # `cargo outdated`'s temporary copy could not. It prints one
           # table per crate with something to bump and nothing otherwise; the
           # per-crate progress lines and its dry-run notes are not findings.
           cargo upgrade --dry-run --incompatible 2>&1 | tee upgrade.log \

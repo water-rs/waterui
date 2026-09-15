@@ -362,11 +362,10 @@ because cbindgen expands the macro-generated exports through `-Zunpretty=expande
 cargo +nightly run --manifest-path ffi/generator/Cargo.toml
 ```
 
-This generates the C header and automatically copies it to:
-- `backends/android/runtime/src/main/cpp/waterui.h` (Android backend, still a submodule here)
-
-The Apple backend keeps its own copy at `Sources/CWaterUI/include/waterui.h` in
-`water-rs/apple-backend`; its CI syncs it from `ffi/waterui.h` in this repository.
+This writes `ffi/waterui.h`. Each native backend keeps its own copy —
+`Sources/CWaterUI/include/waterui.h` in `water-rs/apple-backend`,
+`runtime/src/main/cpp/waterui.h` in `water-rs/android-backend` — and its CI
+syncs it from `ffi/waterui.h` in this repository.
 
 The header is checked into version control, and CI verifies it's always up-to-date with the Rust code.
 
@@ -479,7 +478,7 @@ When adding a new view type to WaterUI:
 1. Define the Rust view struct in the appropriate component crate
 2. Add FFI bindings in `ffi/src/components/<module>.rs`
 3. Regenerate the C header: `cargo +nightly run --manifest-path ffi/generator/Cargo.toml`
-4. Implement the native renderer in Swift (`water-rs/apple-backend`) and Kotlin (`backends/android`)
+4. Implement the native renderer in Swift (`water-rs/apple-backend`) and Kotlin (`water-rs/android-backend`)
 5. Update tests to verify FFI contract
 
 The workflow ensures Rust, C header, and native backends stay synchronized.

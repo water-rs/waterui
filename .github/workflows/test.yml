@@ -46,8 +46,6 @@ jobs:
     timeout-minutes: ${{ inputs.full && 90 || 10 }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       # The fast gate owns the target-cache budget, including workspace check
       # artifacts. Only integration-branch fast runs write it; pull requests
       # and the full nightly lint restore without adding cache generations.
@@ -162,8 +160,6 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: ./.github/actions/setup-rust
         with:
           targets: wasm32-unknown-unknown
@@ -207,8 +203,6 @@ jobs:
         os: ["ubuntu-latest", "macos-latest"]
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       # The nightly test profiles restore only Cargo sources. Their multi-GB
       # target archives previously occupied the cache budget while every dev
       # push cold-compiled clippy. The frequent lint gate now owns that budget;
@@ -281,8 +275,6 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       # Restore-only reader of the shared Linux `~/.cargo` tarball (see the
       # cache budget note in ci.yml).
       - uses: ./.github/actions/setup-rust
@@ -337,8 +329,6 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       # Writes the macOS `~/.cargo` tarball for the macOS jobs that store no
       # target directory (see the cache budget note in ci.yml). clippy is
       # needed by the macOS-only CEF real-engine target at the end of this
@@ -427,8 +417,6 @@ jobs:
         os: ["ubuntu-latest", "macos-latest"]
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: ./.github/actions/setup-rust
         with:
           components: clippy

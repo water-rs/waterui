@@ -8,7 +8,7 @@
 //! were — `ffi/cbindgen.toml` and the `header` feature of `ffi/Cargo.toml` —
 //! and are read from the sibling crate directory.
 
-use std::{env, fs, path::Path, path::PathBuf};
+use std::{env, fs, path::PathBuf};
 
 use cbindgen::{Builder, Config};
 
@@ -38,8 +38,9 @@ fn main() {
     let mut header_bytes = Vec::new();
     bindings.write(&mut header_bytes);
     let header_path = crate_dir.join("waterui.h");
+    // Every native backend syncs its copy from `ffi/waterui.h` in its own
+    // CI; none rides a gitlink in this tree any more.
     fs::write(&header_path, header_bytes).expect("failed to write generated header");
-    propagate_to_backends(&header_path);
 }
 
 /// Directory of the `waterui-ffi` crate this generator binds, which is the
@@ -49,19 +50,4 @@ fn ffi_crate_dir() -> PathBuf {
         .parent()
         .expect("failed to determine the FFI crate directory from the generator manifest path")
         .to_path_buf()
-}
-
-/// Copies the freshly generated header over the checked-in copies of the
-/// native backends that still ride a gitlink in this repository, which CI
-/// compares against this one. Backends released on their own cadence sync the
-/// header from `ffi/waterui.h` in their own CI.
-fn propagate_to_backends(header_path: &Path) {
-    let workspace_root = header_path
-        .parent()
-        .and_then(Path::parent)
-        .expect("failed to determine workspace root from FFI header path");
-
-    let dest = workspace_root.join("backends/android/runtime/src/main/cpp/waterui.h");
-    fs::copy(header_path, &dest)
-        .unwrap_or_else(|error| panic!("failed to copy header to {}: {error}", dest.display()));
 }

@@ -24,7 +24,6 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          submodules: recursive
       - uses: ./.github/actions/setup-rust
         with:
           cache: "false"
@@ -72,7 +71,7 @@ jobs:
           fi
 
       # The manifest is built from the tagged tree itself: the script checks
-      # the tag out and records that revision's submodule pins and locks.
+      # the tag out and records that revision's scaffold table and lock.
       - name: Publish the stable framework manifest
         if: steps.framework_tag.outputs.framework_tag != ''
         env:
@@ -95,7 +94,6 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          submodules: recursive
       - uses: ./.github/actions/setup-rust
         with:
           cache: "false"

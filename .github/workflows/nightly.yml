@@ -66,8 +66,6 @@ jobs:
     # it belongs to the nightly matrix, not to any per-change gate.
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       # Its own key: an instrumented build shares no artifacts with the
       # ordinary ones, so storing it under the shared key would just overwrite
       # a useful tarball with one nothing else can restore. The target dir is
@@ -115,8 +113,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       # The single writer of `ci-ubuntu` (see Hygiene above).
       - uses: ./.github/actions/setup-rust
         with:
@@ -166,7 +162,6 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-          submodules: recursive
       - name: Prepare the tested snapshot
         id: snapshot
         run: python3 .github/scripts/framework_manifest.py nightly
@@ -187,7 +182,7 @@ jobs:
           body: |
             Certified framework revision: ${{ steps.snapshot.outputs.revision }}
             Full test run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-            framework.json records the tested dependency lock and submodule revisions.
+            framework.json records the tested dependency lock and backend revisions.
       - name: Publish the complete certification
         if: steps.snapshot.outputs.eligible == 'true'
         env:
