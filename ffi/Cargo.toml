@@ -45,6 +45,7 @@ waterui-map = { workspace = true, optional = true }
 suiteki.workspace = true
 waterui-locale.workspace = true
 wgpu = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 async-channel = "2.5"
 base64 = { version = "0.23.1", optional = true }
 pastey.workspace = true
@@ -115,6 +116,7 @@ gpu = [
     "dep:objc2-metal",
     "dep:pollster",
     "dep:kurbo",
+    "dep:futures",
 ]
 # The self-drawn video player and its surface-host bridge. Off by default:
 # selecting it links decoders (rav1d, symphonia, hyper) into every package,

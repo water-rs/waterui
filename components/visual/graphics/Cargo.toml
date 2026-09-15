@@ -50,6 +50,7 @@ gpu = [
     "dep:ash",
     "dep:wgpu-hal",
     "dep:libc",
+    "dep:pollster",
 ]
 
 [dependencies]
@@ -86,6 +87,10 @@ rayon = { version = "1.12", optional = true }
 mp4parse = { version = "0.17", optional = true }
 shaderloom = { workspace = true, optional = true }
 num-traits = { version = "0.2", default-features = false }
+# Device-loss recovery rebuilds the GPU context from inside `context()`, a
+# synchronous call, so adapter/device setup needs a block_on that works on the
+# caller's thread.
+pollster = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Android view capture reads a captured subtree out of an `AHardwareBuffer`,

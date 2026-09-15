@@ -542,6 +542,15 @@ block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae8
 # consumes graphics from crates.io and requires `vello ^0.9`.
 vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
 
+# `GpuView::setup` re-runs after the runtime rebuilds a lost device, but
+# waterui-map-gpu 0.2.0 kept its cached textures, Vello renderers, and any
+# in-flight raster job bound to the dead device, so the next render wrote a
+# purged buffer and wgpu-core panicked (waterui#860). This rev is
+# water-rs/map-gpu#16, which drops all device-bound state on re-setup and
+# discards raster results from a previous device generation. Drop this entry
+# once a release carrying that fix ships.
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "e2211b5" }
+
 # vello_hybrid 0.2.0 keeps only one physical layer in its image atlas off wasm,
 # and wgpu's GL backend then makes that texture `TEXTURE_2D` while the shader
 # samples a `texture_2d_array`, so every image brush renders black on a GL

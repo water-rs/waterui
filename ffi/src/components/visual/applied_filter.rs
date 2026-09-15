@@ -23,6 +23,7 @@ use alloc::boxed::Box;
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 use alloc::vec;
 use executor_core::spawn_local;
+use futures::FutureExt;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use {
@@ -159,6 +160,18 @@ pub struct WuiAppliedFilterState {
     runtime: GpuRuntime,
     /// Currently attached presentation target.
     output: Option<FilterOutput>,
+    /// The `ANativeWindow` `output`'s surface was created from — kept so it can
+    /// be recreated on the runtime's rebuilt context after device loss.
+    /// Valid while `output` is `Surface`; stale otherwise.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    attached_output_layer: *mut c_void,
+    /// The HDR preference `attach` configured the output with.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    attached_prefers_hdr: bool,
+    /// The runtime context generation the output surface and every
+    /// device-bound cache below were built under.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    context_generation: u64,
     /// Capture texture (for capturing child view output)
     capture_texture: Option<wgpu::Texture>,
     /// Capture texture format for the currently attached presentation target.
@@ -480,6 +493,12 @@ pub unsafe extern "C" fn waterui_applied_filter_create(
     Box::into_raw(Box::new(WuiAppliedFilterState {
         runtime,
         output: None,
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        attached_output_layer: core::ptr::null_mut(),
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        attached_prefers_hdr: false,
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        context_generation: 0,
         capture_texture: None,
         capture_format: None,
         filter: Rc::new(RefCell::new(Some(filter))),
@@ -660,6 +679,9 @@ pub unsafe extern "C" fn waterui_applied_filter_attach(
     let (surface, config, _) =
         create_configured_surface(state, output_layer, input_width, input_height, prefers_hdr);
     let (output_width, output_height) = (config.width, config.height);
+    state.attached_output_layer = output_layer;
+    state.attached_prefers_hdr = prefers_hdr;
+    state.context_generation = state.runtime.context().generation();
     finish_attach(
         state,
         FilterOutput::Surface { surface, config },
@@ -668,6 +690,63 @@ pub unsafe extern "C" fn waterui_applied_filter_attach(
         output_width,
         output_height,
     );
+}
+
+/// The runtime's current context, rebuilding the output surface, the capture
+/// texture and the Vulkan import/compositor caches when the generation they
+/// were created under died with its device, and putting the semantic filter
+/// through setup again on the fresh device.
+///
+/// Called at the top of every render entry point, so a frame never touches a
+/// resource of the dead device.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn ensure_current_context(
+    state: &mut WuiAppliedFilterState,
+) -> Arc<waterui_graphics::shared_context::SharedGpuContext> {
+    let gpu = state.runtime.context();
+    if gpu.generation() == state.context_generation {
+        return gpu;
+    }
+
+    tracing::warn!(
+        old = state.context_generation,
+        new = gpu.generation(),
+        "GPU device was replaced; recreating the filter's device-bound state"
+    );
+    state.context_generation = gpu.generation();
+    state.capture_texture = None;
+    #[cfg(target_os = "android")]
+    {
+        state.hardware_buffer_imports.clear_after_device_loss();
+        state.capture_compositor = super::capture_composite::CaptureCompositor::default();
+    }
+
+    // A detached filter has no output surface to recreate, but its capture
+    // texture and renderer setup are still device-bound.
+    if state.output.is_some() {
+        drop(state.output.take());
+        let (surface, config, _) = create_configured_surface(
+            state,
+            state.attached_output_layer,
+            state.input_width,
+            state.input_height,
+            state.attached_prefers_hdr,
+        );
+        let (output_width, output_height) = (config.width, config.height);
+        let (input_width, input_height) = (state.input_width, state.input_height);
+        finish_attach(
+            state,
+            FilterOutput::Surface { surface, config },
+            input_width,
+            input_height,
+            output_width,
+            output_height,
+        );
+    }
+    if state.setup_formats.get().is_some() {
+        restart_applied_filter_setup(state);
+    }
+    gpu
 }
 
 /// Attaches a presentation surface (non-Apple only).
@@ -951,6 +1030,7 @@ pub unsafe extern "C" fn waterui_applied_filter_is_ready(
 /// Panics if setup has not completed, or if the filter itself fails.
 fn render_filter_into(
     state: &mut WuiAppliedFilterState,
+    gpu: &waterui_graphics::shared_context::SharedGpuContext,
     output_texture: &wgpu::Texture,
     width: u32,
     height: u32,
@@ -987,8 +1067,8 @@ fn render_filter_into(
 
     let timing = state.frame_clock.tick();
     let input = EffectInput {
-        device: &state.runtime.context().device,
-        queue: &state.runtime.context().queue,
+        device: &gpu.device,
+        queue: &gpu.queue,
         texture: input_texture,
         view: input_view,
         format: input_format,
@@ -998,8 +1078,8 @@ fn render_filter_into(
     };
 
     let filter_output = EffectOutput {
-        device: &state.runtime.context().device,
-        queue: &state.runtime.context().queue,
+        device: &gpu.device,
+        queue: &gpu.queue,
         texture: output_texture,
         view: output_view,
         format: output_format,
@@ -1053,39 +1133,51 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
 
-    ensure_dimensions(state, width, height);
-    let FilterOutput::Surface { surface, config } = state
-        .output
-        .as_ref()
-        .expect("waterui_applied_filter_render: presentation target is detached");
+    // A device loss between frames lands here: the runtime swaps in a rebuilt
+    // context and the output surface, capture texture and caches are recreated
+    // before this frame touches them.
+    let gpu = ensure_current_context(state);
 
-    // Get output texture
-    let Some(output) = super::acquire_surface_texture(
-        surface,
-        state.runtime.context(),
-        config,
-        "waterui_applied_filter_render",
-    ) else {
-        // Nothing was drawn, so the frame this call was asked for is still
-        // pending: the host must come back for it once the surface can be
-        // acquired again. Reporting it done here would strand a view whose only
-        // clock is its own render loop.
-        return true;
-    };
+    super::run_gpu_frame(&gpu, "waterui_applied_filter_render", || {
+        if !state.setup_ready.get() {
+            // The filter's setup is re-running on the rebuilt device; the frame
+            // stays pending and the host comes back for it.
+            return true;
+        }
 
-    let needs_redraw = render_filter_into(
-        state,
-        &output.texture,
-        width,
-        height,
-        "waterui_applied_filter_render",
-    );
+        ensure_dimensions(state, width, height);
+        let FilterOutput::Surface { surface, config } = state
+            .output
+            .as_ref()
+            .expect("waterui_applied_filter_render: presentation target is detached");
 
-    // Present
-    output.present();
-    reclaim_device(&state.runtime.context().device);
+        // Get output texture
+        let Some(output) =
+            super::acquire_surface_texture(surface, &gpu, config, "waterui_applied_filter_render")
+        else {
+            // Nothing was drawn, so the frame this call was asked for is still
+            // pending: the host must come back for it once the surface can be
+            // acquired again. Reporting it done here would strand a view whose only
+            // clock is its own render loop.
+            return true;
+        };
 
-    needs_redraw
+        let needs_redraw = render_filter_into(
+            state,
+            &gpu,
+            &output.texture,
+            width,
+            height,
+            "waterui_applied_filter_render",
+        );
+
+        // Present
+        output.present();
+        reclaim_device(&gpu.device);
+
+        needs_redraw
+    })
+    .unwrap_or(true)
 }
 
 /// Render the filter into a host-owned Metal texture (Apple only).
@@ -1192,8 +1284,10 @@ pub unsafe extern "C" fn waterui_applied_filter_render_to_metal_texture(
             )
     };
 
+    let gpu = state.runtime.context();
     let needs_redraw = render_filter_into(
         state,
+        &gpu,
         &wgpu_texture,
         width,
         height,
@@ -1202,12 +1296,10 @@ pub unsafe extern "C" fn waterui_applied_filter_render_to_metal_texture(
     // SAFETY: the caller contract requires `out_needs_redraw` to be writable.
     unsafe { out_needs_redraw.write(needs_redraw) };
 
-    let submission = state.runtime.context().queue.submit([]);
-    let fence = super::gpu_surface::WuiGpuCaptureFence::new(
-        state.runtime.context().submission_completion_driver(),
-        submission,
-    );
-    reclaim_device(&state.runtime.context().device);
+    let submission = gpu.queue.submit([]);
+    let fence =
+        super::gpu_surface::WuiGpuCaptureFence::new(gpu.submission_completion_driver(), submission);
+    reclaim_device(&gpu.device);
     Box::into_raw(Box::new(fence))
 }
 
@@ -1288,6 +1380,35 @@ fn start_applied_filter_setup(state: &WuiAppliedFilterState, input_format: wgpu:
     }
 
     state.setup_formats.set(Some((input_format, output_format)));
+    spawn_applied_filter_setup(state, input_format, output_format);
+}
+
+/// Re-runs the filter's setup after the runtime's device was lost and rebuilt.
+///
+/// Every pipeline and texture the setup produced belonged to the dead device,
+/// so `setup` runs again against the fresh context; `setup_ready` drops for
+/// the duration and the completion redraw replaces the stale frame.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn restart_applied_filter_setup(state: &WuiAppliedFilterState) {
+    // Platforms without an asynchronous setup path never populate
+    // `setup_formats`; there is nothing to restart there.
+    let Some((input_format, output_format)) = state.setup_formats.get() else {
+        return;
+    };
+    // A setup already in flight read the rebuilt context when it started, so
+    // it is the recovery; starting another one would panic on the empty slot.
+    if state.filter.borrow().is_none() {
+        return;
+    }
+    state.setup_ready.set(false);
+    spawn_applied_filter_setup(state, input_format, output_format);
+}
+
+fn spawn_applied_filter_setup(
+    state: &WuiAppliedFilterState,
+    input_format: wgpu::TextureFormat,
+    output_format: wgpu::TextureFormat,
+) {
     let mut filter = state
         .filter
         .borrow_mut()
@@ -1298,19 +1419,42 @@ fn start_applied_filter_setup(state: &WuiAppliedFilterState, input_format: wgpu:
     let runtime = state.runtime.clone();
     let redraw_handle = state.redraw_handle.clone();
     spawn_local(async move {
-        let gpu = runtime.context();
-        let shader_cache = WgslModuleCache::new();
-        let ctx = EffectContext {
-            device: &gpu.device,
-            queue: &gpu.queue,
-            shader_cache: &shader_cache,
-            input_format,
-            output_format,
-        };
-        filter
-            .setup(&ctx)
-            .await
-            .unwrap_or_else(|error| panic!("AppliedFilter setup failed: {error}"));
+        // Setup retries until it completes on the context that is still the
+        // runtime's current one; a device loss mid-setup leaves corpses that
+        // must not be installed, and a panic from inside `wgpu`'s purged
+        // storage is loss fallout — not a filter bug — so it retries too.
+        loop {
+            let gpu = runtime.context();
+            let outcome = {
+                let shader_cache = WgslModuleCache::new();
+                let ctx = EffectContext {
+                    device: &gpu.device,
+                    queue: &gpu.queue,
+                    shader_cache: &shader_cache,
+                    input_format,
+                    output_format,
+                };
+                std::panic::AssertUnwindSafe(async {
+                    filter
+                        .setup(&ctx)
+                        .await
+                        .unwrap_or_else(|error| panic!("AppliedFilter setup failed: {error}"));
+                })
+                .catch_unwind()
+                .await
+            };
+            if let Err(payload) = outcome {
+                if gpu.device_lost_reason().is_none() {
+                    std::panic::resume_unwind(payload);
+                }
+                continue;
+            }
+            if gpu.device_lost_reason().is_none()
+                && runtime.context().generation() == gpu.generation()
+            {
+                break;
+            }
+        }
         filter_slot.replace(Some(filter));
         setup_ready.set(true);
         redraw_handle.request_redraw();
@@ -1356,6 +1500,16 @@ pub unsafe extern "C" fn waterui_applied_filter_prepare_capture(
     // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
 
+    // A device loss between frames lands here: recover before the resize and
+    // capture-format checks below touch device-bound state.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    {
+        let gpu = ensure_current_context(state);
+        super::run_gpu_frame(&gpu, "waterui_applied_filter_prepare_capture", || {
+            ensure_dimensions(state, width, height);
+        });
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     ensure_dimensions(state, width, height);
     let capture_format = state
         .capture_format
@@ -1438,21 +1592,34 @@ pub unsafe extern "C" fn waterui_applied_filter_set_capture_hardware_buffer(
     // SAFETY: the caller contract requires `state` to be a valid handle, alive and
     // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
-    let capture_texture = state.capture_texture.take().expect(
-        "waterui_applied_filter_set_capture_hardware_buffer: presentation target is detached",
-    );
-    // SAFETY: the caller contract makes `buffer` a live `AHardwareBuffer` for this
-    // call, which is when the import takes its own reference on it.
-    let fence = unsafe {
-        super::hardware_buffer::copy_hardware_buffer_into_texture(
-            &mut state.hardware_buffer_imports,
-            buffer.cast(),
-            &capture_texture,
-            "waterui_applied_filter_set_capture_hardware_buffer",
-        )
-    };
-    state.capture_texture = Some(capture_texture);
-    fence
+    // A device loss between frames lands here: the rebuilt context and the
+    // recreated capture texture must be in place before the copy touches them.
+    let gpu = ensure_current_context(state);
+    // A `None` is the mid-copy device-loss path: there is no submission to
+    // fence, so a null token — which `waterui_gpu_capture_fence_on_complete`
+    // resolves immediately — lets the backend release the buffer it lent.
+    super::run_gpu_frame(
+        &gpu,
+        "waterui_applied_filter_set_capture_hardware_buffer",
+        || {
+            let capture_texture = state.capture_texture.take().expect(
+                "waterui_applied_filter_set_capture_hardware_buffer: presentation target is detached",
+            );
+            // SAFETY: the caller contract makes `buffer` a live `AHardwareBuffer` for this
+            // call, which is when the import takes its own reference on it.
+            let fence = unsafe {
+                super::hardware_buffer::copy_hardware_buffer_into_texture(
+                    &mut state.hardware_buffer_imports,
+                    buffer.cast(),
+                    &capture_texture,
+                    "waterui_applied_filter_set_capture_hardware_buffer",
+                )
+            };
+            state.capture_texture = Some(capture_texture);
+            fence
+        },
+    )
+    .unwrap_or(core::ptr::null_mut())
 }
 
 /// Copies a captured `AHardwareBuffer` into the capture texture (Android only).
@@ -1516,24 +1683,29 @@ pub unsafe extern "C" fn waterui_applied_filter_composite_gpu_surface(
     // SAFETY: the caller contract requires `surface` to be a valid handle for a
     // different state, alive and not otherwise borrowed for this call.
     let surface = unsafe { crate::borrow_ffi_mut(surface) };
-    let capture_texture = filter
-        .capture_texture
-        .take()
-        .expect("waterui_applied_filter_composite_gpu_surface: presentation target is detached");
-    super::capture_composite::composite_gpu_surface(
-        &mut filter.capture_compositor,
-        surface,
-        &capture_texture,
-        super::capture_composite::CompositePlacement {
-            x,
-            y,
-            width,
-            height,
-            scale,
-        },
-        "waterui_applied_filter_composite_gpu_surface",
-    );
-    filter.capture_texture = Some(capture_texture);
+    // Both states draw on the runtime's current context; recover whichever side
+    // a device loss left behind before either draws into the capture.
+    let gpu = ensure_current_context(filter);
+    super::gpu_surface::ensure_current_context(surface);
+    super::run_gpu_frame(&gpu, "waterui_applied_filter_composite_gpu_surface", || {
+        let capture_texture = filter.capture_texture.take().expect(
+            "waterui_applied_filter_composite_gpu_surface: presentation target is detached",
+        );
+        super::capture_composite::composite_gpu_surface(
+            &mut filter.capture_compositor,
+            surface,
+            &capture_texture,
+            super::capture_composite::CompositePlacement {
+                x,
+                y,
+                width,
+                height,
+                scale,
+            },
+            "waterui_applied_filter_composite_gpu_surface",
+        );
+        filter.capture_texture = Some(capture_texture);
+    });
 }
 
 /// Draws a `GpuSurface` nested in the captured subtree into the capture (Android only).

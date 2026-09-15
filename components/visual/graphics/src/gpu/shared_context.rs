@@ -7,6 +7,7 @@
 use std::error::Error;
 use std::fmt;
 use std::mem::ManuallyDrop;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use shaderloom::WgslModuleCache;
@@ -40,7 +41,17 @@ impl fmt::Display for SharedContextError {
 impl Error for SharedContextError {}
 
 /// GPU resources shared by every clone of one [`GpuRuntime`].
+///
+/// All of it is device-bound: when the driver reports the device lost, the
+/// owning [`GpuRuntime`] replaces the whole context — surfaces, pipelines,
+/// caches and scene renderers are recreated against the fresh device — and
+/// [`GpuRuntime::context`] hands the replacement out from then on. Callers
+/// compare [`Self::generation`] against the generation their device-bound
+/// resources were built under to know when to rebuild them.
 pub struct SharedGpuContext {
+    /// Which recreation this context is — `0` for the initial one, increasing
+    /// by one for every device-loss rebuild the owning runtime performs.
+    generation: u64,
     /// The shared wgpu instance.
     ///
     /// Never dropped: it lives as long as the process. Dropping a wgpu
@@ -276,7 +287,7 @@ impl SharedGpuContext {
             reason = "wgpu's WebGPU backend is a thin wrapper over JS objects held in `Rc<RefCell<_>>`, so its adapter/device/queue handles and its request futures are neither `Send` nor `Sync` on this target alone. The context is shared by reference count on every target, so the storage type stays `Arc` rather than splitting into `Rc` here and `Arc` everywhere else."
         )
     )]
-    async fn new() -> Result<Self, SharedContextError> {
+    async fn new(generation: u64) -> Result<Self, SharedContextError> {
         let (instance, adapter) = request_instance_and_adapter().await?;
         let scene_engine = SceneEngine::for_adapter(&adapter);
         let adapter_info = adapter.get_info();
@@ -328,6 +339,7 @@ impl SharedGpuContext {
             GpuSubmissionCompletionDriver::new(Arc::clone(&device), Arc::clone(&queue));
 
         Ok(Self {
+            generation,
             instance: ManuallyDrop::new(instance),
             adapter,
             device,
@@ -337,6 +349,15 @@ impl SharedGpuContext {
             submission_completion_driver,
             device_lost,
         })
+    }
+
+    /// Which recreation this context is — `0` initially, increasing each time
+    /// the owning [`GpuRuntime`] rebuilds after device loss. A surface,
+    /// pipeline or texture created under another generation belongs to a dead
+    /// device and must be rebuilt against this context.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The scene renderer every vector-drawing view on this device shares.
@@ -362,6 +383,16 @@ impl SharedGpuContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// Records a device loss the driver never reported, for tests that
+    /// exercise the runtime's recreation path.
+    #[doc(hidden)]
+    pub fn mark_device_lost_for_testing(&self, reason: &str) {
+        *self
+            .device_lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason.to_owned());
     }
 }
 
@@ -585,16 +616,32 @@ pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Featur
 }
 
 /// Cloneable owner for one explicitly-created shared GPU context.
+///
+/// The context is recreated in place when the driver reports its device lost:
+/// [`GpuRuntime::context`] notices the recorded loss and swaps in a freshly
+/// built [`SharedGpuContext`] — new instance, adapter, device, shader cache
+/// and scene renderer — so every subsequent caller is back on live hardware.
+/// The swap is what makes recovery possible at all: a dead device cannot
+/// honour a surface, so nothing built on it is salvageable.
 #[derive(Clone)]
 pub struct GpuRuntime {
-    context: Arc<SharedGpuContext>,
+    inner: Arc<RuntimeInner>,
+}
+
+struct RuntimeInner {
+    /// The live context, replaced on the first access after its device is
+    /// reported lost. The mutex also serializes the rebuild itself, so a loss
+    /// observed by several views at once is paid for exactly once.
+    context: Mutex<Arc<SharedGpuContext>>,
+    /// Generation handed to the next rebuilt context.
+    next_generation: AtomicU64,
 }
 
 impl fmt::Debug for GpuRuntime {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("GpuRuntime")
-            .field("context", &self.context)
+            .field("context", &self.inner.context)
             .finish()
     }
 }
@@ -615,14 +662,71 @@ impl GpuRuntime {
     )]
     pub async fn new() -> Result<Self, SharedContextError> {
         Ok(Self {
-            context: Arc::new(SharedGpuContext::new().await?),
+            inner: Arc::new(RuntimeInner {
+                context: Mutex::new(Arc::new(SharedGpuContext::new(0).await?)),
+                next_generation: AtomicU64::new(1),
+            }),
         })
     }
 
     /// Returns this runtime's shared GPU resources.
+    ///
+    /// When the driver has reported the current context's device lost, this
+    /// rebuilds the context first and returns the replacement. Callers holding
+    /// device-bound resources from an earlier call compare
+    /// [`SharedGpuContext::generation`] to know they must rebuild them.
     #[must_use]
-    pub fn context(&self) -> &SharedGpuContext {
-        self.context.as_ref()
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the context lock must stay held across `rebuild_locked` so concurrent callers wait for the one rebuild instead of racing to create their own device"
+    )]
+    pub fn context(&self) -> Arc<SharedGpuContext> {
+        let mut slot = self
+            .inner
+            .context
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.device_lost_reason().is_none() {
+            return Arc::clone(&slot);
+        }
+        self.rebuild_locked(&mut slot)
+    }
+
+    /// Replaces the lost context in `slot` with a freshly built one.
+    ///
+    /// A failed rebuild keeps the dead context in place and returns it, so the
+    /// caller still sees the recorded loss reason instead of a second failure;
+    /// the next `context()` call retries the rebuild.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn rebuild_locked(&self, slot: &mut Arc<SharedGpuContext>) -> Arc<SharedGpuContext> {
+        let generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
+        match pollster::block_on(SharedGpuContext::new(generation)) {
+            Ok(fresh) => {
+                let fresh = Arc::new(fresh);
+                tracing::warn!(
+                    generation,
+                    adapter = %fresh.adapter.get_info().name,
+                    "GPU device was lost; recreated the runtime context"
+                );
+                *slot = Arc::clone(&fresh);
+                fresh
+            }
+            Err(error) => {
+                tracing::error!(
+                    "GPU device was lost and recreation failed ({error}); \
+                     retrying on the next access"
+                );
+                Arc::clone(slot)
+            }
+        }
+    }
+
+    /// WebGPU reports device loss but offers no synchronous rebuild path —
+    /// `request_adapter` is a JS promise this accessor cannot await — so the
+    /// lost context stays in place and the failure keeps naming its cause.
+    #[cfg(target_arch = "wasm32")]
+    fn rebuild_locked(&self, slot: &mut Arc<SharedGpuContext>) -> Arc<SharedGpuContext> {
+        Arc::clone(slot)
     }
 }
 
@@ -646,10 +750,13 @@ impl GpuRuntime {
 ///
 /// Every type that owns a device to the end of its life calls this from `Drop`.
 pub fn drain_device_before_teardown(device: &wgpu::Device) {
-    let drained = device.poll(wgpu::PollType::Wait {
-        submission_index: None,
-        timeout: None,
-    });
+    let drained = poll_device(
+        device,
+        wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        },
+    );
     if let Err(error) = drained {
         tracing::warn!("GPU device did not drain before teardown: {error}");
     }
@@ -670,8 +777,39 @@ pub fn drain_device_before_teardown(device: &wgpu::Device) {
 /// with the completion driver (which polls for it) calls this once per frame,
 /// after the present.
 pub fn reclaim_device(device: &wgpu::Device) {
-    if let Err(error) = device.poll(wgpu::PollType::Poll) {
+    if let Err(error) = poll_device(device, wgpu::PollType::Poll) {
         tracing::warn!("GPU device did not reclaim deferred resources: {error}");
+    }
+}
+
+/// Polls the device, treating a panic from inside `wgpu`'s bookkeeping as one
+/// more failed poll.
+///
+/// Device loss is detected lazily: the driver notices mid-call, purges the
+/// resource storage, and only then reports through the device-lost callback.
+/// A poll that lands in that window — or on an already-purged device — can
+/// dereference a resource the loss already removed, and `wgpu-core`'s storage
+/// lookup panics rather than erroring. The device is dead either way, so the
+/// poll reports failure and lets the owner move on to rebuilding instead of
+/// taking the process down over bookkeeping for a device that no longer
+/// exists.
+fn poll_device(
+    device: &wgpu::Device,
+    poll_type: wgpu::PollType,
+) -> Result<wgpu::PollStatus, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.poll(poll_type))) {
+        Ok(Ok(status)) => Ok(status),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown panic");
+            Err(format!(
+                "poll panicked inside wgpu after device loss: {message}"
+            ))
+        }
     }
 }
 
@@ -712,6 +850,25 @@ mod tests {
             "the GPU device outlived its runtime: the submission completion thread was still \
              holding it when the runtime finished dropping"
         );
+    }
+
+    /// A context whose device was reported lost is replaced on the next
+    /// `context()` access, and handles issued earlier still describe the dead
+    /// device so their owners can finish tearing down against it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_lost_device_is_replaced_on_the_next_context_access() {
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("device-loss recreation requires a working GPU runtime");
+        let stale = runtime.context();
+        let stale_generation = stale.generation();
+        stale.mark_device_lost_for_testing("simulated device loss");
+
+        let fresh = runtime.context();
+
+        assert!(fresh.device_lost_reason().is_none());
+        assert_ne!(fresh.generation(), stale_generation);
+        assert!(stale.device_lost_reason().is_some());
     }
 
     fn adapter_features_with_16bit_norm() -> wgpu::Features {
@@ -851,12 +1008,20 @@ impl GpuSubmissionCompletionDriver {
             .name("waterui-gpu-completion".to_owned())
             .spawn(move || {
                 while let Ok((submission, completion)) = receiver.recv() {
-                    device
-                        .poll(wgpu::PollType::Wait {
+                    // A lost device fails every wait; the submission is dead
+                    // either way, so run the completion — waiters use it to
+                    // release resources, not to learn about success.
+                    if let Err(error) = poll_device(
+                        &device,
+                        wgpu::PollType::Wait {
                             submission_index: Some(submission),
                             timeout: None,
-                        })
-                        .expect("GPU submission completion failed");
+                        },
+                    ) {
+                        tracing::warn!(
+                            "GPU submission wait failed ({error}); resolving the completion anyway"
+                        );
+                    }
                     completion();
                 }
             })

@@ -10253,6 +10253,7 @@ dependencies = [
  "base64 0.23.1",
  "cookie",
  "executor-core",
+ "futures",
  "jiff",
  "jni 0.22.4",
  "kurbo",
@@ -10615,8 +10616,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a6ebe8918fb04ed8715e0e7d3cf5f8f2e3c339f23868c46204084e8ae01f37e"
+source = "git+https://github.com/water-rs/map-gpu?rev=e2211b5#e2211b5c24aa8398ac244f52f94b9e292ec8cffe"
 dependencies = [
  "blocking",
  "bytemuck",

@@ -304,6 +304,26 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInstallGpuRuntime<
     crate::components::gpu_runtime::install_gpu_runtime(&mut env.0, runtime);
 }
 
+/// Marks the app environment's GPU runtime device-lost, so the next frame
+/// exercises the recovery path a real driver-reported loss takes.
+///
+/// Testing only: the backend's GPU instrumentation calls this between frames
+/// and asserts the app keeps rendering on the rebuilt context.
+#[cfg(feature = "gpu")]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_simulateGpuDeviceLoss<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    env_ptr: jlong,
+) {
+    // SAFETY: Kotlin passes back the live app environment handle, borrowed only
+    // for this call.
+    let env = unsafe { crate::borrow_ffi(env_ptr as *const crate::WuiEnv) };
+    crate::components::gpu_runtime::gpu_runtime(&env.0)
+        .context()
+        .mark_device_lost_for_testing("simulated device loss via simulateGpuDeviceLoss");
+}
+
 /// Install web view controller in the environment.
 #[cfg(feature = "webview")]
 #[unsafe(no_mangle)]

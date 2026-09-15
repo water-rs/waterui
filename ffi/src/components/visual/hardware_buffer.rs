@@ -42,6 +42,7 @@
 //!   earlier one finished.
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 
@@ -183,6 +184,11 @@ struct ImportedHardwareBuffer {
     /// plus a function table, so this clone costs nothing and lets [`Drop`]
     /// destroy them without reaching back through wgpu.
     device: ash::Device,
+    /// Keeps the owning `VkDevice` alive while the import exists. After the
+    /// runtime's device is lost and the context swapped, the raw handle above
+    /// would otherwise dangle: `destroy_image` on a freed `VkDevice` is UB,
+    /// while on a merely lost one it is a legal no-op.
+    owner: Arc<wgpu::Device>,
     /// The acquired buffer, released when this import is dropped.
     buffer: *mut AHardwareBuffer,
     /// The image bound to the buffer's imported memory.
@@ -222,6 +228,7 @@ impl ImportedHardwareBuffer {
     /// fails.
     unsafe fn import(
         device: &wgpu_hal::vulkan::Device,
+        owner: &Arc<wgpu::Device>,
         buffer: *mut AHardwareBuffer,
         description: HardwareBufferDescription,
         context: &'static str,
@@ -332,6 +339,7 @@ impl ImportedHardwareBuffer {
 
         Self {
             device: raw_device.clone(),
+            owner: Arc::clone(owner),
             buffer,
             image,
             memory,
@@ -382,11 +390,23 @@ impl HardwareBufferImports {
     /// nothing else defers their destruction until the GPU is done with them.
     /// Called when a capture target detaches or is destroyed, which are the only
     /// moments this costs a wait — and it costs nothing when nothing is cached.
+    ///
+    /// The drain targets the device the imports were created on — after a
+    /// device-loss swap `runtime.context()` is the replacement, and waiting on
+    /// it says nothing about work the dead device is still chewing on.
     pub fn clear(&mut self) {
-        if self.imports.is_empty() {
+        let Some(owner) = self.imports.first().map(|import| Arc::clone(&import.owner)) else {
             return;
-        }
-        drain_device_before_teardown(&self.runtime.context().device);
+        };
+        drain_device_before_teardown(&owner);
+        self.imports.clear();
+    }
+
+    /// Releases every import without draining: the device is gone, so no
+    /// submission is still in flight to wait on. Each import's `owner` keeps
+    /// the lost `VkDevice` alive long enough for `Drop`'s destruction calls,
+    /// which a lost device still answers.
+    pub fn clear_after_device_loss(&mut self) {
         self.imports.clear();
     }
 
@@ -398,6 +418,7 @@ impl HardwareBufferImports {
     unsafe fn get_or_import(
         &mut self,
         device: &wgpu_hal::vulkan::Device,
+        owner: &Arc<wgpu::Device>,
         buffer: *mut AHardwareBuffer,
         description: HardwareBufferDescription,
         context: &'static str,
@@ -420,14 +441,15 @@ impl HardwareBufferImports {
             .position(|import| core::ptr::eq(import.buffer, buffer));
         let evicted = stale.or_else(|| (self.imports.len() >= MAX_CACHED_IMPORTS).then_some(0));
         if let Some(index) = evicted {
-            drain_device_before_teardown(&self.runtime.context().device);
-            drop(self.imports.remove(index));
+            let import = self.imports.remove(index);
+            drain_device_before_teardown(&import.owner);
+            drop(import);
         }
 
         // SAFETY: forwarding the caller's contract that `buffer` is live; `import`
         // acquires its own reference before returning.
         let import =
-            unsafe { ImportedHardwareBuffer::import(device, buffer, description, context) };
+            unsafe { ImportedHardwareBuffer::import(device, owner, buffer, description, context) };
         let image = import.image;
         self.imports.push(import);
         image
@@ -484,7 +506,9 @@ pub unsafe fn copy_hardware_buffer_into_texture(
         });
         // SAFETY: forwarding the caller's contract that `buffer` is live; the
         // import acquires its own reference on it.
-        let source = unsafe { imports.get_or_import(&hal_device, buffer, description, context) };
+        let source = unsafe {
+            imports.get_or_import(&hal_device, &gpu.device, buffer, description, context)
+        };
         (
             hal_device.raw_device().clone(),
             hal_device.queue_family_index(),
