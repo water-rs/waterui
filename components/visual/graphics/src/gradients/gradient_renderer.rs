@@ -565,6 +565,11 @@ where
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.into_surface()
     }
+
+    /// Resolves to `GpuSurface`, which stretches on both axes.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
 }
 
 const fn resolved_color_eq(a: &ResolvedColor, b: &ResolvedColor) -> bool {

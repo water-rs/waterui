@@ -406,4 +406,9 @@ impl View for NavigationSplitView {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.layout
     }
+
+    /// Resolves to `NavigationSplit`, a configurable that declares `Both`.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
 }

@@ -47,6 +47,15 @@ pub trait View: 'static {
 
     #[doc(hidden)]
     /// Returns the stretch axis for this view.
+    ///
+    /// The answer is static: it must describe the leaf this view eventually
+    /// resolves to. Wrappers that only decorate or observe their content
+    /// (metadata, `Option`, `Result`, single-element tuples) forward the
+    /// content's axis. A composite view whose `body` produces a stretching
+    /// leaf (a `GpuSurface`, a scroll container, a stack with stretchy
+    /// children) must declare that leaf's axis here — callers read the axis
+    /// before `body` runs and without an [`Environment`], so it cannot be
+    /// discovered by expansion.
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
     }
@@ -65,11 +74,22 @@ impl<V: View, E: View> View for Result<V, E> {
             Err(view) => AnyView::new(view),
         }
     }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        match self {
+            Ok(view) => view.stretch_axis(),
+            Err(view) => view.stretch_axis(),
+        }
+    }
 }
 
 impl<V: View> View for Option<V> {
     fn body(self, _env: &Environment) -> impl View {
         self.map_or_else(|| AnyView::new(()), AnyView::new)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.as_ref().map_or(StretchAxis::None, View::stretch_axis)
     }
 }
 
@@ -111,6 +131,15 @@ pub trait TupleViews {
     ///
     /// A `Vec<AnyView>` containing each view from the original collection.
     fn into_views(self) -> Vec<AnyView>;
+
+    /// Reports each element's declared [`View::stretch_axis`], in order,
+    /// without consuming the collection.
+    ///
+    /// Composite containers answer their own `stretch_axis` from this:
+    /// they resolve to a [`Layout`](crate::layout::Layout)-driven container
+    /// in `body`, and that layout's `stretch_axis` is a function of the
+    /// children's axes — which must be readable before `body` runs.
+    fn stretch_axes(&self) -> Vec<StretchAxis>;
 }
 
 impl<V: View> TupleViews for Vec<V> {
@@ -119,6 +148,10 @@ impl<V: View> TupleViews for Vec<V> {
             .map(|content| AnyView::new(content))
             .collect()
     }
+
+    fn stretch_axes(&self) -> Vec<StretchAxis> {
+        self.iter().map(View::stretch_axis).collect()
+    }
 }
 
 impl<V: View, const N: usize> TupleViews for [V; N] {
@@ -126,6 +159,10 @@ impl<V: View, const N: usize> TupleViews for [V; N] {
         self.into_iter()
             .map(|content| AnyView::new(content))
             .collect()
+    }
+
+    fn stretch_axes(&self) -> Vec<StretchAxis> {
+        self.iter().map(View::stretch_axis).collect()
     }
 }
 
@@ -236,6 +273,11 @@ macro_rules! impl_tuple_views {
                 let ($($ty,)*)=self;
                 alloc::vec![$(AnyView::new($ty)),*]
             }
+
+            fn stretch_axes(&self) -> Vec<StretchAxis> {
+                let ($($ty,)*)=self;
+                alloc::vec![$($ty.stretch_axis()),*]
+            }
         }
     };
 }
@@ -247,6 +289,10 @@ raw_view!(());
 impl<V: View> View for (V,) {
     fn body(self, _env: &Environment) -> impl View {
         self.0
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.0.stretch_axis()
     }
 }
 

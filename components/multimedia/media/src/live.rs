@@ -5,7 +5,7 @@ use waterui_core::gesture::{GestureObserver, LongPressGesture};
 use waterui_core::handler::{BoxedEventAction, EventHandler, boxed_event_handler};
 use waterui_core::{
     AnyView, Binding, Computed, Dynamic, Environment, Metadata, Signal, SignalExt, View,
-    reactive::signal::IntoComputed,
+    layout::StretchAxis, reactive::signal::IntoComputed,
 };
 use waterui_layout::overlay;
 
@@ -133,6 +133,14 @@ impl View for LivePhoto {
                 }
             }),
         )
+    }
+
+    /// Resolves to `overlay(resizable still, motion)`; the overlay is
+    /// transparent to its base, so the axis is the resizable still photo's.
+    /// The `motion` child is a `Dynamic` and never stretches.
+    fn stretch_axis(&self) -> StretchAxis {
+        let still_source = self.source.clone().map(|source| source.image).computed();
+        Photo::new(still_source).resizable().stretch_axis()
     }
 }
 

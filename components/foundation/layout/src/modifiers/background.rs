@@ -139,6 +139,14 @@ where
         // Background is first (renders behind), content is second (renders on top)
         FixedContainer::new(BackgroundLayout, (background, content))
     }
+
+    /// Resolves to `FixedContainer` over `BackgroundLayout` and the two
+    /// children in `[background, content]` order; reports what that container
+    /// would — `BackgroundLayout` is transparent to the content child's axis.
+    fn stretch_axis(&self) -> StretchAxis {
+        BackgroundLayout
+            .stretch_axis(&[self.background.stretch_axis(), self.content.stretch_axis()])
+    }
 }
 
 /// Convenience constructor for creating a [`BackgroundView`].

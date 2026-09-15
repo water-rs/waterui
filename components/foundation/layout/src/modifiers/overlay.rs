@@ -232,6 +232,13 @@ where
         } = self;
         FixedContainer::new(layout, (base, layer))
     }
+
+    /// Resolves to `FixedContainer` over the same layout and children in
+    /// `[base, layer]` order; reports what that container would.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout
+            .stretch_axis(&[self.base.stretch_axis(), self.layer.stretch_axis()])
+    }
 }
 
 /// Convenience constructor for creating an [`Overlay`] with the default alignment.

@@ -477,4 +477,10 @@ impl View for Gradient {
             }
         }
     }
+
+    /// Every branch resolves to a both-axes leaf: `GpuSurface` for mesh
+    /// gradients, `ResolvedGradient` (declared `Both`) for the rest.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
 }

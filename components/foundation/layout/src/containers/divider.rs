@@ -1,6 +1,7 @@
 //! Divider layout primitive shared across `WaterUI` surfaces.
 
 use waterui_core::View;
+use waterui_core::layout::StretchAxis;
 use waterui_graphics::color::Grey;
 
 use crate::{frame::Frame, stack};
@@ -22,5 +23,13 @@ impl View for Divider {
         } else {
             Frame::new(Grey).height(1.0)
         }
+    }
+
+    /// A divider always spans its parent stack's cross axis and stays one
+    /// point thick on the main axis — which orientation that is resolves in
+    /// `body` from `stack::Axis`, but the cross-axis answer is the same either
+    /// way.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::CrossAxis
     }
 }

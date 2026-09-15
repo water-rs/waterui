@@ -124,6 +124,12 @@ where
             })),
         ))
     }
+
+    /// Resolves to a `vstack` over `[view, error-label]`; the label is
+    /// content-sized text, so the stack's axis is the validated view's own.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        self.view.stretch_axis()
+    }
 }
 
 /// An error indicating that a value is out of a specified range.

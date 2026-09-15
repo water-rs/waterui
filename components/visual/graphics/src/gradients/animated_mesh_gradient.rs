@@ -423,6 +423,11 @@ impl View for AnimatedMeshGradient {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.inner
     }
+
+    /// Resolves to `GpuSurface`, which stretches on both axes.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
 }
 
 fn u32_to_f32(value: u32) -> f32 {
