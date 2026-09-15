@@ -12,12 +12,27 @@
 //! let badge = badge::Badge::new(5, button("Messages"));
 //! ```
 
-use crate::ViewExt;
+use crate::theme::color::AccentForeground;
+use crate::widget::condition::when;
+use crate::{SignalExt, ViewExt};
 use nami::{Computed, Signal, signal::IntoComputed};
-use waterui_core::View;
-use waterui_core::configurable;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::color::Color;
+use waterui_core::{Environment, View};
+use waterui_graphics::color::{AccentColor, Color};
+use waterui_graphics::color::signal_color;
+use waterui_layout::overlay;
+use waterui_layout::padding::EdgeInsets;
+use waterui_layout::stack::Alignment;
+use waterui_macros::text;
+use waterui_shape::{Capsule, Circle};
+
+/// Side length of the dot rendered for a non-positive count, in points.
+const DOT_SIZE: f32 = 6.0;
+
+/// How far the indicator hangs past the content's top-trailing corner, in
+/// points. Platform badges sit half outside the badged view rather than fully
+/// inside its bounds.
+const INDICATOR_OFFSET: f32 = 6.0;
 
 /// Configuration for the Badge component
 #[derive(Debug)]
@@ -30,29 +45,24 @@ pub struct BadgeConfig {
     pub color: Computed<Color>,
 }
 
-configurable!(
-    /// A small indicator that displays a count on top of another view.
-    ///
-    /// Badge is typically used to show notification counts or item quantities
-    /// overlaid on icons or buttons.
-    ///
-    /// # Layout Behavior
-    ///
-    /// Badge sizes itself to fit the content it wraps, plus the badge indicator.
-    /// It never stretches to fill extra space.
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: Layout Contract for Backend Implementers
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-
-    // Size: Determined by wrapped content + badge indicator overlay
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    Badge,
-    BadgeConfig
-);
+/// A small indicator that displays a count on top of another view.
+///
+/// Badge is typically used to show notification counts or item quantities
+/// overlaid on icons or buttons. A positive count renders a capsule carrying
+/// the number; zero or negative counts render a bare dot, the convention for
+/// "there is something here but nothing countable".
+///
+/// # Layout Behavior
+///
+/// Badge sizes itself to fit the content it wraps; the indicator overlays the
+/// content's top-trailing corner, nudged [`INDICATOR_OFFSET`] points outward,
+/// and never stretches to fill extra space.
+///
+/// This is a Rust-side composer — a stack, an overlay, a clipped capsule and
+/// theme tokens — and ships no FFI type of its own, so it renders on every
+/// backend without a native leaf.
+#[derive(Debug)]
+pub struct Badge(BadgeConfig);
 
 impl Badge {
     /// Creates a new Badge with the specified value and content
@@ -64,7 +74,7 @@ impl Badge {
         Self(BadgeConfig {
             value: value.into_computed(),
             content: AnyViewBuilder::new(move || content.clone().anyview()),
-            color: Color::default().into_computed(),
+            color: Color::new(AccentColor).into_computed(),
         })
     }
 
@@ -76,5 +86,41 @@ impl Badge {
     pub fn color(mut self, color: impl Signal<Output = Color>) -> Self {
         self.0.color = color.into_computed();
         self
+    }
+}
+
+impl View for Badge {
+    fn body(self, _env: &Environment) -> impl View {
+        let BadgeConfig {
+            value,
+            content,
+            color,
+        } = self.0;
+
+        let pill_color = color.clone();
+        let has_count = value.map(|count| count > 0);
+        // `when` re-invokes its builders whenever the condition flips, so each
+        // call site clones the signals it binds rather than consuming them.
+        let indicator = when(has_count, move || {
+            let value = value.clone();
+            text!("{value}")
+                .caption()
+                .bold()
+                .foreground(AccentForeground)
+                .padding_with(EdgeInsets::symmetric(1.0, 4.0))
+                .background(signal_color(pill_color.clone()))
+                .clip(Capsule)
+        })
+        .otherwise(move || {
+            signal_color(color.clone())
+                .size(DOT_SIZE, DOT_SIZE)
+                .clip(Circle)
+        });
+
+        overlay(
+            content.build(),
+            indicator.offset(INDICATOR_OFFSET, -INDICATOR_OFFSET),
+        )
+        .alignment(Alignment::TopTrailing)
     }
 }
