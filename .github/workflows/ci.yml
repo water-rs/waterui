@@ -184,7 +184,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-machete
       - name: Unused dependencies
         run: |
-          printf 'kit\nutils/nami\n' > .ignore
+          printf 'kit\n' > .ignore
           cargo machete --with-metadata
 
   ffi-header:
