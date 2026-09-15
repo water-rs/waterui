@@ -213,11 +213,11 @@ waterui-chart = "0.2.0"
 waterui-map-gpu = "0.2.0"
 waterui-assets = { version = "0.1.2", path = "components/assets/runtime" }
 waterui-assets-core = { version = "0.1.0", path = "components/assets/core" }
-waterui-assets-planner = { version = "0.1.2", path = "components/assets/planner" }
+waterui-assets-planner = { version = "0.2.0", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.1.2", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.1.2", path = "components/devtools/inspector/protocol" }
 waterui-inspector-app = { version = "0.1.2", path = "components/devtools/inspector/app" }
-waterui-preview-protocol = { version = "0.1.1", path = "components/devtools/preview/protocol" }
+waterui-preview-protocol = { version = "0.1.2", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.1.0", path = "components/devtools/mcp/protocol" }
 # The published 0.1.2 predates the `ShapeKind` fixed-radius variants and cannot
 # compile against this tree; gtk-backend's dev line carries them. The `version`
