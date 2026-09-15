@@ -1391,7 +1391,7 @@ fn restart_view_effect_setup(state: &WuiViewEffectState) {
 /// No-op on platforms that never run asynchronous effect setup: the recovery
 /// path only recreates the textures and caches the dead device owned.
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
-fn restart_view_effect_setup(_state: &WuiViewEffectState) {}
+const fn restart_view_effect_setup(_state: &WuiViewEffectState) {}
 
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 fn spawn_view_effect_setup(

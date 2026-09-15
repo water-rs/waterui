@@ -115,7 +115,7 @@ fn retry_surface_acquire(
 /// actually lost — that is the recoverable fallout this exists for, and it
 /// returns `None`. Anything else is a real bug and is re-raised unchanged.
 #[cfg(all(feature = "gpu", not(any(target_os = "macos", target_os = "ios"))))]
-pub(crate) fn run_gpu_frame<T>(
+pub fn run_gpu_frame<T>(
     gpu: &waterui_graphics::shared_context::SharedGpuContext,
     scope: &'static str,
     frame: impl FnOnce() -> T,
