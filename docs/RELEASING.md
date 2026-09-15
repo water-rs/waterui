@@ -8,9 +8,10 @@ packages with `publish = false` are excluded.
 ## Before merging the release pull request
 
 1. Verify `dev` and `main` share history and GitHub can compare them normally.
-2. Fetch every submodule gitlink by exact SHA from its configured remote.
+2. Confirm `apple-backend-version` and `android-backend-revision` in the root
+   manifest's `[package.metadata.waterui]` name published backend revisions.
 3. Run the workspace CI matrix and the declared Rust 1.95 MSRV check.
-4. Package every publishable crate in Nami, WaterKit, and WaterUI.
+4. Package every publishable crate in the workspace.
 5. Rehearse registry publication in dependency order, then install the
    newest published `waterui-cli` that satisfies the workspace's
    `minimum-cli-version` and run `water create` followed by `water build`.

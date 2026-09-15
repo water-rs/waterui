@@ -1,7 +1,6 @@
 """Build the certified framework manifest (`framework.json`) for a release.
 
-The manifest records the worktree's submodule pins, its lockfile hashes, the
-scaffold table the root manifest's `[package.metadata.waterui]` declares, and
+The manifest records the worktree's lockfile hash, the scaffold table the root manifest's `[package.metadata.waterui]` declares, and
 that metadata table verbatim. The Rust side derives exactly the same scaffold
 table for a tree (`framework_scaffold` in
 https://github.com/water-rs/cli/blob/dev/src/project_model/framework.rs) — the
@@ -30,36 +29,20 @@ import tomllib
 NIGHTLY_TAG = re.compile(r"nightly-\d{8}-[0-9a-f]{12}")
 
 
-# No backend rides a gitlink any more: Apple carries an
-# `apple-backend-version` literal in `[package.metadata.waterui]` (#839) and
-# Android an `android-backend-revision` literal (#940). The scaffold table
-# copies both kinds; `recorded_submodules` stays for the manifest's
-# `submodules` field, which is empty for such a tree.
+# No backend rides a gitlink: Apple carries an `apple-backend-version`
+# literal in `[package.metadata.waterui]` (#839) and Android an
+# `android-backend-revision` literal (#940). The scaffold table copies both
+# kinds.
 
 
 def git(*args):
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
-def recorded_submodules():
-    """path -> commit for every submodule at its recorded revision."""
-    submodules = {}
-    for line in subprocess.check_output(
-        ["git", "submodule", "status", "--recursive"], text=True
-    ).splitlines():
-        if not line.startswith(" "):
-            raise RuntimeError(f"Submodule is not at its recorded revision: {line}")
-        commit, path, *_ = line.split()
-        submodules[path] = commit
-    return submodules
-
-
-def lockfile_hashes(submodules):
-    lockfiles = {}
-    for path in [Path("Cargo.lock"), *(Path(path) / "Cargo.lock" for path in submodules)]:
-        if path.is_file():
-            lockfiles[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
-    return lockfiles
+def lockfile_hashes():
+    """The dependency lock the CLI verifies a certified tree against."""
+    lock = Path("Cargo.lock")
+    return {str(lock): hashlib.sha256(lock.read_bytes()).hexdigest()}
 
 
 def framework_scaffold(framework):
@@ -88,7 +71,6 @@ def build_manifest(channel, tag, revision, repository):
     """Write `framework.json` for the checked-out revision."""
     framework = tomllib.loads(Path("Cargo.toml").read_text())
     metadata = framework["package"]["metadata"]["waterui"]
-    submodules = recorded_submodules()
     manifest = {
         "schema_version": 2,
         "channel": channel,
@@ -97,8 +79,7 @@ def build_manifest(channel, tag, revision, repository):
         "tag": tag,
         "run_id": int(os.environ["GITHUB_RUN_ID"]),
         "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
-        "submodules": submodules,
-        "lockfiles": lockfile_hashes(submodules),
+        "lockfiles": lockfile_hashes(),
         "scaffold": framework_scaffold(framework),
         # The framework-owned metadata table verbatim — including
         # `minimum-cli-version`: a new fact added there flows into every
@@ -112,7 +93,6 @@ def checkout(revision):
     """Put the worktree at `revision` so every recorded fact names the tree
     being certified rather than whatever the job happened to check out."""
     git("checkout", revision)
-    git("submodule", "update", "--init", "--recursive")
 
 
 def prepare_stable(tag, revision):
@@ -166,7 +146,6 @@ def prepare_nightly():
             write_outputs({"eligible": "false", "reason": "This run does not advance the certified revision"})
             return
         comparison.check_returncode()
-    git("submodule", "update", "--init", "--recursive")
     build_manifest("nightly", tag, revision, repository)
     write_outputs({"eligible": "true", "tag": tag, "revision": revision})
 
