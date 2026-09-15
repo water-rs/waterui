@@ -10075,7 +10075,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-assets-planner"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "heck",
  "serde",
@@ -10824,7 +10824,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-preview-protocol"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bincode 2.0.1",
  "dirs 7.0.0",
