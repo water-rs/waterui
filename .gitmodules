@@ -1,4 +1,0 @@
-[submodule "backends/android"]
-	path = backends/android
-	url = https://github.com/water-rs/android-backend.git
-	branch = dev

@@ -55,14 +55,16 @@ minimum-cli-version = "0.2.1"
 android-min-api-level = 26
 # Git repositories the native backends are pinned from. The Apple backend
 # releases on its own cadence, so a generated project pins the declared
-# compatible `apple-backend-version` tag; the Android backend still rides the
-# `backends/android` gitlink, which supplies its `{name}-backend-revision` pin.
+# compatible `apple-backend-version` tag; the Android backend is pinned by
+# commit through `android-backend-revision`, the JitPack coordinate a
+# generated project consumes. Neither rides a gitlink (#940).
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 # 0.2.0 predates the backend's Swift 6 sendability fixes and fails under
 # Xcode 26.x; the dev-line tag carries them and the FFI sync this tree needs.
 # Pin the next `0.3.0` release once it tags.
 apple-backend-version = "0.3.0-dev.3"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
+android-backend-revision = "dc57ad0ddc9fd166afa450b56e96add127b4b273"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
 # `[workspace.dependencies]` below.

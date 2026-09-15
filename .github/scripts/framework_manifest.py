@@ -30,12 +30,11 @@ import tomllib
 NIGHTLY_TAG = re.compile(r"nightly-\d{8}-[0-9a-f]{12}")
 
 
-# The submodules whose checkout carries a native backend repository; each
-# basename keys the `{name}-backend-revision` scaffold entry, matching
-# BACKEND_SUBMODULES on the Rust side. Backends released on their own cadence
-# — Apple, since #839 — carry a `{name}-backend-version` literal in
-# `[package.metadata.waterui]` instead.
-BACKEND_SUBMODULES = ("backends/android",)
+# No backend rides a gitlink any more: Apple carries an
+# `apple-backend-version` literal in `[package.metadata.waterui]` (#839) and
+# Android an `android-backend-revision` literal (#940). The scaffold table
+# copies both kinds; `recorded_submodules` stays for the manifest's
+# `submodules` field, which is empty for such a tree.
 
 
 def git(*args):
@@ -67,8 +66,9 @@ def framework_scaffold(framework):
     """The scaffold table the framework manifest itself declares: each
     `scaffold-packages` entry's `[workspace.dependencies]` requirement and
     every backend coordinate — `{name}-backend-url`, plus the
-    `{name}-backend-version` of a backend pinned by release rather than
-    gitlink — from `[package.metadata.waterui]`.
+    `{name}-backend-version` of a backend pinned by release or the
+    `{name}-backend-revision` of one pinned by commit — from
+    `[package.metadata.waterui]`.
     Identical to `framework_scaffold` in the CLI for the same tree."""
     metadata = framework["package"]["metadata"]["waterui"]
     workspace = framework["workspace"]["dependencies"]
@@ -79,7 +79,7 @@ def framework_scaffold(framework):
             dependency if isinstance(dependency, str) else dependency["version"]
         )
     for key, value in metadata.items():
-        if key.endswith("-backend-url") or key.endswith("-backend-version"):
+        if key.endswith(("-backend-url", "-backend-version", "-backend-revision")):
             scaffold[key] = value
     return scaffold
 
