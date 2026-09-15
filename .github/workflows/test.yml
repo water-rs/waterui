@@ -29,11 +29,11 @@ env:
 # of the whole workspace that no cache can hold next to the default one, so
 # it is a 35-40 minute cold build on every platform, every run, and it made
 # every pull request a 60-70 minute wait whatever it changed. Those passes,
-# the macOS platform and the macOS suites run only when `full` is set; a pull
-# request and a push to `dev` run default-features clippy and format on Linux
-# (#458). Nothing in this repository schedules `full` anymore: the heavyweight
-# coverage moved to the per-repository suites (#755), and the input stays for
-# any caller that wants the complete matrix.
+# the macOS platform and the macOS suites now run only when `full` is set,
+# which `nightly.yml` does once a day against `dev`; a pull request and a
+# push to `dev` run default-features clippy and format on Linux (#458).
+# The complete default-feature tests and examples also belong to nightly;
+# no test coverage is removed to shorten the per-change feedback loop.
 jobs:
   # Lint before testing: it is the cheapest failure to produce, and the one a
   # contributor is most likely to hit, so it should not wait behind the whole
@@ -66,8 +66,11 @@ jobs:
         run: cargo fmt --all -- --check
       # Workspace-wide under default features first: it is the cheapest of the
       # lint passes and the one every crate's normal build shape goes through.
+      # `--all-targets` in the fast shape too: the gate runs no test, but a
+      # `#[cfg(test)]` module or a `tests/` target that no longer compiles
+      # must not wait for the nightly to be noticed.
       - name: Clippy (workspace)
-        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' ${{ inputs.full && '--all-targets' || '--lib --bins' }} -- -D warnings
+        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --all-targets -- -D warnings
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor
       # `--workspace`: the root manifest carries both `[workspace]` and
@@ -203,9 +206,10 @@ jobs:
       # results, so a cross-platform break costs one round trip per platform.
       fail-fast: false
       matrix:
-        # Windows coverage ran in its own workflow, which was retired with the
-        # nightly (#755). This job runs only when `full` is set, so both
-        # platforms are always in the matrix.
+        # Windows is kept in its own workflow because it needs platform-
+        # specific exclusions and compile-only CEF coverage; `nightly.yml`
+        # calls it beside this one. This job runs only when `full` is set, so
+        # both platforms are always in the matrix.
         os: ["ubuntu-latest", "macos-latest"]
     steps:
       - uses: actions/checkout@v4
