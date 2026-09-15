@@ -1575,6 +1575,14 @@ typedef struct Binding_i32 Binding_i32;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_Color Computed_Color;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_ColorScheme Computed_ColorScheme;
 
 /**
@@ -3671,6 +3679,15 @@ typedef struct Computed_ResolvedColor WuiComputed_ResolvedColor;
 typedef struct Binding_Color WuiBinding_Color;
 
 /**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
+typedef struct Computed_Color WuiComputed_Color;
+
+/**
  *C ABI mirror of `ResolvedGradientStop`.
  */
 typedef struct WuiResolvedGradientStop {
@@ -4393,6 +4410,24 @@ typedef struct WuiWindow {
  * - `WuiWindow`: The window configuration to show
  */
 typedef void (*WindowShowFn)(void *context, struct WuiWindow window);
+
+/**
+ * FFI representation of the `Badge` component.
+ */
+typedef struct WuiBadge {
+  /**
+   * The numeric value shown inside the badge indicator.
+   */
+  WuiComputed_i32 *value;
+  /**
+   * The view the badge is attached to.
+   */
+  struct WuiAnyView *content;
+  /**
+   * The badge indicator color.
+   */
+  WuiComputed_Color *color;
+} WuiBadge;
 
 /**
  * FFI surface for the label slot of every control.
@@ -8286,6 +8321,19 @@ WuiComputed_ResolvedColor *waterui_resolve_color(const struct WuiColor *color,
                                                  const struct WuiEnv *env);
 
 /**
+ * Resolves a reactive color signal in the given environment, yielding a
+ * signal of concrete colors. Consumes `color`.
+ *
+ * # Safety
+ *
+ * `color` must be a valid, owning `WuiComputed<Color>` handle that is consumed
+ * by this call and must not be used afterwards; `env` must be a valid,
+ * non-null `WuiEnv` borrowed for the call.
+ */
+WuiComputed_ResolvedColor *waterui_resolve_computed_color(WuiComputed_Color *color,
+                                                          const struct WuiEnv *env);
+
+/**
  * # Safety
  *
  * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
@@ -9461,6 +9509,20 @@ struct WuiTypeId waterui_plain_id(void);
  * Returns the type ID for empty views as a 128-bit value.
  */
 struct WuiTypeId waterui_empty_id(void);
+
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
+struct WuiBadge waterui_force_as_badge(struct WuiAnyView *view);
+
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
+struct WuiTypeId waterui_badge_id(void);
 
 /**
  * # Safety

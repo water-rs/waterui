@@ -24,7 +24,7 @@ pub mod platform;
 pub mod typography;
 mod visual;
 
-pub use controls::{button, form, progress};
+pub use controls::{badge, button, form, progress};
 #[cfg(feature = "map")]
 pub use data::map;
 #[cfg(feature = "map")]
