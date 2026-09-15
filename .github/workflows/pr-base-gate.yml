@@ -34,7 +34,7 @@ jobs:
       # This check doubles as the single required check on main: instead of
       # pinning CI job names in the ruleset (which break on every rename), it
       # waits for every other check run and commit status on the PR's head and
-      # merge commits — and goes green only
+      # merge commits — `nightly-healthy` among them — and goes green only
       # when all of them did. Commit statuses are read alongside check runs so
       # reporters that only publish statuses cannot slip past the gate, and an
       # empty result after the discovery window fails instead of passing

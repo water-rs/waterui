@@ -12,13 +12,17 @@ permissions:
 # per change by the `changes` job below. Running anything is `test.yml` with
 # `full: false`, and every job in that workflow except `lint` is gated on
 # `full`, so no test executes here — that is the #458 decision, "dev is the
-# compile-checked, not test-certified channel". The heavyweight suites live in
-# the repositories that own the code under test, each on its own schedule
-# (#755): the backend e2e nightlies drive every example on their platform.
+# compile-checked, not test-certified channel". The tests themselves, every
+# other clippy shape, macOS and Windows, the all-features runs, the macOS
+# suites, the examples, coverage and the `cargo hack` sweep are `nightly.yml`,
+# once a day against `dev` (#923). The backend e2e nightlies in the backend
+# repositories drive every example on their platform; they do not run the
+# framework's suite.
 #
 # So a green gate here says the change compiles and lints, and says nothing
 # about whether it works. A change whose correctness matters is run locally by
-# whoever writes it.
+# whoever writes it, and the nightly is what certifies `dev`; a release
+# (a pull request into `main`) requires that certification below.
 on:
   # Integration branches only: a branch that also has a PR would otherwise run
   # the whole gate twice for one commit. On dev pushes every job skips itself;
@@ -332,3 +336,77 @@ jobs:
     uses: ./.github/workflows/test.yml
     with:
       full: false
+
+  # The nightly is the only run of the full suite, so its result gates the
+  # release: a pull request into `main` merges only a certified `dev`.
+  # `nightly.yml`'s promote job records a green run as an immutable
+  # `nightly-*` prerelease at the tested commit, which makes certification a
+  # git fact — the newest completed nightly run on dev is healthy exactly
+  # when a `nightly-*` tag points at its head, and the line being released is
+  # certified when that tag's commit is an ancestor of it.
+  #
+  # Only `main` is gated. A red nightly is fixed by ordinary pull requests
+  # into `dev`, which this check never blocks, so it cannot deadlock its own
+  # repair; what it blocks is publishing a `dev` the nightly has not passed.
+  nightly-healthy:
+    name: Nightly healthy
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # checkout
+      actions: read  # list nightly workflow runs
+      issues: read   # name the open tracking issue in the failure message
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # dev is fetched so the latest nightly run's head and the tag targets
+      # resolve even when this pull request's own history does not reach them.
+      - name: Fetch tags and the dev line
+        run: git fetch --tags --quiet origin dev
+      - name: Require a certified line
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # The newest certification, selected the way promote records it in
+          # .github/scripts/framework_manifest.py: among published non-draft
+          # prereleases matching the nightly naming, the latest published_at.
+          tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate | jq -s -r '
+            [ .[][] | select(.prerelease and (.draft | not)
+                and (.tag_name | test("^nightly-[0-9]{8}-[0-9a-f]{12}$"))) ]
+            | max_by(.published_at).tag_name // empty')"
+          if [ -z "${tag}" ]; then
+            echo "::error::no nightly certification exists; nothing is released until the nightly matrix produces one"
+            exit 1
+          fi
+          certified="$(git rev-parse "${tag}^{commit}")"
+
+          # The line being released (the pull request head, normally the dev
+          # tip) must contain the last certification; main itself only gains
+          # certification through this merge.
+          if ! git merge-base --is-ancestor "${certified}" "${HEAD_SHA}"; then
+            echo "::error::${HEAD_SHA} does not descend from the last certified commit ${certified} (${tag})"
+            exit 1
+          fi
+
+          # A certification only counts while the nightly still says so: the
+          # newest completed nightly run on dev must carry a `nightly-*` tag
+          # at the commit it tested. A red or cancelled run certifies
+          # nothing, so the line stays uncertified until a run goes green.
+          run="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?branch=dev&status=completed&per_page=1" \
+            --jq 'if (.workflow_runs | length) == 0 then "" else .workflow_runs[0] | .head_sha + " " + .html_url end')"
+          if [ -z "${run}" ] || [ -z "$(git tag --points-at "${run%% *}" --list 'nightly-*')" ]; then
+            issue="$(gh api "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" --jq '
+              [ .[] | select((.pull_request | not) and (.title == "nightly: the full matrix is red")) | .html_url ]
+              | .[0] // "none found"')"
+            echo "::error::the latest nightly run (${run#* }) is not certified; the last certified commit is ${certified} (${tag}); open nightly issue: ${issue}"
+            exit 1
+          fi
+
+          echo "nightly line healthy: ${tag} certifies ${certified}, and the latest nightly run is certified"

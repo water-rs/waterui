@@ -11,6 +11,11 @@ two must not drift, so this script never reads anything from the CLI.
 (`v<version>`), or — under release preflight, where the release does not
 exist yet — the candidate revision it will publish. The named revision is
 checked out so every recorded fact is read from the released tree.
+
+`nightly` certifies the `dev` revision a green full-matrix run tested, as
+the immutable `nightly-<date>-<sha12>` tag `nightly.yml` publishes. It
+refuses a revision that is already certified or that does not advance the
+newest certification, so the certified line only moves forward.
 """
 
 import argparse
@@ -18,8 +23,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tomllib
+
+NIGHTLY_TAG = re.compile(r"nightly-\d{8}-[0-9a-f]{12}")
 
 
 # The submodules whose checkout carries a native backend repository; each
@@ -118,6 +126,51 @@ def prepare_stable(tag, revision):
     build_manifest("stable", tag, revision, repository)
 
 
+def published_nightlies(repository):
+    """Every published (non-draft) nightly prerelease, newest last."""
+    pages = json.loads(subprocess.check_output([
+        "gh", "api", f"repos/{repository}/releases", "--paginate", "--slurp",
+    ], text=True))
+    releases = [
+        release for page in pages for release in page
+        if not release["draft"] and release["prerelease"]
+        and NIGHTLY_TAG.fullmatch(release["tag_name"])
+    ]
+    return sorted(releases, key=lambda release: release["published_at"])
+
+
+def write_outputs(outputs):
+    with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+        for key, value in outputs.items():
+            output.write(f"{key}={value}\n")
+    if outputs["eligible"] == "false":
+        with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+            summary.write(outputs["reason"] + "\n")
+
+
+def prepare_nightly():
+    repository = os.environ["GITHUB_REPOSITORY"]
+    revision = git("rev-parse", "HEAD")
+    if revision != os.environ["GITHUB_SHA"]:
+        raise RuntimeError("The checkout is not the revision tested by this run")
+    date = git("show", "-s", "--format=%cs", "HEAD").replace("-", "")
+    tag = f"nightly-{date}-{revision[:12]}"
+    releases = published_nightlies(repository)
+    if any(release["tag_name"] == tag for release in releases):
+        write_outputs({"eligible": "false", "reason": "This revision is already certified"})
+        return
+    if releases:
+        latest = git("rev-parse", f'{releases[-1]["tag_name"]}^{{commit}}')
+        comparison = subprocess.run(["git", "merge-base", "--is-ancestor", latest, revision])
+        if comparison.returncode == 1:
+            write_outputs({"eligible": "false", "reason": "This run does not advance the certified revision"})
+            return
+        comparison.check_returncode()
+    git("submodule", "update", "--init", "--recursive")
+    build_manifest("nightly", tag, revision, repository)
+    write_outputs({"eligible": "true", "tag": tag, "revision": revision})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="channel", required=True)
@@ -132,8 +185,14 @@ def main():
         help="the commit the tag certifies (defaults to resolving the tag; "
         "release preflight passes the candidate commit before the tag exists)",
     )
+    commands.add_parser(
+        "nightly", help="certify the dev revision a green full-matrix run tested"
+    )
     args = parser.parse_args()
-    prepare_stable(args.tag, args.revision)
+    if args.channel == "nightly":
+        prepare_nightly()
+    else:
+        prepare_stable(args.tag, args.revision)
 
 
 if __name__ == "__main__":
