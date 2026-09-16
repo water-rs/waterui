@@ -214,7 +214,7 @@ fn pill_button(
     selected: &Computed<usize>,
     controller: &PlayerController,
 ) -> impl View {
-    let is_selected = selected.clone().map(move |s| s == index);
+    let is_selected = selected.clone().equal_to(index);
     let controller = controller.clone();
     let selected_bg_opacity = is_selected.clone().select(1.0, 0.0);
     let idle_bg_opacity = is_selected.select(0.0, 1.0);

@@ -239,7 +239,7 @@ pub fn demo() -> impl View {
         let system_toggle = system_toggle.clone();
         spawn_local(async move {
             loop {
-                system_toggle.set(!system_toggle.get());
+                system_toggle.toggle();
                 sleep(Duration::from_millis(toggle_ms)).await;
             }
         })
@@ -273,7 +273,7 @@ pub fn demo() -> impl View {
     scroll(
         vstack((
             text("WaterUI Stress App").title(),
-            text(format!(
+            text(text!(
                 "SYSTEM={system_count}, CUSTOM={custom_count}, FILTER={filter_count}, TOGGLE={toggle_ms}ms/{filter_toggle_ms}ms"
             ))
             .caption(),

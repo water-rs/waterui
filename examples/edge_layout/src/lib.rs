@@ -11,6 +11,7 @@ use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::shape::{RoundedRectangle, ShapeExt};
+use waterui::widget::condition::when;
 
 /// 8 levels of alternating hstack/vstack nesting. Recursion through AnyView
 /// keeps the concrete type finite while stressing deep layout passes.
@@ -18,20 +19,18 @@ fn deep_nest(depth: u32) -> AnyView {
     if depth == 0 {
         return AnyView::new(text("depth 0").caption().foreground(MutedForeground));
     }
-    let inner = deep_nest(depth - 1);
-    if depth.is_multiple_of(2) {
-        AnyView::new(
-            hstack((text("·").caption(), inner))
+    AnyView::new(
+        when(depth.is_multiple_of(2), move || {
+            hstack((text("·").caption(), deep_nest(depth - 1)))
                 .spacing(2.0)
-                .padding_with(EdgeInsets::symmetric(0.0, 2.0)),
-        )
-    } else {
-        AnyView::new(
-            vstack((text("·").caption(), inner))
+                .padding_with(EdgeInsets::symmetric(0.0, 2.0))
+        })
+        .otherwise(move || {
+            vstack((text("·").caption(), deep_nest(depth - 1)))
                 .spacing(2.0)
-                .alignment(HorizontalAlignment::Leading),
-        )
-    }
+                .alignment(HorizontalAlignment::Leading)
+        }),
+    )
 }
 
 #[derive(Clone, Copy, Identifiable)]
