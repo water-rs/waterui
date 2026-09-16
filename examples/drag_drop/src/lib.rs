@@ -102,7 +102,8 @@ fn fruit_basket(
             spawn_local(async move {
                 sleep(Duration::from_millis(200)).await;
                 bounce.set(1.0);
-            });
+            })
+            .detach();
         },
     )
     .drop_hover(&is_hovering)
