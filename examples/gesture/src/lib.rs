@@ -160,7 +160,7 @@ pub fn demo() -> impl View {
             Divider,
             on_tap_section(&tap_count),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 

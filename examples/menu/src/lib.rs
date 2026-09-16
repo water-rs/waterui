@@ -62,7 +62,7 @@ fn toolbar_scene_section(status: &Binding<String>) -> impl View {
 }
 
 fn window_toolbar(status: &Binding<String>) -> impl View {
-    toolbar_actions(status).padding_with(EdgeInsets::symmetric(6.0, 8.0))
+    toolbar_actions(status).padding_with((6.0, 8.0))
 }
 
 fn menu_section(selected: &Binding<String>) -> impl View {
@@ -159,7 +159,7 @@ fn context_menu_section(context_action: &Binding<String>) -> impl View {
             .foreground(MutedForeground),
         spacer().height(12.0),
         text("Long Press Me")
-            .padding_with(EdgeInsets::all(24.0))
+            .padding_with(24.0)
             .background(ORANGE_BG)
             .foreground(ORANGE_FG)
             .context_menu((
@@ -316,7 +316,7 @@ fn scene(toolbar_status: Binding<String>) -> impl View {
             toolbar_scene_section(&toolbar_status),
             spacer().height(40.0),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 

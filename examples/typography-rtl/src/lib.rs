@@ -56,7 +56,7 @@ fn reading_order_panel(title: &'static str, body: &'static str, arrow: &'static 
     ))
     .alignment(HorizontalAlignment::Leading)
     .spacing(12.0)
-    .padding_with(EdgeInsets::all(16.0))
+    .padding_with(16.0)
     .background(SurfaceVariant)
 }
 
@@ -113,7 +113,7 @@ pub fn typography_and_rtl() -> impl View {
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(16.0)
-        .padding_with(EdgeInsets::all(20.0)),
+        .padding_with(20.0),
     )
 }
 

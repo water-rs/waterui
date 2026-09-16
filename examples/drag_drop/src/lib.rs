@@ -74,7 +74,7 @@ fn fruit_basket(
         text!("{count_display}").size(14.0),
     ))
     .spacing(12.0)
-    .padding_with(EdgeInsets::all(24.0))
+    .padding_with(24.0)
     .min_width(280.0)
     .min_height(120.0)
     .background(Color::srgb_hex("#10B981").with_opacity(0.2))

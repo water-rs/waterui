@@ -133,7 +133,7 @@ fn content(state: MapExampleState) -> impl View {
         text!("{location_status}").caption(),
     ))
     .spacing(4.0)
-    .padding_with(EdgeInsets::symmetric(10.0, 14.0))
+    .padding_with((10.0, 14.0))
     .background(RoundedRectangle::new(0.18).fill(Surface))
     .size(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT)
     .position_in_offset(

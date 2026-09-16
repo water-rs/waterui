@@ -133,7 +133,7 @@ pub fn demo() -> impl View {
                     .style(PickerStyle::Radio),
                 picker_selection_text(&radio_selection),
             ))
-            .padding_with(EdgeInsets::all(12.0)),
+            .padding_with(12.0),
             Divider,
             vstack((
                 text("DatePicker").headline(),
@@ -150,7 +150,7 @@ pub fn demo() -> impl View {
                     .ty(DatePickerType::DateHourMinuteAndSecond),
                 text!("Selected datetime: {datetime}"),
             ))
-            .padding_with(EdgeInsets::all(12.0)),
+            .padding_with(12.0),
             Divider,
             vstack((
                 text("Calendar").headline(),
@@ -162,7 +162,7 @@ pub fn demo() -> impl View {
                     .decorated(decorated_dates.clone()),
                 text!("Selected calendar date: {calendar_date}"),
             ))
-            .padding_with(EdgeInsets::all(12.0)),
+            .padding_with(12.0),
             Divider,
             vstack((
                 text("Multi-Date Picker").headline(),
@@ -177,7 +177,7 @@ pub fn demo() -> impl View {
                 .decorated(decorated_dates),
                 text!("Selected dates: {available_date_count}"),
             ))
-            .padding_with(EdgeInsets::all(12.0)),
+            .padding_with(12.0),
             Divider,
             vstack((
                 text("ColorPicker").headline(),
@@ -192,7 +192,7 @@ pub fn demo() -> impl View {
                 ColorPicker::new("HDR Color", &hdr_color).with_hdr(),
                 color_preview(&hdr_color, "HDR"),
             ))
-            .padding_with(EdgeInsets::all(12.0)),
+            .padding_with(12.0),
             Divider,
             vstack((
                 text("FilePicker").headline(),
@@ -203,13 +203,13 @@ pub fn demo() -> impl View {
                 text("Selected files:").bold(),
                 file_list(&selected_files),
             ))
-            .padding_with(EdgeInsets::all(12.0)),
+            .padding_with(12.0),
             vstack((
                 Divider,
                 text("Built with WaterUI Picker Components").caption(),
             )),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 

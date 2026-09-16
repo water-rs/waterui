@@ -338,7 +338,7 @@ pub fn demo() -> impl View {
                 combined_section(&combined_blur, &combined_saturation, &combined_hue),
             )),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 

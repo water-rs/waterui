@@ -237,7 +237,7 @@ fn scene(system_locale: Locale) -> impl View {
             // leaves update when the selection changes.
             formatted_content(selection.clone().map(locale_from_code).computed()),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
     .on_change(&selection, |code| {
         waterui::regional::set_locale_tag(code).expect("picker locale tag must be valid");

@@ -53,7 +53,7 @@ fn record_row(record: Record) -> ListItem {
                 .foreground(MutedForeground),
         ))
         .alignment(HorizontalAlignment::Leading)
-        .padding_with(EdgeInsets::symmetric(10.0, 16.0)),
+        .padding_with((10.0, 16.0)),
     )
 }
 

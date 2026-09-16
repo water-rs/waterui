@@ -23,7 +23,7 @@ fn deep_nest(depth: u32) -> AnyView {
         AnyView::new(
             hstack((text("·").caption(), inner))
                 .spacing(2.0)
-                .padding_with(EdgeInsets::symmetric(0.0, 2.0)),
+                .padding_horizontal(2.0),
         )
     } else {
         AnyView::new(
@@ -127,7 +127,7 @@ pub fn demo() -> impl View {
             spacer().min_height(16.0),
         ))
         .alignment(HorizontalAlignment::Leading)
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 

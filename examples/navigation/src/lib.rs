@@ -426,7 +426,7 @@ fn message_row(mail: &Mail, message: Message) -> ListItem {
             ))
             .alignment(VerticalAlignment::Top)
             .spacing(6.0)
-            .padding_with(EdgeInsets::symmetric(8.0, 0.0))
+            .padding_vertical(8.0)
         }),
         MailRoute::Message(id),
     ))
@@ -487,7 +487,7 @@ fn message_detail(mail: Mail, id: u64) -> NavigationView {
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(12.0)
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
     .title(text!("{subject}"))
     // A pushed page keeps its title inline, the way a platform back stack does.
@@ -528,7 +528,7 @@ fn compose_page(mail: Mail) -> NavigationView {
     ))
     .alignment(HorizontalAlignment::Leading)
     .spacing(12.0)
-    .padding_with(EdgeInsets::all(16.0))
+    .padding_with(16.0)
     .title("New Message")
     .inline_title()
     .navigation_toolbar(
@@ -638,7 +638,7 @@ fn album_row(album: Album, selection: &Binding<Option<Album>>) -> impl Fn() -> L
                 text!("{count}").caption().foreground(MutedForeground),
             ))
             .spacing(10.0)
-            .padding_with(EdgeInsets::symmetric(10.0, 12.0))
+            .padding_with((10.0, 12.0))
             .on_tap(move || tap_selection.set(Some(album))),
         )
         // The platform draws its own selection chrome; the row only derives
@@ -663,7 +663,7 @@ fn album_detail(album: Album) -> NavigationView {
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(10.0)
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
     .title(album.title())
 }
@@ -690,7 +690,7 @@ fn gallery_stack() -> impl View {
 fn gallery_root() -> NavigationView {
     let tiles: VStack<_> = (0..6).map(photo_tile).collect();
 
-    scroll(tiles.spacing(12.0).padding_with(EdgeInsets::all(16.0)))
+    scroll(tiles.spacing(12.0).padding_with(16.0))
         .title("Gallery")
         .large_title()
 }
@@ -724,7 +724,7 @@ fn photo_page(index: usize) -> NavigationView {
             .foreground(MutedForeground),
     ))
     .spacing(12.0)
-    .padding_with(EdgeInsets::all(16.0))
+    .padding_with(16.0)
     .title(format!("Photo {index}"))
     .inline_title()
     // The declaration lives on the destination, because the pair it names does.
@@ -821,7 +821,7 @@ fn about_page() -> NavigationView {
     ))
     .alignment(HorizontalAlignment::Leading)
     .spacing(10.0)
-    .padding_with(EdgeInsets::all(16.0))
+    .padding_with(16.0)
     .background(SurfaceVariant)
     .title("About")
     .inline_title()
