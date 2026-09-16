@@ -1042,8 +1042,17 @@ impl SemanticApp {
 
     /// Dispatches a primary pointer-down event at viewport coordinates.
     pub fn pointer_down_at(&mut self, x: f32, y: f32) {
-        self.driver.pointer_down(x, y, &self.env);
+        self.queue_pointer_down_at(x, y);
         self.settle();
+    }
+
+    /// Dispatches a primary pointer-down event at viewport coordinates
+    /// without the settle used by [`Self::pointer_down_at`]. The event is
+    /// processed by the next pump, so work the press starts — a long press's
+    /// motion, a drag preview — stays observable to [`Self::wait_for`] rather
+    /// than being waited out.
+    pub fn queue_pointer_down_at(&mut self, x: f32, y: f32) {
+        self.driver.pointer_down(x, y, &self.env);
     }
 
     /// Right-clicks at viewport coordinates, opening a context menu if there is
@@ -1063,8 +1072,15 @@ impl SemanticApp {
 
     /// Dispatches a primary pointer-up event at viewport coordinates.
     pub fn pointer_up_at(&mut self, x: f32, y: f32) {
-        self.driver.pointer_up(x, y, &self.env);
+        self.queue_pointer_up_at(x, y);
         self.settle();
+    }
+
+    /// Dispatches a primary pointer-up event at viewport coordinates without
+    /// the settle used by [`Self::pointer_up_at`]; the release is processed
+    /// by the next pump.
+    pub fn queue_pointer_up_at(&mut self, x: f32, y: f32) {
+        self.driver.pointer_up(x, y, &self.env);
     }
 
     pub(crate) fn drag_from_to(&mut self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) {
@@ -1219,10 +1235,14 @@ impl SemanticApp {
     /// playback ahead of the assertions that follow: a long press held while
     /// an image decodes would activate, play, and finish inside one settle.
     /// Once a paced pump changes the tree, settling returns to advancing
-    /// frames so whatever the change scheduled can run — unless the task count
-    /// held while the tree changed, which is a live producer (video playback,
-    /// a stream) rather than a fetch that publishes once and finishes; settling
-    /// returns then, since such work outlives the settle by design.
+    /// frames so whatever the change scheduled can run.
+    ///
+    /// In-flight work is waited for, whatever its length: a playback task
+    /// or a stream keeps settling busy until it ends or the wall-clock cap
+    /// elapses. A test that has to observe such a transient — motion that
+    /// plays while a press is held — dispatches the press with
+    /// [`Self::queue_pointer_down_at`] and waits on the tree instead of
+    /// settling.
     ///
     /// The virtual cap exists solely for perpetual animations (an
     /// indeterminate progress spinner keeps the animation controller active
@@ -1256,24 +1276,13 @@ impl SemanticApp {
             // Quiescent but a local task may be parked on a wall-clock wake:
             // give it real time, then run what it re-queued at the same
             // virtual instant.
-            let mut outstanding = waterui::task::outstanding_local_tasks();
             loop {
-                if outstanding == 0 || Instant::now() >= wall_deadline {
+                if waterui::task::outstanding_local_tasks() == 0 || Instant::now() >= wall_deadline
+                {
                     return;
                 }
                 std::thread::sleep(crate::driver::VIRTUAL_FRAME);
-                let rebuilt = self.pump_held();
-                let now_outstanding = waterui::task::outstanding_local_tasks();
-                if rebuilt && now_outstanding >= outstanding {
-                    // The tree changed while the task count held: the work is
-                    // a live producer — playback, a stream — not a parked fetch
-                    // waiting to publish once and finish. Its frames keep
-                    // coming for as long as it lives, so settling on it would
-                    // wait out the whole playback.
-                    return;
-                }
-                outstanding = now_outstanding;
-                if !self.driver.is_settled() {
+                if self.pump_held() || !self.driver.is_settled() {
                     break;
                 }
             }
