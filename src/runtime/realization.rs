@@ -24,7 +24,7 @@ use waterui_core::Environment;
 /// building an `App` — an offscreen preview harness, for one — calls this
 /// itself.
 #[cfg_attr(
-    any(not(feature = "video-gpu"), target_vendor = "apple"),
+    target_vendor = "apple",
     expect(
         clippy::missing_const_for_fn,
         reason = "the body is empty only in the configuration being linted; selecting a realization on a platform with no native player makes it install one"
