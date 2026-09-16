@@ -3637,7 +3637,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=b70a1cf3f9dbe65de24321ab20b530cff6a91585#b70a1cf3f9dbe65de24321ab20b530cff6a91585"
+source = "git+https://github.com/water-rs/hydrolysis?rev=452aea58b2e63edc889f1c8a2f3f8f7f1a4c6bb0#452aea58b2e63edc889f1c8a2f3f8f7f1a4c6bb0"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3682,7 +3682,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=3f1a28728575030dc9949e7f95275a2d9b18c145#3f1a28728575030dc9949e7f95275a2d9b18c145"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=14a35e3ef69ced36557a3c7ab11d52e0afb53ad5#14a35e3ef69ced36557a3c7ab11d52e0afb53ad5"
 dependencies = [
  "material-color-utils",
  "num-traits",
@@ -10208,7 +10208,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/chart?rev=f416bd788c7de1df7a9f1c41d5d7aaaaab0c71a7#f416bd788c7de1df7a9f1c41d5d7aaaaab0c71a7"
+source = "git+https://github.com/water-rs/chart?rev=4877ca036d5fdaabc9930357223fcb2f86df6fbb#4877ca036d5fdaabc9930357223fcb2f86df6fbb"
 dependencies = [
  "bytemuck",
  "nami",

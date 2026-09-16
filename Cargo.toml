@@ -49,22 +49,17 @@ categories = ["gui"]
 # the same facts from the checked-out manifest directly.
 [package.metadata.waterui]
 # The lowest CLI version that may consume this framework revision.
-minimum-cli-version = "0.2.1"
+minimum-cli-version = "0.3.1"
 # The Android API floor the native runtime supports; the backend's Gradle
 # `minSdk` must agree.
 android-min-api-level = 26
-# Git repositories the native backends are pinned from. The Apple backend
-# releases on its own cadence, so a generated project pins the declared
-# compatible `apple-backend-version` tag; the Android backend is pinned by
-# commit through `android-backend-revision`, the JitPack coordinate a
-# generated project consumes. Neither rides a gitlink (#940).
+# Native backends are pinned to compatible commits. The CLI preserves these
+# revisions when scaffolding a project; neither backend rides a gitlink.
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
-# 0.2.0 predates the backend's Swift 6 sendability fixes and fails under
-# Xcode 26.x; the dev-line tag carries them and the FFI sync this tree needs.
-# Pin the next `0.3.0` release once it tags.
-apple-backend-version = "0.3.0-dev.3"
+# Proposal-aware placement requires the matching native layout contract.
+apple-backend-revision = "ae0e0e3272905af6d1043839a9d30e23b78aca6c"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "dc57ad0ddc9fd166afa450b56e96add127b4b273"
+android-backend-revision = "b0755be91c1354c5a76c09aaf2daef08005c51c4"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
 # `[workspace.dependencies]` below.
@@ -223,12 +218,15 @@ waterui-mcp-protocol = { version = "0.1.0", path = "components/devtools/mcp/prot
 # compile against this tree; gtk-backend's dev line carries them. The `version`
 # field is what `cargo publish` keeps, so the requirement moves back to a plain
 # registry pin once waterui-gtk 0.2.0 is released.
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "3162043e618e759bea6d6e52ec75c6ee1273c080", version = "0.2.0" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "d3e12c069e3d3c88ab8087dee9417b82119256b5", version = "0.2.0" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.4.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.2.1", default-features = false }
-waterui-dew = "0.2.1"
+# The registry 0.2.1 predates the proposal-preserving contract this tree
+# requires (water-rs/dew#7); `version` is what `cargo publish` keeps, so the
+# requirement moves back to a plain registry pin once a release carries it.
+waterui-dew = { git = "https://github.com/water-rs/dew", rev = "b64f6759a3ebe7ac621bad84be00fe431f978119", version = "0.2.1" }
 waterui = { version = "0.4.1", path = "." }
 waterui-icons-codegen = { version = "0.1.1", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
@@ -473,7 +471,7 @@ panic = "abort"    # Smaller panic handling
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
 # Axis placement participates in the same proposal-aware contract.
-waterui-chart = { git = "https://github.com/water-rs/chart", rev = "f416bd788c7de1df7a9f1c41d5d7aaaaab0c71a7" }
+waterui-chart = { git = "https://github.com/water-rs/chart", rev = "4877ca036d5fdaabc9930357223fcb2f86df6fbb" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
@@ -510,8 +508,8 @@ xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e7
 # this branch changes the contract; the companion branches on water-rs
 # resolve them (water-rs/hydrolysis#37, water-rs/hydrolysis-m3#57). Drop
 # these entries once the releases carry both.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "b70a1cf3f9dbe65de24321ab20b530cff6a91585" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "3f1a28728575030dc9949e7f95275a2d9b18c145" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "452aea58b2e63edc889f1c8a2f3f8f7f1a4c6bb0" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "14a35e3ef69ced36557a3c7ab11d52e0afb53ad5" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
 # storage and takes its address as the opaque class pointer.

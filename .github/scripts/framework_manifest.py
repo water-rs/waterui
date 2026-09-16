@@ -29,10 +29,8 @@ import tomllib
 NIGHTLY_TAG = re.compile(r"nightly-\d{8}-[0-9a-f]{12}")
 
 
-# No backend rides a gitlink: Apple carries an `apple-backend-version`
-# literal in `[package.metadata.waterui]` (#839) and Android an
-# `android-backend-revision` literal (#940). The scaffold table copies both
-# kinds.
+# No backend rides a gitlink. The scaffold table copies each backend's
+# declared release version or exact commit from `[package.metadata.waterui]`.
 
 
 def git(*args):
@@ -47,9 +45,10 @@ def lockfile_hashes():
 
 def framework_scaffold(framework):
     """The scaffold table the framework manifest itself declares: each
-    `scaffold-packages` entry's `[workspace.dependencies]` requirement and
-    every backend coordinate — `{name}-backend-url`, plus the
-    `{name}-backend-version` of a backend pinned by release or the
+    `scaffold-packages` entry's `[workspace.dependencies]` requirement —
+    `{name}-version`, plus `{name}-git` and `{name}-rev` when the requirement
+    pins a repository — and every backend coordinate — `{name}-backend-url`,
+    plus the `{name}-backend-version` of a backend pinned by release or the
     `{name}-backend-revision` of one pinned by commit — from
     `[package.metadata.waterui]`.
     Identical to `framework_scaffold` in the CLI for the same tree."""
@@ -61,6 +60,19 @@ def framework_scaffold(framework):
         scaffold[f"{name}-version"] = (
             dependency if isinstance(dependency, str) else dependency["version"]
         )
+        # A scaffold package pinned from git keeps that source: a bare
+        # `{name}-version` cannot express the commit the framework builds
+        # against, and the registry may not carry it at all.
+        if isinstance(dependency, dict) and "git" in dependency:
+            revision = dependency.get("rev")
+            if not isinstance(revision, str) or not re.fullmatch(
+                r"[0-9a-fA-F]{40}", revision
+            ):
+                raise RuntimeError(
+                    f"workspace.dependencies.{name} must pin an immutable Git revision"
+                )
+            scaffold[f"{name}-git"] = dependency["git"]
+            scaffold[f"{name}-rev"] = revision
     for key, value in metadata.items():
         if key.endswith(("-backend-url", "-backend-version", "-backend-revision")):
             scaffold[key] = value
