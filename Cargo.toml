@@ -472,6 +472,8 @@ panic = "abort"    # Smaller panic handling
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
+# Axis placement participates in the same proposal-aware contract.
+waterui-chart = { git = "https://github.com/water-rs/chart", rev = "f416bd788c7de1df7a9f1c41d5d7aaaaab0c71a7" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
@@ -508,8 +510,8 @@ xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e7
 # this branch changes the contract; the companion branches on water-rs
 # resolve them (water-rs/hydrolysis#37, water-rs/hydrolysis-m3#57). Drop
 # these entries once the releases carry both.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "30fc7c97dcd6d8b863824403c0744049ec7bff05" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "c4cd817b4b5345dd8600aa4d7ab0b0ca33ed4238" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "b70a1cf3f9dbe65de24321ab20b530cff6a91585" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "3f1a28728575030dc9949e7f95275a2d9b18c145" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
 # storage and takes its address as the opaque class pointer.
