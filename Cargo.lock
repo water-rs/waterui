@@ -10818,6 +10818,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "waterui-core",
+ "waterui-internal",
  "waterui-layout",
  "waterui-preview-protocol",
 ]
@@ -10871,6 +10872,7 @@ name = "waterui-testing"
 version = "0.4.1"
 dependencies = [
  "accesskit",
+ "async-io",
  "bitflags 2.13.2",
  "executor-core",
  "hydrolysis",

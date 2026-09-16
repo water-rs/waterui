@@ -18,6 +18,7 @@ use executor_core::spawn_local;
 use futures_lite::io::BufReader;
 use waterui_core::view_renderer::{RenderSize, ViewRenderer};
 use waterui_core::{Environment, Metadata, Retain, View};
+use waterui_internal::task::outstanding_local_tasks;
 
 use crate::library::{LoadError, PreviewLibrary};
 use crate::renderer::RenderResultExt as _;
@@ -682,6 +683,28 @@ fn load_preview_view(
     unsafe { library.load_view(symbol) }.map_err(|e| PreviewError::RenderFailed(e.to_string()))
 }
 
+/// Paces real time until `spawn_local` work outstanding beyond `baseline`
+/// finishes — or the wall-clock cap elapses.
+///
+/// A task parked on a timer or an in-flight read holds no queued runnable,
+/// so runnable-queue quiescence cannot see it; the monitored executor's
+/// live-task count can. Each timer yield hands the executor a real turn, so
+/// the runnable the last wake re-queued runs and the task can publish its
+/// result before the caller snapshots.
+async fn await_local_quiescence(baseline: usize) {
+    /// Wall-clock budget for work parked on real I/O — mirrors
+    /// `waterui-testing`'s settle cap: long enough for a fetch on a slow
+    /// link, bounded so a permanently parked task cannot hang the renderer.
+    const LOCAL_QUIESCENCE_CAP: Duration = Duration::from_secs(5);
+    /// Pacing interval between executor turns.
+    const PACE: Duration = Duration::from_millis(16);
+
+    let deadline = Instant::now() + LOCAL_QUIESCENCE_CAP;
+    while outstanding_local_tasks() > baseline && Instant::now() < deadline {
+        async_io::Timer::after(PACE).await;
+    }
+}
+
 #[expect(
     clippy::future_not_send,
     reason = "preview runtime drives this on the main-thread support-app executor; `Environment` is `!Send` by design"
@@ -694,6 +717,12 @@ async fn handle_render(
     frame: Size,
 ) -> Result<PreviewOutput, PreviewError> {
     let total_start = Instant::now();
+    // `handle_render` itself runs inside the monitored `render_worker` task,
+    // and the support app keeps resident tasks alive (the accept loop, the
+    // idle-shutdown watcher, this connection's read loop), so the live-task
+    // count never reaches zero — the baseline is the count at entry, and
+    // quiescence means falling back to it.
+    let task_baseline = outstanding_local_tasks();
     let cache_start = Instant::now();
     let ensured = ensure_dylib_cached(cache, dylib).await?;
     let cache_elapsed_ms = elapsed_ms(cache_start);
@@ -718,6 +747,14 @@ async fn handle_render(
         .get::<ViewRenderer>()
         .expect("ViewRenderer missing in Environment");
     let render_size = RenderSize::new(frame.width, frame.height);
+
+    // `load_preview_view` runs the previewed view's constructor, which can
+    // already hand async work to this thread's local executor — an eager
+    // `Fetched` read, an `async` computed, a `.task` modifier. The renderer
+    // captures one shot, so work still parked on wall-clock I/O when it runs
+    // would publish after the pixels are taken; pace real time on the
+    // live-task count so it finishes first.
+    await_local_quiescence(task_baseline).await;
 
     let render_start = Instant::now();
     let result = renderer.render(view, render_size).await;
