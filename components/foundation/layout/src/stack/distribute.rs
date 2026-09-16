@@ -75,6 +75,17 @@ const fn with_main(axis: Axis, proposal: ProposalSize, main: Option<f32>) -> Pro
     }
 }
 
+/// Allocates cross-axis fill without shrinking a finite measured minimum.
+pub(super) const fn place_cross_extent(measured: f32, available: f32, stretch: bool) -> f32 {
+    if measured.is_infinite() {
+        available
+    } else if stretch {
+        measured.max(available)
+    } else {
+        measured
+    }
+}
+
 pub(super) fn stack_spacing(spacing: f32, count: usize) -> f32 {
     spacing * usize_to_f32(count.saturating_sub(1))
 }

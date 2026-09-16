@@ -115,7 +115,7 @@ impl SubView for SpacerView {
     }
 }
 
-/// A mock axis-expanding view (like [`TextField`], Slider).
+/// A zero-ideal fill leaf with an unbounded maximum width.
 /// Expands to fill width, has fixed height.
 /// Uses [`StretchAxis::Horizontal`] - stretches WIDTH only, not HEIGHT.
 struct HorizontalExpandingView {
@@ -124,7 +124,7 @@ struct HorizontalExpandingView {
 
 impl SubView for HorizontalExpandingView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        let width = proposal.width.unwrap_or(f32::INFINITY);
+        let width = proposal.width.unwrap_or(0.0);
         ViewDimensions::new(Size::new(width, self.height))
     }
     fn stretch_axis(&self) -> StretchAxis {
@@ -135,7 +135,7 @@ impl SubView for HorizontalExpandingView {
     }
 }
 
-/// A mock vertical-expanding view.
+/// A zero-ideal fill leaf with an unbounded maximum height.
 /// Expands to fill height, has fixed width.
 /// Uses [`StretchAxis::Vertical`] - stretches HEIGHT only, not WIDTH.
 struct VerticalExpandingView {
@@ -185,7 +185,7 @@ impl SubView for GuidedBoxView {
 
 impl SubView for VerticalExpandingView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        let height = proposal.height.unwrap_or(f32::INFINITY);
+        let height = proposal.height.unwrap_or(0.0);
         ViewDimensions::new(Size::new(self.width, height))
     }
     fn stretch_axis(&self) -> StretchAxis {
@@ -635,7 +635,7 @@ fn test_vstack_children_exceed_bounds_bounded_proposal() {
 
 #[test]
 fn test_vstack_child_width_exceeds_bounds_bounded_proposal() {
-    // A child wider than bounds should be clamped to bounds width
+    // A rigid child retains its width and overflows a smaller host region.
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
         spacing: Computed::constant(0.0),
@@ -650,13 +650,10 @@ fn test_vstack_child_width_exceeds_bounds_bounded_proposal() {
     let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     assert_eq!(placements.len(), 1);
-    assert!(
-        placements[0].frame.width() <= bounds.width() + 0.001,
-        "Child width {} exceeds bounds width {}",
-        placements[0].frame.width(),
-        bounds.width()
+    assert_eq!(
+        placements[0].frame,
+        Rect::new(Point::new(-50.0, 0.0), Size::new(200.0, 30.0))
     );
-    assert_rect_within_bounds(&placements[0].frame, &bounds, "wide child");
 }
 
 #[test]
@@ -923,7 +920,7 @@ fn test_hstack_reports_rigid_minimum_under_smaller_proposal() {
 }
 
 #[test]
-fn test_vstack_size_respects_proposal() {
+fn test_vstack_reports_rigid_cross_axis_minimum() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
         spacing: Computed::constant(10.0),
@@ -938,10 +935,10 @@ fn test_vstack_size_respects_proposal() {
 
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
-    // With width proposal, VStack should report min(max_child_width, proposal)
+    // The widest rigid child rejects the smaller cross-axis offer.
     let size = layout.size_that_fits(ProposalSize::new(Some(90.0), None), &children);
 
-    assert_eq!(size.width, 90.0); // Clamped to proposal
+    assert_eq!(size.width, 100.0); // Preserve the reported minimum.
     assert_eq!(size.height, 110.0); // 50 + 10 + 50
 }
 
@@ -1146,8 +1143,8 @@ fn test_hstack_vertical_expanding_child_width() {
 }
 
 #[test]
-fn test_vstack_intrinsic_width_excludes_horizontal_stretch() {
-    // VStack intrinsic width should NOT include horizontally-stretching children
+fn test_vstack_intrinsic_width_includes_zero_ideal_fill() {
+    // Every finite ideal contributes, including the fill leaf's zero ideal.
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
         spacing: Computed::constant(10.0),
@@ -1156,7 +1153,7 @@ fn test_vstack_intrinsic_width_excludes_horizontal_stretch() {
     let mut label = FixedSizeView {
         size: Size::new(80.0, 20.0),
     };
-    let mut text_field = HorizontalExpandingView { height: 40.0 }; // Returns INFINITY width when unspecified
+    let mut text_field = HorizontalExpandingView { height: 40.0 }; // Zero ideal width; only the maximum query is infinite.
     let mut button = FixedSizeView {
         size: Size::new(100.0, 44.0),
     };
@@ -1164,14 +1161,13 @@ fn test_vstack_intrinsic_width_excludes_horizontal_stretch() {
     let children: Vec<&dyn SubView> = vec![&mut label, &mut text_field, &mut button];
     let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
-    // Width: max of non-horizontal-stretching children = max(80, 100) = 100
-    // TextField stretches horizontally so its infinity width doesn't contribute
+    // Width: max(80, 0, 100) = 100.
     assert_eq!(size.width, 100.0);
 }
 
 #[test]
-fn test_hstack_intrinsic_height_excludes_vertical_stretch() {
-    // HStack intrinsic height should NOT include vertically-stretching children
+fn test_hstack_intrinsic_height_includes_zero_ideal_fill() {
+    // Every finite ideal contributes, including the fill leaf's zero ideal.
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
         spacing: Computed::constant(10.0),
@@ -1180,7 +1176,7 @@ fn test_hstack_intrinsic_height_excludes_vertical_stretch() {
     let mut label = FixedSizeView {
         size: Size::new(50.0, 20.0),
     };
-    let mut vertical_component = VerticalExpandingView { width: 60.0 }; // Returns INFINITY height
+    let mut vertical_component = VerticalExpandingView { width: 60.0 }; // Zero ideal height; only the maximum query is infinite.
     let mut button = FixedSizeView {
         size: Size::new(100.0, 44.0),
     };
@@ -1188,8 +1184,7 @@ fn test_hstack_intrinsic_height_excludes_vertical_stretch() {
     let children: Vec<&dyn SubView> = vec![&mut label, &mut vertical_component, &mut button];
     let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
-    // Height: max of non-vertical-stretching children = max(20, 44) = 44
-    // vertical_component stretches vertically so its infinity height doesn't contribute
+    // Height: max(20, 0, 44) = 44.
     assert_eq!(size.height, 44.0);
 }
 
