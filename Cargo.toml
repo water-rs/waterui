@@ -218,7 +218,7 @@ waterui-mcp-protocol = { version = "0.1.0", path = "components/devtools/mcp/prot
 # compile against this tree; gtk-backend's dev line carries them. The `version`
 # field is what `cargo publish` keeps, so the requirement moves back to a plain
 # registry pin once waterui-gtk 0.2.0 is released.
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "d3e12c069e3d3c88ab8087dee9417b82119256b5", version = "0.2.0" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "0e5b248e85b5a3ec787fede3dbbd8b002ad9e9d3", version = "0.2.0" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.4.1", path = "utils/dylib", default-features = false }
