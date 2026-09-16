@@ -224,7 +224,7 @@ waterui-mcp-protocol = { version = "0.1.0", path = "components/devtools/mcp/prot
 # compile against this tree; gtk-backend's dev line carries them. The `version`
 # field is what `cargo publish` keeps, so the requirement moves back to a plain
 # registry pin once waterui-gtk 0.2.0 is released.
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "06e9e744ea5c98c5c665ab6f7a56f1c8c22ca35c", version = "0.2.0" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "cd30eeb1b84c3e5e3a8d3ca70013c2bfbbb1a817", version = "0.2.0" }
 # `waterui-winui` is unpublished and Windows-only; the `water` CLI reads this
 # entry to scaffold a generated launcher crate pinned to the same revision.
 waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "18fa03852593221e2a7a80c2847cdb0e2d24716f", version = "0.1.0" }
