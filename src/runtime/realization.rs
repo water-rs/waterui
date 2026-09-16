@@ -34,7 +34,26 @@ pub fn install(env: &mut Environment) {
     // Apple bridges AVPlayer: even if the application enabled `video-gpu`
     // unconditionally, the self-drawn player must not shadow the native
     // realization there.
-    #[cfg(all(feature = "video-gpu", not(target_vendor = "apple")))]
+    #[cfg(not(target_vendor = "apple"))]
+    install_video(env);
+    let _ = env;
+}
+
+/// Installs the self-drawn video realization without consulting the platform.
+///
+/// [`install`] skips this on Apple because the platform backend bridges a
+/// native player. A host that renders through a self-drawn backend on every
+/// host OS — the semantic/offscreen test harness — has no such bridge and
+/// installs this unconditionally.
+#[cfg_attr(
+    not(feature = "video-gpu"),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "the body is empty only in the configuration being linted; selecting the video-gpu feature makes it install a realization"
+    )
+)]
+pub fn install_video(env: &mut Environment) {
+    #[cfg(feature = "video-gpu")]
     waterui_video_gpu::install(env);
     let _ = env;
 }

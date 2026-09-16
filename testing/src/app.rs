@@ -340,6 +340,12 @@ fn mount_app(
         scale_factor.is_finite() && scale_factor > 0.0,
         "waterui-testing scale_factor must be finite and greater than zero, got {scale_factor}"
     );
+    // Every mount path funnels here and renders through hydrolysis, which
+    // owns no platform media bridge — so the self-drawn video realization
+    // applies on every host OS, including the ones `realization::install`
+    // skips because their system backend would bridge a native player.
+    let mut env = env;
+    waterui::realization::install_video(&mut env);
     let mut app = SemanticApp {
         env,
         content,
