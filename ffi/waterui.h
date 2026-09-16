@@ -373,6 +373,14 @@ typedef enum WuiColorSlot {
    * Foreground drawn on the selection container.
    */
   WuiColorSlot_SelectionForeground = 12,
+  /**
+   * Destructive / error emphasis: badges, destructive buttons, validation.
+   */
+  WuiColorSlot_Error = 13,
+  /**
+   * Foreground drawn on the error color.
+   */
+  WuiColorSlot_ErrorForeground = 14,
 } WuiColorSlot;
 
 /**

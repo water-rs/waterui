@@ -28,8 +28,8 @@ pub fn styling_block_01() {
 // ---------------------------------------------------------------------------
 pub fn styling_token_as_value_prose() {
     use waterui::prelude::theme_color::{
-        AccentContainer, AccentForeground, Background, Border, SelectionContainer,
-        SelectionForeground, SurfaceVariant, Tertiary, TertiaryContainer,
+        AccentContainer, AccentForeground, Background, Border, Error, ErrorForeground,
+        SelectionContainer, SelectionForeground, SurfaceVariant, Tertiary, TertiaryContainer,
     };
 
     let indicator: Color = SurfaceVariant.into();
@@ -42,6 +42,7 @@ pub fn styling_token_as_value_prose() {
         SelectionContainer,
         SelectionForeground,
     );
+    let _ = (Error, ErrorForeground);
     let _ = SurfaceVariant.size(80.0, 40.0);
 }
 

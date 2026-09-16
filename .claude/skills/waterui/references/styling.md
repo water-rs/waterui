@@ -55,6 +55,8 @@ The complete set:
 | `TertiaryContainer` | Container associated with the tertiary accent |
 | `SelectionContainer` | Fill painted behind a selected item |
 | `SelectionForeground` | Foreground drawn on the selection container |
+| `Error` | Destructive / error emphasis — badges, destructive buttons, validation |
+| `ErrorForeground` | Foreground drawn on the error color |
 
 Each token is a zero-sized unit struct that is *also* a `View`, so `Surface.size(80.0, 40.0)`
 paints a themed rectangle. To use a token as a *value* — say, one arm of a `.select` —
