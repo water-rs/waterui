@@ -91,7 +91,7 @@ pub fn demo() -> impl View {
     let available_date_count = available_dates
         .map(|dates: BTreeSet<Date>| dates.len())
         .computed();
-    let decorated_dates = waterui::Computed::constant(decorated_dates());
+    let decorated_dates = Computed::constant(decorated_dates());
 
     let basic_color = binding(Color::from(PICKER_BLUE));
     let alpha_color = binding(Color::from(PICKER_PINK).with_opacity(0.8));
@@ -214,8 +214,7 @@ pub fn demo() -> impl View {
 }
 
 fn picker_selection_text(selection: &Binding<Fruit>) -> impl View {
-    let selection_text = selection.clone().map(|fruit| format!("{fruit:?}"));
-    hstack(("Selected: ", text!("{selection_text}")))
+    hstack(("Selected: ", text!("{selection:?}")))
 }
 
 fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View {

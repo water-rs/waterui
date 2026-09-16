@@ -13,6 +13,7 @@ use waterui::app::App;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
+use waterui_browser_cef::install_chromium;
 use waterui_chromium::cdp::browser_protocol::page::GetNavigationHistoryParams;
 use waterui_chromium::{
     CdpError, ChromiumConfiguration, ChromiumController, ChromiumEvent, ChromiumPage,
@@ -406,7 +407,7 @@ pub fn demo() -> impl View {
 /// runtime, supplies the `ChromiumController` the code above extracts from the
 /// environment, and registers the realization that draws a visible page.
 pub fn app(mut env: Environment) -> App {
-    waterui_browser_cef::install_chromium(&mut env);
+    install_chromium(&mut env);
     App::new(demo, env)
 }
 

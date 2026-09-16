@@ -149,13 +149,7 @@ fn reactive_cursor_section(is_dragging: &Binding<bool>) -> impl View {
         .height(DRAG_CARD_HEIGHT)
         .cursor(
             is_dragging_cursor
-                .map(|d| {
-                    if d {
-                        CursorStyle::ClosedHand
-                    } else {
-                        CursorStyle::OpenHand
-                    }
-                })
+                .select(CursorStyle::ClosedHand, CursorStyle::OpenHand)
                 .computed(),
         )
         .opacity(

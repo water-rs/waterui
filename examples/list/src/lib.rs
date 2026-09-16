@@ -45,7 +45,7 @@ impl DemoState {
 fn record_row(record: Record) -> ListItem {
     ListItem::new(
         vstack((
-            text(format!("Record #{:06}", record.id))
+            text(text!("Record #{id:06}", id = record.id))
                 .sub_headline()
                 .foreground(Foreground),
             text("Materialized only while this row is visible")
@@ -85,13 +85,11 @@ fn jump_last(State(state): State<DemoState>) {
 }
 
 fn toggle_editing(State(state): State<DemoState>) {
-    state.editing.set(!state.editing.get());
+    state.editing.toggle();
 }
 
 fn content(state: DemoState) -> impl View {
-    let edit_label = state
-        .editing
-        .map(|editing| if editing { "Done" } else { "Edit" });
+    let edit_label = state.editing.select("Done", "Edit");
     let list = List::for_each(state.records.clone(), record_row)
         .editing(state.editing.clone())
         .on_delete(delete_record)
