@@ -108,6 +108,8 @@ naga = { version = "30.0.1", features = ["wgsl-in"], optional = true }
 shaderloom = { workspace = true, features = ["build"], optional = true }
 
 [dev-dependencies]
+# `mesh_gradient.wgsl` layout parity test parses the real shader source.
+naga = { version = "30.0.1", features = ["wgsl-in"] }
 pollster.workspace = true
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }

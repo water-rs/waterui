@@ -29,24 +29,33 @@ pub const MAX_COLOR_STOPS: usize = 16;
 pub const MAX_MESH_VERTICES: usize = 64;
 
 mod shader_types {
+    use crate::shader_types::{ShaderVec2, ShaderVec4};
     use encase::ShaderType;
 
+    // Every field layout in this module must mirror `mesh_gradient.wgsl`
+    // member-for-member, padding included: wgpu validates each bound buffer
+    // against the shader's own struct size, and a short binding silently drops
+    // every draw that uses it.
     /// A resolved color stop ready for GPU upload.
     #[derive(Debug, Clone, Copy, Default, ShaderType)]
     pub(super) struct GpuColorStop {
         /// RGBA color in linear space.
-        pub(super) color: [f32; 4],
+        pub(super) color: ShaderVec4,
         /// Position along the gradient (0.0 to 1.0).
         pub(super) position: f32,
+        pub(super) _pad0: f32,
+        pub(super) _pad1: f32,
+        pub(super) _pad2: f32,
     }
 
     /// A resolved mesh vertex ready for GPU upload.
     #[derive(Debug, Clone, Copy, Default, ShaderType)]
     pub(super) struct GpuMeshVertex {
         /// Position in unit coordinates (0.0 to 1.0).
-        pub(super) position: [f32; 2],
+        pub(super) position: ShaderVec2,
+        pub(super) _padding1: ShaderVec2,
         /// RGBA color in linear space.
-        pub(super) color: [f32; 4],
+        pub(super) color: ShaderVec4,
     }
 
     /// Uniform buffer layout for mesh gradient parameters.
@@ -67,9 +76,11 @@ mod shader_types {
         pub(super) start_value: f32,
         pub(super) end_value: f32,
         pub(super) smooths_colors: u32,
+        pub(super) _padding: u32,
     }
 }
 
+use crate::shader_types::{ShaderVec2, ShaderVec4};
 use shader_types::{GpuColorStop, GpuMeshVertex, GradientUniforms};
 
 struct MeshGpuResources {
@@ -240,6 +251,7 @@ fn write_mesh_data<I>(
         start_value: 0.0,
         end_value: 1.0,
         smooths_colors: u32::from(smooths_colors),
+        _padding: 0,
     };
 
     resources.uniform_bytes.clear();
@@ -325,8 +337,9 @@ impl StaticMeshRenderer {
         let vertices = vertices
             .into_iter()
             .map(|(position, color)| GpuMeshVertex {
-                position,
-                color: [color.red, color.green, color.blue, color.opacity],
+                position: ShaderVec2::from_array(position),
+                _padding1: ShaderVec2::ZERO,
+                color: ShaderVec4::from_array([color.red, color.green, color.blue, color.opacity]),
             })
             .collect();
 
@@ -495,8 +508,9 @@ where
                     let y =
                         usize_to_f32(index / w) / usize_to_f32((self.height as usize - 1).max(1));
                     GpuMeshVertex {
-                        position: [x, y],
-                        color: [color.red, color.green, color.blue, color.opacity],
+                        position: ShaderVec2::new(x, y),
+                        _padding1: ShaderVec2::ZERO,
+                        color: ShaderVec4::new(color.red, color.green, color.blue, color.opacity),
                     }
                 });
 
@@ -588,8 +602,78 @@ fn usize_to_f32(value: usize) -> f32 {
 
 #[cfg(all(test, feature = "gpu"))]
 mod uniform_layout_tests {
-    use super::shader_types::GradientUniforms;
-    use encase::ShaderType;
+    use super::shader_types::{GpuColorStop, GpuMeshVertex, GradientUniforms};
+    use alloc::vec::Vec;
+    use encase::private::{Metadata, StructMetadata};
+    use encase::{ShaderSize, ShaderType};
+
+    /// Returns the member byte offsets and total span of struct `name` in
+    /// `mesh_gradient.wgsl`, resolved by naga's WGSL front-end.
+    fn wgsl_struct_layout(name: &str) -> (Vec<u64>, u64) {
+        let module = naga::front::wgsl::parse_str(include_str!("../shaders/mesh_gradient.wgsl"))
+            .expect("mesh_gradient.wgsl must parse");
+        module
+            .types
+            .iter()
+            .find_map(|(_, ty)| match (ty.name.as_deref(), &ty.inner) {
+                (Some(found), naga::TypeInner::Struct { members, span }) if found == name => {
+                    Some((
+                        members
+                            .iter()
+                            .map(|member| u64::from(member.offset))
+                            .collect(),
+                        u64::from(*span),
+                    ))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("struct `{name}` not found in mesh_gradient.wgsl"))
+    }
+
+    /// Asserts that a Rust `ShaderType` mirror of a WGSL struct serializes with
+    /// identical member offsets and total size.
+    ///
+    /// wgpu validates every bound buffer against the shader's own struct size:
+    /// when `GradientUniforms` drifted to 44 bytes against the WGSL's 48, every
+    /// mesh draw was dropped by validation and the surface rendered blank —
+    /// with no panic, so the failure only surfaced in an e2e screenshot. This
+    /// compares against the parsed WGSL rather than a handwritten constant so
+    /// future field additions on either side fail here first.
+    fn assert_wgsl_layout<const N: usize>(
+        name: &str,
+        metadata: &Metadata<StructMetadata<N>>,
+        shader_size: u64,
+    ) {
+        let (offsets, span) = wgsl_struct_layout(name);
+        assert_eq!(
+            &metadata.extra.offsets,
+            offsets.as_slice(),
+            "`{name}`: Rust member offsets diverge from mesh_gradient.wgsl"
+        );
+        assert_eq!(
+            shader_size, span,
+            "`{name}`: Rust SHADER_SIZE differs from the WGSL struct span"
+        );
+    }
+
+    #[test]
+    fn mesh_shader_types_match_wgsl_struct_layouts() {
+        assert_wgsl_layout(
+            "GradientUniforms",
+            &GradientUniforms::METADATA,
+            GradientUniforms::SHADER_SIZE.get(),
+        );
+        assert_wgsl_layout(
+            "ColorStop",
+            &GpuColorStop::METADATA,
+            GpuColorStop::SHADER_SIZE.get(),
+        );
+        assert_wgsl_layout(
+            "MeshVertex",
+            &GpuMeshVertex::METADATA,
+            GpuMeshVertex::SHADER_SIZE.get(),
+        );
+    }
 
     /// `GradientUniforms` must be legal in the uniform address space.
     ///
