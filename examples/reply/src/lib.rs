@@ -13,7 +13,7 @@ use waterui::accessibility::AccessibilityRole;
 use waterui::app::App;
 use waterui::color::signal_color;
 use waterui::component::vstack;
-use waterui::layout::{ContentMode, HorizontalAlignment};
+use waterui::layout::ContentMode;
 use waterui::media::Photo;
 use waterui::metadata::Metadata;
 use waterui::prelude::*;
@@ -270,7 +270,7 @@ fn sender_line(message: &'static Message, starred: bool) -> impl View {
             text(message.sender).font(label_medium()),
             text(message.time).font(label_medium()).foreground(Outline),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .spacing(2.0),
         spacer(),
         star(starred, SurfaceContainer),
@@ -306,7 +306,7 @@ fn thread_card(thread: &'static Thread, selected: Binding<usize>, index: usize) 
                 text(thread.sender).font(label_medium()),
                 text(thread.time).font(label_medium()).foreground(Outline),
             ))
-            .alignment(HorizontalAlignment::Leading)
+            .leading()
             .spacing(2.0),
             spacer(),
             star(false, SurfaceContainerHigh),
@@ -327,7 +327,7 @@ fn thread_card(thread: &'static Thread, selected: Binding<usize>, index: usize) 
             )
         }),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(8.0)
     .padding_with(EdgeInsets::all(20.0))
     .background(container)
@@ -424,7 +424,7 @@ fn message_body(message: &'static Message) -> impl View {
             .map(|signature| AnyView::new(text(signature).font(Body))),
         reply_actions(),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(16.0)
 }
 
@@ -459,7 +459,7 @@ fn detail_header(thread: &'static Thread) -> impl View {
                 .font(label_medium())
                 .foreground(Outline),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .spacing(4.0),
         spacer(),
         circled_icon_button("Delete", mdi::trash_can_outline(), color::Surface),
@@ -481,7 +481,7 @@ fn detail_pane(thread: &'static Thread) -> impl View {
     }
     scroll(
         vstack(rows)
-            .alignment(HorizontalAlignment::Leading)
+            .leading()
             .spacing(8.0)
             .padding_with(EdgeInsets::new(0.0, 12.0, 16.0, 16.0)),
     )

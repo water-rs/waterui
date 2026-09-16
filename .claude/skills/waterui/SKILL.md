@@ -311,7 +311,7 @@ face, so never spell a font name for code.
 
 ```rust
 hstack((a, b, c)).spacing(8.0)
-vstack((a, b)).alignment(HorizontalAlignment::Leading).padding()
+vstack((a, b)).leading().padding()
 zstack((background, content))
 scroll(content)
 spacer()                    // flexible gap

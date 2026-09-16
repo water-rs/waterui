@@ -19,7 +19,7 @@ fn type_scale() -> impl View {
             .caption()
             .foreground(MutedForeground),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(8.0)
 }
 
@@ -31,7 +31,7 @@ fn cjk_specimens() -> impl View {
         with(text("日本語：骨、直、門、関").body(), locales::JA),
         with(text("한국어: 한글과 漢字").body(), locales::KO),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(6.0)
 }
 
@@ -47,14 +47,14 @@ fn reading_order_panel(title: &'static str, body: &'static str, arrow: &'static 
                     .caption()
                     .foreground(MutedForeground),
             ))
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
             spacer(),
             text(arrow).headline(),
         ))
         .spacing(12.0),
         TextField::new("Name / الاسم / שם", &input).prompt("Type here / اكتب هنا / הקלידו כאן"),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(12.0)
     .padding_with(EdgeInsets::all(16.0))
     .background(SurfaceVariant)
@@ -111,7 +111,7 @@ pub fn typography_and_rtl() -> impl View {
                 "←",
             ),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .spacing(16.0)
         .padding_with(EdgeInsets::all(20.0)),
     )

@@ -80,7 +80,7 @@ Common modifiers on stacks:
 
 ```rust
 .spacing(8.0)
-.alignment(HorizontalAlignment::Leading)   // VerticalAlignment on hstack
+.leading()   // or .alignment(Leading); hstack aligns vertically: .top() / .centered() / .bottom()
 .padding()  /  .padding_with(16.0)  /  .padding_with(EdgeInsets::symmetric(10.0, 16.0))
 ```
 
@@ -88,6 +88,12 @@ Common modifiers on stacks:
 a signal of one. Argument orders are traps worth memorizing —
 `EdgeInsets::new(top, bottom, leading, trailing)` (not CSS order) and
 `EdgeInsets::symmetric(vertical, horizontal)`.
+
+Alignment is a token or a method, never the qualified constant: `vstack(..).leading()` or
+`.alignment(Leading)`, `hstack(..).top()`, `zstack(..).top_leading()`. The tokens
+(`Leading`, `Trailing`, `Center`, `Top`, `Bottom`, `FirstBaseline`, `LastBaseline`, and the
+corners `TopLeading` …) convert only into the axis they are legal for, so
+`vstack(..).alignment(Top)` does not compile.
 
 Children are a tuple for a fixed set. For a runtime-length static set, collect — the
 iterator item must be a single concrete type, so heterogeneous helpers return `AnyView`:

@@ -263,12 +263,20 @@ impl<C: TupleViews> VStack<(C,)> {
 crate::stack::impl_stack_for_each!(VStack, VStackLayout);
 
 impl<C> VStack<C> {
-    /// Sets the horizontal alignment for children in the stack.
+    /// Sets the horizontal alignment for children in the stack — a
+    /// [`HorizontalAlignment`] or one of the tokens [`Leading`],
+    /// [`Center`], [`Trailing`].
+    ///
+    /// [`Leading`]: crate::Leading
+    /// [`Center`]: crate::Center
+    /// [`Trailing`]: crate::Trailing
     #[must_use]
-    pub const fn alignment(mut self, alignment: HorizontalAlignment) -> Self {
-        self.layout.alignment = alignment;
+    pub fn alignment(mut self, alignment: impl Into<HorizontalAlignment>) -> Self {
+        self.layout.alignment = alignment.into();
         self
     }
+
+    crate::alignment::horizontal_alignment_methods!();
 
     /// Sets the spacing between children in the stack.
     ///

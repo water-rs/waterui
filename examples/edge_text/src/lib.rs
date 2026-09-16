@@ -14,7 +14,7 @@ fn section(title: &'static str, content: impl View) -> impl View {
         text(title).sub_headline().foreground(MutedForeground),
         content,
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(6.0)
     .padding_with(EdgeInsets::all(12.0))
 }
@@ -75,7 +75,7 @@ fn size_extremes() -> impl View {
             text("body").body(),
         ))
         .spacing(8.0)
-        .alignment(VerticalAlignment::LastBaseline),
+        .last_baseline(),
     )
 }
 
@@ -107,7 +107,7 @@ pub fn demo() -> impl View {
                 Divider,
                 mixed_scripts(),
             ))
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
             vstack((
                 Divider,
                 empties(),
@@ -117,9 +117,9 @@ pub fn demo() -> impl View {
                 long_paragraph(),
                 spacer().min_height(16.0),
             ))
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .padding_with(EdgeInsets::all(16.0)),
     )
 }

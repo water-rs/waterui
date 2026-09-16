@@ -34,8 +34,8 @@ pub struct OverlayLayout {
 impl OverlayLayout {
     /// Sets the [`Alignment`] used to position overlay layers relative to the base.
     #[must_use]
-    pub const fn alignment(mut self, alignment: Alignment) -> Self {
-        self.alignment = alignment;
+    pub fn alignment(mut self, alignment: impl Into<Alignment>) -> Self {
+        self.alignment = alignment.into();
         self
     }
 
@@ -226,10 +226,12 @@ impl<Base: View, Layer: View> Overlay<Base, Layer> {
 
     /// Sets how the overlay layer should be aligned inside the base bounds.
     #[must_use]
-    pub const fn alignment(mut self, alignment: Alignment) -> Self {
-        self.layout.alignment = alignment;
+    pub fn alignment(mut self, alignment: impl Into<Alignment>) -> Self {
+        self.layout.alignment = alignment.into();
         self
     }
+
+    crate::alignment::two_dimensional_alignment_methods!();
 }
 
 impl<Base, Layer> fmt::Debug for Overlay<Base, Layer> {

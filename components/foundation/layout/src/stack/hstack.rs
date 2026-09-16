@@ -265,12 +265,22 @@ impl<C: TupleViews> HStack<(C,)> {
 }
 
 impl<C> HStack<C> {
-    /// Sets the vertical alignment for children in the stack.
+    /// Sets the vertical alignment for children in the stack — a
+    /// [`VerticalAlignment`] or one of the tokens [`Top`], [`Center`],
+    /// [`Bottom`], [`FirstBaseline`], [`LastBaseline`].
+    ///
+    /// [`Top`]: crate::Top
+    /// [`Center`]: crate::Center
+    /// [`Bottom`]: crate::Bottom
+    /// [`FirstBaseline`]: crate::FirstBaseline
+    /// [`LastBaseline`]: crate::LastBaseline
     #[must_use]
-    pub const fn alignment(mut self, alignment: VerticalAlignment) -> Self {
-        self.layout.alignment = alignment;
+    pub fn alignment(mut self, alignment: impl Into<VerticalAlignment>) -> Self {
+        self.layout.alignment = alignment.into();
         self
     }
+
+    crate::alignment::vertical_alignment_methods!();
 
     /// Sets the spacing between children in the stack.
     ///

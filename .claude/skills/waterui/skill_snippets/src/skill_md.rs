@@ -317,11 +317,7 @@ pub fn skill_block_13() {
     let (a, b, c) = (text("a"), text("b"), text("c"));
     let _ = { hstack((a, b, c)).spacing(8.0) };
     let (a, b) = (text("a"), text("b"));
-    let _ = {
-        vstack((a, b))
-            .alignment(HorizontalAlignment::Leading)
-            .padding()
-    };
+    let _ = { vstack((a, b)).leading().padding() };
     let _ = { zstack((background, content)) };
     let content = text("content");
     let _ = { scroll(content) };

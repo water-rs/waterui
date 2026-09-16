@@ -52,7 +52,7 @@ fn record_row(record: Record) -> ListItem {
                 .caption()
                 .foreground(MutedForeground),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .padding_with(EdgeInsets::symmetric(10.0, 16.0)),
     )
 }
@@ -122,7 +122,7 @@ fn content(state: DemoState) -> impl View {
             .caption()
             .foreground(MutedForeground),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .spacing(8.0)
         .padding(),
         Divider,
