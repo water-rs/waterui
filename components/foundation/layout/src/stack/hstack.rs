@@ -13,7 +13,7 @@ use crate::{
     container::FixedContainer,
     stack::{
         Axis, VerticalAlignment,
-        distribute::{ChildMeasurement, measure_stack, stack_spacing},
+        distribute::{ChildMeasurement, measure_stack, place_cross_extent, stack_spacing},
         stack_stretch_axis,
     },
 };
@@ -149,7 +149,12 @@ impl Layout for HStackLayout {
         let width = measurements.iter().map(|m| m.size().width).sum::<f32>()
             + stack_spacing(spacing, children.len());
         let (max_above, max_below) = hstack_intrinsic_cross_metrics(&measurements, self.alignment);
-        Size::new(width, max_above + max_below)
+        let height = if measurements.iter().any(|m| m.size().height.is_infinite()) {
+            f32::INFINITY
+        } else {
+            max_above + max_below
+        };
+        Size::new(width, height)
     }
 
     fn place(
@@ -179,15 +184,11 @@ impl Layout for HStackLayout {
                 current_x += spacing;
             }
 
-            // Handle cross-axis (vertical) stretching and infinite height
-            let child_height = if measurement.stretches_cross_axis() {
-                // CrossAxis in HStack means expand vertically to full bounds height
-                bounds.height()
-            } else if measurement.size().height.is_infinite() {
-                bounds.height()
-            } else {
-                measurement.size().height.min(bounds.height())
-            };
+            let child_height = place_cross_extent(
+                measurement.size().height,
+                bounds.height(),
+                measurement.stretches_cross_axis(),
+            );
 
             let child_width = measurement.size().width;
 

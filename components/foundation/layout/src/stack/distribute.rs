@@ -75,6 +75,17 @@ const fn with_main(axis: Axis, proposal: ProposalSize, main: Option<f32>) -> Pro
     }
 }
 
+/// Allocates cross-axis fill without shrinking a finite measured minimum.
+pub(super) const fn place_cross_extent(measured: f32, available: f32, stretch: bool) -> f32 {
+    if measured.is_infinite() {
+        available
+    } else if stretch {
+        measured.max(available)
+    } else {
+        measured
+    }
+}
+
 pub(super) fn stack_spacing(spacing: f32, count: usize) -> f32 {
     spacing * usize_to_f32(count.saturating_sub(1))
 }
@@ -122,15 +133,6 @@ pub(super) fn measure_stack(
         return measured;
     };
     let available = (main - stack_spacing(spacing, children.len())).max(0.0);
-    let ideal_total: f64 = measured
-        .iter()
-        .map(|m| f64::from(main_extent(axis, m.size())))
-        .sum();
-    if !measured.iter().any(ChildMeasurement::stretches_main_axis)
-        && !exceeds(ideal_total, available, children.len())
-    {
-        return measured;
-    }
     let extents: Vec<Extent> = children
         .iter()
         .zip(&measured)
@@ -143,7 +145,14 @@ pub(super) fn measure_stack(
                 ideal: if measurement.stretches_main_axis() {
                     available.max(minimum)
                 } else {
-                    main_extent(axis, measurement.size())
+                    main_extent(
+                        axis,
+                        child
+                            .measure(with_main(axis, proposal, Some(f32::INFINITY)))
+                            .size,
+                    )
+                    .min(available)
+                    .max(minimum)
                 },
                 min: minimum,
                 priority: child.priority(),
@@ -155,10 +164,6 @@ pub(super) fn measure_stack(
         .zip(&mut measured)
         .zip(compress_to_fit(&extents, available))
     {
-        if !measurement.stretches_main_axis() && allocated >= main_extent(axis, measurement.size())
-        {
-            continue;
-        }
         measurement.proposal = with_main(axis, proposal, Some(allocated));
         measurement.dimensions = child.measure(measurement.proposal);
         if measurement.stretches_main_axis() {

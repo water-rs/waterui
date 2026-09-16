@@ -264,3 +264,191 @@ fn equal_bounds_preserve_distinct_selected_proposals_after_other_probes() {
         }
     }
 }
+
+#[test]
+fn rigid_cross_axis_response_is_preserved_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let layout = stack(axis);
+        let child = RangeLeaf {
+            axis,
+            minimum: 40.0,
+            ideal: 40.0,
+            maximum: 40.0,
+            cross: 20.0,
+        };
+        for cross in [Some(10.0), Some(200.0), None] {
+            let proposal = axis_proposal(axis, None, cross);
+            assert_eq!(
+                layout.size_that_fits(proposal, &[&child]),
+                axis_size(axis, 40.0, 20.0)
+            );
+        }
+    }
+}
+
+#[test]
+fn rigid_cross_axis_placement_overflows_a_smaller_host_region() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let layout = stack(axis);
+        let child = RangeLeaf {
+            axis,
+            minimum: 40.0,
+            ideal: 40.0,
+            maximum: 40.0,
+            cross: 20.0,
+        };
+        let proposal = axis_proposal(axis, None, Some(10.0));
+        let bounds = Rect::new(Point::new(11.0, -7.0), axis_size(axis, 40.0, 10.0));
+        let placements = layout.place(bounds, proposal, &[&child]);
+        assert_eq!(*placements[0].frame.size(), axis_size(axis, 40.0, 20.0));
+        assert_eq!(placements[0].proposal, proposal);
+    }
+}
+
+#[test]
+fn nested_rigid_stacks_preserve_mixed_axis_probe_responses() {
+    let mut node: Box<dyn SubView> = Box::new(RangeLeaf {
+        axis: Axis::Horizontal,
+        minimum: 40.0,
+        ideal: 40.0,
+        maximum: 40.0,
+        cross: 20.0,
+    });
+    for depth in 0..8 {
+        node = Box::new(LayoutNode {
+            layout: stack(if depth % 2 == 0 {
+                Axis::Horizontal
+            } else {
+                Axis::Vertical
+            }),
+            children: vec![node],
+        });
+    }
+    for width in [
+        None,
+        Some(0.0),
+        Some(10.0),
+        Some(200.0),
+        Some(f32::INFINITY),
+    ] {
+        for height in [
+            None,
+            Some(0.0),
+            Some(10.0),
+            Some(200.0),
+            Some(f32::INFINITY),
+        ] {
+            assert_eq!(
+                node.measure(ProposalSize::new(width, height)).size,
+                Size::new(40.0, 20.0)
+            );
+        }
+    }
+}
+
+#[test]
+fn spacing_invalidation_and_membership_changes_return_to_original_geometry() {
+    use alloc::rc::Rc;
+    use core::cell::Cell;
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let spacing = nami::binding(10.0_f32);
+        let layout: Box<dyn Layout> = if axis.is_horizontal() {
+            Box::new(HStackLayout {
+                alignment: VerticalAlignment::Top,
+                spacing: spacing.clone().into(),
+            })
+        } else {
+            Box::new(VStackLayout {
+                alignment: HorizontalAlignment::Leading,
+                spacing: spacing.clone().into(),
+            })
+        };
+        let invalidations = Rc::new(Cell::new(0));
+        let observer = Rc::clone(&invalidations);
+        let _guards = layout.watch_invalidation(Rc::new(move || observer.set(observer.get() + 1)));
+        let leaf = RangeLeaf {
+            axis,
+            minimum: 40.0,
+            ideal: 40.0,
+            maximum: 40.0,
+            cross: 20.0,
+        };
+        let all: [&dyn SubView; 3] = [&leaf, &leaf, &leaf];
+        for (gap, count, expected) in [(10.0, 2, 90.0), (20.0, 3, 160.0), (10.0, 2, 90.0)] {
+            spacing.set(gap);
+            let children = &all[..count];
+            for offer in [Some(300.0), Some(50.0), None] {
+                let proposal = axis_proposal(axis, offer, Some(100.0));
+                let size = layout.size_that_fits(proposal, children);
+                assert_eq!(size, axis_size(axis, expected, 20.0));
+                let bounds = Rect::new(Point::new(11.0, -7.0), size);
+                let placements = layout.place(bounds, proposal, children);
+                assert_eq!(placements.len(), count);
+                let mut origin = main_origin(axis, bounds);
+                for placement in placements {
+                    assert_extent(
+                        main_origin(axis, placement.frame),
+                        origin,
+                        "membership order",
+                    );
+                    assert_eq!(*placement.frame.size(), axis_size(axis, 40.0, 20.0));
+                    origin += 40.0 + gap;
+                }
+            }
+        }
+        assert!(
+            invalidations.get() >= 2,
+            "spacing changes must invalidate the existing layout"
+        );
+    }
+}
+
+struct CrossFillLeaf(Axis);
+
+impl SubView for CrossFillLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let cross = if self.0.is_horizontal() {
+            proposal.height
+        } else {
+            proposal.width
+        };
+        ViewDimensions::new(axis_size(
+            self.0,
+            40.0,
+            cross.map_or(20.0, |value| value.max(10.0)),
+        ))
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::CrossAxis
+    }
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+#[test]
+fn cross_axis_maximum_query_preserves_unbounded_response() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let child = CrossFillLeaf(axis);
+        let layout = stack(axis);
+        let proposal = axis_proposal(axis, None, Some(f32::INFINITY));
+        assert_eq!(
+            layout.size_that_fits(proposal, &[&child]),
+            axis_size(axis, 40.0, f32::INFINITY)
+        );
+    }
+}
+
+#[test]
+fn cross_axis_fill_preserves_its_minimum_in_small_bounds() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let child = CrossFillLeaf(axis);
+        let proposal = axis_proposal(axis, None, Some(5.0));
+        let placements = stack(axis).place(
+            Rect::from_size(axis_size(axis, 40.0, 5.0)),
+            proposal,
+            &[&child],
+        );
+        assert_eq!(*placements[0].frame.size(), axis_size(axis, 40.0, 10.0));
+    }
+}

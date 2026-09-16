@@ -1,42 +1,47 @@
-# Layout Architecture in WaterUI
-by Lexo Liu 2025.12.1
-*Please do not modify this file without opening a GitHub issue*
+# Layout contract
 
-## 1. Philosophy & Units
+This document defines WaterUI's shared layout protocol. Changes to the protocol and its conformance coverage are tracked in issue #959. Backend implementations own native measurement and placement; they do not define separate stack allocation rules.
 
-The WaterUI Layout Engine enforces a strict separation between **Logical Calculation** (Rust) and **Physical Rendering** (Native).
+## Units and ownership
 
-### Coordinate System
-*   **Logical Points (pt):** The exclusive unit of the Rust Engine. All layout math, positioning, and sizing occur in this resolution-independent space.
-*   **Physical Pixels (px):** The unit of the Native Backend/Hardware.
+All Rust geometry uses logical points. A backend converts between logical points and its native coordinate system at the boundary. Pixel rounding belongs to that conversion, not to the shared allocation algorithm. Font and native control metrics may differ across platforms; identical deterministic leaf measurements must produce identical shared geometry.
 
-**Constraint:** The Native backend is responsible for the correct conversion between Logical Points and Physical Pixels (DPI scaling).
+A container owns negotiation, ordering and alignment. A `SubView` supplies dimensions, explicit alignment guides, current stretch metadata and priority. A backend applies the resulting child frame and recursively places the child with its selected proposal.
+
+## Proposals and responses
+
+`ProposalSize` carries independent width and height offers:
+
+| Axis input | Meaning |
+| --- | --- |
+| `None` | Query ideal extent for this axis. |
+| `Some(0.0)` | Query minimum extent. |
+| `Some(v)`, finite and positive | Offer `v` logical points. |
+| `Some(f32::INFINITY)` | Query maximum extent; an unbounded response is permitted. |
+
+A proposal is a suggestion. A rigid child may return more than a finite offer. Overflow does not imply clipping, and an assigned host region does not authorize compressing a child below its reported minimum. Clipping requires the relevant explicit clipping or viewport behavior.
+
+For otherwise unchanged inputs, the minimum, ideal and maximum answers on an axis satisfy `minimum <= ideal <= maximum`. Finite responses are nonnegative. Only maximum queries can yield unbounded extents. Mixed-axis queries retain the other axis: measuring minimum width under a finite height differs from measuring minimum width under an ideal height. Negative or NaN values are not logical proposal extents.
+
+The native ABI encodes `None` as NaN. Decoding must distinguish NaN from infinity; converting every nonfinite value to unspecified loses the maximum query. The bit-level ABI tests also cover signed zero and NaN payloads.
+
+## Measurement and selected placement
+
+The protocol is:
 
 ```rust
-struct Size { width: f32, height: f32 }
-struct Point { x: f32, y: f32 }
-struct Rect { origin: Point, size: Size }
-```
-
-## 2. Layout Containers and Views
-
-In WaterUI, views are typically resolved as a leaf - `raw View` types via the recursive `.body()` call. For example, `WuiStr` resolves internally to `WuiLabel`. These views are backed by the native platform and handle their own content measuring.
-
-However, **Layout Containers** (Stacks, Grids, etc.) must be strictly controlled by Rust to ensure cross-platform consistency. We avoid implementing layout logic in the native layer to prevent FFI overhead and behavior divergence.
-
-To achieve this, we abstract a universal container logic using the `FixedContainer` struct:
-
-```rust
-pub struct FixedContainer {
-    layout: Box<dyn Layout>,
-    contents: Vec<AnyView>,
+pub trait SubView {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions;
+    fn stretch_axis(&self) -> StretchAxis;
+    fn priority(&self) -> i32;
 }
-```
 
-The core logic is encapsulated in the `Layout` trait, which describes the behavior of any layout container:
+pub struct SubviewPlacement {
+    pub frame: Rect,
+    pub proposal: ProposalSize,
+}
 
-```rust
-pub trait Layout: Debug + Any {
+pub trait Layout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size;
     fn place(
         &self,
@@ -47,244 +52,54 @@ pub trait Layout: Debug + Any {
 }
 ```
 
-Tip: Here is also a `Container` struct, it has same layout behavior with `FixedContainer`, but enable us to use lazy loading if user required.
+These excerpts omit the traits' additional bounds and guide/invalidation methods; the definitions in `waterui-core` are authoritative.
 
-## 3. The SubView Trait (Native Contract)
+A parent may probe a child multiple times before selecting an offer. `place` receives that selected input, irrespective of the most recent probe. Each returned packet carries the offer selected for the corresponding child, not an offer reconstructed from its frame. Placements have the same count and order as `children`; their coordinates include the supplied bounds origin. Native parents establish the child's local coordinate system while retaining the packet's logical proposal.
 
-The `SubView` trait defines the interface that **Native backends must implement** to participate in the layout negotiation. Each native view (Text, Button, Image, etc.) must provide measurement capabilities through this trait.
+Equal bounds do not imply equal placement. For two bounded flexible leaves with minima 20/60, ideals 40/120 and unbounded maxima, an ideal main-axis query produces 40/120, while a finite offer of 160 produces 80/80. Both containers measure 160. Rigid sections with minima 40/120 retain those minima under offers of 80 or 160. These independently captured examples are exercised on both axes in `src/tests/contract.rs`.
 
-```rust
-pub trait SubView {
-    /// Returns the size this view prefers given the parent's proposal.
-    ///
-    /// This is the core measurement function. The native backend must:
-    /// 1. Interpret the proposal (None = intrinsic, Some(v) = constrained)
-    /// 2. Calculate the appropriate size based on content
-    /// 3. Return a concrete Size in logical points
-    fn size_that_fits(&mut self, proposal: ProposalSize) -> Size;
+Transparent metadata and effects preserve the incoming proposal. A padding layout transforms it by its insets. A frame measures ideal queries without inventing a finite offer, but during placement explicitly offers its resolved region on each constrained axis; unconstrained axes preserve the incoming proposal. Thus a fixed 28-by-18 frame gives its content 28-by-18 even when its parent queried the frame’s ideal size. A background or overlay preserves its authoritative content's offer while offering the resolved content region to decoration. A scrolling container offers unspecified extent on each scrolling axis and forwards that same offer during recursive placement. Window roots and native widget-owned content regions explicitly create their bounded offers.
 
-    /// Returns the view's stretch axis preference.
-    ///
-    /// This tells the layout engine how this view behaves with surplus space:
-    /// - `None`: Content-sized, does not expand
-    /// - `Horizontal`/`Vertical`: Expands along one axis
-    /// - `Both`: Greedy, fills all available space
-    /// - `MainAxis`: Expands along parent stack's main axis (e.g., Spacer)
-    /// - `CrossAxis`: Expands along parent stack's cross axis (e.g., Divider)
-    fn stretch_axis(&self) -> StretchAxis;
+`PlacedSubview` resolves dimensions and alignment guides using the selected proposal. A guide belongs to the measured response; measuring it under a reconstructed frame can change wrapping and therefore the guide. Maximum responses with an infinite axis are not placed and do not resolve finite placement guides.
 
-    /// Returns the view's layout priority (default: 0).
-    ///
-    /// Higher priority views receive space allocation first during surplus,
-    /// and compress last during overflow.
-    fn layout_priority(&self) -> f32 { 0.0 }
-}
-```
+## Stack negotiation
 
-### 3.1 Implementation Requirements
+Horizontal and vertical stacks use the same main-axis allocation implementation. Main/cross axes are projections of the same protocol:
 
-Native backends **must** ensure:
+- Unspecified main-axis offers retain ideal child measurements.
+- Zero and infinite main-axis queries forward that query to the children.
+- A finite offer accounts for spacing, measures the applicable child minimums and maximums and allocates through the shared priority pool. Finite maximums cap growth; ideal size does not cap a flexible child.
+- Higher numeric priority resists compression longer; ordinary content defaults to zero and `Spacer` defaults to `Spacer::DEFAULT_LAYOUT_PRIORITY`, the lowest integer priority. An explicit priority overrides that default.
+- Every finite allocation is remeasured, including when ideal extents fit, and retains the exact child proposal. Width-dependent height and explicit guides therefore correspond to the allocated width.
+- If the minimum extents and spacing exceed the offer, the container reports the required extent. Fixed dimensions are not rewritten to fit the offer.
+- Content-sized stacks derive cross-axis size from child responses and alignment. A rigid cross-axis response survives a smaller host region.
 
-1.  **Consistent Measurement:** Calling `size_that_fits` with the same proposal must return the same size (deterministic).
-2.  **Logical Units:** All returned sizes must be in logical points (pt), not physical pixels.
-3.  **Respect Constraints:** When `proposal.width = Some(w)`, the returned width must be `<= w` (likewise for height).
-4.  **Intrinsic Fallback:** When `proposal.width = None`, return the view's natural/ideal width.
+Stretch metadata expresses participation in filling, not permission to erase minimums. `MainAxis` and `CrossAxis` are resolved in the surrounding stack orientation. Containers query their current children's metadata; they must not freeze it when the tree is first built. Background/overlay decoration does not make otherwise content-sized authoritative content greedy. Frame constraints and explicit expanding content can change a container's stretch response.
 
-## 4. The Propose-and-Response Model
+## Invalidation and cache lifetime
 
-WaterUI utilizes a **Propose-and-Response** negotiation model. This process allows the layout engine to "probe" children for their ideal size, minimum size, or constrained size.
+Repeated measurement under unchanged inputs is deterministic. Reordering unrelated probes must not change selected placement. Rendering must not depend on the last measurement call.
 
-```rust
-struct ProposalSize {
-    width: Option<f32>,  // None = Unspecified/Intrinsic, Some(v) = Hard Limit
-    height: Option<f32>,
-}
-```
+Measurement caches belong to child proxies and are valid only while their input state remains valid. `MemoizedSubView` provides call-scoped memoization. A retained backend may retain a child cache only with an invalidation lifetime covering content, proposal, font/environment metrics, layout signals and child membership. `Layout` has no persistent negotiation cache.
 
-### 4.1 Negotiation Flow
-1.  **Parent Proposes:** The container sends a `ProposalSize` to a child.
-    *   `None`: "How big do you want to be ideally?"
-    *   `Some(v)`: "You have at most `v` space. How big are you now?"
-2.  **Child Responds:** The child calculates its size based on the proposal and returns a concrete `Size`.
-3.  **Iteration:** The parent may propose multiple times (e.g., first to check ideal width, second to check wrapped height) before making a final decision.
+`watch_invalidation` subscribes to the precise reactive fields that affect a layout, such as spacing and frame constraints. Backend containers retain those subscriptions for the layout lifetime and schedule a new measurement/placement when they fire. Changes to priority, stretch metadata, native metrics or child membership also invalidate affected ancestors. Relayout preserves the existing semantic tree and state; it does not require reconstructing a view body or introducing renderer-local state slots.
 
-### 4.2 StretchAxis
+An A/B/A resize sequence must return to the original geometry when all other inputs return to their original values. The same applies after adding and removing a child, changing and restoring spacing, or replacing a dynamic child's metrics.
 
-`StretchAxis` defines a component's static preference for consuming surplus space within a container.
+## Native hosting and safe areas
 
-```rust
-enum StretchAxis {
-    /// Content-Sized: The view prefers its intrinsic size (e.g., Text, Image, Toggle).
-    None,
+Native hosts own safe-area and keyboard insets. They calculate the content region, account for scoped `IgnoreSafeArea` metadata, and issue the resulting proposal at the host boundary. Shared layouts operate on the supplied logical coordinates. Insets are not silently applied again at every descendant.
 
-    /// Width-Expanding: The view fills horizontal space but keeps intrinsic height (e.g., Slider, TextField).
-    Horizontal,
+Native measurement adapters preserve legal responses and proposal categories. A platform-specific measure mode cannot collapse ideal and maximum queries or force a rigid response below its minimum. Native allocation may use an exact frame for the platform object, but recursive WaterUI layout still consumes the original selected proposal.
 
-    /// Height-Expanding: The view fills vertical space but keeps intrinsic width.
-    Vertical,
+## Conformance evidence
 
-    /// Greedy: The view fills all available space in both directions (e.g. Shape like rectangle, Color).
-    Both,
+| Layer | Required observation | Owner |
+| --- | --- | --- |
+| Proposal ABI | Mixed-axis ideal/minimum/maximum/finite transport; dimensions, guides, priority, stretch and order | `ffi/src/components/layouting/layout.rs` tests |
+| Shared negotiation | Independent expected sizes and positions; rigid overflow; both axes; priority; repeated/reordered probes | Layout unit tests and `src/tests/contract.rs` |
+| Composition and time | Nested constraints, decoration, nonzero origins, reactive changes, membership changes and A/B/A resize | Layout composition tests |
+| Backend transport | Same bounds with different selected offers; wrappers; scroll axes; native priority; dynamic relayout | Each backend repository |
+| User-visible layout | Real native/rendering paths with semantic bounds and visual inspection | Each backend's platform suite |
 
-    /// Main-Axis: The view expands along the parent stack's main axis (e.g., Spacer).
-    /// In VStack: expands vertically. In HStack: expands horizontally.
-    MainAxis,
-
-    /// Cross-Axis: The view expands along the parent stack's cross axis (e.g., Divider).
-    /// In VStack: expands horizontally. In HStack: expands vertically.
-    CrossAxis,
-}
-```
-
-## 5. Safe Area Handling
-
-Safe area insets represent regions of the screen obscured by system UI elements (notches, home indicators, status bars, etc.). **WaterUI handles safe areas entirely in the native backend** - Rust code only provides metadata hints.
-
-### 5.1 Architecture
-
-Safe area is a **native-only** concern:
-
-- **Native Backend**: Queries platform safe area insets and applies them by default to all views
-- **Rust Layer**: Provides `IgnoreSafeArea` metadata to signal which views should extend edge-to-edge
-
-### 5.2 Ignoring Safe Area (`IgnoreSafeArea` Metadata)
-
-Views can extend into unsafe regions using the `.ignore_safe_area()` modifier:
-
-```rust
-Color::blue()
-    .ignore_safe_area(EdgeSet::ALL)  // Extend to all edges
-```
-
-**How it works:**
-
-1. **Metadata Attachment**: The modifier wraps the view in `Metadata<IgnoreSafeArea>`
-2. **Native Detection**: The renderer checks for this metadata
-3. **Native Behavior**: Ignores safe area constraints on specified edges
-
-**Edge control:**
-
-```rust
-EdgeSet::ALL        // All edges
-EdgeSet::VERTICAL   // Top and bottom only
-EdgeSet::HORIZONTAL // Leading and trailing only
-EdgeSet::TOP        // Top edge only
-EdgeSet::BOTTOM     // Bottom edge only
-```
-
-### 5.3 Native Backend Responsibilities
-
-The native renderer must:
-
-1. **Default behavior**: Apply platform safe area insets (e.g., `UIView.safeAreaInsets` on iOS) to all views
-2. **When encountering `IgnoreSafeArea` metadata**:
-   - Ignore safe area constraints on the specified edges
-   - Allow the view to extend edge-to-edge for those edges
-3. **Handle changes**: Re-layout when safe area changes (keyboard appearance, device rotation, etc.)
-
-**Note:** Rust layout code is unaware of safe area - it only works with the bounds provided by native.
-
-### 5.4 Example Usage
-
-```rust
-// Full-screen background
-Color::blue()
-    .ignore_safe_area(EdgeSet::ALL)  // Background fills entire screen
-
-// Header that extends under status bar
-header_view
-    .ignore_safe_area(EdgeSet::TOP)
-```
-
-## 6. Component Layout Reference
-
-This section provides a quick reference for how each WaterUI component behaves during layout. Components are categorized by their `StretchAxis` value.
-
-### 6.1 Content-Sized Components (`StretchAxis::None`)
-
-These components size themselves based on their content and platform styling. They never stretch to fill surplus space.
-
-| Component | Measurement Behavior | Notes |
-|-----------|---------------------|-------|
-| **Text** | Multi-pass: (1) `proposal(nil, nil)` → single-line size, (2) `proposal(w, nil)` → wrapped height, (3) `proposal(w, h)` → truncate with ellipsis | Wraps to multiple lines when width-constrained |
-| **Button** | `label_size + platform_padding` | Size determined by label content + platform button style |
-| **Toggle** | `label_width + spacing + switch_width` | Switch size is platform-determined |
-| **Stepper** | `label_width + spacing + stepper_buttons` | Button sizes are platform-determined |
-| **Link** | Same as Text | Behaves like styled text with tap action |
-| **Badge** | `content_size + overlay_size` | Overlay positioned at corner |
-| **Picker** | Platform-determined based on style | Dropdown/wheel/segmented styles |
-| **DatePicker** | Platform-determined | Compact, wheel, or graphical styles |
-| **ColorPicker** | Platform-determined | Color well or expanded picker |
-| **Progress (Circular)** | Fixed platform size | Spinning indicator |
-
-### 6.2 Horizontally-Expanding Components (`StretchAxis::Horizontal`)
-
-These components expand to fill available width but maintain intrinsic height. In `size_that_fits`, they report a minimum usable width; during `place`, they expand to fill the allocated bounds.
-
-| Component | Measurement Behavior | Notes |
-|-----------|---------------------|-------|
-| **TextField** | Height: fixed intrinsic, Width: minimum usable (~100pt) | Expands horizontally to fill container width |
-| **SecureField** | Same as TextField | Password input with masked characters |
-| **Slider** | Height: fixed track height, Width: minimum usable | Expands horizontally; includes optional min/max labels |
-| **Progress (Linear)** | Height: fixed track height, Width: minimum usable | Expands horizontally to show progress bar |
-
-### 6.3 Greedy Components (`StretchAxis::Both`)
-
-These components expand to fill all available space in both dimensions.
-
-| Component | Measurement Behavior | Notes |
-|-----------|---------------------|-------|
-| **Color** | With proposal: returns full proposal size, Without: small fallback (10×10pt) | Background/shape fill |
-| **ScrollView** | Expands to fill available bounds | Content can scroll beyond bounds |
-| **NavigationView** | Fills container | Navigation controller wrapper |
-| **NavigationStack** | Fills container | Stack-based navigation |
-
-### 6.4 Axis-Relative Components
-
-These components adapt their stretch behavior based on the parent container's axis.
-
-| Component | StretchAxis | Behavior |
-|-----------|-------------|----------|
-| **Spacer** | `MainAxis` | In VStack: expands vertically. In HStack: expands horizontally. Reports `(minLength, minLength)` as intrinsic size, then fills remaining surplus during `place`. |
-| **Divider** | `CrossAxis` (via Color) | In VStack: horizontal line (full width, 1-2pt height). In HStack: vertical line (full height, 1-2pt width). Uses `Color` internally with frame modifier. |
-
-### 6.5 Container Components
-
-Containers delegate to the Rust layout engine and inherit stretch behavior from their `Layout` implementation.
-
-| Container | StretchAxis | Behavior |
-|-----------|-------------|----------|
-| **VStack** | `Horizontal` | Expands horizontally to fill available width; height is sum of children + spacing |
-| **HStack** | `Vertical` (implicit) | Expands vertically to fill available height; width is sum of children + spacing |
-| **ZStack** | `None` | Size is maximum of all children |
-| **Grid** | `None` | Size determined by grid configuration |
-| **Frame** | `None` | Fixed size wrapper |
-| **Padding** | `None` | Adds insets around content |
-
-### 6.6 Backend Implementation Notes
-
-When implementing a native backend:
-
-1. **Text Measurement Protocol:**
-   ```
-   Pass 1 - PROBE:    proposal(nil, nil)    → (single_line_width, line_height)
-   Pass 2 - WRAP:     proposal(w, nil)      → (actual_width ≤ w, wrapped_height)
-   Pass 3 - TRUNCATE: proposal(w, h)        → (w, h) with ellipsis if needed
-   ```
-
-2. **Horizontal-Stretch Components:**
-   - Return minimum usable width in `size_that_fits`
-   - Expand to full bounds width during `place` phase
-   - Height remains intrinsic (platform-determined)
-
-3. **Both-Stretch Components:**
-   - Return proposal size when constrained
-   - Return small fallback (e.g., 10×10pt) when unconstrained
-   - Fill entire bounds during `place`
-
-4. **MainAxis/CrossAxis Resolution:**
-   - Check parent's `Axis` from environment
-   - `MainAxis` + VStack → Vertical stretch
-   - `MainAxis` + HStack → Horizontal stretch
-   - `CrossAxis` + VStack → Horizontal stretch
-   - `CrossAxis` + HStack → Vertical stretch
+Expected geometry is derived independently of the implementation. Updating an expected value requires a demonstrated contract error in that expectation. Pixel-exact comparison across native fonts or GPU adapters is not a cross-platform geometry oracle. A passing shared unit test does not certify a backend, and a backend screenshot does not establish the shared allocation formula.

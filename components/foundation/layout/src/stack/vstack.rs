@@ -13,7 +13,7 @@ use crate::{
     container::FixedContainer,
     stack::{
         Axis,
-        distribute::{ChildMeasurement, measure_stack, stack_spacing},
+        distribute::{ChildMeasurement, measure_stack, place_cross_extent, stack_spacing},
         stack_stretch_axis,
     },
 };
@@ -78,22 +78,13 @@ impl Layout for VStackLayout {
         let final_height = measurements.iter().map(|m| m.size().height).sum::<f32>()
             + stack_spacing(spacing, children.len());
 
-        // Width: every child's width counts, so the column can never report less
-        // than the widest thing in it.
-        let is_min_size_query = proposal.width == Some(0.0);
-        let (max_leading, max_trailing) =
-            vstack_intrinsic_cross_metrics(&measurements, self.alignment);
-        let max_width = max_leading + max_trailing;
-
-        // VStack stretches horizontally (cross-axis), so use proposed width when available
-        // (unless it's a min-size query where we want the minimum required width)
-        let final_width = if is_min_size_query {
-            max_width
+        let (leading, trailing) = vstack_intrinsic_cross_metrics(&measurements, self.alignment);
+        let width = if measurements.iter().any(|m| m.size().width.is_infinite()) {
+            f32::INFINITY
         } else {
-            proposal.width.unwrap_or(max_width)
+            leading + trailing
         };
-
-        Size::new(final_width, final_height)
+        Size::new(width, final_height)
     }
 
     fn place(
@@ -130,16 +121,11 @@ impl Layout for VStackLayout {
                 current_y += spacing;
             }
 
-            // Handle cross-axis (horizontal) stretching and infinite width
-            let child_width = if measurement.stretches_cross_axis() {
-                // CrossAxis in VStack means expand horizontally to full bounds width
-                bounds.width()
-            } else if measurement.size().width.is_infinite() {
-                bounds.width()
-            } else {
-                // Clamp child width to bounds - child can't be wider than container
-                measurement.size().width.min(bounds.width())
-            };
+            let child_width = place_cross_extent(
+                measurement.size().width,
+                bounds.width(),
+                measurement.stretches_cross_axis(),
+            );
 
             // Main-axis extent is whatever the last measurement recorded:
             // intrinsic when the column was unspecified, at least the stretch
