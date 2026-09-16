@@ -144,6 +144,10 @@ sudo apt-get install -y --no-install-recommends \
 # Debian or Ubuntu release packages libbacktrace, so configuring fails on every
 # apt-based host. It only symbolizes WebKit's own crash logs, which a shipped
 # runtime does not print.
+# `USE_JPEGXL` defaults on the same way, but jammy has no `libjxl-dev` — the
+# package entered Ubuntu at 23.04 — so the flag fails the one image the
+# artifact's glibc floor allows. JPEG XL decoding is optional for the embedded
+# runtime.
 cmake \
     -S "$source_directory" \
     -B "$build_directory" \
@@ -166,6 +170,7 @@ cmake \
     -DENABLE_MINIBROWSER=OFF \
     -DENABLE_WPE_LEGACY_API=OFF \
     -DENABLE_WPE_PLATFORM=ON \
+    -DUSE_JPEGXL=OFF \
     -DUSE_LIBBACKTRACE=OFF
 cmake --build "$build_directory" --parallel "${WATERUI_WPE_BUILD_JOBS:-$(nproc)}"
 cmake --install "$build_directory"
