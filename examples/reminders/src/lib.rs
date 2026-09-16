@@ -11,7 +11,7 @@ use waterui::Identifiable;
 use waterui::app::App;
 use waterui::background::Material;
 use waterui::component::list::{List, ListItem};
-use waterui::prelude::theme_color::{Foreground, MutedForeground};
+use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::shape::{Circle, RoundedRectangle};
 use waterui::widget::condition::when;
@@ -278,7 +278,7 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
         .spacing(8.0),
         text("My Lists")
             .caption()
-            .foreground(MutedForeground)
+            .muted()
             .padding_with(EdgeInsets::new(12.0, 4.0, 4.0, 4.0)),
         vstack(user_lists().map(|(name, count, color)| user_list_row(name, count, color)))
             .spacing(2.0)
@@ -349,7 +349,7 @@ fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
             .clip(Circle),
         text(name).body().foreground(Foreground),
         spacer(),
-        text!("{count}").caption().foreground(MutedForeground),
+        text!("{count}").caption().muted(),
     ))
     .alignment(VerticalAlignment::Center)
     .spacing(10.0)
@@ -381,7 +381,7 @@ fn placeholder_view() -> impl View {
         text("Select a list").title().foreground(Foreground),
         text("Choose one of your reminder collections from the sidebar.")
             .body()
-            .foreground(MutedForeground),
+            .muted(),
     ))
     .spacing(10.0)
     .background(Material::Regular)
@@ -436,7 +436,7 @@ fn reminder_section(
         text(title)
             .caption()
             .bold()
-            .foreground(MutedForeground)
+            .muted()
             .max_width(f32::INFINITY)
             .alignment(Alignment::Leading)
             .padding_with(EdgeInsets::new(8.0, 18.0, 0.0, 18.0)),
@@ -444,13 +444,11 @@ fn reminder_section(
             let visible = reminder_visible(search.clone(), row.clone());
             ListItem::new(
                 hstack((
-                    circle_outline()
-                        .size(16.0, 16.0)
-                        .foreground(MutedForeground),
+                    circle_outline().size(16.0, 16.0).muted(),
                     vstack((
                         text(row.title).body().foreground(Foreground),
                         row.subtitle
-                            .map(|subtitle| text(subtitle).caption().foreground(MutedForeground)),
+                            .map(|subtitle| text(subtitle).caption().muted()),
                     ))
                     .spacing(2.0)
                     .alignment(HorizontalAlignment::Leading),

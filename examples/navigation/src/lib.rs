@@ -34,7 +34,7 @@ use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove, Section, row};
 use waterui::id::Id;
 use waterui::navigation::{NavigationSplitView, NavigationView, Navigator};
-use waterui::prelude::theme_color::{Accent, Foreground, MutedForeground, SurfaceVariant};
+use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -354,9 +354,7 @@ fn inbox_root(mail: Mail) -> NavigationView {
                 ))
                 .item(NavigationToolbarItem::new(
                     NavigationToolbarPlacement::Status,
-                    text!("{unread} unread")
-                        .caption()
-                        .foreground(MutedForeground),
+                    text!("{unread} unread").caption().muted(),
                 )),
         )
 }
@@ -422,7 +420,7 @@ fn message_row(mail: &Mail, message: Message) -> ListItem {
                     ))
                     .spacing(6.0),
                     text(message.subject).body().foreground(Foreground),
-                    text(message.preview).caption().foreground(MutedForeground),
+                    text(message.preview).caption().muted(),
                 ))
                 .alignment(HorizontalAlignment::Leading)
                 .spacing(2.0),
@@ -485,7 +483,7 @@ fn message_detail(mail: Mail, id: u64) -> NavigationView {
 
     scroll(
         vstack((
-            text!("{sender}").sub_headline().foreground(MutedForeground),
+            text!("{sender}").sub_headline().muted(),
             text!("{body}").body().foreground(Foreground),
         ))
         .alignment(HorizontalAlignment::Leading)
@@ -527,7 +525,7 @@ fn compose_page(mail: Mail) -> NavigationView {
              button or the platform back gesture, then use Cancel.",
         )
         .caption()
-        .foreground(MutedForeground),
+        .muted(),
     ))
     .alignment(HorizontalAlignment::Leading)
     .spacing(12.0)
@@ -610,9 +608,7 @@ fn placeholder() -> impl View {
         text("No album selected")
             .sub_headline()
             .foreground(Foreground),
-        text("Pick one from the sidebar.")
-            .caption()
-            .foreground(MutedForeground),
+        text("Pick one from the sidebar.").caption().muted(),
     ))
     .spacing(6.0)
 }
@@ -637,7 +633,7 @@ fn album_row(album: Album, selection: &Binding<Option<Album>>) -> impl Fn() -> L
                 album_icon().size(20.0, 20.0).foreground(Accent),
                 text(album.title()).body().foreground(Foreground),
                 spacer(),
-                text!("{count}").caption().foreground(MutedForeground),
+                text!("{count}").caption().muted(),
             ))
             .spacing(10.0)
             .padding_with(EdgeInsets::symmetric(10.0, 12.0))
@@ -657,14 +653,14 @@ fn album_detail(album: Album) -> NavigationView {
 
     scroll(
         vstack((
-            text!("{count} photos").body().foreground(MutedForeground),
+            text!("{count} photos").body().muted(),
             text(
                 "On a wide window this is the trailing column beside the \
                  sidebar; on a phone the same declaration collapses into a \
                  pushed page with a back button.",
             )
             .caption()
-            .foreground(MutedForeground),
+            .muted(),
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(10.0)
@@ -724,7 +720,7 @@ fn photo_page(index: usize) -> NavigationView {
             .navigation_transition_destination(photo_transition(index)),
         text(include_str!("gallery_transition_description.txt"))
             .caption()
-            .foreground(MutedForeground),
+            .muted(),
     ))
     .spacing(12.0)
     .padding_with(EdgeInsets::all(16.0))
@@ -820,7 +816,7 @@ fn about_page() -> NavigationView {
              this app is declared once and drawn by each platform itself.",
         )
         .body()
-        .foreground(MutedForeground),
+        .muted(),
     ))
     .alignment(HorizontalAlignment::Leading)
     .spacing(10.0)
