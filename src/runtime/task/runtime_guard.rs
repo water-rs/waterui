@@ -305,7 +305,15 @@ std::thread_local! {
 /// is published before they report the result.
 ///
 /// The count drops when the task's future finishes or is dropped, so cancelled
-/// work is covered. On a thread with no monitored executor it is always zero.
+/// work is covered.
+///
+/// The blind spot, by design: only work spawned through a monitored executor
+/// is counted. A thread whose local executor was installed bare — a direct
+/// `init_local_executor` without [`monitored_local_executor`] or
+/// [`monitored_local_executor_with_probes`] — reports zero while work is
+/// outstanding; "no monitored work" is truthfully zero and must not be
+/// misread as quiescence. Threads with no executor installed at all likewise
+/// report zero.
 #[must_use]
 pub fn outstanding_local_tasks() -> usize {
     EXECUTOR_MONITORS.with(|monitors| {

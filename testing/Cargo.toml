@@ -27,10 +27,10 @@ waterui-preview-protocol.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+async-io = "2.6"
 bitflags.workspace = true
 waterui-canvas.workspace = true
 waterui-layout.workspace = true
-async-io = "2.6"
 
 [lints]
 workspace = true

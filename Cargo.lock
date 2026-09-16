@@ -10818,6 +10818,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "waterui-core",
+ "waterui-internal",
  "waterui-layout",
  "waterui-preview-protocol",
 ]
