@@ -3636,8 +3636,8 @@ dependencies = [
 
 [[package]]
 name = "hydrolysis"
-version = "0.2.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=452aea58b2e63edc889f1c8a2f3f8f7f1a4c6bb0#452aea58b2e63edc889f1c8a2f3f8f7f1a4c6bb0"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/hydrolysis?rev=eef0d71a9514d791204db96e1037ab116ab15146#eef0d71a9514d791204db96e1037ab116ab15146"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3681,8 +3681,8 @@ dependencies = [
 
 [[package]]
 name = "hydrolysis-m3"
-version = "0.2.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=14a35e3ef69ced36557a3c7ab11d52e0afb53ad5#14a35e3ef69ced36557a3c7ab11d52e0afb53ad5"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=024135222165863b9aa36cca2f04d91d229cc599#024135222165863b9aa36cca2f04d91d229cc599"
 dependencies = [
  "material-color-utils",
  "num-traits",
@@ -10108,9 +10108,8 @@ dependencies = [
 
 [[package]]
 name = "waterui-barcode"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8272778f774e70d79caf3f0617fa0d8eae5a924a5e409ae4c1a650adfe5845e8"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/barcode?rev=183ccfb5b1fcdc020e76ea2f44bfc56b03954b88#183ccfb5b1fcdc020e76ea2f44bfc56b03954b88"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -10191,9 +10190,8 @@ dependencies = [
 
 [[package]]
 name = "waterui-canvas"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88eed93e8209a01b99d9ea05afc3d526cfa5562530647d1d2f0f85ed88ea8384"
+version = "0.2.0"
+source = "git+https://github.com/water-rs/canvas?rev=ccf13f024aafa4ba74d09b5d94e976af88d62bbb#ccf13f024aafa4ba74d09b5d94e976af88d62bbb"
 dependencies = [
  "image",
  "kurbo",
@@ -10206,8 +10204,8 @@ dependencies = [
 
 [[package]]
 name = "waterui-chart"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/chart?rev=4877ca036d5fdaabc9930357223fcb2f86df6fbb#4877ca036d5fdaabc9930357223fcb2f86df6fbb"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/chart?rev=fc1679e2dcc95df3ed979b8c3f80961804f7656e#fc1679e2dcc95df3ed979b8c3f80961804f7656e"
 dependencies = [
  "bytemuck",
  "nami",
@@ -10480,9 +10478,8 @@ dependencies = [
 
 [[package]]
 name = "waterui-image"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23c6a200898c40d0f0e00844fa05df08364f6f5c2cbde8273840dba70b664638"
+version = "0.5.0"
+source = "git+https://github.com/water-rs/image?rev=45522b7e4d4620f05a90511e1454a1a24fa31610#45522b7e4d4620f05a90511e1454a1a24fa31610"
 dependencies = [
  "half",
  "image",
@@ -10650,8 +10647,8 @@ dependencies = [
 
 [[package]]
 name = "waterui-map-gpu"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=e2211b5#e2211b5c24aa8398ac244f52f94b9e292ec8cffe"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/map-gpu?rev=85feed4b82de6a87daca15ddc3eb622655ca9379#85feed4b82de6a87daca15ddc3eb622655ca9379"
 dependencies = [
  "blocking",
  "bytemuck",
@@ -10787,9 +10784,8 @@ dependencies = [
 
 [[package]]
 name = "waterui-particle"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd8a7ef80baba259509310ecfe1dc74f295b77b91b21f3988af85ed804ce8f29"
+version = "0.2.0"
+source = "git+https://github.com/water-rs/particle?rev=749b1d0d46f094abfc75955fa274e3bfde74ac13#749b1d0d46f094abfc75955fa274e3bfde74ac13"
 dependencies = [
  "bytemuck",
  "encase",
@@ -10854,8 +10850,8 @@ dependencies = [
 
 [[package]]
 name = "waterui-svg"
-version = "0.1.0"
-source = "git+https://github.com/water-rs/svg?rev=eff02dbb78e7ba876751e597fd016db85bbc64a2#eff02dbb78e7ba876751e597fd016db85bbc64a2"
+version = "0.4.0"
+source = "git+https://github.com/water-rs/svg?rev=d6b1b067874404f5200de4d967e06fee6378fc69#d6b1b067874404f5200de4d967e06fee6378fc69"
 dependencies = [
  "kurbo",
  "peniko",
@@ -10949,9 +10945,8 @@ dependencies = [
 
 [[package]]
 name = "waterui-video-gpu"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49e265d88476772a1197c05724c69c75bf2a9509619ed25c80406ecced6a8d5e"
+version = "0.4.0"
+source = "git+https://github.com/water-rs/video-gpu?rev=71c1807664595f897c81557467a47f28ec0d2e25#71c1807664595f897c81557467a47f28ec0d2e25"
 dependencies = [
  "async-channel",
  "executor-core",

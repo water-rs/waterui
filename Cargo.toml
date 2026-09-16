@@ -158,20 +158,19 @@ waterui-url = { version = "0.3.1", path = "utils/url" }
 waterui-watcher-set = { version = "0.1.0", path = "utils/watcher-set" }
 waterui-text = { version = "0.4.1", path = "components/foundation/text" }
 waterui-media = { version = "0.3.2", path = "components/multimedia/media" }
-waterui-image = "0.4.0"
+waterui-image = "0.5.0"
 waterui-video = { version = "0.3.2", path = "components/multimedia/video" }
-waterui-video-gpu = "0.3.1"
+waterui-video-gpu = "0.4.0"
 waterui-form = { version = "0.3.2", path = "components/foundation/form" }
 waterui-controls = { version = "0.3.2", path = "components/foundation/controls"}
 waterui-graphics = { version = "0.4.1", path = "components/visual/graphics", default-features = false }
-waterui-canvas = "0.1.2"
+waterui-canvas = "0.2.0"
 waterui-shape = { version = "0.1.2", path = "components/foundation/shape", default-features = false }
-# waterui-svg and waterui-math are extracted (#186, #616). Pinned to the `dev`
-# commits that migrated them from `waterui-str` to `suiteki` (water-rs/svg#14,
-# water-rs/math#3) — the published manifests still name `waterui-str`, which
-# would give the graph a second `Str` type. Back to registry versions at the
-# next release sync.
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "eff02dbb78e7ba876751e597fd016db85bbc64a2" }
+waterui-svg = "0.4.0"
+# waterui-math is extracted (#616). Pinned to the `dev` commit that migrated
+# it from `waterui-str` to `suiteki` (water-rs/math#3) — the published
+# manifest still names `waterui-str`, which would give the graph a second
+# `Str` type. Back to a registry version at the next release sync.
 waterui-math = { git = "https://github.com/water-rs/math", rev = "39b7886f21595645425d326bf9dc652489f11a9f" }
 waterui-ffi = { version = "0.3.2", path = "ffi" }
 waterui-layout = { version = "0.3.2", path = "components/foundation/layout" }
@@ -208,10 +207,10 @@ waterui-backend-core = { version = "0.1.2", path = "backends/core", default-feat
 filtrate = "0.2.0"
 filtrate-core = "0.2.0"
 filtrate-derive = "0.1.0"
-waterui-barcode = "0.2.0"
-waterui-particle = "0.1.1"
-waterui-chart = "0.2.0"
-waterui-map-gpu = "0.2.0"
+waterui-barcode = "0.3.0"
+waterui-particle = "0.2.0"
+waterui-chart = "0.3.0"
+waterui-map-gpu = "0.3.0"
 waterui-assets = { version = "0.1.2", path = "components/assets/runtime" }
 waterui-assets-core = { version = "0.1.0", path = "components/assets/core" }
 waterui-assets-planner = { version = "0.2.0", path = "components/assets/planner" }
@@ -220,26 +219,24 @@ waterui-inspector-protocol = { version = "0.1.2", path = "components/devtools/in
 waterui-inspector-app = { version = "0.1.2", path = "components/devtools/inspector/app" }
 waterui-preview-protocol = { version = "0.1.2", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.1.0", path = "components/devtools/mcp/protocol" }
-# The published 0.1.2 predates the `ShapeKind` fixed-radius variants and cannot
-# compile against this tree; gtk-backend's dev line carries them. The `version`
-# field is what `cargo publish` keeps, so the requirement moves back to a plain
-# registry pin once waterui-gtk 0.2.0 is released.
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "12283e7242596b45f9ffbcdddda3597e9bf23940", version = "0.2.0" }
+# Nothing in this workspace links the GTK or Dew backends: the `water` CLI reads
+# these two entries to scaffold a launcher crate, so until the 0.5.0 wave is on
+# crates.io they carry the adopted `dev` revision as well as the version
+# `cargo publish` keeps. The release commit that drops the patch table below
+# drops the `git` halves too.
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "a05dfd5fa300f729618514dd7155863917875ab0", version = "0.2.0" }
 # `waterui-winui` is unpublished and Windows-only; the `water` CLI reads this
 # entry to scaffold a generated launcher crate pinned to the same revision.
 waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "18fa03852593221e2a7a80c2847cdb0e2d24716f", version = "0.1.0" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.4.1", path = "utils/dylib", default-features = false }
-hydrolysis = { version = "0.2.1", default-features = false }
-# The registry 0.2.1 predates the proposal-preserving contract this tree
-# requires (water-rs/dew#7); `version` is what `cargo publish` keeps, so the
-# requirement moves back to a plain registry pin once a release carries it.
-waterui-dew = { git = "https://github.com/water-rs/dew", rev = "b64f6759a3ebe7ac621bad84be00fe431f978119", version = "0.2.1" }
+hydrolysis = { version = "0.3.0", default-features = false }
+waterui-dew = { git = "https://github.com/water-rs/dew", rev = "af586ccb5582f98938cb41a9ff7fb6c5a920b215", version = "0.3.0" }
 waterui = { version = "0.4.1", path = "." }
 waterui-icons-codegen = { version = "0.1.1", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
-hydrolysis-m3 = "0.2.1"
+hydrolysis-m3 = "0.3.0"
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.3.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
@@ -478,8 +475,22 @@ strip = true       # Strip symbols
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
-# Axis placement participates in the same proposal-aware contract.
-waterui-chart = { git = "https://github.com/water-rs/chart", rev = "4877ca036d5fdaabc9930357223fcb2f86df6fbb" }
+# The 0.5.0 satellite wave (#1014). Every extracted crate this tree consumes
+# re-releases against the 0.5.0 foundation; the requirements above name those
+# next versions, and until they are on crates.io each resolves to the
+# satellite's adopted `dev` revision — the commit that declares that version
+# and builds against this tree. Publishing ignores this table; the release
+# commit that follows the foundation publish drops these entries.
+waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "183ccfb5b1fcdc020e76ea2f44bfc56b03954b88" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "ccf13f024aafa4ba74d09b5d94e976af88d62bbb" }
+waterui-chart = { git = "https://github.com/water-rs/chart", rev = "fc1679e2dcc95df3ed979b8c3f80961804f7656e" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "45522b7e4d4620f05a90511e1454a1a24fa31610" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "85feed4b82de6a87daca15ddc3eb622655ca9379" }
+waterui-particle = { git = "https://github.com/water-rs/particle", rev = "749b1d0d46f094abfc75955fa274e3bfde74ac13" }
+waterui-svg = { git = "https://github.com/water-rs/svg", rev = "d6b1b067874404f5200de4d967e06fee6378fc69" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "71c1807664595f897c81557467a47f28ec0d2e25" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "eef0d71a9514d791204db96e1037ab116ab15146" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "024135222165863b9aa36cca2f04d91d229cc599" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
@@ -510,14 +521,6 @@ waterui-locale = { path = "utils/locale" }
 waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
-# The registry `hydrolysis`/`hydrolysis-m3` call
-# `draw_segmented_picker_state_layer` with the pre-position signature and lack
-# `segment_min_width` in `PickerMetrics`, so they stop compiling the moment
-# this branch changes the contract; the companion branches on water-rs
-# resolve them (water-rs/hydrolysis#37, water-rs/hydrolysis-m3#57). Drop
-# these entries once the releases carry both.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "452aea58b2e63edc889f1c8a2f3f8f7f1a4c6bb0" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "14a35e3ef69ced36557a3c7ab11d52e0afb53ad5" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
 # storage and takes its address as the opaque class pointer.
@@ -537,15 +540,6 @@ block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae8
 # lockstep re-release of `waterui-graphics` and then `hydrolysis`, which
 # consumes graphics from crates.io and requires `vello ^0.9`.
 vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
-
-# `GpuView::setup` re-runs after the runtime rebuilds a lost device, but
-# waterui-map-gpu 0.2.0 kept its cached textures, Vello renderers, and any
-# in-flight raster job bound to the dead device, so the next render wrote a
-# purged buffer and wgpu-core panicked (waterui#860). This rev is
-# water-rs/map-gpu#16, which drops all device-bound state on re-setup and
-# discards raster results from a previous device generation. Drop this entry
-# once a release carrying that fix ships.
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "e2211b5" }
 
 # vello_hybrid 0.2.0 keeps only one physical layer in its image atlas off wasm,
 # and wgpu's GL backend then makes that texture `TEXTURE_2D` while the shader
