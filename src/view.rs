@@ -17,7 +17,7 @@ use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
     env::{With, use_env},
     extract::State,
-    handler::{Handler, HandlerOnce},
+    handler::{EventHandler, Handler, HandlerOnce},
     layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
     metadata::MetadataKey,
     plugin::Plugin,
@@ -187,16 +187,38 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, Focused::new(value, equals))
     }
 
-    /// Monitors a signal for changes and triggers a handler when the signal's value changes.
+    /// Runs `handler` whenever `source`'s value changes, for as long as this
+    /// view is mounted.
     ///
-    /// Compare to manual watching, this method automatically manages the watcher lifecycle.
-    fn on_change<C, F>(self, source: &C, handler: F) -> OnChange<Self, C::Guard>
+    /// The handler is an [`EventHandler`]: the new value comes first, then any
+    /// extractor arguments — `State<T>`, `Environment`, … — resolved from the
+    /// environment this view is rendered in. A `Binding` the handler writes
+    /// is injected with [`ViewExt::state`] and read back as a
+    /// `State<Binding<T>>` parameter rather than captured, so the handler can
+    /// be a named function and the data flow stays visible at the call site.
+    ///
+    /// Compared to watching the signal by hand, the watcher's lifetime is
+    /// tied to the view and consecutive equal values are collapsed.
+    ///
+    /// ```
+    /// use waterui::prelude::*;
+    ///
+    /// let selection = Binding::i32(0);
+    /// let last_seen = Binding::i32(0);
+    ///
+    /// let view = text!("{selection}")
+    ///     .on_change(&selection, |value: i32, State(last_seen): State<Binding<i32>>| {
+    ///         last_seen.set(value);
+    ///     })
+    ///     .state(&last_seen);
+    /// ```
+    fn on_change<C, H, A>(self, source: &C, handler: H) -> OnChange<Self, C>
     where
         C: Signal,
         C::Output: PartialEq + Clone,
-        F: Fn(C::Output) + 'static,
+        H: EventHandler<C::Output, A>,
     {
-        OnChange::<Self, C::Guard>::new(self, source, handler)
+        OnChange::new(self, source, handler)
     }
 
     /// Spawns an asynchronous task tied to the lifecycle of this view.
