@@ -40,9 +40,10 @@ than reaching for `watch`.
 array index, or regenerated per render. The id is the diffing key and must identify the same
 logical row across updates.
 
-**A handler receives the wrong binding.** Multiple `State<T>` of the same type bind
-positionally: the first `.state()` call feeds the first `State<T>` parameter. Reorder, or
-switch to the app-state-struct pattern where one injected struct replaces all of them.
+**A handler receives the wrong binding.** Multiple parameters of the same state type bind
+positionally: the first `.state()` call feeds the first parameter of that type — bare
+`#[state]` types and `State<T>` share the sequence. Reorder, or switch to the
+app-state-struct pattern where one injected struct replaces all of them.
 
 **Rounded corners come out as a capsule.** `RoundedRectangle::new(r)` takes a fraction of
 the shorter side, not points — `new(12.0)` saturates at fully-rounded. Use `new(0.1)`-scale
@@ -112,8 +113,9 @@ genuinely a false positive, use a narrowly scoped item-level `expect` with a rea
 
 ## Runtime panics
 
-**"Environment state `T` not found".** A handler asked for `State<T>` that nothing injected.
-Add `.state(&value)` on the button, or on an ancestor container if several handlers need it.
+**"Environment state `T` not found".** A handler asked for a `State<T>` or a
+`#[state]`-marked `T` that nothing injected. Add `.state(&value)` on the button, or on an
+ancestor container if several handlers need it.
 
 **"Environment value `T` not found".** Same, but for `Use<T>` — the value must be installed
 in the environment (typically in `app(env)`), not passed via `.state()`.

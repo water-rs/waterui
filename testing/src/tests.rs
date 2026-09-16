@@ -939,15 +939,18 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
         DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
     };
     use waterui::prelude::text;
-    use waterui::{Binding, SignalExt as _, State, ViewExt as _};
+    use waterui::{Binding, SignalExt as _, ViewExt as _, state};
     use waterui_core::extract::Use;
 
+    #[state]
     #[derive(Clone)]
     struct DragOffset(Binding<f32>);
 
+    #[state]
     #[derive(Clone)]
     struct ZoomScale(Binding<f32>);
 
+    #[state]
     #[derive(Clone)]
     struct HoverState(Binding<bool>);
 
@@ -975,21 +978,20 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
             surface
                 .gesture_observer(GestureObserver::new(
                     DragGesture::new(0.0),
-                    |State(DragOffset(offset)): State<DragOffset>, drag: Use<DragEvent>| {
+                    |DragOffset(offset): DragOffset, drag: Use<DragEvent>| {
                         offset.set(drag.translation.x);
                     },
                 ))
                 .state(&drag_offset_state)
                 .gesture_observer(GestureObserver::new(
                     MagnificationGesture::new(1.0),
-                    |State(ZoomScale(scale)): State<ZoomScale>,
-                     magnification: Use<MagnificationEvent>| {
+                    |ZoomScale(scale): ZoomScale, magnification: Use<MagnificationEvent>| {
                         scale.set(magnification.scale);
                     },
                 ))
                 .state(&zoom_scale_state)
-                .on_hover_enter(|State(HoverState(hovered)): State<HoverState>| hovered.set(true))
-                .on_hover_exit(|State(HoverState(hovered)): State<HoverState>| hovered.set(false))
+                .on_hover_enter(|HoverState(hovered): HoverState| hovered.set(true))
+                .on_hover_exit(|HoverState(hovered): HoverState| hovered.set(false))
                 .state(&hover_state)
         }
     });

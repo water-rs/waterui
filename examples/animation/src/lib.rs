@@ -46,7 +46,8 @@ fn set_f64_button(label: &'static str, value: f64, binding: &Binding<f64>) -> im
         .state(binding)
 }
 
-/// The two axes of the translation demo, injected as one `State` value.
+/// The two axes of the translation demo, injected as one state value.
+#[state]
 #[derive(Clone)]
 struct TranslationAxes {
     x: Binding<f32>,
@@ -54,7 +55,8 @@ struct TranslationAxes {
 }
 
 /// The scale and rotation of the combined-transform demo, injected as one
-/// `State` value.
+/// state value.
+#[state]
 #[derive(Clone)]
 struct ScaleRotation {
     scale: Binding<f32>,
@@ -140,7 +142,7 @@ fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32
         vstack((
             hstack((
                 button("Center")
-                    .action(|State(a): State<TranslationAxes>| {
+                    .action(|a: TranslationAxes| {
                         a.x.set(0.0);
                         a.y.set(0.0);
                     })
@@ -182,13 +184,13 @@ fn combined_transform_section(
         ),
         hstack((
             button("Reset")
-                .action(|State(t): State<ScaleRotation>| {
+                .action(|t: ScaleRotation| {
                     t.scale.set(1.0);
                     t.rotation.set(0.0);
                 })
                 .state(&transform),
             button("Grow + Spin")
-                .action(|State(t): State<ScaleRotation>| {
+                .action(|t: ScaleRotation| {
                     t.scale.set(1.8);
                     *t.rotation.get_mut() += 180.0;
                 })

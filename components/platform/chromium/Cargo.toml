@@ -23,8 +23,15 @@ thiserror.workspace = true
 tracing.workspace = true
 waterui-core.workspace = true
 waterui-layout.workspace = true
+waterui-macros.workspace = true
 waterui-url.workspace = true
 waterui-webview.workspace = true
+
+[dev-dependencies]
+# `futures::executor::block_on` in the CdpSession tests needs the `executor`
+# feature, which the workspace `futures` dep does not enable; a workspace-wide
+# build papers over it through feature unification.
+futures = { workspace = true, features = ["executor"] }
 
 [lints]
 workspace = true

@@ -1280,7 +1280,8 @@ pub trait ViewExt: View + Sized {
     /// Injects cloneable state into this view subtree's environment.
     ///
     /// Actions and event handlers can later extract the injected value using
-    /// [`waterui_core::extract::State`] in their handler parameters.
+    /// [`waterui_core::extract::State`] in their handler parameters — or bare,
+    /// as `value: T`, when `T` is an owned type marked `#[state]`.
     ///
     /// # Example
     ///

@@ -556,6 +556,7 @@ pub mod components_block_20 {
     use waterui::prelude::*;
     use waterui::reactive::collection::List as ReactiveList;
 
+    #[state]
     #[derive(Clone)]
     pub struct AppState {
         pub rows: ReactiveList<Record>,
@@ -592,10 +593,10 @@ pub mod components_block_20 {
         let _ = {
             List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
                 .editing(is_editing.clone()) // impl IntoComputed<bool>
-                .on_delete(|ListDelete(i), State(s): State<AppState>| {
+                .on_delete(|ListDelete(i), s: AppState| {
                     let _ = s.rows.remove(i);
                 })
-                .on_move(|ListMove(m), State(_s): State<AppState>| {
+                .on_move(|ListMove(m), _s: AppState| {
                     let _ = (m.from(), m.to()); // [ellipsis filled]
                 })
                 .scroll_controller(&controller)
@@ -823,7 +824,7 @@ pub fn components_block_26() {
     use core::time::Duration;
     use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 
-    button("Save").action(|State(m): State<SnackbarManager>| {
+    button("Save").action(|m: SnackbarManager| {
         m.show(
             Snackbar::new("Item moved to trash")
                 .icon(mdi::delete())

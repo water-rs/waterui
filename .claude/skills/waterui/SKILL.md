@@ -75,10 +75,12 @@ and no collection applies. Check those three first, every time.
 ### 3. Inject handler state with `.state()`, do not capture clones
 
 `.action()` takes a *handler*: a function whose parameters are extractors resolved from
-the environment. `.state(&value)` puts a value in that environment; `State<T>` pulls it
-out. This keeps handlers as plain named functions instead of a thicket of `move` closures.
-The same machinery drives every callback in the framework — `.on_tap`, gestures, drops,
-menu commands, list edits — not just buttons.
+the environment. `.state(&value)` puts a value in that environment; an extractor pulls it
+out. `State<T>` is the wrapper for a type the app does not own — `Binding`, `Rc`, a
+third-party value; a `Clone` type the app *does* own gets `#[state]` once and is then
+written bare. This keeps handlers as plain named functions instead of a thicket of `move`
+closures. The same machinery drives every callback in the framework — `.on_tap`, gestures,
+drops, menu commands, list edits — not just buttons.
 
 ```rust
 button("Increment")
@@ -86,8 +88,9 @@ button("Increment")
     .state(&count)
 ```
 
-Repeated `State<T>` of the **same type** bind positionally: the first `.state()` call
-feeds the first `State<T>` parameter.
+Repeated parameters of the **same state type** bind positionally — bare `#[state]` types
+and `State<T>` spellings share one sequence: the first `.state()` call feeds the first
+parameter of that type.
 
 ```rust
 button("Search")
@@ -103,13 +106,14 @@ one `Clone` struct, inject it once on a container, and write handlers as free fu
 This is the idiomatic shape for a real screen:
 
 ```rust
+#[state]
 #[derive(Clone)]
 struct Editor {
     rows: ReactiveList<Row>,
     editing: Binding<bool>,
 }
 
-fn toggle_editing(State(state): State<Editor>) {
+fn toggle_editing(state: Editor) {
     state.editing.toggle();
 }
 
@@ -410,7 +414,7 @@ before it can render themed views; theme tokens panic rather than falling back t
 guessed color.
 
 `.state(&value)` from rule 3 is the same machinery with a narrower scope: it installs into
-the environment of one view, and `State<T>` reads it back.
+the environment of one view, and a `State<T>` or `#[state]`-marked parameter reads it back.
 
 ### Accessibility is part of construction
 
@@ -517,7 +521,7 @@ whole app.
 | A background task dies instantly | the `spawn_local` handle cancels on drop | `.detach()` it |
 | `LongPressGesture::new(Duration…)` rejected | duration is a `u32` in backend time units | `LongPressGesture::new(500)` |
 | `.is_empty()` missing on a string signal | different name | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
-| Wrong binding arrives in a handler | positional `State<T>` | first `.state()` → first parameter |
+| Wrong binding arrives in a handler | positional `.state()` extraction | first `.state()` → first parameter of that type |
 | Scrolling or list updates are janky | `watch` over a `Vec` | `List::for_each` / `Lazy::for_each` / `SignalCollection` |
 | `ForEach<..>: View is not satisfied` | `ForEach` is a collection, not a view | `Lazy::for_each(..)`, or hand it to a container |
 | `.title("Inbox")` rejects its argument | `Text::title()` (font size) shadows the navigation title | title the container, or `NavigationView::new(title, content)` |

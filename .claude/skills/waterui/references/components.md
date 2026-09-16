@@ -371,12 +371,13 @@ Lazy::hstack(ForEach::new(records.clone(), row))
 
 List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
-    .on_delete(|ListDelete(i), State(s): State<AppState>| { let _ = s.rows.remove(i); })
-    .on_move(|ListMove(m), State(s): State<AppState>| { /* m.from(), m.to() */ })
+    .on_delete(|ListDelete(i), s: AppState| { let _ = s.rows.remove(i); })
+    .on_move(|ListMove(m), s: AppState| { /* m.from(), m.to() */ })
     .scroll_controller(&controller)
 ```
 
 `ListDelete(index)` destructures to a `usize`; `ListMove(m)` exposes `.from()`/`.to()`.
+`AppState` is an owned `#[state]` type (SKILL.md rule 3), so handlers take it bare.
 
 For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
 modifiers, `VStack`/`HStack` have `for_each` too, and `collection_transition` animates
@@ -487,13 +488,14 @@ A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new(
 
 ## Overlays: snackbars, cards, suspense, full screen
 
-Every `Window` installs a `SnackbarManager`; reach it from any handler.
+Every `Window` installs a `SnackbarManager` through `.state()`; it is a `#[state]`-marked
+framework type, so handlers take it bare.
 
 ```rust
 use core::time::Duration;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 
-button("Save").action(|State(m): State<SnackbarManager>| {
+button("Save").action(|m: SnackbarManager| {
     m.show(
         Snackbar::new("Item moved to trash")
             .icon(mdi::delete())

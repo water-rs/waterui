@@ -3,8 +3,6 @@ use std::{mem, num::NonZeroUsize, str::FromStr};
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
 use suiteki::Str;
 use waterui_core::{AnyView, Environment, View};
-#[cfg(feature = "snackbar")]
-use waterui_core::{State, extract::Extractor as _};
 use waterui_graphics::color::Blue;
 use waterui_layout::{
     Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
@@ -207,7 +205,8 @@ impl View for RichTextElement {
                 // is rendered from Markdown, so the snackbar coupling is here.
                 #[cfg(feature = "snackbar")]
                 let view = view.on_copied(|env| {
-                    let State(snackbar) = State::<SnackbarManager>::extract(env)
+                    let snackbar = env
+                        .extract::<SnackbarManager>()
                         .expect("the window's environment carries its SnackbarManager");
                     snackbar.show(Snackbar::new("Copied to clipboard"));
                 });

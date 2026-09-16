@@ -20,7 +20,7 @@ use anyhow::Error;
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be extracted from a WaterUI environment",
     label = "expected a type implementing `Extractor`",
-    note = "Handler and `use_env` parameters must be extractors: `State<T>` reads a value injected with `.state(&value)`, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, tuples combine extractors, and `impl_extractor!` makes a `Clone` type extractable."
+    note = "Handler and `use_env` parameters must be extractors: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, tuples combine extractors, and `impl_extractor!` marks a `Clone` type installed as an environment value."
 )]
 pub trait Extractor: 'static + Sized {
     /// Attempts to extract an instance of `Self` from the given environment.
@@ -52,6 +52,11 @@ pub trait Extractor: 'static + Sized {
 pub struct Use<T: 'static>(pub T);
 
 /// Wrapper for cloneable state values injected into the environment.
+///
+/// `.state(&value)` installs `State(value)` so handlers can recover it. For a
+/// `Clone` type the app owns, `#[state]` implements [`Extractor`] on the type
+/// itself and the wrapper disappears from handler signatures; `State<T>`
+/// remains the extractor for values of foreign types such as `Binding<T>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State<T: 'static>(pub T);
 
@@ -199,3 +204,45 @@ impl_tuple_extractor!(A, B, C, D, E);
 impl_tuple_extractor!(A, B, C, D, E, F);
 impl_tuple_extractor!(A, B, C, D, E, F, G);
 impl_tuple_extractor!(A, B, C, D, E, F, G, H);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Environment;
+    use waterui_macros::state;
+
+    /// The real `#[state]` expansion — inside `waterui-core` the macro resolves
+    /// `crate::extract::…` through `proc_macro_crate`'s `Itself` branch.
+    #[state]
+    #[derive(Clone)]
+    struct Editor {
+        title: &'static str,
+    }
+
+    #[test]
+    fn state_injected_owned_type_extracts_bare() {
+        let env = Environment::new().extending(State(Editor { title: "draft" }));
+
+        let editor = env.extract::<Editor>().expect("injected state extracts");
+        assert_eq!(editor.title, "draft");
+    }
+
+    #[test]
+    fn same_type_states_bind_positionally_and_share_positions() {
+        // `.state(&first).state(&second)` layers the outer call's value below
+        // the inner one's, so the nearest `State<Editor>` is `first`.
+        let env = Environment::new()
+            .extending(State(Editor { title: "second" }))
+            .extending(State(Editor { title: "first" }));
+
+        let mut state = ExtractionState::default();
+        let bare = Editor::extract_from_action(&env, &mut state).expect("first parameter");
+        // A `State<Editor>` parameter after a bare `Editor` draws the next
+        // position of the same channel.
+        let wrapped = <State<Editor> as Extractor>::extract_from_action(&env, &mut state)
+            .expect("second parameter");
+
+        assert_eq!(bare.title, "first");
+        assert_eq!(wrapped.0.title, "second");
+    }
+}

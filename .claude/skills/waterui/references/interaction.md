@@ -17,11 +17,12 @@ The compiled examples for this file are `examples/gesture`, `examples/hover`, an
 ## Handlers, everywhere
 
 Every interaction callback in WaterUI is a *handler* — the same extractor machinery as
-`Button::action` (SKILL.md rule 3). Parameters are extractors (`State<T>`, `Environment`,
-custom `impl_extractor!` types), state is injected with `.state(&binding)`, and repeated
-`State<T>` of the same type bind positionally to the `.state()` call order. `.state()`
-wraps the view it is applied to, so it may come *after* the handler-bearing modifier and
-the handler still sees it.
+`Button::action` (SKILL.md rule 3). Parameters are extractors (`State<T>` for foreign
+values, a bare `#[state]` type for owned ones, `Environment`, `impl_extractor!` types
+installed as environment values), state is injected with `.state(&binding)`, and repeated
+parameters of the same state type bind positionally to the `.state()` call order.
+`.state()` wraps the view it is applied to, so it may come *after* the handler-bearing
+modifier and the handler still sees it.
 
 The gesture/drag/hover *types* are not in the prelude — the modules are re-exported at the
 crate root, so import the types explicitly:

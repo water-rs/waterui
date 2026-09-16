@@ -9,7 +9,7 @@ help: the trait `Extractor` is not implemented for `ApiClient`
    |
  7 | struct ApiClient;
    | ^^^^^^^^^^^^^^^^
-   = note: Handler and `use_env` parameters must be extractors: `State<T>` reads a value injected with `.state(&value)`, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, tuples combine extractors, and `impl_extractor!` makes a `Clone` type extractable.
+   = note: Handler and `use_env` parameters must be extractors: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, tuples combine extractors, and `impl_extractor!` marks a `Clone` type installed as an environment value.
    = help: the following other types implement trait `Extractor`:
              (A, B)
              (A, B, C)
@@ -40,7 +40,7 @@ help: the trait `Extractor` is not implemented for `ApiClient`
   |
 7 | struct ApiClient;
   | ^^^^^^^^^^^^^^^^
-  = note: Handler and `use_env` parameters must be extractors: `State<T>` reads a value injected with `.state(&value)`, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, tuples combine extractors, and `impl_extractor!` makes a `Clone` type extractable.
+  = note: Handler and `use_env` parameters must be extractors: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, tuples combine extractors, and `impl_extractor!` marks a `Clone` type installed as an environment value.
   = help: the following other types implement trait `Extractor`:
             (A, B)
             (A, B, C)

@@ -194,9 +194,10 @@ fn configured_flow_config(
 }
 
 /// Aggregates the bindings that the document-control buttons share, so each
-/// button can inject a single `State<StreamControl>` instead of stacking many
+/// button can inject a single `StreamControl` instead of stacking many
 /// `State<Binding<T>>` parameters and matching `.state(...)` calls. See
 /// `docs/api-style.md` for when to prefer this idiom.
+#[state]
 #[derive(Clone)]
 struct StreamControl {
     markdown: Binding<Str>,
@@ -297,7 +298,7 @@ pub fn demo() -> impl View {
         .caption(),
         hstack((
             button("Prev doc")
-                .action(|State(c): State<StreamControl>| {
+                .action(|c: StreamControl| {
                     cancel_stream(&c.streaming, &c.stream_revision);
                     *c.document_index.get_mut() -= 1;
                     reset_stream(&c.markdown, &c.char_progress);
@@ -305,7 +306,7 @@ pub fn demo() -> impl View {
                 .state(&control)
                 .width(PRIMARY_CONTROL_WIDTH),
             button("Next doc")
-                .action(|State(c): State<StreamControl>| {
+                .action(|c: StreamControl| {
                     cancel_stream(&c.streaming, &c.stream_revision);
                     *c.document_index.get_mut() += 1;
                     reset_stream(&c.markdown, &c.char_progress);
@@ -317,7 +318,7 @@ pub fn demo() -> impl View {
         hstack((
             button("Start stream")
                 .bordered_prominent()
-                .action(|State(c): State<StreamControl>| {
+                .action(|c: StreamControl| {
                     start_character_stream(
                         c.markdown.clone(),
                         c.char_progress.clone(),
@@ -330,7 +331,7 @@ pub fn demo() -> impl View {
                 .state(&control)
                 .width(PRIMARY_CONTROL_WIDTH),
             button("Load full")
-                .action(|State(c): State<StreamControl>| {
+                .action(|c: StreamControl| {
                     load_full_document(
                         &c.markdown,
                         &c.char_progress,
@@ -344,7 +345,7 @@ pub fn demo() -> impl View {
         ))
         .spacing(8.0),
         button("Reset")
-            .action(|State(c): State<StreamControl>| {
+            .action(|c: StreamControl| {
                 cancel_stream(&c.streaming, &c.stream_revision);
                 reset_stream(&c.markdown, &c.char_progress);
             })

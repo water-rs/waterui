@@ -7,6 +7,9 @@ use waterui::reactive::binding;
 use waterui_icons_material_icon as mdi;
 
 /// Glue: the app model navigation.md's snippets thread through their views.
+/// `#[state]` marks it an extractor, which `send_draft`'s bare `mail: Mail`
+/// parameter relies on.
+#[state]
 #[derive(Clone)]
 pub struct Mail;
 
@@ -14,8 +17,6 @@ impl Mail {
     fn send_draft(&self) {}
     fn mark_read(&self, _id: u64) {}
 }
-use waterui::impl_extractor;
-impl_extractor!(Mail);
 
 /// Glue: the settings route navigation.md refers to.
 #[derive(Clone, PartialEq, Eq)]
@@ -178,7 +179,7 @@ pub fn navigation_extractor_spellings_prose() {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Going back, and destination lifecycle" — rust block 4/13
 // ---------------------------------------------------------------------------
-pub fn send_draft(State(mail): State<Mail>, navigator: Navigator<MailRoute>) {
+pub fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
     mail.send_draft();
     let _ = navigator.pop(); // returns Option<T> and is #[must_use] — bind it
 }
@@ -214,7 +215,7 @@ pub fn navigation_block_06() -> NavigationView {
             .navigation_subtitle(text!("{unread} unread"))
             .searchable(&query, "Search mail") // a field inside the bar, not above the content
             .navigation_pop_enabled(can_leave) // refuse a back gesture reactively
-            .on_navigation_pop_attempted(|State(m): State<SnackbarManager>| {
+            .on_navigation_pop_attempted(|m: SnackbarManager| {
                 m.show(Snackbar::new("Finish the draft first"));
             })
     }

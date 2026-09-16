@@ -107,14 +107,15 @@ pub fn install(env: &mut Environment) {
 pub fn install_chromium(env: &mut Environment) {
     use crate::CefPageHandle;
     use waterui_chromium::{ChromiumController, ChromiumView, PageMode};
+    use waterui_core::State;
 
     assert!(
         env.get::<Hook<ChromiumView>>().is_none(),
         "a ChromiumView realization is already installed; an application selects exactly one Chromium runtime"
     );
     let runtime = ensure_runtime(env);
-    if env.get::<ChromiumController>().is_none() {
-        env.insert(runtime.chromium_controller());
+    if env.get::<State<ChromiumController>>().is_none() {
+        env.insert(State(runtime.chromium_controller()));
     }
     env.insert_hook::<ChromiumView, AnyView>(|env, chromium| {
         assert_eq!(

@@ -125,13 +125,14 @@ pub mod skill_block_05 {
     use super::{GlueRow as Row, ReactiveList, glue_row_view as row_view};
     use waterui::prelude::*;
 
+    #[state]
     #[derive(Clone)]
     pub struct Editor {
         rows: ReactiveList<Row>,
         editing: Binding<bool>,
     }
 
-    fn toggle_editing(State(state): State<Editor>) {
+    fn toggle_editing(state: Editor) {
         state.editing.toggle();
     }
 

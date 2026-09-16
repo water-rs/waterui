@@ -58,6 +58,7 @@ use waterui_layout::stack::{Alignment, hstack};
 use waterui_layout::{
     AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
 };
+use waterui_macros::state;
 use waterui_text::{font::Font, text::text};
 
 use crate::AnyView;
@@ -566,6 +567,7 @@ struct SnackbarManagerState {
 ///     })
 /// }
 /// ```
+#[state]
 #[derive(Clone)]
 pub struct SnackbarManager {
     state: Rc<RefCell<SnackbarManagerState>>,

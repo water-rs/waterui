@@ -90,9 +90,9 @@ NavigationLink::value("Appearance", SettingsRoute::Appearance)   // a tappable r
 |navigator: Navigator<MailRoute>| navigator.push(MailRoute::Compose)
 ```
 
-`Navigator<R>` is installed by the stack itself — no `.state()` call supplies it — and
-both extractor spellings work interchangeably in a handler: the bare
-`navigator: Navigator<MailRoute>` or `State(navigator): State<Navigator<MailRoute>>`.
+`Navigator<R>` is itself an extractor — the stack publishes it through the `.state()`
+channel — so a handler takes it bare: `navigator: Navigator<MailRoute>`. The wrapped
+spelling `State(navigator): State<Navigator<MailRoute>>` resolves to the same value.
 
 A link's first argument is `impl IntoLabel`, so `NavigationLink::value(Label::new(text!(
 "{sender}, {subject}"), move || row_content(..)), route)` gives a rich row that still
@@ -102,11 +102,14 @@ platform's convention, not yours — iOS draws one, macOS does not.
 ## Going back, and destination lifecycle
 
 ```rust
-fn send_draft(State(mail): State<Mail>, navigator: Navigator<MailRoute>) {
+fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
     mail.send_draft();
     let _ = navigator.pop();      // returns Option<T> and is #[must_use] — bind it
 }
 ```
+
+`Mail` is the app's own `#[state]`-marked model, so it arrives bare alongside the
+navigator rather than wrapped in `State<..>`.
 
 `on_navigation_appear` / `on_navigation_disappear` are destination-level hooks that fire
 when the push/pop *transition completes* — the right place for "opening this page marks
@@ -139,11 +142,14 @@ fn message_list_page(mail: Mail) -> NavigationView {
         .navigation_subtitle(text!("{unread} unread"))
         .searchable(&query, "Search mail")          // a field inside the bar, not above the content
         .navigation_pop_enabled(can_leave)          // refuse a back gesture reactively
-        .on_navigation_pop_attempted(|State(m): State<SnackbarManager>| {
+        .on_navigation_pop_attempted(|m: SnackbarManager| {
             m.show(Snackbar::new("Finish the draft first"));
         })
 }
 ```
+
+`SnackbarManager` is `#[state]`-marked — the window installs it through `.state()` —
+so the handler takes it bare rather than wrapped in `State<..>`.
 
 `NavigationView::new(title, content)` is the direct constructor for the same thing — and
 the clean way around one sharp edge: `Text` has its own `.title()` (the semantic font
