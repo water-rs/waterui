@@ -148,6 +148,10 @@ sudo apt-get install -y --no-install-recommends \
 # package entered Ubuntu at 23.04 — so the flag fails the one image the
 # artifact's glibc floor allows. JPEG XL decoding is optional for the embedded
 # runtime.
+# `ENABLE_WPE_PLATFORM_DRM` defaults on too, and WPEPlatform's DRM display
+# calls `drmModeCreateDumbBuffer`, which entered libdrm at 2.4.114 — jammy
+# ships 2.4.113. The embedded runtime only ever creates the headless display
+# (`wpe_display_headless_new`), so the DRM display is dead code here.
 cmake \
     -S "$source_directory" \
     -B "$build_directory" \
@@ -170,6 +174,7 @@ cmake \
     -DENABLE_MINIBROWSER=OFF \
     -DENABLE_WPE_LEGACY_API=OFF \
     -DENABLE_WPE_PLATFORM=ON \
+    -DENABLE_WPE_PLATFORM_DRM=OFF \
     -DUSE_JPEGXL=OFF \
     -DUSE_LIBBACKTRACE=OFF
 cmake --build "$build_directory" --parallel "${WATERUI_WPE_BUILD_JOBS:-$(nproc)}"
