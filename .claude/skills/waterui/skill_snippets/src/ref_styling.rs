@@ -11,12 +11,12 @@ use waterui::prelude::*;
 // Listing: three token applications.
 // ---------------------------------------------------------------------------
 pub fn styling_block_01() {
-    use waterui::prelude::theme_color::{Accent, Foreground, MutedForeground, Surface};
+    use waterui::prelude::theme_color::{Accent, Foreground, Surface};
 
     let _: Option<Accent> = None;
 
     let _ = { text("Title").foreground(Foreground) };
-    let _ = { text("Caption").caption().foreground(MutedForeground) };
+    let _ = { text("Caption").caption().muted() };
     let card = Divider;
     let _ = { card.background(Surface) };
 }

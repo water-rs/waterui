@@ -269,6 +269,27 @@ pub trait ViewExt: View + Sized {
         self.install(theme::ForegroundOverride::new(color))
     }
 
+    /// Renders this view and its subtree in the theme's muted foreground —
+    /// `self.foreground(MutedForeground)`, the color captions, secondary
+    /// labels and inactive icons share.
+    ///
+    /// `.foreground(Foreground)` restores the primary foreground below a
+    /// muted subtree.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// vstack((
+    ///     text!("Sync"),
+    ///     text!("Last run: never").caption().muted(),
+    /// ));
+    /// ```
+    fn muted(self) -> impl View {
+        self.foreground(theme::color::MutedForeground)
+    }
+
     /// Adds an overlay to this view.
     ///
     /// Unlike `ZStack`, `Overlay` will not affect the size of the base view.

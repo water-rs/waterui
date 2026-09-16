@@ -7,7 +7,6 @@
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::layout::stack::{HStack, VStack};
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::shape::{RoundedRectangle, ShapeExt};
@@ -16,7 +15,7 @@ use waterui::shape::{RoundedRectangle, ShapeExt};
 /// keeps the concrete type finite while stressing deep layout passes.
 fn deep_nest(depth: u32) -> AnyView {
     if depth == 0 {
-        return AnyView::new(text("depth 0").caption().foreground(MutedForeground));
+        return AnyView::new(text("depth 0").caption().muted());
     }
     let inner = deep_nest(depth - 1);
     if depth.is_multiple_of(2) {
@@ -86,7 +85,7 @@ fn constraint_edges() -> impl View {
             RoundedRectangle::new(0.5)
                 .fill(Color::srgb_hex("#EF4444"))
                 .size(0.0, 0.0),
-            text("after zero").caption().foreground(MutedForeground),
+            text("after zero").caption().muted(),
         ))
         .spacing(8.0),
         hstack((
@@ -114,7 +113,7 @@ pub fn demo() -> impl View {
             text("Edge Layout").title(),
             text("Deep nesting, dense children, constraint edges")
                 .sub_headline()
-                .foreground(MutedForeground),
+                .muted(),
             Divider,
             text("Deep nesting (8 levels)").sub_headline(),
             deep_nest(8),

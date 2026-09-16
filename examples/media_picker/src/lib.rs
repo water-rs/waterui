@@ -13,7 +13,7 @@ use waterui::component::Dynamic;
 use waterui::media::live::LivePhotoSource;
 use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
 use waterui::media::{LivePhoto, Media};
-use waterui::prelude::theme_color::{Accent, MutedForeground};
+use waterui::prelude::theme_color::Accent;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::{binding, impl_constant};
@@ -117,12 +117,8 @@ fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
     signal_driven_display(display_state, |state| match state {
         DisplayState::Empty => AnyView::new(
             vstack((
-                text("No media selected")
-                    .sub_headline()
-                    .foreground(MutedForeground),
-                text("Tap a button above to select media")
-                    .body()
-                    .foreground(MutedForeground),
+                text("No media selected").sub_headline().muted(),
+                text("Tap a button above to select media").body().muted(),
             ))
             .spacing(8.0),
         ),
@@ -130,7 +126,7 @@ fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
         DisplayState::Error(message) => AnyView::new(
             vstack((
                 text("Error").sub_headline().bold().foreground(Accent),
-                text(message).body().foreground(MutedForeground),
+                text(message).body().muted(),
             ))
             .spacing(8.0)
             .padding_with(16.0),
@@ -172,10 +168,7 @@ fn image_view(url: Url) -> impl View {
         Photo::new(url.clone()).on_event(move |event| {
             tracing::debug!("Photo event: {:?}", event);
         }),
-        text("Image")
-            .body()
-            .foreground(MutedForeground)
-            .padding_with(8.0),
+        text("Image").body().muted().padding_with(8.0),
     ))
 }
 
@@ -185,10 +178,7 @@ fn video_view(url: Url) -> impl View {
         video_player(url)
             .show_controls(true)
             .content_mode(video::ContentMode::Fit),
-        text("Video")
-            .body()
-            .foreground(MutedForeground)
-            .padding_with(8.0),
+        text("Video").body().muted().padding_with(8.0),
     ))
 }
 
@@ -196,10 +186,7 @@ fn live_photo_view(source: LivePhotoSource) -> impl View {
     tracing::debug!("Displaying live photo");
     vstack((
         LivePhoto::new(source),
-        text("Live Photo")
-            .body()
-            .foreground(MutedForeground)
-            .padding_with(8.0),
+        text("Live Photo").body().muted().padding_with(8.0),
     ))
 }
 
