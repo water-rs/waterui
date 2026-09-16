@@ -3,7 +3,7 @@
 use waterui::app::App;
 use waterui::env::with;
 use waterui::locale::{Locale, locales};
-use waterui::prelude::theme_color::{MutedForeground, SurfaceVariant};
+use waterui::prelude::theme_color::SurfaceVariant;
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -17,7 +17,7 @@ fn type_scale() -> impl View {
             .footnote(),
         text("Caption — 字体 fallback follows locale and script.")
             .caption()
-            .foreground(MutedForeground),
+            .muted(),
     ))
     .alignment(HorizontalAlignment::Leading)
     .spacing(8.0)
@@ -43,9 +43,7 @@ fn reading_order_panel(title: &'static str, body: &'static str, arrow: &'static 
             text("①").headline(),
             vstack((
                 text(body).body(),
-                text("WaterUI 2.0 · 2026")
-                    .caption()
-                    .foreground(MutedForeground),
+                text("WaterUI 2.0 · 2026").caption().muted(),
             ))
             .alignment(HorizontalAlignment::Leading),
             spacer(),
@@ -82,7 +80,7 @@ pub fn typography_and_rtl() -> impl View {
                 "Semantic type styles, CJK fallback, mixed-script shaping, and logical RTL layout.",
             )
             .body()
-            .foreground(MutedForeground),
+            .muted(),
             Divider,
             type_scale(),
             Divider,

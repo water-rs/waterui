@@ -6,7 +6,7 @@
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove};
-use waterui::prelude::theme_color::{Foreground, MutedForeground};
+use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -50,7 +50,7 @@ fn record_row(record: Record) -> ListItem {
                 .foreground(Foreground),
             text("Materialized only while this row is visible")
                 .caption()
-                .foreground(MutedForeground),
+                .muted(),
         ))
         .alignment(HorizontalAlignment::Leading)
         .padding_with((10.0, 16.0)),
@@ -104,7 +104,7 @@ fn content(state: DemoState) -> impl View {
                 remaining = state.remaining.clone()
             )
             .sub_headline()
-            .foreground(MutedForeground),
+            .muted(),
             hstack((
                 button("Top").bordered().action(jump_top),
                 button("Middle").bordered().action(jump_middle),
@@ -118,7 +118,7 @@ fn content(state: DemoState) -> impl View {
                 "Animated jumps and the draggable scrollbar keep only viewport rows materialized.",
             )
             .caption()
-            .foreground(MutedForeground),
+            .muted(),
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(8.0)

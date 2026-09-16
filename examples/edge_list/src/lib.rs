@@ -6,7 +6,6 @@
 
 use waterui::Identifiable;
 use waterui::app::App;
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::collection::List as ReactiveList;
@@ -30,9 +29,7 @@ fn chip_color(index: u64) -> Color {
 }
 
 fn detail_line(n: u64, label: &'static str) -> impl View {
-    text(text!("detail line {n} {label}"))
-        .caption()
-        .foreground(MutedForeground)
+    text(text!("detail line {n} {label}")).caption().muted()
 }
 
 fn record_row(index: u64) -> ListItem {
@@ -81,7 +78,7 @@ pub fn demo() -> impl View {
             text("200,000 variable-height rows").title(),
             text("Rows cycle 1-3 detail lines; only viewport rows materialize.")
                 .sub_headline()
-                .foreground(MutedForeground),
+                .muted(),
         ))
         .alignment(HorizontalAlignment::Leading)
         .padding(),

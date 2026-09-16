@@ -5,18 +5,14 @@
 //! text measurement and line breaking.
 
 use waterui::app::App;
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::preview;
 
 fn section(title: &'static str, content: impl View) -> impl View {
-    vstack((
-        text(title).sub_headline().foreground(MutedForeground),
-        content,
-    ))
-    .alignment(HorizontalAlignment::Leading)
-    .spacing(6.0)
-    .padding_with(12.0)
+    vstack((text(title).sub_headline().muted(), content))
+        .alignment(HorizontalAlignment::Leading)
+        .spacing(6.0)
+        .padding_with(12.0)
 }
 
 /// 160-char run with no break opportunities — tests overflow wrapping.
@@ -96,7 +92,7 @@ pub fn demo() -> impl View {
             text("Edge Text").title(),
             text("Extreme text measurement and line breaking")
                 .sub_headline()
-                .foreground(MutedForeground),
+                .muted(),
             Divider,
             vstack((
                 unbroken(),

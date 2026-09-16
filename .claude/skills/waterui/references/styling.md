@@ -31,10 +31,10 @@ over by hardcoding a color in the view.
 ## Theme color tokens
 
 ```rust
-use waterui::prelude::theme_color::{Accent, Foreground, MutedForeground, Surface};
+use waterui::prelude::theme_color::{Accent, Foreground, Surface};
 
 text("Title").foreground(Foreground)
-text("Caption").caption().foreground(MutedForeground)
+text("Caption").caption().muted()   // `.muted()` is `.foreground(MutedForeground)`
 card.background(Surface)
 ```
 

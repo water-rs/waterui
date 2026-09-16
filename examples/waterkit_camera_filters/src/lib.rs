@@ -14,7 +14,7 @@ use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
 use waterui::prelude::slider::slider;
-use waterui::prelude::theme_color::{MutedForeground, Surface};
+use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -93,7 +93,7 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
         text("WaterUI + Waterkit Camera Filter Lab").title().bold(),
         text("Live camera preview via waterkit-camera, rendered and filtered with WaterUI GpuSurface.")
             .body()
-            .foreground(MutedForeground),
+            .muted(),
         Divider,
     ))
     .spacing(8.0);
@@ -101,9 +101,7 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
     let preview_section = vstack((
         text!("Filter: {filter_label}   |   Strength: {filter_strength:.2}").body(),
         preview,
-        text!("{preview_status}")
-            .caption()
-            .foreground(MutedForeground),
+        text!("{preview_status}").caption().muted(),
         hstack((button("Reconnect Camera Stream")
             .action(
                 |State(ticket): State<Binding<usize>>, State(status): State<Binding<Str>>| {
@@ -137,9 +135,7 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
         text("Waterkit Bridge").headline(),
         text!("{waterkit_status}").body(),
         text!("{permission_status}").body(),
-        text!("{camera_inventory}")
-            .footnote()
-            .foreground(MutedForeground),
+        text!("{camera_inventory}").footnote().muted(),
         button("Sync with Waterkit Camera")
             .action_async(|State(state): State<CameraLabState>| async move {
                 sync_waterkit_camera(
