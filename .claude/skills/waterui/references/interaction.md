@@ -117,7 +117,7 @@ link_row().cursor(CursorStyle::PointingHand)
 // Reactive: derive the style from state.
 view.cursor(
     dragging
-        .map(|d| if d { CursorStyle::ClosedHand } else { CursorStyle::OpenHand })
+        .select(CursorStyle::ClosedHand, CursorStyle::OpenHand)
         .computed(),
 )
 ```

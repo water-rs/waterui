@@ -85,10 +85,6 @@ jobs:
       # linted under its default features by the workspace pass above, and the
       # steps share this job's target dir, so each is an increment on a graph
       # that is already built.
-      #
-      # A separate `-p waterui-browser-wpe --features real-engine` step used to
-      # follow; `--workspace --all-features` selects that crate with every
-      # feature on, so it is now a strict subset and has been removed.
       - name: Clippy (all features, workspace)
         if: inputs.full
         run: |
@@ -256,14 +252,7 @@ jobs:
   # exclusive by construction. Each is run below in the shapes it actually
   # has, sharing this job's target dir.
   #
-  # `waterui-browser-wpe` is a fourth exclusion here that the clippy sweep does
-  # not need: its `real-engine` feature adds a test target that drives a
-  # staged WPE WebKit runtime (`WATERUI_WPE_RUNTIME`), which only
-  # `browser-wpe.yml` builds, so under `--all-features` that target runs here
-  # and fails at once for want of the runtime. Its `webview` shape is the
-  # default one, covered by the workspace pass in `test`.
-  #
-  # `skill_snippets` is a sixth, on every platform: its `compile-gate-tests`
+  # `skill_snippets` is a fifth, on every platform: its `compile-gate-tests`
   # feature registers the skill's `#[waterui::test]` transcriptions as test
   # targets that address elements which do not exist by design and must never
   # run, and its `dev` feature turns on `waterui/dynamic_linking`. The lint
@@ -297,7 +286,6 @@ jobs:
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude waterui-browser-cef \
-            --exclude waterui-browser-wpe \
             --exclude skill_snippets
       # `nightly` is `feature(never_type)`, a hard E0554 on stable.
       - name: Test (waterui-core, every stable feature)
@@ -332,9 +320,8 @@ jobs:
       # Writes the macOS `~/.cargo` tarball for the macOS jobs that store no
       # target directory (see the cache budget note in ci.yml). clippy is
       # needed by the macOS-only CEF real-engine target at the end of this
-      # job, which cannot be linted on Linux the way its WPE sibling is,
-      # because CEF requires a macOS application bundle and the target
-      # refuses to compile anywhere else.
+      # job, which cannot be linted on Linux because CEF requires a macOS
+      # application bundle and the target refuses to compile anywhere else.
       - uses: ./.github/actions/setup-rust
         with:
           components: clippy
@@ -344,8 +331,7 @@ jobs:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       # Every crate's own optional features, with the same exclusions as the
-      # Linux `all-features` job (see there; `waterui-browser-wpe` is
-      # Linux-only, so it needs no exclusion here). Of the excluded crates,
+      # Linux `all-features` job (see there). Of the excluded crates,
       # the two whose feature shapes carry macOS-specific code run below; the
       # FFI C surfaces and the CEF runtime shape are host-independent and the
       # Linux job covers them.
@@ -362,8 +348,7 @@ jobs:
       # nextest cannot run doctests, and this workspace has plenty of them.
       - run: cargo test --locked --doc --workspace --exclude '*-example'
       # The web view bridge has broken three times in ways no Rust-side test
-      # could see, so these drive a real Chromium. Unlike the WPE sibling in
-      # `browser-wpe.yml`, which compiles an engine from source for hours, CEF
+      # could see, so these drive a real Chromium. CEF
       # is a prebuilt distribution `cef-dll-sys` downloads while building the
       # crate: the whole leg is a couple of minutes on top of a workspace this
       # job has already compiled, which is why it lives here instead of in a

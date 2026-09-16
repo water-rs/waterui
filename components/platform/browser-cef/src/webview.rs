@@ -365,7 +365,7 @@ impl CustomWebViewController for CefController {
         // The factory goes onto the page's private request context before any
         // asset URL can navigate — the view still sits on `about:blank` here.
         let asset_origin = config.asset_server.map(|server| {
-            crate::assets::register_scheme_handler(page.request_context(), server);
+            crate::assets::register_scheme_handler(&page.request_context(), server);
             Url::new(ASSET_ORIGIN)
         });
         CefWebViewHandle::new(page, asset_origin)

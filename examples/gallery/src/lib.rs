@@ -14,6 +14,18 @@
 
 use core::time::Duration;
 
+use mdi::Svg;
+use mdi::chevron_down;
+use mdi::chevron_right;
+use mdi::form_textbox;
+use mdi::format_list_bulleted;
+use mdi::gauge;
+use mdi::gesture_tap_button;
+use mdi::home;
+use mdi::numeric;
+use mdi::text_box_outline;
+use mdi::toggle_switch;
+use mdi::tune;
 use waterui::Color;
 use waterui::Handler;
 use waterui::Identifiable;
@@ -179,7 +191,7 @@ impl DemoState {
 /// A single catalog entry: a control with its drawer icon and live demo.
 struct Control {
     title: &'static str,
-    icon: fn() -> mdi::Svg,
+    icon: fn() -> Svg,
     section: Section,
     demo: fn(&DemoState) -> AnyView,
 }
@@ -189,49 +201,49 @@ fn controls() -> Vec<Control> {
     vec![
         Control {
             title: "Buttons",
-            icon: mdi::gesture_tap_button,
+            icon: gesture_tap_button,
             section: Section::Actions,
             demo: |s| AnyView::new(buttons_demo(&s.taps)),
         },
         Control {
             title: "Text Field",
-            icon: mdi::form_textbox,
+            icon: form_textbox,
             section: Section::Inputs,
             demo: |s| AnyView::new(text_field_demo(&s.name)),
         },
         Control {
             title: "Slider",
-            icon: mdi::tune,
+            icon: tune,
             section: Section::Inputs,
             demo: |s| AnyView::new(slider_demo(&s.volume)),
         },
         Control {
             title: "Stepper",
-            icon: mdi::numeric,
+            icon: numeric,
             section: Section::Inputs,
             demo: |s| AnyView::new(stepper_demo(&s.quantity)),
         },
         Control {
             title: "Toggle",
-            icon: mdi::toggle_switch,
+            icon: toggle_switch,
             section: Section::Selection,
             demo: |s| AnyView::new(toggle_demo(&s.wifi, &s.bluetooth)),
         },
         Control {
             title: "Picker",
-            icon: mdi::format_list_bulleted,
+            icon: format_list_bulleted,
             section: Section::Selection,
             demo: |s| AnyView::new(picker_demo(&s.size)),
         },
         Control {
             title: "Label",
-            icon: mdi::text_box_outline,
+            icon: text_box_outline,
             section: Section::Display,
             demo: |_| AnyView::new(label_demo()),
         },
         Control {
             title: "Progress",
-            icon: mdi::gauge,
+            icon: gauge,
             section: Section::Display,
             demo: |_| AnyView::new(progress_demo()),
         },
@@ -277,7 +289,7 @@ fn catalog(
 /// layers inside the row's pill, leaving an indicator nested in an indicator.
 fn drawer_item<F, Args>(
     title: &'static str,
-    icon: fn() -> mdi::Svg,
+    icon: fn() -> Svg,
     active: Computed<bool>,
     action: F,
 ) -> impl View
@@ -286,7 +298,7 @@ where
     Args: 'static,
 {
     let indicator: Color = SurfaceVariant.into();
-    let clear: Color = waterui::color::Srgb::WHITE.with_opacity(0.0).into();
+    let clear: Color = Srgb::WHITE.with_opacity(0.0).into();
     let pill = signal_color(active.clone().select(indicator, clear).computed());
     let active_content: Color = Foreground.into();
     let resting_content: Color = MutedForeground.into();
@@ -340,8 +352,8 @@ where
 {
     let muted: Color = MutedForeground.into();
     let chevron = zstack((
-        mdi::chevron_right().visible(open.clone().map(|open| !open)),
-        mdi::chevron_down().visible(open),
+        chevron_right().visible(open.clone().not()),
+        chevron_down().visible(open),
     ))
     .width(DRAWER_ICON_SIZE)
     .height(DRAWER_ICON_SIZE);
@@ -412,12 +424,17 @@ fn sidebar(
 /// group and reconciles the reactive row collection.
 fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> impl View {
     let section = Section::ALL[group];
-    let toggled = open.clone();
-    drawer_headline(section.title(), open, move |_env: Environment| {
-        let expanded = !toggled.get();
-        toggled.set(expanded);
-        set_group_expanded(&rows, group, expanded);
-    })
+    drawer_headline(
+        section.title(),
+        open.clone(),
+        move |State(open): State<Binding<bool>>, State(rows): State<ReactiveList<Row>>| {
+            let expanded = !open.get();
+            open.set(expanded);
+            set_group_expanded(&rows, group, expanded);
+        },
+    )
+    .state(&open)
+    .state(&rows)
 }
 
 /// A selectable control row, nested under its group header. Tapping selects the
@@ -427,19 +444,16 @@ fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> i
 /// a single accessibility node that survives the reactive collection.
 fn item_row(index: usize, selected: Binding<Option<usize>>) -> impl View {
     let control = &controls()[index];
-    let is_selected = selected
-        .clone()
-        .map(move |current| current == Some(index))
-        .computed();
-    let activate = selected.clone();
+    let is_selected = selected.clone().equal_to(Some(index)).computed();
     drawer_item(
         control.title,
         control.icon,
         is_selected,
-        move |_env: Environment| {
-            activate.set(Some(index));
+        move |State(selected): State<Binding<Option<usize>>>| {
+            selected.set(Some(index));
         },
     )
+    .state(&selected)
 }
 
 /// The detail pane for the selected control: its title (in the navigation bar)
@@ -539,7 +553,7 @@ fn text_field_demo(name: &Binding<Str>) -> impl View {
     .leading()
 }
 
-fn size_items() -> Vec<waterui::form::picker::PickerItem<&'static str>> {
+fn size_items() -> Vec<PickerItem<&'static str>> {
     vec![
         text("Small").tag("Small"),
         text("Medium").tag("Medium"),
@@ -566,15 +580,15 @@ fn label_demo() -> impl View {
     vstack((
         note("LabelDisplayMode controls whether the title, icon, or both show."),
         label("Title and Icon")
-            .icon(mdi::home())
+            .icon(home())
             .leading()
             .display_mode(LabelDisplayMode::TitleAndIcon),
         label("Title Only")
-            .icon(mdi::home())
+            .icon(home())
             .leading()
             .display_mode(LabelDisplayMode::TitleOnly),
         label("Icon Only")
-            .icon(mdi::home())
+            .icon(home())
             .leading()
             .display_mode(LabelDisplayMode::IconOnly),
     ))

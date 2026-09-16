@@ -1,3 +1,12 @@
+use mdi::bell_alert;
+use mdi::calendar_clock;
+use mdi::calendar_today;
+use mdi::check;
+use mdi::circle_outline;
+use mdi::flag;
+use mdi::format_list_bulleted;
+use mdi::inbox;
+use mdi::plus;
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::background::Material;
@@ -7,6 +16,7 @@ use waterui::prelude::*;
 use waterui::shape::{Circle, RoundedRectangle};
 use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
+use waterui_icons_material_icon::Svg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SidebarDestination {
@@ -30,14 +40,14 @@ impl SidebarDestination {
         }
     }
 
-    fn icon(self) -> waterui_icons_material_icon::Svg {
+    fn icon(self) -> Svg {
         match self {
-            Self::Today => mdi::calendar_today(),
-            Self::Scheduled => mdi::calendar_clock(),
-            Self::All => mdi::inbox(),
-            Self::Flagged => mdi::flag(),
-            Self::Urgent => mdi::r#bell_alert(),
-            Self::Completed => mdi::r#check(),
+            Self::Today => calendar_today(),
+            Self::Scheduled => calendar_clock(),
+            Self::All => inbox(),
+            Self::Flagged => flag(),
+            Self::Urgent => r#bell_alert(),
+            Self::Completed => r#check(),
         }
     }
 
@@ -290,7 +300,7 @@ fn destination_tile(
     selection: Binding<Option<SidebarDestination>>,
     query: Computed<Option<String>>,
 ) -> impl View {
-    let is_selected = selection.clone().map(move |current| current == Some(dest));
+    let is_selected = selection.clone().equal_to(Some(dest));
     let count = query.map(move |query| {
         if let Some(query) = query.as_deref() {
             let (today_rows, upcoming_rows) = reminders_for(dest);
@@ -320,13 +330,18 @@ fn destination_tile(
     .background(signal_color(bg))
     // ~10pt on the tile's shorter side, matching the official app's tiles.
     .clip(RoundedRectangle::new(0.15))
-    .on_tap(move || selection.set(Some(dest)))
+    .on_tap(
+        move |State(selection): State<Binding<Option<SidebarDestination>>>| {
+            selection.set(Some(dest));
+        },
+    )
+    .state(&selection)
 }
 
 /// A "My Lists" row: colored circular badge, name, trailing count.
 fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
     hstack((
-        mdi::r#format_list_bulleted()
+        r#format_list_bulleted()
             .tint(Srgb::WHITE)
             .size(14.0, 14.0)
             .padding_with(EdgeInsets::all(6.0))
@@ -355,7 +370,7 @@ fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView
     .searchable(&search, "Search reminders")
     .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::new(
         NavigationToolbarPlacement::PrimaryAction,
-        button(label("").icon(mdi::plus()))
+        button(label("").icon(plus()))
             .style(ButtonStyle::Borderless)
             .action(|| {}),
     )]))
@@ -408,6 +423,9 @@ fn section_visible(search: Binding<Str>, rows: &'static [ReminderRow]) -> Comput
         .computed()
 }
 
+// `row.flagged` is immutable fixture data: the `&'static [ReminderRow]` rows
+// never change, so reading the field in the row builder cannot go stale.
+#[allow(unknown_lints, collection_item_snapshot)]
 fn reminder_section(
     title: &'static str,
     rows: &'static [ReminderRow],
@@ -426,7 +444,7 @@ fn reminder_section(
             let visible = reminder_visible(search.clone(), row.clone());
             ListItem::new(
                 hstack((
-                    mdi::circle_outline()
+                    circle_outline()
                         .size(16.0, 16.0)
                         .foreground(MutedForeground),
                     vstack((
@@ -438,7 +456,7 @@ fn reminder_section(
                     .leading(),
                     spacer(),
                     when(row.flagged, || {
-                        mdi::flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
+                        flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
                     })
                     .otherwise(|| spacer().width(12.0)),
                 ))

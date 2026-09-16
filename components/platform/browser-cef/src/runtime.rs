@@ -8,6 +8,8 @@ use async_channel::{Receiver, TryRecvError, unbounded};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::time::{Duration, Instant};
 
 use cef::args::Args;
@@ -104,42 +106,56 @@ impl Drop for PlatformSandbox {
     }
 }
 
+/// The sandbox information object CEF's bootstrap launcher created for this
+/// process.
+///
+/// CEF no longer ships a static `cef_sandbox` library for Windows: a renamed
+/// `bootstrap.exe` (`/SUBSYSTEM:WINDOWS`) or `bootstrapc.exe`
+/// (`/SUBSYSTEM:CONSOLE`) from the distribution is the application executable.
+/// It creates the sandbox information object itself and delivers it to the
+/// application DLL through the `RunWinMain`/`RunConsoleMain` entry points
+/// exported by [`cef_bootstrap_main!`](crate::cef_bootstrap_main). That macro
+/// calls [`install_bootstrap_sandbox_info`] first; an application exporting the
+/// entry points by hand must do the same before any other CEF call.
+///
+/// The launcher owns the object and keeps it alive for the whole entry-point
+/// call — which spans the application's lifetime — so the pointer is only
+/// borrowed here and is never destroyed.
+#[cfg(target_os = "windows")]
+static BOOTSTRAP_SANDBOX_INFO: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Installs the sandbox information object delivered by the bootstrap
+/// launcher. See [`BOOTSTRAP_SANDBOX_INFO`] for the process model.
+///
+/// # Panics
+///
+/// Panics when `sandbox_info` is null.
+#[cfg(target_os = "windows")]
+pub fn install_bootstrap_sandbox_info(sandbox_info: *mut std::ffi::c_void) {
+    assert!(
+        !sandbox_info.is_null(),
+        "CEF bootstrap launcher delivered a null sandbox information object"
+    );
+    BOOTSTRAP_SANDBOX_INFO.store(sandbox_info, Ordering::Relaxed);
+}
+
 #[cfg(target_os = "windows")]
 struct PlatformSandbox(std::ptr::NonNull<std::ffi::c_void>);
 
 #[cfg(target_os = "windows")]
-unsafe extern "C" {
-    fn waterui_cef_windows_sandbox_create() -> *mut std::ffi::c_void;
-    fn waterui_cef_windows_sandbox_info(sandbox: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-    fn waterui_cef_windows_sandbox_destroy(sandbox: *mut std::ffi::c_void);
-}
-
-#[cfg(target_os = "windows")]
 impl PlatformSandbox {
     fn initialize(_paths: &CefRuntimePaths, _args: &cef::MainArgs) -> Self {
-        // SAFETY: the shim allocates a `CefScopedSandboxInfo` with no
-        // preconditions; the returned pointer is owned by this value and
-        // checked for null right below.
-        let sandbox = unsafe { waterui_cef_windows_sandbox_create() };
-        Self(
-            std::ptr::NonNull::new(sandbox)
-                .expect("failed to allocate Windows CEF sandbox information"),
-        )
+        let sandbox_info = BOOTSTRAP_SANDBOX_INFO.load(Ordering::Relaxed);
+        Self(std::ptr::NonNull::new(sandbox_info).expect(
+            "CEF sandbox information is missing: on Windows the application must \
+             be a DLL entered through the renamed `bootstrap.exe`/`bootstrapc.exe` \
+             launcher; export the entry points with \
+             `waterui_browser_cef::cef_bootstrap_main!`",
+        ))
     }
 
     fn info(&self) -> *mut u8 {
-        // SAFETY: `self.0` came from `waterui_cef_windows_sandbox_create` and
-        // is destroyed only in `Drop`, so it is live for the whole borrow.
-        unsafe { waterui_cef_windows_sandbox_info(self.0.as_ptr()) }.cast()
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for PlatformSandbox {
-    fn drop(&mut self) {
-        // SAFETY: `self.0` came from `waterui_cef_windows_sandbox_create`;
-        // `Drop` runs at most once, and nothing uses the pointer afterwards.
-        unsafe { waterui_cef_windows_sandbox_destroy(self.0.as_ptr()) };
+        self.0.as_ptr().cast()
     }
 }
 
