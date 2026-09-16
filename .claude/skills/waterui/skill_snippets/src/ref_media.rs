@@ -1,6 +1,7 @@
 //! Snippets from `.claude/skills/waterui/references/media.md`, in file order.
 //! Transcription conventions are documented in the crate README.
 
+use waterui::media::media_picker::Selected;
 use waterui::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -67,7 +68,7 @@ pub fn media_block_03() {
 }
 
 /// The handler-side half of block 3, which needs a `Selected` value in hand.
-pub fn media_block_03_handler(selected: waterui::media::media_picker::Selected) {
+pub fn media_block_03_handler(selected: Selected) {
     // In a handler: Selected::load() is synchronous and consumes the selection.
     let media = selected.load(); // Media::Image(Url) | Video(Url) | LivePhoto(source)
 
@@ -78,11 +79,9 @@ pub fn media_block_03_handler(selected: waterui::media::media_picker::Selected) 
 // media.md § "## Media" — rust block 4/13
 // ---------------------------------------------------------------------------
 pub fn media_block_04() -> impl View {
-    use waterui::video::{self, MediaItem, PlaybackSession, Playlist, VideoPlayer};
+    use waterui::video::{self, MediaItem, PlaybackSession, Playlist, Url, VideoPlayer};
 
-    let first_item = MediaItem::from(
-        waterui::video::Url::parse("https://waterui.dev/a.mp4").expect("valid url"),
-    );
+    let first_item = MediaItem::from(Url::parse("https://waterui.dev/a.mp4").expect("valid url"));
     let more_items: Vec<MediaItem> = Vec::new();
 
     let playlist = Playlist::new(first_item, more_items); // deliberately non-empty
@@ -107,11 +106,9 @@ pub fn media_block_04() -> impl View {
 // and commands. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_controller_prose() {
-    use waterui::video::{MediaItem, MediaItemId, PlaybackSession, Playlist};
+    use waterui::video::{MediaItem, MediaItemId, PlaybackSession, Playlist, Url};
 
-    let item = MediaItem::from(
-        waterui::video::Url::parse("https://waterui.dev/a.mp4").expect("valid url"),
-    );
+    let item = MediaItem::from(Url::parse("https://waterui.dev/a.mp4").expect("valid url"));
     let id: MediaItemId = item.id;
     let session = PlaybackSession::new(Playlist::new(item, Vec::new()));
     let controller = session.controller();
@@ -320,10 +317,10 @@ pub fn media_block_11() -> impl View {
 pub fn media_block_12() -> impl View {
     use waterui::reactive::binding;
 
-    use waterui_map::{Annotation, Coordinate, Map, MapStyle, Region};
+    use waterui_map::{Annotation, Coordinate, Location, Map, MapStyle, Region};
 
     let pins = Binding::container(Vec::<Annotation>::new());
-    let loc = Binding::container(None::<waterui_map::Location>);
+    let loc = Binding::container(None::<Location>);
 
     let center = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
     let region: Binding<Region> = binding(Region::new(center, 0.05, 0.05)); // deltas are degree
@@ -342,6 +339,8 @@ pub fn media_block_12() -> impl View {
 // ---------------------------------------------------------------------------
 // media.md § "## Data: charts and maps" — rust block 13/13
 // ---------------------------------------------------------------------------
+// media.md writes `waterui_url::Url` qualified to show which crate owns it.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn media_block_13(mut env: Environment) {
     use waterui_map_gpu::MapGpuOptions;
     env.insert(MapGpuOptions::new(waterui_url::Url::new(

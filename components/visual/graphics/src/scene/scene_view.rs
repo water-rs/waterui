@@ -127,9 +127,11 @@ pub trait SceneContent: 'static {
 ///   aspect ratio — an image `.resizable()` under aspect fit, sized by the axis its
 ///   container actually constrained.
 ///
-/// A named axis that is not finite (`f32::INFINITY` is how a container asks for a
-/// maximum) cannot scale anything, so the open axis falls back to its natural
-/// extent rather than becoming infinite too.
+/// An axis named `f32::INFINITY` is not a box: it is how a container asks for a
+/// maximum, and the maximum of content that is a size is that size. It is
+/// treated as open, so a row probing a scene's largest extent gets the natural
+/// one back and the scene keeps the `StretchAxis::None` promise of
+/// [`scene_stretch_axis`] instead of swallowing the row's leftover space.
 ///
 /// # Panics
 ///
@@ -152,8 +154,10 @@ pub fn resolve_scene_proposal(intrinsic: Option<Size>, proposal: ProposalSize) -
         natural.height
     );
 
-    match (proposal.width, proposal.height) {
-        (Some(_), Some(_)) => proposal,
+    let width = proposal.width.filter(|width| width.is_finite());
+    let height = proposal.height.filter(|height| height.is_finite());
+    match (width, height) {
+        (Some(width), Some(height)) => ProposalSize::new(width, height),
         (None, None) => ProposalSize::new(natural.width, natural.height),
         (Some(width), None) => {
             ProposalSize::new(width, scale_across(width, natural.width, natural.height))
@@ -166,11 +170,7 @@ pub fn resolve_scene_proposal(intrinsic: Option<Size>, proposal: ProposalSize) -
 
 /// The extent across the named axis, at the scale that axis was named at.
 fn scale_across(named: f32, natural_along: f32, natural_across: f32) -> f32 {
-    if named.is_finite() {
-        natural_across * (named / natural_along)
-    } else {
-        natural_across
-    }
+    natural_across * (named / natural_along)
 }
 
 /// Which axes a scene claims from its container, given its intrinsic size.
@@ -432,15 +432,30 @@ mod tests {
     }
 
     #[test]
-    fn an_unbounded_named_axis_leaves_the_other_natural() {
-        // `INFINITY` is how a container asks for a maximum; nothing can be scaled
-        // by it, so the open axis stays the size the content actually is.
+    fn an_unbounded_axis_is_a_maximum_probe_answered_by_the_natural_size() {
+        // `INFINITY` is how a container asks for a maximum, and the most a scene
+        // that is a size wants is that size: a stack ranking its children's
+        // flexibility must not hear "as much as you have" from content that
+        // declared `StretchAxis::None`.
         assert_eq!(
             resolve_scene_proposal(
                 Tall.intrinsic_size(),
                 ProposalSize::new(Some(f32::INFINITY), None)
             ),
-            ProposalSize::new(f32::INFINITY, 200.0)
+            ProposalSize::new(100.0, 200.0)
+        );
+        assert_eq!(
+            resolve_scene_proposal(Tall.intrinsic_size(), ProposalSize::INFINITY),
+            ProposalSize::new(100.0, 200.0)
+        );
+        // The finite axis still drives the open one; the infinite one is open.
+        assert_eq!(
+            resolve_scene_proposal(
+                Tall.intrinsic_size(),
+                ProposalSize::new(Some(f32::INFINITY), Some(400.0))
+            ),
+            ProposalSize::new(200.0, 400.0),
+            "a row of height 400 probing the maximum width gets the aspect-fit width"
         );
     }
 

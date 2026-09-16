@@ -22,6 +22,13 @@
 //! makes a tab remember where you left it: push twice in Inbox, visit Settings,
 //! come back, and the two pushed pages are still there.
 
+use mdi::album as album_icon;
+use mdi::cog;
+use mdi::flag;
+use mdi::image_album;
+use mdi::inbox;
+use mdi::pencil;
+use mdi::view_gallery;
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove, Section, row};
@@ -263,24 +270,24 @@ pub fn demo() -> impl View {
     Tabs::new(
         &pane,
         vec![
-            Tab::container(Pane::Inbox, label("Inbox").icon(mdi::inbox()), {
+            Tab::container(Pane::Inbox, label("Inbox").icon(inbox()), {
                 let mail = mail.clone();
                 move || inbox_stack(mail.clone())
             })
             .badge(mail.unread_count()),
             Tab::container(
                 Pane::Library,
-                label("Library").icon(mdi::image_album()),
+                label("Library").icon(image_album()),
                 library_split,
             ),
             Tab::container(
                 Pane::Gallery,
-                label("Gallery").icon(mdi::view_gallery()),
+                label("Gallery").icon(view_gallery()),
                 gallery_stack,
             ),
             Tab::container(
                 Pane::Settings,
-                label("Settings").icon(mdi::cog()),
+                label("Settings").icon(cog()),
                 settings_stack,
             ),
         ],
@@ -326,14 +333,14 @@ fn inbox_root(mail: Mail) -> NavigationView {
                     button(text!("{edit_title}"))
                         .style(ButtonStyle::Plain)
                         .action(|State(editing): State<Binding<bool>>| {
-                            editing.set(!editing.get());
+                            editing.toggle();
                         })
                         .state(&mail.editing),
                 ))
                 // Primary: the action the screen exists for.
                 .item(NavigationToolbarItem::action(
                     NavigationToolbarPlacement::PrimaryAction,
-                    label("Compose").icon(mdi::pencil()),
+                    label("Compose").icon(pencil()),
                     |navigator: Navigator<MailRoute>| navigator.push(MailRoute::Compose),
                 ))
                 // Bottom bar and status: iOS uses the bottom toolbar, Android
@@ -402,18 +409,14 @@ fn message_row(mail: &Mail, message: Message) -> ListItem {
             // what a mail list must not do.
             let unread = unread.clone();
             hstack((
-                hstack((Accent
-                    .size(8.0, 8.0)
-                    .clip(Circle)
-                    .opacity(unread.map(|unread| if unread { 1.0 } else { 0.0 })),))
-                .size(8.0, 8.0),
+                hstack((Accent.size(8.0, 8.0).clip(Circle).visible(unread),)).size(8.0, 8.0),
                 vstack((
                     hstack((
                         text(message.sender).sub_headline().foreground(Foreground),
                         spacer(),
                         message
                             .flagged
-                            .then(|| mdi::flag().size(14.0, 14.0).foreground(Accent)),
+                            .then(|| flag().size(14.0, 14.0).foreground(Accent)),
                     ))
                     .spacing(6.0),
                     text(message.subject).body().foreground(Foreground),
@@ -625,21 +628,23 @@ fn album_row(album: Album, selection: &Binding<Option<Album>>) -> impl Fn() -> L
     let selection = selection.clone();
 
     move || {
-        let tap_selection = selection.clone();
         ListItem::new(
             hstack((
-                mdi::album().size(20.0, 20.0).foreground(Accent),
+                album_icon().size(20.0, 20.0).foreground(Accent),
                 text(album.title()).body().foreground(Foreground),
                 spacer(),
                 text!("{count}").caption().muted(),
             ))
             .spacing(10.0)
             .padding_with(EdgeInsets::symmetric(10.0, 12.0))
-            .on_tap(move || tap_selection.set(Some(album))),
+            .on_tap(move |State(selection): State<Binding<Option<Album>>>| {
+                selection.set(Some(album));
+            })
+            .state(&selection),
         )
         // The platform draws its own selection chrome; the row only derives
         // its flag from the state that owns selection.
-        .selected(selection.clone().map(move |current| current == Some(album)))
+        .selected(selection.clone().equal_to(Some(album)))
     }
 }
 
@@ -691,9 +696,9 @@ fn gallery_root() -> NavigationView {
         .large_title()
 }
 
-fn photo_tile(index: usize) -> AnyView {
-    let tile = NavigationLink::value(
-        Label::new(format!("Photo {index}"), move || {
+fn photo_tile(index: usize) -> impl View {
+    NavigationLink::value(
+        Label::new(text!("Photo {index}"), move || {
             zstack((
                 photo_color(index).size(160.0, 120.0),
                 text!("Photo {index}").sub_headline().foreground(Foreground),
@@ -701,10 +706,8 @@ fn photo_tile(index: usize) -> AnyView {
             .clip(RoundedRectangle::new(0.1))
         }),
         PhotoRoute(index),
-    );
-
-    tile.navigation_transition_source(photo_transition(index))
-        .anyview()
+    )
+    .navigation_transition_source(photo_transition(index))
 }
 
 fn photo_page(index: usize) -> NavigationView {
@@ -721,7 +724,7 @@ fn photo_page(index: usize) -> NavigationView {
     ))
     .spacing(12.0)
     .padding_with(EdgeInsets::all(16.0))
-    .title(format!("Photo {index}"))
+    .title(text!("Photo {index}"))
     .inline_title()
     // The declaration lives on the destination, because the pair it names does.
     .transition(navigation_transition::zoom(photo_transition(index)))

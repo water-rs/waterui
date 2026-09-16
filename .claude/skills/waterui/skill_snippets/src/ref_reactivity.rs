@@ -715,7 +715,18 @@ pub fn reactivity_block_19() {
     }
     {
         let view = Divider;
-        view.on_change(&query, |new_value| debug!(?new_value));
+        view.on_change(&query, |new_value: Str| debug!(?new_value));
+    }
+    let history: Binding<Vec<Str>> = Binding::container(Vec::new()); // [glue: bound by the prose]
+    {
+        let view = Divider;
+        view.on_change(
+            &query,
+            |new_value: Str, State(history): State<Binding<Vec<Str>>>| {
+                history.append(new_value);
+            },
+        )
+        .state(&history);
     }
 }
 

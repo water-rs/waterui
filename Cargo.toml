@@ -474,7 +474,6 @@ lto = true
 codegen-units = 1
 opt-level = "z"    # Optimize for size
 strip = true       # Strip symbols
-panic = "abort"    # Smaller panic handling
 
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.

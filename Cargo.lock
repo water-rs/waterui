@@ -10178,7 +10178,6 @@ dependencies = [
  "serde",
  "serde_json",
  "suiteki",
- "tiny_http",
  "tracing",
  "waterui-core",
  "waterui-graphics",
@@ -10643,7 +10642,9 @@ dependencies = [
  "waterkit-location",
  "waterui",
  "waterui-core",
+ "waterui-map-gpu",
  "waterui-testing",
+ "waterui-url",
 ]
 
 [[package]]

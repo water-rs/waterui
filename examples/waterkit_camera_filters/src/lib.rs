@@ -137,17 +137,16 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
         text!("{permission_status}").body(),
         text!("{camera_inventory}").footnote().muted(),
         button("Sync with Waterkit Camera")
-            .action_async(
-                |State(status): State<Binding<Str>>,
-                 State(permission): State<Binding<Str>>,
-                 State(inventory): State<Binding<Str>>| async move {
-                    sync_waterkit_camera(status, permission, inventory).await;
-                },
-            )
+            .action_async(|State(state): State<CameraLabState>| async move {
+                sync_waterkit_camera(
+                    state.waterkit_status,
+                    state.permission_status,
+                    state.camera_inventory,
+                )
+                .await;
+            })
             .bordered_prominent()
-            .state(&state.waterkit_status)
-            .state(&state.permission_status)
-            .state(&state.camera_inventory),
+            .state(&state),
     ))
     .spacing(8.0);
 
@@ -213,7 +212,7 @@ impl SyntheticCameraPreviewRenderer {
 }
 
 impl GpuView for SyntheticCameraPreviewRenderer {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui::Environment) {}
+    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut Environment) {}
 
     fn render(&mut self, frame: &mut GpuFrame) {
         let (brightness, saturation, contrast, tint, vignette) =
@@ -488,7 +487,7 @@ impl CameraFilterRenderer {
 }
 
 impl GpuView for CameraFilterRenderer {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui::Environment) {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut Environment) {
         self.ensure_pipeline(ctx);
         self.start_camera_open(ctx.device, ctx.queue, false);
     }

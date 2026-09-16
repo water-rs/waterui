@@ -11,6 +11,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::{Binding, binding};
 use waterui::window::Window;
+use waterui::window::WindowState::Normal;
 
 const BLUE: Srgb = Srgb::from_hex("#2196F3");
 const ORANGE_BG: Srgb = Srgb::from_hex("#FFF3E0");
@@ -321,12 +322,12 @@ pub fn app(env: Environment) -> App {
     let content_toolbar_status = toolbar_status.clone();
 
     App::new_with_windows(
-        [Window::new(
-            "WaterUI Menu Examples",
-            binding(waterui::window::WindowState::Normal),
-            move || scene(content_toolbar_status.clone()),
-        )
-        .toolbar(window_toolbar(&toolbar_status))],
+        [
+            Window::new("WaterUI Menu Examples", binding(Normal), move || {
+                scene(content_toolbar_status.clone())
+            })
+            .toolbar(window_toolbar(&toolbar_status)),
+        ],
         env,
     )
 }
