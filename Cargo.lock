@@ -10178,7 +10178,6 @@ dependencies = [
  "serde",
  "serde_json",
  "suiteki",
- "tiny_http",
  "tracing",
  "waterui-core",
  "waterui-graphics",
