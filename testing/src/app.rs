@@ -1213,6 +1213,17 @@ impl SemanticApp {
     /// wall-clock cap elapses. This is what lets a `Photo` fetch or an
     /// `avatar` image that completes after real I/O reach the tree.
     ///
+    /// Pacing holds the virtual clock still. The scene is quiescent at that
+    /// point, so nothing it schedules needs a frame, and moving the clock
+    /// while a test waits on the outside world would run gestures, timers and
+    /// playback ahead of the assertions that follow: a long press held while
+    /// an image decodes would activate, play, and finish inside one settle.
+    /// Once a paced pump changes the tree, settling returns to advancing
+    /// frames so whatever the change scheduled can run — unless the task count
+    /// held while the tree changed, which is a live producer (video playback,
+    /// a stream) rather than a fetch that publishes once and finishes; settling
+    /// returns then, since such work outlives the settle by design.
+    ///
     /// The virtual cap exists solely for perpetual animations (an
     /// indeterminate progress spinner keeps the animation controller active
     /// forever); every finite transition ends well before it. Each pump
@@ -1242,13 +1253,42 @@ impl SemanticApp {
                 }
                 continue;
             }
-            if waterui::task::outstanding_local_tasks() == 0 || Instant::now() >= wall_deadline {
-                return;
+            // Quiescent but a local task may be parked on a wall-clock wake:
+            // give it real time, then run what it re-queued at the same
+            // virtual instant.
+            let mut outstanding = waterui::task::outstanding_local_tasks();
+            loop {
+                if outstanding == 0 || Instant::now() >= wall_deadline {
+                    return;
+                }
+                std::thread::sleep(crate::driver::VIRTUAL_FRAME);
+                let rebuilt = self.pump_held();
+                let now_outstanding = waterui::task::outstanding_local_tasks();
+                if rebuilt && now_outstanding >= outstanding {
+                    // The tree changed while the task count held: the work is
+                    // a live producer — playback, a stream — not a parked fetch
+                    // waiting to publish once and finish. Its frames keep
+                    // coming for as long as it lives, so settling on it would
+                    // wait out the whole playback.
+                    return;
+                }
+                outstanding = now_outstanding;
+                if !self.driver.is_settled() {
+                    break;
+                }
             }
-            // Quiescent but a local task is parked on a wall-clock wake: give
-            // it real time, then let the next pump run what it re-queued.
-            std::thread::sleep(crate::driver::VIRTUAL_FRAME);
         }
+    }
+
+    /// Pumps one frame without advancing the virtual clock, returning whether
+    /// the tree changed.
+    fn pump_held(&mut self) -> bool {
+        let outcome = self
+            .driver
+            .pump_step(Duration::ZERO, &self.content, &self.env);
+        let rebuilt = outcome.rebuilt;
+        let _ = self.apply_pump_result(outcome);
+        rebuilt
     }
 
     /// Whether the runtime is quiescent: no queued input, no spawned work
