@@ -230,7 +230,7 @@ waterui-dew = { git = "https://github.com/water-rs/dew", rev = "b64f6759a3ebe7ac
 waterui = { version = "0.4.1", path = "." }
 waterui-icons-codegen = { version = "0.1.1", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
-hydrolysis-m3 = "0.2.0"
+hydrolysis-m3 = "0.2.1"
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.3.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
