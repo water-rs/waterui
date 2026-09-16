@@ -36,12 +36,14 @@ pub struct FixedContainer {
 The core logic is encapsulated in the `Layout` trait, which describes the behavior of any layout container:
 
 ```rust
-pub trait Layout: Debug {
-    /// Determines the size of the container based on the parent's proposal and children's responses.
-    fn size_that_fits(&self, proposal: ProposalSize, children: &mut [&mut dyn SubView]) -> Size;
-    
-    /// Calculates the position (Rect) for each child within the final bounds.
-    fn place(&self, bounds: Rect, children: &mut [&mut dyn SubView]) -> Vec<Rect>;
+pub trait Layout: Debug + Any {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size;
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement>;
 }
 ```
 

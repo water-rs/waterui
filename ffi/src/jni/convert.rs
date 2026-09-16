@@ -181,6 +181,22 @@ impl ToJavaStruct for WuiMetadata<*mut WuiEnv> {
     }
 }
 
+impl ToJavaStruct for WuiMetadata<i32> {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataLayoutPriorityStruct"
+            ))
+            .expect("MetadataLayoutPriorityStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JI)V"),
+            &[JValue::Long(self.content as jlong), JValue::Int(self.value)],
+        )
+        .expect("Failed to create MetadataLayoutPriorityStruct")
+    }
+}
+
 /// `MetadataNavigationTransitionStruct(contentPtr: Long, id: Int)`
 impl ToJavaStruct for WuiMetadata<crate::id::WuiId> {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {

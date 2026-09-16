@@ -6,7 +6,7 @@ use waterui_core::{AnyView, View, id::Identifiable, view::TupleViews, views::For
 
 use crate::{
     Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    ViewDimensions,
+    SubviewPlacement, ViewDimensions,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
@@ -134,18 +134,22 @@ impl Layout for ZStackLayout {
         Size::new(final_width, final_height)
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
 
-        // Re-measure children with the bounds as proposal
-        let child_proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-
+        // Re-measure children under the same proposal the stack itself was
+        // measured with — never a bounds-derived one.
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                dimensions: child.measure(child_proposal),
+                dimensions: child.measure(proposal),
             })
             .collect();
 
@@ -173,7 +177,7 @@ impl Layout for ZStackLayout {
         };
 
         // Place each child according to alignment
-        let mut rects = Vec::with_capacity(children.len());
+        let mut placements = Vec::with_capacity(children.len());
 
         for measurement in &measurements {
             // Handle infinite dimensions (axis-expanding views)
@@ -201,10 +205,13 @@ impl Layout for ZStackLayout {
                     .vertical(vertical)
                     .clamp(0.0, child_size.height);
 
-            rects.push(Rect::new(Point::new(x, y), child_size));
+            placements.push(SubviewPlacement::new(
+                Rect::new(Point::new(x, y), child_size),
+                proposal,
+            ));
         }
 
-        rects
+        placements
     }
 
     fn explicit_horizontal(
@@ -403,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn test_zstack_placement_center() {
+    fn test_zstack_placement_center_bounded_proposal() {
         let layout = ZStackLayout {
             alignment: Alignment::Center,
         };
@@ -418,14 +425,15 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
         // Child 1: centered in 100x100
-        assert!((rects[0].x() - 30.0).abs() < f32::EPSILON); // (100 - 40) / 2
-        assert!((rects[0].y() - 40.0).abs() < f32::EPSILON); // (100 - 20) / 2
+        assert!((placements[0].frame.x() - 30.0).abs() < f32::EPSILON); // (100 - 40) / 2
+        assert!((placements[0].frame.y() - 40.0).abs() < f32::EPSILON); // (100 - 20) / 2
 
         // Child 2: centered in 100x100
-        assert!((rects[1].x() - 20.0).abs() < f32::EPSILON); // (100 - 60) / 2
-        assert!((rects[1].y() - 30.0).abs() < f32::EPSILON); // (100 - 40) / 2
+        assert!((placements[1].frame.x() - 20.0).abs() < f32::EPSILON); // (100 - 60) / 2
+        assert!((placements[1].frame.y() - 30.0).abs() < f32::EPSILON); // (100 - 40) / 2
     }
 }

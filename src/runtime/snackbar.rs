@@ -55,7 +55,9 @@ use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{Alignment, hstack};
-use waterui_layout::{AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
+use waterui_layout::{
+    AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
+};
 use waterui_text::{font::Font, text::text};
 
 use crate::AnyView;
@@ -923,8 +925,18 @@ impl Layout for HugWidth {
         Size::new(child.width.clamp(self.min, self.max), child.height)
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
-        children.iter().map(|_| bounds).collect()
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
+        // The row fills the resolved bar width; height keeps the incoming proposal.
+        let child_proposal = ProposalSize::new(Some(bounds.width()), proposal.height);
+        children
+            .iter()
+            .map(|_| SubviewPlacement::new(bounds, child_proposal))
+            .collect()
     }
 
     fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {

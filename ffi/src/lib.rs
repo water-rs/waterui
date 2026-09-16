@@ -806,6 +806,21 @@ pub type WuiMetadataEnv = WuiMetadata<*mut WuiEnv>;
 // Generate waterui_metadata_env_id() and waterui_force_as_metadata_env()
 ffi_metadata!(waterui::Environment, WuiMetadataEnv, env);
 
+use waterui_core::layout::LayoutPriority;
+
+impl IntoFFI for LayoutPriority {
+    type FFI = i32;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.get()
+    }
+}
+
+/// Layout priority metadata paired with the view whose allocation it controls.
+pub type WuiMetadataLayoutPriority = WuiMetadata<i32>;
+
+ffi_metadata!(LayoutPriority, WuiMetadataLayoutPriority, layout_priority);
+
 // ========== Navigation transition metadata FFI ==========
 
 use crate::id::WuiId;

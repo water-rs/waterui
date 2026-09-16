@@ -3637,7 +3637,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=30fc7c97dcd6d8b863824403c0744049ec7bff05#30fc7c97dcd6d8b863824403c0744049ec7bff05"
+source = "git+https://github.com/water-rs/hydrolysis?rev=b70a1cf3f9dbe65de24321ab20b530cff6a91585#b70a1cf3f9dbe65de24321ab20b530cff6a91585"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3682,7 +3682,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=c4cd817b4b5345dd8600aa4d7ab0b0ca33ed4238#c4cd817b4b5345dd8600aa4d7ab0b0ca33ed4238"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=3f1a28728575030dc9949e7f95275a2d9b18c145#3f1a28728575030dc9949e7f95275a2d9b18c145"
 dependencies = [
  "material-color-utils",
  "num-traits",
@@ -10208,8 +10208,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57b74cdbb85869020a967b8dbb8aa830568bfd7c96a661d96a91aa8a15b2c953"
+source = "git+https://github.com/water-rs/chart?rev=f416bd788c7de1df7a9f1c41d5d7aaaaab0c71a7#f416bd788c7de1df7a9f1c41d5d7aaaaab0c71a7"
 dependencies = [
  "bytemuck",
  "nami",

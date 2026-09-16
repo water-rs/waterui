@@ -24,7 +24,7 @@ use waterui_core::View;
 
 use crate::{
     HorizontalAlignment, Layout, PlacedSubview, ProposalSize, Rect, Size, StretchAxis, SubView,
-    VerticalAlignment, container::FixedContainer,
+    SubviewPlacement, VerticalAlignment, container::FixedContainer,
 };
 
 /// Layout used by [`BackgroundView`] to render a background behind content.
@@ -53,7 +53,12 @@ impl Layout for BackgroundLayout {
             .size
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         assert!(
             children.len() >= 2,
             "BackgroundLayout requires at least 2 children: background and content"
@@ -61,16 +66,18 @@ impl Layout for BackgroundLayout {
 
         let mut placements = Vec::with_capacity(children.len());
 
-        // Background (index 0) fills the entire bounds
-        placements.push(Rect::new(
-            bounds.origin(),
-            Size::new(bounds.width(), bounds.height()),
+        // Background (index 0) fills the entire bounds; it is offered the
+        // resolved finite bounds, not the incoming proposal.
+        placements.push(SubviewPlacement::new(
+            Rect::new(bounds.origin(), Size::new(bounds.width(), bounds.height())),
+            ProposalSize::new(bounds.width(), bounds.height()),
         ));
 
-        // Content (index 1) also fills the bounds
-        placements.push(Rect::new(
-            bounds.origin(),
-            Size::new(bounds.width(), bounds.height()),
+        // Content (index 1) also fills the bounds but keeps the proposal the
+        // content was measured with.
+        placements.push(SubviewPlacement::new(
+            Rect::new(bounds.origin(), Size::new(bounds.width(), bounds.height())),
+            proposal,
         ));
 
         placements
@@ -203,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn test_background_fills_bounds() {
+    fn test_background_fills_bounds_bounded_proposal() {
         let layout = BackgroundLayout;
 
         let mut bg = MockSubView {
@@ -215,13 +222,14 @@ mod tests {
 
         let children: Vec<&dyn SubView> = vec![&mut bg, &mut content];
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
         // Both fill the bounds
-        assert_eq!(rects[0].width(), 100.0);
-        assert_eq!(rects[0].height(), 100.0);
-        assert_eq!(rects[1].width(), 100.0);
-        assert_eq!(rects[1].height(), 100.0);
+        assert_eq!(placements[0].frame.width(), 100.0);
+        assert_eq!(placements[0].frame.height(), 100.0);
+        assert_eq!(placements[1].frame.width(), 100.0);
+        assert_eq!(placements[1].frame.height(), 100.0);
     }
 
     #[test]

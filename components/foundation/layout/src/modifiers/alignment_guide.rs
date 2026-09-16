@@ -11,7 +11,7 @@ use waterui_core::View;
 
 use crate::{
     HorizontalAlignment, Layout, PlacedSubview, ProposalSize, Rect, Size, StretchAxis, SubView,
-    VerticalAlignment, ViewDimensions, container::FixedContainer,
+    SubviewPlacement, VerticalAlignment, ViewDimensions, container::FixedContainer,
 };
 
 #[derive(Clone)]
@@ -40,12 +40,17 @@ where
         children[0].measure(proposal).size
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         assert!(
             children.len() == 1,
             "HorizontalAlignmentGuideLayout expects exactly one child"
         );
-        vec![bounds]
+        vec![SubviewPlacement::new(bounds, proposal)]
     }
 
     fn explicit_horizontal(
@@ -151,12 +156,17 @@ where
         children[0].measure(proposal).size
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         assert!(
             children.len() == 1,
             "VerticalAlignmentGuideLayout expects exactly one child"
         );
-        vec![bounds]
+        vec![SubviewPlacement::new(bounds, proposal)]
     }
 
     fn explicit_vertical(
@@ -315,7 +325,10 @@ mod tests {
             size: Size::new(40.0, 10.0),
         };
         let bounds = Rect::new(Point::zero(), Size::new(40.0, 10.0));
-        let placed = [PlacedSubview::new(&child, bounds)];
+        let placed = [PlacedSubview::new(
+            &child,
+            SubviewPlacement::new(bounds, ProposalSize::UNSPECIFIED),
+        )];
         let guide = layout
             .explicit_horizontal(HorizontalAlignment::Leading, bounds, &placed)
             .expect("horizontal guide override should be present");
@@ -349,7 +362,10 @@ mod tests {
             size: Size::new(40.0, 20.0),
         };
         let bounds = Rect::new(Point::zero(), Size::new(40.0, 20.0));
-        let placed = [PlacedSubview::new(&child, bounds)];
+        let placed = [PlacedSubview::new(
+            &child,
+            SubviewPlacement::new(bounds, ProposalSize::UNSPECIFIED),
+        )];
         let guide = layout
             .explicit_vertical(VerticalAlignment::Top, bounds, &placed)
             .expect("vertical guide override should be present");
