@@ -10266,6 +10266,7 @@ dependencies = [
  "nami",
  "num-traits",
  "serde",
+ "smallvec",
  "suiteki",
  "waterui-macros",
 ]
