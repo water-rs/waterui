@@ -802,7 +802,6 @@ fn new_client(
 pub struct CefPageHandle {
     browser: Browser,
     host: BrowserHost,
-    request_context: RequestContext,
     cdp: CefCdpSession,
     state: Rc<PageState>,
 }
@@ -883,7 +882,6 @@ impl CefPageHandle {
         let handle = Self {
             browser,
             host,
-            request_context,
             cdp,
             state,
         };
@@ -1163,8 +1161,11 @@ impl CefPageHandle {
     }
 
     /// Returns the request context this page's browser runs on.
-    pub(crate) const fn request_context(&self) -> &RequestContext {
-        &self.request_context
+    #[cfg(feature = "webview")]
+    pub(crate) fn request_context(&self) -> RequestContext {
+        self.host
+            .request_context()
+            .expect("CEF browser host must expose its request context")
     }
 
     pub(crate) fn navigate(&self, url: &Url) {
