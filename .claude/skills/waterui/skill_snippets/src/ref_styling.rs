@@ -388,6 +388,8 @@ pub fn styling_floating_prose() {
 // ---------------------------------------------------------------------------
 // styling.md § "## Icons" — rust block 12/15
 // ---------------------------------------------------------------------------
+// styling.md writes `mdi::`/`lucide::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn styling_block_12() {
     use waterui::prelude::theme_color::Accent;
 
