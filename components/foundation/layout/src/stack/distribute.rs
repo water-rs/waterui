@@ -14,7 +14,9 @@
 //!   lowest-priority children first, and a band only starts compressing once every
 //!   band below it has been squeezed to its minimums.
 
+#[cfg(test)]
 use alloc::vec::Vec;
+use smallvec::SmallVec;
 
 use super::{Axis, stack_stretch_axis};
 use crate::{HorizontalAlignment, ProposalSize, Size, SubView, VerticalAlignment, ViewDimensions};
@@ -100,14 +102,14 @@ pub(super) fn measure_stack(
     proposal: ProposalSize,
     spacing: f32,
     children: &[&dyn SubView],
-) -> Vec<ChildMeasurement> {
+) -> SmallVec<[ChildMeasurement; 4]> {
     let main = main_proposal(axis, proposal);
     let probe = if main == Some(0.0) || main == Some(f32::INFINITY) {
         proposal
     } else {
         with_main(axis, proposal, None)
     };
-    let mut measured: Vec<ChildMeasurement> = children
+    let mut measured: SmallVec<[ChildMeasurement; 4]> = children
         .iter()
         .map(|child| {
             let physical = stack_stretch_axis(axis, &[child.stretch_axis()]);
@@ -133,7 +135,7 @@ pub(super) fn measure_stack(
         return measured;
     };
     let available = (main - stack_spacing(spacing, children.len())).max(0.0);
-    let extents: Vec<Extent> = children
+    let extents: SmallVec<[Extent; 4]> = children
         .iter()
         .zip(&measured)
         .map(|(child, measurement)| {
@@ -194,21 +196,21 @@ pub struct Extent {
 /// Returns the extent each child should occupy. When even every minimum together
 /// exceeds `available` the result overflows rather than collapsing children to
 /// nothing: an unreadable row is not a better answer than a clipped one.
-pub fn compress_to_fit(extents: &[Extent], available: f32) -> Vec<f32> {
-    let mut resolved: Vec<f32> = extents.iter().map(|extent| extent.ideal).collect();
+pub fn compress_to_fit(extents: &[Extent], available: f32) -> SmallVec<[f32; 4]> {
+    let mut resolved: SmallVec<[f32; 4]> = extents.iter().map(|extent| extent.ideal).collect();
     let total: f64 = resolved.iter().copied().map(f64::from).sum();
     if !exceeds(total, available, resolved.len()) {
         return resolved;
     }
 
     // Allocate higher priorities first, reserving every lower band's measured minimum.
-    let mut priorities: Vec<i32> = extents.iter().map(|extent| extent.priority).collect();
+    let mut priorities: SmallVec<[i32; 4]> = extents.iter().map(|extent| extent.priority).collect();
     priorities.sort_unstable_by(|left, right| right.cmp(left));
     priorities.dedup();
 
     let mut allocated = 0.0;
     for priority in priorities {
-        let band: Vec<usize> = extents
+        let band: SmallVec<[usize; 4]> = extents
             .iter()
             .enumerate()
             .filter(|(_, extent)| extent.priority == priority)
@@ -219,7 +221,8 @@ pub fn compress_to_fit(extents: &[Extent], available: f32) -> Vec<f32> {
             .filter(|extent| extent.priority < priority)
             .map(|extent| f64::from(extent.min))
             .sum();
-        let band_extents: Vec<Extent> = band.iter().map(|&index| extents[index]).collect();
+        let band_extents: SmallVec<[Extent; 4]> =
+            band.iter().map(|&index| extents[index]).collect();
         let budget = f64::from(available) - allocated - reserved;
         for (&index, extent) in band.iter().zip(water_fill(&band_extents, budget)) {
             resolved[index] = extent;
@@ -237,14 +240,14 @@ pub fn compress_to_fit(extents: &[Extent], available: f32) -> Vec<f32> {
 ///
 /// Each child is clamped into its own `[min, ideal]`, so a child already at its
 /// floor stops contributing and the rest absorb the remainder.
-fn water_fill(extents: &[Extent], target: f64) -> Vec<f32> {
+fn water_fill(extents: &[Extent], target: f64) -> SmallVec<[f32; 4]> {
     use num_traits::ToPrimitive;
 
     let mut total: f64 = extents.iter().map(|extent| f64::from(extent.min)).sum();
     if target <= total {
         return extents.iter().map(|extent| extent.min).collect();
     }
-    let mut breakpoints: Vec<(f64, f64)> = extents
+    let mut breakpoints: SmallVec<[(f64, f64); 8]> = extents
         .iter()
         .flat_map(|extent| {
             [
@@ -315,25 +318,31 @@ mod tests {
             extent(164.0, 72.0),
             extent(120.0, 120.0),
         ];
-        assert_eq!(compress_to_fit(&extents, 164.0), vec![120.0, 72.0, 120.0]);
+        assert_eq!(
+            compress_to_fit(&extents, 164.0).as_slice(),
+            &[120.0, 72.0, 120.0]
+        );
     }
 
     #[test]
     fn one_flexible_child_receives_the_exact_remainder() {
         let extents = [extent(50.0, 50.0), extent(280.0, 0.0), extent(80.0, 80.0)];
-        assert_eq!(compress_to_fit(&extents, 280.0), vec![50.0, 150.0, 80.0]);
+        assert_eq!(
+            compress_to_fit(&extents, 280.0).as_slice(),
+            &[50.0, 150.0, 80.0]
+        );
     }
 
     #[test]
     fn large_ideals_do_not_erase_a_small_budget() {
         let extents = [extent(1.0e30, 0.0), extent(1.0e30, 0.0)];
-        assert_eq!(compress_to_fit(&extents, 2.0), vec![1.0, 1.0]);
+        assert_eq!(compress_to_fit(&extents, 2.0).as_slice(), &[1.0, 1.0]);
     }
 
     #[test]
     fn everything_fits_is_a_no_op() {
         let extents = vec![extent(30.0, 10.0), extent(40.0, 10.0)];
-        assert_eq!(compress_to_fit(&extents, 100.0), vec![30.0, 40.0]);
+        assert_eq!(compress_to_fit(&extents, 100.0).as_slice(), &[30.0, 40.0]);
     }
 
     #[test]

@@ -34,6 +34,7 @@ use fmt::Debug;
 
 use alloc::{rc::Rc, vec::Vec};
 use nami::watcher::BoxWatcherGuard;
+use smallvec::SmallVec;
 
 /// The logical horizontal direction used by layout containers.
 ///
@@ -810,9 +811,10 @@ pub fn with_memoized_children<R>(
     children: &[&dyn SubView],
     pass: impl FnOnce(&[&dyn SubView]) -> R,
 ) -> R {
-    let memoized: Vec<MemoizedSubView<'_>> =
+    let memoized: SmallVec<[MemoizedSubView<'_>; 4]> =
         children.iter().copied().map(MemoizedSubView::new).collect();
-    let refs: Vec<&dyn SubView> = memoized.iter().map(|child| child as &dyn SubView).collect();
+    let refs: SmallVec<[&dyn SubView; 4]> =
+        memoized.iter().map(|child| child as &dyn SubView).collect();
     pass(&refs)
 }
 
@@ -968,7 +970,7 @@ fn measure_layout_memoized(
     }
     let bounds = Rect::from_size(size);
     let child_placements = layout.place(bounds, proposal, children);
-    let placed_subviews: Vec<PlacedSubview<'_>> = children
+    let placed_subviews: SmallVec<[PlacedSubview<'_>; 4]> = children
         .iter()
         .zip(child_placements.iter().copied())
         .map(|(view, placement)| PlacedSubview::new(*view, placement))
