@@ -2,14 +2,16 @@
 
 use waterui_core::View;
 use waterui_core::layout::StretchAxis;
-use waterui_graphics::color::Grey;
+use waterui_graphics::color::{BorderColor, Color};
 
 use crate::{frame::Frame, stack};
 
 /// A thin line that separates content.
 ///
 /// Divider adapts to its parent container: in `VStack` it spans horizontally,
-/// in `HStack` it spans vertically.
+/// in `HStack` it spans vertically. The line is drawn in the theme's separator
+/// colour — the [`BorderColor`] slot — so it follows the active theme and
+/// colour scheme on every backend.
 #[derive(Debug, Clone, Copy)]
 #[must_use]
 pub struct Divider;
@@ -19,9 +21,9 @@ impl View for Divider {
         let vertical_divider = matches!(env.get::<stack::Axis>(), Some(stack::Axis::Horizontal));
 
         if vertical_divider {
-            Frame::new(Grey).width(1.0)
+            Frame::new(Color::new(BorderColor)).width(1.0)
         } else {
-            Frame::new(Grey).height(1.0)
+            Frame::new(Color::new(BorderColor)).height(1.0)
         }
     }
 
