@@ -15,7 +15,6 @@ members = [
     "ffi",
     "ffi/generator",
     "macros",
-    "cli",
     "examples/*",
     ".claude/skills/waterui/skill_snippets",
     "backends/core",
@@ -25,8 +24,6 @@ exclude = [
   "derive",
   ".github",
   "*.png",
-  "kit",
-  "utils/nami",
 ]
 
 
@@ -45,8 +42,34 @@ description = "A modern UI framework for Rust"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
 
+# WaterUI framework release policy shared by the `water` CLI and release
+# automation. This table is the framework's own scaffold metadata: the
+# `framework_manifest.py` generator copies it verbatim into the published
+# `framework.json`, and `water create --channel dev`/`--waterui-path` derive
+# the same facts from the checked-out manifest directly.
 [package.metadata.waterui]
-minimum-cli-version = "0.1.4"
+# The lowest CLI version that may consume this framework revision.
+minimum-cli-version = "0.3.2"
+# The Android API floor the native runtime supports; the backend's Gradle
+# `minSdk` must agree.
+android-min-api-level = 26
+# Native backends are pinned to compatible commits. The CLI preserves these
+# revisions when scaffolding a project; neither backend rides a gitlink.
+apple-backend-url = "https://github.com/water-rs/apple-backend.git"
+# Proposal-aware placement requires the matching native layout contract.
+apple-backend-revision = "ae0e0e3272905af6d1043839a9d30e23b78aca6c"
+android-backend-url = "https://github.com/water-rs/android-backend.git"
+android-backend-revision = "b0755be91c1354c5a76c09aaf2daef08005c51c4"
+# Crates released from their own repositories whose requirement a scaffolded
+# project pins; the requirement string itself is read from
+# `[workspace.dependencies]` below.
+scaffold-packages = [
+    "hydrolysis",
+    "hydrolysis-m3",
+    "waterui-dew",
+    "waterui-gtk",
+    "waterui-winui",
+]
 
 [lib]
 path = "facade.rs"
@@ -169,18 +192,18 @@ waterui-icons-lucide = { version = "0.1.2", path = "components/icon/lucide" }
 waterui-icons-native = { version = "0.1.2", path = "components/icon/native" }
 waterui-locale = { version = "0.1.2", path = "utils/locale" }
 waterui-map = { version = "0.1.2", path = "components/data/map" }
-waterkit-location = { version = "0.1.0", path = "kit/device/location" }
-waterkit-screen = { version = "0.1.0", path = "kit/platform/screen" }
-waterkit-audio = { version = "0.1.0", path = "kit/multimedia/audio", default-features = false }
-waterkit-clipboard = { version = "0.1.0", path = "kit/platform/clipboard" }
-waterkit-permission = { version = "0.1.0", path = "kit/platform/permission" }
-waterkit-dialog = { version = "0.1.0", path = "kit/sharing/dialog" }
-waterkit-fs = { version = "0.1.0", path = "kit/platform/fs" }
-waterkit-haptic = { version = "0.1.0", path = "kit/device/haptic" }
-waterkit-camera = { version = "0.1.0", path = "kit/device/camera" }
-waterkit-codec = { version = "0.1.0", path = "kit/multimedia/codec", default-features = false }
-waterkit-video = { version = "0.1.0", path = "kit/multimedia/video", features = ["streaming"] }
-waterkit-build = { version = "0.1.0", path = "kit/utils/build" }
+waterkit-location = "0.1.2"
+waterkit-screen = "0.1.2"
+waterkit-audio = { version = "0.1.2", default-features = false }
+waterkit-clipboard = "0.1.2"
+waterkit-permission = "0.1.2"
+waterkit-dialog = "0.1.2"
+waterkit-fs = "0.1.2"
+waterkit-haptic = "0.1.2"
+waterkit-camera = "0.1.2"
+waterkit-codec = { version = "0.1.2", default-features = false }
+waterkit-video = { version = "0.1.2", features = ["streaming"] }
+waterkit-build = "0.1.2"
 waterui-backend-core = { version = "0.1.2", path = "backends/core", default-features = false }
 filtrate = "0.2.0"
 filtrate-core = "0.2.0"
@@ -191,22 +214,32 @@ waterui-chart = "0.2.0"
 waterui-map-gpu = "0.2.0"
 waterui-assets = { version = "0.1.2", path = "components/assets/runtime" }
 waterui-assets-core = { version = "0.1.0", path = "components/assets/core" }
-waterui-assets-planner = { version = "0.1.2", path = "components/assets/planner" }
+waterui-assets-planner = { version = "0.2.0", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.1.2", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.1.2", path = "components/devtools/inspector/protocol" }
 waterui-inspector-app = { version = "0.1.2", path = "components/devtools/inspector/app" }
-waterui-preview-protocol = { version = "0.1.1", path = "components/devtools/preview/protocol" }
+waterui-preview-protocol = { version = "0.1.2", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.1.0", path = "components/devtools/mcp/protocol" }
-waterui-gtk = "0.1.2"
+# The published 0.1.2 predates the `ShapeKind` fixed-radius variants and cannot
+# compile against this tree; gtk-backend's dev line carries them. The `version`
+# field is what `cargo publish` keeps, so the requirement moves back to a plain
+# registry pin once waterui-gtk 0.2.0 is released.
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "12283e7242596b45f9ffbcdddda3597e9bf23940", version = "0.2.0" }
+# `waterui-winui` is unpublished and Windows-only; the `water` CLI reads this
+# entry to scaffold a generated launcher crate pinned to the same revision.
+waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "18fa03852593221e2a7a80c2847cdb0e2d24716f", version = "0.1.0" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.4.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.2.1", default-features = false }
-waterui-dew = "0.2.1"
+# The registry 0.2.1 predates the proposal-preserving contract this tree
+# requires (water-rs/dew#7); `version` is what `cargo publish` keeps, so the
+# requirement moves back to a plain registry pin once a release carries it.
+waterui-dew = { git = "https://github.com/water-rs/dew", rev = "b64f6759a3ebe7ac621bad84be00fe431f978119", version = "0.2.1" }
 waterui = { version = "0.4.1", path = "." }
 waterui-icons-codegen = { version = "0.1.1", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
-hydrolysis-m3 = "0.2.0"
+hydrolysis-m3 = "0.2.1"
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.3.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
@@ -443,14 +476,11 @@ opt-level = "z"    # Optimize for size
 strip = true       # Strip symbols
 panic = "abort"    # Smaller panic handling
 
-# The profile that 'dist' will build with
-[profile.dist]
-inherits = "release"
-lto = "thin"
-
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
+# Axis placement participates in the same proposal-aware contract.
+waterui-chart = { git = "https://github.com/water-rs/chart", rev = "4877ca036d5fdaabc9930357223fcb2f86df6fbb" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
@@ -478,26 +508,17 @@ waterui-form = { path = "components/foundation/form" }
 waterui-icon = { path = "components/foundation/icon" }
 waterui-inspector-protocol = { path = "components/devtools/inspector/protocol" }
 waterui-locale = { path = "utils/locale" }
+waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }
-waterkit-clipboard = { path = "kit/platform/clipboard" }
-# The extracted image, visualizer and video-gpu crates depend on the registry
-# waterkit crates; resolve those to the kit copies for the same reason.
-waterkit-audio = { path = "kit/multimedia/audio" }
-waterkit-build = { path = "kit/utils/build" }
-waterkit-fs = { path = "kit/platform/fs" }
-waterkit-codec = { path = "kit/multimedia/codec" }
-waterkit-video = { path = "kit/multimedia/video" }
-waterkit-video-container = { path = "kit/multimedia/video/container" }
-waterkit-video-core = { path = "kit/multimedia/video/core" }
-waterkit-video-player = { path = "kit/multimedia/video/player" }
-waterkit-video-streaming = { path = "kit/multimedia/video/streaming" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
-# The registry `hydrolysis`/`hydrolysis-m3` match `ShapeKind` exhaustively, so
-# they stop compiling the moment this branch adds the fixed-radius variants;
-# the companion branches on water-rs resolve them. Drop these entries once the
-# releases carry the new kinds.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "e0cab32d0302877bbc9852cf504538fcf1534cb7" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d8872e5" }
+# The registry `hydrolysis`/`hydrolysis-m3` call
+# `draw_segmented_picker_state_layer` with the pre-position signature and lack
+# `segment_min_width` in `PickerMetrics`, so they stop compiling the moment
+# this branch changes the contract; the companion branches on water-rs
+# resolve them (water-rs/hydrolysis#37, water-rs/hydrolysis-m3#57). Drop
+# these entries once the releases carry both.
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "452aea58b2e63edc889f1c8a2f3f8f7f1a4c6bb0" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "14a35e3ef69ced36557a3c7ab11d52e0afb53ad5" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
 # storage and takes its address as the opaque class pointer.
@@ -517,6 +538,15 @@ block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae8
 # lockstep re-release of `waterui-graphics` and then `hydrolysis`, which
 # consumes graphics from crates.io and requires `vello ^0.9`.
 vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
+
+# `GpuView::setup` re-runs after the runtime rebuilds a lost device, but
+# waterui-map-gpu 0.2.0 kept its cached textures, Vello renderers, and any
+# in-flight raster job bound to the dead device, so the next render wrote a
+# purged buffer and wgpu-core panicked (waterui#860). This rev is
+# water-rs/map-gpu#16, which drops all device-bound state on re-setup and
+# discards raster results from a previous device generation. Drop this entry
+# once a release carrying that fix ships.
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "e2211b5" }
 
 # vello_hybrid 0.2.0 keeps only one physical layer in its image atlas off wasm,
 # and wgpu's GL backend then makes that texture `TEXTURE_2D` while the shader

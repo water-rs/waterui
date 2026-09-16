@@ -79,7 +79,7 @@ let stack = NavigationStack::with_path(
     NavigationView::new("Projects", text("Select a project")),
 )
 .destination::<Project, _>(|project| {
-    NavigationView::new("Project", text!("Project {}", project.0))
+    NavigationView::new("Project", text!("Project {id}", id = project.0))
 })
 .destination::<Preferences, _>(|_| {
     NavigationView::new("Preferences", text("Preferences"))
@@ -120,7 +120,7 @@ let stack = NavigationStack::with_path(
     NavigationView::new("Root", ()),
 )
 .destination::<RestoredProject, _>(|project| {
-    NavigationView::new("Project", text!("Project {}", project.0))
+    NavigationView::new("Project", text!("Project {id}", id = project.0))
 })
 .destination::<RestoredPreferences, _>(|_| NavigationView::new("Preferences", ()));
 

@@ -622,6 +622,11 @@ pub trait GpuView: 'static {
     /// `ctx.redraw_handle` can be cloned here for external redraw triggers.
     /// `env` provides access to the `WaterUI` environment (theme, fonts, etc.).
     ///
+    /// `setup` may run again on the same view after the GPU device was lost
+    /// and rebuilt. Everything created through a previous `ctx` is then dead:
+    /// re-create all device-bound resources and drop any cached ones so the
+    /// next frame renders on the fresh device. CPU-side state may be kept.
+    ///
     /// Async setup hook for GPU resources.
     #[expect(
         async_fn_in_trait,
@@ -1347,79 +1352,20 @@ impl GpuSurface {
         clippy::future_not_send,
         reason = "offscreen GpuView setup is UI-local and borrows the main-thread Environment"
     )]
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::arc_with_non_send_sync,
-            reason = "`SharedSceneRenderer` owns wgpu handles, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The overriding renderer has to be the same `Arc` type the shared context hands back, so it cannot become an `Rc` on this target alone."
-        )
-    )]
     pub async fn render_offscreen_frames(
-        mut self,
+        self,
         runtime: &GpuRuntime,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
         frame_count: NonZeroU32,
     ) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
         validate_rgba_readback_format(config.format)?;
-        let shared = runtime.context();
-        let width = config.size.width();
-        let height = config.size.height();
-        let msaa_samples = resolve_offscreen_msaa(
-            &shared.adapter,
-            config.format,
-            config.msaa_samples,
-            self.msaa_max_samples,
-        )?;
-        let device = shared.device.as_ref();
-        let queue = shared.queue.as_ref();
-        let overridden_renderer = config
-            .scene_engine
-            .map(|engine| Arc::new(SharedSceneRenderer::new(engine)));
-        let scene_renderer = overridden_renderer
-            .as_ref()
-            .unwrap_or_else(|| shared.scene_renderer());
-        let context = GpuContext {
-            adapter: &shared.adapter,
-            device,
-            queue,
-            surface_format: config.format,
-            shader_cache: shared.shader_cache.as_ref(),
-            scene_renderer,
-            msaa_samples,
-            redraw_handle: RedrawHandle::new(),
-        };
-        self.setup(&context, env).await;
-
-        let mut texture_usage =
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
-        if config.format == wgpu::TextureFormat::Rgba8Unorm {
-            texture_usage |= wgpu::TextureUsages::STORAGE_BINDING;
+        let mut session = self.start_offscreen(runtime, config, env).await?;
+        let delta = Duration::from_secs_f32(1.0 / 60.0);
+        for _ in 0..frame_count.get() {
+            session.render(delta);
         }
-        let texture = create_offscreen_texture(
-            device,
-            "waterui_offscreen_surface",
-            width,
-            height,
-            config.format,
-            texture_usage,
-        );
-        render_offscreen_frames_to_texture(&mut self, device, queue, &texture, config, frame_count);
-        let rgba8 = readback_texture(
-            runtime,
-            &texture,
-            width,
-            height,
-            4,
-            "waterui_offscreen_readback",
-            "waterui_offscreen_readback_encoder",
-        )
-        .await?;
-        Ok(OffscreenRenderOutput {
-            width,
-            height,
-            rgba8,
-        })
+        session.readback_rgba8().await
     }
 
     /// Renders this surface into an HDR offscreen texture and asynchronously reads back `RGBA16F` pixels.
@@ -1450,15 +1396,8 @@ impl GpuSurface {
         clippy::future_not_send,
         reason = "offscreen GpuView setup is UI-local and borrows the main-thread Environment"
     )]
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::arc_with_non_send_sync,
-            reason = "`SharedSceneRenderer` owns wgpu handles, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The overriding renderer has to be the same `Arc` type the shared context hands back, so it cannot become an `Rc` on this target alone."
-        )
-    )]
     pub async fn render_offscreen_hdr_frames(
-        mut self,
+        self,
         runtime: &GpuRuntime,
         config: OffscreenRenderConfig,
         env: &mut waterui_core::Environment,
@@ -1469,17 +1408,66 @@ impl GpuSurface {
                 config.format,
             ));
         }
+        let mut session = self.start_offscreen(runtime, config, env).await?;
+        let delta = Duration::from_secs_f32(1.0 / 60.0);
+        for _ in 0..frame_count.get() {
+            session.render(delta);
+        }
+        session.readback_rgba16f().await
+    }
+
+    /// Begins a persistent offscreen rendering session for this surface.
+    ///
+    /// Unlike [`render_offscreen`](Self::render_offscreen), the session keeps
+    /// the view's render state alive across frames — the intended host for
+    /// animated `GpuView`s. A backend renders a frame whenever
+    /// [`OffscreenSession::needs_redraw`] reports the view asked for one
+    /// (in-render `GpuFrame::request_redraw`, or a cloned
+    /// [`OffscreenSession::redraw_handle`] signalled from elsewhere), then
+    /// reads the pixels back with [`OffscreenSession::readback_rgba8`] or
+    /// [`OffscreenSession::readback_rgba16f`].
+    ///
+    /// # Errors
+    ///
+    /// Returns format validation, MSAA validation, or setup errors. The
+    /// texture format must be `Rgba8Unorm`, `Rgba8UnormSrgb`, or
+    /// `Rgba16Float` — the readback methods further restrict to their own
+    /// component sizes.
+    #[expect(
+        clippy::future_not_send,
+        reason = "offscreen GpuView setup is UI-local and borrows the main-thread Environment"
+    )]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "`SharedSceneRenderer` owns wgpu handles, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The overriding renderer has to be the same `Arc` type the shared context hands back, so it cannot become an `Rc` on this target alone."
+        )
+    )]
+    pub async fn start_offscreen(
+        mut self,
+        runtime: &GpuRuntime,
+        config: OffscreenRenderConfig,
+        env: &mut waterui_core::Environment,
+    ) -> Result<OffscreenSession, OffscreenRenderError> {
+        if !matches!(
+            config.format,
+            wgpu::TextureFormat::Rgba8Unorm
+                | wgpu::TextureFormat::Rgba8UnormSrgb
+                | wgpu::TextureFormat::Rgba16Float
+        ) {
+            return Err(OffscreenRenderError::UnsupportedReadbackFormat(
+                config.format,
+            ));
+        }
         let shared = runtime.context();
-        let width = config.size.width();
-        let height = config.size.height();
         let msaa_samples = resolve_offscreen_msaa(
             &shared.adapter,
             config.format,
             config.msaa_samples,
             self.msaa_max_samples,
         )?;
-        let device = shared.device.as_ref();
-        let queue = shared.queue.as_ref();
+        let redraw = RedrawHandle::new();
         let overridden_renderer = config
             .scene_engine
             .map(|engine| Arc::new(SharedSceneRenderer::new(engine)));
@@ -1488,39 +1476,37 @@ impl GpuSurface {
             .unwrap_or_else(|| shared.scene_renderer());
         let context = GpuContext {
             adapter: &shared.adapter,
-            device,
-            queue,
+            device: shared.device.as_ref(),
+            queue: shared.queue.as_ref(),
             surface_format: config.format,
             shader_cache: shared.shader_cache.as_ref(),
             scene_renderer,
             msaa_samples,
-            redraw_handle: RedrawHandle::new(),
+            redraw_handle: redraw.clone(),
         };
         self.setup(&context, env).await;
 
+        let mut texture_usage =
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        if config.format == wgpu::TextureFormat::Rgba8Unorm {
+            texture_usage |= wgpu::TextureUsages::STORAGE_BINDING;
+        }
         let texture = create_offscreen_texture(
-            device,
-            "waterui_offscreen_surface_hdr",
-            width,
-            height,
+            shared.device.as_ref(),
+            "waterui_offscreen_surface",
+            config.size.width(),
+            config.size.height(),
             config.format,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            texture_usage,
         );
-        render_offscreen_frames_to_texture(&mut self, device, queue, &texture, config, frame_count);
-        let rgba16f = readback_texture(
-            runtime,
-            &texture,
-            width,
-            height,
-            8,
-            "waterui_offscreen_readback_hdr",
-            "waterui_offscreen_readback_hdr_encoder",
-        )
-        .await?;
-        Ok(OffscreenRenderOutputHdr {
-            width,
-            height,
-            rgba16f,
+        Ok(OffscreenSession {
+            surface: self,
+            runtime: runtime.clone(),
+            texture,
+            config,
+            redraw,
+            pending: true,
+            elapsed: Duration::ZERO,
         })
     }
 
@@ -1665,41 +1651,174 @@ fn create_offscreen_texture(
     })
 }
 
-fn render_offscreen_frames_to_texture(
-    surface: &mut GpuSurface,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
+/// A live offscreen rendering session for one [`GpuSurface`].
+///
+/// Created by [`GpuSurface::start_offscreen`]. The session owns the render
+/// target and keeps the view's `setup` state alive, so a host renders as many
+/// frames as the view asks for instead of re-creating everything per frame.
+///
+/// Drive it from the host's frame loop: when [`Self::needs_redraw`] is true,
+/// call [`Self::render`] with the frame's wall-clock delta, then
+/// [`Self::readback_rgba8`] (or [`Self::readback_rgba16f`]) for the pixels.
+/// `needs_redraw` starts true so the first frame always renders.
+pub struct OffscreenSession {
+    surface: GpuSurface,
+    runtime: GpuRuntime,
+    texture: wgpu::Texture,
     config: OffscreenRenderConfig,
-    frame_count: NonZeroU32,
-) {
-    let width = config.size.width();
-    let height = config.size.height();
-    let frame_delta = Duration::from_secs_f32(1.0 / 60.0);
-    assert!(
-        config.scale.is_finite() && config.scale > 0.0,
-        "offscreen render scale must be a positive, finite device-pixel ratio, got {}",
-        config.scale
-    );
-    let mut frame = GpuFrame {
-        device,
-        queue,
-        texture,
-        view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-        format: config.format,
-        width,
-        height,
-        scale: config.scale,
-        pointer: config.pointer,
-        gesture: config.gesture,
-        elapsed: frame_delta,
-        delta: frame_delta,
-        redraw_requested: false,
-    };
-    for frame_index in 0..frame_count.get() {
-        frame.elapsed = frame_delta.saturating_mul(frame_index + 1);
-        frame.delta = frame_delta;
-        surface.render(&mut frame);
+    /// The handle handed to the view's `GpuContext` during `setup` — clones
+    /// of it (or a `set_waker` target) are how external events request frames.
+    redraw: RedrawHandle,
+    /// Whether the last rendered frame requested another.
+    pending: bool,
+    /// Animation clock fed to `GpuFrame::elapsed`.
+    elapsed: Duration,
+}
+
+impl fmt::Debug for OffscreenSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OffscreenSession").finish_non_exhaustive()
+    }
+}
+
+impl OffscreenSession {
+    /// The redraw handle the view received during `setup`.
+    ///
+    /// Clones share the session's dirty flag; install a waker on it with
+    /// `set_waker` to be notified the moment the view asks for a frame.
+    #[must_use]
+    pub fn redraw_handle(&self) -> RedrawHandle {
+        self.redraw.clone()
+    }
+
+    /// Whether the view wants another frame rendered.
+    ///
+    /// True before the first render, after a render that called
+    /// `GpuFrame::request_redraw`, and whenever a [`RedrawHandle`] clone
+    /// signalled between frames.
+    #[must_use]
+    pub fn needs_redraw(&self) -> bool {
+        self.pending || self.redraw.is_dirty()
+    }
+
+    /// The session's render configuration.
+    #[must_use]
+    pub const fn config(&self) -> &OffscreenRenderConfig {
+        &self.config
+    }
+
+    /// Renders one frame into the session texture.
+    ///
+    /// `delta` is the time since the previous frame, reported to the view as
+    /// `GpuFrame::delta`; `elapsed` accumulates across calls. An external
+    /// redraw request pending before this call is consumed — one arriving
+    /// mid-render sets the flag again and is caught by the next
+    /// [`Self::needs_redraw`] poll.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the session's render scale is not a positive, finite number.
+    pub fn render(&mut self, delta: Duration) {
+        assert!(
+            self.config.scale.is_finite() && self.config.scale > 0.0,
+            "offscreen render scale must be a positive, finite device-pixel ratio, got {}",
+            self.config.scale
+        );
+        let _ = self.redraw.take_dirty();
+        self.elapsed += delta;
+        let shared = self.runtime.context();
+        let mut frame = GpuFrame {
+            device: shared.device.as_ref(),
+            queue: shared.queue.as_ref(),
+            texture: &self.texture,
+            view: self
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default()),
+            format: self.config.format,
+            width: self.config.size.width(),
+            height: self.config.size.height(),
+            scale: self.config.scale,
+            pointer: self.config.pointer,
+            gesture: self.config.gesture,
+            elapsed: self.elapsed,
+            delta,
+            redraw_requested: false,
+        };
+        self.surface.render(&mut frame);
+        self.pending = frame.was_redraw_requested();
+    }
+
+    /// Reads the rendered texture back as RGBA8 pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OffscreenRenderError::UnsupportedReadbackFormat`] unless the
+    /// session's format is `Rgba8Unorm` or `Rgba8UnormSrgb`, or a readback
+    /// error.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "the buffer-map await holds JS-backed wgpu handles on the WebGPU backend; the future is `Send` on every other target"
+        )
+    )]
+    pub async fn readback_rgba8(&self) -> Result<OffscreenRenderOutput, OffscreenRenderError> {
+        validate_rgba_readback_format(self.config.format)?;
+        let width = self.config.size.width();
+        let height = self.config.size.height();
+        let rgba8 = readback_texture(
+            &self.runtime,
+            &self.texture,
+            width,
+            height,
+            4,
+            "waterui_offscreen_readback",
+            "waterui_offscreen_readback_encoder",
+        )
+        .await?;
+        Ok(OffscreenRenderOutput {
+            width,
+            height,
+            rgba8,
+        })
+    }
+
+    /// Reads the rendered texture back as `RGBA16F` pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OffscreenRenderError::UnsupportedReadbackFormat`] unless the
+    /// session's format is `Rgba16Float`, or a readback error.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "the buffer-map await holds JS-backed wgpu handles on the WebGPU backend; the future is `Send` on every other target"
+        )
+    )]
+    pub async fn readback_rgba16f(&self) -> Result<OffscreenRenderOutputHdr, OffscreenRenderError> {
+        if self.config.format != wgpu::TextureFormat::Rgba16Float {
+            return Err(OffscreenRenderError::UnsupportedReadbackFormat(
+                self.config.format,
+            ));
+        }
+        let width = self.config.size.width();
+        let height = self.config.size.height();
+        let rgba16f = readback_texture(
+            &self.runtime,
+            &self.texture,
+            width,
+            height,
+            8,
+            "waterui_offscreen_readback_hdr",
+            "waterui_offscreen_readback_hdr_encoder",
+        )
+        .await?;
+        Ok(OffscreenRenderOutputHdr {
+            width,
+            height,
+            rgba16f,
+        })
     }
 }
 

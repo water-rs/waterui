@@ -1,8 +1,9 @@
 //! `waterui-mcp-protocol`: the tool contract a headless `WaterUI` session
 //! speaks over MCP.
 //!
-//! Two hosts implement the same nine tools — `snapshot`, `find`, `act`,
-//! `pointer`, `key`, `type_text`, `wait`, `screenshot`, and `restart`:
+//! Two hosts implement the same ten tools — `snapshot`, `find`, `act`,
+//! `pointer`, `key`, `type_text`, `wait`, `screenshot`, `restart`, and
+//! `advance`:
 //!
 //! - `waterui-mcp` serves them in-process against a mounted
 //!   `waterui_testing::OffscreenApp`.
@@ -17,10 +18,10 @@
 mod tools;
 
 pub use tools::{
-    Act, ActAction, ActArgs, Find, FindArgs, Key, KeyArgs, Pointer, PointerArgs, PointerKind,
-    Restart, RestartArgs, SESSION_TOOL_NAMES, Screenshot, ScreenshotArgs, SelectorArgs, Snapshot,
-    SnapshotArgs, SnapshotFormat, ToolDispatch, TypeText, TypeTextArgs, ValueEqArgs, Wait,
-    WaitArgs, register_session_tools,
+    Act, ActAction, ActArgs, Advance, AdvanceArgs, ExpectArgs, Find, FindArgs, Key, KeyArgs,
+    Pointer, PointerArgs, PointerKind, Restart, RestartArgs, SESSION_TOOL_NAMES, Screenshot,
+    ScreenshotArgs, ScrollUnit, SelectorArgs, Snapshot, SnapshotArgs, SnapshotFormat, ToolDispatch,
+    TypeText, TypeTextArgs, ValueEqArgs, Wait, WaitArgs, register_session_tools,
 };
 
 /// Server instructions handed to the client during `initialize`.

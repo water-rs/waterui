@@ -67,7 +67,14 @@ impl ChromiumController {
     /// Opens a visible Chromium page.
     #[must_use]
     pub fn open(&self, configuration: ChromiumConfiguration) -> ChromiumView {
-        let page = ChromiumPage::new(self.controller.open(configuration));
+        let asset_server = configuration.asset_server.clone();
+        let page = ChromiumPage::new(
+            self.controller.open(configuration),
+            asset_server.as_ref().map(|_| crate::assets::asset_origin()),
+        );
+        if let Some(server) = asset_server {
+            crate::assets::intercept(&page, server);
+        }
         ChromiumView::new(page)
     }
 
@@ -85,9 +92,14 @@ impl ChromiumController {
         &self,
         configuration: ChromiumConfiguration,
     ) -> Result<ChromiumPage, crate::CdpError> {
-        self.controller
-            .headless(configuration)
-            .await
-            .map(ChromiumPage::new)
+        let asset_server = configuration.asset_server.clone();
+        let page = ChromiumPage::new(
+            self.controller.headless(configuration).await?,
+            asset_server.as_ref().map(|_| crate::assets::asset_origin()),
+        );
+        if let Some(server) = asset_server {
+            crate::assets::intercept(&page, server);
+        }
+        Ok(page)
     }
 }

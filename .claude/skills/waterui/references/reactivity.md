@@ -396,6 +396,8 @@ another swap.
 ## Async, tasks, and lifecycle
 
 ```rust
+use waterui::log::debug;
+
 button("Fetch")
     .action_async(|State(out): State<Binding<Str>>| async move {
         out.set(fetch().await);
@@ -403,14 +405,20 @@ button("Fetch")
     .state(&result);
 
 view.task(async { warm_cache().await });   // runs while the view is alive; dropped with it
-view.on_appear(|| waterui::log::debug!("shown"));
+view.on_appear(|| debug!("shown"));
 view.on_disappear(|| ());
-view.on_change(&query, |new_value| waterui::log::debug!(?new_value));
+view.on_change(&query, |new_value: Str| debug!(?new_value));
+view.on_change(&query, |new_value: Str, State(history): State<Binding<Vec<Str>>>| {
+    history.append(new_value);
+})
+.state(&history);
 ```
 
-`.on_change(&signal, f)` takes the signal by reference and a plain `Fn(T)` closure — the
-new value arrives **by value**, and this is an ordinary closure, not an extractor handler,
-so it reaches state by capturing cloned bindings.
+`.on_change(&signal, f)` takes the signal by reference and an `EventHandler`: the new value
+arrives first, **by value**, and any `State<T>` extractors follow it, injected with
+`.state(&binding)` on the view exactly as for `.action`. A binding the handler writes is
+never captured with `let b = b.clone(); move |v| ..` — inject it and take it as
+`State(b): State<Binding<T>>`, so the handler can be a named function.
 
 Free-standing async work — from a synchronous handler, or a background loop driving a
 binding — goes through `waterui::task`:

@@ -65,6 +65,11 @@ typedef struct WuiArray {
 #define WUI_SURFACE_MODIFIER_NUM_LOCK 128
 
 /**
+ * The default layout priority of a flexible gap, below ordinary content.
+ */
+#define Spacer_DEFAULT_LAYOUT_PRIORITY INT32_MIN
+
+/**
  * FFI representation of `StretchAxis` enum.
  *
  * Specifies which axis (or axes) a view stretches to fill available space.
@@ -173,6 +178,20 @@ typedef enum WuiMaterial {
    */
   WuiMaterial_UltraThick = 4,
 } WuiMaterial;
+
+/**
+ * FFI-safe representation of a Liquid Glass style.
+ */
+typedef enum WuiGlassStyle {
+  /**
+   * Regular glass, legible over anything.
+   */
+  WuiGlassStyle_Regular = 0,
+  /**
+   * Clear glass, for surfaces over media.
+   */
+  WuiGlassStyle_Clear = 1,
+} WuiGlassStyle;
 
 /**
  * C ABI mirror of [`GradientType`], the discriminator for a resolved gradient's shape.
@@ -541,6 +560,14 @@ typedef enum WuiButtonStyle {
    *Mirrors `ButtonStyle::BorderedProminent`.
    */
   WuiButtonStyle_BorderedProminent,
+  /**
+   *Mirrors `ButtonStyle::Glass`.
+   */
+  WuiButtonStyle_Glass,
+  /**
+   *Mirrors `ButtonStyle::GlassProminent`.
+   */
+  WuiButtonStyle_GlassProminent,
 } WuiButtonStyle;
 
 /**
@@ -1104,6 +1131,20 @@ typedef enum WuiNavigationSplitStyle {
 } WuiNavigationSplitStyle;
 
 /**
+ *C ABI mirror of `TabRole`.
+ */
+typedef enum WuiTabRole {
+  /**
+   *Mirrors `TabRole::Regular`.
+   */
+  WuiTabRole_Regular,
+  /**
+   *Mirrors `TabRole::Search`.
+   */
+  WuiTabRole_Search,
+} WuiTabRole;
+
+/**
  * Native adaptive tab style.
  */
 typedef enum WuiTabStyle {
@@ -1120,6 +1161,28 @@ typedef enum WuiTabStyle {
    */
   WuiTabStyle_Sidebar = 2,
 } WuiTabStyle;
+
+/**
+ *C ABI mirror of `TabBarMinimizeBehavior`.
+ */
+typedef enum WuiTabBarMinimizeBehavior {
+  /**
+   *Mirrors `TabBarMinimizeBehavior::Automatic`.
+   */
+  WuiTabBarMinimizeBehavior_Automatic,
+  /**
+   *Mirrors `TabBarMinimizeBehavior::Never`.
+   */
+  WuiTabBarMinimizeBehavior_Never,
+  /**
+   *Mirrors `TabBarMinimizeBehavior::OnScrollDown`.
+   */
+  WuiTabBarMinimizeBehavior_OnScrollDown,
+  /**
+   *Mirrors `TabBarMinimizeBehavior::OnScrollUp`.
+   */
+  WuiTabBarMinimizeBehavior_OnScrollUp,
+} WuiTabBarMinimizeBehavior;
 
 /**
  * Editing operations forwarded to Chromium's focused frame.
@@ -1517,6 +1580,14 @@ typedef struct Binding_i32 Binding_i32;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_Color Computed_Color;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_ColorScheme Computed_ColorScheme;
 
 /**
@@ -1534,14 +1605,6 @@ typedef struct Computed_CursorStyle Computed_CursorStyle;
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_Delivery Computed_Delivery;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
-typedef struct Computed_EdgeInsets Computed_EdgeInsets;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -1720,6 +1783,18 @@ typedef struct WuiAnyViews WuiAnyViews;
  * Opaque state held by the native backend for one semantic applied filter.
  */
 typedef struct WuiAppliedFilterState WuiAppliedFilterState;
+
+/**
+ * The [`AssetServer`] a native web view owns.
+ *
+ * `FfiWebViewController` boxes the server a `WebView` was opened with and hands
+ * the pointer to the backend's [`WuiCreateWebViewFn`] inside
+ * [`WuiWebViewConfig`]. The backend holds it for the life of the native view,
+ * answers the engine's interception facility through
+ * [`waterui_webview_asset_server_respond`], and frees it with
+ * [`waterui_webview_asset_server_free`] when the view dies.
+ */
+typedef struct WuiAssetServer WuiAssetServer;
 
 /**
  * Opaque CEF state the native backend owns for the surface's lifetime.
@@ -1907,14 +1982,6 @@ typedef struct WuiWatcher_DateTime WuiWatcher_DateTime;
  * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
  */
 typedef struct WuiWatcher_Delivery WuiWatcher_Delivery;
-
-/**
- * FFI-owned wrapper around a native watcher callback.
- *
- * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
- * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
- */
-typedef struct WuiWatcher_EdgeInsets WuiWatcher_EdgeInsets;
 
 /**
  * FFI-owned wrapper around a native watcher callback.
@@ -2182,6 +2249,26 @@ typedef struct WuiMetadata_____WuiEnv {
  * Layout: { content: *mut `WuiAnyView`, value: *mut `WuiEnv` }
  */
 typedef struct WuiMetadata_____WuiEnv WuiMetadataEnv;
+
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
+typedef struct WuiMetadata_i32 {
+  /**
+   * The view content wrapped by this metadata node.
+   */
+  struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
+  int32_t value;
+} WuiMetadata_i32;
+
+/**
+ * Layout priority metadata paired with the view whose allocation it controls.
+ */
+typedef struct WuiMetadata_i32 WuiMetadataLayoutPriority;
 
 /**
  * FFI-compatible representation of [`waterui_core::id::Id`].
@@ -2686,6 +2773,10 @@ typedef struct WuiShadow {
    * Blur radius.
    */
   float radius;
+  /**
+   * Corner radius of the element casting the shadow.
+   */
+  float corner_radius;
 } WuiShadow;
 
 /**
@@ -3513,6 +3604,32 @@ typedef struct WuiIgnorableMetadataMaterialBackground {
 } WuiIgnorableMetadataMaterialBackground;
 
 /**
+ * FFI-safe representation of `IgnorableMetadata<GlassBackground>`
+ */
+typedef struct WuiIgnorableMetadataGlassBackground {
+  /**
+   * The view content wrapped by this metadata
+   */
+  struct WuiAnyView *content;
+  /**
+   * The glass style
+   */
+  enum WuiGlassStyle style;
+  /**
+   * Whether the glass reacts to touch and pointer interaction
+   */
+  bool interactive;
+  /**
+   * Tint color (as opaque pointer - needs environment to resolve); null when untinted
+   */
+  struct WuiColor *tint;
+  /**
+   * The outline of the glass surface, drawn by the effect itself rather than a mask
+   */
+  struct WuiShapeKind shape;
+} WuiIgnorableMetadataGlassBackground;
+
+/**
  * FFI-safe representation of Hittable metadata.
  */
 typedef struct WuiHittable {
@@ -3585,6 +3702,15 @@ typedef struct Computed_ResolvedColor WuiComputed_ResolvedColor;
  * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
  */
 typedef struct Binding_Color WuiBinding_Color;
+
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
+typedef struct Computed_Color WuiComputed_Color;
 
 /**
  *C ABI mirror of `ResolvedGradientStop`.
@@ -4110,38 +4236,6 @@ typedef struct WuiInspectorNode {
 } WuiInspectorNode;
 
 /**
- * C ABI mirror of [`EdgeInsets`]: the four edge distances of a rectangle, in
- * logical points.
- */
-typedef struct WuiEdgeInsets {
-  /**
-   * Inset from the top edge.
-   */
-  float top;
-  /**
-   * Inset from the bottom edge.
-   */
-  float bottom;
-  /**
-   * Inset from the leading (left in LTR) edge.
-   */
-  float leading;
-  /**
-   * Inset from the trailing (right in LTR) edge.
-   */
-  float trailing;
-} WuiEdgeInsets;
-
-/**
- * FFI-owned wrapper around a [`waterui::Computed`] signal.
- *
- * Opaque to native code; accessed only through the `waterui_read_computed_*`,
- * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
- * by the `ffi_computed!` macro.
- */
-typedef struct Computed_EdgeInsets WuiComputed_EdgeInsets;
-
-/**
  * FFI-owned wrapper around a [`waterui::Computed`] signal.
  *
  * Opaque to native code; accessed only through the `waterui_read_computed_*`,
@@ -4179,6 +4273,14 @@ typedef struct WuiResolvedFont {
    * The design the platform face is chosen from when `family` is empty.
    */
   enum WuiFontDesign design;
+  /**
+   * Absolute line height in points; `0.0` keeps the face's natural metrics.
+   */
+  float line_height;
+  /**
+   * Additional spacing between adjacent glyphs in points.
+   */
+  float letter_spacing;
 } WuiResolvedFont;
 
 /**
@@ -4333,6 +4435,24 @@ typedef struct WuiWindow {
  * - `WuiWindow`: The window configuration to show
  */
 typedef void (*WindowShowFn)(void *context, struct WuiWindow window);
+
+/**
+ * FFI representation of the `Badge` component.
+ */
+typedef struct WuiBadge {
+  /**
+   * The numeric value shown inside the badge indicator.
+   */
+  WuiComputed_i32 *value;
+  /**
+   * The view the badge is attached to.
+   */
+  struct WuiAnyView *content;
+  /**
+   * The badge indicator color.
+   */
+  WuiComputed_Color *color;
+} WuiBadge;
 
 /**
  * FFI surface for the label slot of every control.
@@ -5190,12 +5310,29 @@ typedef struct WuiArray_WuiSubView {
 } WuiArray_WuiSubView;
 
 /**
+ * C ABI mirror of [`SubviewPlacement`]: a child's resolved frame together
+ * with the size proposal that was selected to measure and recursively place
+ * it.
+ */
+typedef struct WuiSubviewPlacement {
+  /**
+   * The child frame in the parent layout's coordinate space.
+   */
+  struct WuiRect frame;
+  /**
+   * The proposal used to measure and recursively place the child; it is
+   * not inferred from the frame.
+   */
+  struct WuiProposalSize proposal;
+} WuiSubviewPlacement;
+
+/**
  * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
  */
-typedef struct WuiArraySlice_WuiRect {
-  struct WuiRect *head;
+typedef struct WuiArraySlice_WuiSubviewPlacement {
+  struct WuiSubviewPlacement *head;
   uintptr_t len;
-} WuiArraySlice_WuiRect;
+} WuiArraySlice_WuiSubviewPlacement;
 
 /**
  * The pair of function pointers `WuiArray` uses to view and free its backing storage.
@@ -5203,10 +5340,10 @@ typedef struct WuiArraySlice_WuiRect {
  * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
  * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
  */
-typedef struct WuiArrayVTable_WuiRect {
+typedef struct WuiArrayVTable_WuiSubviewPlacement {
   void (*drop)(void*);
-  struct WuiArraySlice_WuiRect (*slice)(const void*);
-} WuiArrayVTable_WuiRect;
+  struct WuiArraySlice_WuiSubviewPlacement (*slice)(const void*);
+} WuiArrayVTable_WuiSubviewPlacement;
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
@@ -5216,10 +5353,42 @@ typedef struct WuiArrayVTable_WuiRect {
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
-typedef struct WuiArray_WuiRect {
+typedef struct WuiArray_WuiSubviewPlacement {
   NonNull data;
-  struct WuiArrayVTable_WuiRect vtable;
-} WuiArray_WuiRect;
+  struct WuiArrayVTable_WuiSubviewPlacement vtable;
+} WuiArray_WuiSubviewPlacement;
+
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
+typedef struct WuiArraySlice_WuiStretchAxis {
+  enum WuiStretchAxis *head;
+  uintptr_t len;
+} WuiArraySlice_WuiStretchAxis;
+
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
+typedef struct WuiArrayVTable_WuiStretchAxis {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiStretchAxis (*slice)(const void*);
+} WuiArrayVTable_WuiStretchAxis;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiStretchAxis {
+  NonNull data;
+  struct WuiArrayVTable_WuiStretchAxis vtable;
+} WuiArray_WuiStretchAxis;
 
 /**
  * C ABI mirror of [`ScrollView`], a container that scrolls content larger
@@ -6309,6 +6478,10 @@ typedef struct WuiTab {
    * A backend whose tab item takes an image has to rasterize this itself.
    */
   struct WuiAnyView *icon;
+  /**
+   * The part the tab plays in the container's chrome.
+   */
+  enum WuiTabRole role;
 } WuiTab;
 
 /**
@@ -6359,6 +6532,17 @@ typedef struct WuiTabs {
    * Native adaptive tab style.
    */
   enum WuiTabStyle style;
+  /**
+   * How the bar behaves while content scrolls.
+   */
+  enum WuiTabBarMinimizeBehavior minimize_behavior;
+  /**
+   * A view the platform floats above the tab bar, or null.
+   *
+   * An iOS primitive (`UITabBarController.bottomAccessory`); a backend
+   * without the slot does not show it.
+   */
+  struct WuiAnyView *bottom_accessory;
 } WuiTabs;
 
 /**
@@ -6477,6 +6661,29 @@ typedef struct WuiBridgeRequest {
    */
   struct WuiStr payload_base64;
 } WuiBridgeRequest;
+
+/**
+ * A type alias representing binary data as a byte array.
+ */
+typedef struct WuiArray_u8 WuiData;
+
+/**
+ * What the asset origin answered — the FFI shape of [`AssetResponse`].
+ */
+typedef struct WuiAssetResponse {
+  /**
+   * The HTTP status code.
+   */
+  uint16_t status;
+  /**
+   * The response headers as `"Name: value"` lines joined by `\n`.
+   */
+  struct WuiStr headers;
+  /**
+   * The response body.
+   */
+  WuiData body;
+} WuiAssetResponse;
 
 /**
  * FFI representation of a `WebView` event.
@@ -6713,15 +6920,44 @@ typedef struct WuiWebViewHandle {
    */
   void (*call_async_javascript)(void*, struct WuiStr, struct WuiJsCallback);
   /**
+   * The origin this view serves bundled assets under, when it was created
+   * with a `WuiAssetServer`: the engine's own answer — `waterui://localhost`
+   * on the `WebKit` family and CEF, `https://waterui.localhost` where only
+   * `https` can be a secure context. An empty string means the view was
+   * opened without an asset server, and a `None` entry point means the
+   * backend has no interception facility to stand one on — which
+   * `WebView::open_assets` reports as the configuration error it is.
+   */
+  struct WuiStr (*asset_origin)(const void*);
+  /**
    * Release the native handle.
    */
   void (*drop)(void*);
 } WuiWebViewHandle;
 
 /**
- * Type for the native function that creates a new `WebView`.
+ * The creation-time inputs a native view is opened with.
+ *
+ * Engines register their interception facility while the view is constructed,
+ * so the asset server arrives here rather than through a handle method that
+ * could only run after the fact.
  */
-typedef struct WuiWebViewHandle (*WuiCreateWebViewFn)(void);
+typedef struct WuiWebViewConfig {
+  /**
+   * The asset server the view's local asset origin answers through, or null
+   * when the view serves no bundled assets. Ownership passes to the native
+   * view; it frees the pointer with `waterui_webview_asset_server_free`.
+   */
+  struct WuiAssetServer *asset_server;
+} WuiWebViewConfig;
+
+/**
+ * Type for the native function that creates a new `WebView`.
+ *
+ * Receives the creation-time [`WuiWebViewConfig`]; ownership of every owning
+ * pointer inside it passes to the backend.
+ */
+typedef struct WuiWebViewHandle (*WuiCreateWebViewFn)(struct WuiWebViewConfig);
 
 /**
  * FFI representation of a `Metadata<AppliedFilter>`.
@@ -7360,6 +7596,21 @@ WuiMetadataEnv waterui_force_as_metadata_env(struct WuiAnyView *view);
  * Returns the type ID as a 128-bit value for O(1) comparison.
  * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
+struct WuiTypeId waterui_metadata_layout_priority_id(void);
+
+/**
+ * Force-casts an `AnyView` to this metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataLayoutPriority waterui_force_as_metadata_layout_priority(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
 struct WuiTypeId waterui_metadata_navigation_transition_source_id(void);
 
 /**
@@ -7904,6 +8155,21 @@ struct WuiIgnorableMetadataMaterialBackground waterui_force_as_ignorable_metadat
  * Returns the type ID as a 128-bit value for O(1) comparison.
  * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
+struct WuiTypeId waterui_ignorable_metadata_glass_background_id(void);
+
+/**
+ * Force-casts an `AnyView` to this ignorable metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains an `IgnorableMetadata<$ty>`.
+ */
+struct WuiIgnorableMetadataGlassBackground waterui_force_as_ignorable_metadata_glass_background(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
 struct WuiTypeId waterui_metadata_hittable_id(void);
 
 /**
@@ -8142,6 +8408,19 @@ struct WuiColor *waterui_color_from_srgba(float red, float green, float blue, fl
  */
 WuiComputed_ResolvedColor *waterui_resolve_color(const struct WuiColor *color,
                                                  const struct WuiEnv *env);
+
+/**
+ * Resolves a reactive color signal in the given environment, yielding a
+ * signal of concrete colors. Consumes `color`.
+ *
+ * # Safety
+ *
+ * `color` must be a valid, owning `WuiComputed<Color>` handle that is consumed
+ * by this call and must not be used afterwards; `env` must be a valid,
+ * non-null `WuiEnv` borrowed for the call.
+ */
+WuiComputed_ResolvedColor *waterui_resolve_computed_color(WuiComputed_Color *color,
+                                                          const struct WuiEnv *env);
 
 /**
  * # Safety
@@ -9027,86 +9306,6 @@ void waterui_inspector_publish_tree(const struct WuiEnv *env,
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiEdgeInsets waterui_read_computed_edge_insets(const WuiComputed_EdgeInsets *computed);
-
-/**
- * Watches for changes in a computed
- * # Safety
- * The computed pointer must be valid and point to a properly initialized computed object.
- * The watcher pointer will be consumed and freed when the returned guard is dropped.
- */
-struct WuiWatcherGuard *waterui_watch_computed_edge_insets(const WuiComputed_EdgeInsets *computed,
-                                                           struct WuiWatcher_EdgeInsets *watcher);
-
-/**
- * Drops a computed
- * # Safety
- * The caller must ensure that `computed` is a valid pointer.
- */
-void waterui_drop_computed_edge_insets(WuiComputed_EdgeInsets *computed);
-
-/**
- * Creates a watcher from native callbacks.
- *
- * # Safety
- *
- * All function pointers must be valid and `data` must remain valid
- * until `drop` is called exactly once.
- */
-struct WuiWatcher_EdgeInsets *waterui_new_watcher_edge_insets(void *data,
-                                                              void (*call)(void*,
-                                                                           struct WuiEdgeInsets,
-                                                                           struct WuiWatcherMetadata*),
-                                                              void (*drop)(void*));
-
-/**
- * Creates a computed signal from native callbacks.
- * # Safety
- * All function pointers must be valid and follow the expected calling conventions.
- */
-WuiComputed_EdgeInsets *waterui_new_computed_edge_insets(void *data,
-                                                         struct WuiEdgeInsets (*get)(const void*),
-                                                         struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                          struct WuiWatcher_EdgeInsets*),
-                                                         void (*drop)(void*));
-
-/**
- * Installs the window's safe area insets into the environment.
- *
- * Backends without a safe-area concept install nothing; the Rust side then
- * reads zero insets, which is the right answer for a desktop window.
- *
- * # Safety
- * The signal pointer must be an owning pointer from
- * `waterui_new_computed_edge_insets`, and `env` a valid handle that is not
- * otherwise borrowed for this call.
- */
-void waterui_env_install_safe_area(struct WuiEnv *env, WuiComputed_EdgeInsets *signal);
-
-/**
- *Delivers `value` to a `EdgeInsets` watcher.
- *
- * # Safety
- * The watcher pointer must be a valid handle that is alive for this
- * call.
- */
-void waterui_call_watcher_edge_insets(const struct WuiWatcher_EdgeInsets *watcher,
-                                      struct WuiEdgeInsets value);
-
-/**
- *Releases a `EdgeInsets` watcher.
- *
- * # Safety
- * The watcher pointer must be an owning pointer from the matching
- * constructor that has not already been dropped.
- */
-void waterui_drop_watcher_edge_insets(struct WuiWatcher_EdgeInsets *watcher);
-
-/**
- * Reads the current value from a computed
- * # Safety
- * The computed pointer must be valid and point to a properly initialized computed object.
- */
 enum WuiColorScheme waterui_read_computed_color_scheme(const WuiComputed_ColorScheme *computed);
 
 /**
@@ -9399,6 +9598,20 @@ struct WuiTypeId waterui_plain_id(void);
  * Returns the type ID for empty views as a 128-bit value.
  */
 struct WuiTypeId waterui_empty_id(void);
+
+/**
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
+struct WuiBadge waterui_force_as_badge(struct WuiAnyView *view);
+
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
+struct WuiTypeId waterui_badge_id(void);
 
 /**
  * # Safety
@@ -9885,9 +10098,12 @@ struct WuiViewDimensions waterui_layout_measure(struct WuiLayout *layout,
                                                 struct WuiArray_WuiSubView children);
 
 /**
- * Places child views within the specified bounds.
+ * Places child views within the specified bounds under the given proposal.
  *
- * Returns an array of Rect values representing the position and size of each child.
+ * Returns an array of [`WuiSubviewPlacement`] values — each child's frame
+ * paired with the proposal that was selected to measure it. The `proposal`
+ * argument is the selected measurement input, the same one passed to
+ * [`waterui_layout_measure`]; it is not derived from `bounds`.
  *
  * # Safety
  *
@@ -9896,9 +10112,21 @@ struct WuiViewDimensions waterui_layout_measure(struct WuiLayout *layout,
  * - The measure callbacks in each child must be safe to call.
  * - The `children` array will be consumed and dropped after this call.
  */
-struct WuiArray_WuiRect waterui_layout_place(struct WuiLayout *layout,
-                                             struct WuiRect bounds,
-                                             struct WuiArray_WuiSubView children);
+struct WuiArray_WuiSubviewPlacement waterui_layout_place_subviews(struct WuiLayout *layout,
+                                                                  struct WuiRect bounds,
+                                                                  struct WuiProposalSize proposal,
+                                                                  struct WuiArray_WuiSubView children);
+
+/**
+ * Queries a layout's live stretch behavior using its current child axes.
+ *
+ * # Safety
+ *
+ * `layout` must be a live layout handle on its owning thread. `children` must
+ * be a valid array and is consumed by this call.
+ */
+enum WuiStretchAxis waterui_layout_stretch_axis(const struct WuiLayout *layout,
+                                                struct WuiArray_WuiStretchAxis children);
 
 /**
  * Returns the lazy-stack axis the layout advertises, if any.
@@ -10706,6 +10934,54 @@ struct WuiTypeId waterui_webview_id(void);
  * (i.e., it does not downcast to `FfiWebViewHandle`).
  */
 void *waterui_webview_native_handle(struct WuiWebView *webview);
+
+/**
+ * Serves one request the native engine intercepted on the asset origin.
+ *
+ * Callable from any thread — the server behind `server` is `Send + Sync`, and
+ * engines invoke this from whatever thread their network stack uses (a
+ * `WKURLSchemeHandler` callback, a `WebViewClient` worker thread, a `WebKit` URI
+ * scheme task, a CEF IO thread). GET and HEAD are the only methods served —
+ * anything else is refused with `405` without consulting the server — and a
+ * path that escapes the asset root is refused with `404`, so a backend must
+ * route every intercepted request through here rather than only the shapes it
+ * expects.
+ *
+ * # Safety
+ *
+ * - `server` must be a live pointer the backend received inside
+ *   [`WuiWebViewConfig`]; it is borrowed for the call, not consumed.
+ * - `method`, `path` and `query` are owning `WuiStr`s and are consumed; an
+ *   empty `query` means the request carried none.
+ * - The returned response is owned by the caller and freed with
+ *   [`waterui_webview_asset_response_free`] once its fields have been read.
+ */
+struct WuiAssetResponse waterui_webview_asset_server_respond(const struct WuiAssetServer *server,
+                                                             struct WuiStr method,
+                                                             struct WuiStr path,
+                                                             struct WuiStr query);
+
+/**
+ * Frees a [`WuiAssetResponse`] produced by [`waterui_webview_asset_server_respond`].
+ *
+ * # Safety
+ *
+ * `response` must be an owning handle from that function, freed once.
+ */
+void waterui_webview_asset_response_free(struct WuiAssetResponse response);
+
+/**
+ * Releases the [`WuiAssetServer`] a native view was created with.
+ *
+ * The backend calls this when the native view dies; a null pointer is a no-op
+ * so the same teardown path serves views opened without assets.
+ *
+ * # Safety
+ *
+ * `server` must be null or a pointer the backend received inside
+ * [`WuiWebViewConfig`] that has not been freed.
+ */
+void waterui_webview_asset_server_free(struct WuiAssetServer *server);
 
 /**
  * Installs a `WebViewController` into the environment from a native factory function.

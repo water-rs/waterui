@@ -202,6 +202,27 @@ pub fn styling_block_07() {
         // any view is a valid background
         view.background(RoundedRectangle::new(0.18).fill(Surface))
     };
+
+    // ---- glass ----
+    use waterui::background::Glass;
+    use waterui::prelude::theme_color::Accent;
+
+    let view = Divider;
+    let _ = {
+        view.background(Glass::regular()) // capsule pill, the default
+    };
+    let view = Divider;
+    let _ = {
+        view.background(Glass::clear().interactive(true)) // over media; reacts to touch
+    };
+    let view = Divider;
+    let _ = {
+        view.background(
+            Glass::regular()
+                .tint(Accent)
+                .shape(RoundedRectangle::new(0.2)),
+        )
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +388,8 @@ pub fn styling_floating_prose() {
 // ---------------------------------------------------------------------------
 // styling.md § "## Icons" — rust block 12/15
 // ---------------------------------------------------------------------------
+// styling.md writes `mdi::`/`lucide::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn styling_block_12() {
     use waterui::prelude::theme_color::Accent;
 

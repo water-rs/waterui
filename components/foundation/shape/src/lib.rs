@@ -1054,6 +1054,11 @@ impl View for FilledShape {
             fill: self.fill.resolve(env).computed(),
         }
     }
+
+    /// Resolves to `ResolvedShape`, which fills both axes.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
 }
 
 impl View for MorphShape {
@@ -1081,6 +1086,12 @@ impl View for MorphShape {
             progress_for_gpu,
         )));
         native
+    }
+
+    /// Resolves to `Native<ResolvedMorphShape>` (or its `GpuSurface`
+    /// fallback), both of which fill both axes.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
     }
 }
 

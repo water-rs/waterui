@@ -12,8 +12,8 @@ use crate::selector::{ScopeRelation, Selector};
 /// The accessibility actions probed on every node when a snapshot is taken.
 ///
 /// This is the set of actions external drivers (for example the MCP session in
-/// `waterui-mcp`) can dispatch, plus [`AccessibilityAction::ScrollIntoView`].
-const PROBED_ACTIONS: [AccessibilityAction; 11] = [
+/// `waterui-mcp`) can dispatch.
+const PROBED_ACTIONS: [AccessibilityAction; 13] = [
     AccessibilityAction::Click,
     AccessibilityAction::Focus,
     AccessibilityAction::SetValue,
@@ -24,6 +24,8 @@ const PROBED_ACTIONS: [AccessibilityAction; 11] = [
     AccessibilityAction::Collapse,
     AccessibilityAction::ScrollDown,
     AccessibilityAction::ScrollUp,
+    AccessibilityAction::ScrollLeft,
+    AccessibilityAction::ScrollRight,
     AccessibilityAction::ScrollIntoView,
 ];
 

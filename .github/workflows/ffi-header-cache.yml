@@ -9,8 +9,6 @@ on:
     branches: [dev]
     paths:
       - ffi/**
-      - backends/apple
-      - backends/android
       - Cargo.lock
       - '**/Cargo.toml'
       - .github/actions/ffi-header/**
@@ -38,8 +36,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: ./.github/actions/ffi-header
         with:
           save: 'true'

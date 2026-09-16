@@ -45,7 +45,7 @@ pub use split::{
     ColumnWidth, NativeNavigationSplitStyle, NavigationSplitColumnVisibility,
     NavigationSplitLayout, NavigationSplitStyle, NavigationSplitView, split_style,
 };
-pub use tab::{Tab, Tabs, TabsLayout, tab_style};
+pub use tab::{Tab, TabBarMinimizeBehavior, TabRole, Tabs, TabsLayout, tab_style};
 pub use transition::{
     AnyNavigationTransition, NativeNavigationTransition, NavigationTransition,
     NavigationTransitionDestination, NavigationTransitionDirection, NavigationTransitionFrame,
@@ -1240,6 +1240,12 @@ where
             },
         )
     }
+
+    /// Resolves through `path_stack_body` to a `NavigationStack<(), ()>` leaf,
+    /// which fills both axes.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
 }
 
 impl View for NavigationStack<NavigationPath<ErasedNavigationRoute>, HeterogeneousDestinations> {
@@ -1256,6 +1262,12 @@ impl View for NavigationStack<NavigationPath<ErasedNavigationRoute>, Heterogeneo
                 AnyViewBuilder::new(move || destinations.build(&route))
             },
         )
+    }
+
+    /// Resolves through `path_stack_body` to a `NavigationStack<(), ()>` leaf,
+    /// which fills both axes.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
     }
 }
 

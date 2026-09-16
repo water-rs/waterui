@@ -14,7 +14,6 @@ pub mod color;
 mod effects;
 #[cfg(feature = "gpu")]
 mod gpu;
-#[cfg(feature = "gpu")]
 mod gradients;
 #[cfg(feature = "gpu")]
 mod image;
@@ -29,6 +28,9 @@ pub use effects::{filter_view, view_effect};
 pub use gpu::{
     gpu_surface, input, pipeline, reactive_color, shader_source, shader_surface, shared_context,
     texture,
+};
+pub use gradients::gradient::{
+    Gradient, GradientConfig, GradientType, ResolvedGradient, ResolvedGradientStop,
 };
 #[cfg(feature = "gpu")]
 pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
@@ -52,7 +54,8 @@ pub use filtrate::multi_input as multi_input_filter;
 #[cfg(feature = "gpu")]
 pub use gpu_surface::{
     GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
-    OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSize, PointerState, RedrawHandle,
+    OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSession, OffscreenSize, PointerState,
+    RedrawHandle,
 };
 #[cfg(feature = "gpu")]
 pub use input::{
@@ -77,9 +80,7 @@ pub use animated_mesh_gradient::{
     ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig,
 };
 #[cfg(feature = "gpu")]
-pub use gradient_renderer::{
-    Gradient, GradientConfig, GradientType, MeshGradient, ResolvedGradient, ResolvedGradientStop,
-};
+pub use gradient_renderer::MeshGradient;
 
 #[cfg(feature = "gpu")]
 pub use view_effect::{

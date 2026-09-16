@@ -1,45 +1,49 @@
 //! Shared asset discovery and planning for `WaterUI` applications.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use heck::ToSnakeCase;
 use serde::{Deserialize, Serialize};
-use syn::visit::Visit;
-use syn::{File, LitStr, Token, parse::Parse, parse::ParseStream};
 use thiserror::Error;
 use walkdir::WalkDir;
 use waterui_assets_core::AssetKind;
 
-/// Theme color overrides discovered from asset metadata.
+mod color;
+mod launch;
+
+pub use color::{HexColor, InvalidHexColor};
+pub use launch::{ColorScheme, LaunchConfig, LaunchPlan};
+
+/// The `[theme]` section of `Water.toml`: the theme color slots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThemeConfig {
     /// Window or page background color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background: Option<String>,
+    pub background: Option<HexColor>,
     /// Main surface color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub surface: Option<String>,
+    pub surface: Option<HexColor>,
     /// Secondary surface color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub surface_variant: Option<String>,
+    pub surface_variant: Option<HexColor>,
     /// Border color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub border: Option<String>,
+    pub border: Option<HexColor>,
     /// Primary foreground color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub foreground: Option<String>,
+    pub foreground: Option<HexColor>,
     /// Muted foreground color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub muted_foreground: Option<String>,
+    pub muted_foreground: Option<HexColor>,
     /// Accent color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accent: Option<String>,
+    pub accent: Option<HexColor>,
     /// Foreground color used on accent surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accent_foreground: Option<String>,
+    pub accent_foreground: Option<HexColor>,
 }
 
 impl ThemeConfig {
@@ -66,13 +70,118 @@ pub struct BundleMount {
     pub root: PathBuf,
 }
 
+/// Symbol prefix for `include_bundle!` mount metadata statics.
+///
+/// `include_bundle!` emits one `#[used] static` per mounted directory whose
+/// mangled name ends in `{BUNDLE_META_PREFIX}<mount>`; the CLI enumerates the
+/// compiled artifact's symbol table and decodes the matching
+/// [`BundleMountMeta`] payload.
+pub const BUNDLE_META_PREFIX: &str = "waterui_meta_bundle_";
+
+/// One bundle mount declared by `include_bundle!`, carried to the CLI as the
+/// NUL-terminated payload of a `#[used]` static.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleMountMeta {
+    /// Logical mount name; `"assets"` is the main application asset root.
+    pub mount: String,
+    /// Absolute path of the mounted directory at expansion time.
+    pub path: PathBuf,
+    /// Absolute path of the toolchain project that produces `path` — the
+    /// frontend root for a web mount (`include_web!`), `None` for a plain
+    /// `include_bundle!`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<PathBuf>,
+}
+
+impl BundleMountMeta {
+    /// Leaf of the metadata symbol's demangled name.
+    #[must_use]
+    pub fn symbol_leaf(&self) -> String {
+        format!("{BUNDLE_META_PREFIX}{}", rust_identifier(&self.mount))
+    }
+
+    /// Serialize as the symbol payload: JSON followed by a NUL terminator.
+    ///
+    /// # Panics
+    ///
+    /// Panics if serialization fails, which cannot happen for this type.
+    #[must_use]
+    pub fn to_payload(&self) -> Vec<u8> {
+        let mut payload =
+            serde_json::to_vec(self).expect("BundleMountMeta serialization cannot fail");
+        payload.push(0);
+        payload
+    }
+
+    /// Decode a symbol payload read from an artifact.
+    ///
+    /// A trailing NUL terminator is tolerated; anything else malformed is an
+    /// error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlannerError::InvalidMountMeta`] when the payload is not a
+    /// serialized [`BundleMountMeta`].
+    pub fn from_payload(bytes: &[u8]) -> Result<Self, PlannerError> {
+        let json = bytes.split(|byte| *byte == 0).next().unwrap_or_default();
+        serde_json::from_slice(json).map_err(|source| PlannerError::InvalidMountMeta { source })
+    }
+}
+
 /// Semantic role assigned to a planned asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetRole {
     /// Normal asset exposed through generated asset modules.
     Regular,
-    /// Root-level application icon asset.
+    /// Root-level application icon asset (`Icon.*`).
     AppIcon,
+    /// Root-level launch screen artwork (`Launch.*`).
+    LaunchImage,
+}
+
+impl AssetRole {
+    /// The file stem that claims this role at the asset root, or `None` for
+    /// a regular asset.
+    #[must_use]
+    pub const fn root_stem(self) -> Option<&'static str> {
+        match self {
+            Self::Regular => None,
+            Self::AppIcon => Some("Icon"),
+            Self::LaunchImage => Some("Launch"),
+        }
+    }
+
+    /// The roles a file at the asset root can claim by its stem.
+    const ROOT_ARTWORK: [Self; 2] = [Self::AppIcon, Self::LaunchImage];
+
+    fn for_root_stem(stem: &str) -> Self {
+        Self::ROOT_ARTWORK
+            .into_iter()
+            .find(|role| role.root_stem() == Some(stem))
+            .unwrap_or(Self::Regular)
+    }
+}
+
+/// The root-level artwork files seen so far while planning, by stem: each
+/// role may be claimed by exactly one file.
+#[derive(Default)]
+struct RootArtwork(BTreeMap<&'static str, PathBuf>);
+
+impl RootArtwork {
+    fn claim(&mut self, role: AssetRole, path: &Path) -> Result<(), PlannerError> {
+        let Some(stem) = role.root_stem() else {
+            return Ok(());
+        };
+        self.0
+            .insert(stem, path.to_path_buf())
+            .map_or(Ok(()), |first| {
+                Err(PlannerError::DuplicateArtwork {
+                    stem,
+                    first,
+                    second: path.to_path_buf(),
+                })
+            })
+    }
 }
 
 /// Asset discovered during bundle planning.
@@ -93,10 +202,11 @@ pub struct PlannedAsset {
 }
 
 impl PlannedAsset {
-    /// Returns Rust module path segments for this asset.
+    /// Returns Rust module path segments for this asset, relative to its
+    /// mount's generated module.
     #[must_use]
     pub fn module_segments(&self) -> Vec<String> {
-        self.logical_path
+        self.relative_path
             .parent()
             .into_iter()
             .flat_map(Path::components)
@@ -137,6 +247,15 @@ pub struct BundleManifest {
     pub assets: Vec<PlannedAsset>,
 }
 
+impl BundleManifest {
+    /// The root-level artwork claiming `role` (`Icon.*`, `Launch.*`), if the
+    /// project provides one.
+    #[must_use]
+    pub fn root_artwork(&self, role: AssetRole) -> Option<&PlannedAsset> {
+        self.assets.iter().find(|asset| asset.role == role)
+    }
+}
+
 /// Errors produced while discovering and planning asset bundles.
 #[derive(Debug, Error)]
 pub enum PlannerError {
@@ -156,33 +275,11 @@ pub enum PlannerError {
         /// Underlying TOML parse error.
         source: toml::de::Error,
     },
-    /// Failed to read a Rust source file.
-    #[error("Failed to read Rust source '{path}': {source}")]
-    ReadSource {
-        /// Source file path.
-        path: PathBuf,
-        /// Underlying I/O error.
-        source: std::io::Error,
-    },
-    /// Failed to parse a Rust source file.
-    #[error("Failed to parse Rust source '{path}': {source}")]
-    ParseSource {
-        /// Source file path.
-        path: PathBuf,
-        /// Underlying Rust parser error.
-        source: syn::Error,
-    },
-    /// Duplicate `include_bundle!` mount name.
-    #[error("include_bundle mount '{name}' already exists")]
-    DuplicateMount {
-        /// Duplicate mount name.
-        name: String,
-    },
-    /// Included bundle namespace conflicts with the application asset namespace.
-    #[error("include_bundle mount '{name}' conflicts with app assets namespace")]
-    MountNamespaceConflict {
-        /// Conflicting mount name.
-        name: String,
+    /// A `waterui_meta_bundle_*` symbol payload is malformed.
+    #[error("Invalid bundle mount metadata payload: {source}")]
+    InvalidMountMeta {
+        /// Underlying JSON decode error.
+        source: serde_json::Error,
     },
     /// Included bundle root does not exist.
     #[error("include_bundle mount '{name}' points to missing directory '{path}'")]
@@ -214,18 +311,22 @@ pub enum PlannerError {
         /// Second source path seen.
         second: PathBuf,
     },
-    /// Root-level icon asset is not a supported image.
-    #[error("App icon source '{path}' must be a square raster image or SVG")]
-    InvalidIconSource {
-        /// Invalid icon source path.
+    /// Root-level artwork (`Icon.*`, `Launch.*`) is not a supported image.
+    #[error("Root-level {stem}.* asset '{path}' must be a square raster image or SVG")]
+    InvalidArtworkSource {
+        /// The file stem that names the role.
+        stem: &'static str,
+        /// Invalid artwork source path.
         path: PathBuf,
     },
-    /// More than one root-level icon asset was found.
-    #[error("Only one root-level Icon.* asset is allowed, found '{first}' and '{second}'")]
-    DuplicateIcon {
-        /// First icon path seen.
+    /// More than one root-level file claims the same artwork role.
+    #[error("Only one root-level {stem}.* asset is allowed, found '{first}' and '{second}'")]
+    DuplicateArtwork {
+        /// The file stem that names the role.
+        stem: &'static str,
+        /// First artwork path seen.
         first: PathBuf,
-        /// Second icon path seen.
+        /// Second artwork path seen.
         second: PathBuf,
     },
 }
@@ -285,106 +386,40 @@ pub fn read_assets_path(crate_root: &Path) -> Result<String, PlannerError> {
     Ok(water.package.assets_path)
 }
 
-/// Discovers `include_bundle!` mounts from Rust source files under `src`.
+/// Plans one mounted directory.
+///
+/// `mount` is `""` or `"assets"` for the main application asset root; root
+/// artwork roles and unprefixed logical paths apply only to that main mount.
+/// Every other mount prefixes its logical paths with the mount name and
+/// yields only [`AssetRole::Regular`] assets.
 ///
 /// # Errors
 ///
-/// Returns [`PlannerError`] when source files cannot be read or parsed, a mount
-/// is duplicated, or a referenced mount directory is missing.
-pub fn discover_bundle_mounts(crate_root: &Path) -> Result<Vec<BundleMount>, PlannerError> {
-    let mut mounts = Vec::new();
-    let src_root = crate_root.join("src");
-    if !src_root.exists() {
-        return Ok(mounts);
+/// Returns [`PlannerError`] when `root` is not a directory or assets collide
+/// by logical path, generated module path, or root artwork role.
+pub fn plan_mount(root: &Path, mount: &str) -> Result<Vec<PlannedAsset>, PlannerError> {
+    let main = mount.is_empty() || mount == "assets";
+    let mount_name = if main { "" } else { mount };
+    if !root.is_dir() {
+        return Err(PlannerError::MissingMountRoot {
+            name: mount.to_string(),
+            path: root.to_path_buf(),
+        });
     }
-    let mut seen = BTreeSet::new();
-    for entry in WalkDir::new(&src_root).into_iter().filter_map(Result::ok) {
-        let path = entry.path();
-        if !path.is_file() || path.extension() != Some(OsStr::new("rs")) {
-            continue;
-        }
-        let source = fs::read_to_string(path).map_err(|source| PlannerError::ReadSource {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let file = syn::parse_file(&source).map_err(|source| PlannerError::ParseSource {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let mut visitor = IncludeBundleVisitor {
-            crate_root,
-            source_path: path,
-            mounts: Vec::new(),
-        };
-        visitor.visit_file(&file);
-        for mount in visitor.mounts {
-            if !mount.root.is_dir() {
-                return Err(PlannerError::MissingMountRoot {
-                    name: mount.name,
-                    path: mount.root,
-                });
-            }
-            if !seen.insert(mount.name.clone()) {
-                return Err(PlannerError::DuplicateMount { name: mount.name });
-            }
-            mounts.push(mount);
-        }
-    }
-    Ok(mounts)
-}
-
-/// Plans all assets for a crate and its included bundles.
-///
-/// # Errors
-///
-/// Returns [`PlannerError`] when bundle discovery fails or assets collide by
-/// logical path, generated module path, or app-icon role.
-pub fn plan_bundle(crate_root: &Path, assets_path: &str) -> Result<BundleManifest, PlannerError> {
-    let assets_root = crate_root.join(assets_path);
-    let mounts = discover_bundle_mounts(crate_root)?;
     let mut assets = Vec::new();
     let mut by_logical = BTreeMap::<String, PathBuf>::new();
     let mut by_module = BTreeMap::<String, PathBuf>::new();
-    let mut root_namespaces = BTreeSet::<String>::new();
-    let mut app_icon_source: Option<PathBuf> = None;
-
-    if assets_root.exists() {
-        collect_mount_assets(
-            "",
-            &assets_root,
-            &mut assets,
-            &mut by_logical,
-            &mut by_module,
-            &mut root_namespaces,
-            &mut app_icon_source,
-        )?;
-    }
-
-    for mount in &mounts {
-        let namespace = rust_identifier(&mount.name);
-        if root_namespaces.contains(&namespace) {
-            return Err(PlannerError::MountNamespaceConflict {
-                name: mount.name.clone(),
-            });
-        }
-        collect_mount_assets(
-            &mount.name,
-            &mount.root,
-            &mut assets,
-            &mut by_logical,
-            &mut by_module,
-            &mut root_namespaces,
-            &mut app_icon_source,
-        )?;
-    }
-
+    let mut root_artwork = RootArtwork::default();
+    collect_mount_assets(
+        mount_name,
+        root,
+        &mut assets,
+        &mut by_logical,
+        &mut by_module,
+        &mut root_artwork,
+    )?;
     assets.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
-    Ok(BundleManifest {
-        crate_root: crate_root.to_path_buf(),
-        assets_root,
-        mounts,
-        assets,
-    })
+    Ok(assets)
 }
 
 fn collect_mount_assets(
@@ -393,8 +428,7 @@ fn collect_mount_assets(
     assets: &mut Vec<PlannedAsset>,
     by_logical: &mut BTreeMap<String, PathBuf>,
     by_module: &mut BTreeMap<String, PathBuf>,
-    root_namespaces: &mut BTreeSet<String>,
-    app_icon_source: &mut Option<PathBuf>,
+    root_artwork: &mut RootArtwork,
 ) -> Result<(), PlannerError> {
     if !root.exists() {
         return Ok(());
@@ -428,7 +462,7 @@ fn collect_mount_assets(
             });
         }
 
-        let role = infer_role(mount_name, &relative_path, path, app_icon_source)?;
+        let role = infer_role(mount_name, &relative_path, path, root_artwork)?;
         let kind = infer_kind(path);
         let asset = PlannedAsset {
             mount: mount_name.to_string(),
@@ -448,13 +482,6 @@ fn collect_mount_assets(
             });
         }
 
-        if mount_name.is_empty() {
-            if let Some(first) = asset.module_segments().first() {
-                root_namespaces.insert(first.clone());
-            } else {
-                root_namespaces.insert(asset.item_name());
-            }
-        }
         assets.push(asset);
     }
     Ok(())
@@ -470,7 +497,7 @@ fn infer_role(
     mount_name: &str,
     relative_path: &Path,
     absolute_path: &Path,
-    app_icon_source: &mut Option<PathBuf>,
+    root_artwork: &mut RootArtwork,
 ) -> Result<AssetRole, PlannerError> {
     if !mount_name.is_empty() {
         return Ok(AssetRole::Regular);
@@ -481,21 +508,18 @@ fn infer_role(
     let Some(stem) = relative_path.file_stem().and_then(OsStr::to_str) else {
         return Ok(AssetRole::Regular);
     };
-    if stem != "Icon" {
+    let role = AssetRole::for_root_stem(stem);
+    let Some(stem) = role.root_stem() else {
         return Ok(AssetRole::Regular);
-    }
+    };
     if !matches!(infer_kind(absolute_path), AssetKind::Image) {
-        return Err(PlannerError::InvalidIconSource {
+        return Err(PlannerError::InvalidArtworkSource {
+            stem,
             path: absolute_path.to_path_buf(),
         });
     }
-    if let Some(first) = app_icon_source.replace(absolute_path.to_path_buf()) {
-        return Err(PlannerError::DuplicateIcon {
-            first,
-            second: absolute_path.to_path_buf(),
-        });
-    }
-    Ok(AssetRole::AppIcon)
+    root_artwork.claim(role, absolute_path)?;
+    Ok(role)
 }
 
 fn infer_kind(path: &Path) -> AssetKind {
@@ -553,70 +577,6 @@ fn is_rust_keyword(ident: &str) -> bool {
     )
 }
 
-/// Parsed arguments of an `include_bundle!("path", as = mount)` invocation.
-///
-/// This is the single source of truth for the macro's syntax: the
-/// `include_bundle!` proc macro and this planner's source scanner both parse
-/// through it, so the two can never drift apart.
-pub struct IncludeBundleArgs {
-    /// Bundle directory path relative to the crate root.
-    pub path: LitStr,
-    /// Module name the bundle is mounted under.
-    pub mount: syn::Ident,
-}
-
-impl std::fmt::Debug for IncludeBundleArgs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("IncludeBundleArgs")
-            .field("path", &self.path.value())
-            .field("mount", &self.mount.to_string())
-            .finish()
-    }
-}
-
-impl Parse for IncludeBundleArgs {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let path: LitStr = input.parse()?;
-        input.parse::<Token![,]>()?;
-        input.parse::<Token![as]>()?;
-        input.parse::<Token![=]>()?;
-        let mount: syn::Ident = input.parse()?;
-        Ok(Self { path, mount })
-    }
-}
-
-struct IncludeBundleVisitor<'a> {
-    crate_root: &'a Path,
-    source_path: &'a Path,
-    mounts: Vec<BundleMount>,
-}
-
-impl Visit<'_> for IncludeBundleVisitor<'_> {
-    fn visit_macro(&mut self, mac: &syn::Macro) {
-        if mac.path.is_ident("include_bundle") {
-            let args = mac
-                .parse_body::<IncludeBundleArgs>()
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "Failed to parse include_bundle! in '{}': {error}",
-                        self.source_path.display()
-                    )
-                });
-            let root = self.crate_root.join(args.path.value());
-            self.mounts.push(BundleMount {
-                name: args.mount.to_string(),
-                root,
-            });
-        }
-        syn::visit::visit_macro(self, mac);
-    }
-
-    fn visit_file(&mut self, node: &File) {
-        let _ = self.source_path;
-        syn::visit::visit_file(self, node);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -639,41 +599,87 @@ mod tests {
     }
 
     #[test]
-    fn plan_bundle_marks_root_icon() {
+    fn plan_mount_marks_root_icon() {
         let temp = tempdir().expect("tempdir");
-        fs::write(
-            temp.path().join("Water.toml"),
-            "[package]\nname = 'Demo'\nbundle_identifier = 'dev.waterui.demo'\n",
-        )
-        .expect("write Water.toml");
-        fs::create_dir_all(temp.path().join("assets")).expect("create assets");
-        fs::write(temp.path().join("assets/Icon.png"), b"png").expect("write icon");
+        let assets = temp.path().join("assets");
+        fs::create_dir_all(&assets).expect("create assets");
+        fs::write(assets.join("Icon.png"), b"png").expect("write icon");
 
-        let manifest = plan_bundle(temp.path(), "assets").expect("plan bundle");
-        assert_eq!(manifest.assets.len(), 1);
-        assert_eq!(manifest.assets[0].role, AssetRole::AppIcon);
+        let planned = plan_mount(&assets, "").expect("plan mount");
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].role, AssetRole::AppIcon);
+        assert_eq!(planned[0].logical_path, Path::new("Icon.png"));
     }
 
     #[test]
-    fn plan_bundle_rejects_mount_namespace_conflict() {
+    fn plan_mount_marks_root_launch_artwork_and_rejects_a_second_one() {
         let temp = tempdir().expect("tempdir");
-        fs::write(
-            temp.path().join("Water.toml"),
-            "[package]\nname = 'Demo'\nbundle_identifier = 'dev.waterui.demo'\n",
-        )
-        .expect("write Water.toml");
-        fs::create_dir_all(temp.path().join("assets/web")).expect("create web dir");
-        fs::write(temp.path().join("assets/web/index.html"), b"hi").expect("write asset");
-        fs::create_dir_all(temp.path().join("dist")).expect("create dist");
-        fs::write(temp.path().join("dist/app.js"), b"console.log(1)").expect("write dist asset");
-        fs::create_dir_all(temp.path().join("src")).expect("create src");
-        fs::write(
-            temp.path().join("src/lib.rs"),
-            "include_bundle!(\"dist\", as = web);",
-        )
-        .expect("write src");
+        let assets = temp.path().join("assets");
+        fs::create_dir_all(assets.join("nested")).expect("create assets");
+        fs::write(assets.join("Launch.svg"), b"<svg/>").expect("write launch");
+        // A nested Launch.* is a regular asset, not a second claim.
+        fs::write(assets.join("nested/Launch.png"), b"png").expect("write nested");
 
-        let error = plan_bundle(temp.path(), "assets").expect_err("must reject collision");
-        assert!(matches!(error, PlannerError::MountNamespaceConflict { .. }));
+        let planned = plan_mount(&assets, "").expect("plan mount");
+        let launch = planned
+            .iter()
+            .find(|asset| asset.role == AssetRole::LaunchImage)
+            .expect("root Launch.svg is the launch image");
+        assert!(launch.source_path.ends_with("Launch.svg"));
+        assert!(!planned.iter().any(|asset| asset.role == AssetRole::AppIcon));
+
+        fs::write(assets.join("Launch.png"), b"png").expect("write second launch");
+        let error = plan_mount(&assets, "").expect_err("two root Launch.* files");
+        assert!(matches!(
+            error,
+            PlannerError::DuplicateArtwork { stem: "Launch", .. }
+        ));
+    }
+
+    #[test]
+    fn plan_mount_prefixes_non_main_mounts() {
+        let temp = tempdir().expect("tempdir");
+        let dist = temp.path().join("dist");
+        fs::create_dir_all(&dist).expect("create dist");
+        fs::write(dist.join("app.js"), b"console.log(1)").expect("write asset");
+        fs::write(dist.join("Icon.png"), b"png").expect("write icon");
+
+        let planned = plan_mount(&dist, "web").expect("plan mount");
+        assert_eq!(planned.len(), 2);
+        for asset in &planned {
+            assert_eq!(asset.mount, "web");
+            assert_eq!(asset.role, AssetRole::Regular);
+            assert_eq!(
+                asset.logical_path,
+                Path::new("web").join(&asset.relative_path)
+            );
+        }
+    }
+
+    #[test]
+    fn plan_mount_rejects_missing_root() {
+        let temp = tempdir().expect("tempdir");
+        let error =
+            plan_mount(&temp.path().join("missing"), "web").expect_err("missing root must error");
+        assert!(matches!(error, PlannerError::MissingMountRoot { .. }));
+    }
+
+    #[test]
+    fn bundle_mount_meta_payload_round_trips() {
+        let meta = BundleMountMeta {
+            mount: "web".to_string(),
+            path: PathBuf::from("/abs/path/dist"),
+            project: Some(PathBuf::from("/abs/path")),
+        };
+        assert_eq!(meta.symbol_leaf(), "waterui_meta_bundle_web");
+        let payload = meta.to_payload();
+        assert_eq!(payload.last(), Some(&0));
+        let decoded = BundleMountMeta::from_payload(&payload).expect("decode payload");
+        assert_eq!(decoded, meta);
+        // The artifact reader already cuts at the first NUL; decoding without
+        // the terminator must still work.
+        let decoded = BundleMountMeta::from_payload(&payload[..payload.len() - 1])
+            .expect("decode without terminator");
+        assert_eq!(decoded, meta);
     }
 }

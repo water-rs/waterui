@@ -38,6 +38,7 @@ use alloc::boxed::Box;
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 use alloc::vec;
 use executor_core::spawn_local;
+use futures::FutureExt;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use {
@@ -109,6 +110,19 @@ pub struct WuiGpuSurfaceState {
     /// Surface configuration
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     config: Option<wgpu::SurfaceConfiguration>,
+    /// The `ANativeWindow` `layer` was — kept so the surface can be recreated
+    /// on a rebuilt runtime after device loss without another attach call.
+    /// Valid while `wgpu_surface` is `Some`; stale otherwise.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    attached_layer: *mut c_void,
+    /// The HDR preference `attach` configured the surface with.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    attached_prefers_hdr: bool,
+    /// The [`SharedGpuContext`] generation `wgpu_surface`, `config` and the
+    /// renderer were built under. Anything else means they belong to a dead
+    /// device and must be recreated before the next frame.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    context_generation: u64,
     /// The format selected when asynchronous renderer setup starts.
     renderer_format: Cell<Option<wgpu::TextureFormat>>,
     /// Where this surface's frame is drawn when an enclosing capture wants it.
@@ -447,7 +461,7 @@ fn attached_surface_format(
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn create_attached_surface(
-    runtime: &GpuRuntime,
+    gpu: &waterui_graphics::shared_context::SharedGpuContext,
     layer: *mut c_void,
     width: u32,
     height: u32,
@@ -459,7 +473,6 @@ fn create_attached_surface(
         "waterui_gpu_surface_attach: native surface dimensions must be non-zero, got {width}x{height}"
     );
 
-    let gpu = runtime.context();
     let wgpu_surface = create_surface_from_layer(&gpu.instance, layer);
     let surface_caps = wgpu_surface.get_capabilities(&gpu.adapter);
 
@@ -513,6 +526,27 @@ fn start_renderer_setup(state: &WuiGpuSurfaceState, format: wgpu::TextureFormat)
     }
 
     state.renderer_format.set(Some(format));
+    spawn_renderer_setup(state, format);
+}
+
+/// Re-runs renderer setup after the runtime's device was lost and rebuilt.
+///
+/// The `GpuView`'s pipelines and textures all belonged to the dead device, so
+/// `setup` runs again on the fresh context; `setup_ready` drops for the
+/// duration and the redraw it schedules replaces whatever the last frame on
+/// the dead device looked like.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn restart_renderer_setup(state: &WuiGpuSurfaceState, format: wgpu::TextureFormat) {
+    // A setup already in flight read the rebuilt context when it started, so it
+    // is the recovery; starting another one would panic on the empty slot.
+    if state.semantic.borrow().is_none() {
+        return;
+    }
+    state.setup_ready.set(false);
+    spawn_renderer_setup(state, format);
+}
+
+fn spawn_renderer_setup(state: &WuiGpuSurfaceState, format: wgpu::TextureFormat) {
     let mut semantic = state
         .semantic
         .borrow_mut()
@@ -525,24 +559,121 @@ fn start_renderer_setup(state: &WuiGpuSurfaceState, format: wgpu::TextureFormat)
     let msaa_max_samples = state.msaa_max_samples;
 
     spawn_local(async move {
-        let gpu = runtime.context();
-        let ctx = GpuContext::new(
-            &gpu.adapter,
-            &gpu.device,
-            &gpu.queue,
-            format,
-            gpu.shader_cache.as_ref(),
-            gpu.scene_renderer(),
-            msaa_max_samples,
-            redraw_handle.clone(),
-        );
         let GpuSurfaceSemantic { gpu_surface, env } = &mut semantic;
-        gpu_surface.setup(&ctx, env).await;
+        // Setup retries until it completes on the context that is still the
+        // runtime's current one. A device loss mid-setup leaves the just-built
+        // pipelines bound to a dead device — installing them would panic the
+        // next frame inside `wgpu`'s purged storage, so a stale or crashed
+        // attempt loops around and runs again on the rebuilt context.
+        loop {
+            let gpu = runtime.context();
+            let outcome = {
+                let ctx = GpuContext::new(
+                    &gpu.adapter,
+                    &gpu.device,
+                    &gpu.queue,
+                    format,
+                    gpu.shader_cache.as_ref(),
+                    gpu.scene_renderer(),
+                    msaa_max_samples,
+                    redraw_handle.clone(),
+                );
+                std::panic::AssertUnwindSafe(gpu_surface.setup(&ctx, env))
+                    .catch_unwind()
+                    .await
+            };
+            if let Err(payload) = outcome {
+                if gpu.device_lost_reason().is_none() {
+                    std::panic::resume_unwind(payload);
+                }
+                continue;
+            }
+            if gpu.device_lost_reason().is_none()
+                && runtime.context().generation() == gpu.generation()
+            {
+                break;
+            }
+        }
         semantic_slot.replace(Some(semantic));
         setup_ready.set(true);
         redraw_handle.request_redraw();
     })
     .detach();
+}
+
+/// Whether the process was asked to fake one device loss, for end-to-end
+/// recovery checks on real Android drivers that do not lose on demand.
+///
+/// `WATERUI_SIMULATE_GPU_LOSS` is a testing hook: when set, the first render
+/// call marks the shared context lost and `ensure_current_context` takes the
+/// same rebuild a driver-reported loss would.
+#[cfg(target_os = "android")]
+fn simulate_device_loss_requested() -> bool {
+    static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *REQUESTED.get_or_init(|| std::env::var_os("WATERUI_SIMULATE_GPU_LOSS").is_some())
+}
+
+/// Marks the shared context lost exactly once per process when the
+/// `WATERUI_SIMULATE_GPU_LOSS` test hook is set.
+#[cfg(target_os = "android")]
+fn simulate_device_loss_once(state: &WuiGpuSurfaceState) {
+    static FIRED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    if !FIRED.swap(true, core::sync::atomic::Ordering::Relaxed) && simulate_device_loss_requested()
+    {
+        state
+            .runtime
+            .context()
+            .mark_device_lost_for_testing("simulated loss via WATERUI_SIMULATE_GPU_LOSS");
+    }
+}
+
+/// The runtime's current context, recreating the attached surface and the
+/// renderer when the generation this state was built under died with its
+/// device.
+///
+/// The `ANativeWindow` outlives any `wgpu::Surface` made from it, so recovery
+/// is a local rebuild: the frame this state was asked for still runs, just
+/// against the fresh device.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub(crate) fn ensure_current_context(
+    state: &mut WuiGpuSurfaceState,
+) -> Arc<waterui_graphics::shared_context::SharedGpuContext> {
+    let gpu = state.runtime.context();
+    if gpu.generation() == state.context_generation {
+        return gpu;
+    }
+
+    tracing::warn!(
+        old = state.context_generation,
+        new = gpu.generation(),
+        "GPU device was replaced; recreating the surface and renderer"
+    );
+    state.context_generation = gpu.generation();
+    #[cfg(target_os = "android")]
+    {
+        state.composite_texture = None;
+    }
+
+    // A detached surface has no `wgpu::Surface` to recreate, but its renderer —
+    // set up back at the first attach — is still device-bound.
+    if state.wgpu_surface.is_some() {
+        drop(state.wgpu_surface.take());
+        state.config = None;
+        let (surface, config) = create_attached_surface(
+            &gpu,
+            state.attached_layer,
+            state.current_width,
+            state.current_height,
+            state.renderer_format.get(),
+            state.attached_prefers_hdr,
+        );
+        state.config = Some(config);
+        state.wgpu_surface = Some(surface);
+    }
+    if let Some(format) = state.renderer_format.get() {
+        restart_renderer_setup(state, format);
+    }
+    gpu
 }
 
 fn with_semantic_mut<T>(
@@ -646,6 +777,12 @@ pub unsafe extern "C" fn waterui_gpu_surface_create(
         runtime,
         #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         wgpu_surface: None,
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        attached_layer: core::ptr::null_mut(),
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        attached_prefers_hdr: false,
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        context_generation: 0,
         renderer_format: Cell::new(None),
         #[cfg(target_os = "android")]
         composite_texture: None,
@@ -761,8 +898,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_attach(
         "waterui_gpu_surface_attach: native surface is already attached"
     );
 
+    let gpu = state.runtime.context();
     let (surface, config) = create_attached_surface(
-        &state.runtime,
+        &gpu,
         layer,
         width,
         height,
@@ -775,6 +913,9 @@ pub unsafe extern "C" fn waterui_gpu_surface_attach(
     let format = config.format;
     state.config = Some(config);
     state.wgpu_surface = Some(surface);
+    state.attached_layer = layer;
+    state.attached_prefers_hdr = prefers_hdr;
+    state.context_generation = gpu.generation();
     start_renderer_setup(state, format);
 }
 
@@ -935,6 +1076,38 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
         "waterui_gpu_surface_render: scale must be a positive, finite device-pixel ratio, got {scale}"
     );
 
+    // Test hook first so the marked loss is recovered inside this same frame.
+    #[cfg(target_os = "android")]
+    simulate_device_loss_once(state);
+
+    // A device loss between frames lands here: the runtime swaps in a rebuilt
+    // context, and the surface — bound to the dead device — is recreated from
+    // the retained `ANativeWindow` before this frame touches it.
+    let gpu = ensure_current_context(state);
+
+    // A `None` is the mid-frame device-loss path: the frame stays pending and
+    // the next render call lands on the rebuilt context.
+    super::run_gpu_frame(&gpu, "waterui_gpu_surface_render", || {
+        render_frame_body(state, &gpu, width, height, scale)
+    })
+    .unwrap_or(true)
+}
+
+/// Runs one frame's worth of work against `gpu` on an attached surface.
+///
+/// Split from [`waterui_gpu_surface_render`] so the frame body can run inside
+/// [`super::run_gpu_frame`]'s `catch_unwind`: a driver-reported device loss
+/// mid-call purges `wgpu`'s storage while the frame is still using it, and the
+/// resulting internal panic is what the caller catches — but only when the
+/// context confirms the loss.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn render_frame_body(
+    state: &mut WuiGpuSurfaceState,
+    gpu: &Arc<waterui_graphics::shared_context::SharedGpuContext>,
+    width: u32,
+    height: u32,
+    scale: f64,
+) -> bool {
     // Handle resize if needed
     if width != state.current_width || height != state.current_height {
         {
@@ -948,7 +1121,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 
         super::checked_surface_configure(
             attached_surface(state, "waterui_gpu_surface_render"),
-            &state.runtime.context().device,
+            &gpu.device,
             attached_config(state, "waterui_gpu_surface_render"),
             "waterui_gpu_surface_render",
         );
@@ -957,14 +1130,15 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     }
 
     let format = attached_config(state, "waterui_gpu_surface_render").format;
-    assert!(
-        state.setup_ready.get(),
-        "waterui_gpu_surface_render called before asynchronous setup completed"
-    );
+    if !state.setup_ready.get() {
+        // The renderer is mid-setup — first attach or a device-loss rebuild —
+        // so the frame stays pending and the host comes back for it.
+        return true;
+    }
 
     let Some(output) = super::acquire_surface_texture(
         attached_surface(state, "waterui_gpu_surface_render"),
-        &state.runtime.context().device,
+        gpu,
         attached_config(state, "waterui_gpu_surface_render"),
         "waterui_gpu_surface_render",
     ) else {
@@ -984,8 +1158,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
 
     // Create frame data
     let mut frame = GpuFrame::new(
-        &state.runtime.context().device,
-        &state.runtime.context().queue,
+        &gpu.device,
+        &gpu.queue,
         &output.texture,
         view,
         format,
@@ -1007,7 +1181,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_render(
     let needs_redraw = frame.was_redraw_requested() || state.redraw_handle.take_dirty();
 
     output.present();
-    reclaim_device(&state.runtime.context().device);
+    reclaim_device(&gpu.device);
 
     needs_redraw
 }
@@ -1208,9 +1382,10 @@ pub(super) fn render_into_texture(
     scale: f64,
 ) {
     let (elapsed, delta) = advance_frame_timing(state);
+    let gpu = state.runtime.context();
     let mut frame = GpuFrame::new(
-        &state.runtime.context().device,
-        &state.runtime.context().queue,
+        &gpu.device,
+        &gpu.queue,
         texture,
         view,
         format,
@@ -1237,6 +1412,14 @@ pub(super) fn render_into_texture(
 #[cfg(target_os = "android")]
 pub(super) fn composite_runtime(state: &WuiGpuSurfaceState) -> GpuRuntime {
     state.runtime.clone()
+}
+
+/// Whether the surface's renderer setup has completed — `false` while a
+/// device-loss rebuild is re-running it, when a composite would panic inside
+/// `with_semantic_mut` instead of drawing.
+#[cfg(target_os = "android")]
+pub(super) fn composite_source_ready(state: &WuiGpuSurfaceState) -> bool {
+    state.setup_ready.get()
 }
 
 /// Renders this surface's next frame into the texture a capture reads it from.
@@ -1331,6 +1514,19 @@ pub unsafe extern "C" fn waterui_gpu_capture_fence_on_complete(
     callback: WuiGpuCaptureCompletionCallback,
     drop: WuiGpuCaptureCompletionDrop,
 ) {
+    // A null fence is what a capture entry point returns when the device was
+    // lost mid-copy: there is no submission to wait on, so the completion runs
+    // immediately and the backend can release the buffer it lent.
+    if fence.is_null() {
+        // SAFETY: `callback`, `drop`, and `context` were registered together and
+        // the context is still live — the copy never submitted, so nothing else
+        // consumed it.
+        unsafe {
+            callback(context);
+            drop(context);
+        }
+        return;
+    }
     // SAFETY: the caller contract makes `fence` an owning pointer from the matching
     // FFI constructor, so reclaiming the box frees it exactly once.
     let fence = unsafe { Box::from_raw(fence) };

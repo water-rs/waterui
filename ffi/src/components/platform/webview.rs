@@ -4,10 +4,12 @@
 //! to create and control web views.
 
 use alloc::boxed::Box;
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::cell::Cell;
+use core::fmt::Write as _;
 
+use crate::array::{WuiArray, WuiData};
 use crate::closure::WuiFn;
 use crate::reactive::WuiComputed;
 use crate::{IntoFFI, IntoRust, WuiEnv, WuiStr};
@@ -16,8 +18,9 @@ use cookie::Cookie;
 use nami::{Signal, SignalExt};
 use suiteki::Str;
 use waterui_webview::{
-    BackendEvent, CustomWebViewController, JsReply, ScriptInjectionTime, Url, WatcherGuard,
-    WatcherSet, WebView, WebViewController, WebViewError, WebViewEvent, WebViewHandle,
+    AssetResponse, AssetServer, BackendEvent, CustomWebViewController, JsReply,
+    ScriptInjectionTime, Url, WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController,
+    WebViewError, WebViewEvent, WebViewHandle,
 };
 
 // =============================================================================
@@ -342,6 +345,16 @@ pub struct WuiWebViewHandle {
     /// with `awaitPromise`, or resolve the promise in JavaScript and report the
     /// result through the backend's own bridge.
     pub call_async_javascript: unsafe extern "C" fn(*mut (), WuiStr, WuiJsCallback),
+
+    // Asset origin
+    /// The origin this view serves bundled assets under, when it was created
+    /// with a `WuiAssetServer`: the engine's own answer — `waterui://localhost`
+    /// on the `WebKit` family and CEF, `https://waterui.localhost` where only
+    /// `https` can be a secure context. An empty string means the view was
+    /// opened without an asset server, and a `None` entry point means the
+    /// backend has no interception facility to stand one on — which
+    /// `WebView::open_assets` reports as the configuration error it is.
+    pub asset_origin: Option<unsafe extern "C" fn(*const ()) -> WuiStr>,
 
     // Cleanup
     /// Release the native handle.
@@ -684,6 +697,17 @@ impl WebViewHandle for FfiWebViewHandle {
         // SAFETY: as above.
         unsafe { self.evaluate_through(self.ffi.call_async_javascript, body) }
     }
+
+    fn asset_origin(&self) -> Option<Url> {
+        let asset_origin = self.ffi.asset_origin?;
+        // SAFETY: `asset_origin` and `ffi.data` come from the same registration,
+        // and the returned `WuiStr` is an owning handle consumed here once.
+        let origin: Str = unsafe { asset_origin(self.ffi.data.cast_const()).into_rust() };
+        if origin.is_empty() {
+            return None;
+        }
+        Some(parse_url(&origin))
+    }
 }
 
 impl FfiWebViewHandle {
@@ -882,11 +906,175 @@ pub unsafe extern "C" fn waterui_webview_native_handle(webview: *mut WuiWebView)
 }
 
 // =============================================================================
+// Asset server FFI
+// =============================================================================
+
+/// The [`AssetServer`] a native web view owns.
+///
+/// `FfiWebViewController` boxes the server a `WebView` was opened with and hands
+/// the pointer to the backend's [`WuiCreateWebViewFn`] inside
+/// [`WuiWebViewConfig`]. The backend holds it for the life of the native view,
+/// answers the engine's interception facility through
+/// [`waterui_webview_asset_server_respond`], and frees it with
+/// [`waterui_webview_asset_server_free`] when the view dies.
+pub struct WuiAssetServer {
+    pub(crate) server: AssetServer,
+}
+
+impl core::fmt::Debug for WuiAssetServer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WuiAssetServer").finish_non_exhaustive()
+    }
+}
+
+impl IntoFFI for AssetServer {
+    type FFI = *mut WuiAssetServer;
+    fn into_ffi(self) -> Self::FFI {
+        Box::into_raw(Box::new(WuiAssetServer { server: self }))
+    }
+}
+
+impl IntoFFI for Option<AssetServer> {
+    type FFI = *mut WuiAssetServer;
+    fn into_ffi(self) -> Self::FFI {
+        self.map_or_else(core::ptr::null_mut, IntoFFI::into_ffi)
+    }
+}
+
+/// The creation-time inputs a native view is opened with.
+///
+/// Engines register their interception facility while the view is constructed,
+/// so the asset server arrives here rather than through a handle method that
+/// could only run after the fact.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiWebViewConfig {
+    /// The asset server the view's local asset origin answers through, or null
+    /// when the view serves no bundled assets. Ownership passes to the native
+    /// view; it frees the pointer with `waterui_webview_asset_server_free`.
+    pub asset_server: *mut WuiAssetServer,
+}
+
+/// What the asset origin answered — the FFI shape of [`AssetResponse`].
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiAssetResponse {
+    /// The HTTP status code.
+    pub status: u16,
+    /// The response headers as `"Name: value"` lines joined by `\n`.
+    pub headers: WuiStr,
+    /// The response body.
+    pub body: WuiData,
+}
+
+impl IntoFFI for AssetResponse {
+    type FFI = WuiAssetResponse;
+    fn into_ffi(self) -> Self::FFI {
+        let mut headers = String::new();
+        for (name, value) in &self.headers {
+            // A header name or value can never contain a newline, so the lines
+            // form is lossless.
+            let _ = writeln!(headers, "{}: {}", name.as_str(), value.as_str());
+        }
+        WuiAssetResponse {
+            status: self.status,
+            headers: Str::from(headers).into_ffi(),
+            body: WuiArray::new(self.body),
+        }
+    }
+}
+
+/// Serves one request the native engine intercepted on the asset origin.
+///
+/// Callable from any thread — the server behind `server` is `Send + Sync`, and
+/// engines invoke this from whatever thread their network stack uses (a
+/// `WKURLSchemeHandler` callback, a `WebViewClient` worker thread, a `WebKit` URI
+/// scheme task, a CEF IO thread). GET and HEAD are the only methods served —
+/// anything else is refused with `405` without consulting the server — and a
+/// path that escapes the asset root is refused with `404`, so a backend must
+/// route every intercepted request through here rather than only the shapes it
+/// expects.
+///
+/// # Safety
+///
+/// - `server` must be a live pointer the backend received inside
+///   [`WuiWebViewConfig`]; it is borrowed for the call, not consumed.
+/// - `method`, `path` and `query` are owning `WuiStr`s and are consumed; an
+///   empty `query` means the request carried none.
+/// - The returned response is owned by the caller and freed with
+///   [`waterui_webview_asset_response_free`] once its fields have been read.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_webview_asset_server_respond(
+    server: *const WuiAssetServer,
+    method: WuiStr,
+    path: WuiStr,
+    query: WuiStr,
+) -> WuiAssetResponse {
+    // SAFETY: the caller contract makes each an owning handle from the matching
+    // FFI constructor, consumed here exactly once.
+    let method: Str = unsafe { method.into_rust() };
+    // SAFETY: as above.
+    let path: Str = unsafe { path.into_rust() };
+    // SAFETY: as above.
+    let query: Str = unsafe { query.into_rust() };
+    // SAFETY: the caller contract makes `server` a live `WuiAssetServer` for the
+    // view's lifetime; it is only borrowed.
+    let server = unsafe { &*server };
+    waterui_webview::assets::dispatch(
+        &server.server,
+        method.as_str(),
+        path.as_str(),
+        if query.is_empty() {
+            None
+        } else {
+            Some(query.as_str())
+        },
+    )
+    .into_ffi()
+}
+
+/// Frees a [`WuiAssetResponse`] produced by [`waterui_webview_asset_server_respond`].
+///
+/// # Safety
+///
+/// `response` must be an owning handle from that function, freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_webview_asset_response_free(response: WuiAssetResponse) {
+    // SAFETY: the caller contract makes both fields owning handles consumed once
+    // here — the headers by `into_rust`, the body buffer by `consume`.
+    let _headers: Str = unsafe { response.headers.into_rust() };
+    response.body.consume();
+}
+
+/// Releases the [`WuiAssetServer`] a native view was created with.
+///
+/// The backend calls this when the native view dies; a null pointer is a no-op
+/// so the same teardown path serves views opened without assets.
+///
+/// # Safety
+///
+/// `server` must be null or a pointer the backend received inside
+/// [`WuiWebViewConfig`] that has not been freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_webview_asset_server_free(server: *mut WuiAssetServer) {
+    if server.is_null() {
+        return;
+    }
+    // SAFETY: the caller contract makes `server` an owning pointer from
+    // `FfiWebViewController::open` that has not been freed, so reclaiming the
+    // box frees it exactly once.
+    unsafe { drop(Box::from_raw(server)) };
+}
+
+// =============================================================================
 // WebViewController Installation
 // =============================================================================
 
 /// Type for the native function that creates a new `WebView`.
-pub type WuiCreateWebViewFn = unsafe extern "C" fn() -> WuiWebViewHandle;
+///
+/// Receives the creation-time [`WuiWebViewConfig`]; ownership of every owning
+/// pointer inside it passes to the backend.
+pub type WuiCreateWebViewFn = unsafe extern "C" fn(WuiWebViewConfig) -> WuiWebViewHandle;
 
 /// FFI-compatible `WebViewController` implementation.
 struct FfiWebViewController {
@@ -894,10 +1082,14 @@ struct FfiWebViewController {
 }
 
 impl CustomWebViewController for FfiWebViewController {
-    fn open(&self) -> impl WebViewHandle {
+    fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
+        let config = WuiWebViewConfig {
+            asset_server: config.asset_server.into_ffi(),
+        };
         // SAFETY: `create_fn` is the backend's constructor, registered on this
-        // factory; it takes no arguments and hands back an owning handle.
-        let handle = unsafe { (self.create_fn)() };
+        // factory; `config` is passed by value, handing ownership of the boxed
+        // server to the native view it returns.
+        let handle = unsafe { (self.create_fn)(config) };
         FfiWebViewHandle::new(handle)
     }
 }

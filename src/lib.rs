@@ -81,7 +81,7 @@ pub mod prelude {
 
     pub use super::text::{TextConfig, font, highlight, styled};
 
-    pub use super::component::link::{Link, link};
+    pub use super::component::link::{Link, LinkTarget, link};
     pub use super::component::list::{
         List, ListContent, ListItem, ListSection, Row, Section, detail_row, row,
     };
@@ -108,7 +108,7 @@ pub mod prelude {
     };
 
     // Background types (explicit to avoid module name conflict with layout::background)
-    pub use super::background::{Background, Material};
+    pub use super::background::{Background, Glass, GlassStyle, Material};
 
     // Asset types
     #[cfg(feature = "assets")]
@@ -183,6 +183,12 @@ pub use waterui_assets::{
     AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset, LargeFile,
     LargeFileAsset, VideoAsset,
 };
+/// `include_web!("web")` — the one-macro web frontend. Its expansion speaks
+/// [`webview`](crate::webview)'s asset-origin API and serves a staged
+/// [`Bundle`], so it is exported only when both features are on.
+#[doc(inline)]
+#[cfg(all(feature = "webview", feature = "assets"))]
+pub use waterui_assets_macros::include_web;
 #[doc(inline)]
 #[cfg(feature = "assets")]
 pub use waterui_assets_macros::{asset, assets, include_bundle};
@@ -230,6 +236,7 @@ macro_rules! __export_preview {
     ($fn_name:expr, $body:block) => {
         $crate::pastey::paste! {
             #[doc(hidden)]
+            #[cfg(debug_assertions)]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [<waterui_preview_ env!("CARGO_PKG_NAME") _ $fn_name>]() -> *mut () {
                 $body
@@ -241,16 +248,7 @@ macro_rules! __export_preview {
 #[doc(hidden)]
 pub use pastey;
 
-/// Configures a freshly-created environment with compile-time discovered app plugins.
-///
-/// This currently installs the runtime translation catalog generated from the caller's
-/// `i18n/*.toml` files. It is intended to be used at environment creation boundaries
-/// such as backend entry points.
-#[macro_export]
-macro_rules! configure_environment {
-    ($env:expr) => {{
-        let mut __waterui_env = $env;
-        $crate::Plugin::install($crate::catalog!(), &mut __waterui_env);
-        __waterui_env
-    }};
-}
+// `configure_environment!` lives in `waterui-core` so generated backend crates
+// that do not depend on the facade (the ESP32 harness names `waterui-core`,
+// `waterui-dew` and `waterui-locale` only) can still install the app catalog.
+pub use waterui_core::configure_environment;

@@ -1,0 +1,71 @@
+name: Bug report
+description: Report something that is broken or behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a defect. One issue covers one defect — if you found two problems, file two issues.
+
+        Title convention: `<area>: <what is wrong>`, e.g. `android: gradient example panics on uniform stride`.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Steps to reproduce, plus the smallest view code or project that shows the problem.
+      placeholder: |
+        1. water create repro
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      description: Where the defect shows up. Select every surface that applies.
+      multiple: true
+      options:
+        - Android backend
+        - Apple backend (iOS / macOS)
+        - GTK backend (Linux)
+        - Hydrolysis backend (desktop webview)
+        - Web / WASM frontend
+        - water CLI
+        - Core framework (runtime, layout, reactivity)
+        - Components
+        - FFI
+        - Graphics / rendering
+        - DevTools (inspector, MCP, preview)
+        - CI / release plumbing
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: WaterUI version
+      description: Output of `water --version`, or the crate versions from your Cargo.toml.
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Host OS, target device or simulator, Rust toolchain channel.
+      placeholder: macOS 26, iPhone 17 simulator, stable-aarch64-apple-darwin
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and backtraces
+      description: Relevant output from `water run --logs debug`, panic backtraces, or platform logs.
+      render: shell
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else — screenshots, regression range, related issues.

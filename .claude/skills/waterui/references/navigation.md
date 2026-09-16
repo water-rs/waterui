@@ -37,7 +37,7 @@ compensate for it with an `hstack` that imitates a bar.
 
 ```rust
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Pane { Inbox, Library, Settings }
+enum Pane { Inbox, Library, Settings, Search }
 
 let pane = binding(Pane::Inbox);
 
@@ -46,8 +46,12 @@ Tabs::new(&pane, vec![
         .badge(unread_count),
     Tab::container(Pane::Library, label("Library").icon(mdi::image_album()), library_split),
     Tab::container(Pane::Settings, label("Settings").icon(mdi::cog()), settings_stack),
+    Tab::container(Pane::Search, label("Search").icon(mdi::magnify()), search_stack)
+        .role(TabRole::Search),             // iOS: the trailing system search tab; elsewhere a regular tab
 ])
 .style(tab_style::automatic())
+.minimize_behavior(TabBarMinimizeBehavior::OnScrollDown)   // iOS 26 collapses the bar while scrolling; ignored elsewhere
+.bottom_accessory(now_playing_bar())        // iOS 26 glass bar above the tab bar (mini-player slot); not shown elsewhere
 ```
 
 **Use `Tab::container`, not a plain tab, whenever a tab has pushable content.** The

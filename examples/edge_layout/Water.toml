@@ -1,0 +1,6 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Edge Layout"
+bundle_identifier = "dev.waterui.edge_layout"

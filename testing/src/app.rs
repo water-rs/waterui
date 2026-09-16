@@ -340,6 +340,12 @@ fn mount_app(
         scale_factor.is_finite() && scale_factor > 0.0,
         "waterui-testing scale_factor must be finite and greater than zero, got {scale_factor}"
     );
+    // Every mount path funnels here and renders through hydrolysis, which
+    // owns no platform media bridge — so the self-drawn video realization
+    // applies on every host OS, including the ones `realization::install`
+    // skips because their system backend would bridge a native player.
+    let mut env = env;
+    waterui::realization::install_video(&mut env);
     let mut app = SemanticApp {
         env,
         content,
@@ -548,7 +554,6 @@ impl SemanticApp {
     }
 
     /// Starts a chainable semantic query.
-    #[must_use]
     pub fn query(&mut self) -> Query<'_> {
         Query {
             app: self,
@@ -654,6 +659,33 @@ impl SemanticApp {
             },
             inverted: false,
         }
+    }
+
+    /// Creates a UI-focus expectation: fulfilled once the selector resolves to
+    /// the element holding Hydrolysis UI focus.
+    #[must_use]
+    pub const fn expect_ui_focus(&self, selector: Selector) -> Expectation {
+        Expectation {
+            kind: ExpectationKind::UiFocus(selector),
+            inverted: false,
+        }
+    }
+
+    /// Resolves a node id to an [`ElementRef`] bound to the current tree, or
+    /// `None` when the id is absent.
+    ///
+    /// External drivers hold node ids rather than query results; this is the
+    /// entry point that turns one into a handle usable for scoped queries
+    /// ([`Selector::within`], [`Selector::children_of`]) and element-relative
+    /// pointer work.
+    pub fn element(&mut self, id: NodeId) -> Option<ElementRef> {
+        self.sync_tree();
+        let node = self.tree.node(id)?.clone();
+        Some(ElementRef {
+            node_id: id,
+            node,
+            revision: self.tree.revision(),
+        })
     }
 
     /// Waits for expectations using XCTest-like semantics.
@@ -833,6 +865,7 @@ impl SemanticApp {
                 }
                 self.tree[ids[0]].value() == Some(value.as_str())
             }
+            ExpectationKind::UiFocus(selector) => self.matches_ui_focus(selector),
         }
     }
 
@@ -870,7 +903,8 @@ impl SemanticApp {
         self.tree.matching(selector)
     }
 
-    pub(crate) fn resolve_elements(&mut self, selector: &Selector) -> ElementSet {
+    /// Resolves every element matching `selector` against the current tree.
+    pub fn resolve_elements(&mut self, selector: &Selector) -> ElementSet {
         let ids = self.matching_ids(selector);
         let elements = ids
             .into_iter()
@@ -915,15 +949,32 @@ impl SemanticApp {
         action: AccessibilityAction,
         data: Option<AccessibilityActionData>,
     ) -> bool {
+        let handled = self.queue_action(node_id, action, data);
+        self.settle();
+        handled
+    }
+
+    /// Performs an accessibility action on a node without the semantic settle
+    /// used by [`Self::perform_action`].
+    ///
+    /// The request is processed by the next pump, so a caller stepping the
+    /// virtual clock frame by frame — [`OffscreenApp::pump_for`] followed by
+    /// [`OffscreenApp::snapshot`] — observes the transient the action
+    /// triggers. Returns whether the runtime handled the action, with the
+    /// same failure semantics as [`Self::perform_action`].
+    pub fn queue_action(
+        &mut self,
+        node_id: NodeId,
+        action: AccessibilityAction,
+        data: Option<AccessibilityActionData>,
+    ) -> bool {
         let request = AccessibilityActionRequest {
             target_tree: AccessibilityTreeId::ROOT,
             target_node: node_id.as_accesskit(),
             action,
             data,
         };
-        let handled = self.driver.perform_action(request, &self.env);
-        self.settle();
-        handled
+        self.driver.perform_action(request, &self.env)
     }
 
     pub(crate) fn perform_action_expect(
@@ -953,20 +1004,36 @@ impl SemanticApp {
         )
     }
 
-    /// Clears the latest Hydrolysis-managed UI focus target.
+    /// Clears the latest Hydrolysis-managed UI focus target, then settles
+    /// resulting updates.
     ///
     /// A no-op when nothing holds UI focus.
     pub fn clear_ui_focus(&mut self) {
-        if self.driver.clear_ui_focus(&self.env) {
+        if self.queue_clear_ui_focus() {
             self.settle();
         }
+    }
+
+    /// Clears the latest Hydrolysis-managed UI focus target without the
+    /// semantic settle used by [`Self::clear_ui_focus`]. Returns whether a
+    /// focus target was released.
+    pub fn queue_clear_ui_focus(&mut self) -> bool {
+        self.driver.clear_ui_focus(&self.env)
     }
 
     /// Moves the pointer to viewport coordinates without pressing a button,
     /// then settles resulting updates.
     pub fn hover_at(&mut self, x: f32, y: f32) {
-        self.driver.hover_at(x, y, &self.env);
+        self.queue_hover_at(x, y);
         self.settle();
+    }
+
+    /// Moves the pointer to viewport coordinates without the semantic settle
+    /// used by [`Self::hover_at`]. The event is processed by the next pump,
+    /// so a hover-triggered transient stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_hover_at(&mut self, x: f32, y: f32) {
+        self.driver.hover_at(x, y, &self.env);
     }
 
     /// Dispatches a pointer tap at viewport coordinates and settles resulting updates.
@@ -985,8 +1052,16 @@ impl SemanticApp {
     /// Right-clicks at viewport coordinates, opening a context menu if there is
     /// one there.
     pub fn secondary_click_at(&mut self, x: f32, y: f32) {
-        self.driver.secondary_click(x, y, &self.env);
+        self.queue_secondary_click(x, y);
         self.settle();
+    }
+
+    /// Right-clicks at viewport coordinates without the semantic settle used
+    /// by [`Self::secondary_click_at`]. The event is processed by the next
+    /// pump, so a menu's opening transient stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_secondary_click(&mut self, x: f32, y: f32) {
+        self.driver.secondary_click(x, y, &self.env);
     }
 
     /// Dispatches a primary pointer-up event at viewport coordinates.
@@ -1009,6 +1084,35 @@ impl SemanticApp {
         to_y: f32,
         options: DragOptions,
     ) {
+        self.dispatch_drag(from_x, from_y, to_x, to_y, options);
+        self.settle();
+    }
+
+    /// Dispatches a drag between viewport coordinates without the semantic
+    /// settle used by [`Self::drag_from_to_with`]. The events — and the
+    /// per-step pumps when [`DragOptions::frame_per_step`] is set — are
+    /// processed immediately; only the final settle is skipped, so a
+    /// release-triggered transient stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_drag_from_to_with(
+        &mut self,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        options: DragOptions,
+    ) {
+        self.dispatch_drag(from_x, from_y, to_x, to_y, options);
+    }
+
+    fn dispatch_drag(
+        &mut self,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        options: DragOptions,
+    ) {
         let steps = options.steps.max(1);
         self.driver.pointer_down(from_x, from_y, &self.env);
         for step in 1..=steps {
@@ -1024,20 +1128,33 @@ impl SemanticApp {
             }
         }
         self.driver.pointer_up(to_x, to_y, &self.env);
-        self.settle();
     }
 
     /// Dispatches a wheel/trackpad scroll at viewport coordinates and settles resulting updates.
     pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) {
+        self.queue_scroll_at(x, y, dx, dy, is_line_delta);
+        self.settle();
+    }
+
+    /// Dispatches a wheel/trackpad scroll at viewport coordinates without the
+    /// semantic settle used by [`Self::scroll_at`]. The event is processed by
+    /// the next pump, so a scroll's glide transient stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) {
         self.driver
             .scroll_at(x, y, dx, dy, is_line_delta, &self.env);
-        self.settle();
     }
 
     /// Dispatches committed text through the Hydrolysis text input path.
     pub fn text_input(&mut self, text: impl Into<String>) {
-        self.driver.text_input(text.into(), &self.env);
+        self.queue_text_input(text);
         self.settle();
+    }
+
+    /// Dispatches committed text through the Hydrolysis text input path
+    /// without the semantic settle used by [`Self::text_input`].
+    pub fn queue_text_input(&mut self, text: impl Into<String>) {
+        self.driver.text_input(text.into(), &self.env);
     }
 
     /// Dispatches a named keyboard key such as `Backspace`, `Delete`, or `ArrowLeft`.
@@ -1047,8 +1164,7 @@ impl SemanticApp {
 
     /// Dispatches a named keyboard key with explicit modifiers held.
     pub fn press_named_key_with(&mut self, key: impl Into<String>, modifiers: Modifiers) {
-        self.driver
-            .key_press(KeyCode::Named(key.into()), modifiers, &self.env);
+        self.queue_key_press(KeyCode::Named(key.into()), modifiers);
         self.settle();
     }
 
@@ -1059,14 +1175,33 @@ impl SemanticApp {
 
     /// Dispatches a character keyboard key with explicit modifiers held.
     pub fn press_character_key_with(&mut self, key: impl Into<String>, modifiers: Modifiers) {
-        self.driver
-            .key_press(KeyCode::Character(key.into()), modifiers, &self.env);
+        self.queue_key_press(KeyCode::Character(key.into()), modifiers);
         self.settle();
     }
 
-    pub(crate) fn magnify_at(&mut self, x: f32, y: f32, factor: f32) {
-        self.driver.magnify_at(x, y, factor, &self.env);
+    /// Dispatches a keyboard key with explicit modifiers held, without the
+    /// semantic settle used by [`Self::press_named_key_with`] and
+    /// [`Self::press_character_key_with`]. The event is processed by the next
+    /// pump, so a key-triggered transient — a focus ring appearing on `Tab`,
+    /// a sheet dismissing on `Escape` — stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_key_press(&mut self, key: KeyCode, modifiers: Modifiers) {
+        self.driver.key_press(key, modifiers, &self.env);
+    }
+
+    /// Dispatches a magnification (pinch) gesture centered at viewport
+    /// coordinates and settles resulting updates.
+    pub fn magnify_at(&mut self, x: f32, y: f32, factor: f32) {
+        self.queue_magnify_at(x, y, factor);
         self.settle();
+    }
+
+    /// Dispatches a magnification (pinch) gesture without the semantic settle
+    /// used by [`Self::magnify_at`]. The event is processed by the next pump,
+    /// so a zoom transient stays observable to [`OffscreenApp::pump_for`] and
+    /// [`OffscreenApp::snapshot`].
+    pub fn queue_magnify_at(&mut self, x: f32, y: f32, factor: f32) {
+        self.driver.magnify_at(x, y, factor, &self.env);
     }
 
     /// Pumps virtual frames until the runtime reports quiescence — no queued
@@ -1097,6 +1232,17 @@ impl SemanticApp {
                 return;
             }
         }
+    }
+
+    /// Whether the runtime is quiescent: no queued input, no spawned work
+    /// awaiting a drain, and no renderer-scheduled semantic work.
+    ///
+    /// A running animation counts as scheduled work — an app that never comes
+    /// to rest never reports settled, which is what lets a caller stepping
+    /// [`OffscreenApp::pump_for`] tell "still animating" apart from "idle".
+    #[must_use]
+    pub fn is_settled(&self) -> bool {
+        self.driver.is_settled()
     }
 
     fn apply_pump_result(&mut self, outcome: DriverPumpResult) -> Option<Snapshot> {

@@ -683,6 +683,8 @@ pub fn reactivity_block_18() -> impl View {
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
 pub fn reactivity_block_19() {
+    use waterui::log::debug;
+
     async fn fetch() -> Str {
         Str::from("done")
     }
@@ -705,7 +707,7 @@ pub fn reactivity_block_19() {
     }
     {
         let view = Divider;
-        view.on_appear(|| waterui::log::debug!("shown"));
+        view.on_appear(|| debug!("shown"));
     }
     {
         let view = Divider;
@@ -713,7 +715,18 @@ pub fn reactivity_block_19() {
     }
     {
         let view = Divider;
-        view.on_change(&query, |new_value| waterui::log::debug!(?new_value));
+        view.on_change(&query, |new_value: Str| debug!(?new_value));
+    }
+    let history: Binding<Vec<Str>> = Binding::container(Vec::new()); // [glue: bound by the prose]
+    {
+        let view = Divider;
+        view.on_change(
+            &query,
+            |new_value: Str, State(history): State<Binding<Vec<Str>>>| {
+                history.append(new_value);
+            },
+        )
+        .state(&history);
     }
 }
 

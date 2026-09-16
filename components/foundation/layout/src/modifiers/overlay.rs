@@ -11,7 +11,8 @@ use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions,
+    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
+    ViewDimensions,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
@@ -19,6 +20,8 @@ use crate::{
 /// Cached measurement for a child during layout
 struct ChildMeasurement {
     dimensions: ViewDimensions,
+    /// The proposal the child was measured and will be placed with.
+    proposal: ProposalSize,
 }
 
 /// Layout used by [`Overlay`] to keep the base child's size authoritative while
@@ -61,18 +64,33 @@ impl Layout for OverlayLayout {
         )
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
 
-        // Measure all children
-        let child_proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        // The base is measured and placed under the selected proposal; each
+        // overlay layer is offered the resolved finite bounds.
+        let overlay_proposal = ProposalSize::new(bounds.width(), bounds.height());
 
         let measurements: Vec<ChildMeasurement> = children
             .iter()
-            .map(|child| ChildMeasurement {
-                dimensions: child.measure(child_proposal),
+            .enumerate()
+            .map(|(index, child)| {
+                let child_proposal = if index == 0 {
+                    proposal
+                } else {
+                    overlay_proposal
+                };
+                ChildMeasurement {
+                    dimensions: child.measure(child_proposal),
+                    proposal: child_proposal,
+                }
             })
             .collect();
 
@@ -81,9 +99,9 @@ impl Layout for OverlayLayout {
         if let Some(base) = measurements.first() {
             let base_width = overlay_placement_axis(base.dimensions.size.width, bounds.width());
             let base_height = overlay_placement_axis(base.dimensions.size.height, bounds.height());
-            placements.push(Rect::new(
-                bounds.origin(),
-                Size::new(base_width, base_height),
+            placements.push(SubviewPlacement::new(
+                Rect::new(bounds.origin(), Size::new(base_width, base_height)),
+                base.proposal,
             ));
         }
 
@@ -137,7 +155,10 @@ impl Layout for OverlayLayout {
                         .vertical(vertical)
                         .clamp(0.0, size.height),
             );
-            placements.push(Rect::new(origin, size));
+            placements.push(SubviewPlacement::new(
+                Rect::new(origin, size),
+                measurement.proposal,
+            ));
         }
 
         placements
@@ -190,7 +211,7 @@ pub struct Overlay<Base, Layer> {
     layer: Layer,
 }
 
-impl<Base, Layer> Overlay<Base, Layer> {
+impl<Base: View, Layer: View> Overlay<Base, Layer> {
     /// Creates a new overlay using the provided base view and overlay layer.
     #[must_use]
     pub const fn new(base: Base, layer: Layer) -> Self {
@@ -232,11 +253,18 @@ where
         } = self;
         FixedContainer::new(layout, (base, layer))
     }
+
+    /// Resolves to `FixedContainer` over the same layout and children in
+    /// `[base, layer]` order; reports what that container would.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout
+            .stretch_axis(&[self.base.stretch_axis(), self.layer.stretch_axis()])
+    }
 }
 
 /// Convenience constructor for creating an [`Overlay`] with the default alignment.
 #[must_use]
-pub const fn overlay<Base, Layer>(base: Base, layer: Layer) -> Overlay<Base, Layer> {
+pub const fn overlay<Base: View, Layer: View>(base: Base, layer: Layer) -> Overlay<Base, Layer> {
     Overlay::new(base, layer)
 }
 
@@ -295,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn test_overlay_placement_center() {
+    fn test_overlay_placement_center_bounded_proposal() {
         let layout = OverlayLayout {
             alignment: Alignment::Center,
         };
@@ -310,15 +338,16 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut base, &mut overlay_child];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
         // Base fills bounds
-        assert_eq!(rects[0].width(), 100.0);
-        assert_eq!(rects[0].height(), 100.0);
+        assert_eq!(placements[0].frame.width(), 100.0);
+        assert_eq!(placements[0].frame.height(), 100.0);
 
         // Overlay child centered
-        assert_eq!(rects[1].x(), 40.0); // (100 - 20) / 2
-        assert_eq!(rects[1].y(), 40.0); // (100 - 20) / 2
+        assert_eq!(placements[1].frame.x(), 40.0); // (100 - 20) / 2
+        assert_eq!(placements[1].frame.y(), 40.0); // (100 - 20) / 2
     }
 
     #[test]

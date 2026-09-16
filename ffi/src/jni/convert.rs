@@ -181,6 +181,22 @@ impl ToJavaStruct for WuiMetadata<*mut WuiEnv> {
     }
 }
 
+impl ToJavaStruct for WuiMetadata<i32> {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataLayoutPriorityStruct"
+            ))
+            .expect("MetadataLayoutPriorityStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JI)V"),
+            &[JValue::Long(self.content as jlong), JValue::Int(self.value)],
+        )
+        .expect("Failed to create MetadataLayoutPriorityStruct")
+    }
+}
+
 /// `MetadataNavigationTransitionStruct(contentPtr: Long, id: Int)`
 impl ToJavaStruct for WuiMetadata<crate::id::WuiId> {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
@@ -559,7 +575,7 @@ impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityState {
     }
 }
 
-/// `MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float)`
+/// `MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float, cornerRadius: Float)`
 impl ToJavaStruct for crate::WuiMetadataShadow {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -567,13 +583,14 @@ impl ToJavaStruct for crate::WuiMetadataShadow {
             .expect("MetadataShadowStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJFFF)V"),
+            jni_sig!("(JJFFFF)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.color as jlong),
                 JValue::Float(self.value.offset_x),
                 JValue::Float(self.value.offset_y),
                 JValue::Float(self.value.radius),
+                JValue::Float(self.value.corner_radius),
             ],
         )
         .expect("Failed to create MetadataShadowStruct")
@@ -856,9 +873,9 @@ impl ToJavaStruct for crate::WuiMetadata<crate::WuiDynamicRangeMarker> {
     }
 }
 
-// The host struct itself only exists with the GPU stack compiled in, so its
-// Java projection has to carry the same gate.
-#[cfg(all(target_os = "android", feature = "gpu"))]
+// The host struct itself only exists with the self-drawn player compiled in,
+// so its Java projection has to carry the same gate.
+#[cfg(all(target_os = "android", feature = "video"))]
 impl ToJavaStruct for crate::components::media::video::WuiAndroidVideoSurfaceHost {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -875,6 +892,75 @@ impl ToJavaStruct for crate::components::media::video::WuiAndroidVideoSurfaceHos
             ],
         )
         .expect("Failed to create AndroidVideoSurfaceHostStruct")
+    }
+}
+
+/// `MetadataDraggableStruct(contentPtr: Long, draggablePtr: Long)`
+///
+/// The `WuiDraggable` is boxed so Kotlin can pass a stable `*mut WuiDraggable`
+/// back to `draggableGetData` / `dropDraggable`; `dropDraggable` releases both
+/// the box and the wrapper inside it.
+impl ToJavaStruct for crate::WuiMetadataDraggable {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataDraggableStruct"
+            ))
+            .expect("MetadataDraggableStruct class not found");
+        let draggable = Box::into_raw(Box::new(self.value));
+        env.new_object(
+            &class,
+            jni_sig!("(JJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(draggable as jlong),
+            ],
+        )
+        .expect("Failed to create MetadataDraggableStruct")
+    }
+}
+
+/// `MetadataDropDestinationStruct(contentPtr: Long, destinationPtr: Long)`
+///
+/// The `WuiDropDestination` is boxed for the same reason as `WuiDraggable`.
+impl ToJavaStruct for crate::WuiMetadataDropDestination {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataDropDestinationStruct"
+            ))
+            .expect("MetadataDropDestinationStruct class not found");
+        let destination = Box::into_raw(Box::new(self.value));
+        env.new_object(
+            &class,
+            jni_sig!("(JJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(destination as jlong),
+            ],
+        )
+        .expect("Failed to create MetadataDropDestinationStruct")
+    }
+}
+
+/// `DragDataStruct(tag: Int, value: String)`
+impl ToJavaStruct for crate::drag_drop::WuiDragData {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        // SAFETY: this `WuiStr` is owned here, so reclaiming the Rust string
+        // behind it happens exactly once.
+        let value: waterui::Str = unsafe { crate::IntoRust::into_rust(self.value) };
+        let text = env
+            .new_string(value.as_str())
+            .expect("Failed to create drag data string");
+        let class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/DragDataStruct"))
+            .expect("DragDataStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(ILjava/lang/String;)V"),
+            &[JValue::Int(self.tag as jint), JValue::Object(&text)],
+        )
+        .expect("Failed to create DragDataStruct")
     }
 }
 
@@ -1763,6 +1849,25 @@ impl ToJavaStruct for crate::components::progress::WuiProgress {
     }
 }
 
+/// `WuiBadge -> BadgeStruct(valuePtr, contentPtr, colorPtr)`
+impl ToJavaStruct for crate::components::badge::WuiBadge {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/BadgeStruct"))
+            .expect("BadgeStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJJ)V"),
+            &[
+                JValue::Long(self.value as jlong),
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.color as jlong),
+            ],
+        )
+        .expect("Failed to create BadgeStruct")
+    }
+}
+
 /// `WuiGpuSurface -> GpuSurfaceStruct(rendererPtr, HDR preference, PiP host)`
 #[cfg(feature = "gpu")]
 impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
@@ -1827,6 +1932,7 @@ impl ToJavaStruct for crate::components::picture::WuiPicture {
 }
 
 /// `*mut WuiWebView -> WebViewStruct(webviewPtr)`
+#[cfg(feature = "webview")]
 impl ToJavaStruct for *mut crate::components::webview::WuiWebView {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env

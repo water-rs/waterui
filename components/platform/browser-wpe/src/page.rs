@@ -24,7 +24,7 @@ use waterui_watcher_set::WatcherSet;
 use waterui_webview::{BackendEvent, WebViewError, WebViewEvent, bridge};
 use wgpu_external_frame::dma_buf::DmaBufFrame;
 
-use crate::abi::{WaterWpeBytes, WaterWpeFrame, WaterWpePage};
+use crate::abi::{WaterWpeAssetResponse, WaterWpeBytes, WaterWpeFrame, WaterWpePage};
 use crate::frame::frame_from_abi;
 use crate::runtime::{RuntimeApi, WpeRuntime, take_error};
 
@@ -170,6 +170,27 @@ impl WpePage {
             *(*context_ptr).page.borrow_mut() = Rc::downgrade(&page.inner);
         }
         page
+    }
+
+    /// Arms the page's `waterui://localhost` origin, answered by `server`.
+    ///
+    /// Call before the first [`load_uri`](Self::load_uri): the bridge installs
+    /// the scheme interception on the web context and hands `server` over as
+    /// the page's answer, so an asset URL can only be navigated to once the
+    /// origin resolves. The bridge frees the boxed server when the page dies.
+    pub fn set_asset_server(&self, server: waterui_webview::AssetServer) {
+        let server = Box::into_raw(Box::new(server));
+        // SAFETY: `raw` is the live page this type owns; the boxed server is
+        // handed to the bridge, which frees it through `destroy_asset_server`
+        // when the page dies — once, before `destroy_client_context` runs.
+        unsafe {
+            (self.inner.state.api.api.page_set_asset_server)(
+                self.inner.raw.as_ptr(),
+                asset_callback,
+                server.cast(),
+                destroy_asset_server,
+            );
+        }
     }
 
     fn string(value: &str, context: &str) -> CString {
@@ -759,9 +780,12 @@ unsafe extern "C" fn message_callback(
 
 /// Hands one script back across the C ABI, transferring ownership of its buffer.
 fn respond(script: String) -> WaterWpeBytes {
-    let mut response = Box::new(ResponseBytes {
-        bytes: script.into_bytes(),
-    });
+    bytes_response(script.into_bytes())
+}
+
+/// Hands `bytes` across the C ABI, transferring ownership of the buffer.
+fn bytes_response(bytes: Vec<u8>) -> WaterWpeBytes {
+    let mut response = Box::new(ResponseBytes { bytes });
     let payload = WaterWpeBytes {
         data: response.bytes.as_ptr(),
         len: response.bytes.len(),
@@ -770,6 +794,54 @@ fn respond(script: String) -> WaterWpeBytes {
     };
     let _ = Box::into_raw(response);
     payload
+}
+
+unsafe extern "C" fn destroy_asset_server(server: *mut c_void) {
+    // SAFETY: bridge ABI call on the server this page handed over; see the
+    // module safety note.
+    unsafe { drop(Box::from_raw(server.cast::<waterui_webview::AssetServer>())) };
+}
+
+/// Answers one `waterui` request the bridge routed to the page.
+///
+/// The URI arrives whole and is decomposed by
+/// [`assets::asset_target`](waterui_webview::assets::asset_target) — which is
+/// also what confines the scheme to `waterui://localhost`; a `waterui` URL on
+/// any other host gets a 404 — before [`assets::dispatch`] applies the shared
+/// method and traversal rules.
+unsafe extern "C" fn asset_callback(
+    server: *mut c_void,
+    method: *const c_char,
+    uri: *const c_char,
+) -> WaterWpeAssetResponse {
+    // SAFETY: `server` is the boxed `AssetServer` `set_asset_server` handed the
+    // bridge, live for the page's lifetime; `method` and `uri` are the engine's
+    // NUL-terminated strings for this call.
+    let (server, method, uri) = unsafe {
+        (
+            &*server.cast::<waterui_webview::AssetServer>(),
+            CStr::from_ptr(method).to_string_lossy(),
+            CStr::from_ptr(uri).to_string_lossy(),
+        )
+    };
+    let response = waterui_webview::assets::asset_target(&uri, waterui_webview::ASSET_ORIGIN)
+        .map_or_else(
+            waterui_webview::AssetResponse::not_found,
+            |(path, query)| waterui_webview::assets::dispatch(server, &method, path, query),
+        );
+    // The wire form is "Name: value" lines joined by `\n` — the same the FFI
+    // asset contract uses; header names and values can never contain a
+    // newline, so the lines form is lossless.
+    let mut headers = String::new();
+    for (name, value) in &response.headers {
+        use std::fmt::Write as _;
+        let _ = writeln!(headers, "{}: {}", name.as_str(), value.as_str());
+    }
+    WaterWpeAssetResponse {
+        status: u32::from(response.status),
+        headers: bytes_response(headers.into_bytes()),
+        body: bytes_response(response.body),
+    }
 }
 
 unsafe extern "C" fn string_result_callback(

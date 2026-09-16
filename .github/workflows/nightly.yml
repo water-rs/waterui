@@ -1,18 +1,27 @@
 name: Nightly
 
-# The full matrix (#379), once a day against `dev` and on demand. Every
-# check that a pull request used to pay for on every push and that a change
-# cannot break in the default-features shape lives here: every clippy shape,
-# macOS and Windows, the all-features runs, the macOS suites, the examples
-# on macOS, coverage and the `cargo hack --each-feature` sweep. `ci.yml` is
-# the per-change gate. A red nightly opens one tracking issue and keeps it
-# current instead of failing a run nobody is watching.
+# The framework's own test run (#923): the full matrix (#379), once a day
+# against `dev` and on demand. Every check that a pull request used to pay
+# for on every push and that a change cannot break in the default-features
+# shape lives here: the workspace tests and doctests, every clippy shape,
+# macOS and Windows, the all-features runs, the macOS suites, the examples,
+# the web view bridge's JavaScript suite, coverage and the `cargo hack
+# --each-feature` sweep. `ci.yml` is the per-change gate. The backend
+# repositories drive the examples on their platforms in their own nightlies;
+# they do not run this suite, and nothing else does either.
+#
+# A green run certifies its commit as an immutable `nightly-*` prerelease,
+# which `water channel nightly` resolves and the `Nightly healthy` check in
+# ci.yml requires on a pull request into `main`: a red nightly blocks the
+# release, not integration on `dev`. A red scheduled run opens one tracking
+# issue and keeps it current instead of failing a run nobody is watching.
 
 on:
-  # Off-peak UTC, staggered against the bench (05:41) and dependency (Mon
-  # 09:00) schedules so the runs do not compete for the org's job cap.
+  # Off-peak UTC, after the backend nightlies (02:00–06:47 UTC) have left
+  # the organization's concurrent-job cap and clear of the Monday 09:00
+  # dependency check.
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "11 8 * * *"
   workflow_dispatch:
 
 permissions:
@@ -57,8 +66,6 @@ jobs:
     # it belongs to the nightly matrix, not to any per-change gate.
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       # Its own key: an instrumented build shares no artifacts with the
       # ordinary ones, so storing it under the shared key would just overwrite
       # a useful tarball with one nothing else can restore. The target dir is
@@ -106,8 +113,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       # The single writer of `ci-ubuntu` (see Hygiene above).
       - uses: ./.github/actions/setup-rust
         with:
@@ -157,10 +162,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-          submodules: recursive
       - name: Prepare the tested snapshot
         id: snapshot
-        run: python3 .github/scripts/prepare_nightly.py
+        run: python3 .github/scripts/framework_manifest.py nightly
       - name: Upload immutable snapshot assets
         if: steps.snapshot.outputs.eligible == 'true'
         uses: softprops/action-gh-release@v2.3.2
@@ -178,7 +182,7 @@ jobs:
           body: |
             Certified framework revision: ${{ steps.snapshot.outputs.revision }}
             Full test run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-            framework.json records the tested dependency lock and submodule revisions.
+            framework.json records the tested dependency lock and backend revisions.
       - name: Publish the complete certification
         if: steps.snapshot.outputs.eligible == 'true'
         env:
@@ -186,7 +190,7 @@ jobs:
         run: gh release edit "$TAG" --draft=false --prerelease --latest=false
 
   # One issue per broken nightly, updated in place while it stays red, so a
-  # failure that nobody was watching at 03:17 UTC is on the board by morning.
+  # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
     needs: [test, windows, coverage, feature-checks, webview-js, promote]

@@ -146,6 +146,11 @@ version_group = "waterui"
 git_tag_name = "assets-v{{ version }}"
 
 [[package]]
+name = "waterui-assets-core"
+version_group = "waterui"
+git_tag_name = "assets-core-v{{ version }}"
+
+[[package]]
 name = "waterui-assets-planner"
 version_group = "waterui"
 git_tag_name = "assets-planner-v{{ version }}"
@@ -169,6 +174,11 @@ version_group = "waterui"
 name = "waterui-preview-protocol"
 version_group = "waterui"
 git_tag_name = "preview-protocol-v{{ version }}"
+
+[[package]]
+name = "waterui-mcp-protocol"
+version_group = "waterui"
+git_tag_name = "mcp-protocol-v{{ version }}"
 
 [[package]]
 name = "waterui-preview"
@@ -205,10 +215,3 @@ version_group = "waterui"
 [[package]]
 name = "waterui-backend-core"
 version_group = "waterui"
-
-# Tooling
-
-[[package]]
-name = "waterui-cli"
-version_group = "waterui"
-git_tag_name = "waterui-cli-v{{ version }}"

@@ -19,72 +19,18 @@ permissions:
   id-token: write
 
 jobs:
-  tag-backends:
-    name: Tag the backend repositories
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-      # A released CLI scaffolds each backend at the `v<version>` tag of its
-      # repository, where <version> is the CLI's own package version
-      # (cli/build.rs renders `v$CARGO_PKG_VERSION`), so the tag has to exist
-      # before `release` publishes. Each backend is pinned at the submodule
-      # commits that CLI version was cut at: its own release tag when one
-      # already exists, else the checkout this run is releasing. The PAT needs
-      # `contents: write` on both backend repositories — the workflow's own
-      # GITHUB_TOKEN cannot push to them.
-      - name: Push the release tag to each backend
-        env:
-          GH_TOKEN: ${{ secrets.SUBMODULE_UPDATE_PAT }}
-        run: |
-          set -euo pipefail
-
-          version="$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "waterui-cli") | .version')"
-          tag="v${version}"
-
-          if git rev-parse --verify --quiet "refs/tags/waterui-cli-${tag}" >/dev/null; then
-            pins="refs/tags/waterui-cli-${tag}"
-          else
-            pins="HEAD"
-          fi
-
-          for path in backends/apple backends/android; do
-            url="$(git config -f .gitmodules --get "submodule.${path}.url")"
-            repo="${url#https://github.com/}"
-            repo="${repo%.git}"
-            commit="$(git rev-parse "${pins}:${path}")"
-            existing="$(gh api "repos/${repo}/git/ref/tags/${tag}" --jq '.object.sha' 2>/dev/null || true)"
-            if [[ -z "${existing}" ]]; then
-              gh api "repos/${repo}/git/refs" -f "ref=refs/tags/${tag}" -f "sha=${commit}"
-              echo "Tagged ${repo} ${tag} at ${commit}"
-            elif [[ "${existing}" == "${commit}" ]]; then
-              echo "${repo} ${tag} already points at ${commit}"
-            else
-              echo "::error::${repo} ${tag} already exists at ${existing}, expected ${commit}"
-              exit 1
-            fi
-          done
-
   release:
     name: Release unpublished packages
     runs-on: ubuntu-latest
-    needs: tag-backends
     if: github.event_name == 'push'
     concurrency:
       group: release-${{ github.ref_name }}
       cancel-in-progress: false
-    outputs:
-      cli_tag: ${{ steps.cli_tag.outputs.cli_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-          submodules: recursive
       - uses: ./.github/actions/setup-rust
         with:
           cache: "false"
@@ -108,31 +54,45 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
       # Read the tag out of release-plz's own report rather than looking for
       # one on this job's HEAD. The tags do not land there: releasing 0.4.1
-      # created `waterui-cli-v0.2.1` on the release branch's tip, while this
+      # created `v0.4.1` on the release branch's tip, while this
       # job had the merge commit checked out, so `git tag --points-at HEAD`
-      # found nothing and the binary build skipped for a release that had
-      # published perfectly well (#540).
-      - name: Detect CLI release tag
-        id: cli_tag
+      # finds nothing even when a release published perfectly well (#540).
+      # The `v<version>` tag release-plz published for the `waterui` facade
+      # names the framework release `water create --channel stable` resolves.
+      # No facade release this run means no framework manifest to publish.
+      - name: Detect framework release tag
+        id: framework_tag
         shell: bash
         env:
           REPORT: ${{ steps.release_plz.outputs.report }}
         run: |
           set -euo pipefail
 
-          CLI_TAG="$(jq -r '[.releases[]? | select(.package_name == "waterui-cli") | .tag] | last // ""' <<< "$REPORT")"
+          FRAMEWORK_TAG="$(jq -r '[.releases[]? | select(.package_name == "waterui") | .tag] | last // ""' <<< "$REPORT")"
 
-          echo "cli_tag=${CLI_TAG}" >> "$GITHUB_OUTPUT"
-          if [[ -n "${CLI_TAG}" ]]; then
-            echo "release-plz released the CLI as ${CLI_TAG}."
+          echo "framework_tag=${FRAMEWORK_TAG}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${FRAMEWORK_TAG}" ]]; then
+            echo "release-plz released the framework as ${FRAMEWORK_TAG}."
           else
-            echo "release-plz released no waterui-cli this run."
+            echo "release-plz released no waterui facade this run."
           fi
+
+      # The manifest is built from the tagged tree itself: the script checks
+      # the tag out and records that revision's scaffold table and lock.
+      - name: Publish the stable framework manifest
+        if: steps.framework_tag.outputs.framework_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FRAMEWORK_TAG: ${{ steps.framework_tag.outputs.framework_tag }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/framework_manifest.py stable --tag "$FRAMEWORK_TAG"
+          gh release upload "$FRAMEWORK_TAG" framework.json --clobber
 
   release-pr:
     name: Prepare the next release
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     concurrency:
       group: release-plz-${{ github.event.workflow_run.head_branch }}
       cancel-in-progress: false
@@ -141,7 +101,6 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          submodules: recursive
       - uses: ./.github/actions/setup-rust
         with:
           cache: "false"
@@ -153,13 +112,3 @@ jobs:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-cli:
-    name: Build waterui-cli binaries
-    needs: release
-    if: needs.release.result == 'success' && needs.release.outputs.cli_tag != ''
-    uses: ./.github/workflows/build-cli.yml
-    with:
-      tag: ${{ needs.release.outputs.cli_tag }}
-    secrets:
-      HOMEBREW_PAT: ${{ secrets.HOMEBREW_PAT }}

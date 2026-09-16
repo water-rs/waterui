@@ -39,8 +39,6 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       # Only the integration branches write the shared Cargo source cache.
       # The Windows target archive no longer competes with the fast lint
       # gate for the repository's 10 GB budget (#458). Tests still run in
@@ -119,8 +117,6 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: ./.github/actions/setup-rust
         with:
           shared-key: cargo-home-${{ runner.os }}
@@ -159,8 +155,6 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       # Writes the Windows `~/.cargo` tarball (see the cache budget note in
       # ci.yml); the target directory belongs to the test job above. This
       # block used to save a 2.2 GB target tarball on every pull request

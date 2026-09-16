@@ -28,6 +28,7 @@ beyond pointers.
 | Colors, theme tokens, dark mode, icons, shapes, gradients, Material 3 | [references/styling.md](references/styling.md) |
 | Translations, plurals, locale switching, formatting, RTL | [references/i18n.md](references/i18n.md) |
 | `#[waterui::test]`, `#[waterui::bench]`, `#[preview]`, snapshots | [references/testing.md](references/testing.md) |
+| `water mcp` tool surface, animation stepping, agent drive loop | [references/mcp.md](references/mcp.md) |
 | `water` CLI, `Water.toml`, Cargo features, assets, permissions, platforms, embedded | [references/project.md](references/project.md) |
 | Compile errors, silent bugs, and their fixes | [references/troubleshooting.md](references/troubleshooting.md) |
 
@@ -109,7 +110,7 @@ struct Editor {
 }
 
 fn toggle_editing(State(state): State<Editor>) {
-    state.editing.set(!state.editing.get());
+    state.editing.toggle();
 }
 
 fn content(state: Editor) -> impl View {
@@ -286,10 +287,12 @@ owned by a closure or a modifier.
 
 ### Text
 
-`text()` for static strings, `text!` for anything reactive, interpolated, or localized.
-`text!` is the i18n pipeline: the whole literal is a translation-catalog key, and its
-placeholder names are slot keys — bare identifiers, aliased with `name = expr` when the
-local has a different name ([references/i18n.md](references/i18n.md)).
+`text()` for static strings, `text!` for anything reactive, interpolated, or plural.
+Both localize: `text("Settings")` resolves through the `TranslationCatalog` installed in
+the environment at runtime, while `text!` embeds the translations at compile time — the
+whole literal is a translation-catalog key, and its placeholder names are slot keys,
+bare identifiers aliased with `name = expr` when the local has a different name
+([references/i18n.md](references/i18n.md)).
 
 ```rust
 text("Settings").title()                        // title/headline/sub_headline/body/caption/footnote
@@ -374,10 +377,11 @@ shared configuration without every intermediate function taking it as a paramete
 
 ```rust
 use waterui::env::{use_env, with};
+use waterui::impl_extractor;
 
 #[derive(Clone)]
 struct ApiClient { base_url: Str }
-waterui::impl_extractor!(ApiClient);          // makes it a handler/`use_env` parameter
+impl_extractor!(ApiClient);                   // makes it a handler/`use_env` parameter
 
 // Seeding, usually in `app(env)`:
 env.insert(client);                            // in place
@@ -492,7 +496,10 @@ Once connected, the loop is: `snapshot` to read the tree, `act` (or `pointer` / 
 `type_text`) by node id — every mutating tool returns the settled tree, so no follow-up
 `snapshot` is needed — `screenshot` when layout or appearance matters, `wait` for
 conditions instead of polling, then edit the source and `restart` to rebuild and relaunch
-with the changes. Node ids are stable across turns within a session.
+with the changes. Node ids are stable across turns within a session. The full tool
+surface — state-filtered selectors, element-anchored pointer input, `settle: false` +
+`advance` for stepping through animations frame by frame — is in
+[references/mcp.md](references/mcp.md).
 
 `preview` renders a `#[preview]` function or an `expr` expression (e.g. `text("hi")`) and
 returns the PNG image content directly — use it to check one component without driving the
@@ -515,10 +522,10 @@ whole app.
 | `ForEach<..>: View is not satisfied` | `ForEach` is a collection, not a view | `Lazy::for_each(..)`, or hand it to a container |
 | `.title("Inbox")` rejects its argument | `Text::title()` (font size) shadows the navigation title | title the container, or `NavigationView::new(title, content)` |
 | A test's wait can never fail | query `.wait_for_existence(..)` returns `bool` | wrap it in `assert!` |
-| `use of undeclared crate 'tracing'` | logging is re-exported | `waterui::log::debug!(..)` |
+| `use of undeclared crate 'tracing'` | logging is re-exported | `use waterui::log::debug;` then `debug!(..)` |
 | `borrowed data escapes outside of function` | views are `'static` | `&'static str` / `Str` / `impl IntoText`, or `impl View + use<>` |
 | type annotations needed after `binding(v)` | `binding` takes `impl Into<T>` | `Binding::i32(0)` etc., turbofish, or annotate |
 
-Rust rules still apply on top of these: no `println!` (use `waterui::log::debug!`,
-surfaced by `water run --logs debug`), and nothing blocking on the UI thread — use
+Rust rules still apply on top of these: no `println!` (import `waterui::log::debug` and
+use `debug!`, surfaced by `water run --logs debug`), and nothing blocking on the UI thread — use
 `.action_async`, `.task(..)`, or `waterui::task::{spawn_local, sleep}` with `.detach()`.

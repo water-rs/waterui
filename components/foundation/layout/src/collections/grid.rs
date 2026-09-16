@@ -9,7 +9,8 @@ use waterui_core::{
 };
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, ViewDimensions,
+    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
+    ViewDimensions,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
@@ -17,6 +18,9 @@ use crate::{
 /// Cached measurement for a child during layout
 struct ChildMeasurement {
     dimensions: ViewDimensions,
+    /// The proposal that produced `dimensions`; it is the proposal the child
+    /// is recursively placed with.
+    proposal: ProposalSize,
 }
 
 struct GridMeasurement {
@@ -88,6 +92,7 @@ impl GridLayout {
                 let child_proposal = ProposalSize::new(Some(column_widths[column_index]), None);
                 ChildMeasurement {
                     dimensions: child.measure(child_proposal),
+                    proposal: child_proposal,
                 }
             })
             .collect();
@@ -136,14 +141,19 @@ impl Layout for GridLayout {
         Size::new(measurement.total_width, measurement.total_height)
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
 
         let num_columns = self.columns.get();
         let spacing = nami::Signal::get(&self.spacing);
-        let measurement = self.measure_grid(Some(bounds.width()), children);
+        let measurement = self.measure_grid(proposal.width, children);
 
         let mut placements = Vec::with_capacity(children.len());
         let mut cursor_y = bounds.y();
@@ -221,7 +231,10 @@ impl Layout for GridLayout {
                         .vertical(vertical)
                         .clamp(0.0, child_size.height);
 
-                placements.push(Rect::new(Point::new(child_x, child_y), child_size));
+                placements.push(SubviewPlacement::new(
+                    Rect::new(Point::new(child_x, child_y), child_size),
+                    child_measurement.proposal,
+                ));
 
                 cursor_x += column_width + spacing.width;
             }
@@ -393,6 +406,17 @@ impl View for Grid {
 
         FixedContainer::new(self.layout, flattened_children)
     }
+
+    /// Resolves to `FixedContainer` over the same layout and the flattened
+    /// row contents; reports what that container would.
+    fn stretch_axis(&self) -> crate::StretchAxis {
+        let child_axes = self
+            .rows
+            .iter()
+            .flat_map(|row| row.contents.iter().map(View::stretch_axis))
+            .collect::<Vec<_>>();
+        self.layout.stretch_axis(&child_axes)
+    }
 }
 
 /// Creates a new grid with the specified number of columns and rows.
@@ -467,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn test_grid_placement() {
+    fn test_grid_placement_bounded_proposal() {
         let layout = GridLayout::new(
             NonZeroUsize::new(2).unwrap(),
             Size::new(10.0, 10.0),
@@ -484,16 +508,17 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
         // Column width: (100 - 10) / 2 = 45
         // Child 1 at (0, 0)
-        assert!((rects[0].x() - 0.0).abs() < f32::EPSILON);
-        assert!((rects[0].y() - 0.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.x() - 0.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.y() - 0.0).abs() < f32::EPSILON);
 
         // Child 2 at (45 + 10, 0) = (55, 0)
-        assert!((rects[1].x() - 55.0).abs() < f32::EPSILON);
-        assert!((rects[1].y() - 0.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.x() - 55.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.y() - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -547,14 +572,15 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
         let bounds = Rect::new(Point::new(5.0, 7.0), Size::new(f32::INFINITY, 100.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(f32::INFINITY), Some(100.0));
+        let placements = layout.place(bounds, proposal, &children);
 
-        assert_eq!(rects.len(), 2);
-        assert!((rects[0].x() - 5.0).abs() < f32::EPSILON);
-        assert!((rects[0].y() - 7.0).abs() < f32::EPSILON);
-        assert!((rects[0].width() - 40.0).abs() < f32::EPSILON);
-        assert!((rects[1].x() - 55.0).abs() < f32::EPSILON);
-        assert!((rects[1].y() - 7.0).abs() < f32::EPSILON);
-        assert!((rects[1].width() - 20.0).abs() < f32::EPSILON);
+        assert_eq!(placements.len(), 2);
+        assert!((placements[0].frame.x() - 5.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.y() - 7.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.width() - 40.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.x() - 55.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.y() - 7.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.width() - 20.0).abs() < f32::EPSILON);
     }
 }

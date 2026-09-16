@@ -17,13 +17,16 @@ categories = ["gui", "api-bindings"]
 # included), and Cargo forbids a member from turning them off. The FFI crate
 # must not re-root the GPU stack when the app opted out, so it declares the
 # dependency itself and forwards `gpu` explicitly.
-waterui = { version = "0.4.1", path = "..", default-features = false, features = ["assets", "media", "inspector"] }
+# `assets` is intentionally not enabled here: it implies `media` -> `video`,
+# which would root the codec/media stack into every managed build regardless
+# of what the application resolved. This crate only needs the inspector.
+waterui = { version = "0.4.1", path = "..", default-features = false, features = ["inspector"] }
 waterui-core.workspace = true
 waterui-text.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
 waterui-navigation.workspace = true
-waterui-video.workspace = true
+waterui-video = { workspace = true, optional = true }
 native-executor.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
@@ -36,14 +39,15 @@ waterui-graphics = { workspace = true, features = ["cpu-scene"] }
 kurbo = { workspace = true, optional = true }
 waterui-svg = { workspace = true, optional = true }
 waterui-icon.workspace = true
-waterui-webview.workspace = true
-cookie = "0.18.2"
+waterui-webview = { workspace = true, optional = true }
+cookie = { version = "0.18.2", optional = true }
 waterui-map = { workspace = true, optional = true }
 suiteki.workspace = true
 waterui-locale.workspace = true
 wgpu = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 async-channel = "2.5"
-base64 = "0.23.1"
+base64 = { version = "0.23.1", optional = true }
 pastey.workspace = true
 tracing.workspace = true
 tracing-panic.workspace = true
@@ -75,15 +79,27 @@ tracing-oslog = "0.3"
 objc2 = "0.6"
 objc2-metal = { version = "0.3", features = ["MTLDevice", "MTLPixelFormat", "MTLTexture"], optional = true }
 wgpu-hal = { workspace = true, features = ["metal"], optional = true }
-waterkit-audio = { workspace = true, default-features = false, features = ["apple-artwork"] }
+waterkit-audio = { workspace = true, default-features = false, features = ["apple-artwork"], optional = true }
 
 
 [lints]
 workspace = true
 
 [features]
-default = ["std", "c-api", "gpu"]
+default = ["std", "c-api", "gpu", "media", "webview"]
 std = []
+# The `Video`/`Media` playback surface (player controller, track catalogs,
+# media session) plus the `waterkit_audio` keep-alive the Apple backend's
+# @_silgen_name calls resolve against. Default-on so a direct consumer of this
+# crate is unaffected; the managed FFI crate builds with
+# `default-features = false` and forwards the capability only when the app's
+# resolved graph links `waterui-video`, so an app that opted out stops rooting
+# the codec/streaming stack through these exports.
+media = ["dep:waterui-video", "dep:waterkit-audio"]
+# The `WebView` component surface (bridge script, JS replies, cookie jar).
+# Default-on here for the same reason as `video`; the managed crate forwards it
+# only when the app links `waterui-webview`.
+webview = ["dep:waterui-webview", "dep:cookie", "dep:base64"]
 # The GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg) and
 # every GPU-backed FFI surface (GpuSurface, ViewEffect, AppliedFilter, the
 # GPU video pipeline). Default-on so existing consumers are unaffected;
@@ -97,10 +113,21 @@ gpu = [
     "dep:wgpu",
     "dep:wgpu-hal",
     "dep:ash",
-    "dep:waterui-video-gpu",
     "dep:objc2-metal",
     "dep:pollster",
     "dep:kurbo",
+    "dep:futures",
+]
+# The self-drawn video player and its surface-host bridge. Off by default:
+# selecting it links decoders (rav1d, symphonia, hyper) into every package,
+# so the CLI enables it only when the application opted into
+# `waterui/video-gpu` itself. On Android the surface host's FFI surface and
+# JNI entry points are compiled in under this feature.
+video = [
+    "gpu",
+    "media",
+    "dep:waterui-video-gpu",
+    "waterui/video-gpu",
 ]
 # C FFI for Apple/GTK backends (default)
 c-api = ["std"]
@@ -116,7 +143,7 @@ map = ["dep:waterui-map"]
 # expands this crate with exactly this feature on; native backends compile the
 # matching component only when the app enabled that feature. A new optional
 # surface is added in exactly one place.
-header = ["cef-header", "map"]
+header = ["cef-header", "map", "media", "webview"]
 cef-runtime = [
     "gpu",
     "dep:waterui-browser-cef",
@@ -124,6 +151,8 @@ cef-runtime = [
 ]
 # Header generation compiles CEF's Rust API without downloading or linking the runtime.
 cef-header = [
+    "gpu",
+    "webview",
     "dep:waterui-browser-cef",
     "dep:waterui-chromium",
     "waterui-browser-cef/compile-only",
@@ -137,6 +166,7 @@ chromium = [
 ]
 webview-cef = [
     "cef-runtime",
+    "webview",
     "waterui-browser-cef/webview",
 ]
 [package.metadata.cargo-machete]

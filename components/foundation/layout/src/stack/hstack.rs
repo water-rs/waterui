@@ -2,7 +2,6 @@
 
 use alloc::{vec, vec::Vec};
 use nami::{Computed, Signal, SignalExt, collection::Collection};
-use num_traits::ToPrimitive;
 use waterui_core::{
     AnyView, IntoSignalF32, View, env::with, id::Identifiable, layout::LayoutInvalidationCallback,
     view::TupleViews, views::ForEach,
@@ -10,11 +9,11 @@ use waterui_core::{
 
 use crate::{
     Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    ViewDimensions,
+    SubviewPlacement,
     container::FixedContainer,
     stack::{
         Axis, VerticalAlignment,
-        distribute::{Extent, compress_to_fit, exceeds},
+        distribute::{ChildMeasurement, measure_stack, place_cross_extent, stack_spacing},
         stack_stretch_axis,
     },
 };
@@ -82,43 +81,6 @@ impl Default for HStackLayout {
     }
 }
 
-/// Cached measurement for a child during layout
-struct ChildMeasurement {
-    dimensions: ViewDimensions,
-    stretch_axis: StretchAxis,
-}
-
-impl ChildMeasurement {
-    const fn size(&self) -> Size {
-        self.dimensions.size
-    }
-
-    fn vertical_guide(&self, alignment: VerticalAlignment) -> f32 {
-        self.dimensions.vertical(alignment)
-    }
-
-    /// Returns true if this child stretches horizontally (for `HStack` width distribution).
-    /// In `HStack` context:
-    /// - `MainAxis` means horizontal (`HStack`'s main axis)
-    /// - `CrossAxis` means vertical (`HStack`'s cross axis)
-    const fn stretches_main_axis(&self) -> bool {
-        matches!(
-            self.stretch_axis,
-            StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::MainAxis
-        )
-    }
-
-    /// Returns true if this child stretches vertically (for `HStack` height expansion).
-    /// In `HStack` context:
-    /// - `CrossAxis` means vertical (`HStack`'s cross axis)
-    const fn stretches_cross_axis(&self) -> bool {
-        matches!(
-            self.stretch_axis,
-            StretchAxis::Vertical | StretchAxis::Both | StretchAxis::CrossAxis
-        )
-    }
-}
-
 /// The tallest child above and below the alignment guide.
 ///
 /// Every child that reports a height counts, the ones that fill the cross axis
@@ -166,76 +128,6 @@ fn hstack_container_guide_offset(
     }
 }
 
-fn hstack_stretch_allocations(
-    stretch_indices: &[usize],
-    available_for_children: f32,
-    fixed_width: f32,
-) -> Vec<(usize, f32)> {
-    if stretch_indices.is_empty() {
-        return Vec::new();
-    }
-
-    let width =
-        (available_for_children - fixed_width).max(0.0) / usize_to_f32(stretch_indices.len());
-
-    stretch_indices.iter().map(|&idx| (idx, width)).collect()
-}
-
-/// Compresses the non-stretching children into `available`, taking space from the
-/// lowest layout priorities first and never pushing a child below the minimum it
-/// reports when proposed zero width.
-///
-/// Children clamped below their ideal are re-measured at the width they end up
-/// with, so wrapped content reports the height that width actually produces.
-fn compress_children(
-    measurements: &mut [ChildMeasurement],
-    children: &[&dyn SubView],
-    compress_indices: &[usize],
-    available: f32,
-    height_proposal: Option<f32>,
-) {
-    if compress_indices.is_empty() {
-        return;
-    }
-
-    // Probing every child for its minimum only pays when something has to give,
-    // so check the ideals first. That keeps an already-fitting row at one measure
-    // per child — which the embedded backend's per-frame measure budget notices
-    // immediately if it regresses.
-    let ideal_total: f32 = compress_indices
-        .iter()
-        .map(|&index| measurements[index].size().width)
-        .sum();
-    if !exceeds(ideal_total, available, compress_indices.len()) {
-        return;
-    }
-
-    let extents: Vec<Extent> = compress_indices
-        .iter()
-        .map(|&index| Extent {
-            ideal: measurements[index].size().width,
-            min: children[index]
-                .measure(ProposalSize::new(Some(0.0), height_proposal))
-                .size
-                .width,
-            priority: children[index].priority(),
-        })
-        .collect();
-
-    for (&index, resolved) in compress_indices
-        .iter()
-        .zip(compress_to_fit(&extents, available))
-    {
-        if resolved >= measurements[index].size().width {
-            continue;
-        }
-        let constrained = ProposalSize::new(Some(resolved), height_proposal);
-        measurements[index].dimensions = children[index].measure(constrained);
-        measurements[index].dimensions.size.width = measurements[index].size().width.min(resolved);
-    }
-}
-
-#[allow(clippy::too_many_lines)]
 impl Layout for HStackLayout {
     /// An `HStack` claims nothing of its own — a row of labels is content-sized,
     /// like `SwiftUI`'s, and a parent placing an undersized row centers it per
@@ -253,197 +145,30 @@ impl Layout for HStackLayout {
         }
 
         let spacing = self.spacing.get();
-        let total_spacing = if children.len() > 1 {
-            usize_to_f32(children.len() - 1) * spacing
-        } else {
-            0.0
-        };
-
-        // First pass: measure children. If min size query (width=0), use 0 width proposal to get min sizes.
-        let is_min_size_query = proposal.width == Some(0.0);
-        let intrinsic_proposal = if is_min_size_query {
-            ProposalSize::new(Some(0.0), proposal.height)
-        } else {
-            ProposalSize::new(None, proposal.height)
-        };
-        let mut measurements: Vec<ChildMeasurement> = children
-            .iter()
-            .map(|child| ChildMeasurement {
-                dimensions: child.measure(intrinsic_proposal),
-                stretch_axis: child.stretch_axis(),
-            })
-            .collect();
-
-        // HStack checks for main-axis (horizontal) stretching
-        let has_main_axis_stretch = measurements
-            .iter()
-            .any(ChildMeasurement::stretches_main_axis);
-        let main_axis_stretch_indices: Vec<usize> = measurements
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.stretches_main_axis())
-            .map(|(idx, _)| idx)
-            .collect();
-        let main_axis_stretch_count = main_axis_stretch_indices.len();
-
-        let intrinsic_width_all: f32 =
-            measurements.iter().map(|m| m.size().width).sum::<f32>() + total_spacing;
-
-        if is_min_size_query {
-            let (max_above, max_below) =
-                hstack_intrinsic_cross_metrics(&measurements, self.alignment);
-            return Size::new(intrinsic_width_all, max_above + max_below);
-        }
-
-        // Intrinsic width used when the parent doesn't constrain width.
-        // In unconstrained context, even "stretching" children should be measured at their
-        // intrinsic widths (otherwise content-bearing views could collapse to 0 width).
-        let intrinsic_width = intrinsic_width_all;
-
-        // Determine final width
-        let final_width = proposal.width.map_or(intrinsic_width, |proposed| {
-            if has_main_axis_stretch {
-                proposed
-            } else {
-                intrinsic_width.min(proposed)
-            }
-        });
-
-        // If width is constrained, we need to distribute space properly
-        // Key insight: small children (labels) keep intrinsic width, large children (text) compress
-        let available_for_children = (final_width - total_spacing).max(0.0);
-
-        let fixed_indices: Vec<usize> = if main_axis_stretch_count > 0 && proposal.width.is_some() {
-            measurements
-                .iter()
-                .enumerate()
-                .filter(|(_, m)| !m.stretches_main_axis())
-                .map(|(idx, _)| idx)
-                .collect()
-        } else {
-            (0..measurements.len()).collect()
-        };
-
-        if proposal.width.is_some() {
-            compress_children(
-                &mut measurements,
-                children,
-                &fixed_indices,
-                available_for_children,
-                proposal.height,
-            );
-        }
-
-        // If there are main-axis stretching children and width is constrained, measure them with
-        // their allocated widths so height reflects wrapped content.
-        if proposal.width.is_some() && main_axis_stretch_count > 0 {
-            let fixed_width: f32 = measurements
-                .iter()
-                .enumerate()
-                .filter(|(_, m)| !m.stretches_main_axis())
-                .map(|(_, m)| m.size().width)
-                .sum();
-
-            let allocations = hstack_stretch_allocations(
-                &main_axis_stretch_indices,
-                available_for_children,
-                fixed_width,
-            );
-
-            for (idx, stretch_width) in allocations {
-                let constrained_proposal = ProposalSize::new(Some(stretch_width), proposal.height);
-                measurements[idx].dimensions = children[idx].measure(constrained_proposal);
-                measurements[idx].dimensions.size.width =
-                    measurements[idx].size().width.max(stretch_width);
-            }
-        }
-
-        // Height: max of all children (after re-measurement for proper wrapped height)
-        // Important: Do NOT cap height to proposal - if text wraps, we need the full height
-        // Note: cross-axis-stretching children don't contribute to intrinsic height
+        let measurements = measure_stack(Axis::Horizontal, proposal, spacing, children);
+        let width = measurements.iter().map(|m| m.size().width).sum::<f32>()
+            + stack_spacing(spacing, children.len());
         let (max_above, max_below) = hstack_intrinsic_cross_metrics(&measurements, self.alignment);
-        let max_height = max_above + max_below;
-
-        Size::new(final_width, max_height)
+        let height = if measurements.iter().any(|m| m.size().height.is_infinite()) {
+            f32::INFINITY
+        } else {
+            max_above + max_below
+        };
+        Size::new(width, height)
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
 
         let spacing = self.spacing.get();
-        let total_spacing = if children.len() > 1 {
-            usize_to_f32(children.len() - 1) * spacing
-        } else {
-            0.0
-        };
-
-        let available_width = bounds.width() - total_spacing;
-
-        // First pass: measure all children with None to get intrinsic sizes
-        let intrinsic_proposal = ProposalSize::new(None, Some(bounds.height()));
-        let mut measurements: Vec<ChildMeasurement> = children
-            .iter()
-            .map(|child| ChildMeasurement {
-                dimensions: child.measure(intrinsic_proposal),
-                stretch_axis: child.stretch_axis(),
-            })
-            .collect();
-
-        // Calculate totals - HStack cares about main-axis (horizontal) stretching
-        let main_axis_stretch_indices: Vec<usize> = measurements
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.stretches_main_axis())
-            .map(|(idx, _)| idx)
-            .collect();
-        let main_axis_stretch_count = main_axis_stretch_indices.len();
-
-        let fixed_indices: Vec<usize> = if main_axis_stretch_count > 0 {
-            measurements
-                .iter()
-                .enumerate()
-                .filter(|(_, m)| !m.stretches_main_axis())
-                .map(|(idx, _)| idx)
-                .collect()
-        } else {
-            (0..measurements.len()).collect()
-        };
-
-        compress_children(
-            &mut measurements,
-            children,
-            &fixed_indices,
-            available_width,
-            Some(bounds.height()),
-        );
-
-        // Calculate stretch child width from remaining space
-        let actual_fixed_width: f32 = measurements
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| !m.stretches_main_axis())
-            .map(|(_, m)| m.size().width)
-            .sum();
-
-        let stretch_allocations = hstack_stretch_allocations(
-            &main_axis_stretch_indices,
-            available_width,
-            actual_fixed_width,
-        );
-
-        // Measure stretching children with their allocated width so cross-axis sizing is accurate.
-        if main_axis_stretch_count > 0 {
-            for &(idx, stretch_width) in &stretch_allocations {
-                let constrained_proposal =
-                    ProposalSize::new(Some(stretch_width), Some(bounds.height()));
-                measurements[idx].dimensions = children[idx].measure(constrained_proposal);
-                measurements[idx].dimensions.size.width =
-                    measurements[idx].size().width.max(stretch_width);
-            }
-        }
+        let measurements = measure_stack(Axis::Horizontal, proposal, spacing, children);
 
         let (intrinsic_above, _intrinsic_below) =
             hstack_intrinsic_cross_metrics(&measurements, self.alignment);
@@ -451,7 +176,7 @@ impl Layout for HStackLayout {
             bounds.y() + hstack_container_guide_offset(bounds, self.alignment, intrinsic_above);
 
         // Place children
-        let mut rects = Vec::with_capacity(children.len());
+        let mut placements = Vec::with_capacity(children.len());
         let mut current_x = bounds.x();
 
         for (i, measurement) in measurements.iter().enumerate() {
@@ -459,15 +184,11 @@ impl Layout for HStackLayout {
                 current_x += spacing;
             }
 
-            // Handle cross-axis (vertical) stretching and infinite height
-            let child_height = if measurement.stretches_cross_axis() {
-                // CrossAxis in HStack means expand vertically to full bounds height
-                bounds.height()
-            } else if measurement.size().height.is_infinite() {
-                bounds.height()
-            } else {
-                measurement.size().height.min(bounds.height())
-            };
+            let child_height = place_cross_extent(
+                measurement.size().height,
+                bounds.height(),
+                measurement.stretches_cross_axis(),
+            );
 
             let child_width = measurement.size().width;
 
@@ -490,12 +211,12 @@ impl Layout for HStackLayout {
                 Point::new(current_x, y),
                 Size::new(child_width, child_height),
             );
-            rects.push(rect);
+            placements.push(SubviewPlacement::new(rect, measurement.proposal));
 
             current_x += child_width;
         }
 
-        rects
+        placements
     }
 
     fn explicit_vertical(
@@ -529,13 +250,7 @@ impl Layout for HStackLayout {
     }
 }
 
-fn usize_to_f32(value: usize) -> f32 {
-    value
-        .to_f32()
-        .expect("HStackLayout: child count must be representable as f32")
-}
-
-impl<C> HStack<(C,)> {
+impl<C: TupleViews> HStack<(C,)> {
     /// Creates a horizontal stack with the provided alignment, spacing, and
     /// children.
     pub fn new(alignment: VerticalAlignment, spacing: f32, contents: C) -> Self {
@@ -581,7 +296,7 @@ where
 }
 
 /// Convenience constructor that centres children and uses the default spacing.
-pub fn hstack<C>(contents: C) -> HStack<(C,)> {
+pub fn hstack<C: TupleViews>(contents: C) -> HStack<(C,)> {
     HStack::new(VerticalAlignment::Center, 10.0, contents)
 }
 
@@ -599,6 +314,13 @@ where
             Axis::Horizontal,
         )
     }
+
+    /// Resolves to `LazyContainer`, which cannot enumerate children without
+    /// materializing them and answers its layout's axis over an empty child
+    /// set — matching `LazyContainer::stretch_axis`.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis(&[])
+    }
 }
 
 impl<C: TupleViews + 'static> View for HStack<(C,)> {
@@ -609,11 +331,19 @@ impl<C: TupleViews + 'static> View for HStack<(C,)> {
             Axis::Horizontal,
         )
     }
+
+    /// Resolves to `FixedContainer` over the same layout and children;
+    /// reports what that container would — matching `FixedContainer`'s
+    /// `View::stretch_axis`.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis(&self.contents.0.stretch_axes())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ViewDimensions;
     use crate::tests::CompressibleView;
 
     struct MockSubView {
@@ -728,12 +458,12 @@ mod tests {
         };
         let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
 
-        let rects = layout.place(bounds, &children);
+        let placements = layout.place(bounds, ProposalSize::new(Some(200.0), None), &children);
 
-        assert!((rects[0].width() - 30.0).abs() < f32::EPSILON);
-        assert!((rects[1].width() - 140.0).abs() < f32::EPSILON); // 200 - 30 - 30
-        assert!((rects[2].width() - 30.0).abs() < f32::EPSILON);
-        assert!((rects[2].x() - 170.0).abs() < f32::EPSILON); // 30 + 140
+        assert!((placements[0].frame.width() - 30.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.width() - 140.0).abs() < f32::EPSILON); // 200 - 30 - 30
+        assert!((placements[2].frame.width() - 30.0).abs() < f32::EPSILON);
+        assert!((placements[2].frame.x() - 170.0).abs() < f32::EPSILON); // 30 + 140
     }
 
     /// A child that fills the cross axis still contributes the height it
@@ -779,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hstack_compresses_equal_children_evenly() {
+    fn test_hstack_compresses_equal_children_evenly_bounded_proposal() {
         // Seven equal 40pt columns with 8pt spacing (a calendar's day row) in
         // a 272pt bound: the 56pt deficit must be shared equally — every
         // column shrinks to 32 at a uniform 40pt pitch — never taken
@@ -801,26 +531,27 @@ mod tests {
             .collect();
 
         let bounds = Rect::new(Point::zero(), Size::new(272.0, 40.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
-        for rect in &rects {
+        for placement in &placements {
             assert!(
-                (rect.width() - 32.0).abs() < 0.001,
+                (placement.frame.width() - 32.0).abs() < 0.001,
                 "expected even 32pt columns, got {}",
-                rect.width()
+                placement.frame.width()
             );
         }
-        for pair in rects.windows(2) {
+        for pair in placements.windows(2) {
             assert!(
-                ((pair[1].x() - pair[0].x()) - 40.0).abs() < 0.001,
+                ((pair[1].frame.x() - pair[0].frame.x()) - 40.0).abs() < 0.001,
                 "expected uniform 40pt pitch, got {}",
-                pair[1].x() - pair[0].x()
+                pair[1].frame.x() - pair[0].frame.x()
             );
         }
     }
 
     #[test]
-    fn test_hstack_compression_keeps_small_children_intrinsic() {
+    fn test_hstack_compression_keeps_small_children_intrinsic_bounded_proposal() {
         // A 50pt label next to a 200pt text in 140pt of space: the text alone
         // absorbs the deficit (clamped to 90) while the label keeps its
         // intrinsic width.
@@ -842,14 +573,15 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut label, &mut long_text];
 
         let bounds = Rect::new(Point::zero(), Size::new(150.0, 40.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
-        assert!((rects[0].width() - 50.0).abs() < 0.001);
-        assert!((rects[1].width() - 90.0).abs() < 0.001);
+        assert!((placements[0].frame.width() - 50.0).abs() < 0.001);
+        assert!((placements[1].frame.width() - 90.0).abs() < 0.001);
     }
 
     #[test]
-    fn test_hstack_compression_never_goes_below_a_reported_minimum() {
+    fn test_hstack_compression_never_goes_below_a_reported_minimum_bounded_proposal() {
         // Two children that will not go below 20pt, in 10pt of space: the row
         // overflows rather than squeezing them past what they said they need.
         // The floor is each child's own answer, not a constant the stack picked.
@@ -869,10 +601,11 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut first, &mut second];
 
         let bounds = Rect::new(Point::zero(), Size::new(10.0, 20.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
-        assert!((rects[0].width() - 20.0).abs() < 0.001);
-        assert!((rects[1].width() - 20.0).abs() < 0.001);
+        assert!((placements[0].frame.width() - 20.0).abs() < 0.001);
+        assert!((placements[1].frame.width() - 20.0).abs() < 0.001);
     }
 
     #[test]
@@ -904,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hstack_place_uses_stretch_child_wrapped_height() {
+    fn test_hstack_place_uses_stretch_child_wrapped_height_bounded_proposal() {
         let layout = HStackLayout {
             alignment: VerticalAlignment::Center,
             spacing: Computed::constant(0.0),
@@ -926,11 +659,12 @@ mod tests {
 
         let children: Vec<&dyn SubView> = vec![&mut fixed, &mut stretch];
 
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
-        assert!((rects[0].width() - 4.0).abs() < f32::EPSILON);
-        assert!((rects[1].width() - 36.0).abs() < f32::EPSILON);
-        assert!((rects[1].height() - 40.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.width() - 4.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.width() - 36.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.height() - 40.0).abs() < f32::EPSILON);
     }
 
     #[test]

@@ -5,21 +5,26 @@ use nami::{Computed, Signal, signal::IntoComputed, watcher::BoxWatcherGuard};
 use waterui_core::{AnyView, View, layout::LayoutInvalidationCallback};
 
 use crate::{
-    HorizontalAlignment, Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView,
-    VerticalAlignment, container::FixedContainer,
+    HorizontalAlignment, Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis,
+    SubView, SubviewPlacement, VerticalAlignment, container::FixedContainer,
 };
 
 /// Layout that insets its single child by the configured edge values.
 ///
-/// The insets are reactive, so a window that republishes its safe area on
-/// rotation (see [`SafeAreaInsets`](super::safe_area::SafeAreaInsets)) moves the
-/// padded content without the subtree being rebuilt.
+/// The insets are reactive, so a change to them moves the padded content
+/// without the subtree being rebuilt.
 #[derive(Debug, Clone)]
 pub struct PaddingLayout {
     edges: Computed<EdgeInsets>,
 }
 
 impl Layout for PaddingLayout {
+    /// Padding is transparent to its content: it insets the child within
+    /// whatever bounds it is given, so the child's axis is the answer.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        children.first().copied().unwrap_or_default()
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         let edges = self.edges.get();
         // The horizontal and vertical space consumed by padding.
@@ -61,7 +66,12 @@ impl Layout for PaddingLayout {
         )
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
@@ -78,7 +88,17 @@ impl Layout for PaddingLayout {
             (bounds.height() - vertical_padding).max(0.0),
         );
 
-        vec![Rect::new(child_origin, child_size)]
+        // The child is measured and placed under the same inset-adjusted
+        // proposal `size_that_fits` offers it.
+        let child_proposal = ProposalSize::new(
+            proposal.width.map(|w| (w - horizontal_padding).max(0.0)),
+            proposal.height.map(|h| (h - vertical_padding).max(0.0)),
+        );
+
+        vec![SubviewPlacement::new(
+            Rect::new(child_origin, child_size),
+            child_proposal,
+        )]
     }
 
     fn explicit_horizontal(
@@ -234,6 +254,12 @@ impl View for Padding {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, vec![self.content])
     }
+
+    /// Resolves to `FixedContainer` over the same layout and single child;
+    /// reports what that container would.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis(&[self.content.stretch_axis()])
+    }
 }
 
 #[cfg(test)]
@@ -303,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn test_padding_placement() {
+    fn test_padding_placement_bounded_proposal() {
         let layout = PaddingLayout {
             edges: EdgeInsets::new(10.0, 20.0, 15.0, 25.0).into_computed(),
         };
@@ -314,15 +340,16 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut child];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
         // Child origin is offset by leading and top
-        assert!((rects[0].x() - 15.0).abs() < f32::EPSILON);
-        assert!((rects[0].y() - 10.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.x() - 15.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.y() - 10.0).abs() < f32::EPSILON);
 
         // Child size is bounds minus padding
-        assert!((rects[0].width() - 60.0).abs() < f32::EPSILON); // 100 - 15 - 25
-        assert!((rects[0].height() - 70.0).abs() < f32::EPSILON); // 100 - 10 - 20
+        assert!((placements[0].frame.width() - 60.0).abs() < f32::EPSILON); // 100 - 15 - 25
+        assert!((placements[0].frame.height() - 70.0).abs() < f32::EPSILON); // 100 - 10 - 20
     }
 
     #[test]
