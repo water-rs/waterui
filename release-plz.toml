@@ -181,6 +181,11 @@ version_group = "waterui"
 git_tag_name = "mcp-protocol-v{{ version }}"
 
 [[package]]
+name = "waterui-mcp"
+version_group = "waterui"
+git_tag_name = "mcp-v{{ version }}"
+
+[[package]]
 name = "waterui-preview"
 version_group = "waterui"
 
