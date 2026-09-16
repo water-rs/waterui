@@ -58,7 +58,7 @@ A parent may probe a child multiple times before selecting an offer. `place` rec
 
 Equal bounds do not imply equal placement. For two bounded flexible leaves with minima 20/60, ideals 40/120 and unbounded maxima, an ideal main-axis query produces 40/120, while a finite offer of 160 produces 80/80. Both containers measure 160. Rigid sections with minima 40/120 retain those minima under offers of 80 or 160. These independently captured examples are exercised on both axes in `src/tests/contract.rs`.
 
-Transparent metadata and effects preserve the incoming proposal. A padding layout transforms it by its insets. Frame constraints explicitly transform it according to their own semantics. A background or overlay preserves its authoritative content's offer while offering the resolved content region to decoration. A scrolling container offers unspecified extent on each scrolling axis and forwards that same offer during recursive placement. Window roots and native widget-owned content regions explicitly create their bounded offers.
+Transparent metadata and effects preserve the incoming proposal. A padding layout transforms it by its insets. A frame measures ideal queries without inventing a finite offer, but during placement explicitly offers its resolved region on each constrained axis; unconstrained axes preserve the incoming proposal. Thus a fixed 28-by-18 frame gives its content 28-by-18 even when its parent queried the frame’s ideal size. A background or overlay preserves its authoritative content's offer while offering the resolved content region to decoration. A scrolling container offers unspecified extent on each scrolling axis and forwards that same offer during recursive placement. Window roots and native widget-owned content regions explicitly create their bounded offers.
 
 `PlacedSubview` resolves dimensions and alignment guides using the selected proposal. A guide belongs to the measured response; measuring it under a reconstructed frame can change wrapping and therefore the guide. Maximum responses with an infinite axis are not placed and do not resolve finite placement guides.
 
@@ -68,9 +68,9 @@ Horizontal and vertical stacks use the same main-axis allocation implementation.
 
 - Unspecified main-axis offers retain ideal child measurements.
 - Zero and infinite main-axis queries forward that query to the children.
-- A finite offer accounts for spacing, measures the applicable child minimums and allocates through the shared priority pool.
+- A finite offer accounts for spacing, measures the applicable child minimums and maximums and allocates through the shared priority pool. Finite maximums cap growth; ideal size does not cap a flexible child.
 - Higher numeric priority resists compression longer; ordinary content defaults to zero and `Spacer` defaults to `Spacer::DEFAULT_LAYOUT_PRIORITY`, the lowest integer priority. An explicit priority overrides that default.
-- Remeasurement after allocation retains the exact child proposal. Width-dependent height and explicit guides therefore correspond to the allocated width.
+- Every finite allocation is remeasured, including when ideal extents fit, and retains the exact child proposal. Width-dependent height and explicit guides therefore correspond to the allocated width.
 - If the minimum extents and spacing exceed the offer, the container reports the required extent. Fixed dimensions are not rewritten to fit the offer.
 - Content-sized stacks derive cross-axis size from child responses and alignment. A rigid cross-axis response survives a smaller host region.
 

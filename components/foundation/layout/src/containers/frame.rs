@@ -50,6 +50,23 @@ impl FrameLayout {
 }
 
 impl ResolvedFrameLayout {
+    /// A constrained frame owns that axis's placement region. Other axes
+    /// preserve the incoming offer instead of reconstructing it from bounds.
+    fn placement_proposal(&self, bounds: Rect, proposal: ProposalSize) -> ProposalSize {
+        self.child_proposal(ProposalSize {
+            width: if self.min_width.is_some() || self.max_width.is_some() {
+                Some(bounds.width())
+            } else {
+                proposal.width
+            },
+            height: if self.min_height.is_some() || self.max_height.is_some() {
+                Some(bounds.height())
+            } else {
+                proposal.height
+            },
+        })
+    }
+
     /// The proposal the frame hands its child for a given incoming proposal:
     /// the parent's offer on each axis, answered by the ideal where the parent
     /// proposed nothing and bound by the frame's own `min`/`max`.
@@ -138,13 +155,9 @@ impl Layout for FrameLayout {
         }
 
         let resolved = self.resolved();
-        // The child is measured and recursively placed under the same
-        // constrained proposal `size_that_fits` offered it. The resolved
-        // `bounds` are the frame's own extent, not a proposal, so they are
-        // never proposed back down; the frame's ideal answers only the axes
-        // the parent's proposal left unspecified, and its min/max still bind
-        // either way.
-        let child_proposal = resolved.child_proposal(proposal);
+        // The frame selects the region it owns on constrained axes; an
+        // unconstrained axis retains the incoming offer, including None.
+        let child_proposal = resolved.placement_proposal(bounds, proposal);
 
         let child_dimensions = children
             .first()
@@ -453,6 +466,101 @@ mod tests {
     use alloc::rc::Rc;
     use core::cell::Cell;
     use nami::{SignalExt, binding};
+
+    #[test]
+    fn constrained_axes_select_their_owned_region_during_placement() {
+        for (minimum, maximum, ideal, expected) in [
+            (Some(28.0), Some(28.0), 0.0, 28.0),
+            (Some(100.0), None, 0.0, 100.0),
+            (None, Some(60.0), 200.0, 60.0),
+        ] {
+            let layout = FrameLayout {
+                min_width: minimum.map(Computed::constant),
+                max_width: maximum.map(Computed::constant),
+                ..Default::default()
+            };
+            let child = RecordingSubView::new(FillingSubView {
+                intrinsic: Size::new(ideal, 10.0),
+            });
+            let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &[&child]);
+            assert_eq!(size, Size::new(expected, 10.0));
+            let placements =
+                layout.place(Rect::from_size(size), ProposalSize::UNSPECIFIED, &[&child]);
+            assert_eq!(
+                placements[0].proposal,
+                ProposalSize::new(Some(expected), None)
+            );
+            assert_eq!(*placements[0].frame.size(), Size::new(expected, 10.0));
+        }
+    }
+
+    struct FramedChild<C> {
+        layout: FrameLayout,
+        child: C,
+    }
+
+    impl<C: SubView> SubView for FramedChild<C> {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.layout.size_that_fits(proposal, &[&self.child]))
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            self.layout.stretch_axis(&[self.child.stretch_axis()])
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    struct WrappingChild;
+
+    impl SubView for WrappingChild {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            let width = proposal.width.unwrap_or(200.0).clamp(10.0, 200.0);
+            ViewDimensions::new(Size::new(width, (200.0 / width).ceil() * 10.0))
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn finite_stack_offers_remeasure_capped_wrapping_children() {
+        let child = FramedChild {
+            layout: FrameLayout {
+                max_width: Some(Computed::constant(60.0)),
+                ..Default::default()
+            },
+            child: WrappingChild,
+        };
+        let stack = crate::stack::HStackLayout::default();
+        assert_eq!(
+            stack.size_that_fits(ProposalSize::new(Some(240.0), None), &[&child]),
+            Size::new(60.0, 40.0)
+        );
+    }
+
+    #[test]
+    fn finite_maximum_frames_grow_only_to_their_reported_limit() {
+        let child = FramedChild {
+            layout: FrameLayout {
+                max_width: Some(Computed::constant(100.0)),
+                ..Default::default()
+            },
+            child: FillingSubView {
+                intrinsic: Size::new(20.0, 10.0),
+            },
+        };
+        let stack = crate::stack::HStackLayout::default();
+        for (offer, width) in [(80.0, 80.0), (240.0, 100.0)] {
+            assert_eq!(
+                stack.size_that_fits(ProposalSize::new(Some(offer), None), &[&child]),
+                Size::new(width, 10.0)
+            );
+        }
+    }
 
     struct MockSubView {
         size: Size,
