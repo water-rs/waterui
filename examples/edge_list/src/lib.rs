@@ -30,7 +30,7 @@ fn chip_color(index: u64) -> Color {
 }
 
 fn detail_line(n: u64, label: &'static str) -> impl View {
-    text(format!("detail line {n} {label}"))
+    text(text!("detail line {n} {label}"))
         .caption()
         .foreground(MutedForeground)
 }
@@ -39,7 +39,7 @@ fn record_row(index: u64) -> ListItem {
     let lines = index % 3 + 1;
     let header = hstack((
         Circle.fill(chip_color(index)).size(10.0, 10.0),
-        text(format!("Row #{index} - {lines} detail line(s)")).sub_headline(),
+        text(text!("Row #{index} - {#lines} detail line(s)")).sub_headline(),
     ))
     .spacing(8.0)
     .alignment(VerticalAlignment::Center);
