@@ -307,8 +307,9 @@ pub fn include_bundle(input: TokenStream) -> TokenStream {
         Err(error) => {
             return compile_error(
                 format!(
-                    "include_bundle! path '{}' cannot be resolved: {error}",
-                    args.path.value()
+                    "include_bundle! path '{}' cannot be resolved: {}",
+                    args.path.value(),
+                    error.kind()
                 ),
                 path_span,
             );
@@ -422,8 +423,9 @@ pub fn include_web(input: TokenStream) -> TokenStream {
         Err(error) => {
             return compile_error(
                 format!(
-                    "include_web! root '{}' cannot be resolved: {error}",
-                    args.root.value()
+                    "include_web! root '{}' cannot be resolved: {}",
+                    args.root.value(),
+                    error.kind()
                 ),
                 root_span,
             );
