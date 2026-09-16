@@ -1,6 +1,7 @@
 //! Snippets from `.claude/skills/waterui/references/navigation.md`, in file
 //! order. Transcription conventions are documented in the crate README.
 
+use waterui::app::App;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui_icons_material_icon as mdi;
@@ -13,7 +14,8 @@ impl Mail {
     fn send_draft(&self) {}
     fn mark_read(&self, _id: u64) {}
 }
-waterui::impl_extractor!(Mail);
+use waterui::impl_extractor;
+impl_extractor!(Mail);
 
 /// Glue: the settings route navigation.md refers to.
 #[derive(Clone, PartialEq, Eq)]
@@ -61,6 +63,8 @@ fn now_playing_bar() -> impl View {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Tabs" — rust block 1/13
 // ---------------------------------------------------------------------------
+// navigation.md writes `mdi::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn navigation_block_01() -> impl View {
     use waterui::navigation::tab_style;
 
@@ -232,6 +236,8 @@ pub fn navigation_view_new_prose() {
 // navigation.md § "## Toolbars" — rust block 7/13
 // A bare method fragment; applied to a navigation destination receiver.
 // ---------------------------------------------------------------------------
+// navigation.md writes `mdi::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn navigation_block_07() -> NavigationView {
     use waterui::navigation::{
         NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
@@ -357,9 +363,7 @@ pub fn navigation_block_10() -> impl View {
     clippy::redundant_closure,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
-pub fn navigation_block_11(env: Environment) -> waterui::app::App {
-    use waterui::app::App;
-
+pub fn navigation_block_11(env: Environment) -> App {
     fn scene() -> impl View {
         text("scene")
     }

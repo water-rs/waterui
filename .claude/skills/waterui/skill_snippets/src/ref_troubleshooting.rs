@@ -13,6 +13,9 @@ use waterui::prelude::*;
 // Both lines are supposed to compile: the point of the section is that the
 // broken one is a *silent* bug, not a compile error. Both do.
 // ---------------------------------------------------------------------------
+// `fade.get()` is the doc's deliberate broken line — the section's point is
+// that it compiles while silently freezing the view.
+#[allow(unknown_lints, signal_get_in_view)]
 pub fn troubleshooting_block_01() {
     let fade = Binding::f32(1.0);
 
@@ -52,8 +55,9 @@ pub fn troubleshooting_table_fixes() {
 
     // The `Url` row: `Url::parse(s)` yields an `Option`, and
     // `Url::parse_user_input(s)` is the human-typed-address form.
-    let _: Option<waterui::media::Url> = waterui::media::Url::parse("https://waterui.dev");
-    let _: Option<waterui::media::Url> = waterui::media::Url::parse_user_input("waterui.dev");
+    use waterui::media::Url;
+    let _: Option<Url> = Url::parse("https://waterui.dev");
+    let _: Option<Url> = Url::parse_user_input("waterui.dev");
 
     // `.str_is_empty()` / `.str_len()` / `.str_contains(..)`
     let s = Binding::container(Str::from("q"));
