@@ -53,7 +53,7 @@ fn record_row(record: Record) -> ListItem {
                 .muted(),
         ))
         .leading()
-        .padding_with(EdgeInsets::symmetric(10.0, 16.0)),
+        .padding_with((10.0, 16.0)),
     )
 }
 

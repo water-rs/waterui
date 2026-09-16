@@ -426,7 +426,7 @@ pub fn demo() -> impl View {
                 spacer().min_height(32.0),
             )),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 

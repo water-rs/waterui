@@ -479,7 +479,7 @@ pub fn demo() -> impl View {
                 hdr_gradient_section(),
             )),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 

@@ -52,7 +52,7 @@ pub fn components_block_02() {
     let stack = vstack((text("a"), text("b")));
     let _ = { stack.padding_with(16.0) };
     let stack = vstack((text("a"), text("b")));
-    let _ = { stack.padding_with(EdgeInsets::symmetric(10.0, 16.0)) };
+    let _ = { stack.padding_with((10.0, 16.0)) };
 }
 
 // ---------------------------------------------------------------------------

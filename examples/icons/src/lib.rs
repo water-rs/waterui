@@ -106,7 +106,7 @@ pub fn demo() -> impl View {
             Divider,
             all_demos(),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 

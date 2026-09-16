@@ -62,7 +62,7 @@ fn record_row(index: u64) -> ListItem {
         ),
     };
 
-    ListItem::new(content.padding_with(EdgeInsets::symmetric(8.0, 16.0)))
+    ListItem::new(content.padding_with((8.0, 16.0)))
 }
 
 #[preview]

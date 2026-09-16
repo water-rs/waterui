@@ -81,13 +81,15 @@ Common modifiers on stacks:
 ```rust
 .spacing(8.0)
 .leading()   // or .alignment(Leading); hstack aligns vertically: .top() / .centered() / .bottom()
-.padding()  /  .padding_with(16.0)  /  .padding_with(EdgeInsets::symmetric(10.0, 16.0))
+.padding()  /  .padding_with(16.0)  /  .padding_with((10.0, 16.0))
 ```
 
-`.padding_with` takes `impl IntoComputed<EdgeInsets>`: a bare number, an `EdgeInsets`, or
-a signal of one. Argument orders are traps worth memorizing —
-`EdgeInsets::new(top, bottom, leading, trailing)` (not CSS order) and
-`EdgeInsets::symmetric(vertical, horizontal)`.
+`.padding_with` takes `impl IntoComputed<EdgeInsets>`: a bare number (every edge), a
+`(vertical, horizontal)` pair, a `[top, bottom, leading, trailing]` array, an `EdgeInsets`,
+or a signal of one. `.padding_horizontal(x)` / `.padding_vertical(x)` pad one axis. Do not
+spell `EdgeInsets::all(x)` / `symmetric(v, h)` / `new(..)` at a padding call — the number,
+pair and array are those constructors. The orders are traps worth memorizing —
+`[top, bottom, leading, trailing]` (not CSS order) and `(vertical, horizontal)`.
 
 Alignment is a token or a method, never the qualified constant: `vstack(..).leading()` or
 `.alignment(Leading)`, `hstack(..).top()`, `zstack(..).top_leading()`. The tokens

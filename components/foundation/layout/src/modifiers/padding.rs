@@ -139,13 +139,70 @@ pub struct EdgeInsets {
 
 nami::impl_constant!(EdgeInsets);
 
-#[allow(clippy::cast_possible_truncation)]
-impl<T: Into<f64>> From<T> for EdgeInsets {
-    fn from(value: T) -> Self {
-        let v = value.into() as f32;
-        Self::all(v)
-    }
+/// Equal insets on every edge from one number — `.padding_with(16.0)` —
+/// for every numeric type `f64` converts from, which is the set the former
+/// `From<T: Into<f64>>` blanket covered. The blanket had to go so the tuple
+/// and array conversions below could exist beside it (coherence forbids a
+/// concrete `From<(f32, f32)>` next to a blanket over `Into<f64>`).
+macro_rules! from_scalar {
+    (lossless: $($ty:ty),+ $(,)?) => {
+        $(
+            impl From<$ty> for EdgeInsets {
+                fn from(value: $ty) -> Self {
+                    Self::all(f32::from(value))
+                }
+            }
+        )+
+    };
+    (lossy: $($ty:ty),+ $(,)?) => {
+        $(
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+            impl From<$ty> for EdgeInsets {
+                fn from(value: $ty) -> Self {
+                    Self::all(value as f32)
+                }
+            }
+        )+
+    };
 }
+
+from_scalar!(lossless: f32, i8, i16, u8, u16);
+from_scalar!(lossy: f64, i32, u32);
+
+/// `(vertical, horizontal)` — the [`EdgeInsets::symmetric`] order:
+/// `.padding_with((8.0, 16.0))`. The `f64` form is what an unsuffixed
+/// literal pair infers to as a constant signal.
+macro_rules! from_pair {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            #[allow(clippy::cast_possible_truncation)]
+            impl From<($ty, $ty)> for EdgeInsets {
+                fn from((vertical, horizontal): ($ty, $ty)) -> Self {
+                    Self::symmetric(vertical as f32, horizontal as f32)
+                }
+            }
+        )+
+    };
+}
+
+from_pair!(f32, f64);
+
+/// `[top, bottom, leading, trailing]` — the [`EdgeInsets::new`] order:
+/// `.padding_with([4.0, 12.0, 16.0, 16.0])`.
+macro_rules! from_quad {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            #[allow(clippy::cast_possible_truncation)]
+            impl From<[$ty; 4]> for EdgeInsets {
+                fn from([top, bottom, leading, trailing]: [$ty; 4]) -> Self {
+                    Self::new(top as f32, bottom as f32, leading as f32, trailing as f32)
+                }
+            }
+        )+
+    };
+}
+
+from_quad!(f32, f64);
 
 impl core::ops::Add for EdgeInsets {
     type Output = Self;

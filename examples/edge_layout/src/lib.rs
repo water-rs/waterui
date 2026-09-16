@@ -22,7 +22,7 @@ fn deep_nest(depth: u32) -> AnyView {
         when(depth.is_multiple_of(2), move || {
             hstack((text("·").caption(), deep_nest(depth - 1)))
                 .spacing(2.0)
-                .padding_with(EdgeInsets::symmetric(0.0, 2.0))
+                .padding_horizontal(2.0)
         })
         .otherwise(move || {
             vstack((text("·").caption(), deep_nest(depth - 1)))
@@ -125,7 +125,7 @@ pub fn demo() -> impl View {
             spacer().min_height(16.0),
         ))
         .leading()
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 

@@ -279,7 +279,7 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
         text("My Lists")
             .caption()
             .muted()
-            .padding_with(EdgeInsets::new(12.0, 4.0, 4.0, 4.0)),
+            .padding_with([12.0, 4.0, 4.0, 4.0]),
         vstack(user_lists().map(|(name, count, color)| user_list_row(name, count, color)))
             .spacing(2.0)
             .leading(),
@@ -288,7 +288,7 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
     ))
     .leading()
     .spacing(6.0)
-    .padding_with(EdgeInsets::all(12.0))
+    .padding_with(12.0)
     .width(300.0)
     .background(Material::Thick)
 }
@@ -325,7 +325,7 @@ fn destination_tile(
     ))
     .leading()
     .spacing(4.0)
-    .padding_with(EdgeInsets::all(10.0))
+    .padding_with(10.0)
     .min_height(56.0)
     .background(signal_color(bg))
     // ~10pt on the tile's shorter side, matching the official app's tiles.
@@ -344,7 +344,7 @@ fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
         r#format_list_bulleted()
             .tint(Srgb::WHITE)
             .size(14.0, 14.0)
-            .padding_with(EdgeInsets::all(6.0))
+            .padding_with(6.0)
             .background(color)
             .clip(Circle),
         text(name).body().foreground(Foreground),
@@ -353,7 +353,7 @@ fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
     ))
     .centered()
     .spacing(10.0)
-    .padding_with(EdgeInsets::symmetric(4.0, 8.0))
+    .padding_with((4.0, 8.0))
 }
 
 fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView {
@@ -396,7 +396,7 @@ fn content_header(dest: SidebarDestination) -> impl View {
         .foreground(dest.color())
         .max_width(f32::INFINITY)
         .leading()
-        .padding_with(EdgeInsets::new(14.0, 18.0, 12.0, 18.0))
+        .padding_with([14.0, 18.0, 12.0, 18.0])
 }
 
 fn reminder_visible(search: Binding<Str>, row: ReminderRow) -> Computed<bool> {
@@ -439,7 +439,7 @@ fn reminder_section(
             .muted()
             .max_width(f32::INFINITY)
             .leading()
-            .padding_with(EdgeInsets::new(8.0, 18.0, 0.0, 18.0)),
+            .padding_with([8.0, 18.0, 0.0, 18.0]),
         List::for_each(rows, move |row| {
             let visible = reminder_visible(search.clone(), row.clone());
             ListItem::new(
@@ -458,7 +458,7 @@ fn reminder_section(
                     })
                     .otherwise(|| spacer().width(12.0)),
                 ))
-                .padding_with(EdgeInsets::symmetric(10.0, 18.0))
+                .padding_with((10.0, 18.0))
                 .visible(visible),
             )
         }),
