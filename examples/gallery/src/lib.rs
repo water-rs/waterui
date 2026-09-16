@@ -473,7 +473,7 @@ fn placeholder() -> impl View {
         text("WaterUI Controls").title().foreground(Foreground),
         text("Choose a control from the navigation drawer to see it live.")
             .body()
-            .foreground(MutedForeground),
+            .muted(),
     ))
     .spacing(10.0)
     .padding()
@@ -481,7 +481,7 @@ fn placeholder() -> impl View {
 
 /// Shared intro line for a demo.
 fn note(text_value: &'static str) -> impl View {
-    text(text_value).body().foreground(MutedForeground)
+    text(text_value).body().muted()
 }
 
 // ---------------------------------------------------------------------------

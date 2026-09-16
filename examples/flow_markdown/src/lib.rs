@@ -312,6 +312,9 @@ pub fn demo() -> impl View {
                 })
                 .state(&control)
                 .width(WIDE_CONTROL_WIDTH),
+        ))
+        .spacing(8.0),
+        hstack((
             button("Start stream")
                 .bordered_prominent()
                 .action(|State(c): State<StreamControl>| {
@@ -338,15 +341,15 @@ pub fn demo() -> impl View {
                 })
                 .state(&control)
                 .width(PRIMARY_CONTROL_WIDTH),
-            button("Reset")
-                .action(|State(c): State<StreamControl>| {
-                    cancel_stream(&c.streaming, &c.stream_revision);
-                    reset_stream(&c.markdown, &c.char_progress);
-                })
-                .state(&control)
-                .width(PRIMARY_CONTROL_WIDTH),
         ))
         .spacing(8.0),
+        button("Reset")
+            .action(|State(c): State<StreamControl>| {
+                cancel_stream(&c.streaming, &c.stream_revision);
+                reset_stream(&c.markdown, &c.char_progress);
+            })
+            .state(&control)
+            .width(PRIMARY_CONTROL_WIDTH),
         text!(
             "Flow animation preset: {preset} | token reveal CPS: {cps} | token fade: {fade_label}",
             preset = flow_preset_text,
@@ -369,6 +372,9 @@ pub fn demo() -> impl View {
                 })
                 .state(&stream_cps)
                 .width(WIDE_CONTROL_WIDTH),
+        ))
+        .spacing(8.0),
+        hstack((
             button("Preset")
                 .action(|State(preset): State<Binding<i32>>| {
                     let mut preset = preset.get_mut();
@@ -390,14 +396,14 @@ pub fn demo() -> impl View {
                 })
                 .state(&animation_cps)
                 .width(SECONDARY_CONTROL_WIDTH),
-            button(text!("{token_fade_label}"))
-                .action(|State(enabled): State<Binding<bool>>| {
-                    enabled.toggle();
-                })
-                .state(&token_fade_enabled)
-                .width(TOKEN_CONTROL_WIDTH),
         ))
         .spacing(8.0),
+        button(text!("{token_fade_label}"))
+            .action(|State(enabled): State<Binding<bool>>| {
+                enabled.toggle();
+            })
+            .state(&token_fade_enabled)
+            .width(TOKEN_CONTROL_WIDTH),
         Divider,
         scroll(flow_markdown(markdown).configuration(flow_config).padding()).border(Grey, 1.0),
     ))
