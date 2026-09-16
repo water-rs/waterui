@@ -152,7 +152,7 @@ Three different trigger semantics. Pick the one whose verb fits.
 |---|---|---|
 | `.action(...)` | A user gesture lands on the view (tap, click). Synchronous handler. | Button presses; one-shot UI commands. |
 | `.action_async(...)` | A user gesture lands; handler is awaited. Spawned as a task. | Async work triggered by tap (file picker, network call). |
-| `.on_change(&binding, ...)` | A reactive value the handler observes changes. | Side effects driven by state, not by gesture (writing locale tag when a picker selection changes; persisting settings; firing analytics). |
+| `.on_change(&binding, ...)` | A reactive value the handler observes changes. The handler is an `EventHandler`: the new value first, then `State<T>` extractors injected with `.state(..)`. | Side effects driven by state, not by gesture (writing locale tag when a picker selection changes; persisting settings; firing analytics). |
 
 `.on_change` is **not** a button-handler alternative — it fires on data flow,
 not on user input. If two of these look interchangeable, you probably want

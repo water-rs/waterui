@@ -83,17 +83,14 @@ fn picker_button(
     selection: &Binding<Option<Selected>>,
     display_state: &Binding<DisplayState>,
 ) -> impl View {
-    let state = display_state.clone();
-    let sel = selection.clone();
-    let expected_filter = filter;
-
-    // Create media picker and watch for selection changes
-    MediaPicker::new(&sel)
+    // The picker owns the selection; the display state it drives is injected
+    // with `.state(..)` and reaches the change handler as a `State` extractor.
+    MediaPicker::new(selection)
         .filter(filter)
         .label(text(label))
-        .on_change(&sel, {
-            let state = state.clone();
-            move |new_selection| {
+        .on_change(
+            selection,
+            move |new_selection: Option<Selected>, State(state): State<Binding<DisplayState>>| {
                 let Some(selected) = new_selection else {
                     state.set(DisplayState::Empty);
                     return;
@@ -101,15 +98,16 @@ fn picker_button(
 
                 let media = selected.load();
                 tracing::debug!("Loaded media: {:?}", media);
-                match validate_media_result(&media, &expected_filter) {
+                match validate_media_result(&media, &filter) {
                     Ok(()) => state.set(DisplayState::Loaded(media)),
                     Err(message) => {
                         tracing::error!("{message}");
                         state.set(DisplayState::Error(message));
                     }
                 }
-            }
-        })
+            },
+        )
+        .state(display_state)
 }
 
 /// Displays the loaded media or a placeholder.
