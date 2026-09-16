@@ -93,19 +93,19 @@ fn navigation_controls(page: &ChromiumPage) -> impl View + use<> {
     vstack((
         hstack((
             button("Back")
-                .action(|State(page): State<ChromiumPage>| page.go_back())
+                .action(|page: ChromiumPage| page.go_back())
                 .state(page),
             button("Forward")
-                .action(|State(page): State<ChromiumPage>| page.go_forward())
+                .action(|page: ChromiumPage| page.go_forward())
                 .state(page),
         ))
         .spacing(8.0),
         hstack((
             button("Reload")
-                .action(|State(page): State<ChromiumPage>| page.reload())
+                .action(|page: ChromiumPage| page.reload())
                 .state(page),
             button("Stop")
-                .action(|State(page): State<ChromiumPage>| page.stop())
+                .action(|page: ChromiumPage| page.stop())
                 .state(page),
         ))
         .spacing(8.0),
@@ -127,7 +127,7 @@ fn input_probe_controls(page: &ChromiumPage, result: &Binding<Str>) -> impl View
         button("Prepare browser input probe")
             .style(ButtonStyle::Bordered)
             .action_async(
-                |State(page): State<ChromiumPage>, State(result): State<Binding<Str>>| async move {
+                |page: ChromiumPage, State(result): State<Binding<Str>>| async move {
                     match evaluate_page(&page, INPUT_PROBE_SCRIPT).await {
                         Ok(Some(value)) if value == "ready" => {
                             result.set(Str::from_static("Browser input probe ready"));
@@ -146,7 +146,7 @@ fn input_probe_controls(page: &ChromiumPage, result: &Binding<Str>) -> impl View
         button("Inspect focused browser element")
             .style(ButtonStyle::Bordered)
             .action_async(
-                |State(page): State<ChromiumPage>, State(result): State<Binding<Str>>| async move {
+                |page: ChromiumPage, State(result): State<Binding<Str>>| async move {
                     match evaluate_page(
                         &page,
                         "JSON.stringify({tag:document.activeElement?.tagName??null,value:document.activeElement?.value??null,selectionStart:document.activeElement?.selectionStart??null,selectionEnd:document.activeElement?.selectionEnd??null,events:window.wateruiInputProbeEvents??[]})",
@@ -178,7 +178,7 @@ fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
         button("Read title with raw CDP")
             .style(ButtonStyle::Bordered)
             .action_async(
-                |State(page): State<ChromiumPage>, State(result): State<Binding<Str>>| async move {
+                |page: ChromiumPage, State(result): State<Binding<Str>>| async move {
                     match evaluate_page(&page, "document.title").await {
                         Ok(title) => match title {
                             Some(title) => result.set(Str::from(format!("Raw CDP title: {title}"))),
@@ -198,7 +198,7 @@ fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
         button("Read typed navigation history")
             .style(ButtonStyle::Bordered)
             .action_async(
-                |State(page): State<ChromiumPage>, State(result): State<Binding<Str>>| async move {
+                |page: ChromiumPage, State(result): State<Binding<Str>>| async move {
                     match page
                         .cdp()
                         .execute(GetNavigationHistoryParams::default())
@@ -220,7 +220,7 @@ fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
         button("Capture Chromium PNG")
             .style(ButtonStyle::Bordered)
             .action_async(
-                |State(page): State<ChromiumPage>, State(result): State<Binding<Str>>| async move {
+                |page: ChromiumPage, State(result): State<Binding<Str>>| async move {
                     match page.screenshot(ScreenshotFormat::Png).await {
                         Ok(bytes) => result.set(Str::from(format!(
                             "Chromium returned {} PNG bytes",
@@ -283,7 +283,7 @@ async fn load_headless_title(page: &ChromiumPage) -> Result<Value, CdpError> {
     .await
 }
 
-fn headless_controls(controller: &ChromiumController) -> impl View + use<> {
+fn headless_controls() -> impl View + use<> {
     let headless_result: Binding<Str> = binding("Headless Chromium has not run");
 
     vstack((
@@ -291,8 +291,7 @@ fn headless_controls(controller: &ChromiumController) -> impl View + use<> {
         button("Run headless CDP")
             .style(ButtonStyle::BorderedProminent)
             .action_async(
-                |State(controller): State<ChromiumController>,
-                 State(result): State<Binding<Str>>| async move {
+                |controller: ChromiumController, State(result): State<Binding<Str>>| async move {
                     result.set(Str::from_static("Starting headless Chromium"));
                     let page = match controller
                         .headless(ChromiumConfiguration::default().language("en-US"))
@@ -329,7 +328,6 @@ fn headless_controls(controller: &ChromiumController) -> impl View + use<> {
                     }
                 },
             )
-            .state(controller)
             .state(&headless_result),
         text!("{headless_result}")
             .caption()
@@ -340,7 +338,6 @@ fn headless_controls(controller: &ChromiumController) -> impl View + use<> {
 
 fn controls(
     page: &ChromiumPage,
-    controller: &ChromiumController,
     status: &Binding<Str>,
     progress_value: &Binding<f64>,
 ) -> impl View + use<> {
@@ -360,7 +357,7 @@ fn controls(
             Divider,
             visible_cdp_controls(page),
             Divider,
-            headless_controls(controller),
+            headless_controls(),
         ))
         .spacing(10.0)
         .padding(),
@@ -375,10 +372,7 @@ fn scene(controller: &ChromiumController) -> impl View + use<> {
     let page = chromium.page().clone();
     install_event_observer(&page, &status, &progress_value);
 
-    hstack((
-        chromium,
-        controls(&page, controller, &status, &progress_value),
-    ))
+    hstack((chromium, controls(&page, &status, &progress_value)))
 }
 
 #[derive(Debug)]
@@ -387,9 +381,9 @@ struct ChromiumDemo;
 impl View for ChromiumDemo {
     fn body(self, env: &Environment) -> impl View {
         let controller = env
-            .get::<ChromiumController>()
+            .extract::<ChromiumController>()
             .expect("the selected backend did not install the Chromium runtime");
-        scene(controller)
+        scene(&controller)
     }
 }
 

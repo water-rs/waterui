@@ -160,6 +160,7 @@ fn seed_messages() -> Vec<Message> {
 
 /// State owned above every navigation container, so pushing a page, switching
 /// tabs, or rebuilding a destination never loses it.
+#[state]
 #[derive(Clone)]
 struct Mail {
     messages: Binding<Vec<Message>>,
@@ -359,7 +360,7 @@ fn inbox_root(mail: Mail) -> NavigationView {
         )
 }
 
-fn mark_all_read(State(mail): State<Mail>) {
+fn mark_all_read(mail: Mail) {
     for message in mail.messages.get_mut().iter_mut() {
         message.unread = false;
     }
@@ -433,14 +434,14 @@ fn message_row(mail: &Mail, message: Message) -> ListItem {
     ))
 }
 
-fn delete_message(ListDelete(index): ListDelete, State(mail): State<Mail>) {
+fn delete_message(ListDelete(index): ListDelete, mail: Mail) {
     let Some(id) = visible_id(&mail, index) else {
         return;
     };
     mail.messages.get_mut().retain(|message| message.id != id);
 }
 
-fn move_message(ListMove(movement): ListMove, State(mail): State<Mail>) {
+fn move_message(ListMove(movement): ListMove, mail: Mail) {
     let (Some(moved), Some(target)) = (
         visible_id(&mail, movement.from()),
         visible_id(&mail, movement.to()),
@@ -498,7 +499,7 @@ fn message_detail(mail: Mail, id: u64) -> NavigationView {
             NavigationToolbarPlacement::SecondaryAction,
             button(text!("{flag_title}"))
                 .style(ButtonStyle::Plain)
-                .action(move |State(mail): State<Mail>| {
+                .action(move |mail: Mail| {
                     mail.update(id, |message| message.flagged = !message.flagged);
                 })
                 .state(&mail),
@@ -551,12 +552,12 @@ fn compose_page(mail: Mail) -> NavigationView {
             )),
     )
     .navigation_pop_enabled(is_empty)
-    .on_navigation_pop_attempted(|State(manager): State<SnackbarManager>| {
+    .on_navigation_pop_attempted(|manager: SnackbarManager| {
         manager.show(Snackbar::new("Discard the draft with Cancel first"));
     })
 }
 
-fn send_draft(State(mail): State<Mail>, State(navigator): State<Navigator<MailRoute>>) {
+fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
     let messages = mail.messages.get();
     let next_id = messages
         .as_slice()
@@ -580,7 +581,7 @@ fn send_draft(State(mail): State<Mail>, State(navigator): State<Navigator<MailRo
     let _ = navigator.pop();
 }
 
-fn cancel_draft(State(mail): State<Mail>, State(navigator): State<Navigator<MailRoute>>) {
+fn cancel_draft(mail: Mail, navigator: Navigator<MailRoute>) {
     mail.discard_draft();
     let _ = navigator.pop();
 }

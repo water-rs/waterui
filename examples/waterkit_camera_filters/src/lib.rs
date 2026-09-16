@@ -18,6 +18,7 @@ use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
 
+#[state]
 #[derive(Clone)]
 struct CameraLabState {
     active_filter: Binding<usize>,
@@ -137,7 +138,7 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
         text!("{permission_status}").body(),
         text!("{camera_inventory}").footnote().muted(),
         button("Sync with Waterkit Camera")
-            .action_async(|State(state): State<CameraLabState>| async move {
+            .action_async(|state: CameraLabState| async move {
                 sync_waterkit_camera(
                     state.waterkit_status,
                     state.permission_status,

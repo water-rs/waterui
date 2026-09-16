@@ -56,7 +56,8 @@ pub fn app(env: Environment) -> App {
 ```
 
 For state that must exist before the first view, build it in `app` and clone into the
-builder — this is also how you inject app-wide state that handlers reach with `State<T>`:
+builder — this is also how you inject app-wide state that handlers reach as a bare
+`#[state]`-marked parameter:
 
 ```rust
 pub fn app(env: Environment) -> App {

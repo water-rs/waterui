@@ -9,6 +9,7 @@ use waterui_core::extract::{ExtractionState, Extractor};
 use waterui_core::layout::StretchAxis;
 use waterui_core::view::{Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Error, Native, NativeView, View, impl_debug};
+use waterui_macros::state;
 use waterui_url::Url;
 
 use crate::{CdpError, CdpSession, ChromiumController, CustomCdpSession};
@@ -261,7 +262,9 @@ impl AnyChromiumPageHandle {
 }
 
 /// Visible or headless Chromium page with navigation, lifecycle, screenshot,
-/// download, and CDP access.
+/// download, and CDP access. Extracts through `State<Self>`, so
+/// `.state(&page)` supplies it to adjacent controls.
+#[state]
 #[derive(Clone)]
 pub struct ChromiumPage {
     handle: AnyChromiumPageHandle,

@@ -218,6 +218,7 @@ fn opacity_section(opacity: &Binding<f64>) -> impl View {
 }
 
 /// The three combined-filter bindings, injected into handlers as one state.
+#[state]
 #[derive(Clone)]
 struct CombinedFilters {
     blur: Binding<f64>,
@@ -259,26 +260,26 @@ fn combined_section(
             .min_height(100.0),
         hstack((
             button("Reset")
-                .action(|State(f): State<CombinedFilters>| {
+                .action(|f: CombinedFilters| {
                     f.blur.set(0.0);
                     f.saturation.set(1.0);
                     f.hue.set(0.0);
                 })
                 .state(&filters),
             button("Dreamy")
-                .action(|State(f): State<CombinedFilters>| {
+                .action(|f: CombinedFilters| {
                     f.blur.set(3.0);
                     f.saturation.set(0.7);
                 })
                 .state(&filters),
             button("Vibrant")
-                .action(|State(f): State<CombinedFilters>| {
+                .action(|f: CombinedFilters| {
                     f.hue.set(180.0);
                     f.saturation.set(1.8);
                 })
                 .state(&filters),
             button("Vintage")
-                .action(|State(f): State<CombinedFilters>| {
+                .action(|f: CombinedFilters| {
                     f.blur.set(1.0);
                     f.saturation.set(0.5);
                     f.hue.set(30.0);

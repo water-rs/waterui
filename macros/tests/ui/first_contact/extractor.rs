@@ -1,5 +1,5 @@
 //! `use_env(|client: ApiClient| ..)`: the parameter type must implement
-//! `Extractor`; a plain type does not until `impl_extractor!` marks it.
+//! `Extractor`; a plain type does not until `#[state]` or `impl_extractor!` marks it.
 
 use waterui::env::use_env;
 use waterui::prelude::*;

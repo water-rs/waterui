@@ -103,6 +103,7 @@ fn handle_webview_event(
 }
 
 /// The bindings the "Go" action reads and writes.
+#[state]
 #[derive(Clone)]
 struct NavigateState {
     address: Binding<Str>,
@@ -126,7 +127,7 @@ fn toolbar(
             TextField::new("Address", &address).hide_label(),
             button("Go")
                 .style(ButtonStyle::Bordered)
-                .action(|proxy: WebViewProxy, State(nav): State<NavigateState>| {
+                .action(|proxy: WebViewProxy, nav: NavigateState| {
                     if let Some(url) = Url::parse_user_input(nav.address.get().as_str()) {
                         nav.address.set(Str::from(url.as_str().to_owned()));
                         proxy.go_to(url);
