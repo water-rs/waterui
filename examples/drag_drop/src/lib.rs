@@ -16,7 +16,7 @@ use waterui::preview;
 use waterui::reactive::Binding;
 use waterui::task::{sleep, spawn_local};
 
-const FRUIT_CARD_WIDTH: f32 = 152.0;
+const FRUIT_CARD_WIDTH: f32 = 160.0;
 
 /// A draggable fruit card
 fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl View {
