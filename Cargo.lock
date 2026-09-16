@@ -10643,7 +10643,9 @@ dependencies = [
  "waterkit-location",
  "waterui",
  "waterui-core",
+ "waterui-map-gpu",
  "waterui-testing",
+ "waterui-url",
 ]
 
 [[package]]
