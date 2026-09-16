@@ -337,7 +337,7 @@ fn thread_card(thread: &'static Thread, selected: Binding<usize>, index: usize) 
     ))
     .alignment(HorizontalAlignment::Leading)
     .spacing(8.0)
-    .padding_with(EdgeInsets::all(20.0))
+    .padding_with(20.0)
     .background(container)
     .clip(FixedRoundedRectangle::new(CARD_RADIUS))
     .on_tap(move |State(selected): State<Binding<usize>>| {
@@ -358,7 +358,7 @@ fn search_bar() -> impl View {
         avatar("Me").image(avatar_of("Me")).size(SEARCH_AVATAR),
     ))
     .spacing(12.0)
-    .padding_with(EdgeInsets::symmetric(12.0, 16.0))
+    .padding_with((12.0, 16.0))
     .background(Capsule.fill(SurfaceContainerHigh))
 }
 
@@ -416,7 +416,7 @@ fn list_pane(selected: Binding<usize>) -> impl View {
             .spacing(8.0),
         ))
         .spacing(16.0)
-        .padding_with(EdgeInsets::new(16.0, 16.0, 4.0, 12.0)),
+        .padding_with([16.0, 16.0, 4.0, 12.0]),
     )
     .min_width(LIST_MIN_WIDTH)
     .max_width(f32::INFINITY)
@@ -446,7 +446,7 @@ fn reply_pill(label: &'static str) -> impl View {
     text(label)
         .font(label_large())
         .foreground(OnSurface)
-        .padding_with(EdgeInsets::new(10.0, 10.0, 24.0, 24.0))
+        .padding_with([10.0, 10.0, 24.0, 24.0])
         .max_width(f32::INFINITY)
         .background(Capsule.fill(SurfaceBright))
         .on_tap(|| {})
@@ -457,7 +457,7 @@ fn reply_pill(label: &'static str) -> impl View {
 fn reply_actions() -> impl View {
     hstack((reply_pill("Reply"), reply_pill("Reply all")))
         .spacing(12.0)
-        .padding_with(EdgeInsets::new(20.0, 8.0, 0.0, 0.0))
+        .padding_with([20.0, 8.0, 0.0, 0.0])
 }
 
 /// The detail column's app bar: subject, message count, and overflow actions,
@@ -477,7 +477,7 @@ fn detail_header(thread: &'static Thread) -> impl View {
         circled_icon_button("More", dots_vertical(), color::Surface),
     ))
     .spacing(8.0)
-    .padding_with(EdgeInsets::new(16.0, 16.0, 20.0, 16.0))
+    .padding_with([16.0, 16.0, 20.0, 16.0])
 }
 
 fn detail_pane(thread: &'static Thread) -> impl View {
@@ -485,7 +485,7 @@ fn detail_pane(thread: &'static Thread) -> impl View {
     for message in thread.messages {
         rows.push(AnyView::new(
             message_body(message)
-                .padding_with(EdgeInsets::all(20.0))
+                .padding_with(20.0)
                 .background(SurfaceContainerLowest)
                 .clip(FixedRoundedRectangle::new(CARD_RADIUS)),
         ));
@@ -494,7 +494,7 @@ fn detail_pane(thread: &'static Thread) -> impl View {
         vstack(rows)
             .alignment(HorizontalAlignment::Leading)
             .spacing(8.0)
-            .padding_with(EdgeInsets::new(0.0, 12.0, 16.0, 16.0)),
+            .padding_with([0.0, 12.0, 16.0, 16.0]),
     )
     .background(InverseOnSurface)
     .max_width(f32::INFINITY)

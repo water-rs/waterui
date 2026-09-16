@@ -322,12 +322,12 @@ where
     .a11y_hidden(true)
     .height(DRAWER_ITEM_HEIGHT)
     .max_width(f32::INFINITY)
-    .padding_with(EdgeInsets::new(
+    .padding_with([
         0.0,
         0.0,
         DRAWER_ITEM_LEADING_SPACE,
         DRAWER_ITEM_TRAILING_SPACE,
-    ))
+    ])
     .background(pill)
     // `ActiveIndicatorShape` is `CornerFull`, whose caps are half the row
     // height. `Capsule` says that directly and stays correct at any row
@@ -363,12 +363,12 @@ where
         .a11y_hidden(true)
         .height(DRAWER_HEADLINE_HEIGHT)
         .max_width(f32::INFINITY)
-        .padding_with(EdgeInsets::new(
+        .padding_with([
             0.0,
             0.0,
             DRAWER_ITEM_LEADING_SPACE,
             DRAWER_ITEM_TRAILING_SPACE,
-        ))
+        ])
         .on_tap(action)
         .a11y_role(AccessibilityRole::Button)
         .a11y_label(title)
@@ -410,7 +410,7 @@ fn sidebar(
                 .sub_headline()
                 .bold()
                 .foreground(Foreground)
-                .padding_with(EdgeInsets::new(20.0, 12.0, 28.0, 16.0)),
+                .padding_with([20.0, 12.0, 28.0, 16.0]),
             drawer,
         ))
         .spacing(4.0)
@@ -462,10 +462,7 @@ fn item_row(index: usize, selected: Binding<Option<usize>>) -> impl View {
 fn control_detail(index: usize, state: &DemoState) -> NavigationView {
     let all = controls();
     let control = &all[index];
-    NavigationView::new(
-        control.title,
-        (control.demo)(state).padding_with(EdgeInsets::all(20.0)),
-    )
+    NavigationView::new(control.title, (control.demo)(state).padding_with(20.0))
 }
 
 /// Shown before any control is selected (wide layouts).

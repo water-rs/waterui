@@ -544,10 +544,42 @@ pub trait ViewExt: View + Sized {
 
     /// Adds padding to this view with custom edge insets.
     ///
+    /// `EdgeInsets` converts from a single `f32` (every edge), a
+    /// `(vertical, horizontal)` pair and a `[top, bottom, leading, trailing]`
+    /// array, so the common shapes need no constructor:
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// text!("a").padding_with(16.0);
+    /// text!("b").padding_with((8.0, 16.0));
+    /// text!("c").padding_with([4.0, 12.0, 16.0, 16.0]);
+    /// ```
+    ///
     /// # Arguments
     /// * `edge` - The edge insets to apply as padding
     fn padding_with(self, edge: impl IntoComputed<EdgeInsets>) -> Padding {
         Padding::new(edge, self)
+    }
+
+    /// Adds padding on the leading and trailing edges only.
+    fn padding_horizontal(self, value: impl IntoSignalF32) -> Padding {
+        Padding::new(
+            value
+                .into_signal_f32()
+                .map(|value| EdgeInsets::symmetric(0.0, value)),
+            self,
+        )
+    }
+
+    /// Adds padding on the top and bottom edges only.
+    fn padding_vertical(self, value: impl IntoSignalF32) -> Padding {
+        Padding::new(
+            value
+                .into_signal_f32()
+                .map(|value| EdgeInsets::symmetric(value, 0.0)),
+            self,
+        )
     }
 
     /// Adds default padding to this view.

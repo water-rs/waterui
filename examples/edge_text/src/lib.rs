@@ -12,7 +12,7 @@ fn section(title: &'static str, content: impl View) -> impl View {
     vstack((text(title).sub_headline().muted(), content))
         .alignment(HorizontalAlignment::Leading)
         .spacing(6.0)
-        .padding_with(EdgeInsets::all(12.0))
+        .padding_with(12.0)
 }
 
 /// 160-char run with no break opportunities — tests overflow wrapping.
@@ -116,7 +116,7 @@ pub fn demo() -> impl View {
             .alignment(HorizontalAlignment::Leading),
         ))
         .alignment(HorizontalAlignment::Leading)
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 
