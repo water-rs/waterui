@@ -20,6 +20,7 @@ use waterui::prelude::*;
 use waterui::shape::{Capsule, FixedRoundedRectangle, ShapeExt};
 use waterui::text::font::{Body, Caption, Font, FontWeight, Subheadline};
 use waterui::widget::avatar;
+use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
 
 use hydrolysis_m3::color::{
@@ -31,6 +32,17 @@ use hydrolysis_m3::{
     Argb, MaterialColorMode, MaterialColorScheme, MaterialColorSchemes, MaterialColorSource,
     MaterialRoleColor, fab, icon_button, material_badge, navigation_rail, navigation_rail_item,
 };
+use mdi::dots_vertical;
+use mdi::email_outline;
+use mdi::magnify;
+use mdi::menu;
+use mdi::message_outline;
+use mdi::note_outline;
+use mdi::pencil;
+use mdi::star as mdi_star;
+use mdi::star_outline;
+use mdi::trash_can_outline;
+use mdi::video_outline;
 
 const RAIL_WIDTH: f32 = 80.0;
 /// Minimum list-pane width; the pane splits the remaining width evenly with
@@ -252,11 +264,7 @@ fn circled_icon_button(
 fn star(selected: bool, circle: impl Into<Color>) -> impl View {
     circled_icon_button(
         if selected { "Unstar" } else { "Star" },
-        if selected {
-            mdi::star()
-        } else {
-            mdi::star_outline()
-        },
+        when(selected, mdi_star).otherwise(star_outline),
         circle,
     )
 }
@@ -290,13 +298,13 @@ fn avatar_of(name: &'static str) -> Url {
 }
 
 fn thread_card(thread: &'static Thread, selected: Binding<usize>, index: usize) -> impl View {
-    let container = signal_color(selected.clone().map(move |now| {
-        if now == index {
-            Color::new(SecondaryContainer)
-        } else {
-            Color::new(SurfaceVariant)
-        }
-    }));
+    let container = signal_color(
+        selected
+            .clone()
+            .equal_to(index)
+            .select(Color::new(SecondaryContainer), Color::new(SurfaceVariant))
+            .computed(),
+    );
     vstack((
         hstack((
             avatar(thread.sender)
@@ -332,14 +340,17 @@ fn thread_card(thread: &'static Thread, selected: Binding<usize>, index: usize) 
     .padding_with(20.0)
     .background(container)
     .clip(FixedRoundedRectangle::new(CARD_RADIUS))
-    .on_tap(move || selected.set(index))
+    .on_tap(move |State(selected): State<Binding<usize>>| {
+        selected.set(index);
+    })
+    .state(&selected)
     .a11y_label(thread.subject)
     .a11y_role(AccessibilityRole::Button)
 }
 
 fn search_bar() -> impl View {
     hstack((
-        mdi::magnify().foreground(OnSurfaceVariant),
+        magnify().foreground(OnSurfaceVariant),
         text("Search replies")
             .font(Body)
             .foreground(OnSurfaceVariant),
@@ -359,27 +370,27 @@ fn rail_item<Icon: Clone + View + 'static>(
 ) -> impl View {
     // The sample's rail items are icon-only; the a11y label carries the name.
     navigation_rail_item("", icon, &selected_rail.condition(move |now| *now == index))
-        .action({
-            let selected_rail = selected_rail.clone();
-            move || selected_rail.set(index)
+        .action(move |State(selected_rail): State<Binding<usize>>| {
+            selected_rail.set(index);
         })
+        .state(selected_rail)
         .a11y_label(label)
 }
 
 fn rail(selected_rail: Binding<usize>) -> impl View {
     vstack((
-        icon_button("Menu", mdi::menu()),
-        fab("Compose", mdi::pencil()).tertiary(),
+        icon_button("Menu", menu()),
+        fab("Compose", pencil()).tertiary(),
         navigation_rail((
             rail_item(
                 &selected_rail,
                 0,
                 "Mail",
-                material_badge(4, mdi::email_outline()),
+                material_badge(4, email_outline()),
             ),
-            rail_item(&selected_rail, 1, "Notes", mdi::note_outline()),
-            rail_item(&selected_rail, 2, "Chat", mdi::message_outline()),
-            rail_item(&selected_rail, 3, "Meet", mdi::video_outline()),
+            rail_item(&selected_rail, 1, "Notes", note_outline()),
+            rail_item(&selected_rail, 2, "Chat", message_outline()),
+            rail_item(&selected_rail, 3, "Meet", video_outline()),
         ))
         .layout(NavigationRailLayout::CollapsedNarrow),
         spacer(),
@@ -455,15 +466,15 @@ fn detail_header(thread: &'static Thread) -> impl View {
     hstack((
         vstack((
             text(thread.subject).font(Subheadline),
-            text(format!("{} Messages", thread.messages.len()))
+            text(text!("{#count} Messages", count = thread.messages.len()))
                 .font(label_medium())
                 .foreground(Outline),
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(4.0),
         spacer(),
-        circled_icon_button("Delete", mdi::trash_can_outline(), color::Surface),
-        circled_icon_button("More", mdi::dots_vertical(), color::Surface),
+        circled_icon_button("Delete", trash_can_outline(), color::Surface),
+        circled_icon_button("More", dots_vertical(), color::Surface),
     ))
     .spacing(8.0)
     .padding_with([16.0, 16.0, 20.0, 16.0])

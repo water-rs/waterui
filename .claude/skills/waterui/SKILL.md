@@ -110,7 +110,7 @@ struct Editor {
 }
 
 fn toggle_editing(State(state): State<Editor>) {
-    state.editing.set(!state.editing.get());
+    state.editing.toggle();
 }
 
 fn content(state: Editor) -> impl View {
@@ -377,10 +377,11 @@ shared configuration without every intermediate function taking it as a paramete
 
 ```rust
 use waterui::env::{use_env, with};
+use waterui::impl_extractor;
 
 #[derive(Clone)]
 struct ApiClient { base_url: Str }
-waterui::impl_extractor!(ApiClient);          // makes it a handler/`use_env` parameter
+impl_extractor!(ApiClient);                   // makes it a handler/`use_env` parameter
 
 // Seeding, usually in `app(env)`:
 env.insert(client);                            // in place

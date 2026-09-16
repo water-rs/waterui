@@ -6,6 +6,9 @@
 //! - Native-first map configuration with a GPU provider for self-drawn backends
 //! - WaterKit location permission and reactive user-location display
 
+use lucide::locate_fixed;
+use lucide::minus;
+use lucide::plus;
 use waterkit_location::{Location, Permission, PermissionStatus};
 use waterkit_permission::request;
 use waterui::app::App;
@@ -18,6 +21,7 @@ use waterui::shape::{RoundedRectangle, ShapeExt as _};
 use waterui_icons_lucide as lucide;
 use waterui_map::{Coordinate, Map, MapStyle, Region};
 use waterui_map_gpu::MapGpuOptions;
+use waterui_map_gpu::install;
 use waterui_url::Url;
 
 const MAP_CONTROL_SPACING: f32 = 10.0;
@@ -77,7 +81,7 @@ fn content(state: MapExampleState) -> impl View {
         .shows_compass(true)
         .shows_scale(true);
 
-    let location_control = button(label("Use My Location").icon(lucide::locate_fixed()))
+    let location_control = button(label("Use My Location").icon(locate_fixed()))
         .label_style(LabelDisplayMode::IconOnly)
         .plain()
         .action_async(
@@ -117,12 +121,12 @@ fn content(state: MapExampleState) -> impl View {
         .floating()
         .disabled(locating.clone());
 
-    let zoom_in = button(label("Zoom In").icon(lucide::plus()))
+    let zoom_in = button(label("Zoom In").icon(plus()))
         .label_style(LabelDisplayMode::IconOnly)
         .plain()
         .action(|State(region): State<Binding<Region>>| zoom_region(&region, 0.5))
         .state(&region);
-    let zoom_out = button(label("Zoom Out").icon(lucide::minus()))
+    let zoom_out = button(label("Zoom Out").icon(minus()))
         .label_style(LabelDisplayMode::IconOnly)
         .plain()
         .action(|State(region): State<Binding<Region>>| zoom_region(&region, 2.0))
@@ -181,7 +185,7 @@ pub fn app(mut env: Environment) -> App {
     env.insert(MapGpuOptions::new(Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
-    waterui_map_gpu::install(&mut env);
+    install(&mut env);
     let state = MapExampleState::new();
     App::new(move || content(state.clone()), env)
 }

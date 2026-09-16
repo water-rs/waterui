@@ -217,12 +217,25 @@ fn opacity_section(opacity: &Binding<f64>) -> impl View {
     .padding()
 }
 
+/// The three combined-filter bindings, injected into handlers as one state.
+#[derive(Clone)]
+struct CombinedFilters {
+    blur: Binding<f64>,
+    saturation: Binding<f64>,
+    hue: Binding<f64>,
+}
+
 /// Demo: Combined filters with animation
 fn combined_section(
     combined_blur: &Binding<f64>,
     combined_saturation: &Binding<f64>,
     combined_hue: &Binding<f64>,
 ) -> impl View {
+    let filters = CombinedFilters {
+        blur: combined_blur.clone(),
+        saturation: combined_saturation.clone(),
+        hue: combined_hue.clone(),
+    };
     let animated_blur = combined_blur
         .clone()
         .map(|v| v as f32)
@@ -246,49 +259,31 @@ fn combined_section(
             .min_height(100.0),
         hstack((
             button("Reset")
-                .action(
-                    |State(b): State<Binding<f64>>,
-                     State(s): State<Binding<f64>>,
-                     State(h): State<Binding<f64>>| {
-                        b.set(0.0);
-                        s.set(1.0);
-                        h.set(0.0);
-                    },
-                )
-                .state(combined_blur)
-                .state(combined_saturation)
-                .state(combined_hue),
+                .action(|State(f): State<CombinedFilters>| {
+                    f.blur.set(0.0);
+                    f.saturation.set(1.0);
+                    f.hue.set(0.0);
+                })
+                .state(&filters),
             button("Dreamy")
-                .action(
-                    |State(b): State<Binding<f64>>, State(s): State<Binding<f64>>| {
-                        b.set(3.0);
-                        s.set(0.7);
-                    },
-                )
-                .state(combined_blur)
-                .state(combined_saturation),
+                .action(|State(f): State<CombinedFilters>| {
+                    f.blur.set(3.0);
+                    f.saturation.set(0.7);
+                })
+                .state(&filters),
             button("Vibrant")
-                .action(
-                    |State(h): State<Binding<f64>>, State(s): State<Binding<f64>>| {
-                        h.set(180.0);
-                        s.set(1.8);
-                    },
-                )
-                .state(combined_hue)
-                .state(combined_saturation),
+                .action(|State(f): State<CombinedFilters>| {
+                    f.hue.set(180.0);
+                    f.saturation.set(1.8);
+                })
+                .state(&filters),
             button("Vintage")
-                .action(
-                    |State(b): State<Binding<f64>>,
-                     State(s): State<Binding<f64>>,
-                     State(h): State<Binding<f64>>| {
-                        b.set(1.0);
-                        s.set(0.5);
-                        h.set(30.0);
-                    },
-                )
-                .state(combined_blur)
-                .state(combined_saturation)
-                .state(combined_hue),
+                .action(|State(f): State<CombinedFilters>| {
+                    f.blur.set(1.0);
+                    f.saturation.set(0.5);
+                    f.hue.set(30.0);
+                })
+                .state(&filters),
         )),
     ))
     .padding()

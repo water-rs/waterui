@@ -36,23 +36,14 @@ xkeysym = { version = "0.2.1", optional = true }
 
 [dev-dependencies]
 base64 = "0.23"
-executor-core = { workspace = true, features = ["async-executor"] }
 pollster.workspace = true
-tiny_http = "0.12"
-# The shared real-engine assertions; `real-engine` already selects `webview`.
-waterui-webview = { workspace = true, features = ["conformance"] }
 
 [[example]]
 name = "runtime_smoke"
 required-features = ["runtime-smoke"]
 
-[[test]]
-name = "real_engine"
-required-features = ["real-engine"]
-
 [features]
 default = ["webview"]
-real-engine = ["webview"]
 runtime-smoke = ["webview"]
 webview = [
     "dep:cookie",

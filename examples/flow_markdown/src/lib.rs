@@ -77,7 +77,7 @@ fn current_document_char_count(index: i32) -> i32 {
 }
 
 fn cancel_stream(streaming: &Binding<bool>, stream_revision: &Binding<i32>) {
-    stream_revision.set(stream_revision.get().wrapping_add(1));
+    stream_revision.with_mut(|v| *v = (*v).wrapping_add(1));
     streaming.set(false);
 }
 
@@ -237,9 +237,7 @@ pub fn demo() -> impl View {
     let stream_speed = stream_cps
         .clone()
         .map(|cps| cps.clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-    let stream_status = streaming
-        .clone()
-        .map(|streaming| if streaming { "running" } else { "idle" });
+    let stream_status = streaming.clone().select("running", "idle");
     let flow_summary = animation_preset
         .zip(&animation_cps)
         .zip(&stream_cps)
@@ -263,13 +261,9 @@ pub fn demo() -> impl View {
             configured_flow_config(preset, cps, stream_cps, token_fade_enabled)
         })
         .computed();
-    let token_fade_label = token_fade_enabled.clone().map(|enabled| {
-        if enabled {
-            "Token fade on"
-        } else {
-            "Token fade off"
-        }
-    });
+    let token_fade_label = token_fade_enabled
+        .clone()
+        .select("Token fade on", "Token fade off");
     let document_title_text = document_title.clone();
     let document_number_text = document_number.clone();
     let char_progress_text = char_progress.clone();
@@ -398,7 +392,7 @@ pub fn demo() -> impl View {
                 .width(SECONDARY_CONTROL_WIDTH),
             button(text!("{token_fade_label}"))
                 .action(|State(enabled): State<Binding<bool>>| {
-                    enabled.set(!enabled.get());
+                    enabled.toggle();
                 })
                 .state(&token_fade_enabled)
                 .width(TOKEN_CONTROL_WIDTH),

@@ -135,13 +135,7 @@ pub fn interaction_block_06() {
     let _ = {
         view.cursor(
             dragging
-                .map(|d| {
-                    if d {
-                        CursorStyle::ClosedHand
-                    } else {
-                        CursorStyle::OpenHand
-                    }
-                })
+                .select(CursorStyle::ClosedHand, CursorStyle::OpenHand)
                 .computed(),
         )
     };
@@ -224,6 +218,9 @@ pub fn interaction_drop_extras_prose() {
 // ---------------------------------------------------------------------------
 // interaction.md § "## Reactive pressed/hover visuals" — rust block 8/8
 // ---------------------------------------------------------------------------
+// The two layers cross-fade through complementary opacity signals — reaching
+// 0.0 here is the documented technique, not a visibility toggle.
+#[allow(unknown_lints, opacity_as_visibility)]
 pub fn interaction_block_08() -> impl View {
     let is_hovered = Binding::bool(false);
 

@@ -42,6 +42,9 @@ fn glue_row_view(row: GlueRow) -> ListItem {
 // SKILL.md § "### 1. Pass the signal, never a snapshot of it" — rust block 1/16
 // Listing: four independent one-line examples.
 // ---------------------------------------------------------------------------
+// `fade.get()` is SKILL.md's deliberate broken line — the section teaches that
+// passing a snapshot freezes the view while still compiling.
+#[allow(unknown_lints, signal_get_in_view)]
 pub fn skill_block_01() {
     let fade = Binding::f32(1.0);
     let blur = Binding::f64(4.0);
@@ -129,7 +132,7 @@ pub mod skill_block_05 {
     }
 
     fn toggle_editing(State(state): State<Editor>) {
-        state.editing.set(!state.editing.get());
+        state.editing.toggle();
     }
 
     fn content(state: Editor) -> impl View {
@@ -414,7 +417,8 @@ pub fn skill_block_15() {
     let (x, y) = (1.5_f32, 2.5_f32);
     let degrees = 30.0_f32;
     let width = 2.0_f32;
-    let shape = waterui::shape::Circle;
+    use waterui::shape::Circle;
+    let shape = Circle;
 
     let view = Divider;
     let _ = { view.padding() };
@@ -559,12 +563,13 @@ pub mod skill_block_16 {
     use waterui::prelude::*;
 
     use waterui::env::{use_env, with};
+    use waterui::impl_extractor;
 
     #[derive(Clone)]
     pub struct ApiClient {
         base_url: Str,
     }
-    waterui::impl_extractor!(ApiClient); // makes it a handler/`use_env` parameter
+    impl_extractor!(ApiClient); // makes it a handler/`use_env` parameter
 
     fn send(_client: &ApiClient) {}
 

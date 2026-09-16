@@ -17,14 +17,16 @@ use waterui_icons_sf_symbol as sf;
 /// Demo: SF Symbols (Apple only)
 #[cfg(target_vendor = "apple")]
 fn sf_symbols_demo() -> impl View {
+    use sf::{gearshape, heart_fill, house_fill, person_fill, star_fill};
+
     vstack((
         text("SF Symbols (Apple)").size(18.0),
         hstack((
-            sf::house_fill(),
-            sf::person_fill(),
-            sf::gearshape(),
-            sf::heart_fill(),
-            sf::star_fill(),
+            house_fill(),
+            person_fill(),
+            gearshape(),
+            heart_fill(),
+            star_fill(),
         ))
         .spacing(16.0),
     ))
@@ -33,51 +35,40 @@ fn sf_symbols_demo() -> impl View {
 
 /// Demo: Material Design Icons (SVG)
 fn material_icons_demo() -> impl View {
+    use mdi::{account, cog, heart, home, star};
+
     vstack((
         text("Material Design Icons").size(18.0),
-        hstack((
-            mdi::home(),
-            mdi::account(),
-            mdi::cog(),
-            mdi::heart(),
-            mdi::star(),
-        ))
-        .spacing(16.0),
+        hstack((home(), account(), cog(), heart(), star())).spacing(16.0),
     ))
     .padding()
 }
 
 /// Demo: Lucide Icons (SVG)
 fn lucide_icons_demo() -> impl View {
+    use lucide::{heart, house, settings, star, user};
+
     vstack((
         text("Lucide Icons").size(18.0),
-        hstack((
-            lucide::house(),
-            lucide::user(),
-            lucide::settings(),
-            lucide::heart(),
-            lucide::star(),
-        ))
-        .spacing(16.0),
+        hstack((house(), user(), settings(), heart(), star())).spacing(16.0),
     ))
     .padding()
 }
 
 /// Demo: Colored icons
 fn colored_icons_demo() -> impl View {
+    use lucide::star;
+    use mdi::{check_circle, heart, information};
+
     vstack((
         text("Colored Icons").size(18.0),
         hstack((
-            mdi::heart()
-                .tint(Color::srgb_hex("#EF4444"))
-                .size(32.0, 32.0),
-            lucide::star()
-                .tint(Color::srgb_hex("#F59E0B"))
-                .size(32.0, 32.0),
-            mdi::check_circle()
+            heart().tint(Color::srgb_hex("#EF4444")).size(32.0, 32.0),
+            star().tint(Color::srgb_hex("#F59E0B")).size(32.0, 32.0),
+            check_circle()
                 .tint(Color::srgb_hex("#10B981"))
                 .size(32.0, 32.0),
-            mdi::information()
+            information()
                 .tint(Color::srgb_hex("#3B82F6"))
                 .size(32.0, 32.0),
         ))

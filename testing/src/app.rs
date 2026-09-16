@@ -43,10 +43,10 @@ pub fn ui() -> UiBuilder {
 /// Installs the theme a test runs under when it names none.
 ///
 /// This is the complete Hydrolysis theme: the backend's own test installer
-/// supplies the component bridges it realizes natively (the map), and
-/// Material 3 supplies everything a view can draw with — colour and font
-/// tokens, typography, and the widget theme that every Hydrolysis control
-/// reads its chrome from. Material 3 is what a generated project installs, so
+/// supplies the base tokens its renderers read, and Material 3 supplies
+/// everything a view can draw with — colour and font tokens, typography, and
+/// the widget theme that every Hydrolysis control reads its chrome from.
+/// Material 3 is what a generated project installs, so
 /// a test sees what the application's window shows, and a scroll view, a
 /// button or a toggle mounts under `ui()` without the test binary opting into
 /// a theme package first. Its tokens replace the backend installer's, which
