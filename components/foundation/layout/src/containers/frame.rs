@@ -366,12 +366,16 @@ impl Frame {
     /// Sets the alignment of the child within the frame.
     ///
     /// # Arguments
-    /// * `alignment` - The alignment to apply to the child view
+    /// * `alignment` - The alignment to apply to the child view: an
+    ///   [`Alignment`] or one of the tokens (`Leading`, `TopTrailing`,
+    ///   `Center`, …).
     #[must_use]
-    pub const fn alignment(mut self, alignment: Alignment) -> Self {
-        self.layout.alignment = alignment;
+    pub fn alignment(mut self, alignment: impl Into<Alignment>) -> Self {
+        self.layout.alignment = alignment.into();
         self
     }
+
+    crate::alignment::two_dimensional_alignment_methods!();
 
     /// Sets the ideal width of the frame.
     ///

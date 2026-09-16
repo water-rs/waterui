@@ -49,6 +49,7 @@ extern crate alloc;
 
 pub use waterui_core::layout::*;
 
+pub mod alignment;
 mod collections;
 mod containers;
 mod modifiers;
@@ -66,6 +67,10 @@ pub mod stack;
 pub use grid::{Grid, GridRow, grid, row};
 pub use scroll::{ScrollController, ScrollView, scroll, scroll_both, scroll_horizontal};
 
+pub use alignment::{
+    Bottom, BottomLeading, BottomTrailing, Center, FirstBaseline, LastBaseline, Leading, Top,
+    TopLeading, TopTrailing, Trailing,
+};
 pub use alignment_guide::{HorizontalAlignmentGuide, VerticalAlignmentGuide};
 pub use aspect_ratio::{AspectRatio, AspectRatioLayout, ContentMode, aspect_ratio};
 pub use collection_transition::{CollectionTransition, collection_transition};

@@ -282,11 +282,11 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
             .padding_with([12.0, 4.0, 4.0, 4.0]),
         vstack(user_lists().map(|(name, count, color)| user_list_row(name, count, color)))
             .spacing(2.0)
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
         // Pin content to the top of the column, as the official app does.
         spacer(),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(6.0)
     .padding_with(12.0)
     .width(300.0)
@@ -323,7 +323,7 @@ fn destination_tile(
         spacer(),
         text(dest.title()).body().bold().foreground(Srgb::WHITE),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(4.0)
     .padding_with(10.0)
     .min_height(56.0)
@@ -351,7 +351,7 @@ fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
         spacer(),
         text!("{count}").caption().muted(),
     ))
-    .alignment(VerticalAlignment::Center)
+    .centered()
     .spacing(10.0)
     .padding_with((4.0, 8.0))
 }
@@ -395,7 +395,7 @@ fn content_header(dest: SidebarDestination) -> impl View {
         .bold()
         .foreground(dest.color())
         .max_width(f32::INFINITY)
-        .alignment(Alignment::Leading)
+        .leading()
         .padding_with([14.0, 18.0, 12.0, 18.0])
 }
 
@@ -438,7 +438,7 @@ fn reminder_section(
             .bold()
             .muted()
             .max_width(f32::INFINITY)
-            .alignment(Alignment::Leading)
+            .leading()
             .padding_with([8.0, 18.0, 0.0, 18.0]),
         List::for_each(rows, move |row| {
             let visible = reminder_visible(search.clone(), row.clone());
@@ -451,7 +451,7 @@ fn reminder_section(
                             .map(|subtitle| text(subtitle).caption().muted()),
                     ))
                     .spacing(2.0)
-                    .alignment(HorizontalAlignment::Leading),
+                    .leading(),
                     spacer(),
                     when(row.flagged, || {
                         flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)

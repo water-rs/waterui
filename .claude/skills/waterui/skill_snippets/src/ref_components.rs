@@ -45,7 +45,7 @@ pub fn components_block_02() {
     let _ = { stack.spacing(8.0) };
     let stack = vstack((text("a"), text("b")));
     let _ = {
-        stack.alignment(HorizontalAlignment::Leading) // VerticalAlignment on hstack
+        stack.leading() // or .alignment(Leading); hstack aligns vertically: .top() / .centered() / .bottom()
     };
     let stack = vstack((text("a"), text("b")));
     let _ = { stack.padding() };

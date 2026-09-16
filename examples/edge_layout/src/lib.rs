@@ -27,7 +27,7 @@ fn deep_nest(depth: u32) -> AnyView {
         .otherwise(move || {
             vstack((text("·").caption(), deep_nest(depth - 1)))
                 .spacing(2.0)
-                .alignment(HorizontalAlignment::Leading)
+                .leading()
         }),
     )
 }
@@ -57,7 +57,7 @@ fn dense_grid() -> impl View {
         },
     )
     .spacing(4.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn hsl(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
@@ -101,7 +101,7 @@ fn constraint_edges() -> impl View {
         ))
         .spacing(8.0),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(10.0)
 }
 
@@ -124,7 +124,7 @@ pub fn demo() -> impl View {
             constraint_edges(),
             spacer().min_height(16.0),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .padding_with(16.0),
     )
 }

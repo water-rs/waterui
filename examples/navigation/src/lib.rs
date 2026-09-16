@@ -422,10 +422,10 @@ fn message_row(mail: &Mail, message: Message) -> ListItem {
                     text(message.subject).body().foreground(Foreground),
                     text(message.preview).caption().muted(),
                 ))
-                .alignment(HorizontalAlignment::Leading)
+                .leading()
                 .spacing(2.0),
             ))
-            .alignment(VerticalAlignment::Top)
+            .top()
             .spacing(6.0)
             .padding_vertical(8.0)
         }),
@@ -486,7 +486,7 @@ fn message_detail(mail: Mail, id: u64) -> NavigationView {
             text!("{sender}").sub_headline().muted(),
             text!("{body}").body().foreground(Foreground),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .spacing(12.0)
         .padding_with(16.0),
     )
@@ -527,7 +527,7 @@ fn compose_page(mail: Mail) -> NavigationView {
         .caption()
         .muted(),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(12.0)
     .padding_with(16.0)
     .title("New Message")
@@ -662,7 +662,7 @@ fn album_detail(album: Album) -> NavigationView {
             .caption()
             .muted(),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .spacing(10.0)
         .padding_with(16.0),
     )
@@ -818,7 +818,7 @@ fn about_page() -> NavigationView {
         .body()
         .muted(),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(10.0)
     .padding_with(16.0)
     .background(SurfaceVariant)

@@ -33,7 +33,6 @@ use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::form::picker::{PickerStyle, picker};
-use waterui::layout::HorizontalAlignment;
 use waterui::layout::collection_transition;
 use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
@@ -392,7 +391,7 @@ fn sidebar(
         Row::Item(index) => AnyView::new(item_row(index, selected.clone())),
     })
     .spacing(2.0)
-    .alignment(HorizontalAlignment::Leading);
+    .leading();
 
     // Animate group expand/collapse with Material 3 emphasized easing: items fade
     // and collapse along the stack axis as a group opens or closes, while still
@@ -414,7 +413,7 @@ fn sidebar(
             drawer,
         ))
         .spacing(4.0)
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .padding_with(EdgeInsets::symmetric(8.0, DRAWER_INDICATOR_INSET)),
     )
 }
@@ -506,7 +505,7 @@ fn buttons_demo(taps: &Binding<i32>) -> impl View {
         button("Link").link().action(bump).state(taps),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn toggle_demo(wifi: &Binding<bool>, bluetooth: &Binding<bool>) -> impl View {
@@ -517,7 +516,7 @@ fn toggle_demo(wifi: &Binding<bool>, bluetooth: &Binding<bool>) -> impl View {
         text!("Wi-Fi {wifi} · Bluetooth {bluetooth}").body(),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn slider_demo(volume: &Binding<f64>) -> impl View {
@@ -528,7 +527,7 @@ fn slider_demo(volume: &Binding<f64>) -> impl View {
         progress(volume.clone().map(|v| v / 100.0)).label("Volume"),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn stepper_demo(quantity: &Binding<i32>) -> impl View {
@@ -538,7 +537,7 @@ fn stepper_demo(quantity: &Binding<i32>) -> impl View {
         text!("Quantity: {quantity}").body(),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn text_field_demo(name: &Binding<Str>) -> impl View {
@@ -548,7 +547,7 @@ fn text_field_demo(name: &Binding<Str>) -> impl View {
         text!("Echo: {name}").body(),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn size_items() -> Vec<PickerItem<&'static str>> {
@@ -571,7 +570,7 @@ fn picker_demo(size: &Binding<&'static str>) -> impl View {
         text!("Selected: {size}").body(),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn label_demo() -> impl View {
@@ -591,7 +590,7 @@ fn label_demo() -> impl View {
             .display_mode(LabelDisplayMode::IconOnly),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn progress_demo() -> impl View {
@@ -602,7 +601,7 @@ fn progress_demo() -> impl View {
         progress(0.75).label("Almost there"),
     ))
     .spacing(16.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 // ---------------------------------------------------------------------------

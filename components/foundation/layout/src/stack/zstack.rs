@@ -287,12 +287,15 @@ pub struct ZStack<C> {
 }
 
 impl<C> ZStack<C> {
-    /// Sets the alignment for the `ZStack`.
+    /// Sets the alignment for the `ZStack`. An [`Alignment`] or one of the
+    /// tokens (`Leading`, `TopTrailing`, `Center`, …).
     #[must_use]
-    pub const fn alignment(mut self, alignment: Alignment) -> Self {
-        self.layout.alignment = alignment;
+    pub fn alignment(mut self, alignment: impl Into<Alignment>) -> Self {
+        self.layout.alignment = alignment.into();
         self
     }
+
+    crate::alignment::two_dimensional_alignment_methods!();
 }
 
 crate::stack::impl_stack_for_each!(ZStack, ZStackLayout);

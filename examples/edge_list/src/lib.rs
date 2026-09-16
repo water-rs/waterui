@@ -39,20 +39,17 @@ fn record_row(index: u64) -> ListItem {
         text(text!("Row #{index} - {#lines} detail line(s)")).sub_headline(),
     ))
     .spacing(8.0)
-    .alignment(VerticalAlignment::Center);
+    .centered();
 
     let content = match lines {
-        1 => AnyView::new(
-            vstack((header, detail_line(1, "always present")))
-                .alignment(HorizontalAlignment::Leading),
-        ),
+        1 => AnyView::new(vstack((header, detail_line(1, "always present"))).leading()),
         2 => AnyView::new(
             vstack((
                 header,
                 detail_line(1, "always present"),
                 detail_line(2, "makes this row taller"),
             ))
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
         ),
         _ => AnyView::new(
             vstack((
@@ -61,7 +58,7 @@ fn record_row(index: u64) -> ListItem {
                 detail_line(2, "makes this row taller"),
                 detail_line(3, "tallest variant"),
             ))
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
         ),
     };
 
@@ -80,12 +77,12 @@ pub fn demo() -> impl View {
                 .sub_headline()
                 .muted(),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .padding(),
         Divider,
         list,
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 pub fn app(env: Environment) -> App {
