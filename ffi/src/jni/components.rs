@@ -10,11 +10,11 @@ extern crate alloc;
 extern crate std;
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 #[cfg(target_os = "android")]
 use core::ffi::c_void;
 
-use jni::objects::{Global, JClass, JObject, JObjectArray, JValue};
+use jni::objects::{Global, JClass, JIntArray, JObject, JObjectArray, JValue};
 #[cfg(all(target_os = "android", feature = "gpu"))]
 use jni::sys::jboolean;
 #[cfg(all(target_os = "android", feature = "gpu"))]
@@ -29,7 +29,7 @@ use waterui_layout::{
 };
 
 use crate::IntoFFI;
-use crate::components::layout::WuiLayout;
+use crate::components::layout::{WuiLayout, WuiStretchAxis};
 use waterui_graphics::color::ResolvedColor;
 use waterui_text::font::{FontWeight, ResolvedFont};
 
@@ -538,12 +538,8 @@ fn extract_proposal(env: &mut Env, proposal: &JObject) -> ProposalSize {
         .expect("height is float");
 
     ProposalSize {
-        width: if width.is_finite() { Some(width) } else { None },
-        height: if height.is_finite() {
-            Some(height)
-        } else {
-            None
-        },
+        width: if width.is_nan() { None } else { Some(width) },
+        height: if height.is_nan() { None } else { Some(height) },
     }
 }
 
@@ -771,11 +767,36 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutSizeThatFits<'l
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutPlace<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutStretchAxis<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    layout_ptr: jlong,
+    children: jintArray,
+) -> jint {
+    super::with_env(&mut env, |env| {
+        // SAFETY: the runtime owns this live layout handle throughout the call.
+        let layout: &dyn Layout = unsafe { &*(*(layout_ptr as *mut WuiLayout)).0 };
+        // SAFETY: children is the live local int-array reference supplied to this JNI call.
+        let children = unsafe { JIntArray::from_raw(env, children) };
+        let mut ordinals = vec![0; children.len(env).expect("layoutStretchAxis array length")];
+        children
+            .get_region(env, 0, &mut ordinals)
+            .expect("layoutStretchAxis child axes");
+        let axes: Vec<StretchAxis> = ordinals
+            .into_iter()
+            .map(stretch_axis_from_ordinal)
+            .collect();
+        WuiStretchAxis::from(layout.stretch_axis(&axes)) as jint
+    })
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutPlaceSubviews<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     layout_ptr: jlong,
     bounds: JObject<'local>,
+    proposal: JObject<'local>,
     subviews: jobjectArray,
 ) -> jobjectArray {
     super::with_env(&mut env, |env| {
@@ -783,32 +804,42 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_layoutPlace<'local>(
         // boxed `dyn Layout` is borrowed only for this call.
         let layout: &dyn Layout = unsafe { &*(*(layout_ptr as *mut WuiLayout)).0 };
         let bounds = extract_rect(env, &bounds);
+        let proposal = extract_proposal(env, &proposal);
         let jni_subviews = extract_subviews(env, subviews);
         let subview_refs: Vec<&dyn SubView> =
             jni_subviews.iter().map(|s| s as &dyn SubView).collect();
-        let rects = with_memoized_children(&subview_refs, |refs| layout.place(bounds, refs));
-        let rect_class = env
-            .find_class(jni_str!("dev/waterui/android/runtime/RectStruct"))
-            .expect("RectStruct class");
+        let placements =
+            with_memoized_children(&subview_refs, |refs| layout.place(bounds, proposal, refs));
+        let placement_class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/SubviewPlacementStruct"
+            ))
+            .expect("SubviewPlacementStruct class");
         let result_array = env
-            .new_object_array(super::array_len(rects.len()), &rect_class, JObject::null())
-            .expect("create RectStruct array");
+            .new_object_array(
+                super::array_len(placements.len()),
+                &placement_class,
+                JObject::null(),
+            )
+            .expect("create SubviewPlacementStruct array");
 
-        for (i, rect) in rects.iter().enumerate() {
-            let rect_obj = env
+        for (i, placement) in placements.iter().enumerate() {
+            let placement_obj = env
                 .new_object(
-                    &rect_class,
-                    jni_sig!("(FFFF)V"),
+                    &placement_class,
+                    jni_sig!("(FFFFFF)V"),
                     &[
-                        JValue::Float(rect.x()),
-                        JValue::Float(rect.y()),
-                        JValue::Float(rect.width()),
-                        JValue::Float(rect.height()),
+                        JValue::Float(placement.frame.x()),
+                        JValue::Float(placement.frame.y()),
+                        JValue::Float(placement.frame.width()),
+                        JValue::Float(placement.frame.height()),
+                        JValue::Float(placement.proposal.width.unwrap_or(f32::NAN)),
+                        JValue::Float(placement.proposal.height.unwrap_or(f32::NAN)),
                     ],
                 )
-                .expect("create RectStruct");
+                .expect("create SubviewPlacementStruct");
             result_array
-                .set_element(env, i, rect_obj)
+                .set_element(env, i, placement_obj)
                 .expect("set array element");
         }
 

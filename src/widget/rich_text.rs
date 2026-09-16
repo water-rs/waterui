@@ -7,7 +7,8 @@ use waterui_core::{AnyView, Environment, View};
 use waterui_core::{State, extract::Extractor as _};
 use waterui_graphics::color::Blue;
 use waterui_layout::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions,
+    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
+    ViewDimensions,
     container::FixedContainer,
     stack::{HStack, HorizontalAlignment, VStack, hstack},
 };
@@ -482,11 +483,20 @@ impl Layout for MarkdownTableLayout {
         self.measure(proposal.width, children).size
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
-        let measurement = self.measure(Some(bounds.width()), children);
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
+        let measurement = self.measure(proposal.width, children);
         let columns = self.columns.get();
         let row_count = measurement.row_heights.len();
-        let mut placements = vec![Rect::from_size(Size::zero()); children.len()];
+        let mut placements =
+            vec![
+                SubviewPlacement::new(Rect::from_size(Size::zero()), ProposalSize::UNSPECIFIED);
+                children.len()
+            ];
         let mut row_y = bounds.y();
 
         for row in 0..row_count {
@@ -502,9 +512,12 @@ impl Layout for MarkdownTableLayout {
                     MarkdownTableAlignment::Center => (column_width - child_width) * 0.5,
                     MarkdownTableAlignment::Right => column_width - child_width,
                 };
-                placements[self.child_index(cell_index)] = Rect::new(
-                    Point::new(column_x + alignment_offset, row_y),
-                    Size::new(child_width, dimensions.size.height.max(0.0)),
+                placements[self.child_index(cell_index)] = SubviewPlacement::new(
+                    Rect::new(
+                        Point::new(column_x + alignment_offset, row_y),
+                        Size::new(child_width, dimensions.size.height.max(0.0)),
+                    ),
+                    ProposalSize::new(Some(column_width), None),
                 );
                 column_x += column_width + MARKDOWN_TABLE_COLUMN_SPACING;
             }
@@ -512,9 +525,12 @@ impl Layout for MarkdownTableLayout {
             row_y += measurement.row_heights[row];
             if row == 0 {
                 row_y += MARKDOWN_TABLE_ROW_SPACING;
-                placements[self.separator_index()] = Rect::new(
-                    Point::new(bounds.x(), row_y),
-                    Size::new(bounds.width(), measurement.separator_height),
+                placements[self.separator_index()] = SubviewPlacement::new(
+                    Rect::new(
+                        Point::new(bounds.x(), row_y),
+                        Size::new(bounds.width(), measurement.separator_height),
+                    ),
+                    ProposalSize::new(Some(measurement.size.width), None),
                 );
                 row_y += measurement.separator_height;
             }
@@ -1514,14 +1530,15 @@ fn main() {
             .map(|cell| cell as &dyn SubView)
             .collect::<Vec<_>>();
 
-        let size = layout.size_that_fits(ProposalSize::new(Some(300.0), None), children.as_slice());
-        let placements = layout.place(Rect::from_size(size), children.as_slice());
+        let proposal = ProposalSize::new(Some(300.0), None);
+        let size = layout.size_that_fits(proposal, children.as_slice());
+        let placements = layout.place(Rect::from_size(size), proposal, children.as_slice());
 
         assert_eq!(size, Size::new(300.0, 53.0));
-        assert_close(placements[0].x(), placements[4].x());
-        assert_close(placements[1].x(), placements[5].x());
-        assert_close(placements[2].x(), placements[6].x());
-        assert_close(placements[3].width(), 300.0);
+        assert_close(placements[0].frame.x(), placements[4].frame.x());
+        assert_close(placements[1].frame.x(), placements[5].frame.x());
+        assert_close(placements[2].frame.x(), placements[6].frame.x());
+        assert_close(placements[3].frame.width(), 300.0);
     }
 
     #[test]
@@ -1561,12 +1578,13 @@ fn main() {
             .iter()
             .map(|cell| cell as &dyn SubView)
             .collect::<Vec<_>>();
-        let size = layout.size_that_fits(ProposalSize::new(Some(300.0), None), children.as_slice());
-        let placements = layout.place(Rect::from_size(size), children.as_slice());
+        let proposal = ProposalSize::new(Some(300.0), None);
+        let size = layout.size_that_fits(proposal, children.as_slice());
+        let placements = layout.place(Rect::from_size(size), proposal, children.as_slice());
 
-        assert_close(placements[4].x(), 0.0);
-        assert_close(placements[5].x(), 122.0);
-        assert_close(placements[6].x(), 244.0);
+        assert_close(placements[4].frame.x(), 0.0);
+        assert_close(placements[5].frame.x(), 122.0);
+        assert_close(placements[6].frame.x(), 244.0);
     }
 
     #[test]

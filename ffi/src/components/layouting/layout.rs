@@ -5,7 +5,7 @@ use core::fmt;
 use nami::{Signal, SignalExt};
 use waterui_layout::{
     HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
-    VerticalAlignment, ViewDimensions,
+    SubviewPlacement, VerticalAlignment, ViewDimensions,
     container::{FixedContainer, LazyContainer},
     measure_layout,
     scroll::Axis,
@@ -600,6 +600,29 @@ impl IntoFFI for Rect {
 crate::ffi_binding!(Rect, WuiRect, rect);
 crate::ffi_watcher!(Rect, WuiRect, rect);
 
+/// C ABI mirror of [`SubviewPlacement`]: a child's resolved frame together
+/// with the size proposal that was selected to measure and recursively place
+/// it.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiSubviewPlacement {
+    /// The child frame in the parent layout's coordinate space.
+    frame: WuiRect,
+    /// The proposal used to measure and recursively place the child; it is
+    /// not inferred from the frame.
+    proposal: WuiProposalSize,
+}
+
+impl IntoFFI for SubviewPlacement {
+    type FFI = WuiSubviewPlacement;
+    fn into_ffi(self) -> Self::FFI {
+        WuiSubviewPlacement {
+            frame: self.frame.into_ffi(),
+            proposal: self.proposal.into_ffi(),
+        }
+    }
+}
+
 // ============================================================================
 // Layout API Functions
 // ============================================================================
@@ -635,9 +658,12 @@ pub unsafe extern "C" fn waterui_layout_measure(
     dimensions.into_ffi()
 }
 
-/// Places child views within the specified bounds.
+/// Places child views within the specified bounds under the given proposal.
 ///
-/// Returns an array of Rect values representing the position and size of each child.
+/// Returns an array of [`WuiSubviewPlacement`] values — each child's frame
+/// paired with the proposal that was selected to measure it. The `proposal`
+/// argument is the selected measurement input, the same one passed to
+/// [`waterui_layout_measure`]; it is not derived from `bounds`.
 ///
 /// # Safety
 ///
@@ -646,28 +672,57 @@ pub unsafe extern "C" fn waterui_layout_measure(
 /// - The measure callbacks in each child must be safe to call.
 /// - The `children` array will be consumed and dropped after this call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_layout_place(
+pub unsafe extern "C" fn waterui_layout_place_subviews(
     layout: *mut WuiLayout,
     bounds: WuiRect,
+    proposal: WuiProposalSize,
     mut children: WuiArray<WuiSubView>,
-) -> WuiArray<WuiRect> {
+) -> WuiArray<WuiSubviewPlacement> {
     // SAFETY: the caller contract requires `layout` to be a valid handle whose boxed
     // `dyn Layout` stays alive for this call; it is only borrowed.
     let layout: &dyn Layout = unsafe { &*(*layout).0 };
     // SAFETY: the caller contract makes `bounds` an owning handle from the matching
     // FFI constructor; it is consumed here and not observed again.
     let bounds = unsafe { bounds.into_rust() };
+    // SAFETY: the caller contract makes `proposal` an owning handle from the
+    // matching FFI constructor; it is consumed here and not observed again.
+    let proposal = unsafe { proposal.into_rust() };
 
     // Get slice of WuiSubView and create trait object references
     let children_slice = children.as_mut_slice();
     let subview_refs: Vec<&dyn SubView> =
         children_slice.iter().map(|s| s as &dyn SubView).collect();
 
-    let rects = with_memoized_children(&subview_refs, |refs| layout.place(bounds, refs));
+    let placements =
+        with_memoized_children(&subview_refs, |refs| layout.place(bounds, proposal, refs));
 
     children.consume();
 
-    rects.into_ffi()
+    placements.into_ffi()
+}
+
+/// Queries a layout's live stretch behavior using its current child axes.
+///
+/// # Safety
+///
+/// `layout` must be a live layout handle on its owning thread. `children` must
+/// be a valid array and is consumed by this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_layout_stretch_axis(
+    layout: *const WuiLayout,
+    children: WuiArray<WuiStretchAxis>,
+) -> WuiStretchAxis {
+    // SAFETY: the caller keeps the layout handle alive for this shared borrow.
+    let layout = unsafe { crate::borrow_ffi(layout) };
+    let axes: Vec<StretchAxis> = children
+        .as_slice()
+        .iter()
+        .copied()
+        .map(Into::into)
+        .collect();
+    let result = layout.0.stretch_axis(&axes);
+    children.consume();
+    result.into()
 }
 
 /// Returns the lazy-stack axis the layout advertises, if any.
@@ -803,6 +858,71 @@ mod tests {
     use nami::{Computed, SignalExt, binding};
     use waterui_layout::frame::FrameLayout;
     use waterui_layout::stack::{HStackLayout, VStackLayout};
+
+    #[cfg(feature = "c-api")]
+    #[test]
+    fn layout_priority_metadata_preserves_values_and_content_ownership() {
+        use crate::{
+            waterui_force_as_metadata_layout_priority, waterui_metadata_layout_priority_id,
+            waterui_view_id,
+        };
+        use waterui_core::layout::LayoutPriority;
+        use waterui_core::{AnyView, Environment, Metadata, View};
+
+        struct DropProbe(Rc<Cell<usize>>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+
+        impl View for DropProbe {
+            fn body(self, _env: &Environment) -> impl View {}
+        }
+
+        for priority in [i32::MIN, -3, 0, 5, i32::MAX] {
+            let drops = Rc::new(Cell::new(0));
+            let view = AnyView::new(Metadata::new(
+                DropProbe(Rc::clone(&drops)),
+                LayoutPriority::new(priority),
+            ))
+            .into_ffi();
+            // SAFETY: `view` is the live owning handle created above.
+            let view_id = unsafe { waterui_view_id(view) };
+            assert_eq!(view_id, waterui_metadata_layout_priority_id());
+            // SAFETY: the handle contains Metadata<LayoutPriority> and is consumed once.
+            let metadata = unsafe { waterui_force_as_metadata_layout_priority(view) };
+            assert_eq!(metadata.value, priority);
+            assert_eq!(drops.get(), 0);
+            // SAFETY: extraction transferred the live content handle, consumed once here.
+            unsafe { drop(metadata.content.into_rust()) };
+            assert_eq!(drops.get(), 1);
+        }
+    }
+
+    #[test]
+    fn layout_stretch_queries_follow_current_children() {
+        let check = |layout: *mut WuiLayout, main, cross| {
+            for (axes, expected) in [
+                (vec![], WuiStretchAxis::None),
+                (vec![WuiStretchAxis::MainAxis], main),
+                (vec![WuiStretchAxis::CrossAxis], cross),
+                (vec![WuiStretchAxis::Both], WuiStretchAxis::Both),
+                (vec![], WuiStretchAxis::None),
+            ] {
+                // SAFETY: with_layout owns the live handle and this array is consumed once.
+                let actual = unsafe { waterui_layout_stretch_axis(layout, WuiArray::new(axes)) };
+                assert_eq!(actual, expected);
+            }
+        };
+        with_layout(HStackLayout::default(), |layout| {
+            check(layout, WuiStretchAxis::Horizontal, WuiStretchAxis::Vertical);
+        });
+        with_layout(VStackLayout::default(), |layout| {
+            check(layout, WuiStretchAxis::Vertical, WuiStretchAxis::Horizontal);
+        });
+    }
 
     fn with_layout(layout: impl Layout + 'static, f: impl FnOnce(*mut WuiLayout)) {
         let mut layout = WuiLayout(Box::new(layout));
@@ -1085,9 +1205,10 @@ mod tests {
                         assert_eq!(drops.get(), 1);
 
                         let bounds = Rect::new(Point::new(13.0, -9.0), expected_size);
-                        let placed = waterui_layout_place(
+                        let placed = waterui_layout_place_subviews(
                             layout,
                             bounds.into_ffi(),
+                            proposal.into_ffi(),
                             WuiArray::new(vec![foreign_probe(
                                 Rc::clone(&proposals),
                                 Rc::clone(&drops),
@@ -1096,16 +1217,29 @@ mod tests {
                         let rects: Vec<Rect> = placed
                             .as_slice()
                             .iter()
-                            .map(|rect| {
+                            .map(|placement| {
+                                let frame = &placement.frame;
                                 Rect::new(
-                                    Point::new(rect.origin.x, rect.origin.y),
-                                    Size::new(rect.size.width, rect.size.height),
+                                    Point::new(frame.origin.x, frame.origin.y),
+                                    Size::new(frame.size.width, frame.size.height),
                                 )
                             })
                             .collect();
+                        for placement in placed.as_slice() {
+                            // SAFETY: `placement.proposal` is the FFI mirror this
+                            // very call produced; decoding it here is the
+                            // `into_rust` contract.
+                            let returned = placement.proposal.clone().into_rust();
+                            assert_eq!(returned, proposal);
+                        }
                         placed.consume();
                         assert_eq!(rects, vec![bounds]);
-                        assert_eq!(rects, FrameLayout::default().place(bounds, &[&ProbeView]));
+                        let direct: Vec<Rect> = FrameLayout::default()
+                            .place(bounds, proposal, &[&ProbeView])
+                            .into_iter()
+                            .map(|placement| placement.frame)
+                            .collect();
+                        assert_eq!(rects, direct);
                         assert_eq!(drops.get(), 2);
                     },
                 );

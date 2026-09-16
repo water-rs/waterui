@@ -9,11 +9,11 @@ use waterui_core::{
 
 use crate::{
     HorizontalAlignment, Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size,
-    StretchAxis, SubView, ViewDimensions,
+    StretchAxis, SubView, SubviewPlacement,
     container::FixedContainer,
     stack::{
         Axis,
-        distribute::{Extent, compress_to_fit, exceeds},
+        distribute::{ChildMeasurement, measure_stack, stack_spacing},
         stack_stretch_axis,
     },
 };
@@ -33,43 +33,6 @@ impl Default for VStackLayout {
             alignment: HorizontalAlignment::default(),
             spacing: Computed::constant(10.0),
         }
-    }
-}
-
-/// Cached measurement for a child during layout
-struct ChildMeasurement {
-    dimensions: ViewDimensions,
-    stretch_axis: StretchAxis,
-}
-
-impl ChildMeasurement {
-    const fn size(&self) -> Size {
-        self.dimensions.size
-    }
-
-    fn horizontal_guide(&self, alignment: HorizontalAlignment) -> f32 {
-        self.dimensions.horizontal(alignment)
-    }
-
-    /// Returns true if this child stretches vertically (for `VStack` height distribution).
-    /// In `VStack` context:
-    /// - `MainAxis` means vertical (`VStack`'s main axis)
-    /// - `CrossAxis` means horizontal (`VStack`'s cross axis)
-    const fn stretches_main_axis(&self) -> bool {
-        matches!(
-            self.stretch_axis,
-            StretchAxis::Vertical | StretchAxis::Both | StretchAxis::MainAxis
-        )
-    }
-
-    /// Returns true if this child stretches horizontally (for `VStack` width expansion).
-    /// In `VStack` context:
-    /// - `CrossAxis` means horizontal (`VStack`'s cross axis)
-    const fn stretches_cross_axis(&self) -> bool {
-        matches!(
-            self.stretch_axis,
-            StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
-        )
     }
 }
 
@@ -104,111 +67,16 @@ fn vstack_intrinsic_cross_metrics(
     (max_leading, max_trailing)
 }
 
-/// Compresses the children that do not stretch vertically into `available`,
-/// taking height from the lowest layout priorities first and never pushing a
-/// child below the height it reports when proposed zero.
-///
-/// `HStack` has always done this on its axis; `VStack` used to just sum heights,
-/// so a column taller than its bounds overflowed even when its content could
-/// have wrapped or truncated into the space.
-fn compress_children(
-    measurements: &mut [ChildMeasurement],
-    children: &[&dyn SubView],
-    compress_indices: &[usize],
-    available: f32,
-    width_proposal: Option<f32>,
-) {
-    if compress_indices.is_empty() {
-        return;
-    }
-
-    // Probing minimums only pays once the column is known not to fit.
-    let ideal_total: f32 = compress_indices
-        .iter()
-        .map(|&index| measurements[index].size().height)
-        .sum();
-    if !exceeds(ideal_total, available, compress_indices.len()) {
-        return;
-    }
-
-    let extents: Vec<Extent> = compress_indices
-        .iter()
-        .map(|&index| Extent {
-            ideal: measurements[index].size().height,
-            min: children[index]
-                .measure(ProposalSize::new(width_proposal, Some(0.0)))
-                .size
-                .height,
-            priority: children[index].priority(),
-        })
-        .collect();
-
-    for (&index, resolved) in compress_indices
-        .iter()
-        .zip(compress_to_fit(&extents, available))
-    {
-        if resolved >= measurements[index].size().height {
-            continue;
-        }
-        let constrained = ProposalSize::new(width_proposal, Some(resolved));
-        measurements[index].dimensions = children[index].measure(constrained);
-        measurements[index].dimensions.size.height =
-            measurements[index].size().height.min(resolved);
-    }
-}
-
-fn usize_to_f32(value: usize) -> f32 {
-    use num_traits::ToPrimitive;
-    value
-        .to_f32()
-        .expect("VStackLayout: child count must be representable as f32")
-}
-
 impl Layout for VStackLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         if children.is_empty() {
             return Size::zero();
         }
 
-        // Measure each child with parent's width (for text wrapping) and unspecified height
-        let child_proposal = ProposalSize::new(proposal.width, None);
-
-        let measurements: Vec<ChildMeasurement> = children
-            .iter()
-            .map(|child| ChildMeasurement {
-                dimensions: child.measure(child_proposal),
-                stretch_axis: child.stretch_axis(),
-            })
-            .collect();
-
-        // VStack checks for main-axis (vertical) stretching
-        let has_main_axis_stretch = measurements
-            .iter()
-            .any(ChildMeasurement::stretches_main_axis);
-
-        // Height: every child's measured height plus spacing. Children that
-        // stretch are included: measured under this same proposal a stretcher
-        // reports what it actually needs — nothing for a spacer, its content
-        // for a list or a scroll view. Leaving them out makes a column that
-        // holds, say, a header above a list report only the header's height,
-        // and the list is then handed nothing to draw in.
-        let content_height: f32 = measurements.iter().map(|m| m.size().height).sum();
-
         let spacing = self.spacing.get();
-        let total_spacing = if children.len() > 1 {
-            usize_to_f32(children.len() - 1) * spacing
-        } else {
-            0.0
-        };
-
-        let intrinsic_height = content_height + total_spacing;
-        // Only a column that has something able to grow accepts an offer larger
-        // than its content; a content-sized column keeps its own height.
-        let final_height = if has_main_axis_stretch {
-            proposal.height.unwrap_or(intrinsic_height)
-        } else {
-            intrinsic_height
-        };
+        let measurements = measure_stack(Axis::Vertical, proposal, spacing, children);
+        let final_height = measurements.iter().map(|m| m.size().height).sum::<f32>()
+            + stack_spacing(spacing, children.len());
 
         // Width: every child's width counts, so the column can never report less
         // than the widest thing in it.
@@ -228,62 +96,18 @@ impl Layout for VStackLayout {
         Size::new(final_width, final_height)
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
 
-        // Measure children again (will be cached by SubView implementation)
-        let child_proposal = ProposalSize::new(Some(bounds.width()), None);
-
-        let mut measurements: Vec<ChildMeasurement> = children
-            .iter()
-            .map(|child| ChildMeasurement {
-                dimensions: child.measure(child_proposal),
-                stretch_axis: child.stretch_axis(),
-            })
-            .collect();
-
         let spacing = self.spacing.get();
-        let total_spacing = if children.len() > 1 {
-            usize_to_f32(children.len() - 1) * spacing
-        } else {
-            0.0
-        };
-
-        // Fit the non-stretching children into the height on offer before any of
-        // it is handed to the stretchers.
-        let compress_indices: Vec<usize> = measurements
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| !m.stretches_main_axis())
-            .map(|(index, _)| index)
-            .collect();
-        compress_children(
-            &mut measurements,
-            children,
-            &compress_indices,
-            (bounds.height() - total_spacing).max(0.0),
-            Some(bounds.width()),
-        );
-
-        // Calculate stretch child height - only for main-axis (vertically) stretching children
-        let main_axis_stretch_count = measurements
-            .iter()
-            .filter(|m| m.stretches_main_axis())
-            .count();
-        let non_stretch_height: f32 = measurements
-            .iter()
-            .filter(|m| !m.stretches_main_axis())
-            .map(|m| m.size().height)
-            .sum();
-
-        let remaining_height = bounds.height() - non_stretch_height - total_spacing;
-        let stretch_height = if main_axis_stretch_count > 0 {
-            (remaining_height / usize_to_f32(main_axis_stretch_count)).max(0.0)
-        } else {
-            0.0
-        };
+        let measurements = measure_stack(Axis::Vertical, proposal, spacing, children);
 
         let has_explicit_alignment_guides = measurements.iter().any(|measurement| {
             measurement
@@ -298,7 +122,7 @@ impl Layout for VStackLayout {
         });
 
         // Place children
-        let mut rects = Vec::with_capacity(children.len());
+        let mut placements = Vec::with_capacity(children.len());
         let mut current_y = bounds.y();
 
         for (i, measurement) in measurements.iter().enumerate() {
@@ -317,11 +141,10 @@ impl Layout for VStackLayout {
                 measurement.size().width.min(bounds.width())
             };
 
-            let child_height = if measurement.stretches_main_axis() {
-                stretch_height
-            } else {
-                measurement.size().height
-            };
+            // Main-axis extent is whatever the last measurement recorded:
+            // intrinsic when the column was unspecified, at least the stretch
+            // allocation when it was specified.
+            let child_height = measurement.size().height;
 
             let mut adjusted_dimensions = measurement.dimensions.clone();
             adjusted_dimensions.size = Size::new(child_width, child_height);
@@ -344,15 +167,18 @@ impl Layout for VStackLayout {
                 bounds.x() + bounds.width() * 0.5 - guide
             };
 
-            rects.push(Rect::new(
-                Point::new(x, current_y),
-                Size::new(child_width, child_height),
+            placements.push(SubviewPlacement::new(
+                Rect::new(
+                    Point::new(x, current_y),
+                    Size::new(child_width, child_height),
+                ),
+                measurement.proposal,
             ));
 
             current_y += child_height;
         }
 
-        rects
+        placements
     }
 
     fn explicit_horizontal(
@@ -527,6 +353,7 @@ impl<C: TupleViews + 'static> View for VStack<(C,)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ViewDimensions;
 
     struct MockSubView {
         size: Size,
@@ -673,12 +500,12 @@ mod tests {
         };
         let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
 
-        let rects = layout.place(bounds, &children);
+        let placements = layout.place(bounds, ProposalSize::new(None, Some(200.0)), &children);
 
-        assert!((rects[0].height() - 30.0).abs() < f32::EPSILON);
-        assert!((rects[1].height() - 140.0).abs() < f32::EPSILON); // 200 - 30 - 30
-        assert!((rects[2].height() - 30.0).abs() < f32::EPSILON);
-        assert!((rects[2].y() - 170.0).abs() < f32::EPSILON); // 30 + 140
+        assert!((placements[0].frame.height() - 30.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.height() - 140.0).abs() < f32::EPSILON); // 200 - 30 - 30
+        assert!((placements[2].frame.height() - 30.0).abs() < f32::EPSILON);
+        assert!((placements[2].frame.y() - 170.0).abs() < f32::EPSILON); // 30 + 140
     }
 
     /// A child that fills the cross axis still contributes the width it
@@ -764,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn compressible_children_shrink_to_fit_the_column() {
+    fn compressible_children_shrink_to_fit_the_column_bounded_proposal() {
         // Three 60pt rows in 120pt: a column used to just overflow, because
         // `VStack` summed heights and never asked anyone to give way. Content
         // that can shrink now does, evenly.
@@ -782,19 +609,20 @@ mod tests {
         let children: Vec<&dyn SubView> = rows.iter_mut().map(|row| row as &dyn SubView).collect();
 
         let bounds = Rect::new(Point::zero(), Size::new(50.0, 120.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
-        for rect in &rects {
+        for placement in &placements {
             assert!(
-                (rect.height() - 40.0).abs() < 0.01,
+                (placement.frame.height() - 40.0).abs() < 0.01,
                 "expected each row to give up 20pt, got {}",
-                rect.height()
+                placement.frame.height()
             );
         }
     }
 
     #[test]
-    fn a_row_never_shrinks_below_the_height_it_reports() {
+    fn a_row_never_shrinks_below_the_height_it_reports_bounded_proposal() {
         // The middle row will not go below 50pt, so the others absorb what they
         // can and the column overflows by the remainder rather than crushing it.
         let layout = VStackLayout {
@@ -817,12 +645,13 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut top, &mut middle, &mut bottom];
 
         let bounds = Rect::new(Point::zero(), Size::new(50.0, 90.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
         assert!(
-            rects[1].height() >= 50.0 - 0.01,
+            placements[1].frame.height() >= 50.0 - 0.01,
             "the middle row reported a 50pt floor, got {}",
-            rects[1].height()
+            placements[1].frame.height()
         );
     }
 

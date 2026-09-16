@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use waterui_core::raw_view;
 
-use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
+use crate::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement};
 
 /// A flexible space that expands to push views apart.
 ///
@@ -54,6 +54,9 @@ pub struct Spacer {
 }
 
 impl Spacer {
+    /// The default layout priority of a flexible gap, below ordinary content.
+    pub const DEFAULT_LAYOUT_PRIORITY: i32 = i32::MIN;
+
     /// Creates a new spacer with the specified minimum length.
     #[must_use]
     pub const fn new(min_length: f32) -> Self {
@@ -83,7 +86,12 @@ impl Layout for SpacerLayout {
         Size::new(self.min_length, self.min_length)
     }
 
-    fn place(&self, _bounds: Rect, _children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        _bounds: Rect,
+        _proposal: ProposalSize,
+        _children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         // Spacer has no children to place
         Vec::new()
     }

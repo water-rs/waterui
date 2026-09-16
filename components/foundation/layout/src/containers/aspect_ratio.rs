@@ -5,7 +5,8 @@ use nami::{Computed, Signal, SignalExt};
 use waterui_core::{AnyView, IntoSignalF32, View, layout::LayoutInvalidationCallback};
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, container::FixedContainer,
+    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
+    container::FixedContainer,
 };
 
 /// How a view fills a ratio-constrained box.
@@ -72,7 +73,12 @@ impl Layout for AspectRatioLayout {
         self.resolve(proposal, content)
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        _proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
@@ -86,7 +92,10 @@ impl Layout for AspectRatioLayout {
             bounds.x() + (bounds.width() - size.width) * 0.5,
             bounds.y() + (bounds.height() - size.height) * 0.5,
         );
-        vec![Rect::new(origin, size)]
+        vec![SubviewPlacement::new(
+            Rect::new(origin, size),
+            ProposalSize::new(size.width, size.height),
+        )]
     }
 
     fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
@@ -207,15 +216,20 @@ mod tests {
     }
 
     #[test]
-    fn the_child_is_centred_in_the_bounds_it_does_not_fill() {
+    fn the_child_is_centred_in_the_bounds_it_does_not_fill_bounded_proposal() {
         let child = Content(Size::new(10.0, 10.0));
-        let rects = layout(ContentMode::Fit)
-            .place(Rect::new(Point::zero(), Size::new(300.0, 100.0)), &[&child]);
+        let bounds = Rect::new(Point::zero(), Size::new(300.0, 100.0));
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout(ContentMode::Fit).place(bounds, proposal, &[&child]);
         assert!(
-            (rects[0].width() - 200.0).abs() < 0.01,
+            (placements[0].frame.width() - 200.0).abs() < 0.01,
             "got {:?}",
-            rects[0]
+            placements[0].frame
         );
-        assert!((rects[0].x() - 50.0).abs() < 0.01, "got {:?}", rects[0]);
+        assert!(
+            (placements[0].frame.x() - 50.0).abs() < 0.01,
+            "got {:?}",
+            placements[0].frame
+        );
     }
 }
