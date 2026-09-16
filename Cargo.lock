@@ -10583,6 +10583,7 @@ version = "0.3.2"
 dependencies = [
  "nami",
  "num-traits",
+ "smallvec",
  "waterui",
  "waterui-core",
  "waterui-graphics",
