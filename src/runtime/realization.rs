@@ -27,7 +27,7 @@ use waterui_core::Environment;
     target_vendor = "apple",
     expect(
         clippy::missing_const_for_fn,
-        reason = "the body is empty only on Apple, where the install_video call is compiled out"
+        reason = "the body is empty only on Apple, where the native player owns the realization; elsewhere it calls the non-const install_video"
     )
 )]
 pub fn install(env: &mut Environment) {
