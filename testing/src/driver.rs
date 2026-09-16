@@ -206,6 +206,10 @@ impl A11yDriver for HydrolysisA11yDriver {
         env: &Environment,
         capture_snapshot: bool,
     ) -> DriverPumpResult {
+        // Run work `TestLocalExecutor` parked — a runnable a timer or I/O
+        // reactor re-queued since the last frame — before the frame's own
+        // executor drain.
+        let _ = crate::executor::drain_parked_local_work();
         let at = self.tick(VIRTUAL_FRAME);
         let result = if capture_snapshot {
             self.runtime(content, env).pump_at(true, at)
@@ -224,6 +228,7 @@ impl A11yDriver for HydrolysisA11yDriver {
         content: &AnyViewBuilder<AnyView>,
         env: &Environment,
     ) -> DriverPumpResult {
+        let _ = crate::executor::drain_parked_local_work();
         let at = self.tick(step);
         let result = match self.mode {
             DriverMode::Semantic => self.runtime(content, env).pump_semantic_at(at),
@@ -426,6 +431,7 @@ impl A11yDriver for HydrolysisA11yDriver {
     ) -> FrameTiming {
         // Adopt the caller's clock so interleaved semantic pumps stay monotone.
         self.clock = Some(at);
+        let _ = crate::executor::drain_parked_local_work();
         let started_at = std::time::Instant::now();
         let outcome = self.runtime(content, env).pump_at(false, at);
         FrameTiming {

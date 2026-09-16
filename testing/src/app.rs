@@ -426,9 +426,6 @@ impl OffscreenApp {
     pub fn pump_until(&mut self, timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            // Between frames is the one point where draining cannot re-enter
-            // the call that spawned the work.
-            let _ = crate::executor::drain_parked_local_work();
             let outcome = self.app.driver.pump_step(
                 crate::driver::VIRTUAL_FRAME,
                 &self.app.content,
@@ -1208,10 +1205,19 @@ impl SemanticApp {
     /// input, no spawned work awaiting a drain, and no renderer-scheduled
     /// semantic work — or until the virtual cap elapses.
     ///
-    /// The cap exists solely for perpetual animations (an indeterminate
-    /// progress spinner keeps the animation controller active forever); every
-    /// finite transition ends well before it. Each pump advances the virtual
-    /// clock one frame, so the cap costs pump work, never wall-clock sleeps.
+    /// Quiescence alone is not the whole story: a `spawn_local` task parked on
+    /// a wall-clock timer or in-flight I/O holds no queued runnable, so the
+    /// runtime cannot see it. While [`waterui::task::outstanding_local_tasks`]
+    /// reports such work, settling paces real time — each pump runs whatever
+    /// the last wake re-queued — until the task publishes its result or the
+    /// wall-clock cap elapses. This is what lets a `Photo` fetch or an
+    /// `avatar` image that completes after real I/O reach the tree.
+    ///
+    /// The virtual cap exists solely for perpetual animations (an
+    /// indeterminate progress spinner keeps the animation controller active
+    /// forever); every finite transition ends well before it. Each pump
+    /// advances the virtual clock one frame, so the cap costs pump work, never
+    /// wall-clock sleeps.
     ///
     /// Public because a test that drives non-visual work — a handler that spawns
     /// onto the local executor, a coalesced push that lands on the next tick —
@@ -1220,17 +1226,28 @@ impl SemanticApp {
     pub fn settle(&mut self) {
         /// Virtual time budget for perpetual animations; ~62 pumps at 16ms.
         const SETTLE_CAP: Duration = Duration::from_secs(1);
+        /// Wall-clock budget for local tasks parked on real I/O or timers.
+        /// Long enough for a remote fetch on a slow link; bounded so a
+        /// permanently parked task cannot hang the caller forever.
+        const SETTLE_WALL_CAP: Duration = Duration::from_secs(5);
 
         let mut remaining = SETTLE_CAP;
+        let wall_deadline = Instant::now() + SETTLE_WALL_CAP;
         loop {
             let _ = self.pump_once();
-            if self.driver.is_settled() {
+            if !self.driver.is_settled() {
+                remaining = remaining.saturating_sub(crate::driver::VIRTUAL_FRAME);
+                if remaining.is_zero() {
+                    return;
+                }
+                continue;
+            }
+            if waterui::task::outstanding_local_tasks() == 0 || Instant::now() >= wall_deadline {
                 return;
             }
-            remaining = remaining.saturating_sub(crate::driver::VIRTUAL_FRAME);
-            if remaining.is_zero() {
-                return;
-            }
+            // Quiescent but a local task is parked on a wall-clock wake: give
+            // it real time, then let the next pump run what it re-queued.
+            std::thread::sleep(crate::driver::VIRTUAL_FRAME);
         }
     }
 
