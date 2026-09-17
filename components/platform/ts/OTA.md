@@ -107,7 +107,11 @@ runtime serialize the signed bytes through one type.
   "manifest": {
     "version": 3,
     "runtime": "2-9f86d081884c7d65-9b71d224bd62f378",
-    "bundle": { "url": "bundle-3.js", "sha256": "<64 lowercase hex digits>" },
+    "bundle": {
+      "url": "bundle-3.js",
+      "size": 48213,
+      "sha256": "<64 lowercase hex digits>"
+    },
     "modules": {
       "src/views/about.tsx": "fedcba9876543210",
       "src/views/promo.tsx": "0123456789abcdef"
@@ -126,6 +130,7 @@ runtime serialize the signed bytes through one type.
 | `version` | A `u64`. Larger is newer. The loader prefers the newest verified bundle, and a published bundle is only ever preferred to the baseline when its version is greater than the baseline's. The CLI assigns it; the baseline's version is the version the embedded bundle was built as. |
 | `runtime` | The runtime fingerprint, as text. |
 | `bundle.url` | Where the bundle file is, resolved against the manifest's own URL (`Url::join`), so a manifest and its bundle can be uploaded together anywhere. For the baseline it is the file name the CLI wrote beside it. |
+| `bundle.size` | The bundle file's length in bytes, a `u64`. The bound the client reads the download under: a response that declares or delivers more is refused without being buffered past it. Signed, so the publisher and not the server decides how much memory a fetch may take. |
 | `bundle.sha256` | SHA-256 of the bundle file's bytes. |
 | `modules` | Every module the bundle carries, keyed by module id, valued by the contract hash it was built against as sixteen lowercase hexadecimal digits — the same spelling as `installRuntimeGlobal`'s `contracts`. |
 | `translations` | Locale tag to the TOML text of that locale's translation file, exactly the document `TranslationCatalog::add_toml` takes. Omitted when the bundle carries none. |
@@ -144,12 +149,12 @@ another implementation can reproduce it byte for byte:
 
 - UTF-8, no whitespace anywhere;
 - the members `version`, `runtime`, `bundle`, `modules` and — only when
-  non-empty — `translations`, in that order; `bundle`'s members `url` then
-  `sha256`;
+  non-empty — `translations`, in that order; `bundle`'s members `url`,
+  `size` then `sha256`;
 - the entries of `modules` and `translations` sorted by key as byte strings
   (`BTreeMap` order);
-- `version` in plain decimal; every hash as lowercase hexadecimal of its
-  fixed width;
+- `version` and `size` in plain decimal; every hash as lowercase
+  hexadecimal of its fixed width;
 - strings quoted with `\"`, `\\`, `\n`, `\r`, `\t`, `\b` and `\f` as
   two-character escapes, every other control character (U+0000–U+001F) as
   `\u00XX` with lowercase hex digits, and nothing else escaped — non-ASCII
@@ -158,6 +163,13 @@ another implementation can reproduce it byte for byte:
 The bundle file's bytes are covered through `bundle.sha256`. That is why a
 manifest can be verified before the bundle is downloaded, and why the fetch
 downloads nothing for a manifest that fails.
+
+For the manifest above, with the digest written out as `ab` sixty-four
+times, the signed bytes are:
+
+```text
+{"version":3,"runtime":"2-9f86d081884c7d65-9b71d224bd62f378","bundle":{"url":"bundle-3.js","size":48213,"sha256":"abababababababababababababababababababababababababababababababab"},"modules":{"src/views/about.tsx":"fedcba9876543210","src/views/promo.tsx":"0123456789abcdef"},"translations":{"en":"greeting = \"Hello\"\n","zh-Hans":"greeting = \"你好\"\n"}}
+```
 
 The verifier never trusts the bytes it received to be canonical: it parses
 the document, re-serializes the parsed manifest through the same type, and
@@ -195,7 +207,14 @@ through `tracing` by whoever decides what to do about it:
    a translation file. Checked here, before the catalog is built, because
    `TranslationCatalog::add_toml` treats an invalid locale as a programming
    error and a downloaded document is an input.
-5. **Digest** — SHA-256 of the bundle file's bytes equals `bundle.sha256`,
+5. **Size** — the bundle file is no longer than `bundle.size`. For a
+   download, a `Content-Length` above it refuses the response before its
+   body is read, and a body that runs past it is refused at the first chunk
+   that crosses the bound (`FetchError::BundleSize`, naming the bound, the
+   declared length and the bytes read); for a cached file, its length on
+   disk is checked before it is read. The bytes buffered never exceed the
+   bound plus the chunk that crossed it.
+6. **Digest** — SHA-256 of the bundle file's bytes equals `bundle.sha256`,
    and the bytes are UTF-8.
 
 Nothing is written to the store before every step has passed. A fetch that
@@ -219,9 +238,15 @@ how tests inject a temporary one.
 ```
 
 One directory per version, written whole: both files go into a staging
-directory and the directory is renamed into place, so a version directory
-that exists is a complete one. `state.json` is a `waterkit-fs` JSON store
-holding the versions that failed and the version currently booting.
+directory (`bundles/.<version>.staging`) and the directory is renamed into
+place, so a version directory that exists is a complete one; a staging
+directory a fetch died in is reaped at the next launch. `state.json` holds
+the versions that failed and the version currently booting, and is written
+the same way — to a sibling file, flushed, then renamed over the old one —
+so a launch never finds half a state file. One it cannot read or parse
+anyway is logged at warn, naming the file and the reason, and replaced by
+the empty state: the store is a cache, and a bad mark that is lost is
+re-learned the next time that version fails.
 
 Why the cache directory: it is the one directory `waterkit-fs` reaches on
 every platform that is app-private and regenerable. `documents_dir` is
@@ -251,6 +276,24 @@ is the floor and every launch re-verifies what it finds.
    evaluates is the launch.
 5. Nothing usable: the baseline.
 
+The store is a cache, and no failure of it is a failure of the launch. The
+only hard errors `Loader::load` has are the baseline's own —
+`LaunchError::BaselineManifest`, `BaselineRejected`, `BaselineFailed` — and
+`LaunchError::Engine`; there is no store variant. Every store failure along
+the walk is logged at warn and fallen past:
+
+| Failure | What the launch does |
+| --- | --- |
+| `state.json` unreadable or unparsable | The empty state, written back over it. |
+| `bundles/` cannot be listed | No cached candidates: the baseline. |
+| A version cannot be read, or is not the version it is filed under | Removed if it can be, skipped for this launch either way. `bundles/7` as a regular file is this case: it is removed so 7 can be cached later. Not marked bad — nothing was evaluated. |
+| A version cannot be removed | Skipped for this launch; tried again at the next. |
+| The state cannot be saved | The mark it carried is re-learned when the version fails again. |
+| The boot record cannot be written | That version is not evaluated: without the record a mount that panics would be retried at every launch. The walk continues. |
+| `Launched::booted()` cannot clear the record | Logged; the next launch marks the version bad and re-downloads it. |
+
+A stale `.<version>.staging` directory is removed before the walk starts.
+
 `Loader::baseline_only()` is step 2 and 5 alone: no store is read, no file
 is touched. It is what a build without an update source calls, and a build
 without the `ota` feature has nothing else.
@@ -262,6 +305,8 @@ once the application's first frame has been presented — every `tsx!` mount in
 the initial tree has run by then — and not before: a mount can still panic
 until then, and the record is what turns that panic into a bad mark at the
 next launch instead of a crash loop. For the baseline the call does nothing.
+It returns nothing: a record that cannot be cleared is logged at warn, and
+the application keeps running on the bundle that just booted.
 
 ## The fetch
 
@@ -275,7 +320,8 @@ writes to the store.
    `Outcome::KnownBad`; already cached → `Outcome::AlreadyCached`. No
    download in any of these.
 3. Verify the requirement (fingerprint, modules, translations).
-4. `GET` `bundle.url` resolved against the manifest URL; verify the digest.
+4. `GET` `bundle.url` resolved against the manifest URL, read under
+   `bundle.size`; verify the digest.
 5. Write both files to the store → `Outcome::Cached`.
 
 A network failure is `FetchError::Network`, logged at debug: the
@@ -310,7 +356,7 @@ let launched = Loader::new(REQUIREMENT, BASELINE, Components, environment).load(
 let environment = launched.environment().clone();   // the root renders under this
 launched.spawn_update(ota);                          // after launch, never before the first frame
 // ... once the first frame is presented:
-launched.booted()?;
+launched.booted();
 
 // Without one (feature `ts` alone): no store, no key, no URL, no client type.
 let launched = Loader::new(REQUIREMENT, BASELINE, Components, environment).baseline_only()?;
@@ -321,7 +367,7 @@ let launched = Loader::new(REQUIREMENT, BASELINE, Components, environment).basel
 | Feature | Links | Present without it |
 | --- | --- | --- |
 | `waterui-ts` (always) | `serde`, `serde_json`, `sha2` | `Requirement`, `RequiredModule`, `Baseline`, `Loader::baseline_only`, `Launched`, `Rejection`, `LaunchError`, the manifest types via `schema`, `LIBRARY_HASH` |
-| `waterui-ts/ota` (`waterui/ts-ota`) | `ed25519-dalek`, `zenwave` (platform TLS on Apple, rustls elsewhere), `waterkit-fs`, `url`, `executor-core`, `blocking` | `Ota`, `BundleStore`, `Loader::load`, `Launched::spawn_update`, `FetchError`, `Outcome`, `StoreError` |
+| `waterui-ts/ota` (`waterui/ts-ota`) | `ed25519-dalek`, `zenwave` (platform TLS on Apple, rustls elsewhere), `futures-lite` (the bundle body as a stream), `waterkit-fs`, `url`, `executor-core`, `blocking` | `Ota`, `BundleStore`, `Loader::load`, `Launched::spawn_update`, `FetchError`, `Outcome`, `StoreError` |
 
 `cargo tree -p waterui-ts -e normal -i zenwave` answers "nothing to print"
 without the feature: a baseline-only application links no HTTP client. With

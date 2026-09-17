@@ -86,6 +86,7 @@ fn manifest_for(
         runtime,
         bundle: BundleFile {
             url: format!("bundle-{version}.js"),
+            size: u64::try_from(source.len()).expect("a bundle's length fits in u64"),
             sha256: Sha256Digest::new(sha2::Sha256::digest(source.as_bytes()).into()),
         },
         modules: BTreeMap::from([(String::from(MODULE), ContractHash(contract))]),
@@ -132,12 +133,12 @@ fn loader() -> Loader<Components> {
     Loader::new(REQUIREMENT, baseline(), Components, environment())
 }
 
-/// An `Ota` over `store` for `key`, with a manifest URL that nothing here
-/// fetches from: launching reads the store, never the network.
+/// An `Ota` over `store` for `key`, with a manifest URL nothing listens on:
+/// launching reads the store, never the network.
 fn ota(store: &BundleStore, key: &SigningKey) -> Ota {
     Ota::new(
         key.verifying_key().to_bytes(),
-        "http://127.0.0.1:9/manifest.json",
+        &http::unreachable_url("manifest.json"),
         store.clone(),
     )
     .expect("the key and the URL are valid")
@@ -228,9 +229,7 @@ fn ts_ota_the_baseline_launches_and_touches_nothing() {
     assert!(launched.is_baseline());
     assert_eq!(launched.version(), BASELINE_VERSION);
     assert_eq!(evaluated(&launched), "baseline");
-    launched
-        .booted()
-        .expect("nothing to record for the baseline");
+    launched.booted();
 
     let mut app = session(&launched);
     app.query().label("baseline").assert_exists();
@@ -299,14 +298,28 @@ fn fetch(
     signed: &SignedManifest,
     source: &str,
 ) -> (Result<Outcome, FetchError>, http::Server) {
+    fetch_framed(store, key, signed, source, http::Framing::ContentLength)
+}
+
+/// [`fetch`] from a server framing its bodies as `framing` says.
+fn fetch_framed(
+    store: &BundleStore,
+    key: &SigningKey,
+    signed: &SignedManifest,
+    source: &str,
+    framing: http::Framing,
+) -> (Result<Outcome, FetchError>, http::Server) {
     let version = signed.manifest.version;
-    let server = http::Server::serve(BTreeMap::from([
-        (
-            String::from("/manifest.json"),
-            signed.to_json().into_bytes(),
-        ),
-        (format!("/bundle-{version}.js"), source.as_bytes().to_vec()),
-    ]));
+    let server = http::Server::serve(
+        BTreeMap::from([
+            (
+                String::from("/manifest.json"),
+                signed.to_json().into_bytes(),
+            ),
+            (format!("/bundle-{version}.js"), source.as_bytes().to_vec()),
+        ]),
+        framing,
+    );
     let ota = Ota::new(
         key.verifying_key().to_bytes(),
         &server.url("manifest.json"),
@@ -487,13 +500,90 @@ fn ts_ota_a_bundle_not_newer_than_the_baseline_is_not_fetched() {
 }
 
 #[test]
+fn ts_ota_a_bundle_response_declaring_more_than_the_manifests_size_is_refused_unread() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = BundleStore::new(dir.path().join("store"));
+    let key = keypair();
+    let source = bundle("v11", "eleven", NoProps::CONTRACT_HASH);
+    let signed = sign(manifest(11, &source), &key);
+    // The server has more bytes than the publisher signed for, and says so
+    // in `Content-Length`.
+    let padded = format!("{source}// {}\n", "padding ".repeat(64));
+
+    let (outcome, server) = fetch(&store, &key, &signed, &padded);
+    let error = outcome.expect_err("a longer response is refused");
+    match error {
+        FetchError::BundleSize {
+            size,
+            declared,
+            received,
+            ..
+        } => {
+            assert_eq!(size, signed.manifest.bundle.size);
+            assert_eq!(
+                declared,
+                Some(u64::try_from(padded.len()).expect("fits")),
+                "the response's own length is what refused it"
+            );
+            assert_eq!(received, 0, "not a byte of the body was read");
+        }
+        other => panic!("{other}"),
+    }
+    assert!(untouched(store.root()), "nothing was written to the store");
+    assert_eq!(server.requests(), ["/manifest.json", "/bundle-11.js"]);
+}
+
+#[test]
+fn ts_ota_a_bundle_response_delivering_more_than_the_manifests_size_is_refused_at_the_bound() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = BundleStore::new(dir.path().join("store"));
+    let key = keypair();
+    let source = bundle("v11", "eleven", NoProps::CONTRACT_HASH);
+    let signed = sign(manifest(11, &source), &key);
+    // No `Content-Length` to refuse up front: the body runs until the server
+    // closes, and it runs past what the publisher signed for.
+    let padded = format!("{source}// {}\n", "padding ".repeat(64));
+
+    let (outcome, server) = fetch_framed(
+        &store,
+        &key,
+        &signed,
+        &padded,
+        http::Framing::CloseDelimited,
+    );
+    let error = outcome.expect_err("a longer body is refused");
+    match error {
+        FetchError::BundleSize {
+            size,
+            declared,
+            received,
+            ..
+        } => {
+            assert_eq!(size, signed.manifest.bundle.size);
+            assert_eq!(declared, None, "the response declared no length");
+            assert!(
+                received > size,
+                "reading stopped at the chunk that crossed the bound: {received} of {size}"
+            );
+            assert!(
+                received <= u64::try_from(padded.len()).expect("fits"),
+                "and never past what was sent"
+            );
+        }
+        other => panic!("{other}"),
+    }
+    assert!(untouched(store.root()), "nothing was written to the store");
+    assert_eq!(server.requests(), ["/manifest.json", "/bundle-11.js"]);
+}
+
+#[test]
 fn ts_ota_a_server_that_is_not_there_is_not_an_error_of_the_launch() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let store = BundleStore::new(dir.path().join("store"));
     let key = keypair();
     let ota = ota(&store, &key);
     let error = futures_lite::future::block_on(ota.fetch(&REQUIREMENT, BASELINE_VERSION))
-        .expect_err("port 9 answers nothing");
+        .expect_err("nothing listens on the port");
     assert!(matches!(error, FetchError::Network { .. }), "{error}");
     assert!(untouched(store.root()));
 }
@@ -546,7 +636,7 @@ fn ts_ota_a_valid_download_is_cached_and_chosen_on_the_next_launch_over_the_base
     );
     let mut app = session(&launched);
     app.query().label("eleven").assert_exists();
-    launched.booted().expect("the record clears");
+    launched.booted();
     assert_eq!(state(&store)["booting"], serde_json::Value::Null);
 
     // Fetching the same version again downloads nothing.
@@ -681,7 +771,7 @@ fn ts_ota_a_bundle_that_throws_is_marked_bad_and_the_previous_one_loads() {
     assert_eq!(evaluated(&launched), "v11");
     assert_eq!(state(&store)["bad"], serde_json::json!([12]));
     assert_eq!(cached_versions(&store), [11]);
-    launched.booted().expect("the record clears");
+    launched.booted();
     drop(launched);
 
     // Second launch, with 12 cached again by a fetch that trusts the store's
@@ -739,7 +829,7 @@ fn ts_ota_a_boot_record_left_set_marks_the_version_bad_on_the_next_launch() {
     assert_eq!(state(&store)["bad"], serde_json::json!([12]));
     assert_eq!(state(&store)["booting"], 11);
     assert_eq!(cached_versions(&store), [11]);
-    launched.booted().expect("the record clears");
+    launched.booted();
     assert_eq!(state(&store)["booting"], serde_json::Value::Null);
 }
 
@@ -756,8 +846,129 @@ fn ts_ota_the_baseline_is_never_marked_bad() {
     assert!(launched.is_baseline());
     assert_eq!(state(&store)["booting"], serde_json::Value::Null);
     assert_eq!(state(&store)["bad"], serde_json::json!([11]));
-    launched.booted().expect("nothing to record");
+    launched.booted();
     assert_eq!(state(&store)["booting"], serde_json::Value::Null);
+}
+
+// ---------------------------------------------------------------------------
+// The store is a cache: nothing in it fails a launch
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ts_ota_a_torn_state_file_is_the_empty_state_and_is_replaced() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = BundleStore::new(dir.path().join("store"));
+    let key = keypair();
+    // What a launch finds after the process died mid-write of the state
+    // file, back when it was written in place.
+    std::fs::create_dir_all(store.root()).expect("the store root is created");
+    std::fs::write(store.root().join("state.json"), "{\"bad\": [12,")
+        .expect("the torn state is written");
+
+    let launched = loader()
+        .load(&ota(&store, &key))
+        .unwrap_or_else(|error| panic!("launching: {error}"));
+    assert!(
+        launched.is_baseline(),
+        "an empty store launches the baseline"
+    );
+    assert_eq!(
+        state(&store),
+        serde_json::json!({ "bad": [], "booting": null }),
+        "the torn file was replaced by the empty state"
+    );
+    drop(launched);
+
+    // The next launch starts from that fresh state: a cached bundle is
+    // chosen, and its boot record lands in a file that parses.
+    cache(
+        &store,
+        &key,
+        11,
+        &bundle("v11", "eleven", NoProps::CONTRACT_HASH),
+    );
+    let launched = loader()
+        .load(&ota(&store, &key))
+        .unwrap_or_else(|error| panic!("launching: {error}"));
+    assert_eq!(launched.version(), 11);
+    assert_eq!(state(&store)["booting"], 11);
+    launched.booted();
+    assert_eq!(
+        state(&store),
+        serde_json::json!({ "bad": [], "booting": null })
+    );
+}
+
+#[test]
+fn ts_ota_a_version_entry_that_cannot_be_read_is_skipped_and_the_launch_goes_on() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = BundleStore::new(dir.path().join("store"));
+    let key = keypair();
+    cache(
+        &store,
+        &key,
+        11,
+        &bundle("v11", "eleven", NoProps::CONTRACT_HASH),
+    );
+    // A regular file where a version directory would be: reading
+    // `bundles/13/manifest.json` fails with "not a directory".
+    let bundles = store.root().join("bundles");
+    std::fs::write(bundles.join("13"), b"not a directory").expect("the stray file is written");
+
+    let launched = loader()
+        .load(&ota(&store, &key))
+        .unwrap_or_else(|error| panic!("launching: {error}"));
+    assert_eq!(launched.version(), 11, "13 was skipped and 11 is next");
+    assert_eq!(evaluated(&launched), "v11");
+    assert!(
+        !bundles.join("13").exists(),
+        "the stray file was removed so version 13 can be cached later"
+    );
+    assert_eq!(
+        state(&store)["bad"],
+        serde_json::json!([]),
+        "a version that could not be read is not marked bad"
+    );
+    launched.booted();
+    drop(launched);
+
+    // With nothing else cached, the same stray entry falls through to the
+    // baseline.
+    std::fs::remove_dir_all(bundles.join("11")).expect("11 is removed");
+    std::fs::write(bundles.join("13"), b"not a directory").expect("the stray file is written");
+    let launched = loader()
+        .load(&ota(&store, &key))
+        .unwrap_or_else(|error| panic!("launching: {error}"));
+    assert!(launched.is_baseline());
+}
+
+#[test]
+fn ts_ota_a_staging_directory_a_write_left_behind_is_reaped_at_launch() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = BundleStore::new(dir.path().join("store"));
+    let key = keypair();
+    cache(
+        &store,
+        &key,
+        11,
+        &bundle("v11", "eleven", NoProps::CONTRACT_HASH),
+    );
+    // A fetch that died between filling the staging directory and renaming
+    // it into place.
+    let staging = store.root().join("bundles").join(".12.staging");
+    std::fs::create_dir_all(&staging).expect("the staging directory is created");
+    std::fs::write(staging.join("manifest.json"), b"{").expect("half a manifest is written");
+
+    let launched = loader()
+        .load(&ota(&store, &key))
+        .unwrap_or_else(|error| panic!("launching: {error}"));
+    assert_eq!(launched.version(), 11);
+    assert!(!staging.exists(), "the staging directory is gone");
+    assert_eq!(
+        cached_versions(&store),
+        [11],
+        "and the cached version is not"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -1051,6 +1051,7 @@ mod manifest {
             runtime: RuntimeFingerprint::new(0xfedc_ba98_7654_3210, 0x0123_4567_89ab_cdef),
             bundle: BundleFile {
                 url: String::from("bundle-3.js"),
+                size: 48213,
                 sha256: Sha256Digest::new([0xab; 32]),
             },
             modules: BTreeMap::from([
@@ -1067,7 +1068,7 @@ mod manifest {
     #[test]
     fn the_signed_bytes_are_the_compact_canonical_form() {
         let expected = format!(
-            "{{\"version\":3,\"runtime\":\"{}-fedcba9876543210-0123456789abcdef\",\"bundle\":{{\"url\":\"bundle-3.js\",\"sha256\":\"{}\"}},\"modules\":{{\"src/about.tsx\":\"ffffffffffffffff\",\"src/views/promo.tsx\":\"0000000000000001\"}}}}",
+            "{{\"version\":3,\"runtime\":\"{}-fedcba9876543210-0123456789abcdef\",\"bundle\":{{\"url\":\"bundle-3.js\",\"size\":48213,\"sha256\":\"{}\"}},\"modules\":{{\"src/about.tsx\":\"ffffffffffffffff\",\"src/views/promo.tsx\":\"0000000000000001\"}}}}",
             crate::FORMAT_VERSION,
             "ab".repeat(32)
         );
@@ -1099,7 +1100,7 @@ mod manifest {
         // re-serialized file looks like. The verifier signs what it parsed,
         // not what it read.
         let reordered = format!(
-            "{{ \"modules\" : {{ \"src/views/promo.tsx\" : \"0000000000000001\" ,\n \"src/about.tsx\" : \"ffffffffffffffff\" }},\n \"bundle\" : {{ \"sha256\" : \"{}\" , \"url\" : \"bundle-3.js\" }},\n \"runtime\" : \"{}-fedcba9876543210-0123456789abcdef\" , \"version\" : 3 }}",
+            "{{ \"modules\" : {{ \"src/views/promo.tsx\" : \"0000000000000001\" ,\n \"src/about.tsx\" : \"ffffffffffffffff\" }},\n \"bundle\" : {{ \"sha256\" : \"{}\" , \"url\" : \"bundle-3.js\" , \"size\" : 48213 }},\n \"runtime\" : \"{}-fedcba9876543210-0123456789abcdef\" , \"version\" : 3 }}",
             "ab".repeat(32),
             crate::FORMAT_VERSION
         );

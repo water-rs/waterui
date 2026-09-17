@@ -172,7 +172,10 @@ impl Baseline {
 /// Every variant is a hard error: the JavaScript engine could not be created,
 /// or the baseline — the one bundle that must always work — does not match
 /// the binary it ships in or does not evaluate. A downloaded bundle failing
-/// is never one of these; it is logged, recorded and fallen past.
+/// is never one of these; it is logged, recorded and fallen past. Nor is the
+/// bundle store: it is a cache, and with the `ota` feature a store that
+/// cannot be listed, read or written is logged and fallen past the same way,
+/// down to the baseline.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LaunchError {
@@ -196,11 +199,6 @@ pub enum LaunchError {
     /// The baseline threw while it evaluated.
     #[error("the baseline bundle embedded in this binary failed to evaluate: {0}")]
     BaselineFailed(#[source] TsError),
-
-    /// The bundle store could not be read or written.
-    #[cfg(feature = "ota")]
-    #[error(transparent)]
-    Store(#[from] crate::ota::StoreError),
 }
 
 /// Picks, verifies and evaluates the bundle a launch runs.
@@ -463,9 +461,9 @@ impl Launched {
     /// launch if the process dies first. For the baseline there is nothing to
     /// record and the call does nothing.
     ///
-    /// # Errors
-    ///
-    /// Returns `LaunchError::Store` when the record could not be written.
+    /// A record that cannot be cleared is logged at warn and is not an error
+    /// of the running application: the store is a cache, and the cost is
+    /// that the next launch marks this version bad and re-downloads it.
     #[cfg_attr(
         not(feature = "ota"),
         expect(
@@ -474,12 +472,17 @@ impl Launched {
                       builds so the leaf crate's call does not change with the feature"
         )
     )]
-    pub fn booted(&self) -> Result<(), LaunchError> {
+    pub fn booted(&self) {
         #[cfg(feature = "ota")]
         if let Some(boot) = &self.boot {
-            boot.store.clear_booting(boot.version)?;
-            tracing::debug!(version = boot.version, "the cached bundle booted");
+            match boot.store.clear_booting(boot.version) {
+                Ok(()) => tracing::debug!(version = boot.version, "the cached bundle booted"),
+                Err(error) => tracing::warn!(
+                    version = boot.version,
+                    %error,
+                    "the cached bundle booted, but the boot record could not be cleared"
+                ),
+            }
         }
-        Ok(())
     }
 }

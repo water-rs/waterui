@@ -30,15 +30,18 @@ serde_json.workspace = true
 sha2 = { version = "0.11", default-features = false }
 
 # Everything below is the over-the-air client, behind `ota`: the store a
-# downloaded bundle is cached in (its state file is a serde JSON store), the
-# signature check, and the fetch itself. A baseline-only application leaves
-# the feature off and links none of it.
+# downloaded bundle is cached in (its state file is serde JSON, under the
+# platform cache directory `waterkit-fs` locates), the signature check, and
+# the fetch itself, which reads the bundle body as a stream so the signed
+# size bounds what it buffers. A baseline-only application leaves the
+# feature off and links none of it.
 serde = { workspace = true, features = ["derive", "std"], optional = true }
 ed25519-dalek = { version = "3", default-features = false, features = ["fast"], optional = true }
 waterkit-fs = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 executor-core = { workspace = true, optional = true }
 blocking = { workspace = true, optional = true }
+futures-lite = { workspace = true, optional = true }
 
 # The HTTP client is `zenwave`, with the per-target TLS split every fetching
 # crate in the workspace uses: the platform's own TLS on Apple, rustls
@@ -66,6 +69,7 @@ ota = [
     "dep:url",
     "dep:executor-core",
     "dep:blocking",
+    "dep:futures-lite",
     "dep:zenwave",
 ]
 

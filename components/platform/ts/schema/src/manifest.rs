@@ -18,7 +18,7 @@
 //!   "manifest": {
 //!     "version": 3,
 //!     "runtime": "2-9f86d081884c7d65-9b71d224bd62f378",
-//!     "bundle": { "url": "bundle-3.js", "sha256": "<64 hex digits>" },
+//!     "bundle": { "url": "bundle-3.js", "size": 48213, "sha256": "<64 hex digits>" },
 //!     "modules": { "src/views/promo.tsx": "0123456789abcdef" },
 //!     "translations": { "en": "greeting = \"Hello\"\n" }
 //!   },
@@ -34,7 +34,10 @@
 //! locale's translation file — the same document `TranslationCatalog::add_toml`
 //! takes — and is omitted when the bundle carries none. `bundle.url` is the
 //! bundle's location relative to the manifest's own URL; for the baseline it
-//! is the file name the CLI wrote beside it.
+//! is the file name the CLI wrote beside it. `bundle.size` is the bundle
+//! file's length in bytes: the bound the client reads the download under,
+//! signed so that a server cannot make the client buffer more than the
+//! publisher shipped.
 //!
 //! # The signed bytes
 //!
@@ -43,7 +46,7 @@
 //! writes this type. Spelled out, so another implementation can reproduce it
 //! byte for byte: UTF-8, no whitespace anywhere, the members `version`,
 //! `runtime`, `bundle`, `modules` and (only when non-empty) `translations` in
-//! that order, `bundle`'s members `url` then `sha256`, the entries of
+//! that order, `bundle`'s members `url`, `size` then `sha256`, the entries of
 //! `modules` and `translations` sorted by key as byte strings, integers in
 //! plain decimal, and strings quoted with `\"`, `\\`, `\n`, `\r`, `\t`, `\b`
 //! and `\f` as two-character escapes, every other control character as
@@ -211,12 +214,17 @@ impl<'de> serde::Deserialize<'de> for ContractHash {
     }
 }
 
-/// Where the bundle file is and what it hashes to.
+/// Where the bundle file is, how long it is, and what it hashes to.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleFile {
     /// The bundle's location, relative to the manifest's own URL.
     pub url: String,
+    /// The bundle file's length in bytes. A download is read under this
+    /// bound: a response that declares or delivers more is refused without
+    /// being buffered, so the signed manifest — not the server — decides how
+    /// much memory a fetch may take.
+    pub size: u64,
     /// The SHA-256 digest of the bundle file's bytes.
     pub sha256: Sha256Digest,
 }
