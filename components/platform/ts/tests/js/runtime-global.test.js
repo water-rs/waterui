@@ -3,7 +3,8 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { installRuntimeGlobal, makeCallback } from "../../src/js/runtime-global.js";
-import { getHost, installHost, uninstallHost } from "../../src/js/host.js";
+import { getHost, installHost, read, uninstallHost, write } from "../../src/js/host.js";
+import { createEffect, createRoot, createSignal } from "../../src/js/signals.js";
 import { createFakeHost } from "./fake-host.js";
 
 const REQUIRED_FUNCTIONS = [
@@ -81,8 +82,24 @@ describe("makeCallback", () => {
   });
 
   test("names the missing entry when the bridge registered nothing", () => {
-    const callback = makeCallback(1);
-    expect(() => callback()).toThrow(/__waterui_host\.invoke/);
+    expect(() => makeCallback(1)).toThrow(/__waterui_host\.invoke/);
+  });
+
+  test("captures invoke once, so a later reassignment cannot divert the call", () => {
+    const seen = [];
+    globalThis.__waterui_host = {
+      invoke(...args) {
+        seen.push(args);
+      },
+    };
+
+    const callback = makeCallback(3);
+    globalThis.__waterui_host.invoke = () => {
+      throw new Error("the wrapper read the global again");
+    };
+
+    callback("value");
+    expect(seen).toEqual([[3, "value"]]);
   });
 
   test("refuses an id that is not the number the bridge assigns", () => {
@@ -113,5 +130,43 @@ describe("installHost", () => {
     const table = createFakeHost();
     table.modifiers = "padding background";
     expect(() => installHost(table)).toThrow(/modifiers/);
+  });
+});
+
+describe("write", () => {
+  test("answers that the value stood", () => {
+    const count = createSignal(1);
+    expect(write(count, 4)).toBe(true);
+    expect(read(count)).toBe(4);
+  });
+
+  test("answers that an effect changed it while the write settled", () => {
+    createRoot(() => {
+      const count = createSignal(1);
+      createEffect(() => {
+        if (count() > 10) {
+          count.set(10);
+        }
+      });
+
+      expect(write(count, 40)).toBe(false);
+      expect(read(count)).toBe(10);
+      expect(write(count, 5)).toBe(true);
+    });
+  });
+
+  test("answers on identity, so a value carrying a signal is recognised", () => {
+    const inner = createSignal(0);
+    const box = createSignal({ inner });
+    const next = { inner };
+
+    expect(write(box, next)).toBe(true);
+    expect(write(box, { inner })).toBe(true);
+    expect(read(box).inner).toBe(inner);
+  });
+
+  test("refuses a read-only input rather than dropping the write", () => {
+    const count = createSignal(1);
+    expect(() => write(() => count(), 2)).toThrow(/signal/);
   });
 });

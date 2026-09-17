@@ -73,6 +73,14 @@ pub enum TsError {
     )]
     BundleAlreadyLoaded,
 
+    /// A value was exported into JavaScript with no mount scope open.
+    #[error(
+        "a value can only be exported into JavaScript inside a mount scope: JavaScript holds \
+         the exported value and Rust holds the cell feeding it, so the mount that asked for it \
+         is what owns that cell — open one with Bridge::open_scope"
+    )]
+    NoMountScope,
+
     /// Something needed the runtime global before a bundle was loaded.
     #[error("no bundle is loaded yet: TsRuntime::load must run before {what}")]
     NotLoaded {

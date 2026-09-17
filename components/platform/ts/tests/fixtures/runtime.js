@@ -19,6 +19,8 @@
     writes: 0,
     // Every `set` on a fixture signal, whoever made it.
     sets: 0,
+    // Signals the bridge asked for: one per value exported out of Rust.
+    signals: 0,
     subscribes: 0,
     disposes: 0,
     // A slot the tests park a value in, so both sides can reach it.
@@ -26,6 +28,7 @@
   };
 
   function createSignal(initial) {
+    fixture.signals += 1;
     let value = initial;
     const subscribers = new Set();
     const signal = () => value;
@@ -74,15 +77,17 @@
     return value;
   }
 
+  // Like the library's own `write`: the answer is whether the value stood,
+  // compared here where an object is its own identity.
   function write(target, value) {
     fixture.writes += 1;
     if (isSignal(target)) {
       target.set(value);
-      return;
+      return Object.is(read(target), value);
     }
     if (target !== null && typeof target === "object" && typeof target.write === "function") {
       target.write(value);
-      return;
+      return Object.is(read(target), value);
     }
     throw new TypeError("write() expects a signal or a writable reactive value");
   }

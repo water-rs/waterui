@@ -8,7 +8,7 @@ use waterui_ts_engine::{JsFunction, JsRuntime};
 use crate::Engine;
 use crate::bridge::Bridge;
 use crate::error::TsError;
-use crate::host::{self, HostTable};
+use crate::host::{self, HostFunctions, HostTable};
 use crate::runtime_global::RuntimeGlobal;
 
 /// The script name a bundle is attributed to in a stack trace.
@@ -27,6 +27,9 @@ const BUNDLE_NAME: &str = "bundle.js";
 pub struct TsRuntime {
     bridge: Bridge,
     table: Rc<dyn HostTable>,
+    /// The host functions as the engine installed them, captured before any
+    /// bundle could reassign a property of `__waterui_host`.
+    host: HostFunctions,
 }
 
 impl core::fmt::Debug for TsRuntime {
@@ -50,8 +53,12 @@ impl TsRuntime {
         let engine = Engine::new()?;
         let bridge = Bridge::new(engine, environment);
         let table: Rc<dyn HostTable> = Rc::new(table);
-        host::register(&bridge, &table)?;
-        Ok(Self { bridge, table })
+        let host = host::register(&bridge, &table)?;
+        Ok(Self {
+            bridge,
+            table,
+            host,
+        })
     }
 
     /// The bridge every conversion and host call is handed.
@@ -65,14 +72,20 @@ impl TsRuntime {
     ///
     /// # Errors
     ///
-    /// Returns [`TsError`] when the bundle throws, when it published no
-    /// runtime or an incomplete one, when a bundle is already loaded, or when
+    /// Returns [`TsError`] when a bundle is already loaded, when the bundle
+    /// throws, when it published no runtime or an incomplete one, or when
     /// `installHost` rejects the table.
     pub fn load(&self, bundle: &str) -> Result<(), TsError> {
+        // Before evaluating, not after: a second bundle refused on the way out
+        // would already have run, replacing the runtime global and everything
+        // else the first one installed.
+        if self.bridge.runtime().is_ok() {
+            return Err(TsError::BundleAlreadyLoaded);
+        }
         self.bridge.engine().eval(bundle, BUNDLE_NAME)?;
         let runtime = RuntimeGlobal::read(self.bridge.engine())?;
         self.bridge.set_runtime(runtime)?;
-        host::install(&self.bridge, &self.table)?;
+        host::install(&self.bridge, &self.table, &self.host)?;
         Ok(())
     }
 

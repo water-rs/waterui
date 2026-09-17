@@ -3,15 +3,17 @@
 //! A [`Bridge`] is what every conversion and every host call is handed. It
 //! owns the engine, the runtime global a loaded bundle published, the registry
 //! of Rust closures JavaScript can call, the `Environment` the mounted module
-//! sees, and the cells created for values exported into JavaScript. It is a
-//! cheap handle: cloning shares the same runtime, and it is deliberately
-//! neither `Send` nor `Sync`, because the engine is pinned to its thread.
+//! sees, and the open [`MountScope`]s that own what has been exported into
+//! JavaScript. It is a cheap handle: cloning shares the same runtime, and it
+//! is deliberately neither `Send` nor `Sync`, because the engine is pinned to
+//! its thread.
 
 use std::any::Any;
 use std::cell::{OnceCell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 
-use nami::{Binding, Computed, Signal};
+use nami::{Binding, Computed, Signal, SignalIdentity};
 use waterui_core::{AnyView, Environment};
 use waterui_ts_engine::{JsError, JsFunction, JsRuntime, JsValue};
 
@@ -44,6 +46,68 @@ pub enum ReactiveSource {
     Constant(JsValue),
 }
 
+/// What a write into JavaScript left behind.
+///
+/// A JavaScript write settles its effects synchronously, and an effect may
+/// write again — clamping a value, rounding it, refusing it. The runtime's
+/// `write` therefore answers whether reading the source back gives exactly
+/// what was written, compared on the JavaScript side where a function or an
+/// object is its own identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settled {
+    /// The written value is what the source now holds.
+    Stood,
+    /// An effect changed it while the write settled.
+    Changed,
+}
+
+/// Everything one mount exported into JavaScript.
+///
+/// A value exported into JavaScript — a signal wrapping a `Binding<T>`, the
+/// memo behind a `Computed<T>`, a registered callback — is owned by nothing on
+/// the Rust side: JavaScript holds it. Somebody has to, or the subscription
+/// feeding it dies immediately; that somebody is the scope of the mount the
+/// export was made for, and disposing that mount releases every one of them.
+#[derive(Debug, Default)]
+struct Scope {
+    /// The cells and registrations exported while this scope was open.
+    retained: RefCell<Vec<Rc<dyn Any>>>,
+    /// The JavaScript value already exported for a given Rust signal, so the
+    /// same signal crossing twice is the same signal to JavaScript and costs
+    /// one cell, not two.
+    exported: RefCell<BTreeMap<SignalIdentity, JsValue>>,
+}
+
+/// The lifetime of everything a mount exports into JavaScript.
+///
+/// A mount opens one with [`Bridge::open_scope`] and holds it for as long as
+/// the mounted module is on screen; dropping it releases every callback
+/// registration, every outbound cell and every exported signal made while it
+/// was open, so a mounted-and-disposed module leaves nothing behind. Exporting
+/// with no scope open is an error rather than a leak with a runtime-long
+/// lifetime.
+///
+/// Scopes nest: a mount inside a mount opens its own, and exports go to the
+/// innermost one.
+#[derive(Debug)]
+#[must_use = "dropping the scope immediately releases everything exported into it"]
+pub struct MountScope {
+    bridge: WeakBridge,
+    scope: Rc<Scope>,
+}
+
+impl Drop for MountScope {
+    fn drop(&mut self) {
+        if let Some(bridge) = self.bridge.upgrade() {
+            bridge
+                .0
+                .scopes
+                .borrow_mut()
+                .retain(|open| !Rc::ptr_eq(open, &self.scope));
+        }
+    }
+}
+
 /// The engine, the loaded runtime, and the state that crosses between them.
 #[derive(Debug, Clone)]
 pub struct Bridge(Rc<BridgeInner>);
@@ -62,10 +126,9 @@ struct BridgeInner {
     runtime: OnceCell<RuntimeGlobal>,
     callbacks: Rc<CallbackRegistry>,
     environment: Environment,
-    /// Cells created for values exported Rust to JavaScript. Nothing on the
-    /// Rust side holds them — JavaScript does — so the bridge keeps them for
-    /// as long as the bundle is loaded.
-    exports: RefCell<Vec<Rc<dyn Any>>>,
+    /// The mount scopes currently open, innermost last. Everything exported
+    /// into JavaScript belongs to one of them.
+    scopes: RefCell<Vec<Rc<Scope>>>,
 }
 
 impl Bridge {
@@ -76,8 +139,24 @@ impl Bridge {
             runtime: OnceCell::new(),
             callbacks: Rc::new(CallbackRegistry::default()),
             environment,
-            exports: RefCell::new(Vec::new()),
+            scopes: RefCell::new(Vec::new()),
         }))
+    }
+
+    /// Opens the scope that owns what is exported into JavaScript while it is
+    /// open.
+    ///
+    /// The mount leaf (water-rs/waterui#1044) opens one per mounted module and
+    /// drops it when that mount is disposed. Until then a caller that exports
+    /// a value opens one itself, because there is no other answer to the
+    /// question of who owns an exported signal.
+    pub fn open_scope(&self) -> MountScope {
+        let scope = Rc::new(Scope::default());
+        self.0.scopes.borrow_mut().push(Rc::clone(&scope));
+        MountScope {
+            bridge: self.downgrade(),
+            scope,
+        }
     }
 
     /// The environment a mounted module's framework values come from.
@@ -178,18 +257,29 @@ impl Bridge {
 
     /// Exports a `Binding<T>` as a writable JavaScript signal.
     ///
+    /// One Rust signal is one JavaScript signal: the same binding crossing
+    /// again inside the same mount — a field of a value pushed on every
+    /// change, a prop handed to two components — is the value already
+    /// exported, not a second signal with a second cell watching the same
+    /// state.
+    ///
     /// # Errors
     ///
-    /// Returns [`JsError`] when the current value cannot cross, or when the
-    /// signal cannot be created.
+    /// Returns [`JsError`] when no mount scope is open, when the current value
+    /// cannot cross, or when the signal cannot be created.
     pub fn export_binding<T: FromJs + IntoJs + Clone + 'static>(
         &self,
         binding: &Binding<T>,
     ) -> Result<JsValue, JsError> {
+        let scope = self.current_scope()?;
+        let identity = binding.identity();
+        if let Some(exported) = Self::already_exported(&scope, identity) {
+            return Ok(exported);
+        }
         let seed = binding.get().into_js(self)?;
         let signal = self.create_js_signal(seed)?;
         let cell = ReactiveCell::attach(self, signal.clone(), binding.clone(), Flow::TwoWay)?;
-        self.retain_export(cell);
+        Self::retain(&scope, cell, identity, &signal);
         Ok(signal)
     }
 
@@ -197,21 +287,30 @@ impl Bridge {
     ///
     /// The value is pushed into a signal the bridge owns and handed to
     /// JavaScript as a memo over it, so JavaScript tracks it like any other
-    /// derived value and cannot write to it.
+    /// derived value and cannot write to it. Like a binding, one Rust computed
+    /// is one JavaScript accessor for as long as the mount lives.
     ///
     /// # Errors
     ///
-    /// Returns [`JsError`] when the current value cannot cross, or when the
-    /// signal or memo cannot be created.
+    /// Returns [`JsError`] when no mount scope is open, when the current value
+    /// cannot cross, or when the signal or memo cannot be created.
     pub fn export_computed<T: IntoJs + Clone + 'static>(
         &self,
         computed: &Computed<T>,
     ) -> Result<JsValue, JsError> {
+        let scope = self.current_scope()?;
+        let identity = computed.identity();
+        if let Some(exported) = Self::already_exported(&scope, identity) {
+            return Ok(exported);
+        }
         let seed = computed.get().into_js(self)?;
         let signal = self.create_js_signal(seed)?;
         let cell = OutboundCell::push(self, signal.clone(), computed);
-        self.retain_export(Rc::new(cell));
-        self.create_js_memo(&signal)
+        let memo = self.create_js_memo(&signal)?;
+        // The memo is what JavaScript was handed, so the memo is what the same
+        // computed crossing again must be.
+        Self::retain(&scope, Rc::new(cell), identity, &memo);
+        Ok(memo)
     }
 
     /// Takes the `AnyView` out of a view slot JavaScript passed back.
@@ -294,9 +393,48 @@ impl Bridge {
         &self.0.callbacks
     }
 
-    /// Keeps a cell alive for as long as the bundle is loaded.
-    pub(crate) fn retain_export(&self, cell: Rc<dyn Any>) {
-        self.0.exports.borrow_mut().push(cell);
+    /// Keeps a registration alive for as long as its mount is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JsError`] when no mount scope is open.
+    pub(crate) fn retain_export(&self, cell: Rc<dyn Any>) -> Result<(), JsError> {
+        self.current_scope()?.retained.borrow_mut().push(cell);
+        Ok(())
+    }
+
+    /// The innermost open mount scope.
+    fn current_scope(&self) -> Result<Rc<Scope>, JsError> {
+        self.0
+            .scopes
+            .borrow()
+            .last()
+            .map(Rc::clone)
+            .ok_or_else(|| JsError::from(TsError::NoMountScope))
+    }
+
+    /// The JavaScript value this scope already exported for `identity`.
+    fn already_exported(scope: &Scope, identity: Option<SignalIdentity>) -> Option<JsValue> {
+        scope.exported.borrow().get(&identity?).cloned()
+    }
+
+    /// Gives `scope` the cell, and remembers what JavaScript received for it.
+    ///
+    /// A signal with no identity — a constant, which owns no observable state
+    /// — is still retained, and simply never matches a later export.
+    fn retain(
+        scope: &Scope,
+        cell: Rc<dyn Any>,
+        identity: Option<SignalIdentity>,
+        exported: &JsValue,
+    ) {
+        scope.retained.borrow_mut().push(cell);
+        if let Some(identity) = identity {
+            scope
+                .exported
+                .borrow_mut()
+                .insert(identity, exported.clone());
+        }
     }
 
     /// `makeCallback(id)`: the JavaScript function wrapping a registration.
@@ -319,16 +457,31 @@ impl Bridge {
         self.call(runtime.read_value(), std::slice::from_ref(source))
     }
 
-    /// `write(source, value)`: pushes a Rust value into JavaScript.
+    /// `write(source, value)`: pushes a Rust value into JavaScript, and says
+    /// whether it stood.
+    ///
+    /// The answer is computed in JavaScript, after the write has settled its
+    /// effects, by comparing the source's current value with what was written.
+    /// It has to be: the comparison turns on object identity — the same signal
+    /// crossing back out is a fresh handle to Rust — and only JavaScript can
+    /// see that two references are the same object.
     ///
     /// # Errors
     ///
-    /// Returns [`JsError`] before a bundle is loaded, or when the write
-    /// throws — which it does when the target turned out not to be writable.
-    pub(crate) fn write_value(&self, source: &JsValue, value: JsValue) -> Result<(), JsError> {
+    /// Returns [`JsError`] before a bundle is loaded, when the write throws —
+    /// which it does when the target turned out not to be writable — or when
+    /// `write` answers something other than a boolean.
+    pub(crate) fn write_value(&self, source: &JsValue, value: JsValue) -> Result<Settled, JsError> {
         let runtime = self.runtime_for("a reactive value can be written")?;
-        self.call(runtime.write(), &[source.clone(), value])?;
-        Ok(())
+        let answer = self.call(runtime.write(), &[source.clone(), value])?;
+        match answer.as_bool() {
+            Some(true) => Ok(Settled::Stood),
+            Some(false) => Ok(Settled::Changed),
+            None => Err(JsError::conversion(format!(
+                "write() answered {}, not whether the written value stood",
+                kind_of(&answer)
+            ))),
+        }
     }
 
     /// `subscribe(source, makeCallback(id))`: the push half of the mapping.

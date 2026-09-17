@@ -137,18 +137,30 @@ export function read(value) {
 }
 
 /**
- * Writes `value` into a signal or a host-side writable reactive value.
- * Anything else — memos, plain accessors, constants — is read-only and fails
- * loudly rather than being silently dropped.
+ * Writes `value` into a signal or a host-side writable reactive value, and
+ * answers whether the value stood: `true` when reading the target back gives
+ * exactly what was written, `false` when an effect changed it while the write
+ * settled. Anything else — memos, plain accessors, constants — is read-only
+ * and fails loudly rather than being silently dropped.
+ *
+ * The bridge needs that answer and cannot work it out for itself. A write
+ * settles its effects synchronously, and one of them may clamp, round or
+ * reject the value; the comparison that catches it turns on object identity,
+ * and the same signal or callback crossing back out to Rust is a fresh
+ * reference there. Here it is the same object, so `Object.is` is exact.
+ *
+ * @param {unknown} target
+ * @param {unknown} value
+ * @returns {boolean} Whether the target now holds exactly `value`.
  */
 export function write(target, value) {
   if (isSignal(target)) {
     target.set(value);
-    return;
+    return Object.is(read(target), value);
   }
   if (target !== null && typeof target === "object" && typeof target.write === "function") {
     target.write(value);
-    return;
+    return Object.is(read(target), value);
   }
   throw new TypeError("write() expects a signal or a writable reactive value");
 }

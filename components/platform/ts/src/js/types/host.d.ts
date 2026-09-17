@@ -63,8 +63,12 @@ export declare function isAccessor(value: unknown): boolean;
 /** Reads a reactive-or-plain value without tracking. */
 export declare function read<T>(value: MaybeReactive<T> | HostReactive<T>): T;
 
-/** Writes a signal or a writable host value; throws on read-only inputs. */
-export declare function write<T>(target: Signal<T> | HostReactive<T>, value: T): void;
+/**
+ * Writes a signal or a writable host value; throws on read-only inputs.
+ * Answers whether the value stood — `true` when reading the target back gives
+ * exactly what was written, `false` when an effect changed it.
+ */
+export declare function write<T>(target: Signal<T> | HostReactive<T>, value: T): boolean;
 
 /** Runs `callback` on every settled change, with no initial call. */
 export declare function subscribe<T>(

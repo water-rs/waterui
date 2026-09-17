@@ -45,15 +45,19 @@ export function makeCallback(id) {
   if (typeof id !== "number") {
     throw new TypeError("makeCallback(id) expects the numeric id the bridge assigned");
   }
-  return (...args) => {
-    const host = globalThis[HOST_GLOBAL];
-    if (host === undefined || typeof host.invoke !== "function") {
-      throw new Error(
-        `waterui: ${HOST_GLOBAL}.invoke is not registered — the bridge installs it before the bundle is evaluated`,
-      );
-    }
-    return host.invoke(id, ...args);
-  };
+  const host = globalThis[HOST_GLOBAL];
+  if (host === undefined || typeof host.invoke !== "function") {
+    throw new Error(
+      `waterui: ${HOST_GLOBAL}.invoke is not registered — the bridge installs it before the bundle is evaluated`,
+    );
+  }
+  // Captured here, once: `__waterui_host` is an ordinary mutable global, and a
+  // wrapper that read the entry on every call would dispatch through whatever
+  // had been assigned to it since. The check moves with the capture, so a
+  // missing host is reported where the callback is made rather than at some
+  // later call.
+  const { invoke } = host;
+  return (...args) => invoke(id, ...args);
 }
 
 /**

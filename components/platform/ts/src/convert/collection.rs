@@ -62,15 +62,16 @@ impl<T: IntoJs, const N: usize> IntoJs for [T; N] {
 }
 
 impl<T: FromJs, const N: usize> FromJs for [T; N] {
-    /// The length is part of the Rust type, so an array of another length is
-    /// an error naming both.
+    /// The length is part of the Rust type and of the declared TypeScript
+    /// type — `[T; N]` is the tuple `[T, T, …]`, not `T[]` — so an array of
+    /// another length is an error naming both.
     fn from_js(value: &JsValue, bridge: &Bridge) -> Result<Self, JsError> {
         let items = value
             .as_array()
             .ok_or_else(|| expected("an array", value))?;
         if items.len() != N {
             return Err(JsError::conversion(format!(
-                "expected an array of {N} items, found {}",
+                "expected an array of {N} items, the length this type declares, found {}",
                 items.len()
             )));
         }

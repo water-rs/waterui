@@ -26,8 +26,10 @@ Everything the runtime hands the host is one of four shapes:
     (`v()`) and writable (`v.set`, `v.update`); a plain function or a
     `{ read() }` object is a read-only accessor. Anything else is a constant.
   - `read(v)` — current value, untracked; constants pass through.
-  - `write(v, x)` — writes a signal or a `{ write }` host value; throws on
-    read-only inputs.
+  - `write(v, x) -> boolean` — writes a signal or a `{ write }` host value;
+    throws on read-only inputs. The answer is whether the value stood: `true`
+    when reading `v` back gives exactly `x`, `false` when an effect changed it
+    while the write settled.
   - `subscribe(v, callback) -> dispose` — runs `callback(value)` on every
     settled change, glitch-free, with no initial call. This is the push half
     of the `Signal<T> ↔ Binding<T>` mapping: the bridge materializes a JS
@@ -179,7 +181,7 @@ The bundle entry the CLI generates therefore ends with one call —
 | `mount(render)` | Mounts one module under a fresh root scope. |
 | `isSignal(v)` / `isAccessor(v)` | Classifies a reactive input that crossed as a function handle. |
 | `read(v)` | Seeds a materialized cell, untracked. |
-| `write(target, value)` | Pushes a Rust value into a JS signal. |
+| `write(target, value)` | Pushes a Rust value into a JS signal, and answers whether it stood. |
 | `subscribe(source, callback)` | The push half of the mapping; returns the dispose the cell owns. |
 | `toSignal(v)` / `toAccessor(v)` | Used by the runtime itself; the bridge only requires them to be present. |
 | `createSignal(value)` | Creates the JS signal a Rust `Binding<T>` is exported as. |
@@ -209,16 +211,32 @@ Backends read the Rust value: a `get` never crosses into the engine.
 Both directions are guarded so one change propagates once. While an inbound
 value is being applied the write-back is suppressed, which is what stops a
 `Binding::set` — nami notifies unconditionally, `distinct` is opt-in — from
-bouncing straight back. While an outbound value is being pushed the bridge
-remembers exactly what it sent: the notification JavaScript raises for that
-write is recognized and dropped, while a *different* value — an effect that
-clamped or corrected it — is applied to the binding, so the two sides converge
-without an epoch handshake. The seam is synchronous and in-process, which is
-what makes the remembered value enough; the web view's state mirror needs
-epochs because its writes cross an asynchronous transport.
+bouncing straight back. While an outbound value is being written the
+subscription is suppressed outright, for the whole write: a JS write settles
+its effects synchronously, and how many notifications that takes, and in what
+order, is JavaScript's business. What the bridge acts on is where the value
+came to rest, which is what `write` answers. When the value stood there is
+nothing more to do; when an effect changed it, the bridge reads the settled
+value once and applies it under the inbound guard, and the two sides agree.
+
+The comparison is made here rather than in Rust because it turns on object
+identity: a signal, a view slot or a callback crossing back out to Rust is a
+fresh handle there, and only JavaScript can see that two references are the
+same object. Classifying each notification against a remembered value instead
+would also mistake a real correction for an echo whenever the pushed value
+reappears later in the same settle.
 
 Every materialized cell owns its subscription's dispose function and its watch
 guard, and disposes the JavaScript subscription when it is dropped.
+
+The values travelling the other way — a `Binding<T>` exported as a JS signal,
+a `Computed<T>` as a memo, a Rust closure as a callback — are owned by nobody
+on the Rust side, because JavaScript holds them. They belong to the scope of
+the mount they were exported for, and disposing that mount releases every one
+of them; exporting with no mount open is an error rather than a leak that
+lives as long as the runtime. Inside one mount a Rust signal exported twice is
+the same JS signal both times, so a value pushed on every change does not
+leave a trail of signals and cells behind it.
 
 ## `mount(render) -> { handle, dispose }`
 

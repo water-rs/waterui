@@ -232,6 +232,89 @@ fn a_javascript_signal_becomes_a_two_way_binding() {
 }
 
 #[test]
+fn an_effect_that_bounces_a_write_leaves_both_sides_agreeing() {
+    let runtime = runtime();
+    let source = eval(&runtime, "globalThis.fixture.counter");
+
+    let binding: Binding<u32> = runtime
+        .bridge()
+        .materialize_binding(&source)
+        .expect("a signal materializes");
+
+    // An effect that rewrites the value twice while one write settles: 5
+    // becomes 9, and 9 becomes 5 again. Every one of those notifications
+    // reaches the cell's subscription, and none of them is where the value
+    // came to rest.
+    eval(
+        &runtime,
+        "globalThis.bounced = 0;
+         globalThis.fixture.counter.__subscribe((value) => {
+           if (globalThis.bounced >= 2) { return; }
+           globalThis.bounced += 1;
+           globalThis.fixture.counter.set(value === 5 ? 9 : 5);
+         })",
+    );
+
+    binding.set(5);
+
+    assert_eq!(
+        integer(&runtime, "globalThis.bounced"),
+        2,
+        "the effect really did rewrite the value while the write settled"
+    );
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.counter()"),
+        5,
+        "JavaScript came to rest at 5"
+    );
+    assert_eq!(
+        binding.get(),
+        5,
+        "and so did Rust: an intermediate value the effect passed through is \
+         not where the write ended"
+    );
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.writes"),
+        1,
+        "one change, one write: the corrections are JavaScript's own"
+    );
+}
+
+#[test]
+fn an_effect_that_clamps_a_write_is_read_back_once() {
+    let runtime = runtime();
+    let source = eval(&runtime, "globalThis.fixture.counter");
+
+    let binding: Binding<u32> = runtime
+        .bridge()
+        .materialize_binding(&source)
+        .expect("a signal materializes");
+
+    // A clamp: anything above 10 settles at 10.
+    eval(
+        &runtime,
+        "globalThis.fixture.counter.__subscribe((value) => {
+           if (value > 10) { globalThis.fixture.counter.set(10); }
+         })",
+    );
+    let (notifications, _guard) = watch_count(&binding);
+
+    binding.set(40);
+    assert_eq!(integer(&runtime, "globalThis.fixture.counter()"), 10);
+    assert_eq!(binding.get(), 10, "the correction came back to Rust");
+    assert_eq!(
+        notifications.get(),
+        2,
+        "the set and the one correction, and nothing after it"
+    );
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.writes"),
+        1,
+        "the correction was applied inbound, not written back out"
+    );
+}
+
+#[test]
 fn a_host_accessor_becomes_a_pushed_computed() {
     let runtime = runtime();
     let source = eval(&runtime, "globalThis.fixture.label");
@@ -343,6 +426,9 @@ fn dropping_a_materialized_value_disposes_its_subscription() {
 fn a_rust_binding_exported_to_javascript_round_trips() {
     let runtime = runtime();
     let bridge = runtime.bridge();
+    // Everything exported into JavaScript belongs to the mount that asked
+    // for it; the mount leaf opens this scope, a test opens its own.
+    let _scope = bridge.open_scope();
     let hold = function(&runtime, "globalThis.fixture.hold");
 
     let binding = Binding::container(3_u32);
@@ -371,6 +457,9 @@ fn a_rust_binding_exported_to_javascript_round_trips() {
 fn a_rust_computed_exported_to_javascript_is_read_only_and_pushed() {
     let runtime = runtime();
     let bridge = runtime.bridge();
+    // Everything exported into JavaScript belongs to the mount that asked
+    // for it; the mount leaf opens this scope, a test opens its own.
+    let _scope = bridge.open_scope();
     let hold = function(&runtime, "globalThis.fixture.hold");
 
     let source = Binding::container(2_u32);
@@ -396,6 +485,9 @@ fn a_rust_computed_exported_to_javascript_is_read_only_and_pushed() {
 fn a_rust_callback_is_called_from_javascript_with_converted_arguments() {
     let runtime = runtime();
     let bridge = runtime.bridge();
+    // Everything exported into JavaScript belongs to the mount that asked
+    // for it; the mount leaf opens this scope, a test opens its own.
+    let _scope = bridge.open_scope();
     let hold = function(&runtime, "globalThis.fixture.hold");
 
     let seen: Rc<RefCell<Vec<(u32, String)>>> = Rc::new(RefCell::new(Vec::new()));
@@ -420,6 +512,132 @@ fn a_rust_callback_is_called_from_javascript_with_converted_arguments() {
         seen.borrow().len(),
         1,
         "a call that could not be converted never reached the closure"
+    );
+}
+
+#[test]
+fn one_rust_signal_is_one_javascript_signal_however_often_it_crosses() {
+    let runtime = runtime();
+    let bridge = runtime.bridge();
+    let _scope = bridge.open_scope();
+    let hold = function(&runtime, "globalThis.fixture.hold");
+
+    // A value that carries a signal, pushed on every change: the field is one
+    // Rust binding throughout, so it must be one JavaScript signal throughout.
+    let unread = Binding::container(0_u32);
+    let card = |title: &str| Card {
+        title: String::from(title),
+        status: Status::Idle,
+        change: Change::Cleared,
+        subtitle: None,
+        tags: Vec::new(),
+        counts: BTreeMap::new(),
+        unread: unread.clone(),
+        identifier: 1,
+    };
+
+    let outer = Binding::container(card("first"));
+    let exported = outer
+        .clone()
+        .into_js(bridge)
+        .expect("a binding of a value carrying a signal exports");
+    bridge
+        .call(&hold, &[exported])
+        .expect("JavaScript holds it");
+
+    let signals = integer(&runtime, "globalThis.fixture.signals");
+    let subscribes = integer(&runtime, "globalThis.fixture.subscribes");
+    for title in ["second", "third", "fourth"] {
+        outer.set(card(title));
+    }
+
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.writes"),
+        3,
+        "one change, one write"
+    );
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.signals"),
+        signals,
+        "the binding crossing again is the signal it crossed as the first time"
+    );
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.subscribes"),
+        subscribes,
+        "so no second cell watches the same state"
+    );
+
+    // And what JavaScript holds is that live signal, not a snapshot of it.
+    let unread_now = "globalThis.__waterui_runtime.read(globalThis.fixture.held).unread()";
+    assert_eq!(integer(&runtime, unread_now), 0);
+    unread.set(7);
+    assert_eq!(integer(&runtime, unread_now), 7);
+}
+
+#[test]
+fn exporting_outside_a_mount_is_refused() {
+    let runtime = runtime();
+    let error = Binding::container(1_u32)
+        .into_js(runtime.bridge())
+        .expect_err("nothing would own the cell");
+    assert!(
+        error.message.contains("mount scope"),
+        "the error says what is missing: {error}"
+    );
+}
+
+#[test]
+fn disposing_a_mount_releases_everything_it_exported() {
+    let scheme = Binding::container(ColorScheme::Light);
+    let environment = Environment::new()
+        .store::<ColorScheme, Computed<ColorScheme>>(Computed::new(scheme.clone()));
+    let runtime = with_environment(environment);
+    let bridge = runtime.bridge();
+
+    let mut cost = Vec::new();
+    for _ in 0..2 {
+        let before = integer(&runtime, "globalThis.fixture.signals");
+        let scope = bridge.open_scope();
+        eval(
+            &runtime,
+            "globalThis.fixture.held = globalThis.__waterui_host.environment()",
+        );
+        let callback: Box<dyn Fn(u32)> = Box::new(|_| ());
+        let JsValue::Function(exported) = callback.into_js(bridge).expect("a callback exports")
+        else {
+            panic!("a callback crosses as a function");
+        };
+        cost.push(integer(&runtime, "globalThis.fixture.signals") - before);
+
+        // While the mount is open, the theme it exported is live.
+        let writes = integer(&runtime, "globalThis.fixture.writes");
+        scheme.set(ColorScheme::Dark);
+        assert!(
+            integer(&runtime, "globalThis.fixture.writes") > writes,
+            "a theme change reaches the mount"
+        );
+
+        drop(scope);
+
+        let writes = integer(&runtime, "globalThis.fixture.writes");
+        scheme.set(ColorScheme::Light);
+        assert_eq!(
+            integer(&runtime, "globalThis.fixture.writes"),
+            writes,
+            "and stops reaching it once the mount is disposed"
+        );
+        let error = bridge
+            .call(&exported, &[JsValue::Number(1.0)])
+            .expect_err("the registration went with the mount");
+        assert!(
+            error.message.contains("no Rust callback is registered"),
+            "the wrapper outlived what owned it: {error}"
+        );
+    }
+
+    assert_eq!(
+        cost[0], cost[1],
+        "a second mount costs exactly what the first did, with nothing carried over"
     );
 }
 
@@ -459,7 +677,7 @@ enum Change {
 }
 
 /// One nested type carrying every shape the mapping has to get right.
-#[derive(TsType)]
+#[derive(TsType, Clone)]
 struct Card {
     title: String,
     status: Status,
@@ -486,6 +704,9 @@ struct PromoProps {
 fn a_derived_struct_projects_the_shape_the_schema_declares() {
     let runtime = runtime();
     let bridge = runtime.bridge();
+    // Everything exported into JavaScript belongs to the mount that asked
+    // for it; the mount leaf opens this scope, a test opens its own.
+    let _scope = bridge.open_scope();
 
     let card = Card {
         title: String::from("Promo"),
@@ -557,6 +778,9 @@ fn a_derived_struct_projects_the_shape_the_schema_declares() {
 fn a_derived_struct_round_trips() {
     let runtime = runtime();
     let bridge = runtime.bridge();
+    // Everything exported into JavaScript belongs to the mount that asked
+    // for it; the mount leaf opens this scope, a test opens its own.
+    let _scope = bridge.open_scope();
 
     let card = Card {
         title: String::from("Promo"),
@@ -640,6 +864,39 @@ fn the_tagged_variants_read_back() {
 }
 
 #[test]
+fn a_fixed_length_array_crosses_as_the_tuple_it_declares() {
+    let runtime = runtime();
+    let bridge = runtime.bridge();
+
+    assert_eq!(
+        <[u32; 3] as TsType>::SCHEMA.to_string(),
+        "[number, number, number]",
+        "the schema declares the length the conversion enforces"
+    );
+
+    let value = [1_u32, 2, 3].into_js(bridge).expect("an array crosses");
+    assert_eq!(
+        value,
+        JsValue::Array(vec![
+            JsValue::Number(1.0),
+            JsValue::Number(2.0),
+            JsValue::Number(3.0)
+        ])
+    );
+    assert_eq!(
+        <[u32; 3]>::from_js(&value, bridge).expect("and reads back"),
+        [1, 2, 3]
+    );
+
+    let error = <[u32; 4]>::from_js(&value, bridge)
+        .expect_err("an array of another length is not this type");
+    assert!(
+        error.message.contains("4 items"),
+        "the error names the length the type declares: {error}"
+    );
+}
+
+#[test]
 fn an_inexact_number_is_refused_where_the_schema_says_bigint() {
     let runtime = runtime();
     let bridge = runtime.bridge();
@@ -668,6 +925,9 @@ fn props_cross_one_way_with_their_contract_intact() {
 
     let runtime = runtime();
     let bridge = runtime.bridge();
+    // Everything exported into JavaScript belongs to the mount that asked
+    // for it; the mount leaf opens this scope, a test opens its own.
+    let _scope = bridge.open_scope();
     let dismissed = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let props = PromoProps {
         card: Card {
@@ -736,6 +996,45 @@ fn a_bundle_with_an_incomplete_runtime_names_the_entry() {
 }
 
 #[test]
+fn a_second_bundle_is_refused_before_it_runs() {
+    let runtime = runtime();
+    let error = runtime
+        .load("globalThis.fixture.tampered = true; globalThis.__waterui_runtime = {};")
+        .expect_err("one context evaluates one bundle");
+    assert!(error.to_string().contains("already loaded"), "{error}");
+    assert_eq!(
+        eval(&runtime, "globalThis.fixture.tampered"),
+        JsValue::Undefined,
+        "the refused bundle never ran"
+    );
+    assert_eq!(
+        eval(&runtime, "typeof globalThis.__waterui_runtime.read"),
+        JsValue::String(String::from("function")),
+        "so the runtime the first bundle published is still there"
+    );
+}
+
+#[test]
+fn a_bundle_cannot_replace_a_host_function_before_it_is_installed() {
+    let host = TestHost::default();
+    let runtime = TsRuntime::new(Environment::new(), host.clone()).expect("the runtime constructs");
+    // `__waterui_host` is an ordinary mutable global, and this bundle
+    // reassigns one of its entries on the way to installing the runtime.
+    let tampered = format!("globalThis.__waterui_host.create = () => 'hijacked';\n{FIXTURE}");
+    runtime.load(&tampered).expect("the bundle loads");
+
+    eval(
+        &runtime,
+        "globalThis.fixture.hold(globalThis.fixture.host.create('VStack', {}, []))",
+    );
+    assert_eq!(
+        *host.calls.borrow(),
+        vec![Call::Create(String::from("VStack"))],
+        "the installed table carries the function the engine registered"
+    );
+}
+
+#[test]
 fn a_loaded_bundle_carries_its_modules() {
     let runtime = runtime();
     runtime
@@ -796,6 +1095,9 @@ fn the_environment_reaches_javascript_as_theme_and_locale() {
             opacity: 1.0,
         }));
     let runtime = with_environment(environment);
+    // Everything exported into JavaScript belongs to the mount that asked
+    // for it; the mount leaf opens this scope, a test opens its own.
+    let _scope = runtime.bridge().open_scope();
 
     eval(
         &runtime,
@@ -847,6 +1149,9 @@ fn a_theme_change_reaches_javascript() {
     let environment = Environment::new()
         .store::<ColorScheme, Computed<ColorScheme>>(Computed::new(scheme.clone()));
     let runtime = with_environment(environment);
+    // Everything exported into JavaScript belongs to the mount that asked
+    // for it; the mount leaf opens this scope, a test opens its own.
+    let _scope = runtime.bridge().open_scope();
 
     eval(
         &runtime,
@@ -874,6 +1179,7 @@ fn a_theme_change_reaches_javascript() {
 #[test]
 fn an_environment_without_a_colour_scheme_says_so() {
     let runtime = runtime();
+    let _scope = runtime.bridge().open_scope();
     let error = eval_error(&runtime, "globalThis.__waterui_host.environment()");
     assert!(
         error.message.contains("ColorScheme"),

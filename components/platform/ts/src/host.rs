@@ -117,7 +117,8 @@ pub trait HostTable: 'static {
 }
 
 /// The property of `__waterui_host` one host function is registered under,
-/// and the expression that reads it back for the table object.
+/// and the expression that reads it back the moment it is registered.
+#[derive(Clone, Copy)]
 struct HostEntry {
     name: &'static str,
     source: &'static str,
@@ -152,21 +153,37 @@ const ENVIRONMENT: HostEntry = HostEntry {
     source: "globalThis.__waterui_host.environment",
 };
 
+/// Every entry the table object carries, in the order it is built.
+const ENTRIES: [HostEntry; 7] = [CREATE, MODIFY, TEXT, SHOW, EACH, SUSPENSE, ENVIRONMENT];
+
 /// The entry every registered Rust closure is dispatched through.
 const INVOKE: &str = "invoke";
 
 /// The script name the host reads are attributed to in a stack trace.
 const SOURCE_NAME: &str = "waterui:host";
 
-/// Registers every host function on the engine.
+/// The host functions the engine installed, captured as they were installed.
+///
+/// `__waterui_host` is an ordinary mutable global: a bundle can reassign
+/// `__waterui_host.create` while it evaluates, and a table built by reading
+/// the global back afterwards would carry whatever it found. Each function is
+/// therefore read back the moment it is registered — before any bundle
+/// exists — and it is these handles, not a later read, that
+/// [`install`] hands to `installHost`.
+#[derive(Debug)]
+pub struct HostFunctions(Vec<(&'static str, JsFunction)>);
+
+/// Registers every host function on the engine and captures it.
 ///
 /// Registration happens before the bundle is evaluated, so the functions exist
-/// no matter when JavaScript first reaches for one.
+/// no matter when JavaScript first reaches for one — and so the capture sees
+/// the function the engine just installed and nothing else.
 ///
 /// # Errors
 ///
-/// Returns [`JsError`] when the engine cannot install a function.
-pub fn register(bridge: &Bridge, table: &Rc<dyn HostTable>) -> Result<(), JsError> {
+/// Returns [`TsError`] when the engine cannot install a function, or when a
+/// freshly registered entry does not read back as one.
+pub fn register(bridge: &Bridge, table: &Rc<dyn HostTable>) -> Result<HostFunctions, TsError> {
     let engine = bridge.engine();
 
     engine.register(INVOKE, {
@@ -247,26 +264,10 @@ pub fn register(bridge: &Bridge, table: &Rc<dyn HostTable>) -> Result<(), JsErro
         move |_args: &[JsValue]| host_environment(&upgrade(&weak)?)
     })?;
 
-    Ok(())
-}
-
-/// Installs the table object on the JavaScript side.
-///
-/// Called once, after the bundle is evaluated and before anything is mounted:
-/// the installer itself lives in the bundle, so it cannot run earlier.
-///
-/// # Errors
-///
-/// Returns [`TsError`] when a host function cannot be read back, or when
-/// `installHost` rejects the table.
-pub fn install(bridge: &Bridge, table: &Rc<dyn HostTable>) -> Result<(), TsError> {
-    let entries = [CREATE, MODIFY, TEXT, SHOW, EACH, SUSPENSE, ENVIRONMENT];
-    let mut object = Vec::with_capacity(entries.len() + 1);
-    for entry in entries {
-        match bridge.engine().eval(entry.source, SOURCE_NAME)? {
-            JsValue::Function(function) => {
-                object.push((entry.name.to_owned(), JsValue::Function(function)));
-            }
+    let mut captured = Vec::with_capacity(ENTRIES.len());
+    for entry in ENTRIES {
+        match engine.eval(entry.source, SOURCE_NAME)? {
+            JsValue::Function(function) => captured.push((entry.name, function)),
             other => {
                 return Err(TsError::RuntimeEntry {
                     name: entry.name,
@@ -275,6 +276,31 @@ pub fn install(bridge: &Bridge, table: &Rc<dyn HostTable>) -> Result<(), TsError
             }
         }
     }
+    Ok(HostFunctions(captured))
+}
+
+/// Installs the table object on the JavaScript side.
+///
+/// Called once, after the bundle is evaluated and before anything is mounted:
+/// the installer itself lives in the bundle, so it cannot run earlier. What it
+/// installs is what [`register`] captured, never a fresh read of
+/// `__waterui_host`, so a bundle that reassigns a property of that global
+/// while it evaluates changes nothing about the table the runtime receives.
+///
+/// # Errors
+///
+/// Returns [`TsError`] when no bundle is loaded, or when `installHost` rejects
+/// the table.
+pub fn install(
+    bridge: &Bridge,
+    table: &Rc<dyn HostTable>,
+    host: &HostFunctions,
+) -> Result<(), TsError> {
+    let mut object: Vec<(String, JsValue)> = host
+        .0
+        .iter()
+        .map(|(name, function)| ((*name).to_owned(), JsValue::Function(function.clone())))
+        .collect();
     // A `Set` is not a plain object and cannot cross the seam, so the names
     // travel as an array and `installHost` builds the set once.
     object.push((

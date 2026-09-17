@@ -15,6 +15,7 @@
 //! | [`String`] | `string` |
 //! | [`Option`] | the value, or `null` |
 //! | [`List`] | an array |
+//! | [`Array`] | an array of exactly that length |
 //! | [`Map`] | an object |
 //! | [`Signal`] | a `Signal` created by the runtime |
 //! | [`Accessor`] | a memo over a signal the bridge pushes |
@@ -36,6 +37,7 @@
 //! [`String`]: waterui_ts_schema::TypeSchema::String
 //! [`Option`]: waterui_ts_schema::TypeSchema::Option
 //! [`List`]: waterui_ts_schema::TypeSchema::List
+//! [`Array`]: waterui_ts_schema::TypeSchema::Array
 //! [`Map`]: waterui_ts_schema::TypeSchema::Map
 //! [`Signal`]: waterui_ts_schema::TypeSchema::Signal
 //! [`Accessor`]: waterui_ts_schema::TypeSchema::Accessor

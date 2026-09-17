@@ -65,7 +65,7 @@ pub use waterui_ts_engine as engine;
 /// every item the expansion uses.
 pub use waterui_ts_schema as schema;
 
-pub use bridge::{Bridge, ReactiveSource};
+pub use bridge::{Bridge, MountScope, ReactiveSource};
 pub use convert::{FromJs, IntoJs, support};
 pub use environment::{HostLocale, Theme, locale, theme};
 pub use error::TsError;

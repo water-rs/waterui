@@ -21,8 +21,14 @@ use crate::bridge::Bridge;
 
 /// Registers `call` and returns the JavaScript function that invokes it.
 ///
-/// The registration is kept for as long as the bundle is loaded: JavaScript
-/// holds the wrapper, and nothing on the Rust side does.
+/// JavaScript holds the wrapper and nothing on the Rust side does, so the
+/// registration belongs to the mount scope the export was made in and is
+/// released when that mount is disposed.
+///
+/// # Errors
+///
+/// Returns [`JsError`] when no mount scope is open, or when the registry is
+/// exhausted.
 fn export<F>(bridge: &Bridge, call: F) -> Result<JsValue, JsError>
 where
     F: Fn(&[JsValue], &Bridge) -> Result<(), JsError> + 'static,
@@ -39,7 +45,7 @@ where
         Ok(JsValue::Undefined)
     })?;
     let id = handle.id();
-    bridge.retain_export(Rc::new(handle));
+    bridge.retain_export(Rc::new(handle))?;
     bridge.make_callback(id)
 }
 
