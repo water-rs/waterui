@@ -52,6 +52,13 @@ fn ts_path() -> Option<TokenStream2> {
     // integration tests and benches compile, and there `crate` would name
     // the test or bench binary instead, so those expansions take the facade
     // arm like any other consumer.
+    // Inside `waterui-ts` the runtime crate is this crate, which declares
+    // `extern crate self as waterui_ts`. The lookup below must not answer with
+    // the facade: `waterui` is a dev-dependency here — the equivalence tests
+    // author ordinary WaterUI views — and the library build links none of it.
+    if std::env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-ts") {
+        return Some(quote!(::waterui_ts));
+    }
     if std::env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-internal")
         && std::env::var_os("CARGO_TARGET_TMPDIR").is_none()
     {
@@ -111,19 +118,56 @@ fn type_schema(path: &TokenStream2, ty: &syn::Type) -> TokenStream2 {
     quote_spanned!(ty.span()=> <#ty as #path::TsType>::SCHEMA)
 }
 
+/// The TypeScript property name a field projects to.
+///
+/// `#[ts(rename = "onTap")]` states it, which is how a Rust `snake_case` field
+/// reaches a property spelled the way TypeScript spells it — the component
+/// catalog's attributes are the case that needs it, because a JSX attribute is
+/// `onTap` and a Rust field cannot be. Without the attribute the field's own
+/// name is the property name, and the rename travels through the schema and
+/// both conversions together, so one declaration still describes one shape.
+fn projected_name(field: &syn::Field) -> syn::Result<String> {
+    let ident = field
+        .ident
+        .as_ref()
+        .expect("a named field has an identifier");
+    let mut renamed: Option<String> = None;
+    for attribute in &field.attrs {
+        if !attribute.path().is_ident("ts") {
+            continue;
+        }
+        attribute.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("rename") {
+                return Err(
+                    meta.error("a field takes one TypeScript attribute: `#[ts(rename = \"…\")]`")
+                );
+            }
+            let name: syn::LitStr = meta.value()?.parse()?;
+            let name = name.value();
+            if name.is_empty() {
+                return Err(meta.error("a property name must not be empty"));
+            }
+            if renamed.replace(name).is_some() {
+                return Err(meta.error("this field is renamed twice"));
+            }
+            Ok(())
+        })?;
+    }
+    Ok(renamed.unwrap_or_else(|| ident.unraw().to_string()))
+}
+
 /// `&[FieldSchema { .. }, ..]` for named fields.
-fn named_fields(path: &TokenStream2, fields: &syn::FieldsNamed) -> TokenStream2 {
-    let entries = fields.named.iter().map(|field| {
-        let name = field
-            .ident
-            .as_ref()
-            .expect("a named field has an identifier")
-            .unraw()
-            .to_string();
-        let ty = type_schema(path, &field.ty);
-        quote!(#path::FieldSchema { name: #name, ty: #ty })
-    });
-    quote!(&[#(#entries),*])
+fn named_fields(path: &TokenStream2, fields: &syn::FieldsNamed) -> syn::Result<TokenStream2> {
+    let entries = fields
+        .named
+        .iter()
+        .map(|field| {
+            let name = projected_name(field)?;
+            let ty = type_schema(path, &field.ty);
+            Ok(quote!(#path::FieldSchema { name: #name, ty: #ty }))
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
+    Ok(quote!(&[#(#entries),*]))
 }
 
 /// `&[TypeSchema, ..]` for positional fields.
@@ -149,7 +193,7 @@ fn struct_schema(
         ));
     };
     let literal = name.unraw().to_string();
-    let fields = named_fields(path, fields);
+    let fields = named_fields(path, fields)?;
     Ok(quote! {
         #path::TypeSchema::Struct(#path::StructSchema {
             name: #literal,
@@ -159,18 +203,18 @@ fn struct_schema(
 }
 
 /// The `VariantPayload` expression for one variant.
-fn variant_payload(path: &TokenStream2, variant: &Variant) -> TokenStream2 {
-    match &variant.fields {
+fn variant_payload(path: &TokenStream2, variant: &Variant) -> syn::Result<TokenStream2> {
+    Ok(match &variant.fields {
         Fields::Unit => quote!(#path::VariantPayload::Unit),
         Fields::Unnamed(fields) => {
             let entries = unnamed_fields(path, fields);
             quote!(#path::VariantPayload::Tuple(#entries))
         }
         Fields::Named(fields) => {
-            let entries = named_fields(path, fields);
+            let entries = named_fields(path, fields)?;
             quote!(#path::VariantPayload::Struct(#entries))
         }
-    }
+    })
 }
 
 /// The `TypeSchema` expression for an enum.
@@ -194,11 +238,15 @@ fn enum_schema(
     } else {
         quote!(#path::EnumRepresentation::DEFAULT_TAGGED)
     };
-    let variants = data.variants.iter().map(|variant| {
-        let literal = variant.ident.unraw().to_string();
-        let payload = variant_payload(path, variant);
-        quote!(#path::VariantSchema { name: #literal, payload: #payload })
-    });
+    let variants = data
+        .variants
+        .iter()
+        .map(|variant| {
+            let literal = variant.ident.unraw().to_string();
+            let payload = variant_payload(path, variant)?;
+            Ok(quote!(#path::VariantSchema { name: #literal, payload: #payload }))
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
     let literal = name.unraw().to_string();
     Ok(quote! {
         #path::TypeSchema::Enum(#path::EnumSchema {
@@ -263,7 +311,7 @@ fn is_one_way(input: &DeriveInput) -> syn::Result<bool> {
 }
 
 /// `(field access, projected property name)` for every named field.
-fn named_field_names(fields: &syn::FieldsNamed) -> Vec<(&Ident, String)> {
+fn named_field_names(fields: &syn::FieldsNamed) -> syn::Result<Vec<(&Ident, String)>> {
     fields
         .named
         .iter()
@@ -272,7 +320,7 @@ fn named_field_names(fields: &syn::FieldsNamed) -> Vec<(&Ident, String)> {
                 .ident
                 .as_ref()
                 .expect("a named field has an identifier");
-            (ident, ident.unraw().to_string())
+            Ok((ident, projected_name(field)?))
         })
         .collect()
 }
@@ -282,17 +330,20 @@ fn object_expression(
     ts: &TokenStream2,
     fields: &syn::FieldsNamed,
     access: impl Fn(&Ident) -> TokenStream2,
-) -> TokenStream2 {
-    let entries = named_field_names(fields).into_iter().map(|(ident, name)| {
-        let value = access(ident);
-        quote! {
-            (
-                ::std::string::String::from(#name),
-                #ts::IntoJs::into_js(#value, bridge)?,
-            )
-        }
-    });
-    quote!(#ts::engine::JsValue::Object(::std::vec![#(#entries),*]))
+) -> syn::Result<TokenStream2> {
+    let entries = named_field_names(fields)?
+        .into_iter()
+        .map(|(ident, name)| {
+            let value = access(ident);
+            quote! {
+                (
+                    ::std::string::String::from(#name),
+                    #ts::IntoJs::into_js(#value, bridge)?,
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(quote!(#ts::engine::JsValue::Object(::std::vec![#(#entries),*])))
 }
 
 /// The `Self::Variant(f0, f1)` bindings of a tuple variant.
@@ -313,58 +364,62 @@ fn into_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStre
                     "a TypeScript object type needs named fields",
                 ));
             };
-            object_expression(ts, fields, |ident| quote!(self.#ident))
+            object_expression(ts, fields, |ident| quote!(self.#ident))?
         }
         Data::Enum(data) => {
             let string_union = data
                 .variants
                 .iter()
                 .all(|variant| matches!(variant.fields, Fields::Unit));
-            let arms = data.variants.iter().map(|variant| {
-                let ident = &variant.ident;
-                let literal = ident.unraw().to_string();
-                if string_union {
-                    return quote! {
-                        Self::#ident => #ts::engine::JsValue::String(
-                            ::std::string::String::from(#literal),
-                        ),
-                    };
-                }
-                match &variant.fields {
-                    Fields::Unit => quote! {
-                        Self::#ident => #ts::support::tagged_object(
-                            #literal,
-                            ::core::option::Option::None,
-                        ),
-                    },
-                    Fields::Unnamed(fields) => {
-                        let bindings = tuple_bindings(fields);
-                        quote! {
-                            Self::#ident(#(#bindings),*) => #ts::support::tagged_object(
+            let arms = data
+                .variants
+                .iter()
+                .map(|variant| -> syn::Result<TokenStream2> {
+                    let ident = &variant.ident;
+                    let literal = ident.unraw().to_string();
+                    if string_union {
+                        return Ok(quote! {
+                            Self::#ident => #ts::engine::JsValue::String(
+                                ::std::string::String::from(#literal),
+                            ),
+                        });
+                    }
+                    Ok(match &variant.fields {
+                        Fields::Unit => quote! {
+                            Self::#ident => #ts::support::tagged_object(
                                 #literal,
-                                ::core::option::Option::Some(
-                                    #ts::engine::JsValue::Array(::std::vec![
-                                        #(#ts::IntoJs::into_js(#bindings, bridge)?),*
-                                    ]),
+                                ::core::option::Option::None,
+                            ),
+                        },
+                        Fields::Unnamed(fields) => {
+                            let bindings = tuple_bindings(fields);
+                            quote! {
+                                Self::#ident(#(#bindings),*) => #ts::support::tagged_object(
+                                    #literal,
+                                    ::core::option::Option::Some(
+                                        #ts::engine::JsValue::Array(::std::vec![
+                                            #(#ts::IntoJs::into_js(#bindings, bridge)?),*
+                                        ]),
+                                    ),
                                 ),
-                            ),
+                            }
                         }
-                    }
-                    Fields::Named(fields) => {
-                        let bindings: Vec<&Ident> = named_field_names(fields)
-                            .into_iter()
-                            .map(|(ident, _)| ident)
-                            .collect();
-                        let object = object_expression(ts, fields, |ident| quote!(#ident));
-                        quote! {
-                            Self::#ident { #(#bindings),* } => #ts::support::tagged_object(
-                                #literal,
-                                ::core::option::Option::Some(#object),
-                            ),
+                        Fields::Named(fields) => {
+                            let bindings: Vec<&Ident> = named_field_names(fields)?
+                                .into_iter()
+                                .map(|(ident, _)| ident)
+                                .collect();
+                            let object = object_expression(ts, fields, |ident| quote!(#ident))?;
+                            quote! {
+                                Self::#ident { #(#bindings),* } => #ts::support::tagged_object(
+                                    #literal,
+                                    ::core::option::Option::Some(#object),
+                                ),
+                            }
                         }
-                    }
-                }
-            });
+                    })
+                })
+                .collect::<syn::Result<Vec<_>>>()?;
             quote!(match self { #(#arms)* })
         }
         Data::Union(_) => {
@@ -399,7 +454,7 @@ fn from_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStre
                     "a TypeScript object type needs named fields",
                 ));
             };
-            let fields = named_field_names(fields).into_iter().map(|(ident, name)| {
+            let fields = named_field_names(fields)?.into_iter().map(|(ident, name)| {
                 quote!(#ident: #ts::support::field(entries, #type_name, #name, bridge)?)
             });
             quote! {
@@ -412,10 +467,10 @@ fn from_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStre
                 .variants
                 .iter()
                 .all(|variant| matches!(variant.fields, Fields::Unit));
-            let arms = data.variants.iter().map(|variant| {
+            let arms = data.variants.iter().map(|variant| -> syn::Result<TokenStream2> {
                 let ident = &variant.ident;
                 let literal = ident.unraw().to_string();
-                match &variant.fields {
+                Ok(match &variant.fields {
                     Fields::Unit => quote!(#literal => ::core::result::Result::Ok(Self::#ident),),
                     Fields::Unnamed(fields) => {
                         let arity = fields.unnamed.len();
@@ -433,7 +488,7 @@ fn from_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStre
                         }
                     }
                     Fields::Named(fields) => {
-                        let fields = named_field_names(fields).into_iter().map(|(ident, name)| {
+                        let fields = named_field_names(fields)?.into_iter().map(|(ident, name)| {
                             quote!(#ident: #ts::support::field(entries, #type_name, #name, bridge)?)
                         });
                         quote! {
@@ -444,8 +499,9 @@ fn from_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStre
                             }
                         }
                     }
-                }
-            });
+                })
+            })
+            .collect::<syn::Result<Vec<_>>>()?;
             if string_union {
                 quote! {
                     let name = #ts::support::variant_name(value, #type_name)?;
