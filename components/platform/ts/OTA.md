@@ -210,10 +210,12 @@ through `tracing` by whoever decides what to do about it:
 5. **Size** — the bundle file is no longer than `bundle.size`. For a
    download, a `Content-Length` above it refuses the response before its
    body is read, and a body that runs past it is refused at the first chunk
-   that crosses the bound (`FetchError::BundleSize`, naming the bound, the
+   that crosses the bound (`FetchError::BodySize`, naming the bound, the
    declared length and the bytes read); for a cached file, its length on
-   disk is checked before it is read. The bytes buffered never exceed the
-   bound plus the chunk that crossed it.
+   disk is checked and the read itself stops at the bound, so a file that
+   grows under the reader is refused too. The bytes buffered never exceed
+   the bound. The manifest, which nothing signed bounds, is read under the
+   protocol's `MANIFEST_SIZE_LIMIT` of one mebibyte the same way.
 6. **Digest** — SHA-256 of the bundle file's bytes equals `bundle.sha256`,
    and the bytes are UTF-8.
 

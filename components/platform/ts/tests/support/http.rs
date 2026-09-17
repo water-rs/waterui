@@ -52,6 +52,7 @@ impl Server {
         let address = listener.local_addr().expect("the listener has an address");
         let (sender, requests) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let routes = Arc::new(routes);
         let thread = std::thread::spawn({
             let stop = Arc::clone(&stop);
             move || {
@@ -60,7 +61,14 @@ impl Server {
                         break;
                     }
                     let Ok(stream) = stream else { continue };
-                    answer(stream, &routes, framing, &sender);
+                    // Each connection is answered on its own thread, so a
+                    // client that connects and never writes cannot hold the
+                    // accept loop — and with it `Drop`'s join — hostage.
+                    std::thread::spawn({
+                        let routes = Arc::clone(&routes);
+                        let sender = sender.clone();
+                        move || answer(stream, &routes, framing, &sender)
+                    });
                 }
             }
         });
@@ -130,7 +138,9 @@ fn answer(
             Err(_) => return,
         }
     }
-    log.send(path.clone()).expect("the test holds the receiver");
+    // The receiver may be gone when the request arrives after the test's
+    // `Server` was dropped; a request nobody will read is not an error.
+    drop(log.send(path.clone()));
     let response = routes.get(&path).map_or_else(
         || b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
         |body| {

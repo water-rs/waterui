@@ -15,8 +15,9 @@ use std::path::Path;
 use ed25519_dalek::{Signer as _, SigningKey};
 use nami::Computed;
 use waterui::ts::{
-    Baseline, BundleStore, Components, FetchError, LaunchError, Launched, Loader, Mount, NoProps,
-    Ota, Outcome, RUNTIME_FINGERPRINT, Rejection, RequiredModule, Requirement,
+    Baseline, BundleStore, Components, FetchError, LaunchError, Launched, Loader,
+    MANIFEST_SIZE_LIMIT, Mount, NoProps, Ota, Outcome, RUNTIME_FINGERPRINT, Rejection,
+    RequiredModule, Requirement,
 };
 use waterui_core::Environment;
 use waterui_graphics::color::ColorScheme;
@@ -513,7 +514,7 @@ fn ts_ota_a_bundle_response_declaring_more_than_the_manifests_size_is_refused_un
     let (outcome, server) = fetch(&store, &key, &signed, &padded);
     let error = outcome.expect_err("a longer response is refused");
     match error {
-        FetchError::BundleSize {
+        FetchError::BodySize {
             size,
             declared,
             received,
@@ -531,6 +532,44 @@ fn ts_ota_a_bundle_response_declaring_more_than_the_manifests_size_is_refused_un
     }
     assert!(untouched(store.root()), "nothing was written to the store");
     assert_eq!(server.requests(), ["/manifest.json", "/bundle-11.js"]);
+}
+
+#[test]
+fn ts_ota_a_manifest_response_past_the_protocol_limit_is_refused_unread() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = BundleStore::new(dir.path().join("store"));
+    let key = keypair();
+    // A document the size of the limit plus one byte, declared as such: no
+    // signature bounds the manifest, so the protocol's limit is what does.
+    let oversize = usize::try_from(MANIFEST_SIZE_LIMIT + 1).expect("fits");
+    let server = http::Server::serve(
+        BTreeMap::from([(String::from("/manifest.json"), vec![b' '; oversize])]),
+        http::Framing::ContentLength,
+    );
+    let ota = Ota::new(
+        key.verifying_key().to_bytes(),
+        &server.url("manifest.json"),
+        store.clone(),
+    )
+    .expect("the key and the URL are valid");
+
+    let outcome = futures_lite::future::block_on(ota.fetch(&REQUIREMENT, BASELINE_VERSION));
+    match outcome.expect_err("a manifest past the limit is refused") {
+        FetchError::BodySize {
+            url,
+            size,
+            declared,
+            received,
+        } => {
+            assert_eq!(url, server.url("manifest.json"));
+            assert_eq!(size, MANIFEST_SIZE_LIMIT);
+            assert_eq!(declared, Some(MANIFEST_SIZE_LIMIT + 1));
+            assert_eq!(received, 0, "not a byte of the body was read");
+        }
+        other => panic!("{other}"),
+    }
+    assert!(untouched(store.root()), "nothing was written to the store");
+    assert_eq!(server.requests(), ["/manifest.json"]);
 }
 
 #[test]
@@ -553,7 +592,7 @@ fn ts_ota_a_bundle_response_delivering_more_than_the_manifests_size_is_refused_a
     );
     let error = outcome.expect_err("a longer body is refused");
     match error {
-        FetchError::BundleSize {
+        FetchError::BodySize {
             size,
             declared,
             received,

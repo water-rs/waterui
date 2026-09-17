@@ -90,7 +90,7 @@ pub use host::HostTable;
 pub use library::{LIBRARY_HALF_ENCODED, LIBRARY_HASH};
 pub use mount::{Mount, NoProps, RuntimeHandle};
 #[cfg(feature = "ota")]
-pub use ota::{BundleStore, FetchError, Ota, OtaError, Outcome, StoreError};
+pub use ota::{BundleStore, FetchError, MANIFEST_SIZE_LIMIT, Ota, OtaError, Outcome, StoreError};
 pub use runtime::TsRuntime;
 pub use runtime_global::RuntimeGlobal;
 pub use view::{JsViewBuilder, ViewSlot};

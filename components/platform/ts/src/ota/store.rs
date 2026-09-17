@@ -31,7 +31,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{self, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use waterkit_fs::WaterFs;
@@ -276,7 +276,18 @@ impl BundleStore {
                 return;
             }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    tracing::warn!(
+                        path = %dir.display(),
+                        %error,
+                        "an entry of the bundle store's bundles directory could not be listed"
+                    );
+                    continue;
+                }
+            };
             let name = entry.file_name();
             let is_staging = name
                 .to_str()
@@ -324,9 +335,8 @@ impl BundleStore {
     /// bound — and [`StoreError::Io`] when it cannot be read.
     pub(crate) fn read_bundle(&self, version: u64, declared: u64) -> Result<Vec<u8>, StoreError> {
         let path = self.version_dir(version).join(BUNDLE);
-        let len = fs::metadata(&path)
-            .map_err(StoreError::io(path.clone()))?
-            .len();
+        let file = fs::File::open(&path).map_err(StoreError::io(path.clone()))?;
+        let len = file.metadata().map_err(StoreError::io(path.clone()))?.len();
         if len > declared {
             return Err(StoreError::BundleSize {
                 path,
@@ -334,7 +344,23 @@ impl BundleStore {
                 declared,
             });
         }
-        fs::read(&path).map_err(StoreError::io(path))
+        // The read is bounded by the declaration too, not by the length just
+        // measured: a file that grows between the two is refused, never
+        // buffered whole.
+        let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or(usize::MAX));
+        let read = (&file)
+            .take(declared + 1)
+            .read_to_end(&mut bytes)
+            .map_err(StoreError::io(path.clone()))?;
+        let read = u64::try_from(read).expect("a byte count fits a u64");
+        if read > declared {
+            return Err(StoreError::BundleSize {
+                path,
+                len: read,
+                declared,
+            });
+        }
+        Ok(bytes)
     }
 
     /// Writes `version` whole: both files into a staging directory, then one
@@ -405,5 +431,11 @@ fn write_json_atomically<T: serde::Serialize>(path: &Path, value: &T) -> Result<
         .and_then(|()| file.sync_all())
         .map_err(StoreError::io(temporary.clone()))?;
     drop(file);
-    fs::rename(&temporary, path).map_err(StoreError::io(path))
+    fs::rename(&temporary, path).map_err(StoreError::io(path))?;
+    // The rename is durable only once the directory that records it is: a
+    // power loss before that would show the old document, never a torn one,
+    // but it would also lose a write this call reported as done.
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(StoreError::io(parent))
 }

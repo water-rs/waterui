@@ -137,17 +137,19 @@ pub enum FetchError {
         source: url::ParseError,
     },
 
-    /// The bundle response is longer than the `size` its signed manifest
-    /// declares, so it is not the file the manifest was published with and
-    /// was not buffered past the bound.
+    /// A response is longer than its bound — the `size` the signed manifest
+    /// declares for the bundle, or [`MANIFEST_SIZE_LIMIT`] for the manifest —
+    /// so it is not the document that was published and was not buffered
+    /// past the bound.
     #[error(
-        "the bundle at {url} exceeds the {size} bytes its manifest declares: the response \
-         declared {declared:?} and {received} bytes were read before it was refused"
+        "the document at {url} exceeds its bound of {size} bytes: the response declared \
+         {declared:?} and {received} bytes were read before it was refused"
     )]
-    BundleSize {
-        /// The bundle's URL.
+    BodySize {
+        /// The URL of the document: the manifest, or the bundle it names.
         url: String,
-        /// The length the signed manifest declares.
+        /// The bound: [`MANIFEST_SIZE_LIMIT`] for the manifest, the signed
+        /// `bundle.size` for the bundle.
         size: u64,
         /// The length the response declared in `Content-Length`, when it
         /// declared one.
@@ -273,7 +275,7 @@ impl Ota {
         requirement: &Requirement,
         baseline: u64,
     ) -> Result<Outcome, FetchError> {
-        let text = fetch_bytes(&self.manifest_url).await?;
+        let text = fetch_bounded(&self.manifest_url, MANIFEST_SIZE_LIMIT).await?;
         let text = String::from_utf8(text).map_err(|source| FetchError::ManifestEncoding {
             url: self.manifest_url.to_string(),
             source,
@@ -350,23 +352,16 @@ async fn request(url: &Url) -> Result<zenwave::Response, FetchError> {
     Ok(response)
 }
 
-/// One GET, the whole body: the manifest, whose size nothing signed bounds.
-#[expect(
-    clippy::future_not_send,
-    reason = "the fetch runs on the main-thread local executor; see `request`"
-)]
-async fn fetch_bytes(url: &Url) -> Result<Vec<u8>, FetchError> {
-    let response = request(url).await?;
-    let bytes = response
-        .into_body()
-        .into_bytes()
-        .await
-        .map_err(|error| network(url)(error.into()))?;
-    Ok(bytes.to_vec())
-}
+/// The most bytes a manifest document may be.
+///
+/// Nothing signed bounds the manifest — it is what carries the signature — so
+/// the bound is a constant of the protocol: a manifest is a version, a
+/// fingerprint, a bundle entry, one hash per module and the translation files,
+/// and a document past this size is not one of ours whatever it says.
+pub const MANIFEST_SIZE_LIMIT: u64 = 1 << 20;
 
 /// One GET, the body read under `size`: the bundle, whose signed manifest
-/// bounds it.
+/// bounds it, or the manifest under [`MANIFEST_SIZE_LIMIT`].
 ///
 /// A `Content-Length` above the bound refuses the response before a byte of
 /// its body is read. The body is then consumed chunk by chunk as the client
@@ -383,7 +378,7 @@ async fn fetch_bounded(url: &Url, size: u64) -> Result<Vec<u8>, FetchError> {
         .headers()
         .get(CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok()?.parse::<u64>().ok());
-    let exceeded = |received: u64| FetchError::BundleSize {
+    let exceeded = |received: u64| FetchError::BodySize {
         url: url.to_string(),
         size,
         declared,
