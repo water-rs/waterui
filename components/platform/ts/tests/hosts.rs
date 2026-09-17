@@ -13,6 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use nami::Binding;
+use waterui::app::App;
 use waterui::tsx;
 use waterui_core::{AnyView, Environment};
 use waterui_preview::with_configured_runtime;
@@ -85,10 +86,12 @@ fn ts_a_test_session_mounts_a_tsx_view(ui: UiBuilder) {
 fn ts_a_preview_render_installs_the_runtime_for_the_view() {
     // The preview support app has a view it loaded from a dylib and the
     // environment its backend gave it, and nothing else: the runtime rides in
-    // the view's own subtree environment. Mounting what `with_configured_runtime`
-    // hands back in a plain session — one that installs nothing itself, as
-    // `ui()` does without the testing crate's `ts` feature would — shows the
-    // subtree carries what its `Mount` needs.
+    // the view's own subtree environment. The view is mounted through
+    // `mount_app`, which runs the application's environment verbatim and
+    // installs nothing of its own — `mount` would install the runtime the
+    // variable names into the session and hide an unwrapped view — so the
+    // labels in the tree come from the runtime the subtree carries and from
+    // nothing else.
     bundle::configure(PromoProps::CONTRACT_HASH);
     let dismissed = Rc::new(Cell::new(false));
     // The support app's environment carries its backend's theme, which the
@@ -103,11 +106,15 @@ fn ts_a_preview_render_installs_the_runtime_for_the_view() {
 
     // A view crosses once, so the builder hands it over exactly once.
     let view = RefCell::new(Some(view));
-    let mut app = ui().viewport(320, 240).mount(move || {
-        view.borrow_mut()
-            .take()
-            .expect("the test session realizes its root once")
-    });
+    let app = App::new(
+        move || {
+            view.borrow_mut()
+                .take()
+                .expect("the application realizes its root once")
+        },
+        environment,
+    );
+    let mut app = ui().viewport(320, 240).mount_app(app);
 
     app.query().label(HEADLINE).assert_exists();
     app.query().label("3 unread").assert_exists();
