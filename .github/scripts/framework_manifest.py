@@ -1,8 +1,13 @@
 """Build the certified framework manifest (`framework.json`) for a release.
 
 The manifest records the worktree's lockfile hash, the scaffold table the root manifest's `[package.metadata.waterui]` declares, and
-that metadata table verbatim. The Rust side derives exactly the same scaffold
-table for a tree (`framework_scaffold` in
+that metadata table verbatim. A scaffold package whose
+`[workspace.dependencies]` requirement is a git pin (`git` + `rev`) has no
+registry release the stable channel could resolve, so a `stable` manifest
+withholds its entries from `scaffold` and records the pin under
+`experimental-packages` instead; `nightly` carries it in `scaffold` like any
+other package. The Rust side derives exactly the same tables for a tree
+(`framework_scaffold` in
 https://github.com/water-rs/cli/blob/dev/src/project_model/framework.rs) — the
 two must not drift, so this script never reads anything from the CLI.
 
@@ -79,10 +84,38 @@ def framework_scaffold(framework):
     return scaffold
 
 
+def channel_scaffold(framework, channel):
+    """The `(scaffold, experimental)` tables `channel`'s manifest records.
+
+    A scaffold package pinned to a git revision has no registry release the
+    stable channel could resolve, so `stable` withholds its `{name}-*`
+    entries from the scaffold table and records the pin — name, git URL,
+    revision and declared version — under `experimental-packages`; `dev` and
+    `nightly` distribute it through `scaffold` as always. The split derives
+    from the dependency's shape alone: `framework_scaffold` already marks a
+    git pin with a `{name}-git` entry, so no second list is maintained. The
+    CLI splits the derived table the same way and holds the certification's
+    `experimental-packages` to agreement.
+    """
+    scaffold = framework_scaffold(framework)
+    experimental = {}
+    if channel == "stable":
+        for key in sorted(scaffold):
+            if key.endswith("-git"):
+                name = key[: -len("-git")]
+                experimental[name] = {
+                    "version": scaffold.pop(f"{name}-version"),
+                    "git": scaffold.pop(f"{name}-git"),
+                    "rev": scaffold.pop(f"{name}-rev"),
+                }
+    return scaffold, experimental
+
+
 def build_manifest(channel, tag, revision, repository):
     """Write `framework.json` for the checked-out revision."""
     framework = tomllib.loads(Path("Cargo.toml").read_text())
     metadata = framework["package"]["metadata"]["waterui"]
+    scaffold, experimental = channel_scaffold(framework, channel)
     manifest = {
         "schema_version": 2,
         "channel": channel,
@@ -92,7 +125,10 @@ def build_manifest(channel, tag, revision, repository):
         "run_id": int(os.environ["GITHUB_RUN_ID"]),
         "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
         "lockfiles": lockfile_hashes(),
-        "scaffold": framework_scaffold(framework),
+        "scaffold": scaffold,
+        # The packages the channel withholds: stable's git-pinned scaffold
+        # packages, empty on every channel that distributes them.
+        "experimental-packages": experimental,
         # The framework-owned metadata table verbatim — including
         # `minimum-cli-version`: a new fact added there flows into every
         # manifest without a schema change.
