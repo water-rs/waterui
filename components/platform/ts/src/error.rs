@@ -66,6 +66,17 @@ pub enum TsError {
         id: Str,
     },
 
+    /// Clearing `globalThis.__waterui_runtime` left something behind.
+    #[error(
+        "globalThis.__waterui_runtime still holds {found} after being cleared: a bundle defined \
+         it as a non-writable property, and a context whose runtime global cannot be replaced \
+         can load no bundle"
+    )]
+    RuntimeGlobalNotCleared {
+        /// What is still published there.
+        found: &'static str,
+    },
+
     /// A bundle was already evaluated in this runtime.
     #[error(
         "this runtime already loaded a bundle: one context evaluates one bundle, and an update \
