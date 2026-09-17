@@ -493,11 +493,17 @@ fn from_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStre
 /// `both` asks for `FromJs` as well as `IntoJs`: a nested data type crosses
 /// both ways, while props only ever travel into TypeScript.
 fn conversions(input: &DeriveInput, both: bool) -> syn::Result<TokenStream2> {
+    // The attribute is parsed first, and whatever its answer is used for: a
+    // misspelled `#[ts(…)]` is a compile error on `TsProps` and in a crate
+    // that sees only the schema, exactly as it is on `TsType` in the full
+    // graph. A derive that skipped the parse whenever it could not act on the
+    // answer would let `#[ts(oneway)]` compile and mean nothing.
+    let one_way = is_one_way(input)?;
     let Some(ts) = ts_path() else {
         return Ok(TokenStream2::new());
     };
     let into_js = into_js_impl(&ts, input)?;
-    if !both || is_one_way(input)? {
+    if !both || one_way {
         return Ok(into_js);
     }
     let from_js = from_js_impl(&ts, input)?;
