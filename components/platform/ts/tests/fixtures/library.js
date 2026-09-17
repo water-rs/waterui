@@ -82,6 +82,33 @@
   function comparatorOf(source) {
     return source?.[EQUALS] ?? sameValue;
   }
+  var MAX_BRIDGE_DEPTH = 128;
+  function isPlainObject(value) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  }
+  function equalAtDepth(a, b, depth) {
+    if (Object.is(a, b)) {
+      return true;
+    }
+    if (depth >= MAX_BRIDGE_DEPTH) {
+      return false;
+    }
+    if (Array.isArray(a) && Array.isArray(b)) {
+      return a.length === b.length && a.every((item, index) => equalAtDepth(item, b[index], depth + 1));
+    }
+    if (isPlainObject(a) && isPlainObject(b)) {
+      const keys = Object.keys(a);
+      return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && equalAtDepth(a[key], b[key], depth + 1));
+    }
+    return false;
+  }
+  function bridgeEquals(a, b) {
+    return equalAtDepth(a, b, 0);
+  }
   function equalsOf(options) {
     const equals = options?.equals;
     if (equals === undefined) {
@@ -653,10 +680,16 @@
   }
   function write(target, value) {
     if (isSignal(target)) {
+      if (bridgeEquals(read(target), value)) {
+        return true;
+      }
       target.set(() => value);
       return comparatorOf(target)(read(target), value);
     }
     if (target !== null && typeof target === "object" && typeof target.write === "function") {
+      if (bridgeEquals(read(target), value)) {
+        return true;
+      }
       target.write(value);
       return comparatorOf(target)(read(target), value);
     }

@@ -75,6 +75,68 @@ export function comparatorOf(source) {
   return source?.[EQUALS] ?? sameValue;
 }
 
+/**
+ * The deepest a bridge comparison walks. A value that crossed the seam cannot
+ * be cyclic — the engine refuses a cyclic graph on the way in — and cannot be
+ * deeper than the engine's own conversion limit, so this is a backstop: past
+ * it the two are reported different and the write goes through, which is the
+ * safe answer.
+ */
+const MAX_BRIDGE_DEPTH = 128;
+
+/** Whether `value` is a plain object: data, not an instance or a handle. */
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function equalAtDepth(a, b, depth) {
+  if (Object.is(a, b)) {
+    return true;
+  }
+  if (depth >= MAX_BRIDGE_DEPTH) {
+    return false;
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return (
+      a.length === b.length && a.every((item, index) => equalAtDepth(item, b[index], depth + 1))
+    );
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const keys = Object.keys(a);
+    return (
+      keys.length === Object.keys(b).length &&
+      keys.every((key) => Object.hasOwn(b, key) && equalAtDepth(a[key], b[key], depth + 1))
+    );
+  }
+  return false;
+}
+
+/**
+ * Whether two values that crossed the seam are the same value.
+ *
+ * This is the seam's equality rather than a signal's, which is why it lives
+ * beside `comparatorOf` instead of inside any one source: a value arriving
+ * from the native side is always a *copy* — a struct is a fresh object and a
+ * list a fresh array every time it crosses — so comparing it by reference
+ * would call every push a change and re-run every subscriber for a value
+ * nobody altered. Data is therefore compared structurally: primitives by
+ * SameValue, arrays and plain objects recursively over their own keys.
+ * Everything else — a function, a signal, a native handle, a class instance —
+ * is compared by identity, the only meaningful answer for a thing that was
+ * never copied.
+ *
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {boolean}
+ */
+export function bridgeEquals(a, b) {
+  return equalAtDepth(a, b, 0);
+}
+
 function equalsOf(options) {
   const equals = options?.equals;
   if (equals === undefined) {

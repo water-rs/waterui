@@ -14,6 +14,12 @@ use crate::runtime_global::RuntimeGlobal;
 /// The script name a bundle is attributed to in a stack trace.
 const BUNDLE_NAME: &str = "bundle.js";
 
+/// Clears whatever is published at the runtime global.
+const CLEAR_RUNTIME_GLOBAL: &str = "globalThis.__waterui_runtime = undefined;";
+
+/// The script name the clearing is attributed to in a stack trace.
+const CLEAR_NAME: &str = "waterui:load";
+
 /// A JavaScript engine with `WaterUI`'s runtime loaded into it.
 ///
 /// Constructing one creates the engine and registers the host functions;
@@ -82,6 +88,23 @@ impl TsRuntime {
         if self.bridge.runtime().is_ok() {
             return Err(TsError::BundleAlreadyLoaded);
         }
+        // Only this evaluation's publication may be read. A bundle that
+        // publishes a runtime and then throws leaves one behind, and without
+        // this the next load would read that residue and accept a bundle that
+        // published nothing at all.
+        self.clear_runtime_global()?;
+        let outcome = self.evaluate_and_install(bundle);
+        if outcome.is_err()
+            && let Err(error) = self.clear_runtime_global()
+        {
+            tracing::error!(%error, "clearing the runtime global after a failed load failed");
+        }
+        outcome
+    }
+
+    /// Evaluates `bundle`, reads the runtime it published, installs the host
+    /// table, and publishes the runtime to the bridge.
+    fn evaluate_and_install(&self, bundle: &str) -> Result<(), TsError> {
         self.bridge.engine().eval(bundle, BUNDLE_NAME)?;
         let runtime = RuntimeGlobal::read(self.bridge.engine())?;
         // Installed first, published second. The `OnceCell` behind the bridge
@@ -90,6 +113,14 @@ impl TsRuntime {
         // refused as an already-loaded bundle although nothing is usable.
         host::install(&self.bridge, &self.table, &self.host, &runtime)?;
         self.bridge.set_runtime(runtime)?;
+        Ok(())
+    }
+
+    /// Clears whatever is published at the runtime global.
+    fn clear_runtime_global(&self) -> Result<(), TsError> {
+        self.bridge
+            .engine()
+            .eval(CLEAR_RUNTIME_GLOBAL, CLEAR_NAME)?;
         Ok(())
     }
 

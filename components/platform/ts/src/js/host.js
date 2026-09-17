@@ -11,6 +11,7 @@
 // `toSignal` to turn JS values into real `Binding<T>` / `Computed<T>` objects.
 
 import {
+  bridgeEquals,
   comparatorOf,
   createEffect,
   createMemo,
@@ -162,7 +163,16 @@ export function read(value) {
  * settles its effects synchronously, and one of them may clamp, round or
  * reject the value; the comparison that catches it turns on object identity,
  * and the same signal or callback crossing back out to Rust is a fresh
- * reference there. Here it is the same object, so `Object.is` is exact.
+ * reference there. Here it is the same object, so the comparison is exact.
+ *
+ * A value equal to what the target already holds — by `bridgeEquals`, the
+ * seam's structural equality — is not written at all, and stands by
+ * definition. The bridge confirms every inbound change by writing back what
+ * the native side settled on, and that confirmation must cost no propagation:
+ * the payload is a fresh object every time it crosses, so a reference
+ * comparison would announce a change to every subscriber for a value nobody
+ * touched. Values that do differ are written, and the target's own comparator
+ * decides whether that write is a change.
  *
  * @param {unknown} target
  * @param {unknown} value
@@ -170,6 +180,9 @@ export function read(value) {
  */
 export function write(target, value) {
   if (isSignal(target)) {
+    if (bridgeEquals(read(target), value)) {
+      return true;
+    }
     // An updater, not the value: `set` calls a function argument with the old
     // value and stores the result, so a callback or a signal written straight
     // through it would be invoked instead of stored. An updater that returns
@@ -178,6 +191,9 @@ export function write(target, value) {
     return comparatorOf(target)(read(target), value);
   }
   if (target !== null && typeof target === "object" && typeof target.write === "function") {
+    if (bridgeEquals(read(target), value)) {
+      return true;
+    }
     target.write(value);
     return comparatorOf(target)(read(target), value);
   }

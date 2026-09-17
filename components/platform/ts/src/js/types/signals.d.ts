@@ -49,6 +49,13 @@ export declare function createSignal<T>(initial: T, options?: SignalOptions<T>):
  */
 export declare function comparatorOf(source: unknown): (a: unknown, b: unknown) => boolean;
 
+/**
+ * The seam's equality: primitives by SameValue, arrays and plain objects
+ * structurally, everything else by identity. A value that crossed from the
+ * native side is a copy, so this is what decides whether it is a change.
+ */
+export declare function bridgeEquals(a: unknown, b: unknown): boolean;
+
 export declare function createMemo<T>(
   compute: (previous: T | undefined) => T,
   options?: SignalOptions<T>,

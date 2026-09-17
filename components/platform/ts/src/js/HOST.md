@@ -60,7 +60,8 @@ Everything the runtime hands the host is one of four shapes:
  * @property {(each: unknown, render: (item: unknown, index: () => number) => Branch, by?: (item: unknown) => unknown) => Handle} each
  * @property {(children: () => Branch, fallback?: () => Branch) => Handle} suspense
  * @property {() => HostEnvironment} environment
- * @property {ReadonlySet<string>} modifiers
+ * @property {(id: number, ...args: unknown[]) => unknown} invoke
+ * @property {ReadonlySet<string> | readonly string[]} modifiers
  */
 ```
 
@@ -256,8 +257,11 @@ subscription is suppressed outright, for the whole write: a JS write settles
 its effects synchronously, and how many notifications that takes, and in what
 order, is JavaScript's business. What the bridge acts on is where the value
 came to rest, which is what `write` answers. When the value stood there is
-nothing more to do; when an effect changed it, the bridge reads the settled
-value once and applies it under the inbound guard, and the two sides agree.
+nothing more to do; when an effect changed it, the bridge applies the settled
+value under the inbound guard and pushes what the binding holds afterwards,
+which is the same step again. The loop is bounded: two sides that answer
+every value with a different one are a cycle, reported with the binding's
+identity rather than ridden into a stack overflow.
 
 The comparison is made here rather than in Rust because it turns on object
 identity: a signal, a view slot or a callback crossing back out to Rust is a
@@ -273,13 +277,26 @@ itself, so a float written twice propagates once instead of on every write,
 and `-0` is not `0`, so a Rust value written over its opposite sign is a real
 change rather than a write JavaScript drops and Rust is then corrected out of.
 
+That is the equality a signal uses to decide whether a set is a change. The
+skip in `write` is a different question — "is this the value already here?"
+— asked of a value that has just crossed the seam, so it uses `bridgeEquals`:
+primitives, arrays and plain objects compare structurally, because a payload
+crossing from Rust is a fresh copy every time, and functions, handles and
+class instances compare by identity, because those cross as handles and a
+copy would be a different object. The comparison is depth-bounded; a cyclic
+graph cannot cross the seam in the first place.
+
 A cell also always pushes what its binding holds at the moment its watcher
 runs, never the value the notification carried: a watcher registered earlier
 may have written again, and a late notification must not resurrect the value
-it was raised with. Suppression during an inbound apply is a count, not a
-blanket: exactly one notification belongs to the apply itself, and anything
-beyond it is another Rust watcher answering the change, which is pushed once
-the apply is over.
+it was raised with. Suppression during an inbound apply is a blanket: the
+watch pushes nothing while the value is going in, and the cell pushes what
+the binding holds once the apply is over. That covers every way the binding
+can hold something else than what JavaScript sent — a `filter` that rejected
+the write, a mapping binding whose setter normalized it, another watcher that
+answered it — without counting notifications, which a setter is free to raise
+any number of times, including none. The push costs nothing when the value
+did stand, because `write` skips a write of a value the target already holds.
 
 Every materialized cell owns its subscription's dispose function and its watch
 guard, and disposes the JavaScript subscription when it is dropped.
