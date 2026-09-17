@@ -735,6 +735,10 @@ async fn handle_render(
 
     let load_view_start = Instant::now();
     let view = load_preview_view(cache, id, symbol)?;
+    // Before the renderer evaluates the view: a `tsx!` mount looks the
+    // runtime up in the environment its body runs in.
+    #[cfg(feature = "ts")]
+    let view = crate::ts::with_configured_runtime(env, view)?;
     let load_view_ms = elapsed_ms(load_view_start);
     tracing::info!(
         dylib_id = %id,

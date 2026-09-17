@@ -62,6 +62,12 @@ fn stepper_updates(ui: UiBuilder) {
 - **Performance harness.** `ui().perf(view)` / `perf_with` measure steady-state offscreen
   frames (`PerfConfig`, `PerfReport`) with per-phase Hydrolysis timings and process
   resource samples.
+- **TypeScript views** (feature `ts`). A session mounts a view that reaches a `tsx!`
+  mount: `ui()` installs the runtime loaded from the bundle `WATERUI_TS_BUNDLE` names,
+  which `water test` builds and sets before it runs `cargo nextest`. An absolute path is
+  used as written; a relative one resolves against `CARGO_MANIFEST_DIR`. With the variable
+  unset, a test that mounts no TypeScript is unaffected and one that does fails at the
+  mount with a message naming the variable and `water test`.
 
 Because the tree under test is the [Hydrolysis accessibility tree](https://github.com/water-rs/hydrolysis),
 every test doubles as an accessibility-correctness test: a component that cannot be

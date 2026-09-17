@@ -186,6 +186,11 @@ impl UiBuilder {
         // is installed by the test itself, into the environment it passes here,
         // exactly as an application installs it in `app(env)`.
         waterui::realization::install(&mut env);
+        // A view that reaches a `tsx!` mount finds its runtime here: the one
+        // loaded from the bundle `water test` named, installed over the
+        // themed environment so the modules it builds see the theme.
+        #[cfg(feature = "ts")]
+        let env = crate::ts::install_configured_runtime(env);
         env
     }
 

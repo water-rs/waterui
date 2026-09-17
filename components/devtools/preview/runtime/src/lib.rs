@@ -34,10 +34,14 @@
 mod cache;
 mod library;
 pub mod renderer;
+#[cfg(feature = "ts")]
+mod ts;
 mod view;
 
 pub use library::{LoadError, PreviewLibrary};
 pub use renderer::{CustomViewRenderer, RenderResult, RenderResultExt, RenderSize, ViewRenderer};
+#[cfg(feature = "ts")]
+pub use ts::with_configured_runtime;
 pub use view::Preview;
 pub use waterui_preview_protocol as protocol;
 pub use waterui_preview_protocol::{

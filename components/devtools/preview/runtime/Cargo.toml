@@ -36,5 +36,14 @@ libloading = "0.9"
 # PNG encoding
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+[features]
+# TypeScript views in a preview: a `#[preview]` that returns a `tsx!` view
+# renders when `water preview` names the bundle it built in
+# `WATERUI_TS_BUNDLE` (an absolute path, since the support app is not a cargo
+# test process). The support app is built with this feature exactly when the
+# previewed project uses TypeScript views, which keeps the JavaScript engine
+# out of every other project's support app.
+ts = ["waterui-internal/ts"]
+
 [lints]
 workspace = true
