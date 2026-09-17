@@ -12,6 +12,10 @@ categories = ["gui"]
 
 [dependencies]
 serde = { workspace = true, features = ["derive", "std"] }
+# The bundle manifest is JSON, and its signed bytes are what `serde_json`
+# writes for it: one serializer on both sides is what makes the canonical
+# form a property of the type rather than of a spelled-out convention.
+serde_json.workspace = true
 thiserror.workspace = true
 const-fnv1a-hash.workspace = true
 waterui-macros = { workspace = true, optional = true }

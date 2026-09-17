@@ -142,6 +142,12 @@ webview = ["dep:waterui-webview"]
 # this off links none of it — `waterui-ts` is an optional dependency and no
 # other feature pulls it in.
 ts = ["dep:waterui-ts"]
+# The over-the-air update client for TypeScript view bundles: fetches a
+# signed manifest and bundle, verifies them, and caches them for the next
+# launch. Separate from `ts` because it links an HTTP client, a signature
+# verifier and the file-system kit; an application that ships only its
+# baseline bundle leaves it off and opens no connection by construction.
+ts-ota = ["ts", "waterui-ts/ota"]
 navigation-restoration = ["waterui-navigation/serde"]
 # Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
 # with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which

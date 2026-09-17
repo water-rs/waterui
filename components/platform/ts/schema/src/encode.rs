@@ -313,3 +313,32 @@ pub const fn payload(encoded: &[u8]) -> &[u8] {
 pub const fn contract_hash(payload: &[u8]) -> u64 {
     const_fnv1a_hash::fnv1a_hash_64(payload, None)
 }
+
+/// The FNV-1a offset basis: the state a hash starts from.
+///
+/// [`hash_extend`] chains slices through it, and starting from this value and
+/// extending with one slice is exactly [`contract_hash`] of that slice — a
+/// test in this crate holds the two to each other.
+pub const HASH_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// The FNV-1a 64-bit prime.
+const HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Feeds `bytes` into an FNV-1a 64-bit hash whose state is `state`.
+///
+/// This is how a hash covers more than one slice — the JavaScript library's
+/// hash covers every file of the library, name and contents, in one chain —
+/// without concatenating them first, which a `const` context cannot do.
+/// Starting from [`HASH_BASIS`] and extending with one slice is
+/// [`contract_hash`] of that slice.
+#[must_use]
+pub const fn hash_extend(state: u64, bytes: &[u8]) -> u64 {
+    let mut state = state;
+    let mut index = 0;
+    while index < bytes.len() {
+        state ^= bytes[index] as u64;
+        state = state.wrapping_mul(HASH_PRIME);
+        index += 1;
+    }
+    state
+}

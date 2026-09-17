@@ -28,6 +28,17 @@
 //! Materialization is lazy: a signal a TypeScript module never hands to a
 //! native view creates nothing on the Rust side.
 //!
+//! # Bundles, at launch and over the air
+//!
+//! The bundle a launch runs is chosen by the [`Loader`]: the [`Baseline`]
+//! built into the binary, verified against the [`Requirement`] the binary was
+//! compiled with, or — with the `ota` feature — the newest verified bundle
+//! in the bundle store (`BundleStore`) that has not failed, falling through
+//! to the baseline. [`Launched`] is the result, carrying the environment the
+//! application root renders under. `Ota` is the update client: it fetches a
+//! signed manifest and the bundle it names, verifies both, and caches them
+//! for the next launch. `OTA.md` beside this crate spells the contract out.
+//!
 //! [`Binding<T>`]: nami::Binding
 //! [`Computed<T>`]: nami::Computed
 
@@ -45,13 +56,17 @@ compile_error!(
 extern crate self as waterui_ts;
 
 mod bridge;
+mod bundle;
 mod callback;
 mod cell;
 mod convert;
 mod environment;
 mod error;
 mod host;
+mod library;
 mod mount;
+#[cfg(feature = "ota")]
+mod ota;
 mod runtime;
 mod runtime_global;
 mod tether;
@@ -67,11 +82,15 @@ pub use waterui_ts_engine as engine;
 pub use waterui_ts_schema as schema;
 
 pub use bridge::{Bridge, MountScope, ReactiveSource, ScopeOwner, WeakBridge};
+pub use bundle::{Baseline, LaunchError, Launched, Loader, Rejection, RequiredModule, Requirement};
 pub use convert::{FromJs, IntoJs, expected, support};
 pub use environment::{HostLocale, Theme, locale, theme};
 pub use error::{TsError, kind_of};
 pub use host::HostTable;
+pub use library::{LIBRARY_HALF_ENCODED, LIBRARY_HASH};
 pub use mount::{Mount, NoProps, RuntimeHandle};
+#[cfg(feature = "ota")]
+pub use ota::{BundleStore, FetchError, MANIFEST_SIZE_LIMIT, Ota, OtaError, Outcome, StoreError};
 pub use runtime::TsRuntime;
 pub use runtime_global::RuntimeGlobal;
 pub use view::{JsViewBuilder, ViewSlot};
