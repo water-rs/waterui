@@ -198,10 +198,21 @@ impl Font {
     }
 
     /// Sets the font size in points.
+    ///
+    /// A size selects a new face, so the typography metrics declared for
+    /// the previous size are dropped: the resized font uses the new face's
+    /// preferred line height and no extra letter spacing, the way a platform
+    /// text style resized by hand does. A theme slot publishes its own face's
+    /// pitch as an absolute line height; carrying that pitch onto a smaller
+    /// face would space its lines as the larger one. Call [`Self::line_height`]
+    /// or [`Self::letter_spacing`] after `size` to declare metrics for the
+    /// new face.
     #[must_use]
     pub fn size(self, size: f32) -> Self {
         Self::new(resolve::Map::new(self.0, move |mut font| {
             font.size = size;
+            font.line_height = None;
+            font.letter_spacing = 0.0;
             font
         }))
     }
@@ -321,3 +332,30 @@ impl_font!(
 );
 impl_font!(Caption, "Caption font style.", 12.0, FontWeight::Normal);
 impl_font!(Footnote, "Footnote font style.", 11.0, FontWeight::Medium);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env_with_body(font: ResolvedFont) -> Environment {
+        Environment::new().store::<Body, Computed<ResolvedFont>>(Computed::constant(font))
+    }
+
+    #[test]
+    fn size_drops_the_previous_face_typography_metrics() {
+        let slot = ResolvedFont::new(17.0, FontWeight::Normal).with_typography_metrics(22.0, 0.4);
+        let env = env_with_body(slot);
+
+        let resized = Font::new(Body).size(14.0).resolve(&env).get();
+        assert!((resized.size - 14.0).abs() < f32::EPSILON);
+        assert_eq!(resized.line_height, None);
+        assert!(resized.letter_spacing.abs() < f32::EPSILON);
+
+        let declared = Font::new(Body)
+            .size(14.0)
+            .line_height(18.0)
+            .resolve(&env)
+            .get();
+        assert_eq!(declared.line_height, Some(18.0));
+    }
+}
