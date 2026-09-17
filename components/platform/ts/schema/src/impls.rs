@@ -70,7 +70,12 @@ impl<T: TsType> TsType for &'static [T] {
 }
 
 impl<T: TsType, const N: usize> TsType for [T; N] {
-    const SCHEMA: TypeSchema = TypeSchema::List(&T::SCHEMA);
+    /// A fixed-length tuple, not `T[]`: the length is what the conversion
+    /// enforces on the way back in, so it is what the declared type says.
+    const SCHEMA: TypeSchema = TypeSchema::Array {
+        item: &T::SCHEMA,
+        len: N,
+    };
 }
 
 impl<K: TsMapKey, V: TsType> TsType for BTreeMap<K, V> {

@@ -6,7 +6,7 @@
 //! of that length fills it. There is no second traversal to keep in step with
 //! the first.
 
-use crate::format::{FORMAT_VERSION, MAX_DEPTH, representation, tag, variant};
+use crate::format::{FORMAT_VERSION, MAX_ARRAY_LEN, MAX_DEPTH, representation, tag, variant};
 use crate::tree::{EnumRepresentation, EnumSchema, FieldSchema, TypeSchema, VariantPayload};
 
 /// Number of distinct digits a length varint uses.
@@ -170,6 +170,16 @@ const fn put_node(buf: &mut [u8], pos: usize, node: &TypeSchema, depth: usize) -
         TypeSchema::List(inner) => {
             let pos = put(buf, pos, tag::LIST);
             put_node(buf, pos, inner, depth + 1)
+        }
+        TypeSchema::Array { item, len } => {
+            assert!(
+                *len <= MAX_ARRAY_LEN,
+                "an array this long cannot be projected as a TypeScript tuple type: use Vec<T>, \
+                 which projects as T[]"
+            );
+            let pos = put(buf, pos, tag::ARRAY);
+            let pos = put_varint(buf, pos, *len);
+            put_node(buf, pos, item, depth + 1)
         }
         TypeSchema::Map { key, value } => {
             assert!(

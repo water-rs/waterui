@@ -86,7 +86,7 @@ mod tests;
 
 pub use decode::{DecodeError, decode};
 pub use encode::{contract_hash, encode, encoded_len, payload};
-pub use format::{FORMAT_VERSION, MAX_DEPTH};
+pub use format::{FORMAT_VERSION, MAX_ARRAY_LEN, MAX_DEPTH};
 pub use tree::{
     EnumRepresentation, EnumSchema, FieldSchema, NumberKind, StructSchema, TypeSchema,
     VariantPayload, VariantSchema,
