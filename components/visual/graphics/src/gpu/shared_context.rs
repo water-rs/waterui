@@ -7,6 +7,7 @@
 use std::error::Error;
 use std::fmt;
 use std::mem::ManuallyDrop;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -633,7 +634,9 @@ struct RuntimeInner {
     /// reported lost. The mutex also serializes the rebuild itself, so a loss
     /// observed by several views at once is paid for exactly once.
     context: Mutex<Arc<SharedGpuContext>>,
-    /// Generation handed to the next rebuilt context.
+    /// Generation handed to the next rebuilt context. WebGPU has no
+    /// synchronous rebuild path, so on wasm32 no context is ever rebuilt.
+    #[cfg(not(target_arch = "wasm32"))]
     next_generation: AtomicU64,
 }
 
@@ -664,6 +667,7 @@ impl GpuRuntime {
         Ok(Self {
             inner: Arc::new(RuntimeInner {
                 context: Mutex::new(Arc::new(SharedGpuContext::new(0).await?)),
+                #[cfg(not(target_arch = "wasm32"))]
                 next_generation: AtomicU64::new(1),
             }),
         })
@@ -725,6 +729,11 @@ impl GpuRuntime {
     /// `request_adapter` is a JS promise this accessor cannot await — so the
     /// lost context stays in place and the failure keeps naming its cause.
     #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::unused_self,
+        clippy::needless_pass_by_ref_mut,
+        reason = "keeps the native twin's signature so `context()` has one call site; the native rebuild reads the runtime's generation counter and replaces the slot"
+    )]
     fn rebuild_locked(&self, slot: &mut Arc<SharedGpuContext>) -> Arc<SharedGpuContext> {
         Arc::clone(slot)
     }
