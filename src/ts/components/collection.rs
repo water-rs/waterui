@@ -25,7 +25,8 @@ use waterui_core::views::ForEach;
 use waterui_core::{AnyView, Environment, Metadata, Retain, View};
 use waterui_layout::stack::{HStack, VStack, ZStack};
 
-use crate::component::list::{List, ListItem};
+use crate::component::list::{List, ListDelete, ListItem, ListMove};
+use crate::ts::catalog::ListAttributes;
 use waterui_ts::engine::{JsError, JsFunction, JsValue};
 
 use super::control_flow::Branch;
@@ -305,15 +306,43 @@ pub fn into_vstack(
 /// Every item is a row, so membership changes reach the backend as row
 /// insertions and removals rather than as a rebuilt list — which is what
 /// `List::new(ForEach…)` gives a Rust author.
-pub fn into_list(collection: &Collection, editing: Option<Computed<bool>>) -> AnyView {
+pub fn into_list(collection: &Collection, attributes: ListAttributes) -> AnyView {
     let items = collection.items();
     let list = List::new(ForEach::new(collection.keys(), move |key| {
         ListItem::new(items(key))
     }));
-    match editing {
-        Some(editing) => AnyView::new(Metadata::new(list.editing(editing), collection.retain())),
-        None => AnyView::new(Metadata::new(list, collection.retain())),
+    let ListAttributes {
+        editing,
+        on_delete,
+        on_move,
+    } = attributes;
+    if editing.is_none() && on_delete.is_none() && on_move.is_none() {
+        return AnyView::new(Metadata::new(list, collection.retain()));
     }
+    // A list that names a handler but not `editing` takes the `false` a plain
+    // Rust list carries: the handler is wired and the controls it enables stay
+    // out of the way until edit mode is on.
+    let mut list = list.editing(editing.unwrap_or_else(|| Computed::new(false)));
+    if let Some(action) = on_delete {
+        list =
+            list.on_delete(move |ListDelete(index): ListDelete| action.call((row_index(index),)));
+    }
+    if let Some(action) = on_move {
+        list = list.on_move(move |ListMove(movement): ListMove| {
+            action.call((row_index(movement.from()), row_index(movement.to())));
+        });
+    }
+    AnyView::new(Metadata::new(list, collection.retain()))
+}
+
+/// A row's index as JavaScript receives it.
+///
+/// A `<For>` refuses a list longer than a 32-bit index can address when it
+/// reconciles it, so every index a list can report is one — and `u32` is what
+/// crosses as a `number`, where `usize` would cross as a `bigint` and make
+/// `onDelete` take one for no reason.
+fn row_index(index: usize) -> u32 {
+    u32::try_from(index).expect("a <For> refuses a list longer than a 32-bit index can address")
 }
 
 /// Builds the collection `<For each={…}>` evaluates to.

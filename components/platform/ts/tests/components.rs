@@ -532,32 +532,80 @@ fn ts_list_is_a_list() {
     );
 }
 
-#[test]
-fn ts_a_list_in_editing_mode_is_the_rust_editing_list() {
-    let module = Module::mount(&stateful(
-        r#"globalThis.rows = waterui.createSignal(["one", "two"]);"#,
-        r#"waterui.jsx("List", {
-            editing: true,
-            children: waterui.jsx(waterui.For, {
-                each: globalThis.rows,
-                children: (row) => waterui.jsx("Text", { children: row }),
-            }),
-        })"#,
-    ));
-    let rows = Binding::container(vec![
-        SelfId::new(Str::from("one")),
-        SelfId::new(Str::from("two")),
-    ]);
-    assert_eq!(
-        module.tree(),
-        rust_tree(
-            List::new(ForEach::new(
-                SignalCollection::new(rows),
-                |row: SelfId<Str>| ListItem::new(text(row.into_inner())),
-            ))
-            .editing(true)
+/// How far inside a row's trailing edge its edit controls are.
+///
+/// A list insets them by a few points and makes them far wider than that, so a
+/// point this far in is on the trailing-most control whatever width the theme
+/// gives it. The controls are chrome the list draws rather than nodes it
+/// publishes, so pressing one is how a test reaches them.
+const TRAILING_CONTROL_PROBE: f32 = 12.0;
+
+/// A list in edit mode with the handler named by `handler`, over two rows.
+fn editing_list(setup: &str, handler: &str) -> String {
+    stateful(
+        setup,
+        &format!(
+            r#"waterui.jsx("List", {{
+                editing: true,
+                {handler},
+                children: waterui.jsx(waterui.For, {{
+                    each: ["one", "two"],
+                    children: (row) => waterui.jsx("Text", {{ children: row }}),
+                }}),
+            }})"#
         ),
-        "the JSX editing list and the Rust editing list differ"
+    )
+}
+
+#[test]
+fn ts_a_list_delete_control_reaches_the_javascript_handler() {
+    // `editing` leaves no mark on the accessibility tree — the controls it
+    // adds are chrome the list paints — so an equivalence test cannot tell an
+    // arm that reads it from one that drops it, and neither can it tell
+    // whether `onDelete` was wired to anything. Using the control can: there
+    // is nothing at the row's trailing edge to press unless edit mode is on
+    // *and* the list can delete, and what the press produces is the row.
+    let module = Module::mount(&editing_list(
+        "globalThis.deleted = null;",
+        "onDelete: (index) => { globalThis.deleted = index; }",
+    ));
+    let mut app = module.app();
+    let row = app.query().label("one").single().bounds();
+    app.tap_at(
+        row.x() + row.width() - TRAILING_CONTROL_PROBE,
+        row.y() + row.height() / 2.0,
+    );
+    app.settle();
+    assert_eq!(
+        module.eval("globalThis.deleted").as_f64(),
+        Some(0.0),
+        "the delete control ran the JavaScript handler with the row's own index"
+    );
+}
+
+#[test]
+fn ts_a_list_move_control_reaches_the_javascript_handler() {
+    // The reorder handle's lower half moves a row down one place, so the first
+    // row's handle answers with the pair (0, 1) — which is also what says both
+    // arguments arrive, and in the order the attribute declares them.
+    let module = Module::mount(&editing_list(
+        "globalThis.movedFrom = null; globalThis.movedTo = null;",
+        "onMove: (from, to) => { globalThis.movedFrom = from; globalThis.movedTo = to; }",
+    ));
+    let mut app = module.app();
+    let row = app.query().label("one").single().bounds();
+    app.tap_at(
+        row.x() + row.width() - TRAILING_CONTROL_PROBE,
+        row.height().mul_add(0.75, row.y()),
+    );
+    app.settle();
+    assert_eq!(
+        (
+            module.eval("globalThis.movedFrom").as_f64(),
+            module.eval("globalThis.movedTo").as_f64()
+        ),
+        (Some(0.0), Some(1.0)),
+        "the reorder handle ran the JavaScript handler with the row's old and new index"
     );
 }
 
@@ -1344,6 +1392,28 @@ fn ts_an_attribute_value_of_the_wrong_shape_is_refused() {
                 }),
             })"#,
             "editing",
+        ),
+        (
+            "a delete handler that is not a handler",
+            r#"waterui.jsx("List", {
+                onDelete: 3,
+                children: waterui.jsx(waterui.For, {
+                    each: ["a"],
+                    children: (row) => waterui.jsx("Text", { children: row }),
+                }),
+            })"#,
+            "onDelete",
+        ),
+        (
+            "a move handler that is not a handler",
+            r#"waterui.jsx("List", {
+                onMove: "soon",
+                children: waterui.jsx(waterui.For, {
+                    each: ["a"],
+                    children: (row) => waterui.jsx("Text", { children: row }),
+                }),
+            })"#,
+            "onMove",
         ),
         (
             "an avatar picture that is not a URL",
