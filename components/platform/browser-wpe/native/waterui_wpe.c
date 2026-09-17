@@ -188,15 +188,6 @@ static gboolean water_view_render_buffer(
 
     WaterWpePage *page = ((WaterView *)view)->page;
     g_assert(page != NULL);
-    g_assert(WPE_IS_BUFFER_DMA_BUF(buffer));
-
-    WPEBufferDMABuf *dma_buf = WPE_BUFFER_DMA_BUF(buffer);
-    guint32 n_planes = wpe_buffer_dma_buf_get_n_planes(dma_buf);
-    g_assert_cmpuint(n_planes, >, 0);
-    g_assert_cmpuint(n_planes, <=, WATER_WPE_MAX_PLANES);
-    g_assert_cmpuint(n_planes, ==, 1);
-    g_assert_true(
-        wpe_buffer_dma_buf_get_modifier(dma_buf) == DRM_FORMAT_MOD_LINEAR);
 
     WaterWpeFrameToken *token = g_new0(WaterWpeFrameToken, 1);
     token->context = g_main_context_ref(page->runtime->context);
@@ -208,19 +199,56 @@ static gboolean water_view_render_buffer(
         .token = token,
         .width = (uint32_t)wpe_buffer_get_width(buffer),
         .height = (uint32_t)wpe_buffer_get_height(buffer),
-        .format = wpe_buffer_dma_buf_get_format(dma_buf),
-        .modifier = wpe_buffer_dma_buf_get_modifier(dma_buf),
-        .n_planes = n_planes,
         .fds = { -1, -1, -1, -1 },
         .rendering_fence_fd = wpe_buffer_take_rendering_fence(buffer),
     };
-    for (guint32 plane = 0; plane < n_planes; ++plane) {
-        int source_fd = wpe_buffer_dma_buf_get_fd(dma_buf, plane);
-        frame.fds[plane] = fcntl(source_fd, F_DUPFD_CLOEXEC, 0);
-        g_assert_cmpint(frame.fds[plane], >=, 0);
-        frame.offsets[plane] = wpe_buffer_dma_buf_get_offset(dma_buf, plane);
-        frame.strides[plane] = wpe_buffer_dma_buf_get_stride(dma_buf, plane);
+
+    if (WPE_IS_BUFFER_DMA_BUF(buffer)) {
+        WPEBufferDMABuf *dma_buf = WPE_BUFFER_DMA_BUF(buffer);
+        guint32 n_planes = wpe_buffer_dma_buf_get_n_planes(dma_buf);
+        g_assert_cmpuint(n_planes, >, 0);
+        g_assert_cmpuint(n_planes, <=, WATER_WPE_MAX_PLANES);
+        g_assert_cmpuint(n_planes, ==, 1);
+        g_assert_true(
+            wpe_buffer_dma_buf_get_modifier(dma_buf) == DRM_FORMAT_MOD_LINEAR);
+
+        frame.kind = WATER_WPE_BUFFER_DMA_BUF;
+        frame.format = wpe_buffer_dma_buf_get_format(dma_buf);
+        frame.modifier = wpe_buffer_dma_buf_get_modifier(dma_buf);
+        frame.n_planes = n_planes;
+        for (guint32 plane = 0; plane < n_planes; ++plane) {
+            int source_fd = wpe_buffer_dma_buf_get_fd(dma_buf, plane);
+            frame.fds[plane] = fcntl(source_fd, F_DUPFD_CLOEXEC, 0);
+            g_assert_cmpint(frame.fds[plane], >=, 0);
+            frame.offsets[plane] = wpe_buffer_dma_buf_get_offset(dma_buf, plane);
+            frame.strides[plane] = wpe_buffer_dma_buf_get_stride(dma_buf, plane);
+        }
+    } else if (WPE_IS_BUFFER_SHM(buffer)) {
+        WPEBufferSHM *shm = WPE_BUFFER_SHM(buffer);
+        /* The wire `format` is a DRM fourcc whatever the buffer kind.
+         * `WPE_PIXEL_FORMAT_ARGB8888` is the only SHM format WPEPlatform
+         * defines, and it names the same byte layout `DRM_FORMAT_ARGB8888`
+         * does. */
+        g_assert_cmpint(
+            wpe_buffer_shm_get_format(shm),
+            ==,
+            WPE_PIXEL_FORMAT_ARGB8888);
+        gsize shm_len = 0;
+        /* The token keeps the buffer — and so the `GBytes` it owns — alive
+         * until the frame is released, so the pixels cross the ABI borrowed
+         * rather than copied. */
+        frame.kind = WATER_WPE_BUFFER_SHM;
+        frame.format = DRM_FORMAT_ARGB8888;
+        frame.shm_data =
+            g_bytes_get_data(wpe_buffer_shm_get_data(shm), &shm_len);
+        frame.shm_len = shm_len;
+        frame.shm_stride = wpe_buffer_shm_get_stride(shm);
+    } else {
+        g_error(
+            "water_view_render_buffer: unsupported WPEBuffer subclass %s",
+            G_OBJECT_TYPE_NAME(buffer));
     }
+
     page->frame_callback(page->user_data, &frame);
     return TRUE;
 }
@@ -1379,6 +1407,9 @@ void water_wpe_frame_release(void *user_data, int release_fence_fd)
 {
     WaterWpeFrameToken *token = user_data;
     WaterWpeRelease *release = g_new0(WaterWpeRelease, 1);
+    /* The lease's reference moves into `release` — the queued handler is what
+     * still needs `token->buffer` and `token->view`, so the token is unref'd
+     * there, not here. */
     release->token = token;
     release->release_fence_fd = release_fence_fd;
     g_main_context_invoke_full(
@@ -1387,5 +1418,4 @@ void water_wpe_frame_release(void *user_data, int release_fence_fd)
         water_wpe_frame_released_on_main,
         release,
         NULL);
-    water_wpe_frame_token_unref(token);
 }
