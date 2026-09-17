@@ -15,7 +15,6 @@ export interface Branch {
 export interface HostEnvironment {
   theme: unknown;
   locale: unknown;
-  safeArea: unknown;
 }
 
 /** Anywhere a value can be dynamic: constant, signal, accessor, or host value. */
@@ -38,8 +37,12 @@ export interface Host {
   ): Handle;
   suspense(children: () => Branch, fallback?: () => Branch): Handle;
   environment(): HostEnvironment;
-  /** The catalog's modifier attribute names — the runtime keeps no table of its own. */
-  modifiers: ReadonlySet<string>;
+  /**
+   * The catalog's modifier attribute names — the runtime keeps no table of
+   * its own. A `Set` cannot cross the engine seam, so the Rust host table
+   * sends an array and `installHost` builds the set once.
+   */
+  modifiers: ReadonlySet<string> | readonly string[];
 }
 
 /** A host-side reactive value: read plus push subscription. */

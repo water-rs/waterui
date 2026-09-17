@@ -2,8 +2,9 @@
 //
 // Everything the runtime needs from Rust — creating views, applying modifiers,
 // control flow, the environment — goes through the object installed by
-// `installHost`. The engine installs it before evaluating the bundle; the
-// contract it must satisfy is specified in HOST.md next to this file.
+// `installHost`. The bridge installs it right after evaluating the bundle and
+// before any module is mounted; the contract it must satisfy is specified in
+// HOST.md next to this file.
 //
 // The other exports are the bridge's materialization helpers: the Rust host
 // table calls `isSignal` / `isAccessor` / `read` / `write` / `subscribe` /
@@ -41,7 +42,6 @@ export { isAccessor, isMemo, isSignal };
  * @typedef {object} HostEnvironment
  * @property {unknown} theme - Reactive-or-plain theme value; see `toSignal`.
  * @property {unknown} locale - Reactive-or-plain locale value.
- * @property {unknown} safeArea - Reactive-or-plain safe-area insets.
  */
 
 /**
@@ -56,17 +56,24 @@ export { isAccessor, isMemo, isSignal };
  * @property {(each: unknown, render: (item: unknown, index: () => number) => Branch, by?: (item: unknown) => unknown) => Handle} each
  * @property {(children: () => Branch, fallback?: () => Branch) => Handle} suspense
  * @property {() => HostEnvironment} environment
- * @property {ReadonlySet<string>} modifiers - The catalog's modifier
- *   attribute names. The runtime splits config from modifier attributes
- *   against it and rejects spread-carried modifiers; the Rust host table
- *   provides it because the catalog is the single source of truth.
+ * @property {ReadonlySet<string> | readonly string[]} modifiers - The
+ *   catalog's modifier attribute names. The runtime splits config from
+ *   modifier attributes against it and rejects spread-carried modifiers; the
+ *   Rust host table provides it because the catalog is the single source of
+ *   truth. A `Set` cannot cross the engine seam as a value, so the Rust table
+ *   sends the names as an array and `installHost` builds the set once.
  */
 
 let installedHost = null;
 
 /**
- * Installs the native host table. Called once by the engine before the bundle
- * is evaluated; every component creation flows through it.
+ * Installs the native host table. Called once by the bridge, after the bundle
+ * is evaluated and before any module is mounted; every component creation
+ * flows through it.
+ *
+ * The runtime keeps the table with its `modifiers` entry normalized to a real
+ * `Set`, which may be a copy of the object passed in — a host entry must
+ * therefore be a plain function and must not depend on `this`.
  *
  * @param {import("./host.js").Host} host
  */
@@ -79,19 +86,23 @@ export function installHost(host) {
       throw new TypeError(`waterui host is missing the "${name}" entry — see HOST.md`);
     }
   }
+  if (Array.isArray(host.modifiers)) {
+    installedHost = { ...host, modifiers: new Set(host.modifiers) };
+    return;
+  }
   if (
     host.modifiers === null ||
     typeof host.modifiers !== "object" ||
     typeof host.modifiers.has !== "function"
   ) {
     throw new TypeError(
-      'waterui host is missing the "modifiers" entry — a ReadonlySet<string> of the catalog\'s modifier names, see HOST.md',
+      'waterui host is missing the "modifiers" entry — the catalog\'s modifier names as an array or a ReadonlySet<string>, see HOST.md',
     );
   }
   installedHost = host;
 }
 
-/** Removes the installed host. The engine calls this when unloading a bundle. */
+/** Removes the installed host. The bridge calls this when unloading a bundle. */
 export function uninstallHost() {
   installedHost = null;
 }
@@ -100,7 +111,7 @@ export function uninstallHost() {
 export function getHost() {
   if (installedHost === null) {
     throw new Error(
-      "waterui: no host installed — installHost() must run before the bundle is evaluated",
+      "waterui: no host installed — installHost() must run before a module is mounted",
     );
   }
   return installedHost;

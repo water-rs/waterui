@@ -2,8 +2,10 @@
 
 `host.js` is the only seam between the JavaScript runtime and the native side.
 The Rust host table (water-rs/waterui#1042) is implemented against this
-document; the bundled engine calls `installHost(host)` once before evaluating
-the `waterui` virtual module, and `uninstallHost()` when the bundle unloads.
+document. The bridge evaluates the bundle, reads
+`globalThis.__waterui_runtime` (below), and calls `installHost(host)` once
+through it — before any module is mounted, which is the first moment anything
+asks for the host — and `uninstallHost()` when the bundle unloads.
 
 Everything the runtime hands the host is one of four shapes:
 
@@ -124,21 +126,99 @@ resolved, disposing whichever branch leaves.
 
 ## `environment() -> HostEnvironment`
 
-Called once per `mount()`. Returns `{ theme, locale, safeArea }`; each entry
-is a constant, a `Signal`, a thunk, or a host-side
+Called once per `mount()`. Returns `{ theme, locale }`; each entry is a
+constant, a `Signal`, a thunk, or a host-side
 `{ read(): T, subscribe(callback): dispose }` value. The runtime materializes
 each into a `Signal` seeded from `read()` and updated through `subscribe`, and
-publishes them as the built-in contexts behind `useTheme()`, `useLocale()`,
-and `useSafeArea()`.
+publishes them as the built-in contexts behind `useTheme()` and `useLocale()`.
 
-## `modifiers: ReadonlySet<string>`
+`theme` carries `{ colorScheme: "light" | "dark" }` plus the theme's color
+tokens keyed by slot name (`foreground`, `background`, `surface`,
+`surfaceVariant`, `border`, `accent`, `mutedForeground`, `accentForeground`,
+`accentContainer`, `tertiary`, `tertiaryContainer`, `selectionContainer`,
+`selectionForeground`, `error`, `errorForeground`), each
+`{ red, green, blue, headroom, opacity }` in linear light. A slot the
+environment does not install is absent rather than defaulted. `locale` carries
+`{ identifier, languageCode, textDirection }`.
 
-The set of attribute names that are view modifiers (`"padding"`,
-`"background"`, …) — the names the Rust component catalog declares as
-modifiers. The catalog is the single source of truth, so the runtime keeps
-no table of its own: `installHost` requires this entry, `jsx` uses it to
-split modifier attributes from configuration attributes and to drive the
-spread backstop, and `Box` uses it to validate its attributes.
+There is no `safeArea` entry, and no `useSafeArea()`. WaterUI publishes no
+ambient inset value: a backend places content clear of the hardware at the
+container level — a stack lays its children out inside the safe area and
+extends the scroll surfaces and chrome containers that touch its edges — so
+neither the framework nor a view reads an inset number. An accessor that could
+only ever answer zeroes would fake a primitive that does not exist, so the
+asymmetry is documented rather than hidden.
+
+## `modifiers: ReadonlySet<string> | readonly string[]`
+
+The attribute names that are view modifiers (`"padding"`, `"background"`,
+…) — the names the Rust component catalog declares as modifiers. The catalog
+is the single source of truth, so the runtime keeps no table of its own:
+`installHost` requires this entry, `jsx` uses it to split modifier attributes
+from configuration attributes and to drive the spread backstop, and `Box` uses
+it to validate its attributes.
+
+A `Set` is not a plain object and therefore cannot cross the engine seam as a
+value, so the Rust host table sends the names as an array and `installHost`
+builds the set once, at install time — classification stays a JS-local lookup
+instead of a boundary crossing per attribute. Because the runtime keeps the
+table with that entry normalized, and may hold a copy of the object to do so,
+every host entry must be a plain function that does not depend on `this`.
+
+## `globalThis.__waterui_runtime`
+
+A bundle is a classic script, so nothing it declares is reachable from Rust.
+The bundle entry the CLI generates therefore ends with one call —
+`installRuntimeGlobal(modules)` — which publishes the runtime on
+`globalThis.__waterui_runtime`. The bridge reads the global right after
+`eval` and refuses a bundle that is missing an entry, naming it.
+
+| Entry | What the bridge does with it |
+| --- | --- |
+| `installHost(host)` / `uninstallHost()` | Installs the table above; the bridge installs once, after `eval`. |
+| `mount(render)` | Mounts one module under a fresh root scope. |
+| `isSignal(v)` / `isAccessor(v)` | Classifies a reactive input that crossed as a function handle. |
+| `read(v)` | Seeds a materialized cell, untracked. |
+| `write(target, value)` | Pushes a Rust value into a JS signal. |
+| `subscribe(source, callback)` | The push half of the mapping; returns the dispose the cell owns. |
+| `toSignal(v)` / `toAccessor(v)` | Used by the runtime itself; the bridge only requires them to be present. |
+| `createSignal(value)` | Creates the JS signal a Rust `Binding<T>` is exported as. |
+| `createMemo(compute)` | Wraps the pushed signal a Rust `Computed<T>` is exported as, so JS sees a read-only accessor. |
+| `makeCallback(id)` | The JS function wrapping a Rust closure held in the bridge's registry. |
+| `modules` | Module id → that module's default export. |
+
+`makeCallback(id)` calls `__waterui_host.invoke(id, …args)`; `invoke` is the
+one entry the bridge registers for every Rust closure that JavaScript calls,
+from a prop callback to a signal subscription.
+
+## Materialization, and what keeps it from oscillating
+
+A reactive input becomes a Rust signal only when it reaches a native view —
+inside a host call, never while props are converted — so an input the tree
+never uses creates nothing on the Rust side.
+
+- A `Signal` becomes a `Binding<T>`: the bridge subscribes with a registry
+  callback, converts each pushed value and `set`s the binding; a nami `watch`
+  on the binding sends Rust-side changes back through `write`.
+- An accessor — a memo, a thunk, or a `{ read, subscribe }` value — becomes a
+  `Computed<T>` fed the same way, with no write-back.
+- Anything else is a constant and becomes a constant `Computed<T>`.
+
+Backends read the Rust value: a `get` never crosses into the engine.
+
+Both directions are guarded so one change propagates once. While an inbound
+value is being applied the write-back is suppressed, which is what stops a
+`Binding::set` — nami notifies unconditionally, `distinct` is opt-in — from
+bouncing straight back. While an outbound value is being pushed the bridge
+remembers exactly what it sent: the notification JavaScript raises for that
+write is recognized and dropped, while a *different* value — an effect that
+clamped or corrected it — is applied to the binding, so the two sides converge
+without an epoch handshake. The seam is synchronous and in-process, which is
+what makes the remembered value enough; the web view's state mirror needs
+epochs because its writes cross an asynchronous transport.
+
+Every materialized cell owns its subscription's dispose function and its watch
+guard, and disposes the JavaScript subscription when it is dropped.
 
 ## `mount(render) -> { handle, dispose }`
 
