@@ -201,6 +201,15 @@ pub trait TsMapKey: TsType {}
 ///
 /// Derived by `#[derive(TsProps)]`, which also emits the artifact static the
 /// CLI reads.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a TypeScript props contract and cannot be mounted",
+    label = "`{Self}` does not derive `TsProps`",
+    note = "a mounted TypeScript module is typed against its props: add \
+            `#[derive(TsProps)]` to `{Self}`, which is what gives it the contract hash a \
+            bundle is checked against",
+    note = "a module that takes no props mounts against `waterui::ts::NoProps`, which \
+            `tsx!(\"./promo.tsx\")` with no props argument uses"
+)]
 pub trait TsProps: TsType {
     /// The encoded [`TsType::SCHEMA`], without the NUL terminator the artifact
     /// static appends — the exact bytes the CLI recovers and [`decode`] reads.
