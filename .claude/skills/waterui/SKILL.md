@@ -509,6 +509,65 @@ surface — state-filtered selectors, element-anchored pointer input, `settle: f
 returns the PNG image content directly — use it to check one component without driving the
 whole app.
 
+## TypeScript views
+
+A view can be authored in TypeScript — JSX over the same component catalog — and mounted
+from Rust with `tsx!`, which returns an ordinary `View` that slots anywhere a view goes.
+The application crate needs `waterui`'s opt-in `ts` feature. The authoring guide is
+[docs/jsx.md](../../docs/jsx.md); the rules that differ from ordinary Rust views:
+
+- The path is relative to the Rust file that mounts the module, and the module id the
+  bundle publishes is that file's path relative to the crate root, extension kept —
+  `tsx!("./promo.tsx", …)` in `src/lib.rs` mounts `"src/promo.tsx"`. The macro stats the
+  file at compile time but never parses it; the `water` CLI bundles the modules the
+  binary mounts.
+- Props are a struct literal naming a `#[derive(TsProps)]` type; the Rust struct and the
+  TypeScript interface are checked against each other by contract hash, so a bundle from
+  another build is refused rather than mis-mounted. `String` ⇄ `string`,
+  `Binding<T>` ⇄ `Signal<T>`, `Box<dyn Fn()>` ⇄ `() => void`, and
+  `#[ts(rename = "onDismiss")]` maps a snake_case field to its camelCase prop. A module
+  that takes no props is `tsx!("./about.tsx")`, typed against `NoProps`.
+
+```rust
+use waterui::ts::schema::TsProps;
+use waterui::tsx;
+use waterui::Binding;
+
+#[derive(TsProps)]
+struct PromoProps {
+    headline: String,
+    unread: Binding<u32>,
+    #[ts(rename = "onDismiss")]
+    on_dismiss: Box<dyn Fn()>,
+}
+```
+
+```rust
+let view = tsx!(
+    "./promo.tsx",
+    PromoProps {
+        headline: String::from("Welcome back"),
+        unread,
+        on_dismiss: Box::new(|| {}),
+    }
+);
+```
+
+- **Attribute order is semantic.** `<Text padding={16} background={…}>` is
+  `text(…).padding_with(16.0).background(…)` — the same attributes in another order are
+  another view, and a modifier attribute may never arrive through a spread.
+- Component tags import from `"waterui"` and resolve against the catalog
+  (`<VStack>` `<HStack>` `<Text>` `<Button>` `<Toggle>` `<Slider>` `<List>` `<Tabs>` …),
+  with `<Show>` `<For by>` `<Suspense>` `<Box>` for control flow and `createSignal`,
+  `createMemo`, `createContext`/`useContext`, `useTheme`, `useLocale` from the same
+  module. `<Text>` children localize through the same `TranslationCatalog` as `text(…)`.
+- Tests are ordinary `#[waterui::test]`s over the mounted tree: `water test` (or
+  `cargo nextest run`) drives a `tsx!` view through `waterui-testing` exactly like a
+  Rust one.
+- The engine differs by platform: JavaScriptCore on iOS, macOS, tvOS and visionOS;
+  QuickJS-NG on Android, Linux and Windows; **unsupported on watchOS** — the platform
+  has no JavaScriptCore and embedding QuickJS-NG there is not supported.
+
 ## Gotchas worth memorizing
 
 | Symptom | Cause | Fix |

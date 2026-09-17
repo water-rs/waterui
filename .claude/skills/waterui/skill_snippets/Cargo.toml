@@ -22,7 +22,9 @@ dev = ["waterui/dynamic_linking"]
 compile-gate-tests = []
 
 [dependencies]
-waterui = { workspace = true, features = ["webview", "flow-markdown"] }
+# `ts` is what SKILL.md's "TypeScript views" snippets compile against:
+# `tsx!`, `TsProps`, and `waterui::ts::schema` exist only under it.
+waterui = { workspace = true, features = ["webview", "flow-markdown", "ts"] }
 waterui-icons-material-icon.workspace = true
 waterui-icons-lucide.workspace = true
 # Direct-crate dependencies the skill's own snippets name.

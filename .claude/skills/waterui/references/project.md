@@ -236,6 +236,12 @@ renderers: `hydrolysis` is GPU-required and targets high-refresh modern hardware
 CPU-first for constrained devices. Choosing a self-drawn renderer is a deliberate decision,
 never a fallback for a native path that failed.
 
+TypeScript views (`tsx!`) run on an embedded JavaScript engine that differs by platform:
+JavaScriptCore on iOS, macOS, tvOS and visionOS; QuickJS-NG on Android, Linux and Windows;
+unsupported on watchOS — the platform ships no JavaScriptCore and embedding QuickJS-NG
+there is not supported. The asymmetry is documented, not faked: `tsx!` on watchOS is a
+compile error, not a fallback.
+
 The same view code runs on all of them. Platform-specific behavior belongs in the backend,
 not in conditional app code.
 
