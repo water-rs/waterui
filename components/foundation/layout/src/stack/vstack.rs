@@ -338,6 +338,7 @@ impl<C: TupleViews + 'static> View for VStack<(C,)> {
 mod tests {
     use super::*;
     use crate::ViewDimensions;
+    use crate::tests::CompressibleHeightView;
 
     struct MockSubView {
         size: Size,
@@ -637,26 +638,5 @@ mod tests {
             "the middle row reported a 50pt floor, got {}",
             placements[1].frame.height()
         );
-    }
-
-    /// A row that shrinks to whatever height it is proposed, down to `floor`.
-    struct CompressibleHeightView {
-        ideal: Size,
-        floor: f32,
-    }
-
-    impl SubView for CompressibleHeightView {
-        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-            let height = proposal.height.map_or(self.ideal.height, |proposed| {
-                proposed.clamp(self.floor, self.ideal.height)
-            });
-            ViewDimensions::new(Size::new(self.ideal.width, height))
-        }
-        fn stretch_axis(&self) -> StretchAxis {
-            StretchAxis::None
-        }
-        fn priority(&self) -> i32 {
-            0
-        }
     }
 }
