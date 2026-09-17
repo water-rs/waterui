@@ -68,6 +68,34 @@ pub(crate) mod tag {
     /// [`TypeSchema::Array`](crate::TypeSchema::Array), followed by its length
     /// and its element node.
     pub const ARRAY: u8 = 14;
+    /// [`TypeSchema::Union`](crate::TypeSchema::Union), followed by a count and
+    /// that many member nodes.
+    pub const UNION: u8 = 15;
+}
+
+/// What a payload carries, written straight after the version byte.
+///
+/// Two kinds of payload share the format and the version: a props contract,
+/// which is one type tree, and the component catalog. A type tree starts with
+/// a node tag, so the catalog announces itself with a byte no node tag uses
+/// and each decoder refuses the other kind rather than reading it as a
+/// malformed one of its own.
+pub(crate) mod kind {
+    /// The component catalog: [`decode_catalog`](crate::decode_catalog) reads
+    /// it, and [`decode`](crate::decode) refuses it.
+    pub const CATALOG: u8 = 0x20;
+}
+
+/// Which slot a component's JSX children fill.
+pub(crate) mod children {
+    /// [`ChildrenSlot::None`](crate::ChildrenSlot::None).
+    pub const NONE: u8 = 1;
+    /// [`ChildrenSlot::Content`](crate::ChildrenSlot::Content).
+    pub const CONTENT: u8 = 2;
+    /// [`ChildrenSlot::Label`](crate::ChildrenSlot::Label).
+    pub const LABEL: u8 = 3;
+    /// [`ChildrenSlot::Text`](crate::ChildrenSlot::Text).
+    pub const TEXT: u8 = 4;
 }
 
 /// Enum representation tags.

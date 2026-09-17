@@ -20,7 +20,7 @@ const VARINT_RADIX: usize = 127;
 /// Passing an empty buffer turns the walk into a measuring pass. The caller is
 /// responsible for sizing the real buffer; [`encode`] asserts the size it was
 /// handed matches the length this walk reports.
-const fn put(buf: &mut [u8], pos: usize, byte: u8) -> usize {
+pub const fn put(buf: &mut [u8], pos: usize, byte: u8) -> usize {
     assert!(
         byte != 0,
         "an encoded schema is NUL-free: the CLI cuts a `#[used]` static at its first NUL"
@@ -40,7 +40,7 @@ const fn put(buf: &mut [u8], pos: usize, byte: u8) -> usize {
     clippy::cast_possible_truncation,
     reason = "a remainder of 127 is below u8::MAX by construction"
 )]
-const fn put_varint(buf: &mut [u8], pos: usize, value: usize) -> usize {
+pub const fn put_varint(buf: &mut [u8], pos: usize, value: usize) -> usize {
     let mut pos = pos;
     let mut value = value;
     loop {
@@ -55,7 +55,7 @@ const fn put_varint(buf: &mut [u8], pos: usize, value: usize) -> usize {
 }
 
 /// Append `text` as a length-prefixed UTF-8 string.
-const fn put_str(buf: &mut [u8], pos: usize, text: &str) -> usize {
+pub const fn put_str(buf: &mut [u8], pos: usize, text: &str) -> usize {
     let bytes = text.as_bytes();
     let mut pos = put_varint(buf, pos, bytes.len());
     let mut index = 0;
@@ -67,7 +67,7 @@ const fn put_str(buf: &mut [u8], pos: usize, text: &str) -> usize {
 }
 
 /// Append a sequence of nodes, count first. Each element sits at `depth`.
-const fn put_nodes(buf: &mut [u8], pos: usize, nodes: &[TypeSchema], depth: usize) -> usize {
+pub const fn put_nodes(buf: &mut [u8], pos: usize, nodes: &[TypeSchema], depth: usize) -> usize {
     let mut pos = put_varint(buf, pos, nodes.len());
     let mut index = 0;
     while index < nodes.len() {
@@ -150,7 +150,7 @@ const fn put_enum(buf: &mut [u8], pos: usize, schema: &EnumSchema, depth: usize)
 /// `depth` and everything it nests sits deeper — the same counting
 /// [`decode`](crate::decode) bounds with [`MAX_DEPTH`], so the two agree on
 /// exactly which trees the format admits.
-const fn put_node(buf: &mut [u8], pos: usize, node: &TypeSchema, depth: usize) -> usize {
+pub const fn put_node(buf: &mut [u8], pos: usize, node: &TypeSchema, depth: usize) -> usize {
     assert!(
         depth <= MAX_DEPTH,
         "the schema nests deeper than MAX_DEPTH, the format's recursion bound"
@@ -197,6 +197,14 @@ const fn put_node(buf: &mut [u8], pos: usize, node: &TypeSchema, depth: usize) -
         TypeSchema::Accessor(inner) => {
             let pos = put(buf, pos, tag::ACCESSOR);
             put_node(buf, pos, inner, depth + 1)
+        }
+        TypeSchema::Union(members) => {
+            assert!(
+                members.len() >= 2,
+                "a union of fewer than two members is the member itself: write that node"
+            );
+            let pos = put(buf, pos, tag::UNION);
+            put_nodes(buf, pos, members, depth + 1)
         }
         TypeSchema::View => put(buf, pos, tag::VIEW),
         TypeSchema::Callback(arguments) => {
