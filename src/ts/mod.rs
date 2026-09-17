@@ -2,9 +2,14 @@
 //! views from, and the props contract both are typed against.
 //!
 //! `waterui-ts` is re-exported wholesale, so `waterui::ts::Bridge`,
-//! `waterui::ts::TsRuntime` and `waterui::ts::schema` name the runtime crate's
-//! items and a `TsType`/`TsProps` derive on a crate that consumes the facade
-//! finds every item the expansion uses.
+//! `waterui::ts::TsRuntime`, `waterui::ts::Mount` and `waterui::ts::schema`
+//! name the runtime crate's items and a `TsType`/`TsProps` derive on a crate
+//! that consumes the facade finds every item the expansion uses.
+//!
+//! An application mounts a module with [`tsx!`](crate::tsx), which resolves
+//! the module id from the path written beside the Rust file and expands to
+//! [`Mount`]; the runtime it mounts into is the one the application's bundle
+//! loader installed in the environment as a [`RuntimeHandle`].
 //!
 //! What lives *here* rather than in that crate is the vocabulary: the
 //! [`catalog`] of components a JSX tag may name and the [`Components`] host

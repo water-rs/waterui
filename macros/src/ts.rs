@@ -44,7 +44,7 @@ use syn::{Data, DeriveInput, Fields, Ident, Variant, parse_macro_input};
 /// its own tests and doctests as well as in its library. `None` means the
 /// expansion can see the schema crate only — the `water` CLI is the case — and
 /// the conversions are left out.
-fn ts_path() -> Option<TokenStream2> {
+pub fn ts_path() -> Option<TokenStream2> {
     // Inside `waterui-internal` the facade is this crate: `src/lib.rs`
     // declares `extern crate self as waterui`, so `crate` is the `waterui`
     // the expansion names — the same special case `waterui_crate_path` in
@@ -89,7 +89,7 @@ fn ts_path() -> Option<TokenStream2> {
 /// that has the runtime names it through there and one copy of the crate
 /// serves both halves of the expansion. A crate that depends on the schema
 /// alone names it directly.
-fn ts_schema_path() -> syn::Result<TokenStream2> {
+pub fn ts_schema_path() -> syn::Result<TokenStream2> {
     if let Some(ts) = ts_path() {
         return Ok(quote!(#ts::schema));
     }

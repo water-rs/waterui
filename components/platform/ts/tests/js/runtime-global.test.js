@@ -46,6 +46,35 @@ describe("installRuntimeGlobal", () => {
     expect(() => installRuntimeGlobal(undefined)).toThrow(/module id/);
   });
 
+  test("publishes the contract table the mount check reads", () => {
+    const contracts = { "src/promo.tsx": "0123456789abcdef" };
+    const runtime = installRuntimeGlobal({ "src/promo.tsx": () => null }, contracts);
+
+    expect(runtime.contracts).toBe(contracts);
+  });
+
+  test("a bundle that declares no contracts publishes an empty table", () => {
+    // Not undefined: the bridge reads the entry by name and refuses a bundle
+    // that is missing one, so a bundle nothing may be mounted from still has
+    // a complete runtime.
+    expect(installRuntimeGlobal({}).contracts).toEqual({});
+  });
+
+  test("rejects a contract table that is not an object", () => {
+    expect(() => installRuntimeGlobal({}, null)).toThrow(/contract hash/);
+    expect(() => installRuntimeGlobal({}, "0123456789abcdef")).toThrow(/contract hash/);
+  });
+
+  test("a contract hash stays text, because 64 bits do not fit in a number", () => {
+    // 0xfedcba9876543210 read as a JavaScript number loses its low bits, and
+    // two contracts that differ only down there would compare equal.
+    const hash = "fedcba9876543210";
+    const runtime = installRuntimeGlobal({}, { "src/promo.tsx": hash });
+
+    expect(runtime.contracts["src/promo.tsx"]).toBe(hash);
+    expect(Number(`0x${hash}`).toString(16)).not.toBe(hash);
+  });
+
   test("exposes the library's own helpers, not copies", async () => {
     const host = await import("../../src/js/host.js");
     const signals = await import("../../src/js/signals.js");

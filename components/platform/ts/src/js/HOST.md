@@ -226,6 +226,19 @@ The bundle entry the CLI generates therefore ends with one call —
 | `createMemo(compute)` | Wraps the pushed signal a Rust `Computed<T>` is exported as, so JS sees a read-only accessor. |
 | `makeCallback(id)` | The JS function wrapping a Rust closure held in the bridge's registry. |
 | `modules` | Module id → that module's default export. |
+| `contracts` | Module id → the hexadecimal props contract hash that module was built against. |
+
+`modules` and `contracts` are keyed alike: the module id is the `.tsx` file's
+path relative to the crate's manifest directory, forward-slashed and with the
+extension kept, which is what `tsx!` records and what the bundler publishes.
+Mounting a module checks the hash the bundle declares for it against the hash
+the binary's props type carries, and refuses the mount when the two differ —
+that check is the whole reason the table exists, because a bundle and a binary
+can come from different builds, and an over-the-air update is exactly that
+case. The hash crosses as text because it is 64 bits wide and a JavaScript
+number holds only 53 of them exactly. A module with no contract entry cannot
+be mounted; `installRuntimeGlobal(modules)` with the second argument omitted
+publishes an empty table.
 
 `makeCallback(id)` calls the installed host's `invoke(id, …args)`, the one
 entry the bridge registers for every Rust closure JavaScript calls, from a prop
