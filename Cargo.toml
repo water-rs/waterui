@@ -9,8 +9,12 @@ members = [
     "components/multimedia/*",
     "components/platform/*",
     # The `ts` family directory holds more than one crate, so its members are
-    # listed one by one; the glob above stops at `components/platform/*`.
+    # listed one by one; the glob above picks up `components/platform/ts`
+    # itself and stops there.
     "components/platform/ts/schema",
+    "components/platform/ts/engine",
+    "components/platform/ts/engine/jsc",
+    "components/platform/ts/engine/quickjs",
     "components/visual/*",
     "utils/*",
     "src",
@@ -25,7 +29,6 @@ members = [
 ]
 exclude = [
   "derive",
-  "components/platform/ts",
   ".github",
   "*.png",
 ]
@@ -248,6 +251,20 @@ hydrolysis-m3 = "0.3.0"
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.3.1", path = "macros" }
 waterui-ts-schema = { version = "0.1.0", path = "components/platform/ts/schema" }
+waterui-ts = { version = "0.1.0", path = "components/platform/ts" }
+waterui-ts-engine = { version = "0.1.0", path = "components/platform/ts/engine" }
+waterui-ts-engine-jsc = { version = "0.1.0", path = "components/platform/ts/engine/jsc" }
+waterui-ts-engine-quickjs = { version = "0.1.0", path = "components/platform/ts/engine/quickjs" }
+# QuickJS-NG through `rquickjs` — the embedded engine for every non-Apple
+# target. (`rquickjs-sys` vendors the QuickJS-NG fork, not the original
+# Bellard tree.)
+rquickjs = "0.13"
+# The system JavaScriptCore, reached through the objc2 family. Used only by
+# `waterui-ts-engine-jsc`, which gates them on `target_vendor = "apple"`.
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = "0.3"
+objc2-javascript-core = "0.3"
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
 # 29, not 30, and not by neglect: `vello` 0.10.0 — the newest release — pins
