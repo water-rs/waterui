@@ -146,6 +146,16 @@ pub enum TypeSchema {
     /// A callback the TypeScript side invokes, projected as
     /// `(…) => void`. The slice holds the argument types in order.
     Callback(&'static [Self]),
+    /// A choice of shapes, projected as the union `A | B | …`.
+    ///
+    /// No Rust type projects to a union — a field has one type — so no derive
+    /// produces this node. It exists for the component catalog, where an
+    /// attribute genuinely accepts several shapes that the Rust side converts
+    /// from: `padding` takes `true`, a number or an edge-insets object, which
+    /// is a union in TypeScript exactly as it is a set of `From` impls in
+    /// Rust. A type that declares one writes its own [`TsType`](crate::TsType)
+    /// impl beside the conversion that reads the same shapes.
+    Union(&'static [Self]),
     /// A struct with named fields, projected as an object type.
     Struct(StructSchema),
     /// An enum, projected according to its [`EnumRepresentation`].
@@ -258,6 +268,15 @@ impl fmt::Display for TypeSchema {
             Self::Map { key, value } => write!(f, "Record<{key}, {value}>"),
             Self::Signal(inner) => write!(f, "Signal<{inner}>"),
             Self::Accessor(inner) => write!(f, "Accessor<{inner}>"),
+            Self::Union(members) => {
+                for (index, member) in members.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(" | ")?;
+                    }
+                    write!(f, "{member}")?;
+                }
+                Ok(())
+            }
             Self::View => f.write_str("View"),
             Self::Callback(arguments) => {
                 f.write_str("(")?;

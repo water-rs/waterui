@@ -635,3 +635,98 @@ mod raw_identifiers {
         assert_eq!(crate::payload(&waterui_meta_tsprops_Type), r#Type::ENCODED);
     }
 }
+
+/// The component catalog: the second payload kind the format carries.
+mod catalog {
+    use crate::{
+        Catalog, CatalogSchema, ChildrenSlot, ComponentSchema, FieldSchema, ModifierSchema,
+        NumberKind, StructSchema, TypeSchema, attributes_of, catalog_encoded_len, decode,
+        decode_catalog, encode_catalog, payload,
+    };
+
+    /// `true | number | { top: number }` — the shape a union exists for.
+    const PADDING: TypeSchema = TypeSchema::Union(&[
+        TypeSchema::Bool,
+        TypeSchema::Number(NumberKind::F64),
+        TypeSchema::Struct(StructSchema {
+            name: "EdgeInsets",
+            fields: &[FieldSchema {
+                name: "top",
+                ty: TypeSchema::Number(NumberKind::F64),
+            }],
+        }),
+    ]);
+
+    const TOGGLE_ATTRIBUTES: TypeSchema = TypeSchema::Struct(StructSchema {
+        name: "ToggleAttributes",
+        fields: &[FieldSchema {
+            name: "value",
+            ty: TypeSchema::Signal(&TypeSchema::Bool),
+        }],
+    });
+
+    const SPACER_ATTRIBUTES: TypeSchema = TypeSchema::Struct(StructSchema {
+        name: "SpacerAttributes",
+        fields: &[],
+    });
+
+    const CATALOG: CatalogSchema = CatalogSchema {
+        components: &[
+            ComponentSchema {
+                name: "Toggle",
+                summary: "A two-state switch.",
+                attributes: attributes_of(&TOGGLE_ATTRIBUTES),
+                children: ChildrenSlot::Label,
+            },
+            ComponentSchema {
+                name: "Spacer",
+                summary: "A flexible gap.",
+                attributes: attributes_of(&SPACER_ATTRIBUTES),
+                children: ChildrenSlot::None,
+            },
+        ],
+        modifiers: &[ModifierSchema {
+            name: "padding",
+            summary: "Insets the view.",
+            value: &PADDING,
+        }],
+    };
+
+    const ENCODED: [u8; catalog_encoded_len(&CATALOG) + 1] = encode_catalog(&CATALOG);
+
+    #[test]
+    fn a_catalog_decodes_to_the_constant_the_compiler_encoded() {
+        let decoded = decode_catalog(payload(&ENCODED)).expect("the catalog payload decodes");
+        assert_eq!(decoded, Catalog::from(&CATALOG));
+        assert_eq!(decoded.components[0].attributes[0].name, "value");
+        assert_eq!(decoded.components[1].attributes, []);
+        assert_eq!(
+            decoded.modifiers[0].value,
+            crate::owned::Schema::from(&PADDING)
+        );
+    }
+
+    #[test]
+    fn the_catalog_payload_is_nul_free_so_the_cli_can_find_its_end() {
+        assert!(!payload(&ENCODED).contains(&0));
+    }
+
+    #[test]
+    fn a_union_renders_as_the_typescript_union() {
+        assert_eq!(PADDING.to_string(), "boolean | number | EdgeInsets");
+    }
+
+    #[test]
+    fn each_decoder_refuses_the_other_payload_kind() {
+        let props =
+            crate::encode::<{ crate::encoded_len(&TOGGLE_ATTRIBUTES) + 1 }>(&TOGGLE_ATTRIBUTES);
+        assert_eq!(
+            decode(payload(&ENCODED)).expect_err("a catalog is not a type tree"),
+            crate::DecodeError::NotATypeTree
+        );
+        assert_eq!(
+            decode_catalog(payload(&props)).expect_err("a props contract is not a catalog"),
+            crate::DecodeError::NotACatalog
+        );
+    }
+}

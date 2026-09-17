@@ -4,7 +4,7 @@
 //! `waterui_meta_tsprops_*` static — back into an [`owned::Schema`]. Every
 //! malformed input is an error, never a partial or guessed tree.
 
-use crate::format::{FORMAT_VERSION, MAX_ARRAY_LEN, MAX_DEPTH, representation, tag, variant};
+use crate::format::{FORMAT_VERSION, MAX_ARRAY_LEN, MAX_DEPTH, kind, representation, tag, variant};
 use crate::owned;
 use crate::tree::NumberKind;
 
@@ -102,6 +102,36 @@ pub enum DecodeError {
         /// Where the key node starts.
         offset: usize,
     },
+    /// A union carries fewer than two members. A one-member union is the
+    /// member itself; the encoder asserts the same bound during const
+    /// evaluation.
+    #[error("the union at byte {offset} carries {len} members, fewer than the two a union needs")]
+    ShortUnion {
+        /// How many members the payload carries.
+        len: usize,
+        /// Where the member count starts.
+        offset: usize,
+    },
+    /// The payload is a component catalog, not a props contract. The two share
+    /// the format and are told apart by the byte after the version.
+    #[error("the payload is a component catalog, which `decode_catalog` reads, not a type tree")]
+    NotATypeTree,
+    /// The payload is a props contract, not a component catalog.
+    #[error("the payload is a props contract, which `decode` reads, not a component catalog")]
+    NotACatalog,
+    /// A component's attributes are not an object type. A catalog entry's
+    /// attributes come from a props struct, so the node is always a struct;
+    /// the encoder asserts it during const evaluation.
+    #[error("the attributes of `{component}` decode to `{found}`, not an object type")]
+    AttributesNotAStruct {
+        /// The component whose attributes were read.
+        component: String,
+        /// What the node turned out to be.
+        found: &'static str,
+    },
+    /// A catalog carries no components, which no build produces.
+    #[error("the catalog carries no components")]
+    EmptyCatalog,
     /// A name in the schema is empty. The encoder asserts every name it
     /// writes is non-empty, so a valid payload cannot contain one.
     #[error("the {kind} name at byte {offset} is empty")]
@@ -141,6 +171,9 @@ pub fn decode(payload: &[u8]) -> Result<owned::Schema, DecodeError> {
             expected: FORMAT_VERSION,
         });
     }
+    if payload.get(reader.pos) == Some(&kind::CATALOG) {
+        return Err(DecodeError::NotATypeTree);
+    }
     let schema = reader.node()?;
     let extra = payload.len() - reader.pos;
     if extra > 0 {
@@ -150,18 +183,18 @@ pub fn decode(payload: &[u8]) -> Result<owned::Schema, DecodeError> {
 }
 
 /// A cursor over an encoded payload.
-struct Reader<'a> {
+pub struct Reader<'a> {
     /// The payload.
-    bytes: &'a [u8],
+    pub bytes: &'a [u8],
     /// How far the cursor has advanced.
-    pos: usize,
+    pub pos: usize,
     /// How many `node` frames are live, bounded by [`MAX_DEPTH`].
-    depth: usize,
+    pub depth: usize,
 }
 
 impl Reader<'_> {
     /// Read one byte.
-    fn byte(&mut self) -> Result<u8, DecodeError> {
+    pub fn byte(&mut self) -> Result<u8, DecodeError> {
         let byte = *self
             .bytes
             .get(self.pos)
@@ -171,7 +204,7 @@ impl Reader<'_> {
     }
 
     /// Read a little-endian base-127 varint.
-    fn length(&mut self) -> Result<usize, DecodeError> {
+    pub fn length(&mut self) -> Result<usize, DecodeError> {
         let offset = self.pos;
         let mut value = 0_usize;
         let mut scale = 1_usize;
@@ -202,7 +235,7 @@ impl Reader<'_> {
     }
 
     /// Read a length-prefixed UTF-8 string.
-    fn string(&mut self) -> Result<String, DecodeError> {
+    pub fn string(&mut self) -> Result<String, DecodeError> {
         let len = self.length()?;
         let offset = self.pos;
         let end = offset
@@ -219,7 +252,7 @@ impl Reader<'_> {
     }
 
     /// Read a counted sequence of nodes.
-    fn nodes(&mut self) -> Result<Vec<owned::Schema>, DecodeError> {
+    pub fn nodes(&mut self) -> Result<Vec<owned::Schema>, DecodeError> {
         let count = self.length()?;
         let mut nodes = Vec::new();
         for _ in 0..count {
@@ -229,7 +262,7 @@ impl Reader<'_> {
     }
 
     /// Read a counted sequence of named fields.
-    fn fields(&mut self) -> Result<Vec<owned::Field>, DecodeError> {
+    pub fn fields(&mut self) -> Result<Vec<owned::Field>, DecodeError> {
         let count = self.length()?;
         let mut fields = Vec::new();
         for _ in 0..count {
@@ -250,12 +283,12 @@ impl Reader<'_> {
     }
 
     /// Read a boxed child node.
-    fn child(&mut self) -> Result<Box<owned::Schema>, DecodeError> {
+    pub fn child(&mut self) -> Result<Box<owned::Schema>, DecodeError> {
         self.node().map(Box::new)
     }
 
     /// Read one node and everything below it, bounding recursion.
-    fn node(&mut self) -> Result<owned::Schema, DecodeError> {
+    pub fn node(&mut self) -> Result<owned::Schema, DecodeError> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             return Err(DecodeError::TooDeep { limit: MAX_DEPTH });
@@ -318,6 +351,17 @@ impl Reader<'_> {
             }
             tag::SIGNAL => owned::Schema::Signal(self.child()?),
             tag::ACCESSOR => owned::Schema::Accessor(self.child()?),
+            tag::UNION => {
+                let offset = self.pos;
+                let members = self.nodes()?;
+                if members.len() < 2 {
+                    return Err(DecodeError::ShortUnion {
+                        len: members.len(),
+                        offset,
+                    });
+                }
+                owned::Schema::Union(members)
+            }
             tag::VIEW => owned::Schema::View,
             tag::CALLBACK => owned::Schema::Callback(self.nodes()?),
             tag::STRUCT => {

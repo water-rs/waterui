@@ -47,6 +47,8 @@ pub enum Schema {
     View,
     /// See [`TypeSchema::Callback`].
     Callback(Vec<Self>),
+    /// See [`TypeSchema::Union`].
+    Union(Vec<Self>),
     /// See [`TypeSchema::Struct`].
     Struct(Struct),
     /// See [`TypeSchema::Enum`].
@@ -135,6 +137,7 @@ impl From<&TypeSchema> for Schema {
             },
             TypeSchema::Signal(inner) => Self::Signal(Box::new(Self::from(*inner))),
             TypeSchema::Accessor(inner) => Self::Accessor(Box::new(Self::from(*inner))),
+            TypeSchema::Union(members) => Self::Union(members.iter().map(Self::from).collect()),
             TypeSchema::View => Self::View,
             TypeSchema::Callback(arguments) => {
                 Self::Callback(arguments.iter().map(Self::from).collect())

@@ -48,6 +48,16 @@
 //! `no_dead_strip` on Mach-O, so a release artifact would carry the payload
 //! all the way into the application.
 //!
+//! # The component catalog
+//!
+//! The same format carries a second payload: [`CatalogSchema`], the runtime's
+//! component table — which components JSX may name, what each one's
+//! attributes are, and which modifier attributes exist. It is built from the
+//! same [`TypeSchema`] constants, encoded by [`encode_catalog`] during const
+//! evaluation, and read back by [`decode_catalog`]. The two kinds are told
+//! apart by the byte after the version, so neither decoder can read the other
+//! kind as a malformed one of its own.
+//!
 //! # Type mapping
 //!
 //! | Rust | TypeScript | Node |
@@ -74,6 +84,7 @@
 // this crate, in its tests and doctests, and in a dependent crate alike.
 extern crate self as waterui_ts_schema;
 
+mod catalog;
 mod decode;
 mod encode;
 pub mod format;
@@ -84,6 +95,10 @@ mod tree;
 #[cfg(test)]
 mod tests;
 
+pub use catalog::{
+    Catalog, CatalogSchema, ChildrenSlot, Component, ComponentSchema, Modifier, ModifierSchema,
+    attributes_of, catalog_encoded_len, decode_catalog, encode_catalog,
+};
 pub use decode::{DecodeError, decode};
 pub use encode::{contract_hash, encode, encoded_len, payload};
 pub use format::{FORMAT_VERSION, MAX_ARRAY_LEN, MAX_DEPTH};
