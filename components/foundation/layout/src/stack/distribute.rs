@@ -88,6 +88,85 @@ pub(super) const fn place_cross_extent(measured: f32, available: f32, stretch: b
     }
 }
 
+/// Where a container anchors the envelope its children form on an axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineAnchor {
+    /// The envelope sits at the leading edge (`Top`, `Leading`).
+    Leading,
+    /// The envelope is centred in the container's extent.
+    Center,
+    /// The envelope sits at the trailing edge (`Bottom`, `Trailing`).
+    Trailing,
+    /// A custom guide: the envelope sits at the leading edge.
+    Custom,
+}
+
+impl LineAnchor {
+    pub fn vertical(alignment: VerticalAlignment) -> Self {
+        if alignment == VerticalAlignment::Top {
+            Self::Leading
+        } else if alignment == VerticalAlignment::Center {
+            Self::Center
+        } else if alignment == VerticalAlignment::Bottom {
+            Self::Trailing
+        } else {
+            Self::Custom
+        }
+    }
+
+    pub fn horizontal(alignment: HorizontalAlignment) -> Self {
+        if alignment == HorizontalAlignment::Leading {
+            Self::Leading
+        } else if alignment == HorizontalAlignment::Center {
+            Self::Center
+        } else if alignment == HorizontalAlignment::Trailing {
+            Self::Trailing
+        } else {
+            Self::Custom
+        }
+    }
+}
+
+/// The envelope a set of children forms on one axis when their guides are
+/// lined up: `above` is how far the furthest guide sits from the leading edge
+/// of the envelope, `below` how far the furthest trailing edge sits past the
+/// line, so the envelope's extent is `above + below`. Guides are not clamped:
+/// an explicit guide outside its child moves the envelope, as `SwiftUI`'s
+/// does. Children with an infinite extent on the axis take no part (the fill
+/// pass hands them the container's extent).
+pub fn cross_envelope(children: impl IntoIterator<Item = (f32, f32)>) -> (f32, f32) {
+    let mut above = f32::NEG_INFINITY;
+    let mut below = f32::NEG_INFINITY;
+    for (extent, guide) in children {
+        if !extent.is_finite() {
+            continue;
+        }
+        above = above.max(guide);
+        below = below.max(extent - guide);
+    }
+    if above.is_finite() {
+        (above, below)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+/// Where the container's alignment line sits inside `extent`, the cross
+/// extent it was placed in: the envelope is anchored by the alignment and the
+/// line is `above` past the envelope's leading edge. With default guides this
+/// is `0`, `extent / 2` and `extent` for the three edge alignments, and the
+/// envelope's own line for a custom guide. A child is placed at
+/// `line - guide`.
+pub fn container_line(extent: f32, anchor: LineAnchor, above: f32, below: f32) -> f32 {
+    let slack = extent - (above + below);
+    let offset = match anchor {
+        LineAnchor::Leading | LineAnchor::Custom => 0.0,
+        LineAnchor::Center => slack * 0.5,
+        LineAnchor::Trailing => slack,
+    };
+    offset + above
+}
+
 pub(super) fn stack_spacing(spacing: f32, count: usize) -> f32 {
     spacing * usize_to_f32(count.saturating_sub(1))
 }

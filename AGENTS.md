@@ -80,6 +80,19 @@ These are the target architecture and acceptance criteria for repository changes
 
 - **Framework revisions own their minimum compatible CLI version.** Declare it in the root `Cargo.toml` under `[package.metadata.waterui].minimum-cli-version`, using a concrete SemVer version. Raise it when a framework change requires newer CLI behavior, not automatically for every CLI release. The library checks local source metadata, resolved `waterui` package metadata, and the requirement persisted with a channel before backend scaffolding or builds. Every published `framework.json` carries the same declaration. Rejection names the installed and required versions and gives an update command for the selected source; it never silently switches framework channels or upgrades the executable. Previously released CLIs without this check still need a one-time manual update.
 
+## Layout Is Frozen
+
+The layout system — the proposal protocol, `StretchAxis`, stack sizing and
+allocation, every container in `waterui-layout`, and the leaf contracts backends
+implement — is frozen as of 0.5.0. Its normative description is
+[`docs/layout-spec.md`](docs/layout-spec.md). Do not change the semantics that
+document describes, in `core/`, `components/foundation/layout/`, or a backend
+bridge, for any reason: not to fix a parity budget, not to make an example
+render, not because a reference framework does it differently. A difference
+between the document and the code is a bug in the code; a pull request that
+has to weaken a contract test or amend the document is rejected. The only path
+to a semantic change is a major-version decision recorded by the maintainer.
+
 ## Engagement Rules
 
 **Prefer a coherent design over a small diff.** Avoiding overengineering means avoiding unnecessary complexity, not avoiding substantial refactoring.

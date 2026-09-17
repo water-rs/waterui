@@ -13,7 +13,10 @@ use crate::{
     container::FixedContainer,
     stack::{
         Axis,
-        distribute::{ChildMeasurement, measure_stack, place_cross_extent, stack_spacing},
+        distribute::{
+            ChildMeasurement, LineAnchor, container_line, cross_envelope, measure_stack,
+            place_cross_extent, stack_spacing,
+        },
         stack_stretch_axis,
     },
 };
@@ -45,26 +48,17 @@ impl Default for VStackLayout {
 /// A child that answers an unbounded width is answering "as much as you have"
 /// rather than naming a size, so it sets no floor here — the fill pass in
 /// [`Layout::place`] is what gives it the column's width.
+/// The horizontal envelope of the column's children lined up on `alignment`.
 fn vstack_intrinsic_cross_metrics(
     measurements: &[ChildMeasurement],
     alignment: HorizontalAlignment,
 ) -> (f32, f32) {
-    let mut max_leading = 0.0_f32;
-    let mut max_trailing = 0.0_f32;
-
-    for measurement in measurements
-        .iter()
-        .filter(|measurement| measurement.size().width.is_finite())
-    {
-        let size = measurement.size();
-        let guide = measurement
-            .horizontal_guide(alignment)
-            .clamp(0.0, size.width);
-        max_leading = max_leading.max(guide);
-        max_trailing = max_trailing.max((size.width - guide).max(0.0));
-    }
-
-    (max_leading, max_trailing)
+    cross_envelope(measurements.iter().map(|measurement| {
+        (
+            measurement.size().width,
+            measurement.horizontal_guide(alignment),
+        )
+    }))
 }
 
 impl Layout for VStackLayout {
@@ -90,7 +84,7 @@ impl Layout for VStackLayout {
     fn place(
         &self,
         bounds: Rect,
-        proposal: ProposalSize,
+        _proposal: ProposalSize,
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
@@ -98,19 +92,24 @@ impl Layout for VStackLayout {
         }
 
         let spacing = self.spacing.get();
-        let measurements = measure_stack(Axis::Vertical, proposal, spacing, children);
+        // Placement is a fresh negotiation against the bounds the column was
+        // placed in: every child is allocated from the column's resolved
+        // height and proposed the column's resolved width, so what a child
+        // lays out under is the extent it actually has, never the offer the
+        // column was measured with. A column widened past its proposal by an
+        // unshrinkable row hands that width to every child, so a title lays
+        // out across the column it actually has.
+        let placement = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let measurements = measure_stack(Axis::Vertical, placement, spacing, children);
 
-        let has_explicit_alignment_guides = measurements.iter().any(|measurement| {
-            measurement
-                .dimensions
-                .explicit_horizontal(self.alignment)
-                .is_some()
-        });
-        let guide_line = has_explicit_alignment_guides.then(|| {
-            let (intrinsic_leading, _intrinsic_trailing) =
-                vstack_intrinsic_cross_metrics(&measurements, self.alignment);
-            bounds.x() + intrinsic_leading
-        });
+        let (above, below) = vstack_intrinsic_cross_metrics(&measurements, self.alignment);
+        let guide_line = bounds.x()
+            + container_line(
+                bounds.width(),
+                LineAnchor::horizontal(self.alignment),
+                above,
+                below,
+            );
 
         // Place children
         let mut placements = Vec::with_capacity(children.len());
@@ -135,22 +134,13 @@ impl Layout for VStackLayout {
             let mut adjusted_dimensions = measurement.dimensions.clone();
             adjusted_dimensions.size = Size::new(child_width, child_height);
 
+            // A child that fills the cross axis spans the bounds; every other
+            // child sits with its guide on the column's line, wherever that
+            // guide lies.
             let x = if measurement.stretches_cross_axis() {
                 bounds.x()
-            } else if let Some(guide_line) = guide_line {
-                let guide = adjusted_dimensions
-                    .horizontal(self.alignment)
-                    .clamp(0.0, child_width);
-                guide_line - guide
-            } else if self.alignment == HorizontalAlignment::Leading {
-                bounds.x()
-            } else if self.alignment == HorizontalAlignment::Trailing {
-                bounds.x() + bounds.width() - child_width
             } else {
-                let guide = adjusted_dimensions
-                    .horizontal(self.alignment)
-                    .clamp(0.0, child_width);
-                bounds.x() + bounds.width() * 0.5 - guide
+                guide_line - adjusted_dimensions.horizontal(self.alignment)
             };
 
             placements.push(SubviewPlacement::new(

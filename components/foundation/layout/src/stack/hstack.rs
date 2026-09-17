@@ -13,7 +13,10 @@ use crate::{
     container::FixedContainer,
     stack::{
         Axis, VerticalAlignment,
-        distribute::{ChildMeasurement, measure_stack, place_cross_extent, stack_spacing},
+        distribute::{
+            ChildMeasurement, LineAnchor, container_line, cross_envelope, measure_stack,
+            place_cross_extent, stack_spacing,
+        },
         stack_stretch_axis,
     },
 };
@@ -90,42 +93,17 @@ impl Default for HStackLayout {
 /// fill. A child that answers an unbounded height is answering "as much as you
 /// have" rather than naming a size, so it sets no floor here — the fill pass in
 /// [`Layout::place`] is what gives it the row's height.
+/// The vertical envelope of the row's children lined up on `alignment`.
 fn hstack_intrinsic_cross_metrics(
     measurements: &[ChildMeasurement],
     alignment: VerticalAlignment,
 ) -> (f32, f32) {
-    let mut max_above = 0.0_f32;
-    let mut max_below = 0.0_f32;
-
-    for measurement in measurements
-        .iter()
-        .filter(|measurement| measurement.size().height.is_finite())
-    {
-        let size = measurement.size();
-        let guide = measurement
-            .vertical_guide(alignment)
-            .clamp(0.0, size.height);
-        max_above = max_above.max(guide);
-        max_below = max_below.max((size.height - guide).max(0.0));
-    }
-
-    (max_above, max_below)
-}
-
-fn hstack_container_guide_offset(
-    bounds: Rect,
-    alignment: VerticalAlignment,
-    intrinsic_above: f32,
-) -> f32 {
-    if alignment == VerticalAlignment::Top {
-        0.0
-    } else if alignment == VerticalAlignment::Bottom {
-        bounds.height()
-    } else if alignment == VerticalAlignment::Center {
-        bounds.height() * 0.5
-    } else {
-        intrinsic_above
-    }
+    cross_envelope(measurements.iter().map(|measurement| {
+        (
+            measurement.size().height,
+            measurement.vertical_guide(alignment),
+        )
+    }))
 }
 
 impl Layout for HStackLayout {
@@ -148,11 +126,11 @@ impl Layout for HStackLayout {
         let measurements = measure_stack(Axis::Horizontal, proposal, spacing, children);
         let width = measurements.iter().map(|m| m.size().width).sum::<f32>()
             + stack_spacing(spacing, children.len());
-        let (max_above, max_below) = hstack_intrinsic_cross_metrics(&measurements, self.alignment);
+        let (above, below) = hstack_intrinsic_cross_metrics(&measurements, self.alignment);
         let height = if measurements.iter().any(|m| m.size().height.is_infinite()) {
             f32::INFINITY
         } else {
-            max_above + max_below
+            above + below
         };
         Size::new(width, height)
     }
@@ -160,7 +138,7 @@ impl Layout for HStackLayout {
     fn place(
         &self,
         bounds: Rect,
-        proposal: ProposalSize,
+        _proposal: ProposalSize,
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
@@ -168,12 +146,22 @@ impl Layout for HStackLayout {
         }
 
         let spacing = self.spacing.get();
-        let measurements = measure_stack(Axis::Horizontal, proposal, spacing, children);
+        // Placement is a fresh negotiation against the bounds the row was
+        // placed in: every child is allocated from the row's resolved width
+        // and proposed the row's resolved height, so what a child lays out
+        // under is the extent it actually has, never the offer the row was
+        // measured with.
+        let placement = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let measurements = measure_stack(Axis::Horizontal, placement, spacing, children);
 
-        let (intrinsic_above, _intrinsic_below) =
-            hstack_intrinsic_cross_metrics(&measurements, self.alignment);
-        let guide_line =
-            bounds.y() + hstack_container_guide_offset(bounds, self.alignment, intrinsic_above);
+        let (above, below) = hstack_intrinsic_cross_metrics(&measurements, self.alignment);
+        let guide_line = bounds.y()
+            + container_line(
+                bounds.height(),
+                LineAnchor::vertical(self.alignment),
+                above,
+                below,
+            );
 
         // Place children
         let mut placements = Vec::with_capacity(children.len());
@@ -195,17 +183,14 @@ impl Layout for HStackLayout {
             let mut adjusted_dimensions = measurement.dimensions.clone();
             adjusted_dimensions.size = Size::new(child_width, child_height);
 
-            let y =
-                if measurement.stretches_cross_axis() || self.alignment == VerticalAlignment::Top {
-                    bounds.y()
-                } else if self.alignment == VerticalAlignment::Bottom {
-                    bounds.y() + bounds.height() - child_height
-                } else {
-                    let guide = adjusted_dimensions
-                        .vertical(self.alignment)
-                        .clamp(0.0, child_height);
-                    guide_line - guide
-                };
+            // A child that fills the cross axis spans the bounds; every other
+            // child sits with its guide on the row's line, wherever that
+            // guide lies.
+            let y = if measurement.stretches_cross_axis() {
+                bounds.y()
+            } else {
+                guide_line - adjusted_dimensions.vertical(self.alignment)
+            };
 
             let rect = Rect::new(
                 Point::new(current_x, y),

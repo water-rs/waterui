@@ -56,7 +56,7 @@ impl Layout for BackgroundLayout {
     fn place(
         &self,
         bounds: Rect,
-        proposal: ProposalSize,
+        _proposal: ProposalSize,
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement> {
         assert!(
@@ -73,11 +73,11 @@ impl Layout for BackgroundLayout {
             ProposalSize::new(bounds.width(), bounds.height()),
         ));
 
-        // Content (index 1) also fills the bounds but keeps the proposal the
-        // content was measured with.
+        // Content (index 1) also fills the bounds and, like every child at
+        // placement, is proposed the resolved bounds it is placed in.
         placements.push(SubviewPlacement::new(
             Rect::new(bounds.origin(), Size::new(bounds.width(), bounds.height())),
-            proposal,
+            ProposalSize::new(bounds.width(), bounds.height()),
         ));
 
         placements

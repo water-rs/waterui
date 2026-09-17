@@ -69,7 +69,7 @@ impl Layout for PaddingLayout {
     fn place(
         &self,
         bounds: Rect,
-        proposal: ProposalSize,
+        _proposal: ProposalSize,
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
@@ -88,12 +88,10 @@ impl Layout for PaddingLayout {
             (bounds.height() - vertical_padding).max(0.0),
         );
 
-        // The child is measured and placed under the same inset-adjusted
-        // proposal `size_that_fits` offers it.
-        let child_proposal = ProposalSize::new(
-            proposal.width.map(|w| (w - horizontal_padding).max(0.0)),
-            proposal.height.map(|h| (h - vertical_padding).max(0.0)),
-        );
+        // Placement proposes the region the child is placed in: the bounds
+        // less the insets, so a padded child stretched by its container lays
+        // out across the room it actually has.
+        let child_proposal = ProposalSize::new(Some(child_size.width), Some(child_size.height));
 
         vec![SubviewPlacement::new(
             Rect::new(child_origin, child_size),

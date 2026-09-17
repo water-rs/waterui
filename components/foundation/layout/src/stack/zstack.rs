@@ -8,7 +8,10 @@ use crate::{
     Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
     SubviewPlacement, ViewDimensions,
     container::FixedContainer,
-    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
+    stack::{
+        Alignment, HorizontalAlignment, VerticalAlignment,
+        distribute::{LineAnchor, container_line, cross_envelope},
+    },
 };
 
 /// Cached measurement for a child during layout
@@ -22,40 +25,30 @@ impl ChildMeasurement {
     }
 }
 
+/// The horizontal envelope of the layers lined up on `alignment`.
 fn zstack_horizontal_metrics(
     measurements: &[ChildMeasurement],
     alignment: HorizontalAlignment,
 ) -> (f32, f32) {
-    let mut max_leading = 0.0_f32;
-    let mut max_trailing = 0.0_f32;
-    for measurement in measurements {
-        let size = measurement.size();
-        let guide = measurement
-            .dimensions
-            .horizontal(alignment)
-            .clamp(0.0, size.width);
-        max_leading = max_leading.max(guide);
-        max_trailing = max_trailing.max((size.width - guide).max(0.0));
-    }
-    (max_leading, max_trailing)
+    cross_envelope(measurements.iter().map(|measurement| {
+        (
+            measurement.size().width,
+            measurement.dimensions.horizontal(alignment),
+        )
+    }))
 }
 
+/// The vertical envelope of the layers lined up on `alignment`.
 fn zstack_vertical_metrics(
     measurements: &[ChildMeasurement],
     alignment: VerticalAlignment,
 ) -> (f32, f32) {
-    let mut max_above = 0.0_f32;
-    let mut max_below = 0.0_f32;
-    for measurement in measurements {
-        let size = measurement.size();
-        let guide = measurement
-            .dimensions
-            .vertical(alignment)
-            .clamp(0.0, size.height);
-        max_above = max_above.max(guide);
-        max_below = max_below.max((size.height - guide).max(0.0));
-    }
-    (max_above, max_below)
+    cross_envelope(measurements.iter().map(|measurement| {
+        (
+            measurement.size().height,
+            measurement.dimensions.vertical(alignment),
+        )
+    }))
 }
 
 /// Stacks an arbitrary number of children with a shared alignment.
@@ -115,99 +108,93 @@ impl Layout for ZStackLayout {
             })
             .collect();
 
+        // The stack is the envelope of its layers, like every container: a
+        // layer wider than the offer widens the stack rather than being
+        // shrunk, and a layer that answers an unbounded extent makes the
+        // stack answer it too so the fill pass above resolves it.
         let (max_leading, max_trailing) =
             zstack_horizontal_metrics(&measurements, self.alignment.horizontal());
         let (max_above, max_below) =
             zstack_vertical_metrics(&measurements, self.alignment.vertical());
-        let max_width = max_leading + max_trailing;
-        let max_height = max_above + max_below;
-
-        // Respect parent constraints - don't exceed them
-        let final_width = proposal
-            .width
-            .map_or(max_width, |parent_width| max_width.min(parent_width));
-
-        let final_height = proposal
-            .height
-            .map_or(max_height, |parent_height| max_height.min(parent_height));
-
-        Size::new(final_width, final_height)
+        let width = if measurements.iter().any(|m| m.size().width.is_infinite()) {
+            f32::INFINITY
+        } else {
+            max_leading + max_trailing
+        };
+        let height = if measurements.iter().any(|m| m.size().height.is_infinite()) {
+            f32::INFINITY
+        } else {
+            max_above + max_below
+        };
+        Size::new(width, height)
     }
 
     fn place(
         &self,
         bounds: Rect,
-        proposal: ProposalSize,
+        _proposal: ProposalSize,
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
 
-        // Re-measure children under the same proposal the stack itself was
-        // measured with — never a bounds-derived one.
+        // Placement is a fresh negotiation against the bounds the stack was
+        // placed in: every layer is proposed the resolved extent, so what it
+        // lays out under is the space it actually has.
+        let placement = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
         let measurements: Vec<ChildMeasurement> = children
             .iter()
             .map(|child| ChildMeasurement {
-                dimensions: child.measure(proposal),
+                dimensions: child.measure(placement),
             })
             .collect();
 
         let horizontal = self.alignment.horizontal();
         let vertical = self.alignment.vertical();
-        let target_x = if horizontal == HorizontalAlignment::Leading {
-            0.0
-        } else if horizontal == HorizontalAlignment::Trailing {
-            bounds.width()
-        } else if horizontal == HorizontalAlignment::Center {
-            bounds.width() * 0.5
-        } else {
-            let (max_leading, _) = zstack_horizontal_metrics(&measurements, horizontal);
-            max_leading
-        };
-        let target_y = if vertical == VerticalAlignment::Top {
-            0.0
-        } else if vertical == VerticalAlignment::Bottom {
-            bounds.height()
-        } else if vertical == VerticalAlignment::Center {
-            bounds.height() * 0.5
-        } else {
-            let (max_above, _) = zstack_vertical_metrics(&measurements, vertical);
-            max_above
-        };
+        let (max_leading, max_trailing) = zstack_horizontal_metrics(&measurements, horizontal);
+        let (max_above, max_below) = zstack_vertical_metrics(&measurements, vertical);
+        let line_x = bounds.x()
+            + container_line(
+                bounds.width(),
+                LineAnchor::horizontal(horizontal),
+                max_leading,
+                max_trailing,
+            );
+        let line_y = bounds.y()
+            + container_line(
+                bounds.height(),
+                LineAnchor::vertical(vertical),
+                max_above,
+                max_below,
+            );
 
-        // Place each child according to alignment
         let mut placements = Vec::with_capacity(children.len());
 
         for measurement in &measurements {
-            // Handle infinite dimensions (axis-expanding views)
+            // A layer that answers an unbounded extent fills the bounds; every
+            // other layer keeps its answer, overflowing the bounds when it is
+            // larger, and sits with its guide on the stack's line.
             let child_width = if measurement.dimensions.size.width.is_infinite() {
                 bounds.width()
             } else {
-                measurement.dimensions.size.width.min(bounds.width())
+                measurement.dimensions.size.width
             };
-
             let child_height = if measurement.dimensions.size.height.is_infinite() {
                 bounds.height()
             } else {
-                measurement.dimensions.size.height.min(bounds.height())
+                measurement.dimensions.size.height
             };
 
             let child_size = Size::new(child_width, child_height);
             let mut adjusted_dimensions = measurement.dimensions.clone();
             adjusted_dimensions.size = child_size;
-            let x = bounds.x() + target_x
-                - adjusted_dimensions
-                    .horizontal(horizontal)
-                    .clamp(0.0, child_size.width);
-            let y = bounds.y() + target_y
-                - adjusted_dimensions
-                    .vertical(vertical)
-                    .clamp(0.0, child_size.height);
+            let x = line_x - adjusted_dimensions.horizontal(horizontal);
+            let y = line_y - adjusted_dimensions.vertical(vertical);
 
             placements.push(SubviewPlacement::new(
                 Rect::new(Point::new(x, y), child_size),
-                proposal,
+                placement,
             ));
         }
 

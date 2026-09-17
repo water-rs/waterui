@@ -11,7 +11,10 @@ use crate::{
     Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
     ViewDimensions,
     container::FixedContainer,
-    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
+    stack::{
+        Alignment, HorizontalAlignment, VerticalAlignment,
+        distribute::{LineAnchor, container_line},
+    },
 };
 
 /// Layout that clamps a single child's proposal to reactive frame constraints.
@@ -50,6 +53,26 @@ impl FrameLayout {
 }
 
 impl ResolvedFrameLayout {
+    /// The frame's own extent for a child answer under `proposal`.
+    fn resolve(&self, proposal: ProposalSize, child: Size) -> Size {
+        Size::new(
+            frame_resolved_axis(
+                proposal.width,
+                child.width,
+                self.min_width,
+                self.ideal_width,
+                self.max_width,
+            ),
+            frame_resolved_axis(
+                proposal.height,
+                child.height,
+                self.min_height,
+                self.ideal_height,
+                self.max_height,
+            ),
+        )
+    }
+
     /// A constrained frame owns that axis's placement region. Other axes
     /// preserve the incoming offer instead of reconstructing it from bounds.
     fn placement_proposal(&self, bounds: Rect, proposal: ProposalSize) -> ProposalSize {
@@ -112,36 +135,27 @@ impl Layout for FrameLayout {
         // the parent left unspecified. Either way the frame's own min/max limit
         // what it passes down.
         let child_proposal = resolved.child_proposal(proposal);
-
-        // Measure the child with our constrained proposal
-        let child_dimensions = children
-            .first()
-            .map_or(ViewDimensions::new(Size::zero()), |c| {
-                c.measure(child_proposal)
-            });
-        let child_size = child_dimensions.size;
+        let Some(child) = children.first() else {
+            return resolved.resolve(proposal, Size::zero());
+        };
 
         // Resolve the frame size on each axis. With no bound on an axis the
         // frame is exactly as big as the child it just measured; a maximum is
         // something to grow into, so there the frame takes the extent it was
-        // offered instead. `place` proposes that resolved extent back to the
-        // child, so the child is measured at the extent it will be placed in.
-        let final_width = frame_resolved_axis(
-            proposal.width,
-            child_size.width,
-            resolved.min_width,
-            resolved.ideal_width,
-            resolved.max_width,
-        );
-        let final_height = frame_resolved_axis(
-            proposal.height,
-            child_size.height,
-            resolved.min_height,
-            resolved.ideal_height,
-            resolved.max_height,
-        );
+        // offered instead.
+        let first = resolved.resolve(proposal, child.measure(child_proposal).size);
 
-        Size::new(final_width, final_height)
+        // `place` proposes the resolved extent of a constrained axis back to
+        // the child, and the child's answer on the other axes can depend on
+        // it (text wraps to the width it is given). The frame's answer is
+        // therefore taken from the child measured under the proposal it will
+        // be placed with, so measurement and placement agree.
+        let placement = resolved.placement_proposal(Rect::from_size(first), proposal);
+        if placement == child_proposal {
+            first
+        } else {
+            resolved.resolve(proposal, child.measure(placement).size)
+        }
     }
 
     fn place(
@@ -183,40 +197,29 @@ impl Layout for FrameLayout {
         let mut adjusted_dimensions = child_dimensions;
         adjusted_dimensions.size = final_child_size;
 
-        // Calculate the child's origin point (top-left) based on alignment.
+        // The child sits with its guide on the frame's alignment line,
+        // wherever that guide lies; a child larger than the frame overflows.
         let horizontal = self.alignment.horizontal();
-        let horizontal_target = if horizontal == HorizontalAlignment::Leading {
-            0.0
-        } else if horizontal == HorizontalAlignment::Trailing {
-            bounds.width()
-        } else if horizontal == HorizontalAlignment::Center {
-            bounds.width() * 0.5
-        } else {
-            adjusted_dimensions
-                .horizontal(horizontal)
-                .clamp(0.0, final_child_size.width)
-        };
-        let child_x = bounds.x() + horizontal_target
-            - adjusted_dimensions
-                .horizontal(horizontal)
-                .clamp(0.0, final_child_size.width);
+        let guide_x = adjusted_dimensions.horizontal(horizontal);
+        let child_x = bounds.x()
+            + container_line(
+                bounds.width(),
+                LineAnchor::horizontal(horizontal),
+                guide_x,
+                final_child_size.width - guide_x,
+            )
+            - guide_x;
 
         let vertical = self.alignment.vertical();
-        let vertical_target = if vertical == VerticalAlignment::Top {
-            0.0
-        } else if vertical == VerticalAlignment::Bottom {
-            bounds.height()
-        } else if vertical == VerticalAlignment::Center {
-            bounds.height() * 0.5
-        } else {
-            adjusted_dimensions
-                .vertical(vertical)
-                .clamp(0.0, final_child_size.height)
-        };
-        let child_y = bounds.y() + vertical_target
-            - adjusted_dimensions
-                .vertical(vertical)
-                .clamp(0.0, final_child_size.height);
+        let guide_y = adjusted_dimensions.vertical(vertical);
+        let child_y = bounds.y()
+            + container_line(
+                bounds.height(),
+                LineAnchor::vertical(vertical),
+                guide_y,
+                final_child_size.height - guide_y,
+            )
+            - guide_y;
 
         vec![SubviewPlacement::new(
             Rect::new(Point::new(child_x, child_y), final_child_size),
