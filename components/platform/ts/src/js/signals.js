@@ -31,7 +31,17 @@ let Owner = null;
 
 let batchDepth = 0;
 let flushing = false;
+// How many computations are mid-`evaluate`. Writes inside an evaluation must
+// not flush: the node being evaluated is in the queue and cannot re-run until
+// its own run finishes, so draining happens when the outermost evaluation
+// ends.
+let evaluatingDepth = 0;
 const effectQueue = [];
+
+// A flush that keeps finding work past this point is a reactive cycle —
+// effects writing each other's sources forever. Legitimate propagation runs
+// each queued effect once, so the bound is generous, not tight.
+const MAX_FLUSH_EVALUATIONS = 10000;
 
 const referenceEquals = (a, b) => a === b;
 const neverEquals = () => false;
@@ -124,6 +134,11 @@ function updateIfNecessary(node) {
     node.state = CLEAN;
     return;
   }
+  if (node.evaluating) {
+    // The only way to reach a mid-evaluation node through a pull is a true
+    // dependency cycle — its value is being recomputed right now.
+    throw new Error("waterui: circular dependency in a computation");
+  }
   if (node.state === CHECK) {
     for (const source of node.sources) {
       if (source.compute !== null) {
@@ -137,17 +152,31 @@ function updateIfNecessary(node) {
   if (node.state === DIRTY) {
     evaluate(node);
   }
-  node.state = CLEAN;
+  // `evaluate` leaves the node CLEAN unless it re-marked itself mid-run —
+  // a write to one of its own sources. That mark is real: the node is queued
+  // again and will re-run from the flush, so only settle a node still in
+  // CHECK here.
+  if (node.state === CHECK) {
+    node.state = CLEAN;
+  }
 }
 
 function flushEffects() {
-  if (batchDepth > 0 || flushing) {
+  if (batchDepth > 0 || flushing || evaluatingDepth > 0) {
     return;
   }
   flushing = true;
+  let runs = 0;
   try {
     // A write inside an effect can queue more effects; drain until empty.
     while (effectQueue.length > 0) {
+      if (runs >= MAX_FLUSH_EVALUATIONS) {
+        effectQueue.length = 0;
+        throw new Error(
+          `waterui: effects did not settle within ${MAX_FLUSH_EVALUATIONS} evaluations — a reactive cycle keeps re-scheduling work`,
+        );
+      }
+      runs += 1;
       const effect = effectQueue.shift();
       effect.queued = false;
       updateIfNecessary(effect);
@@ -189,9 +218,10 @@ function evaluate(node) {
   const previous = node.value;
   let next;
   node.evaluating = true;
-  // Present as clean while running: a reader that reaches this node
-  // mid-evaluation (a write inside the function flushing queued effects)
-  // sees the previous value and gets marked again when the new one lands.
+  evaluatingDepth += 1;
+  // Present as clean while running: a write to one of this node's own sources
+  // re-marks it DIRTY and queues it, and the mark survives — it converges on
+  // the re-run rather than being swallowed by the caller's settle.
   node.state = CLEAN;
   try {
     next = node.compute(previous);
@@ -200,8 +230,12 @@ function evaluate(node) {
     throw error;
   } finally {
     node.evaluating = false;
+    evaluatingDepth -= 1;
     Listener = prevListener;
     Owner = prevOwner;
+    if (evaluatingDepth === 0) {
+      flushEffects();
+    }
   }
 
   if (node.isEffect) {
@@ -286,7 +320,6 @@ export function createMemo(compute, options) {
   node.compute = compute;
   node.equals = equalsOf(options);
   evaluate(node);
-  node.state = CLEAN;
   const memo = function () {
     return readTracked(node);
   };
@@ -308,7 +341,6 @@ export function createEffect(fn) {
   node.compute = fn;
   node.isEffect = true;
   evaluate(node);
-  node.state = CLEAN;
 }
 
 /**
@@ -513,10 +545,28 @@ const storeHandler = {
     return Reflect.ownKeys(target);
   },
   set(target, key, value) {
+    const node = nodeFor(target);
+    // Truncating an array by `length` removes indices without going through
+    // deleteProperty — notify every dropped index and the key set explicitly.
+    if (Array.isArray(target) && key === "length") {
+      const next = unwrapStore(value);
+      const previous = target.length;
+      for (let i = next; i < previous; i += 1) {
+        const indexKey = String(i);
+        if (indexKey in target) {
+          delete target[indexKey];
+          node.children.delete(indexKey);
+          notifyProp(node, indexKey);
+        }
+      }
+      target.length = next;
+      bumpKeys(node);
+      notifyProp(node, "length");
+      return true;
+    }
     const raw = unwrapStore(value);
     const had = Object.prototype.hasOwnProperty.call(target, key);
     target[key] = raw;
-    const node = nodeFor(target);
     if (!had) {
       bumpKeys(node);
     }

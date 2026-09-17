@@ -1,6 +1,6 @@
 // Type surface for contexts.js — the built-in environment contexts.
 
-import type { Signal } from "./signals.js";
+import type { Accessor } from "./signals.js";
 import type { Element } from "./jsx-runtime.js";
 import type { Handle } from "./host.js";
 
@@ -24,14 +24,18 @@ export interface SafeArea {
   trailing: number;
 }
 
-/** The ambient theme signal. Only available inside a mounted tree. */
-export declare function useTheme(): Signal<Theme>;
+/**
+ * The ambient theme. Read-only: the value is owned by the host's environment
+ * (it may be a memo), so it is declared as an `Accessor`. Only available
+ * inside a mounted tree.
+ */
+export declare function useTheme(): Accessor<Theme>;
 
-/** The ambient locale signal. Only available inside a mounted tree. */
-export declare function useLocale(): Signal<Locale>;
+/** The ambient locale. Read-only like `useTheme`; host-owned. */
+export declare function useLocale(): Accessor<Locale>;
 
-/** The ambient safe-area insets signal. Only available inside a mounted tree. */
-export declare function useSafeArea(): Signal<SafeArea>;
+/** The ambient safe-area insets. Read-only like `useTheme`; host-owned. */
+export declare function useSafeArea(): Accessor<SafeArea>;
 
 export interface Mounted {
   handle: Handle;

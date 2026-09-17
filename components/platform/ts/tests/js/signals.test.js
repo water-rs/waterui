@@ -171,6 +171,45 @@ describe("propagation", () => {
       dispose();
     });
   });
+
+  test("a write to an observed signal inside an effect converges", () => {
+    const value = createSignal(0);
+    let runs = 0;
+    createRoot((dispose) => {
+      createEffect(() => {
+        const v = value();
+        runs += 1;
+        if (v < 3) {
+          value.set(v + 1);
+        }
+      });
+      // Converges on the first run, not a circular-dependency error.
+      expect(value()).toBe(3);
+      expect(runs).toBe(4);
+      // And on re-runs — the self-mark must not be swallowed either.
+      value.set(0);
+      expect(value()).toBe(3);
+      expect(runs).toBe(8);
+      dispose();
+    });
+  });
+
+  test("a write cycle between effects throws instead of hanging", () => {
+    const a = createSignal(0);
+    const b = createSignal(0);
+    expect(() =>
+      createRoot(() => {
+        createEffect(() => {
+          a();
+          b.update((v) => v + 1);
+        });
+        createEffect(() => {
+          b();
+          a.update((v) => v + 1);
+        });
+      }),
+    ).toThrow(/did not settle/);
+  });
 });
 
 describe("ownership", () => {
@@ -327,6 +366,26 @@ describe("stores", () => {
       });
       setStore("b", 2);
       expect(seen).toBe(2);
+      dispose();
+    });
+  });
+
+  test("truncating an array by `length` notifies dropped-index readers", () => {
+    const [store] = createStore({ items: [10, 20, 30] });
+    let seen = 0;
+    let keyCount = 0;
+    createRoot((dispose) => {
+      createEffect(() => {
+        seen = store.items[2];
+      });
+      createEffect(() => {
+        keyCount = Object.keys(store.items).length;
+      });
+      store.items.length = 1;
+      expect(seen).toBeUndefined();
+      expect(store.items.length).toBe(1);
+      // Only "0" remains enumerable.
+      expect(keyCount).toBe(1);
       dispose();
     });
   });

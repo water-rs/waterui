@@ -1,7 +1,7 @@
 // Type surface for components.js — control flow as real components.
 
 import type { Accessor, MaybeReactive } from "./signals.js";
-import type { Element, ModifierProps } from "./jsx-runtime.js";
+import type { Element } from "./jsx-runtime.js";
 
 export interface ShowProps<T> {
   /** Presents `children` while this reads truthy. */
@@ -29,12 +29,18 @@ export interface SuspenseProps {
 
 export declare function Suspense(props: SuspenseProps): Element;
 
-export interface BoxProps extends ModifierProps {
+export interface BoxProps {
   /**
    * Exactly one element. `Box` creates no node: its modifier attributes
    * apply to this child in written order.
    */
   children: Element;
+  /**
+   * Applied in written order; reordering changes the result. The accepted
+   * names are the catalog's modifier set — the host's `modifiers` — spelled
+   * concretely by the generated component typings.
+   */
+  [modifier: string]: unknown;
 }
 
 export declare function Box(props: BoxProps): Element;

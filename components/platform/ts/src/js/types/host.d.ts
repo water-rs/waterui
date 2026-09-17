@@ -18,23 +18,28 @@ export interface HostEnvironment {
   safeArea: unknown;
 }
 
+/** Anywhere a value can be dynamic: constant, signal, accessor, or host value. */
+export type ReactiveInput<T> = MaybeReactive<T> | HostReactive<T>;
+
 /** The native host table. Specified in full in HOST.md. */
 export interface Host {
   create(component: string, config: object, children: unknown[]): Handle;
   modify(handle: Handle, name: string, value: unknown): Handle;
   text(content: MaybeReactive<string | number>): Handle;
   show(
-    when: Accessor<unknown>,
+    when: ReactiveInput<unknown>,
     render: (item: Accessor<unknown>) => Branch,
     fallback?: () => Branch,
   ): Handle;
   each(
-    each: Accessor<readonly unknown[]>,
+    each: ReactiveInput<readonly unknown[]>,
     render: (item: unknown, index: Accessor<number>) => Branch,
     by?: (item: unknown) => unknown,
   ): Handle;
   suspense(children: () => Branch, fallback?: () => Branch): Handle;
   environment(): HostEnvironment;
+  /** The catalog's modifier attribute names — the runtime keeps no table of its own. */
+  modifiers: ReadonlySet<string>;
 }
 
 /** A host-side reactive value: read plus push subscription. */
@@ -67,5 +72,13 @@ export declare function subscribe<T>(
 /** Lifts `T | Signal<T> | (() => T)` to an accessor. */
 export declare function toAccessor<T>(value: MaybeReactive<T> | HostReactive<T>): Accessor<T>;
 
-/** Materializes a reactive-or-plain input as a real `Signal<T>`. */
-export declare function toSignal<T>(source: MaybeReactive<T> | HostReactive<T>): Signal<T>;
+/**
+ * Materializes a reactive-or-plain input as a runtime-tracked reactive value.
+ * A signal passes through and stays writable; a `{ read, subscribe }` host
+ * value becomes a writable signal that pushes through `subscribe`; a thunk or
+ * memo is read-only, so the return type is `Signal<T> | Accessor<T>` — treat
+ * the result as an `Accessor<T>` unless the input was a `Signal<T>`.
+ */
+export declare function toSignal<T>(
+  source: MaybeReactive<T> | HostReactive<T>,
+): Signal<T> | Accessor<T>;

@@ -114,4 +114,46 @@ describe("jsx", () => {
     expect(handle.modifiers[0][0]).toBe("frame");
     expect(typeof handle.modifiers[0][1]).toBe("function");
   });
+
+  test("getter props reach the host as accessors, not snapshots", () => {
+    const count = createSignal(0);
+    const handle = jsx("Text", {
+      children: "x",
+      get padding() {
+        return count();
+      },
+      get gap() {
+        return count();
+      },
+    });
+    expect(handle.modifiers[0][0]).toBe("padding");
+    expect(typeof handle.modifiers[0][1]).toBe("function");
+    expect(handle.modifiers[0][1]()).toBe(0);
+    expect(typeof handle.config.gap).toBe("function");
+    count.set(4);
+    // The host observes the update through the accessor it was handed.
+    expect(handle.modifiers[0][1]()).toBe(4);
+    expect(handle.config.gap()).toBe(4);
+  });
+
+  test("a children getter reaches the host as a reactive slot", () => {
+    const count = createSignal(0);
+    const handle = jsx("Text", {
+      get children() {
+        return count();
+      },
+    });
+    expect(typeof handle.children[0]).toBe("function");
+    expect(handle.children[0]()).toBe(0);
+    count.set(9);
+    expect(handle.children[0]()).toBe(9);
+  });
+
+  test("a host without the modifier set is rejected", () => {
+    uninstallHost();
+    const bare = createFakeHost();
+    delete bare.modifiers;
+    expect(() => installHost(bare)).toThrow(/modifiers/);
+    installHost(host);
+  });
 });

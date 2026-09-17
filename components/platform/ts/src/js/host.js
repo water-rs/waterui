@@ -56,6 +56,10 @@ export { isAccessor, isMemo, isSignal };
  * @property {(each: unknown, render: (item: unknown, index: () => number) => Branch, by?: (item: unknown) => unknown) => Handle} each
  * @property {(children: () => Branch, fallback?: () => Branch) => Handle} suspense
  * @property {() => HostEnvironment} environment
+ * @property {ReadonlySet<string>} modifiers - The catalog's modifier
+ *   attribute names. The runtime splits config from modifier attributes
+ *   against it and rejects spread-carried modifiers; the Rust host table
+ *   provides it because the catalog is the single source of truth.
  */
 
 let installedHost = null;
@@ -74,6 +78,15 @@ export function installHost(host) {
     if (typeof host[name] !== "function") {
       throw new TypeError(`waterui host is missing the "${name}" entry — see HOST.md`);
     }
+  }
+  if (
+    host.modifiers === null ||
+    typeof host.modifiers !== "object" ||
+    typeof host.modifiers.has !== "function"
+  ) {
+    throw new TypeError(
+      'waterui host is missing the "modifiers" entry — a ReadonlySet<string> of the catalog\'s modifier names, see HOST.md',
+    );
   }
   installedHost = host;
 }

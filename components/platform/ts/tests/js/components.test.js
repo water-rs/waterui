@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { installHost, uninstallHost } from "../../src/js/host.js";
 import { Box, For, Show, Suspense } from "../../src/js/components.js";
-import { jsx } from "../../src/js/jsx-runtime.js";
+import { jsx, spreadProps } from "../../src/js/jsx-runtime.js";
 import { createRoot, createSignal, onCleanup } from "../../src/js/signals.js";
 import { createFakeHost } from "./fake-host.js";
 
@@ -76,6 +76,25 @@ describe("Show", () => {
       dispose();
     });
   });
+
+  test("a `when` getter reaches the host as an accessor and stays live", () => {
+    const flag = createSignal(false);
+    createRoot((dispose) => {
+      const slot = jsx(Show, {
+        get when() {
+          return flag();
+        },
+        fallback: () => jsx("Text", { children: "off" }),
+        children: () => jsx("Text", { children: "on" }),
+      });
+      expect(slot.branch.handle.children).toEqual(["off"]);
+      flag.set(true);
+      expect(slot.branch.handle.children).toEqual(["on"]);
+      flag.set(false);
+      expect(slot.branch.handle.children).toEqual(["off"]);
+      dispose();
+    });
+  });
 });
 
 describe("For", () => {
@@ -120,6 +139,22 @@ describe("For", () => {
     });
   });
 
+  test("an `each` getter reaches the host as an accessor and stays live", () => {
+    const items = createSignal([{ id: 1 }]);
+    createRoot((dispose) => {
+      const slot = jsx(For, {
+        get each() {
+          return items();
+        },
+        children: (item) => row(item),
+      });
+      expect(slot.entries).toHaveLength(1);
+      items.set([{ id: 1 }, { id: 2 }]);
+      expect(slot.entries).toHaveLength(2);
+      dispose();
+    });
+  });
+
   test("a non-function child fails loudly", () => {
     expect(() =>
       createRoot(() => jsx(For, { each: [], children: "nope" })),
@@ -135,6 +170,25 @@ describe("Suspense", () => {
         children: () => jsx("Text", { children: "ready" }),
       });
       expect(slot.branch.handle.children).toEqual(["ready"]);
+      dispose();
+    });
+  });
+
+  test("presents the fallback while pending, then the children", () => {
+    const log = [];
+    createRoot((dispose) => {
+      host.setPending(true);
+      const slot = jsx(Suspense, {
+        fallback: () => {
+          onCleanup(() => log.push("fallback disposed"));
+          return jsx("Text", { children: "loading" });
+        },
+        children: () => jsx("Text", { children: "ready" }),
+      });
+      expect(slot.branch.handle.children).toEqual(["loading"]);
+      host.setPending(false);
+      expect(slot.branch.handle.children).toEqual(["ready"]);
+      expect(log).toEqual(["fallback disposed"]);
       dispose();
     });
   });
@@ -169,5 +223,20 @@ describe("Box", () => {
     expect(() =>
       createRoot(() => jsx(Box, { children: child, gap: 4 })),
     ).toThrow(/"gap"/);
+  });
+
+  test("rejects children that are not host elements", () => {
+    for (const child of ["text", 0, false]) {
+      expect(() =>
+        createRoot(() => jsx(Box, { children: child })),
+      ).toThrow(/<Box>/);
+    }
+  });
+
+  test("a spread carrying a modifier throws, naming attribute and element", () => {
+    const child = jsx("Text", {});
+    expect(() =>
+      createRoot(() => jsx(Box, spreadProps({ children: child, padding: 8 }))),
+    ).toThrow(/"padding".*<Box>|<Box>.*"padding"/);
   });
 });

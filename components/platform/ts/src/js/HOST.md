@@ -8,15 +8,17 @@ the `waterui` virtual module, and `uninstallHost()` when the bundle unloads.
 Everything the runtime hands the host is one of four shapes:
 
 - **`Handle`** — an opaque native view handle produced by the host. The JS
-  side stores and passes it but never inspects it.
+  side stores and passes it but never inspects it. Handles are objects;
+  `<Box>` relies on that to reject primitive children.
 - **`Branch`** — `{ handle: Handle, dispose(): void }`. Each control-flow
   render callback runs under a fresh reactive scope and returns a `Branch`.
   The host owns *when* a branch is presented and calls `dispose` exactly once
   when the branch stops being presented; `dispose` runs the branch's
   `onCleanup`s and tears down its signals and effects.
 - **Reactive input** — anywhere a value is dynamic the runtime passes the
-  user-supplied form through verbatim: `T | Signal<T> | (() => T)`. The host
-  distinguishes and materializes them with the helpers exported from
+  user-supplied form through verbatim:
+  `T | Signal<T> | (() => T) | { read(): T, subscribe?(cb): dispose }`. The
+  host distinguishes and materializes them with the helpers exported from
   `host.js`:
   - `isSignal(v)` / `isAccessor(v)` — classify. A `Signal` is callable
     (`v()`) and writable (`v.set`, `v.update`); a plain function or a
@@ -30,6 +32,13 @@ Everything the runtime hands the host is one of four shapes:
     accessor as a Rust `Computed<T>` by subscribing and writing into the Rust
     side, and materializes a `Signal<T>` as a `Binding<T>` by additionally
     forwarding Rust writes through `write`.
+  - `toAccessor(v)` — lifts any reactive input to a plain `() => T`.
+  - `toSignal(v)` — materializes any reactive input as a reactive value the
+    runtime tracks: signals and memos pass through, `{ read, subscribe }`
+    values become push-fed signals (the subscription dies with the current
+    owner), thunks become memos, constants become constant signals.
+    `mount`'s environment seeding and the reference host in the test suite
+    both go through it.
 - **Plain values** — configuration data crossing as ordinary JS values.
 
 ```js
@@ -42,6 +51,7 @@ Everything the runtime hands the host is one of four shapes:
  * @property {(each: unknown, render: (item: unknown, index: () => number) => Branch, by?: (item: unknown) => unknown) => Handle} each
  * @property {(children: () => Branch, fallback?: () => Branch) => Handle} suspense
  * @property {() => HostEnvironment} environment
+ * @property {ReadonlySet<string>} modifiers
  */
 ```
 
@@ -51,20 +61,22 @@ Creates a native view. `component` is the WaterUI component name from the JSX
 tag (`"VStack"`, `"Text"`, `"Toggle"`, …) — the host resolves it against the
 component catalog and must throw on an unknown name.
 
-`config` carries the component's configuration attributes as getter-props:
-each property is a getter the host reads when it needs the value. Values are
-reactive inputs (`T | Signal<T> | (() => T)`) or plain constants per the
-rules above. `on*` attributes are event callbacks and are invoked, never
-subscribed.
+`config` carries the component's configuration attributes. The transform's
+getter-props are already resolved: a dynamic attribute arrives as an
+accessor, so every config value is a reactive input
+(`T | Signal<T> | (() => T)`) or a plain constant — the host never sees a
+property getter and must not read the property eagerly. `on*` attributes are
+event callbacks and are invoked, never subscribed.
 
 `children` is the normalized child list: an array whose elements are
 `Handle | string | number | boolean | null | Accessor<…>`. `null`, `undefined`,
 and booleans are already filtered; nested arrays are already flattened. String
 and number elements are materialized with `text`. An accessor element is a
 reactive child slot: the host subscribes to it and swaps the child when it
-produces a new element. For components with a label slot (`Button`, `Toggle`,
-…) the children are the label; `config.label` is the explicit form and takes
-precedence when both are present.
+produces a new element (an accessor may also yield a list, which the host
+normalizes the same way). For components with a label slot (`Button`,
+`Toggle`, …) the children are the label; `config.label` is the explicit form
+and takes precedence when both are present.
 
 ## `modify(handle, name, value) -> Handle`
 
@@ -118,6 +130,15 @@ is a constant, a `Signal`, a thunk, or a host-side
 each into a `Signal` seeded from `read()` and updated through `subscribe`, and
 publishes them as the built-in contexts behind `useTheme()`, `useLocale()`,
 and `useSafeArea()`.
+
+## `modifiers: ReadonlySet<string>`
+
+The set of attribute names that are view modifiers (`"padding"`,
+`"background"`, …) — the names the Rust component catalog declares as
+modifiers. The catalog is the single source of truth, so the runtime keeps
+no table of its own: `installHost` requires this entry, `jsx` uses it to
+split modifier attributes from configuration attributes and to drive the
+spread backstop, and `Box` uses it to validate its attributes.
 
 ## `mount(render) -> { handle, dispose }`
 

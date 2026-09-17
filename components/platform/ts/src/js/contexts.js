@@ -2,9 +2,10 @@
 //
 // Theme, locale, and safe area are framework-owned environment values. The
 // host provides them at mount through `environment()`; `mount` materializes
-// each into a signal — seeded from the host's `read()` and kept live through
-// the host's `subscribe()` — and publishes them on the root owner, where
-// `useContext` resolves them for the whole tree.
+// each through `toSignal` — seeded from the host's `read()` and kept live
+// through the host's `subscribe()` — and publishes them on the root owner,
+// where `useContext` resolves them for the whole tree. They are read-only
+// accessors from the JS side: writes live on the host.
 
 import { getHost, toSignal } from "./host.js";
 import { createContext, createRoot, getOwner, useContext } from "./signals.js";
@@ -21,17 +22,17 @@ function required(context, name) {
   return value;
 }
 
-/** The ambient theme signal: color scheme and theme tokens. */
+/** The ambient theme: color scheme and theme tokens. */
 export function useTheme() {
   return required(ThemeContext, "useTheme");
 }
 
-/** The ambient locale signal. */
+/** The ambient locale. */
 export function useLocale() {
   return required(LocaleContext, "useLocale");
 }
 
-/** The ambient safe-area insets signal. */
+/** The ambient safe-area insets. */
 export function useSafeArea() {
   return required(SafeAreaContext, "useSafeArea");
 }
