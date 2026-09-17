@@ -1,3 +1,7 @@
+/* glibc exposes `dladdr`/`Dl_info` only under `_GNU_SOURCE`, which has to be
+ * defined before the first libc header is read. */
+#define _GNU_SOURCE
+
 #include "waterui_wpe.h"
 
 #include <dlfcn.h>
@@ -736,10 +740,9 @@ WaterWpePage *water_wpe_page_new(
         "user-content-manager",
         page->content_manager,
         NULL));
-    WebKitSettings *settings = webkit_web_view_get_settings(page->web_view);
-    webkit_settings_set_hardware_acceleration_policy(
-        settings,
-        WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS);
+    /* The 2.0 API removed `webkit_settings_set_hardware_acceleration_policy`:
+     * the WPE platform is always hardware-accelerated, which is the policy
+     * this bridge used to request. */
     page->view = webkit_web_view_get_wpe_view(page->web_view);
     g_assert(WATER_IS_VIEW(page->view));
     ((WaterView *)page->view)->page = page;
@@ -1131,10 +1134,13 @@ void water_wpe_page_set_cookie(WaterWpePage *page, const char *cookie)
 {
     const char *uri = webkit_web_view_get_uri(page->web_view);
     g_assert(uri != NULL);
-    SoupCookie *parsed = soup_cookie_parse(cookie, uri);
+    GUri *origin = g_uri_parse(uri, SOUP_HTTP_URI_FLAGS, NULL);
+    g_assert(origin != NULL);
+    SoupCookie *parsed = soup_cookie_parse(cookie, origin);
+    g_uri_unref(origin);
     g_assert(parsed != NULL);
-    WebKitCookieManager *manager = webkit_website_data_manager_get_cookie_manager(
-        webkit_web_view_get_website_data_manager(page->web_view));
+    WebKitCookieManager *manager = webkit_network_session_get_cookie_manager(
+        webkit_web_view_get_network_session(page->web_view));
     webkit_cookie_manager_add_cookie(
         manager,
         parsed,
@@ -1231,8 +1237,8 @@ void water_wpe_page_get_cookies(
 {
     const char *uri = webkit_web_view_get_uri(page->web_view);
     g_assert(uri != NULL);
-    WebKitCookieManager *manager = webkit_website_data_manager_get_cookie_manager(
-        webkit_web_view_get_website_data_manager(page->web_view));
+    WebKitCookieManager *manager = webkit_network_session_get_cookie_manager(
+        webkit_web_view_get_network_session(page->web_view));
     WaterWpeAsyncResult *async = g_new0(WaterWpeAsyncResult, 1);
     async->callback = callback;
     async->user_data = user_data;
