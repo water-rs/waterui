@@ -293,17 +293,11 @@ fn ts_avatar_is_an_avatar() {
         &module(r#"waterui.jsx("Avatar", { name: "Ada Lovelace" })"#),
         Avatar::new(text("Ada Lovelace"), || ()),
     );
-    assert_same(
-        "Avatar with a picture",
-        &module(
-            r#"waterui.jsx("Avatar", {
-                name: "Ada Lovelace",
-                image: "https://waterui.dev/ada.png",
-            })"#,
-        ),
-        Avatar::new(text("Ada Lovelace"), || ())
-            .image(waterui::Url::parse("https://waterui.dev/ada.png").expect("a valid URL")),
-    );
+    // An avatar's picture has no equivalence case. `Avatar::body` ends in
+    // `.a11y_children(ExcludeDescendants)`, so the picture never reaches the
+    // accessibility tree and the two trees are identical whether the `image`
+    // attribute was read or dropped. What holds that arm honest is the refusal
+    // below, which an arm that never looks at the value cannot produce.
 }
 
 #[test]
@@ -1019,14 +1013,11 @@ fn ts_a_tap_reaches_the_javascript_handler() {
     );
 }
 
-#[test]
-fn ts_clip_takes_a_corner_radius() {
-    assert_same(
-        "clip by corner radius",
-        &module(r#"waterui.jsx("Text", { clip: { cornerRadius: 8 }, children: "Rounded" })"#),
-        text("Rounded").clip(waterui::shape::RoundedRectangle::new(8.0)),
-    );
-}
+// `clip` has no equivalence case either: a clip is purely visual and changes
+// neither a node, a label, an action nor a bound, so both trees are the same
+// tree whether the shape was read or thrown away. The two refusals below —
+// a shape the catalog does not name, and a rounded clip with no radius — are
+// what an arm that drops the value cannot produce.
 
 #[test]
 fn ts_accessibility_attributes_reach_the_tree() {
