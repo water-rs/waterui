@@ -11,32 +11,32 @@
 //!
 //! # What is in it, and what is not
 //!
-//! The catalog covers the components whose realization is a native primitive
-//! and whose Rust constructor can be driven by the shapes JavaScript hands
-//! over. Two boundaries decide the rest, and both are structural rather than a
-//! matter of effort:
+//! The catalog lives in the facade because the facade is the one crate that
+//! reaches every component and composer `WaterUI` exports. `List`, `Progress`,
+//! `Link`, `Card`, `Badge`, `Table`, `Accordion` and `Avatar` are defined in
+//! it, and `opacity`, `shadow`, `border`, `clip`, `foreground` and `disabled`
+//! are its own `ViewExt` methods; the runtime crate cannot depend back on it
+//! without a cycle, which is why nothing here sits on that side of the edge.
 //!
-//! * A component that lives in the `waterui` facade rather than in a component
-//!   crate — `List`, `Progress`, `Link`, `Card` — is unreachable from here.
-//!   The facade depends on this crate under its `ts` feature, so a dependency
-//!   back would be a cycle. Those components join the catalog when their
-//!   implementations move into component crates, which is where every other
-//!   component already lives.
-//! * A component whose content is a *builder* rather than a view — a
-//!   navigation destination, a tab's root, which `ViewBuilder::build` may call
-//!   again at any time — needs a JavaScript render function the props schema
-//!   cannot yet type: there is no node for "a function returning a view", and a
-//!   view that crossed once cannot be handed over twice.
-//! * An image has no native counterpart a JavaScript value constructs. A
-//!   bundled image is an `ImageAsset`, whose handle the asset macros produce at
-//!   compile time, and the URL-backed `Photo` lives in `waterui-media`, whose
-//!   graph is the video stack, an HTTP client and the GPU image decoder. A
-//!   TypeScript application linking all of that to show a picture is the
-//!   package-size boundary the framework draws, not a detail, so `<Image>`
-//!   waits for the decision about which of the two it is.
+//! Two structural boundaries remain, and both are about what a build actually
+//! contains rather than about effort:
 //!
-//! Neither gap is papered over with a half-working entry, because a container
-//! whose destinations cannot be built is a promise the runtime cannot keep.
+//! * `<Image>` exists only when the facade's `media` feature is on. The entry
+//!   and the arm that builds it carry the same `#[cfg]`, so a build without
+//!   that feature declares no `<Image>` and a JSX tag naming one is refused by
+//!   the same error any unknown tag gets. The alternative — declaring it
+//!   always and failing at build time — would put a component in the `.d.ts`
+//!   that the linked application cannot render. That gate is Principle 5: a
+//!   TypeScript application that never shows a picture must not link the
+//!   media graph, so the vocabulary follows the feature rather than the
+//!   feature following the vocabulary.
+//! * A component whose content is a *builder* — a navigation destination, a
+//!   tab's root — takes a JavaScript render function rather than a view,
+//!   typed as [`TypeSchema::ViewBuilder`] and projected as `() => JSX.Element`.
+//!   Every `ViewBuilder::build` calls it again, which is what lets a
+//!   destination be entered twice. A component that needs a view handed over
+//!   once and reused, rather than rebuilt, still has no entry: a value that
+//!   crossed the bridge once cannot cross again.
 
 mod attributes;
 mod values;
