@@ -86,6 +86,7 @@ jobs:
       code: ${{ steps.prose.outputs.code == 'true' || steps.filter.outputs.workflows == 'true' }}
       ffi: ${{ steps.filter.outputs.ffi == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
+      scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'push'
@@ -103,6 +104,9 @@ jobs:
               - "**/Cargo.toml"
               - "**/Cargo.lock"
               - "deny.toml"
+            scripts:
+              - ".github/scripts/**"
+              - "Cargo.toml"
             workflows:
               - ".github/workflows/**"
               - ".github/actions/**"
@@ -128,6 +132,21 @@ jobs:
       # Pinned: on `@master` the tool upgrades itself, and a new dictionary
       # turns a green job red with no change to the repository.
       - uses: crate-ci/typos@v1.49.0
+
+  # The release scripts derive the certified `framework.json` from the root
+  # manifest; their tests pin that derivation to the tree, so they run whenever
+  # the scripts or the manifest change.
+  scripts:
+    name: Release scripts
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Manifest derivation tests
+        run: uv run --with pytest pytest .github/scripts
 
   # Security audit, license check and unused-dependency check are each a cheap
   # metadata pass over the dependency graph, but were previously three separate
