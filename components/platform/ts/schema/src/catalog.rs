@@ -304,12 +304,14 @@ pub fn decode_catalog(payload: &[u8]) -> Result<Catalog, DecodeError> {
             expected: FORMAT_VERSION,
         });
     }
-    if payload.get(reader.pos) != Some(&kind::CATALOG) {
+    // Read rather than peeked: a payload that ends after the version byte is
+    // truncated, not a payload of another kind.
+    let found = reader.byte()?;
+    if found != kind::CATALOG {
         return Err(DecodeError::NotACatalog {
-            found: payload_kind(payload.get(reader.pos).copied()),
+            found: payload_kind(found),
         });
     }
-    reader.pos += 1;
 
     let count = reader.length()?;
     if count == 0 {

@@ -107,11 +107,11 @@ pub(crate) mod runtime_part {
 
 /// What the byte after the version says a payload is, for the error a decoder
 /// handed the wrong kind raises.
-pub(crate) const fn payload_kind(byte: Option<u8>) -> &'static str {
+pub(crate) const fn payload_kind(byte: u8) -> &'static str {
     match byte {
-        Some(kind::CATALOG) => "a component catalog",
-        Some(kind::MOUNT) => "a mount point",
-        Some(kind::RUNTIME_HALF) => "a runtime fingerprint half",
+        kind::CATALOG => "a component catalog",
+        kind::MOUNT => "a mount point",
+        kind::RUNTIME_HALF => "a runtime fingerprint half",
         _ => "a props type tree",
     }
 }

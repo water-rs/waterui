@@ -863,6 +863,20 @@ mod mount {
         );
     }
 
+    /// A payload that stops after its version byte has no kind byte to read:
+    /// it is truncated, not a payload of the default kind.
+    #[test]
+    fn a_payload_that_ends_after_the_version_is_truncated_for_every_decoder() {
+        let version = [crate::FORMAT_VERSION];
+        for error in [
+            decode_mount(&version).expect_err("no kind byte to be a mount point"),
+            crate::decode_catalog(&version).expect_err("no kind byte to be a catalog"),
+            crate::decode_runtime_half(&version).expect_err("no kind byte to be a runtime half"),
+        ] {
+            assert_eq!(error, crate::DecodeError::Truncated { offset: 1 });
+        }
+    }
+
     #[test]
     fn trailing_bytes_after_the_hash_are_refused() {
         let mut bytes = payload(&ENCODED).to_vec();

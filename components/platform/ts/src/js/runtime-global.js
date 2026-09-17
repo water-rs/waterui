@@ -2,10 +2,11 @@
 //
 // A bundle is a classic script: nothing it declares is reachable from Rust,
 // because the engine hands back only the completion value. The CLI-generated
-// bundle entry therefore ends with one call — `installRuntimeGlobal(modules)` —
-// and everything the bridge needs is on `globalThis.__waterui_runtime` from
-// that moment on: the reactive helpers it drives the seam with, the host
-// installer, `mount`, and the module table.
+// bundle entry therefore ends with one call —
+// `installRuntimeGlobal(modules, contracts)` — and everything the bridge needs
+// is on `globalThis.__waterui_runtime` from that moment on: the reactive
+// helpers it drives the seam with, the host installer, `mount`, the module
+// table and the contract table beside it.
 //
 // The Rust side reads each entry by name and refuses a bundle that is missing
 // one, so this file and `waterui-ts`'s `RuntimeGlobal` are two halves of the

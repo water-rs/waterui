@@ -200,12 +200,11 @@ pub fn decode(payload: &[u8]) -> Result<owned::Schema, DecodeError> {
             expected: FORMAT_VERSION,
         });
     }
-    if matches!(
-        payload.get(reader.pos),
-        Some(&kind::CATALOG | &kind::MOUNT | &kind::RUNTIME_HALF)
-    ) {
+    if let Some(&found @ (kind::CATALOG | kind::MOUNT | kind::RUNTIME_HALF)) =
+        payload.get(reader.pos)
+    {
         return Err(DecodeError::NotATypeTree {
-            found: crate::format::payload_kind(payload.get(reader.pos).copied()),
+            found: crate::format::payload_kind(found),
         });
     }
     let schema = reader.node()?;
