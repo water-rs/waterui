@@ -307,7 +307,7 @@ jobs:
             echo "AR_aarch64_linux_android=$bin/llvm-ar"
           } >> "$GITHUB_ENV"
       - name: Clippy (aarch64-linux-android)
-        run: cargo clippy -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
+        run: cargo clippy --profile ci-check -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
 
   test:
     name: Test

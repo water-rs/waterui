@@ -95,7 +95,7 @@ jobs:
 
   # Every crate's own optional features, in its own job so the test tarball
   # above holds one feature variant of the dependency graph instead of two
-  # (#362): this job stores only `~/.cargo`, like macos-suites.
+  # (#362): this job stores only `~/.cargo`, like the macOS jobs.
   #
   # Two passes, because the root crate cannot join a workspace-wide
   # `--all-features` here: that turns on `dynamic_linking`, which pulls in
@@ -128,6 +128,9 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - name: Test (root crate, every feature but dynamic_linking)
         run: cargo nextest run --locked --features all --profile ci
+      # The `trybuild_*` binaries each drive a cold fixture build that is
+      # independent of the outer feature set; they already ran once in the
+      # `test` job on this OS, so this pass skips them (see test.yml).
       - name: Test (all features, workspace)
         run: |
           cargo nextest run --locked --workspace --all-features --profile ci `
@@ -137,7 +140,8 @@ jobs:
             --exclude waterui-core `
             --exclude waterui-ffi `
             --exclude waterui-browser-cef `
-            --exclude skill_snippets
+            --exclude skill_snippets `
+            -E 'not binary(/^trybuild_/)'
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
       - name: Upload Test Snapshots
@@ -172,9 +176,9 @@ jobs:
         uses: ./.github/actions/install-dxc
       # Compile the CEF backend without its binary distribution (see the test
       # job for why it cannot be linked here).
-      - run: cargo check --locked -p waterui-browser-cef --features compile-only
+      - run: cargo check --locked --profile ci-check -p waterui-browser-cef --features compile-only
       # Windows-only code is invisible to every other leg: a `cfg(windows)` body
       # is compiled nowhere else, so a lint that fires only there reaches
       # nobody.
       - name: Clippy
-        run: cargo clippy --locked --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
