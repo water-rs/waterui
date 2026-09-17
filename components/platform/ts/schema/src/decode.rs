@@ -363,6 +363,7 @@ impl Reader<'_> {
                 owned::Schema::Union(members)
             }
             tag::VIEW => owned::Schema::View,
+            tag::VIEW_BUILDER => owned::Schema::ViewBuilder,
             tag::CALLBACK => owned::Schema::Callback(self.nodes()?),
             tag::STRUCT => {
                 let name_offset = self.pos;
