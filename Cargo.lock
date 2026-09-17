@@ -10690,7 +10690,7 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?rev=8fe681127e8e9f91e1f518c90020c7b743db5b7a#8fe681127e8e9f91e1f518c90020c7b743db5b7a"
+source = "git+https://github.com/water-rs/math?rev=ffa8e42e4f04ffd2396bf0466eae46a2b9e00c53#ffa8e42e4f04ffd2396bf0466eae46a2b9e00c53"
 dependencies = [
  "kurbo",
  "mathcat",
