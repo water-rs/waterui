@@ -22,6 +22,9 @@ icu_locid = "2.0"
 icu_locid_transform = "2.0"
 toml = "1.1"
 proc-macro-crate = "3"
+# A TypeScript property name is an ECMAScript IdentifierName, whose character
+# classes are the Unicode ID_Start/ID_Continue sets; syn already links this.
+unicode-ident = "1"
 
 [dev-dependencies]
 hydrolysis-m3.workspace = true

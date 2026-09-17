@@ -143,11 +143,18 @@ fn projected_name(field: &syn::Field) -> syn::Result<String> {
                 );
             }
             let name: syn::LitStr = meta.value()?.parse()?;
-            let name = name.value();
-            if name.is_empty() {
-                return Err(meta.error("a property name must not be empty"));
+            let value = name.value();
+            if !is_js_identifier(&value) {
+                return Err(syn::Error::new(
+                    name.span(),
+                    format!(
+                        "`{value}` is not a property name TypeScript can write as `props.{value}`. \
+                         A rename is an identifier: it starts with a letter, `_` or `$` and \
+                         continues with those or digits"
+                    ),
+                ));
             }
-            if renamed.replace(name).is_some() {
+            if renamed.replace(value).is_some() {
                 return Err(meta.error("this field is renamed twice"));
             }
             Ok(())
@@ -156,17 +163,71 @@ fn projected_name(field: &syn::Field) -> syn::Result<String> {
     Ok(renamed.unwrap_or_else(|| ident.unraw().to_string()))
 }
 
+/// Whether `name` is an ECMAScript `IdentifierName`.
+///
+/// Reserved words are deliberately accepted: `props.class` and `props.default`
+/// are legal property accesses, and a Rust field named `r#type` projecting to
+/// `type` is exactly the case raw identifiers exist for. What is rejected is a
+/// name no property access can reach — a space, a dash, a leading digit — which
+/// would compile here and produce a `.d.ts` TypeScript refuses.
+fn is_js_identifier(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    let starts = |character: char| {
+        character == '_' || character == '$' || unicode_ident::is_xid_start(character)
+    };
+    let continues = |character: char| {
+        character == '_'
+            || character == '$'
+            || character == '\u{200c}'
+            || character == '\u{200d}'
+            || unicode_ident::is_xid_continue(character)
+    };
+    starts(first) && characters.all(continues)
+}
+
+/// `(field access, projected property name)` for every named field, with the
+/// projection checked as a whole.
+///
+/// Two fields projecting to one property name is a silent loss: the schema
+/// declares the property twice, `IntoJs` writes it twice and the last write
+/// wins, and `FromJs` reads one field's value into both. It is a compile error
+/// here instead, named at the field that collides.
+fn projected_names(fields: &syn::FieldsNamed) -> syn::Result<Vec<(&Ident, String)>> {
+    let mut projected: Vec<(&Ident, String)> = Vec::with_capacity(fields.named.len());
+    for field in &fields.named {
+        let ident = field
+            .ident
+            .as_ref()
+            .expect("a named field has an identifier");
+        let name = projected_name(field)?;
+        if let Some((earlier, _)) = projected.iter().find(|(_, taken)| *taken == name) {
+            return Err(syn::Error::new(
+                field.span(),
+                format!(
+                    "`{ident}` projects to the property `{name}`, which `{earlier}` already \
+                     projects to. One property name is one field, or the value of one of them \
+                     would never reach TypeScript"
+                ),
+            ));
+        }
+        projected.push((ident, name));
+    }
+    Ok(projected)
+}
+
 /// `&[FieldSchema { .. }, ..]` for named fields.
 fn named_fields(path: &TokenStream2, fields: &syn::FieldsNamed) -> syn::Result<TokenStream2> {
-    let entries = fields
-        .named
-        .iter()
-        .map(|field| {
-            let name = projected_name(field)?;
+    let entries = projected_names(fields)?
+        .into_iter()
+        .zip(&fields.named)
+        .map(|((_, name), field)| {
             let ty = type_schema(path, &field.ty);
-            Ok(quote!(#path::FieldSchema { name: #name, ty: #ty }))
+            quote!(#path::FieldSchema { name: #name, ty: #ty })
         })
-        .collect::<syn::Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     Ok(quote!(&[#(#entries),*]))
 }
 
@@ -312,17 +373,7 @@ fn is_one_way(input: &DeriveInput) -> syn::Result<bool> {
 
 /// `(field access, projected property name)` for every named field.
 fn named_field_names(fields: &syn::FieldsNamed) -> syn::Result<Vec<(&Ident, String)>> {
-    fields
-        .named
-        .iter()
-        .map(|field| {
-            let ident = field
-                .ident
-                .as_ref()
-                .expect("a named field has an identifier");
-            Ok((ident, projected_name(field)?))
-        })
-        .collect()
+    projected_names(fields)
 }
 
 /// `IntoJs` for a struct with named fields, or for a struct-shaped variant.
@@ -657,4 +708,83 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
         }
     }
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_js_identifier, ts_type_impl};
+    use quote::quote;
+
+    /// Expands the schema half of the derive, which is the half that projects
+    /// property names.
+    fn expand(input: &syn::DeriveInput) -> syn::Result<String> {
+        ts_type_impl(&quote!(::schema), input).map(|tokens| tokens.to_string())
+    }
+
+    #[test]
+    fn a_rename_reaches_the_schema() {
+        let expansion = expand(&syn::parse_quote! {
+            struct ButtonAttributes {
+                #[ts(rename = "onTap")]
+                on_tap: u32,
+            }
+        })
+        .expect("a valid rename expands");
+        assert!(expansion.contains(r#""onTap""#), "{expansion}");
+        assert!(!expansion.contains(r#""on_tap""#), "{expansion}");
+    }
+
+    #[test]
+    fn a_rename_that_is_not_an_identifier_is_refused() {
+        let error = expand(&syn::parse_quote! {
+            struct Attributes {
+                #[ts(rename = "foo bar")]
+                foo: u32,
+            }
+        })
+        .expect_err("a property name with a space cannot be written as a property access");
+        let message = error.to_string();
+        assert!(message.contains("foo bar"), "{message}");
+        assert!(message.contains("props.foo bar"), "{message}");
+    }
+
+    #[test]
+    fn a_rename_that_starts_with_a_digit_is_refused() {
+        expand(&syn::parse_quote! {
+            struct Attributes {
+                #[ts(rename = "1st")]
+                first: u32,
+            }
+        })
+        .expect_err("a property name cannot start with a digit");
+    }
+
+    #[test]
+    fn two_fields_projecting_to_one_property_are_refused() {
+        let error = expand(&syn::parse_quote! {
+            struct Attributes {
+                on_tap: u32,
+                #[ts(rename = "on_tap")]
+                tapped: u32,
+            }
+        })
+        .expect_err("one property name is one field");
+        let message = error.to_string();
+        assert!(message.contains("on_tap"), "{message}");
+        assert!(message.contains("tapped"), "{message}");
+    }
+
+    #[test]
+    fn a_reserved_word_is_a_legal_property_name() {
+        // `props.class` and `props.default` are legal property accesses, and a
+        // Rust `r#type` projecting to `type` is what raw identifiers are for.
+        assert!(is_js_identifier("class"));
+        assert!(is_js_identifier("type"));
+        assert!(is_js_identifier("$ref"));
+        assert!(is_js_identifier("_private"));
+        // A Unicode hyphen is not an ID_Continue character.
+        assert!(!is_js_identifier("aria\u{2010}label"));
+        assert!(!is_js_identifier(""));
+        assert!(!is_js_identifier("a-b"));
+    }
 }
