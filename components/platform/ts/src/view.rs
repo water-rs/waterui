@@ -13,8 +13,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use waterui_core::AnyView;
 use waterui_core::handler::ViewBuilder;
+use waterui_core::{AnyView, Metadata, Retain};
 use waterui_ts_engine::{JsError, JsFunction, JsValue, Opaque};
 
 use crate::bridge::{Bridge, WeakBridge};
@@ -91,6 +91,12 @@ impl ViewSlot {
 /// subtree. So what crosses is the function, and every build calls it and
 /// takes the slot it returned.
 ///
+/// Each build runs under a scope of its own, closed into the built subtree, so
+/// whatever the function exports into JavaScript while building — a signal it
+/// materializes, a callback it registers — is released when that subtree is
+/// dropped. Owned by the mount instead, a destination entered and left
+/// repeatedly would leave one set of exports behind per visit.
+///
 /// The bridge is held weakly, because the function lives inside the engine
 /// that lives inside the bridge. A build after the runtime is gone is an
 /// error, not a crash.
@@ -135,8 +141,11 @@ impl JsViewBuilder {
                 "a TypeScript view builder was asked for a view after its runtime was dropped",
             )
         })?;
+        let scope = bridge.open_scope();
         let built = bridge.call(&self.function, &[])?;
-        ViewSlot::from_js_value(&built)?.take()
+        let exports = scope.close();
+        let view = ViewSlot::from_js_value(&built)?.take()?;
+        Ok(AnyView::new(Metadata::new(view, Retain::new(exports))))
     }
 }
 

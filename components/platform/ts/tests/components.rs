@@ -154,6 +154,32 @@ fn ts_scrollview_is_a_scroll_view() {
             vec![AnyView::new(text("Scrolled"))],
         )),
     );
+    assert_same(
+        "ScrollView, horizontal",
+        &module(
+            r#"waterui.jsx("ScrollView", {
+                axis: "Horizontal",
+                children: waterui.jsx("Text", { children: "Scrolled" }),
+            })"#,
+        ),
+        ScrollView::horizontal(vstack(
+            HorizontalAlignment::Center,
+            vec![AnyView::new(text("Scrolled"))],
+        )),
+    );
+    assert_same(
+        "ScrollView, both axes",
+        &module(
+            r#"waterui.jsx("ScrollView", {
+                axis: "Both",
+                children: waterui.jsx("Text", { children: "Scrolled" }),
+            })"#,
+        ),
+        ScrollView::both(vstack(
+            HorizontalAlignment::Center,
+            vec![AnyView::new(text("Scrolled"))],
+        )),
+    );
 }
 
 #[test]
@@ -187,6 +213,26 @@ fn ts_accordion_is_an_accordion() {
             })"#,
         ),
         Accordion::new(
+            vstack(
+                HorizontalAlignment::Leading,
+                vec![AnyView::new(text("Header"))],
+            ),
+            || text("Body"),
+        ),
+    );
+    let expanded = Binding::container(true);
+    assert_same(
+        "Accordion, expanded by a binding",
+        &stateful(
+            "globalThis.open = waterui.createSignal(true);",
+            r#"waterui.jsx("Accordion", {
+                expanded: globalThis.open,
+                content: () => waterui.jsx("Text", { children: "Body" }),
+                children: waterui.jsx("Text", { children: "Header" }),
+            })"#,
+        ),
+        Accordion::with_toggle(
+            &expanded,
             vstack(
                 HorizontalAlignment::Leading,
                 vec![AnyView::new(text("Header"))],
@@ -247,6 +293,17 @@ fn ts_avatar_is_an_avatar() {
         &module(r#"waterui.jsx("Avatar", { name: "Ada Lovelace" })"#),
         Avatar::new(text("Ada Lovelace"), || ()),
     );
+    assert_same(
+        "Avatar with a picture",
+        &module(
+            r#"waterui.jsx("Avatar", {
+                name: "Ada Lovelace",
+                image: "https://waterui.dev/ada.png",
+            })"#,
+        ),
+        Avatar::new(text("Ada Lovelace"), || ())
+            .image(waterui::Url::parse("https://waterui.dev/ada.png").expect("a valid URL")),
+    );
 }
 
 #[test]
@@ -271,6 +328,19 @@ fn ts_image_is_a_photo() {
         waterui::media::Photo::new(
             waterui::Url::parse("https://waterui.dev/logo.png").expect("a valid URL"),
         ),
+    );
+    assert_same(
+        "Image, resizable",
+        &module(
+            r#"waterui.jsx("Image", {
+                src: "https://waterui.dev/logo.png",
+                resizable: true,
+            })"#,
+        ),
+        waterui::media::Photo::new(
+            waterui::Url::parse("https://waterui.dev/logo.png").expect("a valid URL"),
+        )
+        .resizable(),
     );
 }
 
@@ -337,6 +407,19 @@ fn ts_textfield_is_a_text_field() {
         ),
         field("Name", &name),
     );
+    let prompted = Binding::container(Str::from("Ada"));
+    assert_same(
+        "TextField with a prompt",
+        &stateful(
+            r#"globalThis.name = waterui.createSignal("Ada");"#,
+            r#"waterui.jsx("TextField", {
+                value: globalThis.name,
+                prompt: "Your name",
+                children: "Name",
+            })"#,
+        ),
+        field("Name", &prompted).prompt(text("Your name")),
+    );
 }
 
 #[test]
@@ -372,6 +455,33 @@ fn ts_progress_is_progress() {
         "Progress",
         &module(r#"waterui.jsx("Progress", { value: 0.4, children: "Uploading" })"#),
         progress(0.4).linear().label("Uploading"),
+    );
+    assert_same(
+        "Progress, circular",
+        &module(
+            r#"waterui.jsx("Progress", {
+                value: 0.4,
+                style: "Circular",
+                children: "Uploading",
+            })"#,
+        ),
+        progress(0.4).circular().label("Uploading"),
+    );
+    assert_same(
+        "Progress, loading",
+        &module(
+            r#"waterui.jsx("Progress", {
+                value: 0.4,
+                style: "Loading",
+                children: "Uploading",
+            })"#,
+        ),
+        progress(0.4).loading().label("Uploading"),
+    );
+    assert_same(
+        "Progress out of a total",
+        &module(r#"waterui.jsx("Progress", { value: 3, total: 10, children: "Files" })"#),
+        progress(3.0).total(10.0).linear().label("Files"),
     );
 }
 
@@ -419,6 +529,35 @@ fn ts_list_is_a_list() {
             |row: SelfId<Str>| ListItem::new(text(row.into_inner())),
         ))),
         "the JSX list and the Rust list differ"
+    );
+}
+
+#[test]
+fn ts_a_list_in_editing_mode_is_the_rust_editing_list() {
+    let module = Module::mount(&stateful(
+        r#"globalThis.rows = waterui.createSignal(["one", "two"]);"#,
+        r#"waterui.jsx("List", {
+            editing: true,
+            children: waterui.jsx(waterui.For, {
+                each: globalThis.rows,
+                children: (row) => waterui.jsx("Text", { children: row }),
+            }),
+        })"#,
+    ));
+    let rows = Binding::container(vec![
+        SelfId::new(Str::from("one")),
+        SelfId::new(Str::from("two")),
+    ]);
+    assert_eq!(
+        module.tree(),
+        rust_tree(
+            List::new(ForEach::new(
+                SignalCollection::new(rows),
+                |row: SelfId<Str>| ListItem::new(text(row.into_inner())),
+            ))
+            .editing(true)
+        ),
+        "the JSX editing list and the Rust editing list differ"
     );
 }
 
@@ -602,6 +741,25 @@ fn ts_padding_takes_every_shape_the_rust_chain_takes() {
         &module(r#"waterui.jsx("Text", { padding: true, children: "Inset" })"#),
         text("Inset").padding(),
     );
+    assert_same(
+        "a padding switched off",
+        &module(r#"waterui.jsx("Text", { padding: false, children: "Flush" })"#),
+        text("Flush").padding_with(EdgeInsets::all(0.0)),
+    );
+    // A zero inset and the framework's default inset are both `padding`, so the
+    // equivalence above would also hold if `false` were read as `true`. This is
+    // what tells the two apart.
+    assert_ne!(
+        Module::mount(&module(
+            r#"waterui.jsx("Text", { padding: false, children: "Flush" })"#
+        ))
+        .tree(),
+        Module::mount(&module(
+            r#"waterui.jsx("Text", { padding: true, children: "Flush" })"#
+        ))
+        .tree(),
+        "a padding of false insets nothing, and a bare padding insets by the default"
+    );
 }
 
 #[test]
@@ -744,6 +902,81 @@ fn ts_background_takes_a_colour() {
                 opacity: 1.0,
             },
         )),
+    );
+}
+
+#[test]
+fn ts_frame_bounds_are_the_rust_frame() {
+    assert_same(
+        "a height",
+        &module(r#"waterui.jsx("Text", { height: 44, children: "Tall" })"#),
+        text("Tall").height(44.0),
+    );
+    assert_same(
+        "four bounds on one frame",
+        &module(
+            r#"waterui.jsx("Text", {
+                minWidth: 80,
+                maxWidth: 200,
+                minHeight: 20,
+                maxHeight: 60,
+                children: "Bounded",
+            })"#,
+        ),
+        text("Bounded")
+            .min_width(80.0)
+            .max_width(200.0)
+            .min_height(20.0)
+            .max_height(60.0),
+    );
+}
+
+#[test]
+fn ts_a_hidden_view_is_hidden_the_way_rust_hides_it() {
+    assert_same(
+        "a11yHidden",
+        &module(r#"waterui.jsx("Text", { a11yHidden: true, children: "Decorative" })"#),
+        text("Decorative").a11y_hidden(true),
+    );
+}
+
+#[test]
+fn ts_on_tap_gesture_is_the_rust_gesture() {
+    assert_same(
+        "onTapGesture",
+        &module(r#"waterui.jsx("Text", { onTapGesture: () => {}, children: "Tap me" })"#),
+        text("Tap me").on_tap_gesture(|| {}),
+    );
+}
+
+#[test]
+fn ts_a_tap_reaches_the_javascript_handler() {
+    // The equivalence above says the tree is the same; this says the handler on
+    // the other side of the seam is the one that runs.
+    let module = Module::mount(&stateful(
+        "globalThis.taps = 0;",
+        r#"waterui.jsx("Button", {
+            onTap: () => {},
+            onTapGesture: () => { globalThis.taps += 1; },
+            children: "Tap me",
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Tap me").tap();
+    app.settle();
+    assert_eq!(
+        module.eval("globalThis.taps").as_f64(),
+        Some(1.0),
+        "the gesture ran the JavaScript handler once"
+    );
+}
+
+#[test]
+fn ts_clip_takes_a_corner_radius() {
+    assert_same(
+        "clip by corner radius",
+        &module(r#"waterui.jsx("Text", { clip: { cornerRadius: 8 }, children: "Rounded" })"#),
+        text("Rounded").clip(waterui::shape::RoundedRectangle::new(8.0)),
     );
 }
 
@@ -918,6 +1151,124 @@ fn ts_a_departed_row_releases_what_it_exported() {
     );
 }
 
+#[test]
+fn ts_a_departed_row_releases_what_its_branch_exported() {
+    // A row's render callback exports too: a `<Show>` inside it materializes
+    // `when` and exports the accessor its branch is handed. Those belong to the
+    // branch the callback built, not to the mount — otherwise every row that
+    // leaves strands a cell, a JavaScript memo and a dedup entry that live as
+    // long as the module does.
+    let module = Module::mount(&stateful(
+        r#"globalThis.items = waterui.createSignal(["a"]);
+           globalThis.live = waterui.createSignal(true);"#,
+        r#"waterui.jsx("VStack", {
+            children: waterui.jsx(waterui.For, {
+                each: globalThis.items,
+                children: (item) => waterui.jsx(waterui.Show, {
+                    when: globalThis.live,
+                    children: () => waterui.jsx("Text", { children: item }),
+                }),
+            }),
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("a").assert_exists();
+    let baseline = module.bridge().exported_count();
+
+    for round in 0..8 {
+        module.eval(&format!(r#"globalThis.items.set(["row {round}"])"#));
+        app.settle();
+    }
+    app.query().label("row 7").assert_exists();
+    assert_eq!(
+        module.bridge().exported_count(),
+        baseline,
+        "a row whose content exports releases those exports when the row leaves"
+    );
+}
+
+#[test]
+fn ts_a_replaced_branch_releases_what_it_built() {
+    // The inner `<Show>` is built afresh every time the outer one activates,
+    // and exports its own `when` accessor each time. The outgoing branch owns
+    // the previous set, so replacing it releases them.
+    let module = Module::mount(&stateful(
+        r"globalThis.outer = waterui.createSignal(true);
+           globalThis.inner = waterui.createSignal(true);",
+        r#"waterui.jsx(waterui.Show, {
+            when: globalThis.outer,
+            fallback: () => waterui.jsx("Text", { children: "away" }),
+            children: () => waterui.jsx(waterui.Show, {
+                when: globalThis.inner,
+                children: () => waterui.jsx("Text", { children: "here" }),
+            }),
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("here").assert_exists();
+    let baseline = module.bridge().exported_count();
+
+    for _ in 0..8 {
+        module.eval("globalThis.outer.set(false)");
+        app.settle();
+        module.eval("globalThis.outer.set(true)");
+        app.settle();
+    }
+    app.query().label("here").assert_exists();
+    assert_eq!(
+        module.bridge().exported_count(),
+        baseline,
+        "a branch replaced eight times leaves eight sets of exports behind, or none"
+    );
+}
+
+#[test]
+fn ts_a_rebuilt_destination_releases_what_the_last_build_exported() {
+    // `ViewBuilder::build` runs again every time the destination is entered,
+    // and each build's render function exports afresh — here a `<Show>`'s `when`
+    // accessor. A build's exports belong to the subtree it produced, so a
+    // destination entered and left eight times does not leave eight sets in the
+    // mount's scope.
+    let module = Module::mount(&stateful(
+        r"globalThis.builds = 0;
+           globalThis.live = waterui.createSignal(true);",
+        r#"waterui.jsx("NavigationStack", {
+            children: waterui.jsx("NavigationLink", {
+                destination: () => {
+                    globalThis.builds += 1;
+                    return waterui.jsx(waterui.Show, {
+                        when: globalThis.live,
+                        children: () => waterui.jsx("Text", { children: "Body" }),
+                    });
+                },
+                children: "Open",
+            }),
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Open").assert_exists();
+    let baseline = module.bridge().exported_count();
+
+    for _ in 0..8 {
+        app.query().label("Open").tap();
+        app.settle();
+        app.query().label("Body").assert_exists();
+        app.query().label("Back").tap();
+        app.settle();
+    }
+    app.query().label("Open").assert_exists();
+    assert_eq!(
+        module.eval("globalThis.builds").as_f64(),
+        Some(8.0),
+        "the destination is built once per entry, which is what leaves exports to release"
+    );
+    assert_eq!(
+        module.bridge().exported_count(),
+        baseline,
+        "a destination rebuilt on every entry releases the previous build's exports"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // What the catalog refuses
 // ---------------------------------------------------------------------------
@@ -941,6 +1292,68 @@ fn ts_an_attribute_the_component_does_not_declare_is_refused() {
     assert!(
         error.contains("onClick") && error.contains("onTap"),
         "the error names the attribute and what the component accepts: {error}"
+    );
+}
+
+#[test]
+fn ts_an_attribute_value_of_the_wrong_shape_is_refused() {
+    // Several attributes leave no mark on the accessibility tree — a clip, a
+    // prompt, an avatar's picture, a list's editing mode — so an equivalence
+    // test cannot tell an arm that reads them from one that drops them. A
+    // refusal can: an arm that never looks at the value cannot reject it.
+    for (case, source, expected) in [
+        (
+            "a shape the catalog does not name",
+            r#"waterui.jsx("Text", { clip: "Squircle", children: "x" })"#,
+            "Squircle",
+        ),
+        (
+            "a rounded clip with no corner radius",
+            r#"waterui.jsx("Text", { clip: { radius: 8 }, children: "x" })"#,
+            "cornerRadius",
+        ),
+        (
+            "an editing flag that is not a flag",
+            r#"waterui.jsx("List", {
+                editing: "yes",
+                children: waterui.jsx(waterui.For, {
+                    each: ["a"],
+                    children: (row) => waterui.jsx("Text", { children: row }),
+                }),
+            })"#,
+            "editing",
+        ),
+        (
+            "an avatar picture that is not a URL",
+            r#"waterui.jsx("Avatar", { name: "Ada", image: "not a url" })"#,
+            "image",
+        ),
+        (
+            "a prompt that is not text",
+            r#"waterui.jsx("TextField", {
+                value: waterui.createSignal("a"),
+                prompt: {},
+                children: "Name",
+            })"#,
+            "prompt",
+        ),
+    ] {
+        let error = mount_error(&module(source));
+        assert!(
+            error.contains(expected),
+            "{case}: the error names what was wrong, found: {error}"
+        );
+    }
+}
+
+#[test]
+fn ts_a_loading_progress_cannot_also_count() {
+    let error = mount_error(&module(
+        r#"waterui.jsx("Progress", { value: 1, total: 5, style: "Loading", children: "Files" })"#,
+    ));
+    assert!(
+        error.contains("Loading") && error.contains("total"),
+        "the error says an indeterminate bar has nothing to count out of: {error}"
     );
 }
 

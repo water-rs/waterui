@@ -112,13 +112,14 @@ struct Item {
     /// The branch this item is currently presented through, disposed when the
     /// item leaves or is realized again.
     branch: Option<Branch>,
-    /// What this item exported into JavaScript — its index accessor, and
-    /// whatever its render callback exported while it was building.
+    /// The index accessor this item exported into JavaScript.
     ///
     /// The item owns it rather than the mount: a list that churns adds and
     /// removes rows for as long as it is on screen, and exports that belonged
     /// to the mount's scope would accumulate one signal and one cell per
-    /// departed row until the whole module was disposed.
+    /// departed row until the whole module was disposed. What the item's
+    /// *render callback* exports belongs to the [`Branch`] it built, which is
+    /// shorter-lived still — an item realized again replaces its branch.
     #[expect(
         dead_code,
         reason = "the scope is held, not read: what the item exported lives exactly as long as it"
@@ -169,7 +170,8 @@ impl EachState {
             let binding = Binding::container(index);
             // The scope is opened around this item's export and closed again
             // straight away, so nothing else lands in it; what it owns lives as
-            // long as the item does and is released with it.
+            // long as the item does and is released with it. The render
+            // callback runs later and under the branch's own scope.
             let scope = bridge.open_scope();
             let accessor = bridge.export_computed(&binding.computed())?;
             self.items.borrow_mut().insert(
