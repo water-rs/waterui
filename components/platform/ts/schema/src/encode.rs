@@ -207,6 +207,7 @@ pub const fn put_node(buf: &mut [u8], pos: usize, node: &TypeSchema, depth: usiz
             put_nodes(buf, pos, members, depth + 1)
         }
         TypeSchema::View => put(buf, pos, tag::VIEW),
+        TypeSchema::ViewBuilder => put(buf, pos, tag::VIEW_BUILDER),
         TypeSchema::Callback(arguments) => {
             let pos = put(buf, pos, tag::CALLBACK);
             put_nodes(buf, pos, arguments, depth + 1)

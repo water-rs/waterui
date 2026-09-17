@@ -717,6 +717,42 @@ mod catalog {
     }
 
     #[test]
+    fn a_union_inside_a_list_is_parenthesised() {
+        // `T[]` binds tighter than `|`, so without the parentheses this reads
+        // as "a boolean, or an array of numbers" — a different type.
+        const MEMBERS: [TypeSchema; 2] = [TypeSchema::Bool, TypeSchema::Number(NumberKind::F32)];
+        const UNION: TypeSchema = TypeSchema::Union(&MEMBERS);
+        const LIST: TypeSchema = TypeSchema::List(&UNION);
+        assert_eq!(LIST.to_string(), "(boolean | number)[]");
+    }
+
+    #[test]
+    fn an_option_inside_a_list_is_parenthesised() {
+        const ITEM: TypeSchema = TypeSchema::String;
+        const OPTION: TypeSchema = TypeSchema::Option(&ITEM);
+        const LIST: TypeSchema = TypeSchema::List(&OPTION);
+        assert_eq!(LIST.to_string(), "(string | null)[]");
+    }
+
+    #[test]
+    fn a_plain_element_type_keeps_its_bare_suffix() {
+        const LIST: TypeSchema = TypeSchema::List(&TypeSchema::String);
+        assert_eq!(LIST.to_string(), "string[]");
+    }
+
+    #[test]
+    fn a_view_builder_round_trips_and_renders_as_a_thunk() {
+        const BUILDER: TypeSchema = TypeSchema::ViewBuilder;
+        const ENCODED_BUILDER: [u8; crate::encoded_len(&BUILDER) + 1] =
+            crate::encode::<{ crate::encoded_len(&BUILDER) + 1 }>(&BUILDER);
+        assert_eq!(BUILDER.to_string(), "() => JSX.Element");
+        assert_eq!(
+            decode(payload(&ENCODED_BUILDER)).expect("a view builder decodes"),
+            crate::owned::Schema::ViewBuilder
+        );
+    }
+
+    #[test]
     fn each_decoder_refuses_the_other_payload_kind() {
         let props =
             crate::encode::<{ crate::encoded_len(&TOGGLE_ATTRIBUTES) + 1 }>(&TOGGLE_ATTRIBUTES);

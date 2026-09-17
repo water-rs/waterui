@@ -143,6 +143,14 @@ pub enum TypeSchema {
     Accessor(&'static Self),
     /// An opaque handle to a Rust-composed view subtree, projected as `View`.
     View,
+    /// A function that builds a view each time it is called, projected as
+    /// `() => JSX.Element`.
+    ///
+    /// A [`View`](Self::View) handle crosses once and is taken once: it is a
+    /// subtree that already exists. A destination or a page is not that — a
+    /// `ViewBuilder` may be built again at any time, and each build needs a
+    /// fresh subtree — so what crosses is the function, called per build.
+    ViewBuilder,
     /// A callback the TypeScript side invokes, projected as
     /// `(…) => void`. The slice holds the argument types in order.
     Callback(&'static [Self]),
@@ -241,6 +249,17 @@ pub enum VariantPayload {
     Struct(&'static [FieldSchema]),
 }
 
+impl TypeSchema {
+    /// Whether this node renders as a union, and therefore needs parentheses
+    /// where TypeScript's `[]` suffix would otherwise bind tighter than `|`.
+    ///
+    /// An `Option<T>` renders as `T | null`, which is a union however it is
+    /// spelled in Rust.
+    const fn is_union(&self) -> bool {
+        matches!(self, Self::Union(_) | Self::Option(_))
+    }
+}
+
 impl fmt::Display for TypeSchema {
     /// Renders the node as the TypeScript type expression that refers to it.
     ///
@@ -254,6 +273,11 @@ impl fmt::Display for TypeSchema {
             Self::Number(kind) => f.write_str(kind.ts_name()),
             Self::String => f.write_str("string"),
             Self::Option(inner) => write!(f, "{inner} | null"),
+            // `T[]` binds tighter than `|`, so an element type that is itself
+            // a union or an option needs parentheses: without them
+            // `List(Union(Bool, Number))` reads as `boolean | number[]`,
+            // which is a different type — a boolean or an array of numbers.
+            Self::List(inner) if inner.is_union() => write!(f, "({inner})[]"),
             Self::List(inner) => write!(f, "{inner}[]"),
             Self::Array { item, len } => {
                 f.write_str("[")?;
@@ -278,6 +302,7 @@ impl fmt::Display for TypeSchema {
                 Ok(())
             }
             Self::View => f.write_str("View"),
+            Self::ViewBuilder => f.write_str("() => JSX.Element"),
             Self::Callback(arguments) => {
                 f.write_str("(")?;
                 for (index, argument) in arguments.iter().enumerate() {

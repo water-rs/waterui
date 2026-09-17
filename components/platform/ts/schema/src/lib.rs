@@ -65,6 +65,7 @@
 //! | `Binding<T>` | `Signal<T>` | [`TypeSchema::Signal`] |
 //! | `Computed<T>` | `Accessor<T>` | [`TypeSchema::Accessor`] |
 //! | `AnyView` | `View` | [`TypeSchema::View`] |
+//! | a JavaScript view builder | `() => JSX.Element` | [`TypeSchema::ViewBuilder`] |
 //! | `Box`/`Rc<dyn Fn(A)>`, `fn(A)` — at most 8 arguments | `(arg0: A) => void` | [`TypeSchema::Callback`] |
 //! | `#[derive(TsType)]` struct | object type | [`TypeSchema::Struct`] |
 //! | `#[derive(TsType)]` enum | string union or tagged object | [`TypeSchema::Enum`] |

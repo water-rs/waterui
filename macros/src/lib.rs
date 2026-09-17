@@ -1668,6 +1668,12 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
 /// outwards — a callback, which the bridge registers rather than reads —
 /// declares `#[ts(one_way)]` and gets `IntoJs` alone. A crate that depends on
 /// `waterui-ts-schema` alone gets the schema and nothing else.
+///
+/// A field whose TypeScript property is spelled differently from its Rust name
+/// says so with `#[ts(rename = "onTap")]`. The rename travels through the
+/// schema and both conversions at once, so a JSX attribute in the case
+/// TypeScript writes — `onTap`, `minLength`, `a11yLabel` — still comes from
+/// one declaration in one place.
 #[proc_macro_derive(TsType, attributes(ts))]
 pub fn derive_ts_type(input: TokenStream) -> TokenStream {
     ts::derive_ts_type(input)

@@ -76,6 +76,13 @@ fn trigger_impact_haptic(intensity: Intensity) {
     }
 }
 
+/// The inset a bare [`ViewExt::padding`] applies.
+///
+/// It is named because two places need the same number: the modifier, and the
+/// TypeScript catalog's `padding={true}`, which is the same spelling from the
+/// other side of the seam. A second literal would let the two drift.
+pub const DEFAULT_PADDING: f32 = 14.0;
+
 /// Extension trait for views, adding common styling and configuration methods.
 pub trait ViewExt: View + Sized {
     /// Attaches metadata to a view.
@@ -594,7 +601,7 @@ pub trait ViewExt: View + Sized {
     /// text!("Hello").padding();
     /// ```
     fn padding(self) -> Padding {
-        Padding::new(EdgeInsets::all(14.0), self)
+        Padding::new(EdgeInsets::all(DEFAULT_PADDING), self)
     }
 
     /// Marks this view as secure.

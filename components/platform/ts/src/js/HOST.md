@@ -78,21 +78,34 @@ getter-props are already resolved: a dynamic attribute arrives as an
 accessor, so every config value is a reactive input
 (`T | Signal<T> | (() => T)`) or a plain constant — the host never sees a
 property getter and must not read the property eagerly. `on*` attributes are
-event callbacks and are invoked, never subscribed.
+event callbacks and are invoked, never subscribed — with the values their
+event carries, in the order the component's catalog entry declares them.
+`onTap()` carries none; `<List onDelete>` carries the deleted row's index and
+`<List onMove>` the index a row left and the index it arrived at. One
+declaration is both the signature in the generated `.d.ts` and the call the
+handler receives, so the two cannot disagree.
 
 `children` is the normalized child list: an array whose elements are
 `Handle | string | number | boolean | null | Accessor<…>`. `null`, `undefined`,
 and booleans are already filtered; nested arrays are already flattened. String
 and number elements are materialized with `text`. An accessor element is a
 reactive child slot: the host subscribes to it and swaps the child when it
-produces a new element (an accessor may also yield a list, which the host
-normalizes the same way). For components with a label slot (`Button`,
+produces a new element. One element, not a list: an accessor that yields a
+list is refused, because a child position whose membership changes is a
+collection, and `<For>` reconciles it by identity instead of replacing the
+whole subtree on every change. For components with a label slot (`Button`,
 `Toggle`, …) the children are the label; `config.label` is the explicit form
 and takes precedence when both are present.
 
+A property `config` carries that the component's catalog entry does not
+declare is an error naming it and listing the attributes the component does
+accept. A modifier attribute never reaches `create` — the runtime routes it to
+`modify` — so what is left is exactly the configuration, and a name that is
+not in it is a typo with no effect, which is worse than a failure.
+
 ## `modify(handle, name, value) -> Handle`
 
-Applies modifier `name` (`"padding"`, `"background"`, `"foreground"`, …) to
+Applies modifier `name` (`"padding"`, `"background"`, `"width"`, …) to
 the view and returns the resulting handle — which may be the same handle or a
 new one; callers always use the return value.
 
@@ -102,6 +115,11 @@ order; the host applies them in receive order. `value` is a reactive input.
 
 A modifier attribute that arrives through a JSX spread is rejected by the
 runtime before any host call — the host never has to detect that case.
+
+A modifier whose Rust counterpart takes a view takes one here too: `background`
+accepts a colour object, reactive like any other value, or a handle —
+`background={<Gradient />}` — and which one it got decides whether the
+background is a painted colour or a view laid out behind the content.
 
 ## `text(content) -> Handle`
 
@@ -122,8 +140,12 @@ carries the update.
 ## `each(each, render, by?) -> Handle`
 
 Maps to WaterUI's `AnyViews` identity reconciliation. `each` is a reactive
-input reading the item list. Identity is `by(item)` when given, referential
-identity otherwise. On every change the host reconciles: a retained key keeps
+input reading the item list. Identity is `by(item)` when given. Without it an
+item identifies itself, which only a primitive can do: an object crosses the
+engine seam as a copy, so its referential identity is gone by the time the host
+sees it, and a list of objects without `by` is a typed error naming the fix
+rather than a list that silently rebuilds every row. On every change the host
+reconciles: a retained key keeps
 its branch (the branch's `index` accessor updates if its position moved), a
 new key calls `render(item, index)` once, and a removed key's branch is
 disposed. `render` receives the item and an accessor of its current index.
@@ -133,6 +155,12 @@ disposed. `render` receives the item and an accessor of its current index.
 Maps to WaterUI's `Suspense`. The host presents `fallback?.()` while the
 `children()` branch's resources are pending and the children branch once
 resolved, disposing whichever branch leaves.
+
+The JavaScript runtime has no resource primitive, so nothing a `children()`
+branch builds out of JSX alone can be pending: that branch renders
+synchronously and is what the host presents. A Rust-composed subtree placed
+under the boundary suspends through its own `Suspense`, which the backend
+presents as it always has.
 
 ## `environment() -> HostEnvironment`
 
