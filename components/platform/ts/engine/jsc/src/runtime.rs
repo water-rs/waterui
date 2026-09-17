@@ -139,7 +139,9 @@ unsafe impl Send for PendingFree {}
 /// `JSContextRef` functions — and a `Box<Rc<dyn Any>>` dropped here would
 /// race the non-atomic refcount and run `!Send` destructors on a foreign
 /// thread. It therefore only moves the pointer onto the runtime's
-/// pending-free list; the owner thread drains it and does the drop.
+/// pending-free list; the next owner-thread actor — the runtime at each
+/// public operation and on drop, or a retained [`JscHandle`] on use and on
+/// drop — drains it and does the drop.
 unsafe extern "C-unwind" fn opaque_finalize(object: JSObjectRef) {
     // SAFETY: `box_opaque` stored a `Box<OpaquePrivate>` pointer as the
     // object's private data, and `finalize` runs exactly once per object.
@@ -214,8 +216,11 @@ struct Bridge {
     /// `JscRuntime::new` created — the runtime releases it on drop, and live
     /// boxes keep the class alive through their own refs until then.
     opaque_class: JSClassRef,
-    /// Boxes whose finalizers ran on another thread, waiting for the owner
-    /// thread to drop the `Rc`s they carry.
+    /// Boxes whose finalizers ran — possibly on another thread — waiting
+    /// for an owner-thread actor to drop the `Rc`s they carry. Drained by
+    /// the runtime at each public operation and on drop, and by each
+    /// retained [`JscHandle`] on use and on drop; the `Arc` outlives the
+    /// runtime inside handles and inside the boxes themselves.
     pending_free: Arc<Mutex<Vec<PendingFree>>>,
 }
 
@@ -358,7 +363,10 @@ impl Bridge {
                 // callable rather than collapsing into entries.
                 if self.is_function(context, value)? {
                     return Ok(JsValue::Function(JsFunction::from_handle(Handle::new(
-                        value.retain(),
+                        JscHandle {
+                            value: ManuallyDrop::new(value.retain()),
+                            pending_free: Arc::clone(&self.pending_free),
+                        },
                     ))));
                 }
                 if value.isArray() {
@@ -530,12 +538,59 @@ impl Bridge {
     }
 }
 
-/// Restores a retained handle to the engine's own `Retained<JSValue>`.
+/// Drops every box a finalizer handed back — call only on the owner
+/// thread, the one place a non-atomic `Rc` refcount may change.
+/// `opaque_finalize` may run on any thread, so it only queues pointers
+/// here.
+fn drain_pending_list(pending_free: &Mutex<Vec<PendingFree>>) {
+    let pending = std::mem::take(
+        &mut *pending_free
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    for PendingFree(data) in pending {
+        // SAFETY: `data` is a `Box<OpaquePrivate>` `box_opaque` created and
+        // `opaque_finalize` handed over exactly once; this runs only on the
+        // owner thread, so dropping the `Rc` inside is safe.
+        unsafe { drop(Box::from_raw(data)) };
+    }
+}
+
+/// The retained reference behind `JsFunction` and `JsObject`: the
+/// `JSValue`, which keeps its context — and its heap — alive, plus a
+/// drain handle to the producing runtime's pending-free list. Once the
+/// runtime is gone a handle is the last owner-thread actor able to free
+/// finalized boxes, so it drains on use ([`restore`]) and on drop. The
+/// `Handle` wrapper is `Rc`-backed and `!Send`, so a handle only ever acts
+/// on the owner thread.
+struct JscHandle {
+    /// The value the handle keeps alive. `ManuallyDrop` so `Drop` can
+    /// release it — running any finalizers that release triggers — before
+    /// the pending-free drain that frees what they queued.
+    value: ManuallyDrop<Retained<JSValue>>,
+    /// Shared with the runtime's `Bridge::pending_free`.
+    pending_free: Arc<Mutex<Vec<PendingFree>>>,
+}
+
+impl Drop for JscHandle {
+    fn drop(&mut self) {
+        // SAFETY: `value` is dropped exactly once, here — a finalizer its
+        // release runs still finds the pending-free list alive, and the
+        // drain below frees whatever it queued.
+        unsafe { ManuallyDrop::drop(&mut self.value) };
+        drain_pending_list(&self.pending_free);
+    }
+}
+
+/// Restores a retained handle to the `JSValue` it keeps alive. Handle use
+/// runs on the owner thread, so this also drains whatever
+/// `opaque_finalize` queued since the last drain.
 fn restore(handle: &Handle) -> Result<Retained<JSValue>, JsError> {
-    handle
-        .downcast::<Retained<JSValue>>()
-        .map(|retained| (*retained).clone())
-        .ok_or_else(|| JsError::conversion("a handle from a different engine was passed in"))
+    let retained = handle
+        .downcast::<JscHandle>()
+        .ok_or_else(|| JsError::conversion("a handle from a different engine was passed in"))?;
+    drain_pending_list(&retained.pending_free);
+    Ok(retained.value.retain())
 }
 
 /// The `JavaScriptCore` engine.
@@ -552,23 +607,15 @@ pub struct JscRuntime {
 impl JscRuntime {
     /// Drops every box a finalizer handed back, on the owner thread.
     /// `opaque_finalize` may run on any thread and a non-atomic `Rc`
-    /// refcount may only change here, so the finalizer only queues the
-    /// pointer; this runs at the head of every public operation and on
-    /// drop.
+    /// refcount may only change here. A finalized box is freed by
+    /// whichever owner-thread actor runs next — this runtime at the head
+    /// of every public operation and on drop, or a retained [`JscHandle`]
+    /// on use and on drop. Residual case, stated exactly: a box finalized
+    /// after the last owner-thread object — the runtime and every handle —
+    /// is gone leaks its `Rc`; nothing remains that may legally drop it,
+    /// and by then the context's heap is unreachable from Rust anyway.
     fn drain_pending(&self) {
-        let pending = std::mem::take(
-            &mut *self
-                .bridge
-                .pending_free
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        for PendingFree(data) in pending {
-            // SAFETY: `data` is a `Box<OpaquePrivate>` `box_opaque` created
-            // and `opaque_finalize` handed over exactly once; this is the
-            // owner thread, so dropping the `Rc` inside is safe.
-            unsafe { drop(Box::from_raw(data)) };
-        }
+        drain_pending_list(&self.bridge.pending_free);
     }
 
     /// Drains the context's pending exception into a `JsError`.
@@ -626,7 +673,8 @@ impl JsRuntime for JscRuntime {
                     const objectKeys = Object.keys;\
                     const getPrototype = Object.getPrototypeOf;\
                     const objectPrototype = Object.prototype;\
-                    const toString = Object.prototype.toString;\
+                    const callToString = Function.prototype.call.bind(Object.prototype.toString);\
+                    const slice = Function.prototype.call.bind(String.prototype.slice);\
                     return {\
                         keys: (object) => objectKeys(object),\
                         isFunction: (value) => typeof value === 'function',\
@@ -634,7 +682,7 @@ impl JsRuntime for JscRuntime {
                             const prototype = getPrototype(value);\
                             return prototype === null || prototype === objectPrototype;\
                         },\
-                        kindName: (value) => toString.call(value).slice(8, -1)\
+                        kindName: (value) => slice(callToString(value), 8, -1)\
                     };\
                 })())")))
         }
@@ -727,7 +775,10 @@ impl JsRuntime for JscRuntime {
             match value {
                 JsValue::Object(_) | JsValue::ObjectRef(_) | JsValue::Function(_) => {
                     let value = self.bridge.to_js(&self.context, value, 0)?;
-                    Ok(JsObject::from_handle(Handle::new(value)))
+                    Ok(JsObject::from_handle(Handle::new(JscHandle {
+                        value: ManuallyDrop::new(value),
+                        pending_free: Arc::clone(&self.bridge.pending_free),
+                    })))
                 }
                 _ => Err(JsError::conversion(
                     "only JavaScript objects and functions can be retained",

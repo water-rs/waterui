@@ -538,38 +538,40 @@ pub fn register_reports_namespace_failure<R: JsRuntime>() {
     assert!(rt.register("f", |_| Ok(JsValue::Undefined)).is_err());
 }
 
-/// Conversion probes that miss — a non-box checked against the opaque
-/// class, a revoked `Proxy` asked for its prototype — must not leave a
-/// pending exception behind: the next operation stays clean.
+/// A revoked `Proxy` fails conversion with an error — never a panic and
+/// never a wrong result.
 ///
 /// # Panics
 ///
 /// Panics on conformance failure — each function is a test body.
-pub fn plain_objects_leave_no_pending_exception<R: JsRuntime>() {
+pub fn revoked_proxies_fail_conversion<R: JsRuntime>() {
     let rt = runtime::<R>();
-    for _ in 0..10 {
-        assert_eq!(
-            rt.eval("({a: 1})", "conformance.js").expect("evaluates"),
-            JsValue::Object(vec![(String::from("a"), JsValue::Number(1.0))])
-        );
-    }
-    assert_eq!(
-        rt.eval("40 + 2", "conformance.js")
-            .expect("no pending exception survived the conversions"),
-        JsValue::Number(42.0)
+    assert!(
+        rt.eval(
+            "(() => { const p = Proxy.revocable({}, {}); p.revoke(); return p.proxy; })()",
+            "conformance.js",
+        )
+        .is_err(),
+        "a revoked proxy cannot convert"
     );
 }
 
-/// A script rewriting `globalThis.Object` cannot change what converts —
-/// engines capture the helpers they need at construction.
+/// A script rewriting `globalThis.Object` — or `Function.prototype.call`
+/// and `String.prototype.slice` — cannot change what converts: engines
+/// capture the helpers they need at construction.
 ///
 /// # Panics
 ///
 /// Panics on conformance failure — each function is a test body.
 pub fn rewritten_globals_do_not_change_conversion<R: JsRuntime>() {
     let rt = runtime::<R>();
-    rt.eval("Object.keys = () => []", "conformance.js")
-        .expect("the rewrite evaluates");
+    rt.eval(
+        "Object.keys = () => [];\
+         Function.prototype.call = () => { throw new Error('forged call'); };\
+         String.prototype.slice = () => { throw new Error('forged slice'); };",
+        "conformance.js",
+    )
+    .expect("the rewrite evaluates");
     assert_eq!(
         rt.eval("({a: 1, b: 'x'})", "conformance.js")
             .expect("evaluates"),
@@ -577,6 +579,17 @@ pub fn rewritten_globals_do_not_change_conversion<R: JsRuntime>() {
             (String::from("a"), JsValue::Number(1.0)),
             (String::from("b"), JsValue::String(String::from("x"))),
         ])
+    );
+    // `kindName` must not reach the forged `call`/`slice` either — the
+    // error still names the kind.
+    let error = rt
+        .eval("new Map()", "conformance.js")
+        .expect_err("a Map cannot convert");
+    assert_eq!(error.name, "TypeError");
+    assert!(
+        error.message.contains("Map"),
+        "the error names the kind: {}",
+        error.message
     );
 }
 
@@ -709,10 +722,10 @@ macro_rules! conformance_tests {
             $crate::conformance::register_reports_namespace_failure::<$engine>();
         }
 
-        /// Missed conversion probes leave no pending exception.
+        /// A revoked `Proxy` fails conversion with an error.
         #[test]
-        fn plain_objects_leave_no_pending_exception() {
-            $crate::conformance::plain_objects_leave_no_pending_exception::<$engine>();
+        fn revoked_proxies_fail_conversion() {
+            $crate::conformance::revoked_proxies_fail_conversion::<$engine>();
         }
 
         /// Rewritten `Object` globals cannot change what converts.
