@@ -10574,6 +10574,7 @@ dependencies = [
  "waterui-shape",
  "waterui-svg",
  "waterui-text",
+ "waterui-ts-schema",
  "waterui-url",
  "waterui-video",
  "waterui-video-gpu",

@@ -171,6 +171,19 @@ pub use waterui_navigation as navigation;
 #[cfg(feature = "gpu")]
 pub use waterui_svg as svg;
 pub use waterui_text as text;
+/// TypeScript-facing surface.
+#[cfg(feature = "ts")]
+pub mod ts {
+    /// The props contract schema a mounted TypeScript view module is typed
+    /// against.
+    ///
+    /// This is `waterui-ts-schema` re-exported, so a `TsType`/`TsProps` derive
+    /// on a crate that consumes the facade can name `waterui::ts::schema` and
+    /// find every item the expansion uses.
+    pub mod schema {
+        pub use waterui_ts_schema::*;
+    }
+}
 #[cfg(feature = "video")]
 pub use waterui_video as video;
 #[cfg(feature = "webview")]

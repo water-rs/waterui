@@ -394,6 +394,10 @@ video = ["waterui-internal/video", "waterui-dylib?/video"]
 # link it. The backend without one selects this.
 video-gpu = ["waterui-internal/video-gpu", "waterui-dylib?/video-gpu"]
 webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
+# The TypeScript props contract schema (`waterui::ts::schema`): the
+# `TsType`/`TsProps` derives whose encoded contract the `water` CLI reads back
+# out of a debug artifact.
+ts = ["waterui-internal/ts", "waterui-dylib?/ts"]
 navigation-restoration = [
     "waterui-internal/navigation-restoration",
     "waterui-dylib?/navigation-restoration",
