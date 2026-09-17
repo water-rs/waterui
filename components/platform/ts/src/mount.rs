@@ -46,8 +46,10 @@ pub struct NoProps {}
 /// created it, so it is neither `Send` nor `Sync`. `Environment` stores values
 /// behind `Rc` and requires nothing of them but `'static`, which is exactly
 /// what a thread-pinned runtime can promise: the application's bundle loader
-/// creates the runtime at launch and installs one of these, and every
-/// [`Mount`] below it finds it there.
+/// creates the runtime at launch and installs one of these, a test or preview
+/// host installs the one [`configured_runtime`](crate::configured_runtime)
+/// loads from the bundle the `water` CLI names, and every [`Mount`] below it
+/// finds it there.
 ///
 /// The handle is cheap to clone: every clone is the same runtime.
 #[derive(Debug, Clone)]

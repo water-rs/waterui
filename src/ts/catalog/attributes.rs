@@ -26,10 +26,12 @@ use waterui_ts::schema::TsType;
 
 use waterui_ts::JsViewBuilder;
 
+#[cfg(feature = "media")]
+use super::values::UrlValue;
 use super::values::{
     BackgroundValue, BorderValue, ColorValue, HorizontalAlign, JsAction, PaddingValue,
     PickerOption, ProgressStyleValue, ScrollAxis, ShadowValue, ShapeValue, StackAlign, TextContent,
-    UrlValue, VerticalAlign,
+    VerticalAlign,
 };
 
 /// `<VStack>`: children stacked top to bottom.
@@ -226,11 +228,17 @@ pub struct AccordionAttributes {
 }
 
 /// `<Avatar>`: a person's picture, or their monogram.
+///
+/// The picture is fetched and decoded by `waterui-media`, so the attribute
+/// that names it exists only with the facade's `media` feature — the same
+/// gate `<Image>` sits behind, for the same reason: a build without the
+/// media graph declares no attribute it cannot honour.
 #[derive(Debug, TsType)]
 pub struct AvatarAttributes {
     /// Who the avatar is of, which is also its accessibility label.
     pub name: TextContent,
     /// The picture's URL. Without one the avatar shows the monogram.
+    #[cfg(feature = "media")]
     pub image: Option<Computed<UrlValue>>,
 }
 

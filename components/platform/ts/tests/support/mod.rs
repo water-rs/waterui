@@ -15,7 +15,7 @@ use nami::Computed;
 use waterui::ts::Components;
 use waterui_core::{AnyView, Environment};
 use waterui_graphics::color::ColorScheme;
-use waterui_testing::{NodeId, SemanticApp, TreeSnapshot, ui};
+use waterui_testing::{NodeId, OffscreenApp, SemanticApp, Snapshot, TreeSnapshot, ui};
 use waterui_ts::engine::{JsRuntime as _, JsValue};
 use waterui_ts::{MountScope, TsRuntime, ViewSlot};
 
@@ -96,6 +96,21 @@ impl Module {
         mount_view(view)
     }
 
+    /// Mounts the module's view in an offscreen session, for a test whose
+    /// observable is the rendered frame rather than the tree.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the view has already been mounted.
+    pub fn offscreen(&self) -> OffscreenApp {
+        let view = self
+            .view
+            .borrow_mut()
+            .take()
+            .expect("a mounted module is realized once");
+        mount_view_offscreen(view)
+    }
+
     /// The bridge, for a test that watches what the mount exported.
     pub const fn bridge(&self) -> &waterui_ts::Bridge {
         self.runtime.bridge()
@@ -104,6 +119,11 @@ impl Module {
     /// The accessibility tree the module's view produces.
     pub fn tree(&self) -> String {
         render(self.app().tree())
+    }
+
+    /// The frame the module's view renders.
+    pub fn pixels(&self) -> Snapshot {
+        self.offscreen().snapshot()
     }
 }
 
@@ -169,16 +189,70 @@ pub fn mount_view(view: AnyView) -> SemanticApp {
     })
 }
 
+/// Mounts one view in an offscreen session.
+///
+/// The same viewport as [`mount_view`], so a frame and a tree of one view
+/// describe the same layout.
+pub fn mount_view_offscreen(view: AnyView) -> OffscreenApp {
+    let view = RefCell::new(Some(view));
+    ui().viewport(320, 240).mount_offscreen(move || {
+        view.borrow_mut()
+            .take()
+            .expect("the test session realizes its root once")
+    })
+}
+
 /// The accessibility tree of a Rust view.
 pub fn rust_tree(view: impl waterui_core::View + 'static) -> String {
     render(mount_view(AnyView::new(view)).tree())
 }
 
+/// The frame a Rust view renders.
+pub fn rust_pixels(view: impl waterui_core::View + 'static) -> Snapshot {
+    mount_view_offscreen(AnyView::new(view)).snapshot()
+}
+
+/// Asserts two frames are the same picture.
+///
+/// This is the equivalence a purely visual modifier — a colour, an opacity, a
+/// shadow, a clip — leaves to check: it moves no node, label, action or
+/// bound, so the accessibility tree is the same tree whether the attribute
+/// was read or dropped, and only the frame can tell. Both frames come from
+/// the same renderer on the same adapter in the same process, drawing what
+/// is meant to be the same scene, so they are compared exactly rather than
+/// judged: the Rust form is the reference, and a JSX form that drops the
+/// attribute draws a different picture.
+///
+/// # Panics
+///
+/// Panics when the frames differ in size or in any pixel.
+pub fn assert_same_pixels(case: &str, jsx: &Snapshot, rust: &Snapshot) {
+    assert_eq!(
+        (jsx.width, jsx.height),
+        (rust.width, rust.height),
+        "{case}: the JSX form and the Rust form render at different sizes"
+    );
+    let (jsx_pixels, _) = jsx.rgba8.as_chunks::<4>();
+    let (rust_pixels, _) = rust.rgba8.as_chunks::<4>();
+    let differing = jsx_pixels
+        .iter()
+        .zip(rust_pixels)
+        .filter(|(left, right)| left != right)
+        .count();
+    assert_eq!(
+        differing,
+        0,
+        "{case}: the JSX form and the Rust form differ in {differing} of {} pixels",
+        jsx_pixels.len()
+    );
+}
+
 /// The tree as text: one line per node, indented by depth.
 ///
-/// Identifiers are left out because they are assigned per mount and would
-/// never match between two sessions; everything that describes what the node
-/// *is* — its role, what it says, what it can do, and where it sits — is in.
+/// Node ids are left out because they are assigned per mount and would never
+/// match between two sessions; everything that describes what the node *is* —
+/// its role, what it says, its identifier and states, what it can do, and
+/// where it sits — is in.
 pub fn render(tree: &TreeSnapshot) -> String {
     let mut rendered = String::new();
     write_node(&mut rendered, tree, tree.root(), 0);
@@ -211,12 +285,16 @@ fn write_node(rendered: &mut String, tree: &TreeSnapshot, id: NodeId, depth: usi
         .join("+");
     writeln!(
         rendered,
-        "{indent}{:?} label={:?} value={:?} checked={:?} enabled={} hidden={} actions=[{actions}] \
-         {bounds}",
+        "{indent}{:?} label={:?} id={:?} value={:?} checked={:?} selected={} expanded={:?} \
+         busy={} enabled={} hidden={} actions=[{actions}] {bounds}",
         node.role(),
         node.label(),
+        node.identifier(),
         node.value(),
         node.checked(),
+        node.selected(),
+        node.expanded(),
+        node.busy(),
         node.enabled(),
         node.hidden(),
     )

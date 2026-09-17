@@ -10987,6 +10987,7 @@ dependencies = [
  "waterui-core",
  "waterui-graphics",
  "waterui-locale",
+ "waterui-preview",
  "waterui-testing",
  "waterui-ts-engine",
  "waterui-ts-engine-jsc",

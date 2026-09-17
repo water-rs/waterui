@@ -26,6 +26,13 @@ sysinfo.workspace = true
 waterui-preview-protocol.workspace = true
 serde_json.workspace = true
 
+[features]
+# TypeScript views in a test: `ui()` installs the runtime loaded from the
+# bundle `WATERUI_TS_BUNDLE` names — set by `water test` — into the test
+# environment, so a view that reaches a `tsx!` mount renders. A test that
+# mounts no TypeScript never needs the variable.
+ts = ["waterui/ts"]
+
 [dev-dependencies]
 async-io = "2.6"
 bitflags.workspace = true

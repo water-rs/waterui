@@ -66,31 +66,37 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
         )
     });
 
+    // The header is a button that reports whether its content is showing,
+    // so assistive technology can operate it as the control it is.
     app.query()
-        .role(Role::LABEL)
+        .role(Role::BUTTON)
         .label("Details")
+        .expanded(false)
         .assert_exists();
     app.query()
         .role(Role::LABEL)
         .label("Hidden specifics")
         .assert_not_exists();
 
-    let header = app.query().role(Role::LABEL).label("Details").single();
-    header.tap_at(&mut app, 0.5, 0.5);
+    app.query().role(Role::BUTTON).label("Details").tap();
     assert!(
         expanded.get(),
-        "tapping the header must expand the accordion"
+        "activating the header must expand the accordion"
     );
+    app.query()
+        .role(Role::BUTTON)
+        .label("Details")
+        .expanded(true)
+        .assert_exists();
     app.query()
         .role(Role::LABEL)
         .label("Hidden specifics")
         .assert_exists();
 
-    let header = app.query().role(Role::LABEL).label("Details").single();
-    header.tap_at(&mut app, 0.5, 0.5);
+    app.query().role(Role::BUTTON).label("Details").tap();
     assert!(
         !expanded.get(),
-        "tapping the header again must collapse the accordion"
+        "activating the header again must collapse the accordion"
     );
     app.query()
         .role(Role::LABEL)

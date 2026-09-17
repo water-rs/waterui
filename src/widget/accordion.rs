@@ -1,7 +1,8 @@
 //! Accordion component with a header and expandable content.
 
 use crate::ViewExt;
-use nami::Binding;
+use nami::{Binding, SignalExt as _};
+use waterui_core::accessibility::{AccessibilityChildren, AccessibilityRole, AccessibilityState};
 use waterui_core::{View, handler::ViewBuilder};
 use waterui_layout::stack::vstack;
 
@@ -73,10 +74,20 @@ where
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         let toggle = self.toggle;
         let expanded = toggle.clone();
+        // The header is a control: assistive technology and a test drive it
+        // as one button, named by what the header shows, that reports whether
+        // the content it reveals is showing — rather than as text that happens
+        // to react to a tap. Its descendants are folded into that node, as a
+        // button's label is, so the header is not announced twice.
+        let state = expanded.map(|expanded| AccessibilityState::new().expanded(Some(expanded)));
         vstack((
-            self.header.on_tap(move || {
-                toggle.toggle();
-            }),
+            self.header
+                .on_tap(move || {
+                    toggle.toggle();
+                })
+                .a11y_role(AccessibilityRole::Button)
+                .a11y_children(AccessibilityChildren::ExcludeDescendants)
+                .a11y_state_signal(state),
             when(expanded, move || self.content.build()),
         ))
     }
