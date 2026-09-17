@@ -204,21 +204,29 @@ fn a_javascript_signal_becomes_a_two_way_binding() {
     assert_eq!(binding.get(), 1, "the binding is seeded from the signal");
     let (notifications, _guard) = watch_count(&binding);
 
-    // JavaScript to Rust: one notification, and nothing pushed back.
+    // JavaScript to Rust: one notification, and the value the binding came to
+    // hold is confirmed back. The confirmation is a `write` crossing and
+    // nothing more — the value is already there, so no `set` is made and no
+    // JavaScript subscriber hears anything.
     eval(&runtime, "globalThis.fixture.counter.set(5)");
     assert_eq!(binding.get(), 5);
     assert_eq!(notifications.get(), 1, "one change, one notification");
     assert_eq!(
         integer(&runtime, "globalThis.fixture.writes"),
-        0,
-        "an inbound value is never written straight back out"
+        1,
+        "the inbound value is confirmed, not written back a second time"
+    );
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.sets"),
+        1,
+        "the confirmation stored nothing: the value was already there"
     );
 
     // Rust to JavaScript: one write, and the echo it settles is dropped rather
     // than applied a second time.
     binding.set(9);
     assert_eq!(integer(&runtime, "globalThis.fixture.counter()"), 9);
-    assert_eq!(integer(&runtime, "globalThis.fixture.writes"), 1);
+    assert_eq!(integer(&runtime, "globalThis.fixture.writes"), 2);
     assert_eq!(
         notifications.get(),
         2,
@@ -309,8 +317,14 @@ fn an_effect_that_clamps_a_write_is_read_back_once() {
     );
     assert_eq!(
         integer(&runtime, "globalThis.fixture.writes"),
-        1,
-        "the correction was applied inbound, not written back out"
+        2,
+        "the write, then the confirmation of the clamped value the binding \
+         came to hold — and no third round, because that value stands"
+    );
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.sets"),
+        2,
+        "the write and the clamp: the confirmation stored nothing"
     );
 }
 
@@ -491,6 +505,47 @@ fn dropping_a_materialized_value_disposes_its_subscription() {
     eval(&runtime, "globalThis.fixture.counter.set(3)");
 }
 
+/// A plain data payload: what an ordinary object looks like crossing the seam.
+#[derive(TsType, Debug, Clone, PartialEq, Eq)]
+struct Point {
+    x: u32,
+    y: u32,
+}
+
+#[test]
+fn an_object_payload_confirmed_back_does_not_re_notify_javascript() {
+    let runtime = runtime();
+    eval(
+        &runtime,
+        "globalThis.fixture.point = globalThis.__waterui_runtime.createSignal({ x: 1, y: 2 });
+         globalThis.fixture.pointNotifications = 0;
+         globalThis.fixture.point.__subscribe(() => {
+           globalThis.fixture.pointNotifications += 1;
+         });",
+    );
+    let source = eval(&runtime, "globalThis.fixture.point");
+
+    let binding: Binding<Point> = runtime
+        .bridge()
+        .materialize_binding(&source)
+        .expect("a signal materializes");
+    assert_eq!(binding.get(), Point { x: 1, y: 2 });
+
+    eval(&runtime, "globalThis.fixture.point.set({ x: 3, y: 4 })");
+    assert_eq!(
+        binding.get(),
+        Point { x: 3, y: 4 },
+        "the change reached Rust"
+    );
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.pointNotifications"),
+        1,
+        "the value the cell confirms back is the one already there, and \
+         costs nothing: a payload crossing the seam is a fresh object every \
+         time, so it is compared structurally rather than by reference"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
@@ -524,6 +579,66 @@ fn a_rust_binding_exported_to_javascript_round_trips() {
 
     eval(&runtime, "globalThis.fixture.held.set(8)");
     assert_eq!(binding.get(), 8, "a JavaScript write reaches the binding");
+}
+
+#[test]
+fn a_javascript_write_a_filter_rejects_is_corrected_in_javascript() {
+    let runtime = runtime();
+    let bridge = runtime.bridge();
+    let _scope = bridge.open_scope();
+    let hold = function(&runtime, "globalThis.fixture.hold");
+
+    let source = Binding::container(5_u32);
+    // Single digits only. A rejected write stores nothing and notifies
+    // nobody, so no count of notifications can tell the cell what became of
+    // the value: only reading the binding back can.
+    let filtered = source.filter(|value| *value < 10);
+    let exported = filtered
+        .into_js(bridge)
+        .expect("a binding exports as a signal");
+    bridge
+        .call(&hold, &[exported])
+        .expect("JavaScript holds it");
+
+    eval(&runtime, "globalThis.fixture.held.set(50)");
+    assert_eq!(source.get(), 5, "the filter rejected the write");
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.held()"),
+        5,
+        "and JavaScript holds what Rust holds, instead of a value Rust never took"
+    );
+}
+
+#[test]
+fn a_javascript_write_a_setter_normalizes_comes_back_normalized() {
+    let runtime = runtime();
+    let bridge = runtime.bridge();
+    let _scope = bridge.open_scope();
+    let hold = function(&runtime, "globalThis.fixture.hold");
+
+    let source = Binding::container(1_u32);
+    // The setter clamps, so the binding notifies exactly once — carrying a
+    // value JavaScript never sent. Counting the notification would call that
+    // one the write's own echo and drop it.
+    let clamped = Binding::mapping(
+        &source,
+        |value: u32| value,
+        |binding: &Binding<u32>, value: u32| binding.set(value.min(10)),
+    );
+    let exported = clamped
+        .into_js(bridge)
+        .expect("a binding exports as a signal");
+    bridge
+        .call(&hold, &[exported])
+        .expect("JavaScript holds it");
+
+    eval(&runtime, "globalThis.fixture.held.set(50)");
+    assert_eq!(source.get(), 10, "the setter normalized the write");
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.held()"),
+        10,
+        "and JavaScript was corrected to the value that stands"
+    );
 }
 
 #[test]
@@ -1267,6 +1382,28 @@ fn a_bundle_whose_host_installation_fails_can_be_loaded_again() {
         eval(&runtime, "typeof globalThis.fixture.host.create"),
         JsValue::String(String::from("function")),
         "and the host it installs is the real one"
+    );
+}
+
+#[test]
+fn a_bundle_that_published_before_it_threw_leaves_nothing_for_the_next_one() {
+    let runtime =
+        TsRuntime::new(Environment::new(), TestHost::default()).expect("the runtime constructs");
+    let throwing = format!("{FIXTURE}\nthrow new Error('the bundle failed after publishing');");
+    let error = runtime.load(&throwing).expect_err("the bundle throws");
+    assert!(
+        error.to_string().contains("failed after publishing"),
+        "{error}"
+    );
+
+    // The next bundle is judged on what it published, never on the residue
+    // of the one before it.
+    let error = runtime
+        .load("1 + 1")
+        .expect_err("a bundle that publishes no runtime");
+    assert!(
+        error.to_string().contains("installRuntimeGlobal"),
+        "the bundle that published nothing is refused: {error}"
     );
 }
 

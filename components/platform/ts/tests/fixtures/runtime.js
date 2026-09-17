@@ -11,10 +11,14 @@
 // the Rust tests it mirrors the real library exactly: `set` takes an updater
 // function like the real one, so `write` has to use one to store a value
 // verbatim; a signal deduplicates on SameValue, so NaN and signed zero behave
-// as they do in `signals.js`; and `makeCallback` dispatches through the
-// installed host's `invoke`, not a global read per call. `fixture-parity` in
-// the bun suite runs the same scenarios against this script and the real
-// library and asserts they observe the same thing.
+// as they do in `signals.js`; `write` skips a value the target already holds,
+// compared structurally as the seam compares it; `subscribe` follows a plain
+// thunk by tracking what it reads, and `toSignal` accepts a `{ read }` value
+// that announces nothing; `mount` materializes the host's environment before
+// the tree runs and releases it on dispose; and `makeCallback` dispatches
+// through the installed host's `invoke`, not a global read per call.
+// `fixture-parity` in the bun suite runs the same scenarios against this
+// script and the real library and asserts they observe the same thing.
 //
 // Everything the tests need to observe hangs off `globalThis.fixture`: the
 // counters that prove one change propagates once, and a slot for handing a
@@ -36,18 +40,64 @@
     held: undefined,
   };
 
-  function createSignal(initial) {
+  // What a tracked run read. A plain thunk says nothing about what it
+  // depends on, so `subscribe` learns it the way the library's effects do:
+  // run the thunk with tracking on and record every signal it touched.
+  let tracking = null;
+
+  function trackedRun(compute) {
+    const previous = tracking;
+    const read = new Set();
+    tracking = read;
+    try {
+      compute();
+    } finally {
+      tracking = previous;
+    }
+    return read;
+  }
+
+  // Where a subscription made while a tree is mounting is parked, so the
+  // mount's `dispose` releases it — the fixture's stand-in for `onCleanup`.
+  let cleanups = null;
+
+  // `options.equals` is the library's own: a comparator, or `false` for a
+  // signal that calls every write a change. The bridge never passes one, but
+  // a module does, and `write` answers with the target's own comparator — so
+  // a fixture that hard-coded SameValue would settle writes the library
+  // reports differently.
+  function equalsOf(options) {
+    const equals = options?.equals;
+    if (equals === undefined) {
+      return Object.is;
+    }
+    if (equals === false) {
+      return () => false;
+    }
+    if (typeof equals === "function") {
+      return equals;
+    }
+    throw new TypeError('"equals" must be a comparison function or false');
+  }
+
+  function createSignal(initial, options) {
     fixture.signals += 1;
     let value = initial;
+    const equals = equalsOf(options);
     const subscribers = new Set();
-    const signal = () => value;
+    const signal = () => {
+      if (tracking !== null) {
+        tracking.add(signal);
+      }
+      return value;
+    };
     signal.__signal = true;
     // Like the real `set`: a function argument is an updater, called with the
     // current value, and the write is deduplicated on SameValue.
     signal.set = (next) => {
       fixture.sets += 1;
       const resolved = typeof next === "function" ? next(value) : next;
-      if (Object.is(value, resolved)) {
+      if (equals(value, resolved)) {
         return;
       }
       value = resolved;
@@ -55,7 +105,7 @@
         subscriber(value);
       }
     };
-    signal.__equals = Object.is;
+    signal.__equals = equals;
     signal.__subscribe = (callback) => {
       subscribers.add(callback);
       fixture.subscribes += 1;
@@ -67,17 +117,20 @@
     return signal;
   }
 
-  // The bridge only ever calls `createMemo(signal)`, to hand JavaScript a
-  // read-only view of a signal it pushes into, so the fake memo forwards both
-  // the read and the subscription to what it was given.
+  // A read-only view of whatever it computes: the bridge creates one over a
+  // signal it pushes into, and `toSignal` creates one over a thunk. Both the
+  // read and the subscription forward to the computation, which `subscribe`
+  // knows how to follow whether it announces itself or has to be tracked.
   function createMemo(compute) {
     const memo = () => compute();
     memo.__memo = true;
-    memo.__subscribe = (callback) => compute.__subscribe(callback);
+    memo.__subscribe = (callback) => subscribe(compute, callback);
     return memo;
   }
 
   const isSignal = (value) => typeof value === "function" && value.__signal === true;
+
+  const isMemo = (value) => typeof value === "function" && value.__memo === true;
 
   const isAccessor = (value) =>
     typeof value === "function" ||
@@ -95,16 +148,58 @@
 
   // Like the library's own `write`: an updater so the value is stored and
   // never called, and the answer is whether it stood, compared with the
-  // comparator the target itself settles on.
+  // comparator the target itself settles on. A value the target already
+  // holds — by the seam's structural equality, because everything crossing
+  // from Rust is a fresh copy — is not written at all and stands.
   const comparatorOf = (source) => source?.__equals ?? Object.is;
+
+  const MAX_BRIDGE_DEPTH = 128;
+
+  function isPlainObject(value) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  }
+
+  function equalAtDepth(a, b, depth) {
+    if (Object.is(a, b)) {
+      return true;
+    }
+    if (depth >= MAX_BRIDGE_DEPTH) {
+      return false;
+    }
+    if (Array.isArray(a) && Array.isArray(b)) {
+      return (
+        a.length === b.length && a.every((item, index) => equalAtDepth(item, b[index], depth + 1))
+      );
+    }
+    if (isPlainObject(a) && isPlainObject(b)) {
+      const keys = Object.keys(a);
+      return (
+        keys.length === Object.keys(b).length &&
+        keys.every((key) => Object.hasOwn(b, key) && equalAtDepth(a[key], b[key], depth + 1))
+      );
+    }
+    return false;
+  }
+
+  const bridgeEquals = (a, b) => equalAtDepth(a, b, 0);
 
   function write(target, value) {
     fixture.writes += 1;
     if (isSignal(target)) {
+      if (bridgeEquals(read(target), value)) {
+        return true;
+      }
       target.set(() => value);
       return comparatorOf(target)(read(target), value);
     }
     if (target !== null && typeof target === "object" && typeof target.write === "function") {
+      if (bridgeEquals(read(target), value)) {
+        return true;
+      }
       target.write(value);
       return comparatorOf(target)(read(target), value);
     }
@@ -117,6 +212,20 @@
     }
     if (typeof source === "function" && typeof source.__subscribe === "function") {
       return source.__subscribe(callback);
+    }
+    if (typeof source === "function") {
+      // A plain thunk, which the library subscribes to with an effect. Here
+      // its dependencies are learned once by tracking and answered with the
+      // recomputed value; a thunk that reads nothing reactive announces
+      // nothing, exactly as an effect over constants would.
+      const disposers = [...trackedRun(source)].map((dependency) =>
+        dependency.__subscribe(() => callback(source())),
+      );
+      return () => {
+        for (const dispose of disposers) {
+          dispose();
+        }
+      };
     }
     throw new TypeError("subscribe() expects a signal, an accessor, or a { read, subscribe } value");
   }
@@ -132,24 +241,42 @@
   }
 
   function toSignal(source) {
-    if (isSignal(source)) {
+    if (isSignal(source) || isMemo(source)) {
       return source;
     }
-    const signal = createSignal(read(source));
-    if (isAccessor(source)) {
-      subscribe(source, (value) => signal.set(() => value));
+    if (source !== null && typeof source === "object" && typeof source.read === "function") {
+      const signal = createSignal(source.read());
+      if (typeof source.subscribe === "function") {
+        const dispose = source.subscribe((value) => signal.set(() => value));
+        if (cleanups !== null) {
+          cleanups.push(dispose);
+        }
+      }
+      // A `{ read }` value that announces nothing is a value that never
+      // changes: it seeds the signal and nothing more, rather than failing
+      // the way subscribing to it would.
+      return signal;
     }
-    return signal;
+    if (typeof source === "function") {
+      return createMemo(source);
+    }
+    return createSignal(source);
   }
 
   // Through the installed host's `invoke`, captured once, exactly as the real
   // `makeCallback` does: reading the mutable global per call would let a
   // bundle divert every callback in the runtime.
-  function makeCallback(id) {
+  function requireHost() {
     if (fixture.host === undefined) {
-      throw new Error("waterui: no host installed — makeCallback needs its invoke");
+      throw new Error(
+        "waterui: no host installed — installHost() must run before a module is mounted",
+      );
     }
-    const { invoke } = fixture.host;
+    return fixture.host;
+  }
+
+  function makeCallback(id) {
+    const { invoke } = requireHost();
     return (...args) => invoke(id, ...args);
   }
 
@@ -166,9 +293,45 @@
     fixture.host = undefined;
   }
 
+  // Like the library's `mount`: the environment the host offers is
+  // materialized through `toSignal` before the tree runs, and released when
+  // the mount is disposed. The library publishes the two on the root owner
+  // for `useContext`; the fixture has no owner tree, so it parks them where
+  // `useTheme` / `useLocale` below read them.
   function mount(render) {
-    return { handle: render(), dispose: () => {} };
+    const host = requireHost();
+    const environment = host.environment();
+    const previous = cleanups;
+    const mountCleanups = [];
+    cleanups = mountCleanups;
+    try {
+      fixture.theme = toSignal(environment.theme);
+      fixture.locale = toSignal(environment.locale);
+      const handle = render();
+      return {
+        handle,
+        dispose: () => {
+          for (const dispose of mountCleanups) {
+            dispose();
+          }
+          fixture.theme = undefined;
+          fixture.locale = undefined;
+        },
+      };
+    } finally {
+      cleanups = previous;
+    }
   }
+
+  function mountedContext(signal, name) {
+    if (signal === undefined) {
+      throw new Error(`${name}() is only available inside a mounted WaterUI tree`);
+    }
+    return signal;
+  }
+
+  const useTheme = () => mountedContext(fixture.theme, "useTheme");
+  const useLocale = () => mountedContext(fixture.locale, "useLocale");
 
   // The values the tests bind to. `counter` is a writable signal, `label` is a
   // host-shaped accessor, `doubled` is a function accessor that pushes, and
@@ -209,6 +372,11 @@
   fixture.hold = (value) => {
     fixture.held = value;
   };
+  // The mounted environment, reachable the way `useTheme` / `useLocale` are
+  // in the library. They are not runtime-global entries there either: a
+  // module imports them from the library, and the bridge never calls them.
+  fixture.useTheme = useTheme;
+  fixture.useLocale = useLocale;
 
   globalThis.fixture = fixture;
   globalThis.__waterui_runtime = {
