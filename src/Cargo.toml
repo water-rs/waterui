@@ -134,10 +134,13 @@ video = ["dep:waterui-video"]
 video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
 webview = ["dep:waterui-webview"]
 # The TypeScript runtime behind `waterui::ts`: the embedded JavaScript engine,
-# the signal bridge, and the props contract schema (`waterui::ts::schema`)
-# whose encoded form the `water` CLI reads back out of a debug artifact. Off by
+# the signal bridge, the component vocabulary a JSX tag resolves against, the
+# `tsx!` mount, and the props contract schema (`waterui::ts::schema`) whose
+# encoded form the `water` CLI reads back out of a debug artifact. Off by
 # default: only a shell that mounts TypeScript view modules needs it, and it
-# links a JavaScript engine.
+# links a JavaScript engine. An application that writes no `tsx!` and leaves
+# this off links none of it — `waterui-ts` is an optional dependency and no
+# other feature pulls it in.
 ts = ["dep:waterui-ts"]
 navigation-restoration = ["waterui-navigation/serde"]
 # Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark

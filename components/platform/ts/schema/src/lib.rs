@@ -54,9 +54,13 @@
 //! component table — which components JSX may name, what each one's
 //! attributes are, and which modifier attributes exist. It is built from the
 //! same [`TypeSchema`] constants, encoded by [`encode_catalog`] during const
-//! evaluation, and read back by [`decode_catalog`]. The two kinds are told
-//! apart by the byte after the version, so neither decoder can read the other
-//! kind as a malformed one of its own.
+//! evaluation, and read back by [`decode_catalog`].
+//!
+//! A third payload records a *mount point*: one `tsx!` call site, naming the
+//! module it mounts and the props contract it is typed against. See
+//! [`encode_mount`] and [`decode_mount`]. The three kinds are told apart by
+//! the byte after the version, so no decoder can read another kind as a
+//! malformed payload of its own.
 //!
 //! # Type mapping
 //!
@@ -91,6 +95,7 @@ mod decode;
 mod encode;
 pub mod format;
 mod impls;
+mod mount;
 pub mod owned;
 mod tree;
 
@@ -104,6 +109,7 @@ pub use catalog::{
 pub use decode::{DecodeError, decode};
 pub use encode::{contract_hash, encode, encoded_len, payload};
 pub use format::{FORMAT_VERSION, MAX_ARRAY_LEN, MAX_DEPTH};
+pub use mount::{MountPoint, decode_mount, encode_mount, mount_encoded_len, struct_name};
 pub use tree::{
     EnumRepresentation, EnumSchema, FieldSchema, NumberKind, StructSchema, TypeSchema,
     VariantPayload, VariantSchema,
@@ -208,6 +214,15 @@ pub trait TsMapKey: TsType {}
 ///
 /// Derived by `#[derive(TsProps)]`, which also emits the artifact static the
 /// CLI reads.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a TypeScript props contract and cannot be mounted",
+    label = "`{Self}` does not derive `TsProps`",
+    note = "a mounted TypeScript module is typed against its props: add \
+            `#[derive(TsProps)]` to `{Self}`, which is what gives it the contract hash a \
+            bundle is checked against",
+    note = "a module that takes no props mounts against `waterui::ts::NoProps`, which \
+            `tsx!(\"./promo.tsx\")` with no props argument uses"
+)]
 pub trait TsProps: TsType {
     /// The encoded [`TsType::SCHEMA`], without the NUL terminator the artifact
     /// static appends — the exact bytes the CLI recovers and [`decode`] reads.

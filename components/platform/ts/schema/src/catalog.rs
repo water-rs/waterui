@@ -21,7 +21,7 @@
 
 use crate::decode::{DecodeError, Reader};
 use crate::encode::{put, put_node, put_str, put_varint};
-use crate::format::{FORMAT_VERSION, children, kind};
+use crate::format::{FORMAT_VERSION, children, kind, payload_kind};
 use crate::owned;
 use crate::tree::{StructSchema, TypeSchema};
 
@@ -304,8 +304,13 @@ pub fn decode_catalog(payload: &[u8]) -> Result<Catalog, DecodeError> {
             expected: FORMAT_VERSION,
         });
     }
-    if reader.byte()? != kind::CATALOG {
-        return Err(DecodeError::NotACatalog);
+    // Read rather than peeked: a payload that ends after the version byte is
+    // truncated, not a payload of another kind.
+    let found = reader.byte()?;
+    if found != kind::CATALOG {
+        return Err(DecodeError::NotACatalog {
+            found: payload_kind(found),
+        });
     }
 
     let count = reader.length()?;

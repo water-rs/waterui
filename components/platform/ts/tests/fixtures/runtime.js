@@ -507,5 +507,11 @@
     modules: {
       "src/promo.tsx": (props) => props,
     },
+    // Keyed like `modules`: the props contract hash each module was built
+    // against, as hexadecimal text. Nothing here mounts through `Mount`, so
+    // the value is only ever read as a table, never matched.
+    contracts: {
+      "src/promo.tsx": "0000000000000000",
+    },
   };
 })();

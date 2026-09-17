@@ -59,6 +59,12 @@ pub enum DecodeError {
         /// Where the length starts.
         offset: usize,
     },
+    /// A contract hash does not fit in a `u64`.
+    #[error("the contract hash at byte {offset} does not fit in a u64")]
+    HashOverflow {
+        /// Where the hash starts.
+        offset: usize,
+    },
     /// A string is not valid UTF-8.
     #[error("the string at byte {offset} is not valid UTF-8")]
     InvalidUtf8 {
@@ -112,13 +118,27 @@ pub enum DecodeError {
         /// Where the member count starts.
         offset: usize,
     },
-    /// The payload is a component catalog, not a props contract. The two share
-    /// the format and are told apart by the byte after the version.
-    #[error("the payload is a component catalog, which `decode_catalog` reads, not a type tree")]
-    NotATypeTree,
-    /// The payload is a props contract, not a component catalog.
-    #[error("the payload is a props contract, which `decode` reads, not a component catalog")]
-    NotACatalog,
+    /// The payload is another kind. The three kinds share the format and are
+    /// told apart by the byte after the version.
+    #[error("the payload is {found}, which `decode` does not read, not a props type tree")]
+    NotATypeTree {
+        /// What the payload turned out to be.
+        found: &'static str,
+    },
+    /// The payload is not a component catalog.
+    #[error(
+        "the payload is {found}, which `decode_catalog` does not read, not a component catalog"
+    )]
+    NotACatalog {
+        /// What the payload turned out to be.
+        found: &'static str,
+    },
+    /// The payload is not a mount point.
+    #[error("the payload is {found}, which `decode_mount` does not read, not a mount point")]
+    NotAMountPoint {
+        /// What the payload turned out to be.
+        found: &'static str,
+    },
     /// A component's attributes are not an object type. A catalog entry's
     /// attributes come from a props struct, so the node is always a struct;
     /// the encoder asserts it during const evaluation.
@@ -171,8 +191,10 @@ pub fn decode(payload: &[u8]) -> Result<owned::Schema, DecodeError> {
             expected: FORMAT_VERSION,
         });
     }
-    if payload.get(reader.pos) == Some(&kind::CATALOG) {
-        return Err(DecodeError::NotATypeTree);
+    if let Some(&found @ (kind::CATALOG | kind::MOUNT)) = payload.get(reader.pos) {
+        return Err(DecodeError::NotATypeTree {
+            found: crate::format::payload_kind(found),
+        });
     }
     let schema = reader.node()?;
     let extra = payload.len() - reader.pos;
@@ -231,6 +253,40 @@ impl Reader<'_> {
             scale = scale
                 .checked_mul(127)
                 .ok_or(DecodeError::LengthOverflow { offset })?;
+        }
+    }
+
+    /// Read a little-endian base-127 varint as a `u64`.
+    ///
+    /// The same encoding [`length`](Self::length) reads, over the type a
+    /// contract hash actually has: a `usize` is 32 bits on some targets the
+    /// framework builds for, and a hash read into one would silently lose its
+    /// top half.
+    pub fn hash(&mut self) -> Result<u64, DecodeError> {
+        let offset = self.pos;
+        let mut value = 0_u64;
+        let mut scale = 1_u64;
+        loop {
+            let byte = self.byte()?;
+            let biased = byte & 0x7f;
+            if biased == 0 {
+                return Err(DecodeError::UnknownTag {
+                    kind: "hash",
+                    tag: byte,
+                    offset: self.pos - 1,
+                });
+            }
+            let digit = u64::from(biased - 1);
+            value = digit
+                .checked_mul(scale)
+                .and_then(|term| value.checked_add(term))
+                .ok_or(DecodeError::HashOverflow { offset })?;
+            if byte & 0x80 == 0 {
+                return Ok(value);
+            }
+            scale = scale
+                .checked_mul(127)
+                .ok_or(DecodeError::HashOverflow { offset })?;
         }
     }
 

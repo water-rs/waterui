@@ -18,4 +18,5 @@ globalThis.__waterui_runtime = {
   createMemo: (compute) => compute,
   makeCallback: () => () => {},
   modules: {},
+  contracts: {},
 };
