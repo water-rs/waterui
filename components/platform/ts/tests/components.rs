@@ -11,6 +11,16 @@
 //! here: a stack's spacing comes from `VStackLayout::default()` and a bare
 //! padding from `DEFAULT_PADDING`, so a test cannot agree with the host about
 //! a number the framework has since changed.
+//!
+//! An attribute the tree cannot see is compared where it can be seen. A
+//! purely visual one — a colour, an opacity, a shadow, a border, a clip, a
+//! field's prompt — moves no node, label, action or bound, so its two forms
+//! are compared as the frames they render (`assert_same_pixels`). One that
+//! only shows when the control is used — a stepper's step, a handler on the
+//! other side of the seam — is driven through `waterui-testing` and observed
+//! in the JavaScript it reaches. A case whose two trees would be the same
+//! tree whether the attribute was read or dropped is not written as a tree
+//! comparison, because it could never fail.
 
 mod support;
 
@@ -31,9 +41,12 @@ use waterui::{AnyView, Str, ViewExt as _};
 use waterui_core::id::SelfId;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 use waterui_core::views::ForEach;
+use waterui_testing::{OffscreenApp, Role};
 use waterui_ts::engine::JsValue;
 
-use support::{Module, mount_error, rust_tree};
+use support::{
+    Module, assert_same_pixels, mount_error, mount_view_offscreen, rust_pixels, rust_tree,
+};
 
 /// Mounts the JSX form and the Rust form and asserts they are one tree.
 fn assert_same(case: &str, source: &str, rust: impl waterui_core::View + 'static) {
@@ -103,18 +116,42 @@ fn ts_a_stack_with_no_spacing_uses_the_frameworks_own_default() {
 
 #[test]
 fn ts_hstack_is_an_hstack() {
+    // Two children of different heights: the spacing is the gap between
+    // them, and the alignment is where the shorter one sits beside the
+    // taller. With one child neither would move anything.
     assert_same(
         "HStack",
         &module(
             r#"waterui.jsx("HStack", {
+                spacing: 8,
                 alignment: "Top",
-                children: waterui.jsx("Text", { children: "Only" }),
+                children: [
+                    waterui.jsx("Text", { children: "Short" }),
+                    waterui.jsx("Text", { height: 60, children: "Tall" }),
+                ],
             })"#,
         ),
         HStack::new(
             VerticalAlignment::Top,
+            8.0,
+            vec![
+                AnyView::new(text("Short")),
+                AnyView::new(text("Tall").height(60.0)),
+            ],
+        ),
+    );
+    assert_same(
+        "HStack default spacing",
+        &module(
+            r#"waterui.jsx("HStack", { children: [
+                waterui.jsx("Text", { children: "First" }),
+                waterui.jsx("Text", { children: "Second" }),
+            ] })"#,
+        ),
+        HStack::new(
+            VerticalAlignment::Center,
             0.0,
-            vec![AnyView::new(text("Only"))],
+            vec![AnyView::new(text("First")), AnyView::new(text("Second"))],
         )
         .spacing(HStackLayout::default().spacing),
     );
@@ -242,6 +279,39 @@ fn ts_accordion_is_an_accordion() {
     );
 }
 
+#[test]
+fn ts_an_accordion_header_toggles_the_javascript_signal() {
+    let module = Module::mount(&stateful(
+        "globalThis.open = waterui.createSignal(false);",
+        r#"waterui.jsx("Accordion", {
+            expanded: globalThis.open,
+            content: () => waterui.jsx("Text", { children: "Body" }),
+            children: waterui.jsx("Text", { children: "Header" }),
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Body").assert_not_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Header")
+        .expanded(false)
+        .assert_exists();
+
+    app.query().role(Role::BUTTON).label("Header").tap();
+    app.settle();
+    assert_eq!(
+        module.eval("globalThis.open()"),
+        JsValue::Bool(true),
+        "expanding the accordion wrote the JavaScript signal"
+    );
+    app.query().label("Body").assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Header")
+        .expanded(true)
+        .assert_exists();
+}
+
 // ---------------------------------------------------------------------------
 // Leaves
 // ---------------------------------------------------------------------------
@@ -277,6 +347,13 @@ fn ts_spacer_and_divider_are_themselves() {
     );
 }
 
+// A spacer's minimum length has no equivalence case. A spacer with room to
+// spare takes the room whatever its minimum, and under compression the stack
+// gives it nothing — `Spacer::new(40.0)` in a 50-point `VStack` of two texts
+// lays out exactly as `Spacer::new(0.0)` does — so no tree and no frame can
+// tell an arm that reads `minLength` from one that drops it. What holds that
+// arm is the refusal in `ts_an_attribute_value_of_the_wrong_shape_is_refused`.
+
 #[test]
 fn ts_label_is_a_label() {
     assert_same(
@@ -296,8 +373,11 @@ fn ts_avatar_is_an_avatar() {
     // An avatar's picture has no equivalence case. `Avatar::body` ends in
     // `.a11y_children(ExcludeDescendants)`, so the picture never reaches the
     // accessibility tree and the two trees are identical whether the `image`
-    // attribute was read or dropped. What holds that arm honest is the refusal
-    // below, which an arm that never looks at the value cannot produce.
+    // attribute was read or dropped; and the picture is fetched from its URL,
+    // which a test session cannot reach, so both frames show the monogram as
+    // well. What holds that arm honest is the refusal in
+    // `ts_an_attribute_value_of_the_wrong_shape_is_refused`, which an arm that
+    // never looks at the value cannot produce.
 }
 
 #[test]
@@ -379,14 +459,17 @@ fn ts_slider_is_a_slider() {
 
 #[test]
 fn ts_stepper_is_a_stepper() {
+    // The step is not in the tree — a stepper reports its value, not how far
+    // one press moves it — so it is observed by pressing, in
+    // `ts_a_stepper_steps_the_javascript_signal_by_its_step`.
     let count = Binding::container(2_i32);
     assert_same(
         "Stepper",
         &stateful(
             "globalThis.count = waterui.createSignal(2);",
-            r#"waterui.jsx("Stepper", { value: globalThis.count, step: 2, children: "Guests" })"#,
+            r#"waterui.jsx("Stepper", { value: globalThis.count, children: "Guests" })"#,
         ),
-        stepper("Guests", &count).step(2),
+        stepper("Guests", &count),
     );
 }
 
@@ -401,18 +484,36 @@ fn ts_textfield_is_a_text_field() {
         ),
         field("Name", &name),
     );
-    let prompted = Binding::container(Str::from("Ada"));
-    assert_same(
+}
+
+#[test]
+fn ts_a_text_fields_prompt_is_the_rust_prompt() {
+    // The prompt is what an empty, focused field shows, and it is not in the
+    // tree — the node reports the field's value, which is nothing — so the
+    // two forms are focused and compared as the frames they render, where the
+    // prompt is drawn.
+    let focused = |mut app: OffscreenApp| {
+        app.semantic_mut().query().label("Name").focus();
+        app.semantic_mut().settle();
+        app.snapshot()
+    };
+    let prompted = Binding::container(Str::from(""));
+    assert_same_pixels(
         "TextField with a prompt",
-        &stateful(
-            r#"globalThis.name = waterui.createSignal("Ada");"#,
-            r#"waterui.jsx("TextField", {
-                value: globalThis.name,
-                prompt: "Your name",
-                children: "Name",
-            })"#,
+        &focused(
+            Module::mount(&stateful(
+                r#"globalThis.name = waterui.createSignal("");"#,
+                r#"waterui.jsx("TextField", {
+                    value: globalThis.name,
+                    prompt: "Your name",
+                    children: "Name",
+                })"#,
+            ))
+            .offscreen(),
         ),
-        field("Name", &prompted).prompt(text("Your name")),
+        &focused(mount_view_offscreen(AnyView::new(
+            field("Name", &prompted).prompt(text("Your name")),
+        ))),
     );
 }
 
@@ -490,11 +591,207 @@ fn ts_progress_without_a_value_is_indeterminate() {
 
 #[test]
 fn ts_link_is_a_link() {
+    // The target is not in the tree — a link node carries its label — and
+    // following it hands the URL to the platform, which a test session must
+    // not do. What holds the `url` arm is the refusal in
+    // `ts_an_attribute_value_of_the_wrong_shape_is_refused`.
     assert_same(
         "Link",
         &module(r#"waterui.jsx("Link", { url: "https://waterui.dev", children: "WaterUI" })"#),
         Link::new(label("WaterUI"), Str::from("https://waterui.dev")),
     );
+}
+
+#[test]
+fn ts_a_controls_label_attribute_is_its_label() {
+    // `label` is the explicit form of the children slot. The Rust twin is the
+    // control with that label, so the tree is the same one the children form
+    // produces — and an arm that dropped the attribute would leave the
+    // control with no label at all, which the host refuses.
+    let label = |name: &str| format!(r#"label: waterui.jsx("Label", {{ children: "{name}" }})"#);
+    assert_same(
+        "Button by label attribute",
+        &module(&format!(
+            r#"waterui.jsx("Button", {{ onTap: () => {{}}, {} }})"#,
+            label("Save")
+        )),
+        button("Save").action(|| {}),
+    );
+    let on = Binding::container(true);
+    assert_same(
+        "Toggle by label attribute",
+        &stateful(
+            "globalThis.on = waterui.createSignal(true);",
+            &format!(
+                r#"waterui.jsx("Toggle", {{ value: globalThis.on, {} }})"#,
+                label("Dark mode")
+            ),
+        ),
+        toggle("Dark mode", &on),
+    );
+    let amount = Binding::container(0.25_f64);
+    assert_same(
+        "Slider by label attribute",
+        &stateful(
+            "globalThis.amount = waterui.createSignal(0.25);",
+            &format!(
+                r#"waterui.jsx("Slider", {{ value: globalThis.amount, {} }})"#,
+                label("Volume")
+            ),
+        ),
+        slider("Volume", &amount),
+    );
+    let count = Binding::container(2_i32);
+    assert_same(
+        "Stepper by label attribute",
+        &stateful(
+            "globalThis.count = waterui.createSignal(2);",
+            &format!(
+                r#"waterui.jsx("Stepper", {{ value: globalThis.count, {} }})"#,
+                label("Guests")
+            ),
+        ),
+        stepper("Guests", &count),
+    );
+    let name = Binding::container(Str::from("Ada"));
+    assert_same(
+        "TextField by label attribute",
+        &stateful(
+            r#"globalThis.name = waterui.createSignal("Ada");"#,
+            &format!(
+                r#"waterui.jsx("TextField", {{ value: globalThis.name, {} }})"#,
+                label("Name")
+            ),
+        ),
+        field("Name", &name),
+    );
+    let choice = Binding::container(Str::from("alpha"));
+    assert_same(
+        "Picker by label attribute",
+        &stateful(
+            r#"globalThis.choice = waterui.createSignal("alpha");"#,
+            &format!(
+                r#"waterui.jsx("Picker", {{
+                    value: globalThis.choice,
+                    options: [{{ value: "alpha", label: "Alpha" }}],
+                    {}
+                }})"#,
+                label("Variant")
+            ),
+        ),
+        Picker::new(
+            "Variant",
+            vec![PickerItem::new(Str::from("alpha"), text("Alpha"))],
+            &choice,
+        ),
+    );
+}
+
+#[test]
+fn ts_a_button_activation_reaches_the_javascript_handler() {
+    // `onTap` is the button's own activation, distinct from the tap gesture
+    // modifier: it is what a native control runs when it is activated, by
+    // whatever means. Activating the button through the accessibility action
+    // is how a test tells the two apart.
+    let module = Module::mount(&stateful(
+        "globalThis.saves = 0;",
+        r#"waterui.jsx("Button", {
+            onTap: () => { globalThis.saves += 1; },
+            children: "Save",
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Save").tap();
+    app.settle();
+    assert_eq!(
+        module.eval("globalThis.saves").as_f64(),
+        Some(1.0),
+        "activating the button ran the JavaScript handler once"
+    );
+}
+
+#[test]
+fn ts_a_slider_writes_through_to_the_javascript_signal() {
+    let module = Module::mount(&stateful(
+        "globalThis.amount = waterui.createSignal(0.25);",
+        r#"waterui.jsx("Slider", { value: globalThis.amount, children: "Volume" })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Volume").increment();
+    app.settle();
+    let amount = module
+        .eval("globalThis.amount()")
+        .as_f64()
+        .expect("the signal holds a number");
+    assert!(
+        amount > 0.25,
+        "incrementing the slider moved the JavaScript signal up from 0.25, found {amount}"
+    );
+}
+
+#[test]
+fn ts_a_stepper_steps_the_javascript_signal_by_its_step() {
+    // The step is invisible in the tree, and visible the moment the stepper
+    // is pressed: one increment moves the signal by the step, not by one.
+    let module = Module::mount(&stateful(
+        "globalThis.count = waterui.createSignal(2);",
+        r#"waterui.jsx("Stepper", { value: globalThis.count, step: 2, children: "Guests" })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Guests").increment();
+    app.settle();
+    assert_eq!(
+        module.eval("globalThis.count()").as_f64(),
+        Some(4.0),
+        "one increment moved the JavaScript signal by the step"
+    );
+    app.query().label("Guests").decrement();
+    app.settle();
+    assert_eq!(
+        module.eval("globalThis.count()").as_f64(),
+        Some(2.0),
+        "and one decrement moved it back by the step"
+    );
+}
+
+#[test]
+fn ts_a_text_field_writes_through_to_the_javascript_signal() {
+    let module = Module::mount(&stateful(
+        r#"globalThis.name = waterui.createSignal("Ada");"#,
+        r#"waterui.jsx("TextField", { value: globalThis.name, children: "Name" })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Name").set_text("Grace");
+    app.settle();
+    assert_eq!(
+        module.eval("globalThis.name()"),
+        JsValue::String(String::from("Grace")),
+        "setting the field's text wrote the JavaScript signal"
+    );
+}
+
+#[test]
+fn ts_a_picker_choice_writes_through_to_the_javascript_signal() {
+    let module = Module::mount(&stateful(
+        r#"globalThis.choice = waterui.createSignal("alpha");"#,
+        r#"waterui.jsx("Picker", {
+            value: globalThis.choice,
+            options: [
+                { value: "alpha", label: "Alpha" },
+                { value: "beta", label: "Beta" },
+            ],
+            children: "Variant",
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Beta").tap();
+    app.settle();
+    assert_eq!(
+        module.eval("globalThis.choice()"),
+        JsValue::String(String::from("beta")),
+        "choosing an option wrote its value into the JavaScript signal"
+    );
+    app.query().label("Beta").selected(true).assert_exists();
 }
 
 // ---------------------------------------------------------------------------
@@ -720,6 +1017,30 @@ fn ts_a_destination_is_built_again_every_time_it_is_entered() {
 }
 
 #[test]
+fn ts_a_navigation_links_title_heads_the_destination() {
+    // The title is the destination's, so it is nowhere in the tree until the
+    // link is followed — which is why `ts_navigation_link_is_a_navigation_link`
+    // cannot see it and this one enters the destination.
+    let module = Module::mount(&module(
+        r#"waterui.jsx("NavigationStack", {
+            title: "Inbox",
+            children: waterui.jsx("NavigationLink", {
+                title: "Message",
+                destination: () => waterui.jsx("Text", { children: "Body" }),
+                children: "Open",
+            }),
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Message").assert_not_exists();
+
+    app.query().label("Open").tap();
+    app.settle();
+    app.query().label("Body").assert_exists();
+    app.query().label("Message").assert_exists();
+}
+
+#[test]
 fn ts_tabs_is_a_tabs() {
     let selection = Binding::container(Str::from("inbox"));
     assert_same(
@@ -729,6 +1050,7 @@ fn ts_tabs_is_a_tabs() {
             r#"waterui.jsx("Tabs", { value: globalThis.tab, children: [
                 waterui.jsx("Tab", {
                     value: "inbox",
+                    title: "All messages",
                     content: () => waterui.jsx("Text", { children: "Messages" }),
                     children: "Inbox",
                 }),
@@ -743,7 +1065,7 @@ fn ts_tabs_is_a_tabs() {
             &selection,
             vec![
                 Tab::new(Str::from("inbox"), label("Inbox"), || {
-                    NavigationView::new("", text("Messages"))
+                    NavigationView::new("All messages", text("Messages"))
                 }),
                 Tab::new(Str::from("sent"), label("Sent"), || {
                     NavigationView::new("", text("Sent mail"))
@@ -751,6 +1073,37 @@ fn ts_tabs_is_a_tabs() {
             ],
         ),
     );
+}
+
+#[test]
+fn ts_choosing_a_tab_writes_through_to_the_javascript_signal() {
+    let module = Module::mount(&stateful(
+        r#"globalThis.tab = waterui.createSignal("inbox");"#,
+        r#"waterui.jsx("Tabs", { value: globalThis.tab, children: [
+            waterui.jsx("Tab", {
+                value: "inbox",
+                content: () => waterui.jsx("Text", { children: "Messages" }),
+                children: "Inbox",
+            }),
+            waterui.jsx("Tab", {
+                value: "sent",
+                content: () => waterui.jsx("Text", { children: "Sent mail" }),
+                children: "Sent",
+            }),
+        ] })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Messages").assert_exists();
+
+    app.query().label("Sent").tap();
+    app.settle();
+    assert_eq!(
+        module.eval("globalThis.tab()"),
+        JsValue::String(String::from("sent")),
+        "choosing a tab wrote its value into the JavaScript signal"
+    );
+    app.query().label("Sent mail").assert_exists();
+    app.query().label("Messages").assert_not_exists();
 }
 
 // ---------------------------------------------------------------------------
@@ -862,88 +1215,140 @@ fn ts_modifier_order_is_the_chain_order() {
     );
 }
 
+/// A colour as the catalog's `{ red, green, blue }` object resolves it.
+fn rgb(red: f32, green: f32, blue: f32) -> waterui::graphics::color::Color {
+    waterui::graphics::color::Color::new(waterui::graphics::ResolvedColor {
+        red,
+        green,
+        blue,
+        headroom: 1.0,
+        opacity: 1.0,
+    })
+}
+
+// The purely visual modifiers — opacity, shadow, border, clip, foreground, a
+// colour background — leave the accessibility tree exactly as it was, so a
+// tree comparison could never tell an arm that reads one from an arm that
+// drops it. Each is compared as the frame it renders instead, against the
+// frame the Rust chain renders, one modifier at a time so a difference names
+// the arm.
+
 #[test]
-fn ts_appearance_modifiers_are_the_rust_ones() {
-    assert_same(
-        "opacity, shadow, border and clip",
-        &module(
+fn ts_opacity_is_the_rust_opacity() {
+    assert_same_pixels(
+        "opacity",
+        &Module::mount(&module(
+            r#"waterui.jsx("Text", { opacity: 0.5, children: "Faded" })"#,
+        ))
+        .pixels(),
+        &rust_pixels(text("Faded").opacity(0.5)),
+    );
+}
+
+#[test]
+fn ts_shadow_is_the_rust_shadow() {
+    use waterui::graphics::color::Color;
+    use waterui::style::{Shadow, Vector};
+    assert_same_pixels(
+        "shadow",
+        &Module::mount(&module(
+            r#"waterui.jsx("Text", { shadow: { radius: 4, y: 2 }, children: "Raised" })"#,
+        ))
+        .pixels(),
+        &rust_pixels(text("Raised").shadow(Shadow::new(
+            Color::srgb(0, 0, 0),
+            Vector { x: 0.0, y: 2.0 },
+            4.0,
+            0.0,
+        ))),
+    );
+}
+
+#[test]
+fn ts_border_is_the_rust_border() {
+    use waterui::border::Border;
+    assert_same_pixels(
+        "border",
+        &Module::mount(&module(
             r#"waterui.jsx("Text", {
-                opacity: 0.5,
-                shadow: { radius: 4, y: 2 },
                 border: { color: { red: 0, green: 0, blue: 1 }, width: 2 },
-                clip: "Capsule",
-                children: "Styled",
+                children: "Framed",
             })"#,
+        ))
+        .pixels(),
+        &rust_pixels(text("Framed").border_with(Border::new(rgb(0.0, 0.0, 1.0), 2.0))),
+    );
+}
+
+#[test]
+fn ts_clip_is_the_rust_clip() {
+    // A clip shows only where there is something to cut: a colour background
+    // fills the text's box, and the shape takes its corners off.
+    assert_same_pixels(
+        "clip to a capsule",
+        &Module::mount(&module(
+            r#"waterui.jsx("Text", {
+                padding: 12,
+                background: { red: 0, green: 0, blue: 1 },
+                clip: "Capsule",
+                children: "Rounded",
+            })"#,
+        ))
+        .pixels(),
+        &rust_pixels(
+            text("Rounded")
+                .padding_with(12.0)
+                .background(rgb(0.0, 0.0, 1.0))
+                .clip(waterui::shape::Capsule),
         ),
-        {
-            use waterui::border::Border;
-            use waterui::graphics::ResolvedColor;
-            use waterui::graphics::color::Color;
-            use waterui::style::{Shadow, Vector};
-            text("Styled")
-                .opacity(0.5)
-                .shadow(Shadow::new(
-                    Color::srgb(0, 0, 0),
-                    Vector { x: 0.0, y: 2.0 },
-                    4.0,
-                    0.0,
-                ))
-                .border_with(Border::new(
-                    Color::new(ResolvedColor {
-                        red: 0.0,
-                        green: 0.0,
-                        blue: 1.0,
-                        headroom: 1.0,
-                        opacity: 1.0,
-                    }),
-                    2.0,
-                ))
-                .clip(waterui::shape::Capsule)
-        },
+    );
+    assert_same_pixels(
+        "clip by corner radius",
+        &Module::mount(&module(
+            r#"waterui.jsx("Text", {
+                padding: 12,
+                background: { red: 0, green: 0, blue: 1 },
+                clip: { cornerRadius: 8 },
+                children: "Rounded",
+            })"#,
+        ))
+        .pixels(),
+        &rust_pixels(
+            text("Rounded")
+                .padding_with(12.0)
+                .background(rgb(0.0, 0.0, 1.0))
+                .clip(waterui::shape::RoundedRectangle::new(8.0)),
+        ),
     );
 }
 
 #[test]
 fn ts_foreground_is_the_rust_foreground() {
-    assert_same(
+    assert_same_pixels(
         "foreground",
-        &module(
+        &Module::mount(&module(
             r#"waterui.jsx("Text", {
                 foreground: { red: 1, green: 0, blue: 0 },
                 children: "Tinted",
             })"#,
-        ),
-        text("Tinted").foreground(waterui::graphics::color::Color::new(
-            waterui::graphics::ResolvedColor {
-                red: 1.0,
-                green: 0.0,
-                blue: 0.0,
-                headroom: 1.0,
-                opacity: 1.0,
-            },
-        )),
+        ))
+        .pixels(),
+        &rust_pixels(text("Tinted").foreground(rgb(1.0, 0.0, 0.0))),
     );
 }
 
 #[test]
 fn ts_background_takes_a_colour() {
-    assert_same(
+    assert_same_pixels(
         "a colour background",
-        &module(
+        &Module::mount(&module(
             r#"waterui.jsx("Text", {
                 background: { red: 1, green: 0, blue: 0 },
                 children: "Tinted",
             })"#,
-        ),
-        text("Tinted").background(waterui::graphics::color::Color::new(
-            waterui::graphics::ResolvedColor {
-                red: 1.0,
-                green: 0.0,
-                blue: 0.0,
-                headroom: 1.0,
-                opacity: 1.0,
-            },
-        )),
+        ))
+        .pixels(),
+        &rust_pixels(text("Tinted").background(rgb(1.0, 0.0, 0.0))),
     );
 }
 
@@ -1012,12 +1417,6 @@ fn ts_a_tap_reaches_the_javascript_handler() {
         "the gesture ran the JavaScript handler once"
     );
 }
-
-// `clip` has no equivalence case either: a clip is purely visual and changes
-// neither a node, a label, an action nor a bound, so both trees are the same
-// tree whether the shape was read or thrown away. The two refusals below —
-// a shape the catalog does not name, and a rounded clip with no radius — are
-// what an arm that drops the value cannot produce.
 
 #[test]
 fn ts_accessibility_attributes_reach_the_tree() {
@@ -1358,10 +1757,11 @@ fn ts_an_attribute_the_component_does_not_declare_is_refused() {
 
 #[test]
 fn ts_an_attribute_value_of_the_wrong_shape_is_refused() {
-    // Several attributes leave no mark on the accessibility tree — a clip, a
-    // prompt, an avatar's picture, a list's editing mode — so an equivalence
-    // test cannot tell an arm that reads them from one that drops them. A
-    // refusal can: an arm that never looks at the value cannot reject it.
+    // Several attributes leave no mark on the accessibility tree — an
+    // avatar's picture, a spacer's minimum, a link's target, a list's editing
+    // mode — and some no mark on the frame either, so an equivalence test
+    // cannot tell an arm that reads them from one that drops them. A refusal
+    // can: an arm that never looks at the value cannot reject it.
     for (case, source, expected) in [
         (
             "a shape the catalog does not name",
@@ -1410,6 +1810,16 @@ fn ts_an_attribute_value_of_the_wrong_shape_is_refused() {
             "an avatar picture that is not a URL",
             r#"waterui.jsx("Avatar", { name: "Ada", image: "not a url" })"#,
             "image",
+        ),
+        (
+            "a spacer minimum that is not a length",
+            r#"waterui.jsx("Spacer", { minLength: "wide" })"#,
+            "minLength",
+        ),
+        (
+            "a link target that is not a URL string",
+            r#"waterui.jsx("Link", { url: 3, children: "WaterUI" })"#,
+            "url",
         ),
         (
             "a prompt that is not text",
