@@ -69,7 +69,8 @@
 //! | `#[derive(TsType)]` struct | object type | [`TypeSchema::Struct`] |
 //! | `#[derive(TsType)]` enum | string union or tagged object | [`TypeSchema::Enum`] |
 //! | `Option<T>` | `T \| null` | [`TypeSchema::Option`] |
-//! | `Vec<T>`, `[T; N]`, `&'static [T]` | `T[]` | [`TypeSchema::List`] |
+//! | `Vec<T>`, `&'static [T]` | `T[]` | [`TypeSchema::List`] |
+//! | `[T; N]` | `[T, …]`, a tuple of N | [`TypeSchema::Array`] |
 //! | `BTreeMap<K, V>`, `HashMap<K, V>` | `Record<K, V>` | [`TypeSchema::Map`] |
 //! | `String`, `Str`, `&'static str` | `string` | [`TypeSchema::String`] |
 //! | `f32`, `f64`, integers to 32 bits | `number` | [`TypeSchema::Number`] |
