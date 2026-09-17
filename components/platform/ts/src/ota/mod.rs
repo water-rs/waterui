@@ -317,8 +317,8 @@ impl<H: HostTable + Clone> Loader<H> {
     /// Picks the newest verified cached bundle that has not failed, falling
     /// through to the baseline, and evaluates it.
     ///
-    /// The selection is spelled out in the [module documentation](self).
-    /// Only the store is read; no connection is opened.
+    /// The selection is spelled out under "Selection at launch" in
+    /// `OTA.md`. Only the store is read; no connection is opened.
     ///
     /// # Errors
     ///
