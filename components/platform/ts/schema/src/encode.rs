@@ -54,6 +54,29 @@ pub const fn put_varint(buf: &mut [u8], pos: usize, value: usize) -> usize {
     }
 }
 
+/// Append `value` as a little-endian base-127 varint, in the same encoding
+/// [`put_varint`] uses for a length.
+///
+/// A length is a `usize` and a contract hash is a `u64`, and the two are not
+/// the same width everywhere the framework builds — a 32-bit target would
+/// truncate a hash written through [`put_varint`] — so the hash has its own
+/// walk over its own type rather than a cast that is lossless only by luck.
+pub const fn put_u64(buf: &mut [u8], pos: usize, value: u64) -> usize {
+    /// The radix as a `u64`, so the arithmetic never leaves the type.
+    const RADIX: u64 = VARINT_RADIX as u64;
+    let mut pos = pos;
+    let mut value = value;
+    loop {
+        let digit = (value % RADIX) as u8;
+        value /= RADIX;
+        let more = value != 0;
+        pos = put(buf, pos, if more { 0x80 | (digit + 1) } else { digit + 1 });
+        if !more {
+            return pos;
+        }
+    }
+}
+
 /// Append `text` as a length-prefixed UTF-8 string.
 pub const fn put_str(buf: &mut [u8], pos: usize, text: &str) -> usize {
     let bytes = text.as_bytes();
