@@ -12,11 +12,14 @@
 // function like the real one, so `write` has to use one to store a value
 // verbatim; a signal deduplicates on SameValue, so NaN and signed zero behave
 // as they do in `signals.js`; `write` skips a value the target already holds,
-// compared structurally as the seam compares it; `subscribe` follows a plain
-// thunk by tracking what it reads, and `toSignal` accepts a `{ read }` value
-// that announces nothing; `mount` materializes the host's environment before
-// the tree runs and releases it on dispose; and `makeCallback` dispatches
-// through the installed host's `invoke`, not a global read per call.
+// compared structurally as the seam compares it and by identity when the
+// native side says the value is a handle; `subscribe` follows a plain thunk
+// by tracking what it reads, and `toSignal` accepts a `{ read }` value that
+// announces nothing; a memo caches its value and recomputes only after a
+// change; `installHost` validates the table it is given; `mount` materializes
+// the host's environment before the tree runs and releases it on dispose;
+// and `makeCallback` dispatches through the installed host's `invoke`, not a
+// global read per call.
 // `fixture-parity` in the bun suite runs the same scenarios against this
 // script and the real library and asserts they observe the same thing.
 //
@@ -36,6 +39,8 @@
     signals: 0,
     subscribes: 0,
     disposes: 0,
+    // Memo evaluations, so a test can see a cached read cost nothing.
+    computations: 0,
     // A slot the tests park a value in, so both sides can reach it.
     held: undefined,
   };
@@ -45,6 +50,9 @@
   // run the thunk with tracking on and record every signal it touched.
   let tracking = null;
 
+  // Runs `compute` with tracking on and answers the sources it read. A source
+  // records itself when it is read, so this is how a thunk's dependencies are
+  // learned without being declared.
   function trackedRun(compute) {
     const previous = tracking;
     const read = new Set();
@@ -60,6 +68,7 @@
   // Where a subscription made while a tree is mounting is parked, so the
   // mount's `dispose` releases it — the fixture's stand-in for `onCleanup`.
   let cleanups = null;
+
 
   // `options.equals` is the library's own: a comparator, or `false` for a
   // signal that calls every write a change. The bridge never passes one, but
@@ -85,6 +94,10 @@
     let value = initial;
     const equals = equalsOf(options);
     const subscribers = new Set();
+    // How many times this signal changed. A memo reading it stamps the count
+    // it computed against, which is how a cached read knows it is still
+    // current without anyone pushing to it.
+    let changes = 0;
     const signal = () => {
       if (tracking !== null) {
         tracking.add(signal);
@@ -101,11 +114,13 @@
         return;
       }
       value = resolved;
+      changes += 1;
       for (const subscriber of [...subscribers]) {
         subscriber(value);
       }
     };
     signal.__equals = equals;
+    signal.__version = () => changes;
     signal.__subscribe = (callback) => {
       subscribers.add(callback);
       fixture.subscribes += 1;
@@ -121,9 +136,52 @@
   // signal it pushes into, and `toSignal` creates one over a thunk. Both the
   // read and the subscription forward to the computation, which `subscribe`
   // knows how to follow whether it announces itself or has to be tracked.
+  // A cached derived value, like the library's: it evaluates once when it is
+  // created and then only after something it read has changed. What it read
+  // is learned by tracking, and each dependency's change count is stamped, so
+  // a read with nothing changed costs nothing and a change to an unrelated
+  // signal does not invalidate it either.
   function createMemo(compute) {
-    const memo = () => compute();
+    let value;
+    let stamps = new Map();
+    let seeded = false;
+    let changes = 0;
+
+    const evaluate = () => {
+      let next;
+      const dependencies = trackedRun(() => {
+        next = compute();
+      });
+      stamps = new Map([...dependencies].map((dependency) => [dependency, dependency.__version()]));
+      if (!seeded || !Object.is(next, value)) {
+        changes += 1;
+      }
+      value = next;
+      seeded = true;
+      fixture.computations += 1;
+    };
+
+    const stale = () => {
+      for (const [dependency, stamp] of stamps) {
+        if (dependency.__version() !== stamp) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    evaluate();
+    const memo = () => {
+      if (stale()) {
+        evaluate();
+      }
+      if (tracking !== null) {
+        tracking.add(memo);
+      }
+      return value;
+    };
     memo.__memo = true;
+    memo.__version = () => changes;
     memo.__subscribe = (callback) => subscribe(compute, callback);
     return memo;
   }
@@ -163,6 +221,9 @@
     return prototype === Object.prototype || prototype === null;
   }
 
+  // Index by index including holes, and objects in key order, exactly as
+  // `signals.js` compares them: a hole is not a value, and a native object is
+  // its entries in insertion order.
   function equalAtDepth(a, b, depth) {
     if (Object.is(a, b)) {
       return true;
@@ -171,33 +232,52 @@
       return false;
     }
     if (Array.isArray(a) && Array.isArray(b)) {
-      return (
-        a.length === b.length && a.every((item, index) => equalAtDepth(item, b[index], depth + 1))
-      );
+      if (a.length !== b.length) {
+        return false;
+      }
+      for (let index = 0; index < a.length; index += 1) {
+        const present = index in a;
+        if (present !== (index in b)) {
+          return false;
+        }
+        if (present && !equalAtDepth(a[index], b[index], depth + 1)) {
+          return false;
+        }
+      }
+      return true;
     }
     if (isPlainObject(a) && isPlainObject(b)) {
       const keys = Object.keys(a);
-      return (
-        keys.length === Object.keys(b).length &&
-        keys.every((key) => Object.hasOwn(b, key) && equalAtDepth(a[key], b[key], depth + 1))
-      );
+      const otherKeys = Object.keys(b);
+      if (keys.length !== otherKeys.length) {
+        return false;
+      }
+      for (const [index, key] of keys.entries()) {
+        if (key !== otherKeys[index] || !equalAtDepth(a[key], b[key], depth + 1)) {
+          return false;
+        }
+      }
+      return true;
     }
     return false;
   }
 
   const bridgeEquals = (a, b) => equalAtDepth(a, b, 0);
 
-  function write(target, value) {
+  // `identity` is the native side saying the value it sent is a retained
+  // handle rather than data, so two look-alike objects are still two things.
+  function write(target, value, identity = false) {
     fixture.writes += 1;
+    const alreadyHolds = (held) => (identity ? Object.is(held, value) : bridgeEquals(held, value));
     if (isSignal(target)) {
-      if (bridgeEquals(read(target), value)) {
+      if (alreadyHolds(read(target))) {
         return true;
       }
       target.set(() => value);
       return comparatorOf(target)(read(target), value);
     }
     if (target !== null && typeof target === "object" && typeof target.write === "function") {
-      if (bridgeEquals(read(target), value)) {
+      if (alreadyHolds(read(target))) {
         return true;
       }
       target.write(value);
@@ -280,13 +360,41 @@
     return (...args) => invoke(id, ...args);
   }
 
+  // The same validation the library does, and for the same reason: a table
+  // missing an entry must fail where it is installed, not at the first call
+  // that needed it.
   function installHost(host) {
     if (fixture.host !== undefined) {
       throw new Error("waterui: a host is already installed");
     }
-    fixture.host = Array.isArray(host.modifiers)
-      ? { ...host, modifiers: new Set(host.modifiers) }
-      : host;
+    for (const name of [
+      "create",
+      "modify",
+      "text",
+      "show",
+      "each",
+      "suspense",
+      "environment",
+      "invoke",
+    ]) {
+      if (typeof host[name] !== "function") {
+        throw new TypeError(`waterui host is missing the "${name}" entry — see HOST.md`);
+      }
+    }
+    if (Array.isArray(host.modifiers)) {
+      fixture.host = { ...host, modifiers: new Set(host.modifiers) };
+      return;
+    }
+    if (
+      host.modifiers === null ||
+      typeof host.modifiers !== "object" ||
+      typeof host.modifiers.has !== "function"
+    ) {
+      throw new TypeError(
+        'waterui host is missing the "modifiers" entry — the catalog\'s modifier names as an array or a ReadonlySet<string>, see HOST.md',
+      );
+    }
+    fixture.host = host;
   }
 
   function uninstallHost() {
@@ -377,6 +485,9 @@
   // module imports them from the library, and the bridge never calls them.
   fixture.useTheme = useTheme;
   fixture.useLocale = useLocale;
+  // The installed table, reachable the way `getHost` makes it reachable in
+  // the library; it is not a runtime-global entry there either.
+  fixture.getHost = requireHost;
 
   globalThis.fixture = fixture;
   globalThis.__waterui_runtime = {

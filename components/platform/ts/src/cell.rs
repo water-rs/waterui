@@ -61,7 +61,7 @@ use nami::watcher::{BoxWatcherGuard, Context};
 use nami::{Binding, Computed, Signal};
 use waterui_ts_engine::{JsError, JsFunction, JsValue};
 
-use crate::bridge::{Bridge, Settled, WeakBridge};
+use crate::bridge::{Bridge, Compare, Settled, WeakBridge};
 use crate::callback::CallbackHandle;
 use crate::convert::{FromJs, IntoJs};
 use crate::error::kind_of;
@@ -140,8 +140,9 @@ fn push<T: IntoJs>(bridge: &Bridge, source: &JsValue, echo: &Echo, value: T) -> 
             return None;
         }
     };
+    let compare = Compare::of(&value);
     let _outbound = Raised::new(&echo.outbound);
-    match bridge.write_value(source, value) {
+    match bridge.write_value(source, value, compare) {
         Ok(settled) => Some(settled),
         Err(error) => {
             tracing::error!(%error, "writing a bridged value into JavaScript failed");

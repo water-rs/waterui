@@ -101,16 +101,39 @@ function equalAtDepth(a, b, depth) {
     return false;
   }
   if (Array.isArray(a) && Array.isArray(b)) {
-    return (
-      a.length === b.length && a.every((item, index) => equalAtDepth(item, b[index], depth + 1))
-    );
+    if (a.length !== b.length) {
+      return false;
+    }
+    // Index by index rather than with `every`, which skips holes: a hole and
+    // a value at the same index are different values, and an array walked by
+    // `every` would have neither visited.
+    for (let index = 0; index < a.length; index += 1) {
+      const present = index in a;
+      if (present !== (index in b)) {
+        return false;
+      }
+      if (present && !equalAtDepth(a[index], b[index], depth + 1)) {
+        return false;
+      }
+    }
+    return true;
   }
   if (isPlainObject(a) && isPlainObject(b)) {
+    // In order, because the native side's own equality is: an object crosses
+    // as its entries in insertion order, and the same entries in another
+    // order are a different value there. Calling them equal here would drop
+    // a reordering the native side made.
     const keys = Object.keys(a);
-    return (
-      keys.length === Object.keys(b).length &&
-      keys.every((key) => Object.hasOwn(b, key) && equalAtDepth(a[key], b[key], depth + 1))
-    );
+    const otherKeys = Object.keys(b);
+    if (keys.length !== otherKeys.length) {
+      return false;
+    }
+    for (const [index, key] of keys.entries()) {
+      if (key !== otherKeys[index] || !equalAtDepth(a[key], b[key], depth + 1)) {
+        return false;
+      }
+    }
+    return true;
   }
   return false;
 }
@@ -128,6 +151,13 @@ function equalAtDepth(a, b, depth) {
  * Everything else — a function, a signal, a native handle, a class instance —
  * is compared by identity, the only meaningful answer for a thing that was
  * never copied.
+ *
+ * Two details follow from the native side's own equality rather than from
+ * JavaScript's. Arrays are compared index by index including their holes,
+ * because a hole and a value are different values. Objects are compared in
+ * key order, because a native object is a list of entries in insertion order
+ * and reordering it is a change there even though nothing was added or
+ * removed.
  *
  * @param {unknown} a
  * @param {unknown} b
