@@ -2,7 +2,8 @@
 //! the table the host table dispatches on.
 //!
 //! Tooling never reads the catalog from this source tree: `water components`
-//! enumerates `waterui_meta_` statics in the rlib the user's crate compiles to,
+//! enumerates `waterui_meta_` statics in the rlibs a build produces — the
+//! user's crate, and the facade it links, which is where this symbol is —
 //! because the artifact is ground truth that has already resolved macros,
 //! `cfg`s and generics. This test walks the same path on the binary it is
 //! running from, so a payload the linker drops, truncates, or lets drift from
@@ -11,8 +12,8 @@
 use std::collections::BTreeSet;
 
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
-use waterui_ts::catalog::{CATALOG, CATALOG_ENCODED};
-use waterui_ts_schema::{Catalog, decode_catalog};
+use waterui::ts::catalog::{CATALOG, CATALOG_ENCODED};
+use waterui_ts::schema::{Catalog, decode_catalog};
 
 /// The leaf segment of a demangled symbol name.
 fn leaf_of(name: &str) -> Option<&str> {

@@ -58,6 +58,32 @@ impl FromJs for AnyView {
     }
 }
 
+impl waterui_ts_schema::TsType for crate::view::JsViewBuilder {
+    const SCHEMA: waterui_ts_schema::TypeSchema = waterui_ts_schema::TypeSchema::ViewBuilder;
+}
+
+impl FromJs for crate::view::JsViewBuilder {
+    /// A render function, kept as one. Unlike a view handle it is not
+    /// consumed: a destination is built again every time it is entered.
+    fn from_js(value: &JsValue, bridge: &Bridge) -> Result<Self, JsError> {
+        match value {
+            JsValue::Function(function) => Ok(Self::new(function.clone(), bridge)),
+            other => Err(crate::convert::expected(
+                "a function returning a view, which is what a destination is",
+                other,
+            )),
+        }
+    }
+}
+
+impl IntoJs for crate::view::JsViewBuilder {
+    /// The function itself: a builder that came from JavaScript goes back as
+    /// what it was.
+    fn into_js(self, _bridge: &Bridge) -> Result<JsValue, JsError> {
+        Ok(JsValue::Function(self.function()))
+    }
+}
+
 impl IntoJs for ViewSlot {
     fn into_js(self, _bridge: &Bridge) -> Result<JsValue, JsError> {
         Ok(self.to_js_value())

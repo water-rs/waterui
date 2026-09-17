@@ -4,31 +4,36 @@
 //! That comparison is what makes the catalog a binding rather than a
 //! lookalike. A TypeScript `<Toggle>` is not "close enough" to a Rust
 //! `toggle(…)` — it *is* one, so anything a binding drops on the way (a label,
-//! an action, a value, a bound) shows up here as a difference in the tree
-//! rather than as a screen nobody can use.
+//! an action, a value, a bound, a disabled state) shows up here as a
+//! difference in the tree rather than as a screen nobody can use.
+//!
+//! Every default the Rust form needs is read from the framework, never written
+//! here: a stack's spacing comes from `VStackLayout::default()` and a bare
+//! padding from `DEFAULT_PADDING`, so a test cannot agree with the host about
+//! a number the framework has since changed.
 
 mod support;
 
 use nami::Binding;
-use suiteki::Str;
-use waterui::ViewExt as _;
-use waterui_controls::{button, field, label, slider::slider, stepper::stepper, toggle};
-use waterui_core::AnyView;
+use nami::collection::SignalCollection;
+use waterui::component::list::{List, ListItem};
+use waterui::component::table::{col, table};
+use waterui::component::{Link, button, field, label, progress, slider, stepper, toggle};
+use waterui::form::picker::{Picker, PickerItem};
+use waterui::layout::padding::EdgeInsets;
+use waterui::layout::stack::{HStack, HStackLayout, VStack, VStackLayout, ZStack};
+use waterui::layout::{Divider, ScrollView, Spacer};
+use waterui::navigation::tab::{Tab, Tabs};
+use waterui::navigation::{NavigationLink, NavigationStack, NavigationView};
+use waterui::text::text;
+use waterui::widget::{Accordion, Avatar, Card};
+use waterui::{AnyView, Str, ViewExt as _};
+use waterui_core::id::SelfId;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
-use waterui_form::picker::{Picker, PickerItem};
-use waterui_graphics::ResolvedColor;
-use waterui_graphics::color::Color;
-use waterui_layout::padding::EdgeInsets;
-use waterui_layout::stack::{HStack, VStack, ZStack};
-use waterui_layout::{Divider, ScrollView, Spacer};
-use waterui_text::text;
+use waterui_core::views::ForEach;
 use waterui_ts::engine::JsValue;
 
 use support::{Module, mount_error, rust_tree};
-
-/// The gap a stack with no `spacing` leaves, which is what `VStack::new`
-/// documents and what the host passes.
-const DEFAULT_SPACING: f32 = 10.0;
 
 /// Mounts the JSX form and the Rust form and asserts they are one tree.
 fn assert_same(case: &str, source: &str, rust: impl waterui_core::View + 'static) {
@@ -45,6 +50,12 @@ fn module(element: &str) -> String {
 /// A module that sets up state on `globalThis` before building its element.
 fn stateful(setup: &str, element: &str) -> String {
     format!("{setup}\nwaterui.installRuntimeGlobal({{ main: () => {element} }});")
+}
+
+/// A vertical stack with the framework's own default spacing, which is what a
+/// `<VStack>` with no `spacing` builds.
+fn vstack(alignment: HorizontalAlignment, children: Vec<AnyView>) -> VStack<(Vec<AnyView>,)> {
+    VStack::new(alignment, 0.0, children).spacing(VStackLayout::default().spacing)
 }
 
 // ---------------------------------------------------------------------------
@@ -74,21 +85,38 @@ fn ts_vstack_is_a_vstack() {
 }
 
 #[test]
+fn ts_a_stack_with_no_spacing_uses_the_frameworks_own_default() {
+    assert_same(
+        "VStack default spacing",
+        &module(
+            r#"waterui.jsx("VStack", { children: [
+                waterui.jsx("Text", { children: "First" }),
+                waterui.jsx("Text", { children: "Second" }),
+            ] })"#,
+        ),
+        vstack(
+            HorizontalAlignment::Center,
+            vec![AnyView::new(text("First")), AnyView::new(text("Second"))],
+        ),
+    );
+}
+
+#[test]
 fn ts_hstack_is_an_hstack() {
     assert_same(
         "HStack",
         &module(
             r#"waterui.jsx("HStack", {
-                spacing: 4,
                 alignment: "Top",
                 children: waterui.jsx("Text", { children: "Only" }),
             })"#,
         ),
         HStack::new(
             VerticalAlignment::Top,
-            4.0,
+            0.0,
             vec![AnyView::new(text("Only"))],
-        ),
+        )
+        .spacing(HStackLayout::default().spacing),
     );
 }
 
@@ -121,11 +149,50 @@ fn ts_scrollview_is_a_scroll_view() {
                 children: waterui.jsx("Text", { children: "Scrolled" }),
             })"#,
         ),
-        ScrollView::vertical(VStack::new(
+        ScrollView::vertical(vstack(
             HorizontalAlignment::Center,
-            DEFAULT_SPACING,
             vec![AnyView::new(text("Scrolled"))],
         )),
+    );
+}
+
+#[test]
+fn ts_card_is_a_card() {
+    assert_same(
+        "Card",
+        &module(
+            r#"waterui.jsx("Card", {
+                title: "Weekly report",
+                subtitle: "Last seven days",
+                children: waterui.jsx("Text", { children: "Everything is fine" }),
+            })"#,
+        ),
+        Card::new(vstack(
+            HorizontalAlignment::Leading,
+            vec![AnyView::new(text("Everything is fine"))],
+        ))
+        .title("Weekly report")
+        .subtitle("Last seven days"),
+    );
+}
+
+#[test]
+fn ts_accordion_is_an_accordion() {
+    assert_same(
+        "Accordion",
+        &module(
+            r#"waterui.jsx("Accordion", {
+                content: () => waterui.jsx("Text", { children: "Body" }),
+                children: waterui.jsx("Text", { children: "Header" }),
+            })"#,
+        ),
+        Accordion::new(
+            vstack(
+                HorizontalAlignment::Leading,
+                vec![AnyView::new(text("Header"))],
+            ),
+            || text("Body"),
+        ),
     );
 }
 
@@ -153,9 +220,8 @@ fn ts_spacer_and_divider_are_themselves() {
                 waterui.jsx("Divider", {}),
             ] })"#,
         ),
-        VStack::new(
+        vstack(
             HorizontalAlignment::Center,
-            DEFAULT_SPACING,
             vec![
                 AnyView::new(text("Above")),
                 AnyView::new(Spacer::new(0.0)),
@@ -171,6 +237,40 @@ fn ts_label_is_a_label() {
         "Label",
         &module(r#"waterui.jsx("Label", { children: "Named" })"#),
         label("Named"),
+    );
+}
+
+#[test]
+fn ts_avatar_is_an_avatar() {
+    assert_same(
+        "Avatar",
+        &module(r#"waterui.jsx("Avatar", { name: "Ada Lovelace" })"#),
+        Avatar::new(text("Ada Lovelace"), || ()),
+    );
+}
+
+#[test]
+fn ts_badge_is_a_badge() {
+    assert_same(
+        "Badge",
+        &module(
+            r#"waterui.jsx("Badge", {
+                value: 3,
+                content: () => waterui.jsx("Text", { children: "Inbox" }),
+            })"#,
+        ),
+        text("Inbox").badge(3),
+    );
+}
+
+#[test]
+fn ts_image_is_a_photo() {
+    assert_same(
+        "Image",
+        &module(r#"waterui.jsx("Image", { src: "https://waterui.dev/logo.png" })"#),
+        waterui::media::Photo::new(
+            waterui::Url::parse("https://waterui.dev/logo.png").expect("a valid URL"),
+        ),
     );
 }
 
@@ -266,6 +366,212 @@ fn ts_picker_is_a_picker() {
     );
 }
 
+#[test]
+fn ts_progress_is_progress() {
+    assert_same(
+        "Progress",
+        &module(r#"waterui.jsx("Progress", { value: 0.4, children: "Uploading" })"#),
+        progress(0.4).linear().label("Uploading"),
+    );
+}
+
+#[test]
+fn ts_progress_without_a_value_is_indeterminate() {
+    assert_same(
+        "Progress, indeterminate",
+        &module(r#"waterui.jsx("Progress", { children: "Working" })"#),
+        waterui::component::progress::Progress::infinity().label("Working"),
+    );
+}
+
+#[test]
+fn ts_link_is_a_link() {
+    assert_same(
+        "Link",
+        &module(r#"waterui.jsx("Link", { url: "https://waterui.dev", children: "WaterUI" })"#),
+        Link::new(label("WaterUI"), Str::from("https://waterui.dev")),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Collections
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ts_list_is_a_list() {
+    let module = Module::mount(&stateful(
+        r#"globalThis.rows = waterui.createSignal(["one", "two"]);"#,
+        r#"waterui.jsx("List", {
+            children: waterui.jsx(waterui.For, {
+                each: globalThis.rows,
+                children: (row) => waterui.jsx("Text", { children: row }),
+            }),
+        })"#,
+    ));
+    let rows = Binding::container(vec![
+        SelfId::new(Str::from("one")),
+        SelfId::new(Str::from("two")),
+    ]);
+    assert_eq!(
+        module.tree(),
+        rust_tree(List::new(ForEach::new(
+            SignalCollection::new(rows),
+            |row: SelfId<Str>| ListItem::new(text(row.into_inner())),
+        ))),
+        "the JSX list and the Rust list differ"
+    );
+}
+
+#[test]
+fn ts_a_list_of_written_out_rows_is_refused() {
+    let error = mount_error(&module(
+        r#"waterui.jsx("List", { children: waterui.jsx("Text", { children: "one" }) })"#,
+    ));
+    assert!(
+        error.contains("<For"),
+        "the error points at the collection that can rebuild a row: {error}"
+    );
+}
+
+#[test]
+fn ts_table_is_a_table() {
+    assert_same(
+        "Table",
+        &module(
+            r#"waterui.jsx("Table", { children: [
+                waterui.jsx("Column", { label: "Name", children: ["Ada", "Alan"] }),
+                waterui.jsx("Column", { label: "Year", children: ["1815", "1912"] }),
+            ] })"#,
+        ),
+        table(vec![
+            col("Name", vec![text("Ada"), text("Alan")]),
+            col("Year", vec![text("1815"), text("1912")]),
+        ]),
+    );
+}
+
+#[test]
+fn ts_a_column_outside_a_table_is_refused() {
+    let error = mount_error(&module(
+        r#"waterui.jsx("VStack", { children: waterui.jsx("Table", {
+            children: waterui.jsx("Text", { children: "not a column" }),
+        }) })"#,
+    ));
+    assert!(
+        error.contains("Column"),
+        "the error names the child a table takes: {error}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ts_navigation_stack_is_a_navigation_stack() {
+    assert_same(
+        "NavigationStack",
+        &module(
+            r#"waterui.jsx("NavigationStack", {
+                title: "Inbox",
+                children: waterui.jsx("Text", { children: "Nothing here" }),
+            })"#,
+        ),
+        NavigationStack::new(NavigationView::new(
+            "Inbox",
+            vstack(
+                HorizontalAlignment::Center,
+                vec![AnyView::new(text("Nothing here"))],
+            ),
+        )),
+    );
+}
+
+#[test]
+fn ts_navigation_link_is_a_navigation_link() {
+    assert_same(
+        "NavigationLink",
+        &module(
+            r#"waterui.jsx("NavigationStack", {
+                title: "Inbox",
+                children: waterui.jsx("NavigationLink", {
+                    title: "Message",
+                    destination: () => waterui.jsx("Text", { children: "Body" }),
+                    children: "Open",
+                }),
+            })"#,
+        ),
+        NavigationStack::new(NavigationView::new(
+            "Inbox",
+            vstack(
+                HorizontalAlignment::Center,
+                vec![AnyView::new(NavigationLink::new(label("Open"), || {
+                    NavigationView::new("Message", text("Body"))
+                }))],
+            ),
+        )),
+    );
+}
+
+#[test]
+fn ts_a_destination_is_built_again_every_time_it_is_entered() {
+    // A view crosses the seam once; a destination does not. The builder is
+    // called per build, so a second build produces a second view rather than
+    // failing on a slot that was already emptied.
+    let module = Module::mount(&stateful(
+        "globalThis.builds = 0;",
+        r#"waterui.jsx("NavigationStack", {
+            children: waterui.jsx("NavigationLink", {
+                destination: () => {
+                    globalThis.builds += 1;
+                    return waterui.jsx("Text", { children: "Body " + globalThis.builds });
+                },
+                children: "Open",
+            }),
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Open").assert_exists();
+
+    app.query().label("Open").tap();
+    app.settle();
+    app.query().label("Body 1").assert_exists();
+}
+
+#[test]
+fn ts_tabs_is_a_tabs() {
+    let selection = Binding::container(Str::from("inbox"));
+    assert_same(
+        "Tabs",
+        &stateful(
+            r#"globalThis.tab = waterui.createSignal("inbox");"#,
+            r#"waterui.jsx("Tabs", { value: globalThis.tab, children: [
+                waterui.jsx("Tab", {
+                    value: "inbox",
+                    content: () => waterui.jsx("Text", { children: "Messages" }),
+                    children: "Inbox",
+                }),
+                waterui.jsx("Tab", {
+                    value: "sent",
+                    content: () => waterui.jsx("Text", { children: "Sent mail" }),
+                    children: "Sent",
+                }),
+            ] })"#,
+        ),
+        Tabs::new(
+            &selection,
+            vec![
+                Tab::new(Str::from("inbox"), label("Inbox"), || {
+                    NavigationView::new("", text("Messages"))
+                }),
+                Tab::new(Str::from("sent"), label("Sent"), || {
+                    NavigationView::new("", text("Sent mail"))
+                }),
+            ],
+        ),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Modifiers
 // ---------------------------------------------------------------------------
@@ -295,6 +601,28 @@ fn ts_padding_takes_every_shape_the_rust_chain_takes() {
         "a bare padding",
         &module(r#"waterui.jsx("Text", { padding: true, children: "Inset" })"#),
         text("Inset").padding(),
+    );
+}
+
+#[test]
+fn ts_one_padded_edge_follows_its_own_signal() {
+    let module = Module::mount(&stateful(
+        "globalThis.gap = waterui.createSignal(4);",
+        r#"waterui.jsx("Text", {
+            padding: { top: globalThis.gap, horizontal: 16 },
+            a11yId: "inset",
+            children: "Inset",
+        })"#,
+    ));
+    let mut app = module.app();
+    let before = app.query().identifier("inset").single().bounds();
+
+    module.eval("globalThis.gap.set(40)");
+    app.settle();
+    let after = app.query().identifier("inset").single().bounds();
+    assert_ne!(
+        before, after,
+        "a signal on one edge moves the view it insets"
     );
 }
 
@@ -335,6 +663,69 @@ fn ts_modifier_order_is_the_chain_order() {
 }
 
 #[test]
+fn ts_appearance_modifiers_are_the_rust_ones() {
+    assert_same(
+        "opacity, shadow, border and clip",
+        &module(
+            r#"waterui.jsx("Text", {
+                opacity: 0.5,
+                shadow: { radius: 4, y: 2 },
+                border: { color: { red: 0, green: 0, blue: 1 }, width: 2 },
+                clip: "Capsule",
+                children: "Styled",
+            })"#,
+        ),
+        {
+            use waterui::border::Border;
+            use waterui::graphics::ResolvedColor;
+            use waterui::graphics::color::Color;
+            use waterui::style::{Shadow, Vector};
+            text("Styled")
+                .opacity(0.5)
+                .shadow(Shadow::new(
+                    Color::srgb(0, 0, 0),
+                    Vector { x: 0.0, y: 2.0 },
+                    4.0,
+                    0.0,
+                ))
+                .border_with(Border::new(
+                    Color::new(ResolvedColor {
+                        red: 0.0,
+                        green: 0.0,
+                        blue: 1.0,
+                        headroom: 1.0,
+                        opacity: 1.0,
+                    }),
+                    2.0,
+                ))
+                .clip(waterui::shape::Capsule)
+        },
+    );
+}
+
+#[test]
+fn ts_foreground_is_the_rust_foreground() {
+    assert_same(
+        "foreground",
+        &module(
+            r#"waterui.jsx("Text", {
+                foreground: { red: 1, green: 0, blue: 0 },
+                children: "Tinted",
+            })"#,
+        ),
+        text("Tinted").foreground(waterui::graphics::color::Color::new(
+            waterui::graphics::ResolvedColor {
+                red: 1.0,
+                green: 0.0,
+                blue: 0.0,
+                headroom: 1.0,
+                opacity: 1.0,
+            },
+        )),
+    );
+}
+
+#[test]
 fn ts_background_takes_a_colour() {
     assert_same(
         "a colour background",
@@ -344,13 +735,15 @@ fn ts_background_takes_a_colour() {
                 children: "Tinted",
             })"#,
         ),
-        text("Tinted").background(Color::new(ResolvedColor {
-            red: 1.0,
-            green: 0.0,
-            blue: 0.0,
-            headroom: 1.0,
-            opacity: 1.0,
-        })),
+        text("Tinted").background(waterui::graphics::color::Color::new(
+            waterui::graphics::ResolvedColor {
+                red: 1.0,
+                green: 0.0,
+                blue: 0.0,
+                headroom: 1.0,
+                opacity: 1.0,
+            },
+        )),
     );
 }
 
@@ -374,11 +767,26 @@ fn ts_accessibility_attributes_reach_the_tree() {
 }
 
 #[test]
-fn ts_disabled_disables_the_subtree() {
+fn ts_disabled_disables_a_subtree_the_way_rust_does() {
+    // `disabled` is three things at once — an environment scope, an
+    // accessibility state and a hit-test switch — so a subtree that is not a
+    // control is where a partial implementation shows.
     assert_same(
-        "disabled",
-        &module(r#"waterui.jsx("Button", { disabled: true, onTap: () => {}, children: "Send" })"#),
-        button("Send").action(|| {}).disabled(true),
+        "a disabled stack",
+        &module(
+            r#"waterui.jsx("VStack", { disabled: true, children: [
+                waterui.jsx("Text", { children: "Read only" }),
+                waterui.jsx("Button", { onTap: () => {}, children: "Send" }),
+            ] })"#,
+        ),
+        vstack(
+            HorizontalAlignment::Center,
+            vec![
+                AnyView::new(text("Read only")),
+                AnyView::new(button("Send").action(|| {})),
+            ],
+        )
+        .disabled(true),
     );
 }
 
@@ -464,6 +872,52 @@ fn ts_for_reconciles_by_key() {
     app.query().label("one").assert_not_exists();
 }
 
+#[test]
+fn ts_two_items_with_one_key_are_refused() {
+    let error = mount_error(&module(
+        r#"waterui.jsx("VStack", {
+            children: waterui.jsx(waterui.For, {
+                each: ["a", "a"],
+                children: (item) => waterui.jsx("Text", { children: item }),
+            }),
+        })"#,
+    ));
+    assert!(
+        error.contains("key"),
+        "the error says two rows cannot share one key: {error}"
+    );
+}
+
+#[test]
+fn ts_a_departed_row_releases_what_it_exported() {
+    // Every `<For>` row exports an index accessor. Owned by the mount, those
+    // would pile up one per departed row for as long as the module lived; owned
+    // by the row, they go with it.
+    let module = Module::mount(&stateful(
+        r#"globalThis.items = waterui.createSignal(["a"]);"#,
+        r#"waterui.jsx("VStack", {
+            children: waterui.jsx(waterui.For, {
+                each: globalThis.items,
+                children: (item) => waterui.jsx("Text", { children: item }),
+            }),
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("a").assert_exists();
+    let baseline = module.bridge().exported_count();
+
+    for round in 0..8 {
+        module.eval(&format!(r#"globalThis.items.set(["row {round}"])"#));
+        app.settle();
+    }
+    app.query().label("row 7").assert_exists();
+    assert_eq!(
+        module.bridge().exported_count(),
+        baseline,
+        "a list that churns leaves nothing behind in the mount's scope"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // What the catalog refuses
 // ---------------------------------------------------------------------------
@@ -474,6 +928,19 @@ fn ts_a_component_the_catalog_does_not_declare_is_refused() {
     assert!(
         error.contains("Carousel") && error.contains("VStack"),
         "the error names the component and what the catalog does declare: {error}"
+    );
+}
+
+#[test]
+fn ts_an_attribute_the_component_does_not_declare_is_refused() {
+    // A dropped attribute is worse than a refused one: `onClick` on a button
+    // renders a button that does nothing, and nothing says why.
+    let error = mount_error(&module(
+        r#"waterui.jsx("Button", { onClick: () => {}, children: "Send" })"#,
+    ));
+    assert!(
+        error.contains("onClick") && error.contains("onTap"),
+        "the error names the attribute and what the component accepts: {error}"
     );
 }
 

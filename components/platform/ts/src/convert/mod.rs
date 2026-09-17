@@ -98,6 +98,7 @@ pub trait FromJs: Sized {
 }
 
 /// "expected a `u32`, found a string" — the shape every mismatch reports.
+#[must_use]
 pub fn expected(what: &str, value: &JsValue) -> JsError {
     JsError::conversion(format!(
         "expected {what}, found {}",

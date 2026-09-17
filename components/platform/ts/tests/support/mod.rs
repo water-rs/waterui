@@ -12,11 +12,12 @@ use core::cell::RefCell;
 use std::fmt::Write as _;
 
 use nami::Computed;
+use waterui::ts::Components;
 use waterui_core::{AnyView, Environment};
 use waterui_graphics::color::ColorScheme;
 use waterui_testing::{NodeId, SemanticApp, TreeSnapshot, ui};
 use waterui_ts::engine::{JsRuntime as _, JsValue};
-use waterui_ts::{Components, MountScope, TsRuntime, ViewSlot};
+use waterui_ts::{MountScope, TsRuntime, ViewSlot};
 
 /// The `waterui` JavaScript library, as a classic script.
 const LIBRARY: &str = include_str!("../fixtures/library.js");
@@ -93,6 +94,11 @@ impl Module {
             .take()
             .expect("a mounted module is realized once");
         mount_view(view)
+    }
+
+    /// The bridge, for a test that watches what the mount exported.
+    pub const fn bridge(&self) -> &waterui_ts::Bridge {
+        self.runtime.bridge()
     }
 
     /// The accessibility tree the module's view produces.

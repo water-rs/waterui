@@ -82,10 +82,18 @@ event callbacks and are invoked, never subscribed.
 and booleans are already filtered; nested arrays are already flattened. String
 and number elements are materialized with `text`. An accessor element is a
 reactive child slot: the host subscribes to it and swaps the child when it
-produces a new element (an accessor may also yield a list, which the host
-normalizes the same way). For components with a label slot (`Button`,
+produces a new element. One element, not a list: an accessor that yields a
+list is refused, because a child position whose membership changes is a
+collection, and `<For>` reconciles it by identity instead of replacing the
+whole subtree on every change. For components with a label slot (`Button`,
 `Toggle`, …) the children are the label; `config.label` is the explicit form
 and takes precedence when both are present.
+
+A property `config` carries that the component's catalog entry does not
+declare is an error naming it and listing the attributes the component does
+accept. A modifier attribute never reaches `create` — the runtime routes it to
+`modify` — so what is left is exactly the configuration, and a name that is
+not in it is a typo with no effect, which is worse than a failure.
 
 ## `modify(handle, name, value) -> Handle`
 

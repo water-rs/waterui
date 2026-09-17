@@ -76,12 +76,16 @@
   var evaluatingDepth = 0;
   var effectQueue = [];
   var MAX_FLUSH_EVALUATIONS = 1e4;
-  var referenceEquals = (a, b) => a === b;
+  var sameValue = (a, b) => Object.is(a, b);
   var neverEquals = () => false;
+  var EQUALS = Symbol("waterui.equals");
+  function comparatorOf(source) {
+    return source?.[EQUALS] ?? sameValue;
+  }
   function equalsOf(options) {
     const equals = options?.equals;
     if (equals === undefined) {
-      return referenceEquals;
+      return sameValue;
     }
     if (equals === false) {
       return neverEquals;
@@ -104,7 +108,7 @@
       observers: new Set,
       compute: null,
       isEffect: false,
-      equals: referenceEquals,
+      equals: sameValue,
       queued: false,
       disposed: false,
       evaluating: false,
@@ -288,6 +292,7 @@
     signal.map = (f) => createMemo(() => f(signal()));
     signal.peek = () => node.value;
     signal[SIGNAL] = true;
+    signal[EQUALS] = node.equals;
     signal[Symbol.iterator] = function* () {
       yield signal;
       yield (value) => signal.set(value);
@@ -308,6 +313,7 @@
       return node.value;
     };
     memo[MEMO] = true;
+    memo[EQUALS] = node.equals;
     return memo;
   }
   function createEffect(fn) {
@@ -417,7 +423,7 @@
   function trackProp(node, key) {
     let signal = node.signals.get(key);
     if (signal === undefined) {
-      signal = newSource(node.raw[key], referenceEquals);
+      signal = newSource(node.raw[key], sameValue);
       node.signals.set(key, signal);
     }
     track(signal);
@@ -604,7 +610,16 @@
     if (installedHost !== null) {
       throw new Error("waterui: a host is already installed");
     }
-    for (const name of ["create", "modify", "text", "show", "each", "suspense", "environment"]) {
+    for (const name of [
+      "create",
+      "modify",
+      "text",
+      "show",
+      "each",
+      "suspense",
+      "environment",
+      "invoke"
+    ]) {
       if (typeof host[name] !== "function") {
         throw new TypeError(`waterui host is missing the "${name}" entry — see HOST.md`);
       }
@@ -638,12 +653,12 @@
   }
   function write(target, value) {
     if (isSignal(target)) {
-      target.set(value);
-      return Object.is(read(target), value);
+      target.set(() => value);
+      return comparatorOf(target)(read(target), value);
     }
     if (target !== null && typeof target === "object" && typeof target.write === "function") {
       target.write(value);
-      return Object.is(read(target), value);
+      return comparatorOf(target)(read(target), value);
     }
     throw new TypeError("write() expects a signal or a writable reactive value");
   }
@@ -683,7 +698,7 @@
     if (source !== null && typeof source === "object" && typeof source.read === "function") {
       const signal = createSignal(source.read());
       if (typeof source.subscribe === "function") {
-        onCleanup(source.subscribe((value) => signal.set(value)));
+        onCleanup(source.subscribe((value) => signal.set(() => value)));
       }
       return signal;
     }
@@ -862,16 +877,11 @@
   }
   // src/js/runtime-global.js
   var RUNTIME_GLOBAL = "__waterui_runtime";
-  var HOST_GLOBAL = "__waterui_host";
   function makeCallback(id) {
     if (typeof id !== "number") {
       throw new TypeError("makeCallback(id) expects the numeric id the bridge assigned");
     }
-    const host = globalThis[HOST_GLOBAL];
-    if (host === undefined || typeof host.invoke !== "function") {
-      throw new Error(`waterui: ${HOST_GLOBAL}.invoke is not registered — the bridge installs it before the bundle is evaluated`);
-    }
-    const { invoke } = host;
+    const { invoke } = getHost();
     return (...args) => invoke(id, ...args);
   }
   function installRuntimeGlobal(modules) {

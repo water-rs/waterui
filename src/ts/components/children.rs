@@ -4,7 +4,7 @@
 //! `undefined` and booleans are gone, nested arrays are flattened, and what
 //! arrives is a list of handles, strings, numbers and accessors. Which slot
 //! that list fills is the component's own — the catalog's
-//! [`ChildrenSlot`](waterui_ts_schema::ChildrenSlot) — and this module turns
+//! [`ChildrenSlot`](waterui_ts::schema::ChildrenSlot) — and this module turns
 //! the list into the Rust value that slot takes: content views, a label, or
 //! text.
 
@@ -13,12 +13,12 @@ use suiteki::Str;
 use waterui_controls::label::{IntoLabel as _, Label};
 use waterui_core::{AnyView, Dynamic, Metadata, Retain};
 use waterui_text::Text;
-use waterui_ts_engine::{JsError, JsValue};
+use waterui_ts::engine::{JsError, JsValue};
 
-use crate::bridge::Bridge;
-use crate::catalog::TextContent;
-use crate::convert::FromJs as _;
-use crate::view::ViewSlot;
+use crate::ts::catalog::TextContent;
+use waterui_ts::Bridge;
+use waterui_ts::FromJs as _;
+use waterui_ts::ViewSlot;
 
 /// The content views of an element whose children are views.
 ///
@@ -43,7 +43,7 @@ fn view_of(bridge: &Bridge, child: &JsValue) -> Result<AnyView, JsError> {
         JsValue::Function(_) | JsValue::Object(_) => reactive(bridge, child),
         other => Err(JsError::conversion(format!(
             "a child is {}, which is not a view, text or a reactive child slot",
-            crate::error::kind_of(other)
+            waterui_ts::kind_of(other)
         ))),
     }
 }
@@ -117,6 +117,37 @@ pub fn label(
         )));
     };
     Ok(Text::new(content).into_label())
+}
+
+/// The label of a control that may go without one.
+///
+/// `<Progress>` is the case: a bar filling a row inside a labelled section
+/// names itself through that section, and Rust's `Progress::new` takes the
+/// label separately for the same reason.
+///
+/// # Errors
+///
+/// Returns [`JsError`] when a child cannot be read as text.
+pub fn label_or_none(bridge: &Bridge, children: &[JsValue]) -> Result<Option<Label>, JsError> {
+    Ok(text(bridge, children)?.map(|content| Text::new(content).into_label()))
+}
+
+/// The children of an element whose children are each their own text.
+///
+/// A `<Column>`'s children are its rows: one text view per child, not one
+/// value assembled from all of them, which is what [`text`] does.
+///
+/// # Errors
+///
+/// Returns [`JsError`] when a child cannot be read as text.
+pub fn texts(bridge: &Bridge, children: &[JsValue]) -> Result<Vec<Text>, JsError> {
+    children
+        .iter()
+        .map(|child| {
+            let content: Computed<TextContent> = bridge.materialize_computed(child)?;
+            Ok(Text::new(content))
+        })
+        .collect()
 }
 
 /// The text of an element whose children are text, lifted into one value.

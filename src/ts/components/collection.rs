@@ -21,12 +21,15 @@ use nami::{Binding, Computed, Signal, SignalExt as _};
 use suiteki::Str;
 use waterui_core::id::Identifiable;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
+use waterui_core::views::ForEach;
 use waterui_core::{AnyView, Environment, Metadata, Retain, View};
 use waterui_layout::stack::{HStack, VStack, ZStack};
-use waterui_ts_engine::{JsError, JsFunction, JsValue};
 
-use crate::bridge::{Bridge, WeakBridge};
-use crate::components::control_flow::Branch;
+use crate::component::list::{List, ListItem};
+use waterui_ts::engine::{JsError, JsFunction, JsValue};
+
+use super::control_flow::Branch;
+use waterui_ts::{Bridge, ScopeOwner, WeakBridge};
 
 /// The identity of one item, as `by` or the item itself answered it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -40,6 +43,18 @@ pub enum ItemKey {
     Number(u64),
     /// A string key.
     Text(Str),
+}
+
+impl core::fmt::Display for ItemKey {
+    /// The key as the author wrote it, for the error two equal keys raise.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Bool(value) => write!(f, "{value}"),
+            Self::Integer(value) => write!(f, "{value}"),
+            Self::Number(bits) => write!(f, "{}", f64::from_bits(*bits)),
+            Self::Text(value) => write!(f, "`{value}`"),
+        }
+    }
 }
 
 impl Identifiable for ItemKey {
@@ -73,13 +88,13 @@ impl ItemKey {
             other if keyed => Err(JsError::conversion(format!(
                 "<For by={{…}}> answered {}, which cannot be a key: return a string, a number or \
                  a boolean",
-                crate::error::kind_of(other)
+                waterui_ts::kind_of(other)
             ))),
             other => Err(JsError::conversion(format!(
                 "<For each={{…}}> was given items of {}, whose identity cannot cross into the \
                  native side: an object crosses as data, so two references Rust sees are two \
                  values. Give <For> a `by` that answers a stable key",
-                crate::error::kind_of(other)
+                waterui_ts::kind_of(other)
             ))),
         }
     }
@@ -97,6 +112,18 @@ struct Item {
     /// The branch this item is currently presented through, disposed when the
     /// item leaves or is realized again.
     branch: Option<Branch>,
+    /// What this item exported into JavaScript — its index accessor, and
+    /// whatever its render callback exported while it was building.
+    ///
+    /// The item owns it rather than the mount: a list that churns adds and
+    /// removes rows for as long as it is on screen, and exports that belonged
+    /// to the mount's scope would accumulate one signal and one cell per
+    /// departed row until the whole module was disposed.
+    #[expect(
+        dead_code,
+        reason = "the scope is held, not read: what the item exported lives exactly as long as it"
+    )]
+    exports: ScopeOwner,
 }
 
 /// Everything one `<For>` owns.
@@ -120,9 +147,16 @@ impl EachState {
     /// keep theirs and learn their new index, and departed keys lose theirs —
     /// which disposes the branch they were presented through.
     fn reconcile(&self, bridge: &Bridge, snapshot: &[JsValue]) -> Result<Vec<ItemKey>, JsError> {
-        let mut keys = Vec::with_capacity(snapshot.len());
+        let mut keys: Vec<ItemKey> = Vec::with_capacity(snapshot.len());
         for (position, value) in snapshot.iter().enumerate() {
             let key = self.key(bridge, value)?;
+            if keys.contains(&key) {
+                return Err(JsError::conversion(format!(
+                    "two items of this <For> have the key {key}. A key is what tells one row from \
+                     another, so two rows sharing one is a list that cannot be reconciled: give \
+                     `by` something unique, or make the items themselves distinct"
+                )));
+            }
             let index = u32::try_from(position).map_err(|_| {
                 JsError::conversion("a <For> list longer than a 32-bit index can address")
             })?;
@@ -133,6 +167,10 @@ impl EachState {
                 continue;
             }
             let binding = Binding::container(index);
+            // The scope is opened around this item's export and closed again
+            // straight away, so nothing else lands in it; what it owns lives as
+            // long as the item does and is released with it.
+            let scope = bridge.open_scope();
             let accessor = bridge.export_computed(&binding.computed())?;
             self.items.borrow_mut().insert(
                 key.clone(),
@@ -141,6 +179,7 @@ impl EachState {
                     index: binding,
                     accessor,
                     branch: None,
+                    exports: scope.close(),
                 },
             );
             keys.push(key);
@@ -242,6 +281,22 @@ pub fn into_vstack(
         stack = stack.spacing(spacing);
     }
     AnyView::new(Metadata::new(stack, collection.retain()))
+}
+
+/// A native list over a collection.
+///
+/// Every item is a row, so membership changes reach the backend as row
+/// insertions and removals rather than as a rebuilt list — which is what
+/// `List::new(ForEach…)` gives a Rust author.
+pub fn into_list(collection: &Collection, editing: Option<Computed<bool>>) -> AnyView {
+    let items = collection.items();
+    let list = List::new(ForEach::new(collection.keys(), move |key| {
+        ListItem::new(items(key))
+    }));
+    match editing {
+        Some(editing) => AnyView::new(Metadata::new(list.editing(editing), collection.retain())),
+        None => AnyView::new(Metadata::new(list, collection.retain())),
+    }
 }
 
 /// Builds the collection `<For each={…}>` evaluates to.

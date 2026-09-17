@@ -11,10 +11,10 @@ use std::rc::Rc;
 
 use nami::{Computed, Signal, SignalExt as _};
 use waterui_core::{AnyView, Dynamic, Metadata, Retain};
-use waterui_ts_engine::{JsError, JsFunction, JsValue};
+use waterui_ts::engine::{JsError, JsFunction, JsValue};
 
-use crate::bridge::{Bridge, WeakBridge};
-use crate::view::ViewSlot;
+use waterui_ts::ViewSlot;
+use waterui_ts::{Bridge, WeakBridge};
 
 /// One realized branch: the view it produced, and its teardown.
 pub struct Branch {
@@ -45,7 +45,7 @@ impl Branch {
         let entries = branch.as_object().ok_or_else(|| {
             JsError::conversion(format!(
                 "a control-flow render callback returned {}, not a {{ handle, dispose }} branch",
-                crate::error::kind_of(&branch)
+                waterui_ts::kind_of(&branch)
             ))
         })?;
         let entry = |name: &str| {
@@ -64,7 +64,7 @@ impl Branch {
             Some(other) => {
                 return Err(JsError::conversion(format!(
                     "a branch's `dispose` is {}, not the teardown the contract requires",
-                    crate::error::kind_of(other)
+                    waterui_ts::kind_of(other)
                 )));
             }
         };

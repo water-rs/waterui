@@ -21,11 +21,12 @@ use waterui_graphics::color::Color;
 use waterui_layout::padding::EdgeInsets;
 use waterui_locale::{Locale, TranslationCatalog};
 use waterui_text::text::{IntoText, Text, TextConfig};
-use waterui_ts_engine::{JsError, JsFunction, JsValue};
-use waterui_ts_schema::{NumberKind, TsType, TypeSchema};
+use waterui_ts::engine::{JsError, JsFunction, JsValue};
+use waterui_ts::schema::{NumberKind, TsType, TypeSchema};
+use waterui_url::Url;
 
-use crate::bridge::Bridge;
-use crate::convert::{FromJs, IntoJs, expected};
+use waterui_ts::Bridge;
+use waterui_ts::{FromJs, IntoJs, expected};
 
 /// Text as JSX wrote it: a string, or a number lifted into one.
 ///
@@ -147,6 +148,7 @@ impl From<ResolvedColor> for ColorValue {
 }
 
 /// The reactive colour a colour-valued attribute becomes.
+#[must_use]
 pub fn color_of(value: &Computed<ColorValue>) -> Color {
     waterui_graphics::color::signal_color(
         value
@@ -160,59 +162,84 @@ pub fn color_of(value: &Computed<ColorValue>) -> Color {
 /// Every edge is optional and the two axes are shorthands, mirroring the Rust
 /// `EdgeInsets` constructors: an edge named twice takes the more specific
 /// value, so `{ horizontal: 8, leading: 16 }` insets the leading edge by 16.
-#[derive(Debug, Clone, Copy, PartialEq, TsType)]
+///
+/// Every position is a reactive input of its own, so `{ top: gap }` follows
+/// `gap` without the object being rebuilt — the same thing a Rust author
+/// composes by hand when one edge of a `Computed<EdgeInsets>` moves.
+#[derive(Debug, Clone, TsType)]
 pub struct EdgeValues {
     /// The top inset.
-    pub top: Option<f32>,
+    pub top: Option<Computed<f32>>,
     /// The bottom inset.
-    pub bottom: Option<f32>,
+    pub bottom: Option<Computed<f32>>,
     /// The leading inset.
-    pub leading: Option<f32>,
+    pub leading: Option<Computed<f32>>,
     /// The trailing inset.
-    pub trailing: Option<f32>,
+    pub trailing: Option<Computed<f32>>,
     /// Both the leading and the trailing inset.
-    pub horizontal: Option<f32>,
+    pub horizontal: Option<Computed<f32>>,
     /// Both the top and the bottom inset.
-    pub vertical: Option<f32>,
+    pub vertical: Option<Computed<f32>>,
 }
 
-impl From<EdgeValues> for EdgeInsets {
-    fn from(value: EdgeValues) -> Self {
-        Self::new(
-            value.top.or(value.vertical).unwrap_or_default(),
-            value.bottom.or(value.vertical).unwrap_or_default(),
-            value.leading.or(value.horizontal).unwrap_or_default(),
-            value.trailing.or(value.horizontal).unwrap_or_default(),
-        )
+impl EdgeValues {
+    /// The insets these positions compose to, following every one of them.
+    fn insets(&self) -> Computed<EdgeInsets> {
+        let edge = |specific: &Option<Computed<f32>>, axis: &Option<Computed<f32>>| {
+            specific
+                .clone()
+                .or_else(|| axis.clone())
+                .unwrap_or_else(|| Computed::constant(0.0))
+        };
+        let top = edge(&self.top, &self.vertical);
+        let bottom = edge(&self.bottom, &self.vertical);
+        let leading = edge(&self.leading, &self.horizontal);
+        let trailing = edge(&self.trailing, &self.horizontal);
+        top.zip(&bottom)
+            .zip(&leading)
+            .zip(&trailing)
+            .map(|(((top, bottom), leading), trailing)| {
+                EdgeInsets::new(top, bottom, leading, trailing)
+            })
+            .computed()
     }
 }
 
-/// The default inset a bare `padding` applies, the same number Rust's
-/// `.padding()` uses.
-const DEFAULT_PADDING: f32 = 14.0;
-
-/// What `padding` accepts: `true`, a number, or an edge-insets object.
+/// What `padding` accepts: `true`, a number, or an object per edge.
 ///
-/// The three spellings are the three Rust ones — `.padding()`,
-/// `.padding_with(16.0)`, `.padding_with(EdgeInsets…)` — and no Rust type is
-/// their union, so the schema is written here beside the conversion.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// The spellings are the Rust ones — `.padding()`, `.padding_with(16.0)`,
+/// `.padding_with(EdgeInsets…)` — and no Rust type is their union, so the
+/// schema is written here beside the conversion. Every numeric position is a
+/// reactive input, whether it is the one number or one edge of the object.
+#[derive(Debug, Clone)]
 pub enum PaddingValue {
     /// `padding` or `padding={true}`: the framework's default inset.
     Default,
-    /// `padding={12}`: the same inset on every edge.
-    Uniform(f32),
-    /// `padding={{ horizontal: 16 }}`: insets per edge.
-    Edges(EdgeValues),
     /// `padding={false}`: no inset at all, which is how a computed padding
     /// switches itself off.
     None,
+    /// `padding={12}`: the same inset on every edge.
+    Uniform(Computed<f32>),
+    /// `padding={{ horizontal: 16, top: gap }}`: insets per edge.
+    Edges(EdgeValues),
+}
+
+impl PaddingValue {
+    /// The reactive insets this value composes to.
+    pub fn insets(&self) -> Computed<EdgeInsets> {
+        match self {
+            Self::Default => Computed::constant(EdgeInsets::all(crate::view::DEFAULT_PADDING)),
+            Self::None => Computed::constant(EdgeInsets::all(0.0)),
+            Self::Uniform(inset) => inset.map(EdgeInsets::all).computed(),
+            Self::Edges(edges) => edges.insets(),
+        }
+    }
 }
 
 impl TsType for PaddingValue {
     const SCHEMA: TypeSchema = TypeSchema::Union(&[
         TypeSchema::Bool,
-        TypeSchema::Number(NumberKind::F32),
+        <Computed<f32> as TsType>::SCHEMA,
         EdgeValues::SCHEMA,
     ]);
 }
@@ -222,12 +249,10 @@ impl FromJs for PaddingValue {
         match value {
             JsValue::Bool(true) => Ok(Self::Default),
             JsValue::Bool(false) => Ok(Self::None),
-            JsValue::Number(_) => f32::from_js(value, bridge).map(Self::Uniform),
             JsValue::Object(_) => EdgeValues::from_js(value, bridge).map(Self::Edges),
-            other => Err(expected(
-                "`true`, a number, or an object of edge insets",
-                other,
-            )),
+            // A number, or any reactive input of one: `padding={12}` and
+            // `padding={gap}` are one inset on every edge.
+            other => Computed::<f32>::from_js(other, bridge).map(Self::Uniform),
         }
     }
 }
@@ -239,17 +264,6 @@ impl IntoJs for PaddingValue {
             Self::None => Ok(JsValue::Bool(false)),
             Self::Uniform(inset) => inset.into_js(bridge),
             Self::Edges(edges) => edges.into_js(bridge),
-        }
-    }
-}
-
-impl From<PaddingValue> for EdgeInsets {
-    fn from(value: PaddingValue) -> Self {
-        match value {
-            PaddingValue::Default => Self::all(DEFAULT_PADDING),
-            PaddingValue::None => Self::all(0.0),
-            PaddingValue::Uniform(inset) => Self::all(inset),
-            PaddingValue::Edges(edges) => edges.into(),
         }
     }
 }
@@ -293,6 +307,165 @@ impl IntoJs for BackgroundValue {
             Self::View(view) => view.into_js(bridge),
         }
     }
+}
+
+/// The shadow `shadow` casts, which is the Rust [`Shadow`] spelled as an
+/// object.
+///
+/// Only the colour is reactive, because only the colour is reactive in Rust:
+/// `Shadow`'s offset, blur radius and corner radius are `f32` fields, and a
+/// signal declared where the framework takes a number would promise an update
+/// nothing delivers.
+///
+/// [`Shadow`]: crate::appearance::style::Shadow
+#[derive(Debug, Clone, PartialEq, TsType)]
+pub struct ShadowValue {
+    /// The shadow's colour; black when it is left out, as `Shadow::splat` uses.
+    pub color: Option<ColorValue>,
+    /// The horizontal offset, in points.
+    pub x: Option<f32>,
+    /// The vertical offset, in points.
+    pub y: Option<f32>,
+    /// The blur radius, in points.
+    pub radius: f32,
+    /// The corner radius of the view casting the shadow, so the silhouette
+    /// follows its shape.
+    #[ts(rename = "cornerRadius")]
+    pub corner_radius: Option<f32>,
+}
+
+/// The border `border` draws, which is the Rust [`Border`] spelled as an
+/// object.
+///
+/// [`Border`]: crate::appearance::border::Border
+#[derive(Debug, Clone, PartialEq, TsType)]
+pub struct BorderValue {
+    /// The border's colour.
+    pub color: ColorValue,
+    /// The stroke width, in points.
+    pub width: f32,
+    /// The corner radius, in points; square corners when left out.
+    #[ts(rename = "cornerRadius")]
+    pub corner_radius: Option<f32>,
+}
+
+/// A shape named by a string, for the shapes that carry no parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TsType)]
+pub enum ShapeName {
+    /// The view's own rectangle.
+    Rectangle,
+    /// A circle inscribed in the view's shorter side.
+    Circle,
+    /// A rectangle whose ends are fully rounded, at whatever size the view is.
+    Capsule,
+    /// An ellipse filling the view's bounds.
+    Ellipse,
+}
+
+/// A rectangle with a uniform corner radius.
+#[derive(Debug, Clone, Copy, PartialEq, TsType)]
+pub struct RoundedShape {
+    /// The corner radius, as a fraction of the shorter side: `0.5` is fully
+    /// rounded, which is what [`ShapeName::Capsule`] says directly.
+    #[ts(rename = "cornerRadius")]
+    pub corner_radius: f32,
+}
+
+/// What `clip` accepts: a named shape, or a rounded rectangle's radius.
+///
+/// Rust's `clip` takes anything implementing `Shape`, which is an open set a
+/// TypeScript type cannot name. What it can name is the shapes the framework
+/// ships, so the attribute is a union of those — a string for the ones that
+/// carry nothing, an object for the one that carries a radius — and a shape an
+/// application defines is composed on the Rust side and slotted in as a view.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShapeValue {
+    /// `clip="Rectangle"`.
+    Rectangle,
+    /// `clip="Circle"`.
+    Circle,
+    /// `clip="Capsule"`.
+    Capsule,
+    /// `clip="Ellipse"`.
+    Ellipse,
+    /// `clip={{ cornerRadius: 0.25 }}`.
+    Rounded(f32),
+}
+
+impl TsType for ShapeValue {
+    const SCHEMA: TypeSchema = TypeSchema::Union(&[ShapeName::SCHEMA, RoundedShape::SCHEMA]);
+}
+
+impl FromJs for ShapeValue {
+    fn from_js(value: &JsValue, bridge: &Bridge) -> Result<Self, JsError> {
+        match value {
+            JsValue::String(_) => Ok(match ShapeName::from_js(value, bridge)? {
+                ShapeName::Rectangle => Self::Rectangle,
+                ShapeName::Circle => Self::Circle,
+                ShapeName::Capsule => Self::Capsule,
+                ShapeName::Ellipse => Self::Ellipse,
+            }),
+            JsValue::Object(_) => {
+                RoundedShape::from_js(value, bridge).map(|shape| Self::Rounded(shape.corner_radius))
+            }
+            other => Err(expected(
+                "a shape name, or an object carrying a corner radius",
+                other,
+            )),
+        }
+    }
+}
+
+impl IntoJs for ShapeValue {
+    fn into_js(self, bridge: &Bridge) -> Result<JsValue, JsError> {
+        match self {
+            Self::Rectangle => ShapeName::Rectangle.into_js(bridge),
+            Self::Circle => ShapeName::Circle.into_js(bridge),
+            Self::Capsule => ShapeName::Capsule.into_js(bridge),
+            Self::Ellipse => ShapeName::Ellipse.into_js(bridge),
+            Self::Rounded(corner_radius) => RoundedShape { corner_radius }.into_js(bridge),
+        }
+    }
+}
+
+/// A URL, which crosses as the string it is written as.
+///
+/// A newtype rather than `Url` itself, because both the conversion traits and
+/// `Url` come from other crates. Parsing happens on the way in, so an address
+/// a `WaterUI` view could not fetch is a typed error naming it rather than a
+/// picture that silently never appears.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UrlValue(pub Url);
+
+impl TsType for UrlValue {
+    const SCHEMA: TypeSchema = TypeSchema::String;
+}
+
+impl FromJs for UrlValue {
+    fn from_js(value: &JsValue, bridge: &Bridge) -> Result<Self, JsError> {
+        let text = Str::from_js(value, bridge)?;
+        Url::parse(&text)
+            .map(Self)
+            .ok_or_else(|| JsError::conversion(format!("`{text}` is not a URL WaterUI can fetch")))
+    }
+}
+
+impl IntoJs for UrlValue {
+    fn into_js(self, bridge: &Bridge) -> Result<JsValue, JsError> {
+        Str::from(self.0.to_string()).into_js(bridge)
+    }
+}
+
+/// Which shape a `<Progress>` takes, mirroring Rust's `ProgressStyle`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, TsType)]
+pub enum ProgressStyleValue {
+    /// A bar, which is what a determinate progress uses by default.
+    #[default]
+    Linear,
+    /// A ring.
+    Circular,
+    /// An indeterminate spinner.
+    Loading,
 }
 
 /// Where a vertical stack's children sit on the horizontal axis.
@@ -406,7 +579,7 @@ pub enum ScrollAxis {
 #[derive(Clone)]
 pub struct JsAction {
     function: JsFunction,
-    bridge: crate::bridge::WeakBridge,
+    bridge: waterui_ts::WeakBridge,
 }
 
 impl core::fmt::Debug for JsAction {

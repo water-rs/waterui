@@ -100,22 +100,28 @@ describe("Show", () => {
 describe("For", () => {
   const row = (item) => jsx("Text", { children: `row ${item.id}` });
 
-  test("reconciles by referential identity without `by`", () => {
-    const a = { id: 1 };
-    const b = { id: 2 };
-    const c = { id: 3 };
-    const d = { id: 4 };
-    const items = createSignal([a, b, c]);
+  test("reconciles a primitive item by the item itself", () => {
+    const items = createSignal(["a", "b", "c"]);
     createRoot((dispose) => {
-      const slot = jsx(For, { each: items, children: (item) => row(item) });
+      const slot = jsx(For, {
+        each: items,
+        children: (item) => jsx("Text", { children: `row ${item}` }),
+      });
       const before = [...slot.entries];
-      items.set([c, a, d]);
+      items.set(["c", "a", "d"]);
       expect(slot.entries[0].handle).toBe(before[2].handle);
       expect(slot.entries[1].handle).toBe(before[0].handle);
-      expect(slot.entries[2].item).toBe(d);
-      expect(host.calls).toContainEqual(["dispose-item", b]);
+      expect(slot.entries[2].item).toBe("d");
+      expect(host.calls).toContainEqual(["dispose-item", "b"]);
       dispose();
     });
+  });
+
+  test("refuses a list of objects with no `by`", () => {
+    const items = createSignal([{ id: 1 }]);
+    expect(() =>
+      createRoot(() => jsx(For, { each: items, children: (item) => row(item) })),
+    ).toThrow(/needs `by`/);
   });
 
   test("reconciles by `by` and keeps an index accessor current", () => {
@@ -146,6 +152,7 @@ describe("For", () => {
         get each() {
           return items();
         },
+        by: (item) => item.id,
         children: (item) => row(item),
       });
       expect(slot.entries).toHaveLength(1);
@@ -174,21 +181,18 @@ describe("Suspense", () => {
     });
   });
 
-  test("presents the fallback while pending, then the children", () => {
+  test("never builds the fallback, because nothing built from JSX is pending", () => {
     const log = [];
     createRoot((dispose) => {
-      host.setPending(true);
       const slot = jsx(Suspense, {
         fallback: () => {
-          onCleanup(() => log.push("fallback disposed"));
+          log.push("fallback built");
           return jsx("Text", { children: "loading" });
         },
         children: () => jsx("Text", { children: "ready" }),
       });
-      expect(slot.branch.handle.children).toEqual(["loading"]);
-      host.setPending(false);
       expect(slot.branch.handle.children).toEqual(["ready"]);
-      expect(log).toEqual(["fallback disposed"]);
+      expect(log).toEqual([]);
       dispose();
     });
   });
