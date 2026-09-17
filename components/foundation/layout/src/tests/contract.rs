@@ -169,6 +169,12 @@ fn assert_extent(actual: f32, expected: f32, context: &str) {
     );
 }
 
+/// Measures the stack under `main`, then places it at its own answer and
+/// checks the allocation. `expected` is what placement hands each child from
+/// the resolved bounds; it equals the measured allocation under a finite
+/// proposal and, under an unspecified one, the distribution of the sum of
+/// ideals — placement negotiates against the bounds, never a replay of the
+/// ideal probe.
 fn assert_allocation(axis: Axis, children: &[&dyn SubView], main: Option<f32>, expected: [f32; 2]) {
     let layout = stack(axis);
     let proposal = axis_proposal(axis, main, Some(100.0));
@@ -190,9 +196,13 @@ fn assert_allocation(axis: Axis, children: &[&dyn SubView], main: Option<f32>, e
             cursor,
             "child main origin",
         );
-        if main.is_none() {
-            assert_eq!(main_proposal(axis, placement.proposal), None);
-        }
+        // Placement proposes each child its allocation, whatever the stack
+        // itself was measured with.
+        assert_extent(
+            main_proposal(axis, placement.proposal).expect("placement proposes a finite extent"),
+            expected,
+            "selected main proposal",
+        );
         let response = child.measure(placement.proposal);
         assert_extent(
             main_extent(axis, response.size),
@@ -208,8 +218,10 @@ fn flexible_children_follow_reference_allocations_on_both_axes() {
     for axis in [Axis::Horizontal, Axis::Vertical] {
         let children = flexible_children(axis);
         let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        // Unspecified: the stack answers the sum of ideals (160) and, placed
+        // at that extent, splits it between two equally flexible children.
         for (main, expected) in [
-            (None, [40.0, 120.0]),
+            (None, [80.0, 80.0]),
             (Some(80.0), [20.0, 60.0]),
             (Some(160.0), [80.0, 80.0]),
             (Some(240.0), [120.0, 120.0]),
@@ -237,8 +249,11 @@ fn nested_sections_follow_reference_allocations_on_both_axes() {
     }
 }
 
+/// Placement is a function of the bounds alone: the same bounds allocate the
+/// same way whether the stack was measured unspecified or bounded, and
+/// whatever other probes ran in between.
 #[test]
-fn equal_bounds_preserve_distinct_selected_proposals_after_other_probes() {
+fn equal_bounds_allocate_identically_whatever_the_proposal_or_probe_order() {
     for axis in [Axis::Horizontal, Axis::Vertical] {
         let layout = stack(axis);
         let children = flexible_children(axis);
@@ -250,15 +265,16 @@ fn equal_bounds_preserve_distinct_selected_proposals_after_other_probes() {
         let bounds = Rect::from_size(ideal);
         for other in [Some(320.0), Some(0.0), Some(80.0), None] {
             layout.size_that_fits(axis_proposal(axis, other, Some(100.0)), &refs);
-            for (proposal, expected) in [(unspecified, [40.0, 120.0]), (bounded, [80.0, 80.0])] {
+            for proposal in [unspecified, bounded] {
                 let placements = layout.place(bounds, proposal, &refs);
                 assert_eq!(placements.len(), 2);
-                for (placement, expected) in placements.iter().zip(expected) {
+                for placement in &placements {
                     assert_extent(
                         main_extent(axis, *placement.frame.size()),
-                        expected,
+                        80.0,
                         "probe order",
                     );
+                    assert_eq!(main_proposal(axis, placement.proposal), Some(80.0));
                 }
             }
         }
@@ -301,7 +317,11 @@ fn rigid_cross_axis_placement_overflows_a_smaller_host_region() {
         let bounds = Rect::new(Point::new(11.0, -7.0), axis_size(axis, 40.0, 10.0));
         let placements = layout.place(bounds, proposal, &[&child]);
         assert_eq!(*placements[0].frame.size(), axis_size(axis, 40.0, 20.0));
-        assert_eq!(placements[0].proposal, proposal);
+        // The bounds, not the measurement probe, are what placement proposes.
+        assert_eq!(
+            placements[0].proposal,
+            axis_proposal(axis, Some(40.0), Some(10.0))
+        );
     }
 }
 
@@ -530,10 +550,165 @@ fn placement_proposes_the_resolved_cross_extent() {
         );
         assert_eq!(
             main_proposal(axis, placements[0].proposal),
-            main_proposal(axis, proposal),
-            "the main axis keeps the measurement proposal"
+            Some(40.0),
+            "the rigid child is proposed its allocation"
         );
     }
+}
+
+/// A stack measured narrower than its offer proposes its own extent at
+/// placement, not the offer: a content-sized card in a wide column hands its
+/// children the card's width.
+#[test]
+fn placement_proposes_the_resolved_extent_on_underfill() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let layout = stack(axis);
+        let child = RangeLeaf {
+            axis,
+            minimum: 30.0,
+            ideal: 30.0,
+            maximum: 30.0,
+            cross: 140.0,
+        };
+        let proposal = axis_proposal(axis, Some(500.0), Some(362.0));
+        let measured = layout.size_that_fits(proposal, &[&child]);
+        assert_extent(cross_extent(axis, measured), 140.0, "stack cross extent");
+        assert_extent(main_extent(axis, measured), 30.0, "stack main extent");
+        let placements = layout.place(Rect::from_size(measured), proposal, &[&child]);
+        assert_eq!(cross_proposal(axis, placements[0].proposal), Some(140.0));
+        assert_eq!(main_proposal(axis, placements[0].proposal), Some(30.0));
+    }
+}
+
+/// A leaf whose answer on one axis follows the other, like an image kept in
+/// a square: it answers the ideal to an unspecified offer and fits inside a
+/// finite one.
+struct SquareLeaf(f32);
+
+impl SubView for SquareLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let side = match (proposal.width, proposal.height) {
+            (Some(width), Some(height)) if width.is_finite() && height.is_finite() => {
+                width.min(height)
+            }
+            (Some(width), _) if width.is_finite() => width,
+            (_, Some(height)) if height.is_finite() => height,
+            _ => self.0,
+        };
+        ViewDimensions::new(Size::new(side, side))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// A stack widened by a rigid sibling hands the resolved cross extent to a
+/// child whose main extent follows it. Because placement also allocates the
+/// main axis from the resolved bounds, that child takes the room the rigid
+/// sibling leaves (100 of 110) instead of growing to the 200 the cross extent
+/// alone would let it claim, and the children end where the stack reported.
+#[test]
+fn placement_allocates_the_main_axis_from_the_resolved_bounds() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let layout = stack(axis);
+        let square = SquareLeaf(100.0);
+        let rigid = RangeLeaf {
+            axis,
+            minimum: 10.0,
+            ideal: 10.0,
+            maximum: 10.0,
+            cross: 200.0,
+        };
+        let proposal = ProposalSize::new(None, None);
+        let measured = layout.size_that_fits(proposal, &[&square, &rigid]);
+        assert_extent(cross_extent(axis, measured), 200.0, "stack cross extent");
+        assert_extent(main_extent(axis, measured), 110.0, "stack main extent");
+
+        let bounds = Rect::from_size(measured);
+        let placements = layout.place(bounds, proposal, &[&square, &rigid]);
+        assert_eq!(cross_proposal(axis, placements[0].proposal), Some(200.0));
+        assert_eq!(main_proposal(axis, placements[0].proposal), Some(100.0));
+        assert_extent(
+            main_extent(axis, *placements[0].frame.size()),
+            100.0,
+            "square main extent",
+        );
+        let end =
+            main_origin(axis, placements[1].frame) + main_extent(axis, *placements[1].frame.size());
+        assert_extent(end, 110.0, "children end where the stack reported");
+    }
+}
+
+/// A leaf carrying an explicit guide.
+struct GuidedLeaf {
+    size: Size,
+    top: f32,
+}
+
+impl SubView for GuidedLeaf {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        let mut dimensions = ViewDimensions::new(self.size);
+        dimensions.set_vertical(VerticalAlignment::Top, self.top);
+        dimensions
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// Explicit guides are honoured on every alignment and never clamped: a row
+/// aligned on `top` whose child declares its top guide 10 above its edge is
+/// the envelope of the guides, and the child sits 10 below the row's line.
+#[test]
+fn explicit_guides_shape_the_envelope_on_edge_alignments() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Top,
+        spacing: Computed::constant(0.0),
+    };
+    let raised = GuidedLeaf {
+        size: Size::new(10.0, 20.0),
+        top: -10.0,
+    };
+    let plain = RangeLeaf {
+        axis: Axis::Horizontal,
+        minimum: 10.0,
+        ideal: 10.0,
+        maximum: 10.0,
+        cross: 30.0,
+    };
+    let proposal = ProposalSize::new(None, None);
+    let measured = layout.size_that_fits(proposal, &[&raised, &plain]);
+    // Line at max guide 0 (the plain child); extents past the line: 30 for
+    // the plain child, 20 - (-10) = 30 for the raised one.
+    assert_extent(measured.height, 30.0, "row height");
+    let placements = layout.place(Rect::from_size(measured), proposal, &[&raised, &plain]);
+    assert_extent(
+        placements[0].frame.y(),
+        10.0,
+        "raised child sits below the line",
+    );
+    assert_extent(placements[1].frame.y(), 0.0, "plain child sits on the line");
+
+    // Alone, the raised child's guide is the line itself: the row is as tall
+    // as the child and the child starts at the row's top.
+    let measured = layout.size_that_fits(proposal, &[&raised]);
+    assert_extent(measured.height, 20.0, "row height around one raised child");
+    let placements = layout.place(Rect::from_size(measured), proposal, &[&raised]);
+    assert_extent(
+        placements[0].frame.y(),
+        0.0,
+        "lone raised child starts at the top",
+    );
 }
 
 const fn cross_extent(axis: Axis, size: Size) -> f32 {

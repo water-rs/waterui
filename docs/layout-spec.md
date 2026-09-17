@@ -7,19 +7,20 @@ without a major-version decision recorded by the maintainer, and a pull request
 that changes them is rejected regardless of what it fixes. A difference between
 this document and the code is a bug in the code.
 
-The reference model is SwiftUI's layout protocol. Where SwiftUI's observable
-behaviour is known it is the tie-breaker; where WaterUI deliberately differs the
-difference is stated here.
+The reference model is SwiftUI's layout protocol as observed on iOS 26 and
+macOS 26. Where SwiftUI's observable behaviour is known it is the tie-breaker;
+where WaterUI deliberately differs the difference is listed in §8.
 
 ## 1. Units and coordinates
 
 - Every layout value is a logical pixel (point, dp). Backends convert to device
   pixels with the display scale; layout never sees a device pixel.
-- `Rect` origins are physical left-to-right coordinates. `LayoutDirection`
-  (leading/trailing) is resolved by containers when they place children; leaf
-  and renderer code receives physical coordinates.
+- `Rect` origins are physical left-to-right, top-to-bottom coordinates.
+  `LayoutDirection` (leading/trailing) is resolved by containers when they
+  place children; leaf and renderer code receives physical coordinates.
 - Extents are finite and non-negative except a maximum, where
-  `f32::INFINITY` means "unbounded".
+  `f32::INFINITY` means "unbounded". A container's answer may be `INFINITY`
+  on an axis only when a child answered `INFINITY` on it.
 
 ## 2. The proposal protocol
 
@@ -33,9 +34,9 @@ axis independently:
 | `Some(INFINITY)` | maximum extent |
 | `Some(v)` | fit into `v` |
 
-The child answers with `ViewDimensions`: a `Size` plus optional alignment
-guides. The answer is the child's choice; the proposal is advice. On each axis
-the three probe answers satisfy `min <= ideal <= max`.
+The child answers with `ViewDimensions`: a `Size` plus optional explicit
+alignment guides. The answer is the child's choice; the proposal is advice. On
+each axis the three probe answers satisfy `min <= ideal <= max`.
 
 ### 2.1 The SubView contract
 
@@ -61,15 +62,40 @@ A container is a `Layout`:
 - `size_that_fits(proposal, children) -> Size` is the container's answer to a
   proposal. It may probe children freely.
 - `place(bounds, proposal, children) -> Vec<SubviewPlacement>` places every
-  child, in order, inside `bounds`. `proposal` is the proposal this container
-  was measured with — never a probe it sent a child, never a proposal derived
-  from `bounds`. Each placement carries the frame and the proposal the child
-  is placed with; the child's own layout pass receives that proposal verbatim.
-  Which proposal a container hands a child at placement is that container's
-  rule (§4.4, §5).
+  child, in order, relative to `bounds`. `bounds` is the frame the parent
+  resolved for this container; `proposal` is the proposal this container was
+  measured with, available to a container whose rule needs it (§5, Grid).
+  Each placement carries the child's frame and the proposal the child is
+  placed with; the child's own layout pass receives that proposal verbatim.
 - Explicit alignment guides (`explicit_horizontal` / `explicit_vertical`)
   come from the placed children; a container exposes the alignments it can
-  answer.
+  answer. Resolving an explicit guide runs the container's `place`, so a
+  container's guide is always consistent with its placement.
+
+### 2.3 Placement is a negotiation against the resolved bounds
+
+Placement is not a replay of measurement. When a container is placed it
+negotiates with its children again, against the bounds it was actually given,
+on **both** axes. The bounds equal the container's own answer whenever the
+container is content-sized, so the two passes agree there; they differ exactly
+when a parent stretched the container, overflowed it, or measured it with an
+unspecified, zero or infinite proposal. In every such case the children see
+the real geometry, never a stale probe.
+
+Concretely: a stack allocates its main axis from `bounds` (§4.2 with
+`M = bounds.main`) and proposes its resolved cross extent (`bounds.cross`) to
+every child; a `ZStack`, `Overlay`, `Background`, `Absolute` and `Padding`
+propose the bounds (less insets) they place into; a `Frame` proposes the
+region it resolved; an `AspectRatio` proposes the ratio-correct box. A
+container never places a child under a proposal it did not derive from
+`bounds`, with the single exception in §5 (Grid column widths).
+
+This is the SwiftUI behaviour (`placeSubviews` receives resolved bounds and a
+fresh proposal) and the one breaking change 0.5.0 makes to the 0.4 rule
+("placement keeps the measurement probe"): a title in a column that an
+unshrinkable row has made wider than the viewport lays out on one line across
+the column, as the reference twin does, instead of staying wrapped at the
+proposal the column was measured with.
 
 ## 3. Stretch
 
@@ -86,44 +112,83 @@ A container is a `Layout`:
 - A `Frame` stretches on an axis only when its `max` on that axis is
   `INFINITY`; `.width(v)` (`min = max = v`) and `.max_width(100)` do not
   stretch.
+- `Absolute` is `Both` regardless of its children.
+- A lazy container (`List`, lazy stacks) cannot enumerate its children before
+  they are realised, so it reports its layout's axis over an empty child set:
+  `None` for a lazy stack. A lazy stack that must fill is placed by a parent
+  that stretches it (`ScrollView`, `Absolute`, a `Frame` with `max = INFINITY`).
 - `ScrollView` is `Both`; `Spacer` is `MainAxis`; `Divider` is `CrossAxis`;
   `Color` and shapes are `Both`; text, buttons, toggles and other content
   controls are `None`; a text field is `Horizontal`.
 
 ## 4. Stacks (`HStack`, `VStack`)
 
-### 4.1 Cross axis: content-sized
+The description below is written for an `HStack` (main axis horizontal, cross
+axis vertical); a `VStack` is the same with the axes swapped.
 
-A stack's cross extent is the widest finite child answer, measured with the
-stack's own cross proposal; a child answering `INFINITY` sets no floor (the
-fill pass gives it the stack's extent) and makes the stack answer `INFINITY`
-on a maximum query. A stack never widens to its proposal on its own: a column
-of two labels is as wide as the wider label, wherever it is placed. Default
-spacing is 10.
+### 4.1 Cross axis: the alignment envelope
 
-A child wider than the stack's bounds overflows; it is placed at its measured
-size and the stack's alignment decides which edges it crosses (`Center`
-overflows both edges equally). Nothing is clipped by layout.
+Every child answers a cross extent `e` and a guide `g` for the stack's
+alignment — its explicit guide when it answered one, otherwise the default
+position of that alignment (`Top = 0`, `Center = e / 2`, `Bottom = e`;
+`FirstTextBaseline` / `LastTextBaseline` are the leaf's baselines). Guides are
+**not** clamped into `[0, e]`: a child may raise its guide above its own top
+or below its own bottom, and the stack honours it.
+
+The stack's cross envelope is
+
+```
+above = max over children of g
+below = max over children of (e - g)
+cross = above + below
+```
+
+Children answering an infinite extent are skipped; if any child answers
+`INFINITY` the stack answers `INFINITY` on that axis (a maximum query or a
+filling child), and the fill pass above resolves it. A stack never widens to
+its proposal on its own: a column of two labels is as wide as the wider label,
+wherever it is placed. Default spacing is 10.
+
+At placement the envelope is anchored in `bounds` by the stack's alignment:
+
+| alignment | line |
+| --- | --- |
+| `Top` / `Leading` | `bounds.min + above` |
+| `Center` | `bounds.min + (bounds.cross - cross) / 2 + above` |
+| `Bottom` / `Trailing` | `bounds.max - below` |
+| explicit guide alignments, custom | as `Top` / `Leading` |
+
+Every non-stretching child is placed at `line - g` with its own answer; a
+cross-axis stretcher is placed at `bounds.min` with extent `bounds.cross`.
+Nothing is clamped: a child wider than the bounds overflows and the alignment
+decides which edges it crosses (`Center` crosses both equally). Nothing is
+clipped by layout.
 
 ### 4.2 Main axis: one probe, then allocation
 
-With an unspecified main proposal every child keeps its ideal extent. With a
-finite main proposal `M`:
+With an unspecified main proposal every child keeps its ideal extent (probe:
+cross proposal, main `None`). `0` and `INFINITY` main proposals are forwarded
+to the children unchanged. With a finite, non-zero main proposal `M`:
 
-1. `available = M - spacing * (n - 1)`.
-2. Each child's `min` is its answer to `0`; its `ideal` is `available`
-   (clamped up to `min`) when it stretches on the main axis, otherwise its
-   answer to `INFINITY` clamped into `[min, available]`.
+1. `available = max(0, M - spacing * (n - 1))`.
+2. Each child's `min` is its answer to `(cross, 0)`; its `ideal` is
+   `max(min, available)` when it stretches on the main axis, otherwise its
+   answer to `(cross, INFINITY)` clamped into `[min, available]`.
 3. `compress_to_fit` allocates `available`: everything fits → every child gets
    its ideal; otherwise higher `priority` bands are allocated first with every
    lower band's `min` reserved, and inside a band a common cap is lowered
    (water-filling) so the widest children give up the most and equal children
    shrink equally. No child goes below its `min`; when the minima alone exceed
    `available` the stack overflows rather than collapsing children.
-4. Every child is measured once more at its allocation; a main-axis stretcher
-   is reported at `max(answer, allocation)`.
+4. Every child is measured once more at `(cross, allocation)`; a main-axis
+   stretcher is reported at `max(answer, allocation)`.
 
-`0` and `INFINITY` main proposals are forwarded to the children unchanged.
+The stack's main answer is the sum of the children's reported extents plus
+spacing. At placement the same allocation runs with `M = bounds.main` and
+`cross = bounds.cross`; children are laid out in order from `bounds.min`
+(reversed under a right-to-left `LayoutDirection` in an `HStack`) at their
+reported extents. A child is placed with the proposal it was last measured
+with, `(bounds.cross, allocation)`.
 
 ### 4.3 Priority
 
@@ -131,33 +196,7 @@ finite main proposal `M`:
 lowest band first; within a band the water-fill rule applies. Priority never
 grants space beyond a child's ideal.
 
-### 4.4 Placement proposal
-
-At placement each child of an `HStack` or `VStack` receives, on the main axis,
-the extent allocated in §4.2 under the proposal the stack was measured with,
-and on the cross axis **the stack's resolved cross extent — the cross extent
-of the bounds the stack was placed in**. The child is placed at the size it
-answers to that proposal, aligned by the stack's alignment within the bounds;
-a cross-axis stretcher is placed at `max(answer, bounds)`.
-
-This is the SwiftUI behaviour and the one breaking change 0.5.0 makes to the
-0.4 rule ("placement keeps the measurement probe on the cross axis"): a title
-in a column that an unshrinkable row has made wider than the viewport lays out
-on one line across the column, as the reference twin does, instead of staying
-wrapped at the proposal the column was measured with. Because the stack's
-bounds equal its own measured cross extent whenever the stack is
-content-sized, the two rules agree everywhere except where a stack overflows
-its proposal or was measured with an unspecified, zero or infinite cross
-proposal.
-
-### 4.5 Alignment guides
-
-A child may answer explicit guides for an alignment. When any child answers
-one for the stack's alignment, the stack aligns children on that guide line
-(the widest intrinsic leading extent); otherwise it aligns on the bounds edge
-or centre.
-
-### 4.6 Spacing and membership
+### 4.4 Spacing and membership
 
 Spacing is reactive; a spacing or membership change invalidates the stack and
 returns the original geometry when reverted.
@@ -165,39 +204,64 @@ returns the original geometry when reverted.
 ## 5. Other containers
 
 - **ZStack**: every child is measured with the stack's proposal; the stack's
-  size is the per-axis maximum of the children's answers, capped by a finite
-  proposal; children are re-measured with the same proposal at placement (a
-  `ZStack` does not re-propose its bounds), placed by the stack alignment
-  inside the bounds at `min(answer, bounds)`, and an unbounded answer fills the
-  bounds.
+  answer on each axis is the alignment envelope of §4.1 over all children
+  (`INFINITY` if any child answers it), **not** capped by the proposal. At
+  placement children are measured again with `(bounds.width, bounds.height)`,
+  placed by the stack alignment on the envelope line inside the bounds at their
+  own answer (a child larger than the bounds overflows), and an unbounded
+  answer fills the bounds. Every child is proposed the bounds.
 - **Overlay** (`base.overlay(decoration)`): sized by the base child alone; the
-  overlay child is measured with the base's size and aligned inside it. It
-  never influences the parent's sizing.
-- **Background** (`content.background(view)`): sized by the content alone;
-  the background child fills the content's bounds and is proposed them; the
-  content keeps the proposal it was measured with. `Material` and `Glass`
-  backgrounds are metadata the backend projects; they do not enter layout.
-- **Padding**: shrinks the child's proposal by the insets, adds them back to
-  the answer, places the child inset; transparent to stretch and guides.
-- **Frame** (`width/height/min/max/ideal`): the child hears the parent's
-  proposal clamped into `[min, max]`, with `ideal` answering only an axis the
-  parent left unspecified. The frame grows into what it was offered up to
-  `max`; with no `max` it is exactly as big as its child, clamped up by `min`.
-  `max = INFINITY` is how a view opts into filling.
-- **AspectRatio**: fits the ratio inside what is offered; `Fit` shrinks to
-  the offer, `Fill` covers it.
-- **Absolute** (`absolute(...)`, `position_in`, `pin`): fills its parent and
-  hands every child the full bounds; children position themselves. A
-  window-level overlay layer (snackbar, dialog host) is an `Absolute` with
-  `StretchAxis::Both`, never a content-sized `ZStack`.
-- **Grid**: fixed column count; each column is as wide as its widest cell
-  answer, each row as tall as its tallest; cells align by the grid alignment.
+  base is placed over the whole bounds and proposed them. Each decoration is
+  measured with the bounds as its proposal, placed at its own answer (an
+  unbounded answer fills the bounds) on the envelope line of its alignment
+  inside the bounds, unclamped. Decorations never influence the parent's
+  sizing.
+- **Background** (`content.background(view)`): sized by the content alone; at
+  placement both the background and the content are placed over the whole
+  bounds and proposed them. `Material` and `Glass` backgrounds are metadata
+  the backend projects; they do not enter layout.
+- **Padding**: measures the child with the proposal shrunk by the insets and
+  adds them back to the answer; at placement the child is placed in the bounds
+  inset by the edges and proposed that inset region. Transparent to stretch
+  and guides.
+- **Frame** (`width/height/min/max/ideal`): on each axis the child hears the
+  parent's proposal clamped into `[min, max]`, with `ideal` answering only an
+  axis the parent left unspecified; the frame answers the child's answer
+  clamped into `[min, max]`, growing into a finite offer only up to `max`.
+  With no `max` it is exactly as big as its child, clamped up by `min`;
+  `max = INFINITY` is how a view opts into filling. The frame measures its
+  child a second time under the exact proposal it will place with (the
+  resolved frame region) whenever that differs from the first probe, so its
+  answer and its placement agree. At placement the child is placed at its
+  answer to that proposal, aligned by the frame's alignment on the envelope
+  line, unclamped (a child larger than the frame overflows).
+- **AspectRatio**: `Fit` answers the largest box of the ratio inside the
+  offer, `Fill` the smallest box covering it; an unspecified axis follows the
+  child's answer on the other. At placement the box is resolved against the
+  bounds, centred in them, and the child is placed in it and proposed it.
+- **Absolute** (`absolute(...)`, `position_in`, `pin`): answers the proposal
+  (`0` for an unspecified axis) and hands every child the full bounds as both
+  frame and proposal; children position themselves. A window-level overlay
+  layer (snackbar, dialog host) is an `Absolute` with `StretchAxis::Both`,
+  never a content-sized `ZStack`.
+- **Grid**: fixed column count. Under a finite width proposal every column is
+  `(width - spacing * (columns - 1)) / columns` wide and the grid answers the
+  proposal width; under an unspecified or infinite width each column is as
+  wide as its widest cell's ideal answer. Each cell is measured with its
+  column width and an unspecified height; each row is as tall as its tallest
+  finite answer. Cells align by the grid alignment inside their cell; an
+  unbounded answer fills the cell. Column widths at placement are computed
+  from the width proposal the grid was measured with — the one documented
+  exception to §2.3, kept so a content-sized grid keeps its content-sized
+  columns.
 - **Spacer**: `MainAxis`, minimum length 0 (`spacer_min(n)`); it takes the
-  allocation the stack gives it and nothing in a `ZStack`.
+  allocation the stack gives it, answers zero on every other axis and under
+  every other container, and claims nothing in a `ZStack`.
 - **Divider**: 1 pt on the stack's main axis, fills the cross axis, drawn in
   the `BorderColor` theme slot.
 - **Lazy containers** (`List`, lazy stacks): virtualised along one axis with
-  the same per-child protocol; membership diffs by identity.
+  the same per-child protocol over the realised children; membership diffs by
+  identity. Stretch is §3.
 
 ## 6. Leaf contracts (backends)
 
@@ -212,7 +276,8 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
 - **Controls** (button, toggle, picker, stepper, slider, progress): the
   platform control's intrinsic size, with the platform's own chrome padding
   for the selected style and none for a borderless one; a text field answers
-  the proposal width (`Horizontal`) and its intrinsic height.
+  the proposal width (`Horizontal`) and its intrinsic height — a plain iOS
+  text field is one 22 pt line with no border, fill or vertical floor.
 - **ScrollView**: a scroll claims the whole offer — a finite proposal on
   either axis is answered with that proposal; only a `0` proposal measures the
   content, answering its intrinsic extent on the non-scrolling axis and `0` on
@@ -222,6 +287,7 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
   narrower or wider than the viewport (a wider content crosses both edges by
   the same amount). A scroll surface that touches window chrome extends under
   it (safe-area extension rule).
+- **Spacer** hosted natively answers zero to every proposal.
 - **GPU surfaces, images, shapes, colours**: `Both`; an image with an
   intrinsic size answers it to `None` and fits the proposal otherwise.
 
@@ -236,11 +302,29 @@ A backend applies the Rust placement verbatim: the child's frame is the
 placement rect and its layout pass receives the placement proposal. A bridge
 wrapper standing in a child's slot (a metadata wrapper, a clip host) lays its
 content over the whole slot; it never re-centres, re-measures or gravity-packs
-the content inside the slot. Safe-area insets are a backend concern applied
-outside the protocol (`IgnoresSafeArea` opts out); they never change a
-proposal a Rust container sees.
+the content inside the slot.
 
-## 8. Invariants a change must preserve
+The root proposal is the window's (or scene's) content size, both axes
+finite; the root is placed at its answer to that proposal, stretched to the
+window on the axes it declares. Safe-area insets are a backend concern applied
+outside the protocol (`IgnoresSafeArea` opts out); they never change a
+proposal a Rust container sees. Layout is single-threaded; a backend that
+measures on another thread is outside the contract.
+
+## 8. Divergence register
+
+Behaviour that is deliberately not SwiftUI's. Each entry is a decision, not a
+gap; changing one is a contract change.
+
+| WaterUI | SwiftUI | why |
+| --- | --- | --- |
+| Compression water-fills inside a priority band (the widest give up the most). | Offers space least-flexible child first, in order of flexibility. | Equal children shrink equally and a single wide child absorbs the deficit; independent of child order. |
+| Default stack spacing is a fixed 10 pt. | Platform-dependent, content-dependent default. | One value across backends keeps parity tests meaningful. |
+| Controls are intrinsic-only (`None`) unless they declare an axis. | Some controls stretch by style. | The style attribute, not the widget type, decides; backends declare per style. |
+| Images are `Both` and fit the proposal. | Images are fixed-size unless `.resizable()`. | Fitting is the common case for cross-platform content; an intrinsic size is answered to `None`. |
+| Grid columns at placement use the measurement proposal width. | `Grid` re-resolves columns against bounds. | Keeps a content-sized grid's columns content-sized under the bounds rule. |
+
+## 9. Invariants a change must preserve
 
 The contract tests in `components/foundation/layout/src/tests/contract.rs`
 and the per-container tests encode this document. They cover: the reference
@@ -248,6 +332,8 @@ allocations of flexible and nested children on both axes; distinct selected
 proposals surviving other probes; rigid cross-axis answers surviving any cross
 proposal; a rigid child overflowing a smaller host; fill children keeping
 their minimum in small bounds; unbounded answers surviving a maximum query;
-the resolved cross extent proposed at placement; and spacing/membership
-invalidation returning to the original geometry. A pull request that has to
-weaken one of these assertions is changing the contract and is rejected.
+the resolved extent proposed at placement on both axes, under stretch and
+under underfill; the main axis allocated from the bounds; explicit guides
+shaping the envelope on edge alignments; and spacing/membership invalidation
+returning to the original geometry. A pull request that has to weaken one of
+these assertions is changing the contract and is rejected.

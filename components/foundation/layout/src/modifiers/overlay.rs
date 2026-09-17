@@ -12,17 +12,12 @@ use waterui_core::View;
 
 use crate::{
     Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
-    ViewDimensions,
     container::FixedContainer,
-    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
+    stack::{
+        Alignment, HorizontalAlignment, VerticalAlignment,
+        distribute::{LineAnchor, container_line},
+    },
 };
-
-/// Cached measurement for a child during layout
-struct ChildMeasurement {
-    dimensions: ViewDimensions,
-    /// The proposal the child was measured and will be placed with.
-    proposal: ProposalSize,
-}
 
 /// Layout used by [`Overlay`] to keep the base child's size authoritative while
 /// still allowing aligned overlay content.
@@ -67,97 +62,55 @@ impl Layout for OverlayLayout {
     fn place(
         &self,
         bounds: Rect,
-        proposal: ProposalSize,
+        _proposal: ProposalSize,
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
 
-        // The base is measured and placed under the selected proposal; each
-        // overlay layer is offered the resolved finite bounds.
-        let overlay_proposal = ProposalSize::new(bounds.width(), bounds.height());
-
-        let measurements: Vec<ChildMeasurement> = children
-            .iter()
-            .enumerate()
-            .map(|(index, child)| {
-                let child_proposal = if index == 0 {
-                    proposal
-                } else {
-                    overlay_proposal
-                };
-                ChildMeasurement {
-                    dimensions: child.measure(child_proposal),
-                    proposal: child_proposal,
-                }
-            })
-            .collect();
+        // The wrapper is transparent: the base takes the whole bounds and is
+        // proposed them, and each decoration is proposed the same extent. A
+        // decoration keeps its own answer, overflowing the base when it is
+        // larger, and sits with its guide on the base's alignment line.
+        let placement = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
 
         let mut placements = Vec::with_capacity(children.len());
+        placements.push(SubviewPlacement::new(bounds, placement));
 
-        if let Some(base) = measurements.first() {
-            let base_width = overlay_placement_axis(base.dimensions.size.width, bounds.width());
-            let base_height = overlay_placement_axis(base.dimensions.size.height, bounds.height());
-            placements.push(SubviewPlacement::new(
-                Rect::new(bounds.origin(), Size::new(base_width, base_height)),
-                base.proposal,
-            ));
-        }
-
-        // Overlay children are aligned within the bounds
-        for measurement in measurements.iter().skip(1) {
-            let child_dimensions = &measurement.dimensions;
-            let width = if child_dimensions.size.width.is_infinite() {
+        let horizontal = self.alignment.horizontal();
+        let vertical = self.alignment.vertical();
+        for child in children.iter().skip(1) {
+            let mut dimensions = child.measure(placement);
+            let width = if dimensions.size.width.is_infinite() {
                 bounds.width()
             } else {
-                child_dimensions.size.width.min(bounds.width()).max(0.0)
+                dimensions.size.width.max(0.0)
             };
-            let height = if child_dimensions.size.height.is_infinite() {
+            let height = if dimensions.size.height.is_infinite() {
                 bounds.height()
             } else {
-                child_dimensions.size.height.min(bounds.height()).max(0.0)
+                dimensions.size.height.max(0.0)
             };
-            let size = Size::new(width, height);
-            let mut adjusted_dimensions = child_dimensions.clone();
-            adjusted_dimensions.size = size;
-            let horizontal = self.alignment.horizontal();
-            let vertical = self.alignment.vertical();
-            let target_x = if horizontal == HorizontalAlignment::Leading {
-                0.0
-            } else if horizontal == HorizontalAlignment::Trailing {
-                bounds.width()
-            } else if horizontal == HorizontalAlignment::Center {
-                bounds.width() * 0.5
-            } else {
-                adjusted_dimensions
-                    .horizontal(horizontal)
-                    .clamp(0.0, size.width)
-            };
-            let target_y = if vertical == VerticalAlignment::Top {
-                0.0
-            } else if vertical == VerticalAlignment::Bottom {
-                bounds.height()
-            } else if vertical == VerticalAlignment::Center {
-                bounds.height() * 0.5
-            } else {
-                adjusted_dimensions
-                    .vertical(vertical)
-                    .clamp(0.0, size.height)
-            };
-            let origin = Point::new(
-                bounds.x() + target_x
-                    - adjusted_dimensions
-                        .horizontal(horizontal)
-                        .clamp(0.0, size.width),
-                bounds.y() + target_y
-                    - adjusted_dimensions
-                        .vertical(vertical)
-                        .clamp(0.0, size.height),
+            dimensions.size = Size::new(width, height);
+            let guide_x = dimensions.horizontal(horizontal);
+            let guide_y = dimensions.vertical(vertical);
+            let line_x = container_line(
+                bounds.width(),
+                LineAnchor::horizontal(horizontal),
+                guide_x,
+                width - guide_x,
             );
+            let line_y = container_line(
+                bounds.height(),
+                LineAnchor::vertical(vertical),
+                guide_y,
+                height - guide_y,
+            );
+            let origin = Point::new(bounds.x() + line_x - guide_x, bounds.y() + line_y - guide_y);
             placements.push(SubviewPlacement::new(
-                Rect::new(origin, size),
-                measurement.proposal,
+                Rect::new(origin, dimensions.size),
+                placement,
             ));
         }
 
@@ -192,14 +145,6 @@ fn overlay_axis_size(measured: f32, proposal: Option<f32>) -> f32 {
         measured.max(0.0)
     } else {
         proposal.unwrap_or(0.0).max(0.0)
-    }
-}
-
-const fn overlay_placement_axis(measured: f32, bounds_axis: f32) -> f32 {
-    if measured.is_infinite() {
-        bounds_axis.max(0.0)
-    } else {
-        measured.min(bounds_axis).max(0.0)
     }
 }
 
@@ -274,8 +219,8 @@ pub const fn overlay<Base: View, Layer: View>(base: Base, layer: Layer) -> Overl
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
-    use crate::StretchAxis;
     use crate::container::FixedContainer;
+    use crate::{StretchAxis, ViewDimensions};
     use waterui_core::{AnyView, Environment, View};
 
     struct MockSubView {
