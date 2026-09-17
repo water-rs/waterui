@@ -4,10 +4,14 @@
 //! compiled artifact's symbol table — lives in `tests/artifact.rs`, because it
 //! has to look at the binary it is running from.
 
+use std::rc::Rc;
+use std::sync::Arc;
+
+use crate::format::{representation, tag, variant};
 use crate::{
-    DecodeError, EnumRepresentation, EnumSchema, FieldSchema, NumberKind, StructSchema, TsType,
-    TypeSchema, VariantPayload, VariantSchema, contract_hash, decode, encode, encoded_len, owned,
-    payload,
+    DecodeError, EnumRepresentation, EnumSchema, FieldSchema, MAX_DEPTH, NumberKind, StructSchema,
+    TsType, TypeSchema, VariantPayload, VariantSchema, contract_hash, decode, encode, encoded_len,
+    owned, payload,
 };
 
 /// A three-level tree exercising every node kind that carries children.
@@ -135,6 +139,251 @@ fn schemas_of_mapped_types_compose() {
         <Box<dyn Fn(u32, bool)> as TsType>::SCHEMA,
         TypeSchema::Callback(&[TypeSchema::Number(NumberKind::U32), TypeSchema::Bool])
     );
+}
+
+#[test]
+fn every_callable_spelling_is_a_callback() {
+    const ONE_NUMBER: TypeSchema = TypeSchema::Callback(&[TypeSchema::Number(NumberKind::U32)]);
+    assert_eq!(<Box<dyn Fn(u32)> as TsType>::SCHEMA, ONE_NUMBER);
+    assert_eq!(<Box<dyn Fn(u32) + Send> as TsType>::SCHEMA, ONE_NUMBER);
+    assert_eq!(<Box<dyn Fn(u32) + Sync> as TsType>::SCHEMA, ONE_NUMBER);
+    assert_eq!(
+        <Box<dyn Fn(u32) + Send + Sync> as TsType>::SCHEMA,
+        ONE_NUMBER
+    );
+    assert_eq!(<Arc<dyn Fn(u32)> as TsType>::SCHEMA, ONE_NUMBER);
+    assert_eq!(<Arc<dyn Fn(u32) + Send> as TsType>::SCHEMA, ONE_NUMBER);
+    assert_eq!(<Arc<dyn Fn(u32) + Sync> as TsType>::SCHEMA, ONE_NUMBER);
+    assert_eq!(
+        <Arc<dyn Fn(u32) + Send + Sync> as TsType>::SCHEMA,
+        ONE_NUMBER
+    );
+    assert_eq!(<Rc<dyn Fn(u32)> as TsType>::SCHEMA, ONE_NUMBER);
+    assert_eq!(<fn(u32) as TsType>::SCHEMA, ONE_NUMBER);
+
+    // The documented cap is eight arguments.
+    assert!(matches!(
+        <fn(u32, u32, u32, u32, u32, u32, u32, u32) as TsType>::SCHEMA,
+        TypeSchema::Callback(arguments) if arguments.len() == 8
+    ));
+}
+
+#[test]
+fn decoding_rejects_nesting_beyond_the_depth_limit() {
+    // `MAX_DEPTH + 1` nested `Option` tags would recurse that many frames
+    // without a bound; the decoder must fail rather than overflow the stack.
+    let mut bytes = Vec::with_capacity(MAX_DEPTH + 3);
+    bytes.push(crate::FORMAT_VERSION);
+    bytes.extend(std::iter::repeat_n(tag::OPTION, MAX_DEPTH + 1));
+    bytes.push(tag::UNIT);
+    assert_eq!(
+        decode(&bytes),
+        Err(DecodeError::TooDeep { limit: MAX_DEPTH })
+    );
+
+    // One level shallower the leaf still sits inside the limit and decodes:
+    // `MAX_DEPTH - 1` options plus the leaf is exactly `MAX_DEPTH` deep.
+    let mut shallow = Vec::with_capacity(MAX_DEPTH + 2);
+    shallow.push(crate::FORMAT_VERSION);
+    shallow.extend(std::iter::repeat_n(tag::OPTION, MAX_DEPTH - 1));
+    shallow.push(tag::UNIT);
+    assert!(matches!(decode(&shallow), Ok(owned::Schema::Option(_))));
+}
+
+#[test]
+fn decoding_rejects_a_string_union_variant_with_a_payload() {
+    // A `StringUnion` enum's variants are all unit by definition, so a tuple
+    // payload violates an invariant the encoder also asserts.
+    let bytes = [
+        crate::FORMAT_VERSION,
+        tag::ENUM,
+        2,
+        b'E',
+        representation::STRING_UNION,
+        2, // one variant
+        2,
+        b'V',
+        variant::TUPLE,
+        2, // one node
+        tag::BOOL,
+    ];
+    assert_eq!(
+        decode(&bytes),
+        Err(DecodeError::StringUnionVariant {
+            enum_name: "E".into(),
+            variant: "V".into(),
+            offset: 8,
+        })
+    );
+}
+
+#[test]
+fn decoding_rejects_a_map_with_a_non_string_key() {
+    // `TsMapKey` admits only string types, so a non-string key violates an
+    // invariant the encoder also asserts.
+    let bytes = [
+        crate::FORMAT_VERSION,
+        tag::MAP,
+        tag::BOOL,   // key
+        tag::STRING, // value
+    ];
+    assert_eq!(
+        decode(&bytes),
+        Err(DecodeError::NonStringMapKey { offset: 2 })
+    );
+}
+
+#[test]
+fn decoding_rejects_a_tagged_enum_with_an_empty_property_name() {
+    // A length-0 string encodes as the single byte `1`; the encoder asserts
+    // every name it writes is non-empty, so an empty one cannot appear in a
+    // valid payload.
+    let bytes = [
+        crate::FORMAT_VERSION,
+        tag::ENUM,
+        2,
+        b'E',
+        representation::TAGGED,
+        1, // empty tag name
+        2,
+        b'v',
+    ];
+    assert_eq!(
+        decode(&bytes),
+        Err(DecodeError::EmptyName {
+            kind: "tag",
+            offset: 5,
+        })
+    );
+
+    let bytes = [
+        crate::FORMAT_VERSION,
+        tag::ENUM,
+        2,
+        b'E',
+        representation::TAGGED,
+        2,
+        b't',
+        1, // empty content name
+    ];
+    assert_eq!(
+        decode(&bytes),
+        Err(DecodeError::EmptyName {
+            kind: "content",
+            offset: 7,
+        })
+    );
+}
+
+#[test]
+fn decoding_rejects_empty_names() {
+    // The same empty-name invariant, at each position a name can occupy.
+    let bytes = [crate::FORMAT_VERSION, tag::STRUCT, 1 /* empty name */];
+    assert_eq!(
+        decode(&bytes),
+        Err(DecodeError::EmptyName {
+            kind: "struct",
+            offset: 2,
+        })
+    );
+
+    let bytes = [crate::FORMAT_VERSION, tag::ENUM, 1 /* empty name */];
+    assert_eq!(
+        decode(&bytes),
+        Err(DecodeError::EmptyName {
+            kind: "enum",
+            offset: 2,
+        })
+    );
+
+    let bytes = [
+        crate::FORMAT_VERSION,
+        tag::STRUCT,
+        2,
+        b'S',
+        2, // one field
+        1, // empty field name
+    ];
+    assert_eq!(
+        decode(&bytes),
+        Err(DecodeError::EmptyName {
+            kind: "field",
+            offset: 5,
+        })
+    );
+
+    let bytes = [
+        crate::FORMAT_VERSION,
+        tag::ENUM,
+        2,
+        b'E',
+        representation::STRING_UNION,
+        2, // one variant
+        1, // empty variant name
+    ];
+    assert_eq!(
+        decode(&bytes),
+        Err(DecodeError::EmptyName {
+            kind: "variant",
+            offset: 6,
+        })
+    );
+}
+
+/// The encoder asserts the same invariants the decoder checks, so a
+/// hand-built `TypeSchema` that violates one fails const evaluation rather
+/// than producing an encoding nothing can read back.
+mod encoder_invariants {
+    use crate::{EnumRepresentation, EnumSchema, TypeSchema, VariantPayload, VariantSchema};
+    use crate::{StructSchema, encoded_len};
+
+    #[test]
+    #[should_panic(expected = "a map crossing the props seam has a string key")]
+    fn encoding_rejects_a_map_with_a_non_string_key() {
+        const BAD: TypeSchema = TypeSchema::Map {
+            key: &TypeSchema::Bool,
+            value: &TypeSchema::String,
+        };
+        let _ = encoded_len(&BAD);
+    }
+
+    #[test]
+    #[should_panic(expected = "a string-union variant cannot carry a payload")]
+    fn encoding_rejects_a_string_union_variant_with_a_payload() {
+        const BAD: TypeSchema = TypeSchema::Enum(EnumSchema {
+            name: "E",
+            representation: EnumRepresentation::StringUnion,
+            variants: &[VariantSchema {
+                name: "V",
+                payload: VariantPayload::Tuple(&[TypeSchema::Bool]),
+            }],
+        });
+        let _ = encoded_len(&BAD);
+    }
+
+    #[test]
+    #[should_panic(expected = "a struct name must not be empty")]
+    fn encoding_rejects_an_empty_struct_name() {
+        const BAD: TypeSchema = TypeSchema::Struct(StructSchema {
+            name: "",
+            fields: &[],
+        });
+        let _ = encoded_len(&BAD);
+    }
+
+    #[test]
+    #[should_panic(expected = "a tagged enum's `tag` property name must not be empty")]
+    fn encoding_rejects_an_empty_tagged_property_name() {
+        const BAD: TypeSchema = TypeSchema::Enum(EnumSchema {
+            name: "E",
+            representation: EnumRepresentation::Tagged {
+                tag: "",
+                content: "content",
+            },
+            variants: &[],
+        });
+        let _ = encoded_len(&BAD);
+    }
 }
 
 #[test]
@@ -270,5 +519,72 @@ mod hashing {
             read_only::Props::CONTRACT_HASH
         );
         assert_ne!(two_way::Props::CONTRACT_HASH, spelled::Props::CONTRACT_HASH);
+    }
+}
+
+/// Raw identifiers: `r#` is a spelling detail, not part of the name, so it
+/// must not leak into the projected schema or the artifact symbol.
+#[cfg(feature = "derive")]
+mod raw_identifiers {
+    use crate::{TsProps, TsType, TypeSchema};
+
+    #[derive(TsType)]
+    #[expect(
+        dead_code,
+        reason = "the schema is derived from the declaration; nothing constructs the fixture"
+    )]
+    struct Kinded {
+        r#type: String,
+    }
+
+    #[derive(TsType)]
+    #[expect(
+        dead_code,
+        reason = "the schema is derived from the declaration; nothing constructs the fixture"
+    )]
+    #[expect(
+        non_camel_case_types,
+        reason = "raw keyword variants are deliberately spelled like the keywords they test"
+    )]
+    enum Keywords {
+        r#match,
+        r#type,
+    }
+
+    #[derive(TsProps)]
+    #[expect(
+        dead_code,
+        reason = "the schema is derived from the declaration; nothing constructs the fixture"
+    )]
+    struct r#Type {
+        handle: String,
+    }
+
+    #[test]
+    fn a_raw_field_name_projects_without_the_raw_prefix() {
+        let TypeSchema::Struct(schema) = Kinded::SCHEMA else {
+            panic!("`Kinded` is a struct")
+        };
+        assert_eq!(schema.fields[0].name, "type");
+    }
+
+    #[test]
+    fn raw_variant_names_project_without_the_raw_prefix() {
+        let TypeSchema::Enum(schema) = Keywords::SCHEMA else {
+            panic!("`Keywords` is an enum")
+        };
+        assert_eq!(schema.variants[0].name, "match");
+        assert_eq!(schema.variants[1].name, "type");
+    }
+
+    #[test]
+    fn a_raw_type_name_gives_an_unrawed_meta_static() {
+        let TypeSchema::Struct(schema) = r#Type::SCHEMA else {
+            panic!("`r#Type` is a struct")
+        };
+        assert_eq!(schema.name, "Type");
+        // The metadata static exists only in debug builds.
+        #[cfg(debug_assertions)]
+        assert_eq!(crate::payload(&waterui_meta_tsprops_Type), r#Type::ENCODED);
     }
 }

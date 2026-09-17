@@ -55,6 +55,7 @@ waterui-math = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
 waterui-inspector-protocol = { workspace = true, optional = true }
+waterui-ts-schema = { workspace = true, optional = true }
 waterkit-haptic = { workspace = true, optional = true }
 # The self-drawn video realization. Selected by `video-gpu` rather than by
 # `video`, because whether it is the realization is a property of the platform's
@@ -132,6 +133,11 @@ video = ["dep:waterui-video"]
 # native player to bridge selects this.
 video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
 webview = ["dep:waterui-webview"]
+# The TypeScript props contract schema behind `waterui::ts::schema` — the
+# `TsType`/`TsProps` derives whose encoded contract the `water` CLI reads back
+# out of a debug artifact. Off by default: only a shell that mounts TypeScript
+# view modules needs it.
+ts = ["dep:waterui-ts-schema"]
 navigation-restoration = ["waterui-navigation/serde"]
 # Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
 # with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which
@@ -161,6 +167,10 @@ canvas = ["dep:waterui-canvas"]
 chart = ["dep:waterui-chart"]
 barcode = ["dep:waterui-barcode"]
 particle = ["dep:waterui-particle"]
+# `ts` is deliberately absent: the TypeScript runtime will link a JavaScript
+# engine and a bundle loader, so an application that mounts TypeScript view
+# modules opts in explicitly rather than paying for them through the
+# full-feature set — the same reasoning `markdown-math` carries above.
 all = [
     "canvas",
     "chart",
@@ -187,8 +197,10 @@ all = [
 # are read there. A doctest compiles as a crate of its own, so it needs the
 # facade linked or none of the examples resolve, which is what left them
 # uncompiled. A dev-dependency is allowed to point back at a crate that depends
-# on this one; only a cycle among normal dependencies is refused.
-waterui = { path = "..", features = ["all"] }
+# on this one; only a cycle among normal dependencies is refused. `ts` is named
+# alongside `all` so `tests/` can derive `TsProps` through the
+# `waterui::ts::schema` facade path the macro emits for a facade consumer.
+waterui = { path = "..", features = ["all", "ts"] }
 
 [lints]
 workspace = true
