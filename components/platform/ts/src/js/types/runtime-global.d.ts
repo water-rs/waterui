@@ -3,7 +3,9 @@
 
 /**
  * Wraps a Rust callback, registered under `id`, as a plain JavaScript
- * function. Calling it crosses into `__waterui_host.invoke(id, …args)`.
+ * function. Calling it crosses into the installed host's `invoke(id, …args)`
+ * — the entry captured when the table was installed, never a property read
+ * off `globalThis.__waterui_host` at call time.
  */
 export declare function makeCallback(id: number): (...args: unknown[]) => unknown;
 
