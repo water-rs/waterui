@@ -191,10 +191,6 @@ pub mod ts {
 
         /// Props crossing to a mounted TypeScript view.
         #[derive(TsProps)]
-        #[expect(
-            dead_code,
-            reason = "the schema is derived from the declaration; nothing constructs the fixture"
-        )]
         struct SidebarProps {
             unread: Binding<u32>,
         }
