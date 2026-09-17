@@ -49,6 +49,8 @@ These are constraints on every WaterUI feature, refactor, and review — not jus
 
 10. **Do not change WaterUI foundations without user approval.** Do not modify `core/`, foundational animation/reactivity/layout primitives, or shared backend contracts unless the user explicitly approves that foundation change in the current task. External references are evidence for values, semantics, and behavior; they are not permission to import another framework's abstraction model into WaterUI.
 
+11. **The layout system is frozen.** [`docs/layout-spec.md`](docs/layout-spec.md) is the normative description of the layout protocol — proposals, `SubView`/`Layout`, stretch, stack distribution and placement, every container's rule, the leaf contracts backends implement — and it was frozen at 0.5.0. Its semantics do not change: not for a parity score, not for a backend that finds them inconvenient, not for a reference framework that does something else. A pull request that changes a documented behaviour, or has to weaken a layout contract test to pass, is rejected whatever it fixes; the maintainer alone can reopen the specification, and only as a recorded major-version decision. A difference between the specification and the code is a bug in the code. A backend or leaf that disagrees with the specification is fixed on that backend, never by bending the contract.
+
 ## Repository Boundaries and Distribution
 
 These are the target architecture and acceptance criteria for repository changes. Existing in-tree implementations and backend submodules are migration state, not exceptions to the boundary. A layout description below is not evidence that a migration or release has completed.
@@ -203,6 +205,7 @@ Keep the change set strictly scoped to the task.
   `try_init_global_executor`, which needs no main-thread affinity. The mistake is
   made at install time but only panics at the first `spawn_local`, so it is worth
   checking explicitly whenever a new host or test harness is added.
+- Before touching anything under `components/foundation/layout/`, `core/src/ui/layout.rs`, or a backend's measurement/placement bridge, read [`docs/layout-spec.md`](docs/layout-spec.md) (Principle 11). A layout symptom is diagnosed against that document first: find which rule the observed geometry breaks, then find the leaf or bridge that breaks it. The stack, frame, padding, background, overlay, scroll and spacer rules are not candidates.
 - Measurement caching is the `SubView`'s responsibility, never the `Layout`'s. The `Layout` trait deliberately has no cache — containers probe children freely with many proposals — so any caching (text shaping above all, which **must** cache) lives in the `SubView` implementation. Layout measurement is single-threaded by contract (running on whichever thread drives layout), so a `SubView` is neither `Send` nor `Sync` and its cache may be a plain `RefCell` (as in `MemoizedSubView`). Parallelism belongs in batched renderer pre-passes, not per-container measurement loops. Do not add caching to `Layout`.
 
 <important>
