@@ -42,7 +42,6 @@ waterui-ts-engine-quickjs.workspace = true
 # may close the cycle the library one cannot.
 waterui = { path = "../../..", features = ["ts", "media"] }
 waterui-testing = { path = "../../../testing" }
-hydrolysis-m3.workspace = true
 # The catalog test reads `waterui_meta_ts_catalog` back out of the test
 # executable's own symbol table, which is the path the `water` CLI takes
 # through a user crate's rlib.
