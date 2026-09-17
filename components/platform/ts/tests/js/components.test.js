@@ -121,7 +121,60 @@ describe("For", () => {
     const items = createSignal([{ id: 1 }]);
     expect(() =>
       createRoot(() => jsx(For, { each: items, children: (item) => row(item) })),
-    ).toThrow(/needs `by`/);
+    ).toThrow(/a `by` that answers a stable key/);
+  });
+
+  // The next six are the edges where the native key domain and a JavaScript
+  // `Set` disagree. Each one is a list the two would answer differently, so a
+  // fake keyed by the raw value would pass a test the real host fails.
+  test("a number and a bigint of one value are one key", () => {
+    const items = createSignal([1, 1n]);
+    expect(() =>
+      createRoot(() => jsx(For, { each: items, children: (item) => row({ id: item }) })),
+    ).toThrow(/have the key/);
+  });
+
+  test("two whole numbers past the integer range stay two keys", () => {
+    const items = createSignal([1e21, 2e21]);
+    createRoot((dispose) => {
+      const slot = jsx(For, { each: items, children: (item) => row({ id: item }) });
+      expect(slot.entries).toHaveLength(2);
+      dispose();
+    });
+  });
+
+  test("two NaN rows are one key", () => {
+    const items = createSignal([Number.NaN, Number.NaN]);
+    expect(() =>
+      createRoot(() => jsx(For, { each: items, children: (item) => row({ id: item }) })),
+    ).toThrow(/have the key/);
+  });
+
+  test("refuses a `by` that answers something no key can be", () => {
+    const items = createSignal([{ id: "a" }]);
+    expect(() =>
+      createRoot(() =>
+        jsx(For, { each: items, by: (item) => ({ of: item.id }), children: (item) => row(item) }),
+      ),
+    ).toThrow(/cannot be a key/);
+  });
+
+  test("refuses a `by` that answers nothing for a row", () => {
+    const items = createSignal([{ id: "a" }, { name: "b" }]);
+    expect(() =>
+      createRoot(() =>
+        jsx(For, { each: items, by: (item) => item.id, children: () => row({ id: 0 }) }),
+      ),
+    ).toThrow(/cannot be a key/);
+  });
+
+  test("refuses a `by` answering past the range of an integer key", () => {
+    const items = createSignal([{ id: 1n << 70n }]);
+    expect(() =>
+      createRoot(() =>
+        jsx(For, { each: items, by: (item) => item.id, children: (item) => row(item) }),
+      ),
+    ).toThrow(/64-bit integer/);
   });
 
   test("refuses two rows sharing one key", () => {
