@@ -350,7 +350,7 @@ impl_required_for_text!(&str, Str, String);
 /// Lifts a validator over plain text onto styled text.
 ///
 /// Text inputs are backed by [`StyledStr`], but validators are naturally written
-/// against plain text (`Required`, [`Regex`], …). `Plain` bridges the two so a
+/// against plain text (`Required`, [`Regex`](regex::Regex), …). `Plain` bridges the two so a
 /// single plain-text validator works on a styled field, instead of every
 /// validator needing a second styled implementation:
 ///
