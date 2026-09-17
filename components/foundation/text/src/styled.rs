@@ -591,18 +591,25 @@ impl MarkdownInlineBuilder {
 }
 
 /// Returns the default style applied to Markdown headings.
+///
+/// Levels consume the semantic font slots in descending platform order: on
+/// Apple platforms this resolves to `.title`, `.headline`, `.body`,
+/// `.subheadline`, `.footnote`, `.caption`, so the rendered sizes step down
+/// with the heading level. Do not reorder — `Headline` is an emphasized body
+/// style on Apple platforms, so ordering slots by their *names* scrambles the
+/// scale (`#` body-sized, `###` smaller than body).
 #[cfg(feature = "markdown")]
 #[must_use]
 pub fn heading_style(level: HeadingLevel) -> Style {
     use crate::font::{Body, Caption, Footnote, Headline, Subheadline, Title};
 
     let font: Font = match level {
-        HeadingLevel::H1 => Headline.into(),
-        HeadingLevel::H2 => Title.into(),
-        HeadingLevel::H3 => Subheadline.into(),
-        HeadingLevel::H4 => Body.into(),
-        HeadingLevel::H5 => Caption.into(),
-        HeadingLevel::H6 => Footnote.into(),
+        HeadingLevel::H1 => Title.into(),
+        HeadingLevel::H2 => Headline.into(),
+        HeadingLevel::H3 => Body.into(),
+        HeadingLevel::H4 => Subheadline.into(),
+        HeadingLevel::H5 => Footnote.into(),
+        HeadingLevel::H6 => Caption.into(),
     };
 
     Style::default().font(font).bold()
@@ -705,6 +712,54 @@ mod tests {
         let chunks = styled.into_chunks();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].0.as_str(), "Title");
+    }
+
+    /// Heading levels must resolve to a non-increasing type scale. A backend
+    /// installs its own platform sizes for each slot, so the test mimics the
+    /// iOS scale (`title` 28, `headline` 17, `body` 17, `subheadline` 15,
+    /// `footnote` 13, `caption` 12); on the previous slot assignment this
+    /// produced 17/28/15/17/12/13 — `##` larger than `#` and `####` larger
+    /// than `###`.
+    #[cfg(feature = "markdown")]
+    #[test]
+    fn heading_levels_descend_the_platform_type_scale() {
+        use crate::font::{Body, Caption, Footnote, Headline, ResolvedFont, Subheadline, Title};
+        use nami::{Computed, Signal};
+        use waterui_core::{Environment, env::Store};
+
+        let mut env = Environment::new();
+        env.insert(Store::<Title, _>::new(Computed::constant(
+            ResolvedFont::new(28.0, FontWeight::Normal),
+        )));
+        env.insert(Store::<Headline, _>::new(Computed::constant(
+            ResolvedFont::new(17.0, FontWeight::SemiBold),
+        )));
+        env.insert(Store::<Body, _>::new(Computed::constant(
+            ResolvedFont::new(17.0, FontWeight::Normal),
+        )));
+        env.insert(Store::<Subheadline, _>::new(Computed::constant(
+            ResolvedFont::new(15.0, FontWeight::Normal),
+        )));
+        env.insert(Store::<Footnote, _>::new(Computed::constant(
+            ResolvedFont::new(13.0, FontWeight::Normal),
+        )));
+        env.insert(Store::<Caption, _>::new(Computed::constant(
+            ResolvedFont::new(12.0, FontWeight::Normal),
+        )));
+
+        let sizes: Vec<f32> = [
+            HeadingLevel::H1,
+            HeadingLevel::H2,
+            HeadingLevel::H3,
+            HeadingLevel::H4,
+            HeadingLevel::H5,
+            HeadingLevel::H6,
+        ]
+        .iter()
+        .map(|&level| heading_style(level).font.resolve(&env).get().size)
+        .collect();
+
+        assert_eq!(sizes.as_slice(), &[28.0, 17.0, 17.0, 15.0, 13.0, 12.0]);
     }
 
     #[cfg(feature = "markdown")]
