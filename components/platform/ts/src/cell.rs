@@ -3,33 +3,49 @@
 //! A cell is the whole of the `Signal<T> ↔ Binding<T>` mapping: a subscription
 //! that carries JavaScript changes into a `Binding<T>`, a `watch` that carries
 //! Rust changes back out, and the discipline that keeps one change from
-//! becoming two.
+//! becoming two without losing one that is real.
 //!
-//! # Two flags, and one settled value
+//! # What the cell pushes
+//!
+//! Always the binding's current value, never the value the notification
+//! carried. A watcher registered before the cell's own may write again while
+//! the first change is still being delivered — nami snapshots its watchers, so
+//! the outer notification still arrives afterwards, carrying a value that is
+//! no longer the state. Reading the binding makes a late notification push the
+//! latest value instead of resurrecting an old one; a push of a value
+//! JavaScript already holds is deduplicated there and settles as it stands.
+//!
+//! # Two flags, one count, and the settled value
 //!
 //! `Binding::set` notifies unconditionally — `distinct` is opt-in — so an
 //! applied inbound value would bounce straight back out. While the cell
-//! applies one, the inbound flag is raised and the watch stays quiet. That is
-//! the rule the web view's state mirror follows for its inbound writes.
+//! applies one, the inbound flag is raised and the watch does not push.
 //!
-//! The other direction needs more, because a JavaScript write settles its
-//! effects synchronously: the subscription the cell installed fires during the
-//! push, and may fire several times as effects run and write again. None of
-//! that ordering is Rust's business, so the outbound flag suppresses the
-//! subscription for the whole write. What matters is where the value came to
-//! rest, and `write` answers exactly that — whether reading the source back
-//! gives what was written. When it does not, the cell reads the settled value
-//! once and applies it, under the inbound flag so the correction does not
-//! bounce out again, and the two sides agree.
+//! Suppressing every push during the apply would be wrong on its own: a Rust
+//! watcher that answers the new value with another write (`if v == 10 { set(0)
+//! }`) writes into the same window, and dropping that would leave the two
+//! sides holding different values with nothing left to reconcile them. So the
+//! watch counts instead. Exactly one notification during an apply is the
+//! apply's own: nami notifies unconditionally and synchronously, and the apply
+//! is a single `set`, so the cell's watcher is called exactly once for it.
+//! Anything beyond that came from another watcher writing, and the cell pushes
+//! the current value once the apply is over.
 //!
-//! Classifying each notification instead, by remembering the value that was
-//! pushed, looks cheaper and is wrong twice over. A value the cell pushed can
-//! arrive again later in the same settle, after a correction — `5` clamped to
-//! `9` and released back to `5` — and be dropped as an echo, leaving Rust
-//! holding a value JavaScript has since abandoned. And a payload carrying a
-//! signal, a view or a callback can never be recognised at all, because a
-//! handle crossing back out of JavaScript is a fresh handle. The comparison
-//! belongs on the side where an object is its own identity.
+//! The outbound direction is the mirror image. A JavaScript write settles its
+//! effects synchronously and the subscription fires during it, perhaps several
+//! times; none of that ordering is Rust's business, so the outbound flag
+//! suppresses the subscription for the whole write and `write` answers where
+//! the value came to rest. If it did not stand, the cell takes the settled
+//! value back — under the inbound flag, counting again — and pushes once more
+//! if applying it provoked another Rust write. The loop is bounded: two sides
+//! that answer every value with a different one are a cycle, and a cycle is
+//! reported, not ridden into a stack overflow.
+//!
+//! Classifying each notification against a remembered pushed value instead,
+//! which this branch did at first, is wrong twice over: a value pushed once
+//! can arrive again later in the same settle and be dropped as an echo, and a
+//! payload carrying a signal or a callback can never be recognised at all,
+//! because a handle crossing back out of JavaScript is a fresh handle.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -41,6 +57,15 @@ use waterui_ts_engine::{JsError, JsFunction, JsValue};
 use crate::bridge::{Bridge, Settled, WeakBridge};
 use crate::callback::CallbackHandle;
 use crate::convert::{FromJs, IntoJs};
+
+/// How many times one change may bounce between the two sides before the cell
+/// calls it a cycle.
+///
+/// A settled write needs one round. A correction — a JavaScript effect that
+/// clamps the value, a Rust watcher that answers it — needs one more each.
+/// Past this, the two sides are answering each other rather than converging,
+/// and one more round would only deepen the recursion.
+const SETTLE_ROUNDS: usize = 16;
 
 /// Which way values travel between a cell's two sides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +83,17 @@ impl Flow {
     }
 }
 
+/// Whether a Rust watcher wrote to the binding while an inbound value was
+/// being applied to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Nested {
+    /// Only the apply's own notification was seen.
+    Quiet,
+    /// Another watcher wrote, so what the binding holds is not what
+    /// JavaScript does.
+    Wrote,
+}
+
 /// What each side is currently doing, so neither answers the other.
 #[derive(Debug, Default)]
 struct Echo {
@@ -66,21 +102,34 @@ struct Echo {
     /// Raised while a Rust value is being written into JavaScript, for as long
     /// as that write settles.
     outbound: Cell<bool>,
+    /// Notifications the cell's own watcher received while `inbound` was
+    /// raised.
+    notifications: Cell<usize>,
 }
 
-/// Raises a flag for a scope, lowering it even if the scope unwinds.
-struct Raised<'a>(&'a Cell<bool>);
+/// Raises a flag for a scope, restoring what it was even if the scope unwinds.
+///
+/// The previous value is restored rather than cleared, because these scopes
+/// nest: an engine call made inside one can call back into Rust and reach the
+/// same cell, and a nested scope that lowered the flag on the way out would
+/// unguard the one still running.
+struct Raised<'a> {
+    flag: &'a Cell<bool>,
+    previous: bool,
+}
 
 impl<'a> Raised<'a> {
-    fn new(flag: &'a Cell<bool>) -> Self {
-        flag.set(true);
-        Self(flag)
+    const fn new(flag: &'a Cell<bool>) -> Self {
+        Self {
+            flag,
+            previous: flag.replace(true),
+        }
     }
 }
 
 impl Drop for Raised<'_> {
     fn drop(&mut self) {
-        self.0.set(false);
+        self.flag.set(self.previous);
     }
 }
 
@@ -107,69 +156,60 @@ fn push<T: IntoJs>(bridge: &Bridge, source: &JsValue, echo: &Echo, value: T) -> 
     }
 }
 
-/// Applies the value a source came to rest at to the binding behind it.
-fn apply_settled<T: FromJs + Clone + 'static>(
+/// Applies one inbound value to the binding, and says whether another Rust
+/// watcher wrote while it was being applied.
+fn apply<T: Clone + 'static>(echo: &Echo, binding: &Binding<T>, value: T) -> Nested {
+    // The count is saved and restored so a nested apply — reached through an
+    // engine call made from a watcher — reports on its own notifications.
+    let outer = echo.notifications.replace(0);
+    {
+        let _inbound = Raised::new(&echo.inbound);
+        binding.set(value);
+    }
+    let seen = echo.notifications.replace(outer);
+    if seen > 1 {
+        Nested::Wrote
+    } else {
+        Nested::Quiet
+    }
+}
+
+/// Pushes the binding's current value, and keeps the two sides talking until
+/// they hold the same one.
+fn settle<T: FromJs + IntoJs + Clone + 'static>(
     bridge: &Bridge,
     source: &JsValue,
     echo: &Echo,
     binding: &Binding<T>,
 ) {
-    let settled = match bridge
-        .read_value(source)
-        .and_then(|value| T::from_js(&value, bridge))
-    {
-        Ok(value) => value,
-        Err(error) => {
-            tracing::error!(%error, "reading back the value a JavaScript write settled at failed");
-            return;
+    for _ in 0..SETTLE_ROUNDS {
+        match push(bridge, source, echo, binding.get()) {
+            // Nothing more to do: either the value stands, or the write
+            // failed and was reported, and JavaScript keeps what it had.
+            None | Some(Settled::Stood) => return,
+            Some(Settled::Changed) => {}
         }
-    };
-    let _inbound = Raised::new(&echo.inbound);
-    binding.set(settled);
-}
-
-/// The watcher that pushes a two-way value out and takes the correction back.
-fn two_way_watcher<T: FromJs + IntoJs + Clone + 'static>(
-    bridge: &Bridge,
-    source: JsValue,
-    echo: Rc<Echo>,
-    binding: Binding<T>,
-) -> impl Fn(Context<T>) + 'static {
-    let weak = bridge.downgrade();
-    move |context: Context<T>| {
-        if echo.inbound.get() {
-            return;
-        }
-        let Some(bridge) = weak.upgrade() else {
-            tracing::debug!("a bridged value changed after its TypeScript runtime was dropped");
-            return;
+        // An effect rewrote it while the write settled, so what JavaScript
+        // holds now is the value both sides must agree on.
+        let settled = match bridge
+            .read_value(source)
+            .and_then(|value| T::from_js(&value, bridge))
+        {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::error!(%error, "reading back the value a JavaScript write settled at failed");
+                return;
+            }
         };
-        if push(&bridge, &source, &echo, context.into_value()) == Some(Settled::Changed) {
-            // An effect rewrote it while the write settled, so what JavaScript
-            // holds now is the value both sides must agree on.
-            apply_settled(&bridge, &source, &echo, &binding);
+        if apply(echo, binding, settled) == Nested::Quiet {
+            return;
         }
     }
-}
-
-/// The watcher that pushes a read-only value out, with nothing coming back.
-///
-/// Where the value settled is not this cell's business: JavaScript holds a
-/// memo it cannot write to, and the next change overwrites whatever an effect
-/// did to the signal underneath it.
-fn outbound_watcher<T: IntoJs + 'static>(
-    bridge: &Bridge,
-    source: JsValue,
-    echo: Rc<Echo>,
-) -> impl Fn(Context<T>) + 'static {
-    let weak = bridge.downgrade();
-    move |context: Context<T>| {
-        let Some(bridge) = weak.upgrade() else {
-            tracing::debug!("a bridged value changed after its TypeScript runtime was dropped");
-            return;
-        };
-        push(&bridge, &source, &echo, context.into_value());
-    }
+    tracing::error!(
+        rounds = SETTLE_ROUNDS,
+        "a bridged value never settled: each side keeps answering the other's value with a \
+         different one"
+    );
 }
 
 /// One JavaScript reactive value bound to one `Binding<T>`.
@@ -207,7 +247,9 @@ impl<T: FromJs + IntoJs + Clone + 'static> ReactiveCell<T> {
         let callback = bridge.register_callback({
             let binding = binding.clone();
             let echo = Rc::clone(&echo);
+            let source = source.clone();
             let weak = bridge.downgrade();
+            let two_way = flow.watches();
             move |args: &[JsValue]| {
                 if echo.outbound.get() {
                     // Our own write, settling. The value it comes to rest at
@@ -222,20 +264,34 @@ impl<T: FromJs + IntoJs + Clone + 'static> ReactiveCell<T> {
                     )
                 })?;
                 let converted = T::from_js(value, &bridge)?;
-                let _inbound = Raised::new(&echo.inbound);
-                binding.set(converted);
+                if apply(&echo, &binding, converted) == Nested::Wrote && two_way {
+                    // A Rust watcher answered the inbound value with a write
+                    // of its own, which JavaScript has not seen.
+                    settle(&bridge, &source, &echo, &binding);
+                }
                 Ok(JsValue::Undefined)
             }
         })?;
         let dispose = bridge.subscribe(&source, callback.id())?;
 
         let watch = flow.watches().then(|| {
-            binding.watch(two_way_watcher(
-                bridge,
-                source,
-                Rc::clone(&echo),
-                binding.clone(),
-            ))
+            let weak = bridge.downgrade();
+            let echo = Rc::clone(&echo);
+            let binding = binding.clone();
+            let source = source;
+            binding.clone().watch(move |_: Context<T>| {
+                if echo.inbound.get() {
+                    echo.notifications.set(echo.notifications.get() + 1);
+                    return;
+                }
+                let Some(bridge) = weak.upgrade() else {
+                    tracing::debug!(
+                        "a bridged value changed after its TypeScript runtime was dropped"
+                    );
+                    return;
+                };
+                settle(&bridge, &source, &echo, &binding);
+            })
         });
 
         Ok(Rc::new(Self {
@@ -272,7 +328,9 @@ impl<T: 'static> Drop for ReactiveCell<T> {
 ///
 /// This is what a `Computed<T>` exported to JavaScript owns: a watch that
 /// writes every change into the signal the memo JavaScript holds reads from.
-/// There is no inbound half, because a memo cannot be written to.
+/// There is no inbound half, because a memo cannot be written to, and where
+/// the value settled is not this cell's business: the next change overwrites
+/// whatever an effect did to the signal underneath.
 ///
 /// The cell holds the computed itself, not only the guard. A watcher
 /// registration does not keep its signal alive, and a computed handed to
@@ -292,9 +350,21 @@ pub struct OutboundCell<T: 'static> {
 impl<T: IntoJs + Clone + 'static> OutboundCell<T> {
     /// Pushes every change of `computed` into `source`.
     pub(crate) fn push(bridge: &Bridge, source: JsValue, computed: &Computed<T>) -> Self {
+        let echo = Echo::default();
+        let weak = bridge.downgrade();
+        let signal = computed.clone();
+        let guard = computed.watch(move |_: Context<T>| {
+            let Some(bridge) = weak.upgrade() else {
+                tracing::debug!("a bridged value changed after its TypeScript runtime was dropped");
+                return;
+            };
+            // The current value, not the notification's: a watcher that runs
+            // before this one may have moved the source on already.
+            push(&bridge, &source, &echo, signal.get());
+        });
         Self {
             signal: computed.clone(),
-            guard: computed.watch(outbound_watcher(bridge, source, Rc::new(Echo::default()))),
+            guard,
         }
     }
 }

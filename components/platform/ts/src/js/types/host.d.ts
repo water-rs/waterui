@@ -38,6 +38,12 @@ export interface Host {
   suspense(children: () => Branch, fallback?: () => Branch): Handle;
   environment(): HostEnvironment;
   /**
+   * Dispatches one Rust closure held in the bridge's registry. `makeCallback`
+   * wraps this one, never `globalThis.__waterui_host.invoke`: that global is
+   * writable, and the table carries the function the engine registered.
+   */
+  invoke(id: number, ...args: unknown[]): unknown;
+  /**
    * The catalog's modifier attribute names — the runtime keeps no table of
    * its own. A `Set` cannot cross the engine seam, so the Rust host table
    * sends an array and `installHost` builds the set once.
@@ -64,9 +70,11 @@ export declare function isAccessor(value: unknown): boolean;
 export declare function read<T>(value: MaybeReactive<T> | HostReactive<T>): T;
 
 /**
- * Writes a signal or a writable host value; throws on read-only inputs.
+ * Writes a signal or a writable host value; throws on read-only inputs. The
+ * value is stored verbatim: a function is the value, never an updater.
  * Answers whether the value stood — `true` when reading the target back gives
- * exactly what was written, `false` when an effect changed it.
+ * exactly what was written, `false` when an effect changed it — compared with
+ * the comparator the target settles on.
  */
 export declare function write<T>(target: Signal<T> | HostReactive<T>, value: T): boolean;
 

@@ -15,6 +15,16 @@
 // Signal states: CLEAN (value current), CHECK (a source may have changed),
 // DIRTY (a source definitely changed). Signals themselves have no state —
 // a write is always a real change once `equals` has accepted it.
+//
+// The default `equals` is SameValue (`Object.is`), not the `===` most signal
+// libraries use. The difference is exactly two values: `NaN` equals itself
+// here, so writing it twice propagates once instead of on every write, and
+// `-0` differs from `0`, so writing one over the other is a real change. That
+// is the equality the Rust half of this runtime already has — one `f64` is
+// distinct from another bit for bit — and a seam whose two halves disagree
+// about what counts as a change writes values back and forth that neither
+// side asked for. A computation wanting `===`, or a deep comparison, passes
+// its own `equals`.
 
 const CLEAN = 0;
 const CHECK = 1;
@@ -43,13 +53,32 @@ const effectQueue = [];
 // each queued effect once, so the bound is generous, not tight.
 const MAX_FLUSH_EVALUATIONS = 10000;
 
-const referenceEquals = (a, b) => a === b;
+const sameValue = (a, b) => Object.is(a, b);
 const neverEquals = () => false;
+
+/** The symbol a source carries its own comparator under. */
+const EQUALS = Symbol("waterui.equals");
+
+/**
+ * The comparator `source` settles a write with: its own if it is a signal or
+ * a memo, SameValue for anything else, including a host-side `{ read, write }`
+ * value, which has no comparator to offer.
+ *
+ * `write` asks rather than restating an equality of its own: a signal created
+ * with a custom `equals` would otherwise be told a write did not stand every
+ * time its comparator accepted a value this one calls different.
+ *
+ * @param {unknown} source
+ * @returns {(a: unknown, b: unknown) => boolean}
+ */
+export function comparatorOf(source) {
+  return source?.[EQUALS] ?? sameValue;
+}
 
 function equalsOf(options) {
   const equals = options?.equals;
   if (equals === undefined) {
-    return referenceEquals;
+    return sameValue;
   }
   if (equals === false) {
     return neverEquals;
@@ -79,7 +108,7 @@ function newNode(owner) {
     observers: new Set(),
     compute: null,
     isEffect: false,
-    equals: referenceEquals,
+    equals: sameValue,
     queued: false,
     disposed: false,
     evaluating: false,
@@ -303,6 +332,7 @@ export function createSignal(initial, options) {
   signal.map = (f) => createMemo(() => f(signal()));
   signal.peek = () => node.value;
   signal[SIGNAL] = true;
+  signal[EQUALS] = node.equals;
   signal[Symbol.iterator] = function* () {
     yield signal;
     yield (value) => signal.set(value);
@@ -329,6 +359,7 @@ export function createMemo(compute, options) {
     return node.value;
   };
   memo[MEMO] = true;
+  memo[EQUALS] = node.equals;
   return memo;
 }
 
@@ -491,7 +522,7 @@ function unwrapStore(value) {
 function trackProp(node, key) {
   let signal = node.signals.get(key);
   if (signal === undefined) {
-    signal = newSource(node.raw[key], referenceEquals);
+    signal = newSource(node.raw[key], sameValue);
     node.signals.set(key, signal);
   }
   track(signal);

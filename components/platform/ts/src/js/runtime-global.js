@@ -13,6 +13,7 @@
 
 import { createMemo, createSignal, isAccessor, isSignal } from "./signals.js";
 import {
+  getHost,
   installHost,
   read,
   subscribe,
@@ -26,9 +27,6 @@ import { mount } from "./contexts.js";
 /** Where the runtime object is published. */
 const RUNTIME_GLOBAL = "__waterui_runtime";
 
-/** Where the engine registers the bridge's own functions. */
-const HOST_GLOBAL = "__waterui_host";
-
 /**
  * Wraps a Rust callback as a plain JavaScript function.
  *
@@ -36,7 +34,13 @@ const HOST_GLOBAL = "__waterui_host";
  * subscription, a prop callback — and hands JavaScript this wrapper instead of
  * the closure itself, because a host function can only be registered under a
  * name, never passed as a value. Calling the wrapper crosses into
- * `__waterui_host.invoke(id, …args)`, which dispatches on the id.
+ * `invoke(id, …args)`, which dispatches on the id.
+ *
+ * The `invoke` it calls is the installed host's, captured here once. It is
+ * deliberately not `globalThis.__waterui_host.invoke`: that global is
+ * writable, and a bundle that reassigns the entry while it evaluates — before
+ * any callback is made — would otherwise be what every wrapper dispatches
+ * through. The host table carries the function the engine registered.
  *
  * @param {number} id - The registry id the bridge assigned to the callback.
  * @returns {(...args: unknown[]) => unknown}
@@ -45,18 +49,7 @@ export function makeCallback(id) {
   if (typeof id !== "number") {
     throw new TypeError("makeCallback(id) expects the numeric id the bridge assigned");
   }
-  const host = globalThis[HOST_GLOBAL];
-  if (host === undefined || typeof host.invoke !== "function") {
-    throw new Error(
-      `waterui: ${HOST_GLOBAL}.invoke is not registered — the bridge installs it before the bundle is evaluated`,
-    );
-  }
-  // Captured here, once: `__waterui_host` is an ordinary mutable global, and a
-  // wrapper that read the entry on every call would dispatch through whatever
-  // had been assigned to it since. The check moves with the capture, so a
-  // missing host is reported where the callback is made rather than at some
-  // later call.
-  const { invoke } = host;
+  const { invoke } = getHost();
   return (...args) => invoke(id, ...args);
 }
 

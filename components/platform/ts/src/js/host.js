@@ -11,6 +11,7 @@
 // `toSignal` to turn JS values into real `Binding<T>` / `Computed<T>` objects.
 
 import {
+  comparatorOf,
   createEffect,
   createMemo,
   createRoot,
@@ -56,6 +57,11 @@ export { isAccessor, isMemo, isSignal };
  * @property {(each: unknown, render: (item: unknown, index: () => number) => Branch, by?: (item: unknown) => unknown) => Handle} each
  * @property {(children: () => Branch, fallback?: () => Branch) => Handle} suspense
  * @property {() => HostEnvironment} environment
+ * @property {(id: number, ...args: unknown[]) => unknown} invoke - Dispatches
+ *   one Rust closure held in the bridge's registry. It travels with the table
+ *   rather than being read off `globalThis.__waterui_host` at call time,
+ *   because that global is writable and a bundle that reassigns an entry of it
+ *   while it evaluates would otherwise be what every callback wrapper calls.
  * @property {ReadonlySet<string> | readonly string[]} modifiers - The
  *   catalog's modifier attribute names. The runtime splits config from
  *   modifier attributes against it and rejects spread-carried modifiers; the
@@ -81,7 +87,16 @@ export function installHost(host) {
   if (installedHost !== null) {
     throw new Error("waterui: a host is already installed");
   }
-  for (const name of ["create", "modify", "text", "show", "each", "suspense", "environment"]) {
+  for (const name of [
+    "create",
+    "modify",
+    "text",
+    "show",
+    "each",
+    "suspense",
+    "environment",
+    "invoke",
+  ]) {
     if (typeof host[name] !== "function") {
       throw new TypeError(`waterui host is missing the "${name}" entry — see HOST.md`);
     }
@@ -155,12 +170,16 @@ export function read(value) {
  */
 export function write(target, value) {
   if (isSignal(target)) {
-    target.set(value);
-    return Object.is(read(target), value);
+    // An updater, not the value: `set` calls a function argument with the old
+    // value and stores the result, so a callback or a signal written straight
+    // through it would be invoked instead of stored. An updater that returns
+    // the value stores it verbatim, whatever its type.
+    target.set(() => value);
+    return comparatorOf(target)(read(target), value);
   }
   if (target !== null && typeof target === "object" && typeof target.write === "function") {
     target.write(value);
-    return Object.is(read(target), value);
+    return comparatorOf(target)(read(target), value);
   }
   throw new TypeError("write() expects a signal or a writable reactive value");
 }
@@ -230,7 +249,9 @@ export function toSignal(source) {
   ) {
     const signal = createSignal(source.read());
     if (typeof source.subscribe === "function") {
-      onCleanup(source.subscribe((value) => signal.set(value)));
+      // An updater, for the same reason `write` uses one: a host value
+      // carrying a function must be stored, not called.
+      onCleanup(source.subscribe((value) => signal.set(() => value)));
     }
     return signal;
   }

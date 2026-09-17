@@ -7,6 +7,15 @@
 // `read`, `write`, `subscribe`, `isSignal`, `createSignal`, `createMemo` and
 // `makeCallback`, and each one behaves exactly as HOST.md describes.
 //
+// Minimal is not "simplified". Where a difference would hide a defect from
+// the Rust tests it mirrors the real library exactly: `set` takes an updater
+// function like the real one, so `write` has to use one to store a value
+// verbatim; a signal deduplicates on SameValue, so NaN and signed zero behave
+// as they do in `signals.js`; and `makeCallback` dispatches through the
+// installed host's `invoke`, not a global read per call. `fixture-parity` in
+// the bun suite runs the same scenarios against this script and the real
+// library and asserts they observe the same thing.
+//
 // Everything the tests need to observe hangs off `globalThis.fixture`: the
 // counters that prove one change propagates once, and a slot for handing a
 // value between Rust and JavaScript.
@@ -33,13 +42,20 @@
     const subscribers = new Set();
     const signal = () => value;
     signal.__signal = true;
+    // Like the real `set`: a function argument is an updater, called with the
+    // current value, and the write is deduplicated on SameValue.
     signal.set = (next) => {
-      value = next;
       fixture.sets += 1;
+      const resolved = typeof next === "function" ? next(value) : next;
+      if (Object.is(value, resolved)) {
+        return;
+      }
+      value = resolved;
       for (const subscriber of [...subscribers]) {
         subscriber(value);
       }
     };
+    signal.__equals = Object.is;
     signal.__subscribe = (callback) => {
       subscribers.add(callback);
       fixture.subscribes += 1;
@@ -77,17 +93,20 @@
     return value;
   }
 
-  // Like the library's own `write`: the answer is whether the value stood,
-  // compared here where an object is its own identity.
+  // Like the library's own `write`: an updater so the value is stored and
+  // never called, and the answer is whether it stood, compared with the
+  // comparator the target itself settles on.
+  const comparatorOf = (source) => source?.__equals ?? Object.is;
+
   function write(target, value) {
     fixture.writes += 1;
     if (isSignal(target)) {
-      target.set(value);
-      return Object.is(read(target), value);
+      target.set(() => value);
+      return comparatorOf(target)(read(target), value);
     }
     if (target !== null && typeof target === "object" && typeof target.write === "function") {
       target.write(value);
-      return Object.is(read(target), value);
+      return comparatorOf(target)(read(target), value);
     }
     throw new TypeError("write() expects a signal or a writable reactive value");
   }
@@ -118,13 +137,20 @@
     }
     const signal = createSignal(read(source));
     if (isAccessor(source)) {
-      subscribe(source, (value) => signal.set(value));
+      subscribe(source, (value) => signal.set(() => value));
     }
     return signal;
   }
 
+  // Through the installed host's `invoke`, captured once, exactly as the real
+  // `makeCallback` does: reading the mutable global per call would let a
+  // bundle divert every callback in the runtime.
   function makeCallback(id) {
-    return (...args) => globalThis.__waterui_host.invoke(id, ...args);
+    if (fixture.host === undefined) {
+      throw new Error("waterui: no host installed — makeCallback needs its invoke");
+    }
+    const { invoke } = fixture.host;
+    return (...args) => invoke(id, ...args);
   }
 
   function installHost(host) {
@@ -172,6 +198,14 @@
   fixture.doubled.__subscribe = (callback) =>
     fixture.counter.__subscribe((value) => callback(value * 2));
   fixture.readOnce = { read: () => 41 };
+  // A function the tests push through `write`, to prove a value that happens
+  // to be callable is stored and not called.
+  fixture.probeCalls = 0;
+  fixture.probe = (...args) => {
+    fixture.probeCalls += 1;
+    fixture.probeArgs = args;
+    return "called";
+  };
   fixture.hold = (value) => {
     fixture.held = value;
   };
