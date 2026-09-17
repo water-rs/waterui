@@ -173,7 +173,7 @@ jobs:
         run: python3 .github/scripts/framework_manifest.py nightly
       - name: Upload immutable snapshot assets
         if: steps.snapshot.outputs.eligible == 'true'
-        uses: softprops/action-gh-release@v2.3.2
+        uses: softprops/action-gh-release@v3.0.3
         with:
           tag_name: ${{ steps.snapshot.outputs.tag }}
           target_commitish: ${{ steps.snapshot.outputs.revision }}
