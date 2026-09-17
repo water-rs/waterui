@@ -71,6 +71,8 @@ pub(crate) mod tag {
     /// [`TypeSchema::Union`](crate::TypeSchema::Union), followed by a count and
     /// that many member nodes.
     pub const UNION: u8 = 15;
+    /// [`TypeSchema::ViewBuilder`](crate::TypeSchema::ViewBuilder).
+    pub const VIEW_BUILDER: u8 = 16;
 }
 
 /// What a payload carries, written straight after the version byte.

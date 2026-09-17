@@ -401,6 +401,7 @@ const fn kind_of(schema: &owned::Schema) -> &'static str {
         owned::Schema::Signal(_) => "a signal",
         owned::Schema::Accessor(_) => "an accessor",
         owned::Schema::View => "a view",
+        owned::Schema::ViewBuilder => "a view builder",
         owned::Schema::Callback(_) => "a callback",
         owned::Schema::Union(_) => "a union",
         owned::Schema::Struct(_) => "an object",
