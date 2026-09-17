@@ -55,7 +55,7 @@
 //! | `Binding<T>` | `Signal<T>` | [`TypeSchema::Signal`] |
 //! | `Computed<T>` | `Accessor<T>` | [`TypeSchema::Accessor`] |
 //! | `AnyView` | `View` | [`TypeSchema::View`] |
-//! | `Box<dyn Fn(A)>`, `Rc<dyn Fn(A)>` | `(arg0: A) => void` | [`TypeSchema::Callback`] |
+//! | `Box`/`Rc<dyn Fn(A)>`, `fn(A)` — at most 8 arguments | `(arg0: A) => void` | [`TypeSchema::Callback`] |
 //! | `#[derive(TsType)]` struct | object type | [`TypeSchema::Struct`] |
 //! | `#[derive(TsType)]` enum | string union or tagged object | [`TypeSchema::Enum`] |
 //! | `Option<T>` | `T \| null` | [`TypeSchema::Option`] |
@@ -84,7 +84,7 @@ mod tree;
 #[cfg(test)]
 mod tests;
 
-pub use decode::{DecodeError, decode};
+pub use decode::{DecodeError, MAX_DEPTH, decode};
 pub use encode::{contract_hash, encode, encoded_len, payload};
 pub use format::FORMAT_VERSION;
 pub use tree::{
@@ -142,12 +142,17 @@ pub use waterui_macros::TsProps;
 /// type's constant and the compiler resolves aliases and generic parameters
 /// before anything is encoded. Implement it with `#[derive(TsType)]` for
 /// application structs and enums; the mapped built-in types implement it here.
+///
+/// Callbacks — `Box<dyn Fn(..)>` in every `Send`/`Sync` flavour, bare
+/// `Rc<dyn Fn(..)>`, and `fn(..)` pointers — project with at most eight
+/// arguments; a wider signature has no schema and fails the bound.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no TypeScript projection and cannot cross the props seam",
     label = "no `TsType` schema for `{Self}`",
     note = "props fields must be mapped types: `Binding<T>`, `Computed<T>`, `AnyView`, \
-            `Box`/`Rc<dyn Fn(..)>`, `Option`, `Vec`, `BTreeMap`/`HashMap`, a string, a \
-            number, `bool`, or a struct or enum deriving `TsType`",
+            `Box`/`Rc<dyn Fn(..)>` or a `fn(..)` pointer of at most 8 arguments, \
+            `Option`, `Vec`, `BTreeMap`/`HashMap`, a string, a number, `bool`, or a \
+            struct or enum deriving `TsType`",
     note = "there is no implicit fallback: add `#[derive(TsType)]` to `{Self}`, or change \
             the field's type"
 )]

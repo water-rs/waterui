@@ -86,17 +86,27 @@ impl<K: TsMapKey, V: TsType, S> TsType for HashMap<K, V, S> {
     };
 }
 
-/// One [`TypeSchema::Callback`] impl per callable arity, for both boxed and
-/// reference-counted closures.
+/// One [`TypeSchema::Callback`] impl for one callable spelling.
+macro_rules! callback_schema {
+    ($ty:ty, $($argument:ident),*) => {
+        impl<$($argument: TsType),*> TsType for $ty {
+            const SCHEMA: TypeSchema = TypeSchema::Callback(&[$(<$argument as TsType>::SCHEMA),*]);
+        }
+    };
+}
+
+/// One set of impls per callable arity, up to eight arguments: boxed closures
+/// in every `Send`/`Sync` flavour, bare reference-counted closures (`Rc` is
+/// neither `Send` nor `Sync`, so only that spelling exists), and plain `fn`
+/// pointers. Eight is the documented cap — see [`TsType`](crate::TsType).
 macro_rules! callback_schemas {
     ($($argument:ident),*) => {
-        impl<$($argument: TsType),*> TsType for Box<dyn Fn($($argument),*)> {
-            const SCHEMA: TypeSchema = TypeSchema::Callback(&[$(<$argument as TsType>::SCHEMA),*]);
-        }
-
-        impl<$($argument: TsType),*> TsType for Rc<dyn Fn($($argument),*)> {
-            const SCHEMA: TypeSchema = TypeSchema::Callback(&[$(<$argument as TsType>::SCHEMA),*]);
-        }
+        callback_schema!(Box<dyn Fn($($argument),*)>, $($argument),*);
+        callback_schema!(Box<dyn Fn($($argument),*) + Send>, $($argument),*);
+        callback_schema!(Box<dyn Fn($($argument),*) + Sync>, $($argument),*);
+        callback_schema!(Box<dyn Fn($($argument),*) + Send + Sync>, $($argument),*);
+        callback_schema!(Rc<dyn Fn($($argument),*)>, $($argument),*);
+        callback_schema!(fn($($argument),*), $($argument),*);
     };
 }
 
@@ -105,6 +115,10 @@ callback_schemas!(A);
 callback_schemas!(A, B);
 callback_schemas!(A, B, C);
 callback_schemas!(A, B, C, D);
+callback_schemas!(A, B, C, D, E);
+callback_schemas!(A, B, C, D, E, F);
+callback_schemas!(A, B, C, D, E, F, G);
+callback_schemas!(A, B, C, D, E, F, G, H);
 
 #[cfg(feature = "waterui")]
 mod waterui {

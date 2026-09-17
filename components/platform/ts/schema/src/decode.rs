@@ -57,7 +57,56 @@ pub enum DecodeError {
         /// How many bytes are left over.
         extra: usize,
     },
+    /// The tree nests deeper than [`MAX_DEPTH`].
+    ///
+    /// Decoding is recursive, so a payload of N nested `Option`/`List`-style
+    /// tags would otherwise recurse N frames deep and overflow the stack.
+    #[error("the schema payload nests deeper than {limit} nodes, the most this decoder follows")]
+    TooDeep {
+        /// The nesting limit that was exceeded.
+        limit: usize,
+    },
+    /// A `StringUnion` enum's variant carries a payload. Only an enum whose
+    /// variants are all unit encodes that way, so the encoder cannot have
+    /// produced this.
+    #[error(
+        "variant `{variant}` of `{enum_name}` carries a payload although the enum is a string union"
+    )]
+    StringUnionVariant {
+        /// The enum the variant belongs to.
+        enum_name: String,
+        /// The variant carrying the payload.
+        variant: String,
+        /// Where the variant's payload tag was read.
+        offset: usize,
+    },
+    /// A map's key schema is not a string. `TsMapKey` admits only string
+    /// types, so the encoder cannot have produced this.
+    #[error("the map key node at byte {offset} does not decode to a string schema")]
+    NonStringMapKey {
+        /// Where the key node starts.
+        offset: usize,
+    },
+    /// A tagged enum's `tag` or `content` property name is empty. The derive
+    /// always writes both names, so the encoder cannot have produced this.
+    #[error("the tagged representation of `{enum_name}` has an empty {property} name")]
+    EmptyPropertyName {
+        /// The enum carrying the tagged representation.
+        enum_name: String,
+        /// Which name is empty: `tag` or `content`.
+        property: &'static str,
+        /// Where the empty name's length prefix was read.
+        offset: usize,
+    },
 }
+
+/// The deepest node nesting [`decode`] follows before failing with
+/// [`DecodeError::TooDeep`].
+///
+/// Real props schemas nest a handful of levels; sixty-four is generous head-
+/// room while keeping the recursion — and therefore the stack a hostile
+/// payload can consume — firmly bounded.
+pub const MAX_DEPTH: usize = 64;
 
 /// Decode a payload into an owned schema tree.
 ///
@@ -76,6 +125,7 @@ pub fn decode(payload: &[u8]) -> Result<owned::Schema, DecodeError> {
     let mut reader = Reader {
         bytes: payload,
         pos: 0,
+        depth: 0,
     };
     let version = reader.byte()?;
     if version != FORMAT_VERSION {
@@ -98,6 +148,8 @@ struct Reader<'a> {
     bytes: &'a [u8],
     /// How far the cursor has advanced.
     pos: usize,
+    /// How many `node` frames are live, bounded by [`MAX_DEPTH`].
+    depth: usize,
 }
 
 impl Reader<'_> {
@@ -187,8 +239,23 @@ impl Reader<'_> {
         self.node().map(Box::new)
     }
 
-    /// Read one node and everything below it.
+    /// Read one node and everything below it, bounding recursion.
     fn node(&mut self) -> Result<owned::Schema, DecodeError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(DecodeError::TooDeep { limit: MAX_DEPTH });
+        }
+        // An error return is terminal — `decode` propagates the first one —
+        // so the depth bookkeeping only needs to be balanced on success.
+        let node = self.node_inner();
+        if node.is_ok() {
+            self.depth -= 1;
+        }
+        node
+    }
+
+    /// Read one node and everything below it.
+    fn node_inner(&mut self) -> Result<owned::Schema, DecodeError> {
         let offset = self.pos;
         let node = self.byte()?;
         Ok(match node {
@@ -208,10 +275,17 @@ impl Reader<'_> {
             tag::STRING => owned::Schema::String,
             tag::OPTION => owned::Schema::Option(self.child()?),
             tag::LIST => owned::Schema::List(self.child()?),
-            tag::MAP => owned::Schema::Map {
-                key: self.child()?,
-                value: self.child()?,
-            },
+            tag::MAP => {
+                let key_offset = self.pos;
+                let key = self.child()?;
+                if !matches!(*key, owned::Schema::String) {
+                    return Err(DecodeError::NonStringMapKey { offset: key_offset });
+                }
+                owned::Schema::Map {
+                    key,
+                    value: self.child()?,
+                }
+            }
             tag::SIGNAL => owned::Schema::Signal(self.child()?),
             tag::ACCESSOR => owned::Schema::Accessor(self.child()?),
             tag::VIEW => owned::Schema::View,
@@ -237,10 +311,27 @@ impl Reader<'_> {
         let offset = self.pos;
         let representation = match self.byte()? {
             representation::STRING_UNION => owned::Representation::StringUnion,
-            representation::TAGGED => owned::Representation::Tagged {
-                tag: self.string()?,
-                content: self.string()?,
-            },
+            representation::TAGGED => {
+                let tag_offset = self.pos;
+                let tag = self.string()?;
+                if tag.is_empty() {
+                    return Err(DecodeError::EmptyPropertyName {
+                        enum_name: name,
+                        property: "tag",
+                        offset: tag_offset,
+                    });
+                }
+                let content_offset = self.pos;
+                let content = self.string()?;
+                if content.is_empty() {
+                    return Err(DecodeError::EmptyPropertyName {
+                        enum_name: name,
+                        property: "content",
+                        offset: content_offset,
+                    });
+                }
+                owned::Representation::Tagged { tag, content }
+            }
             other => {
                 return Err(DecodeError::UnknownTag {
                     kind: "representation",
@@ -252,9 +343,21 @@ impl Reader<'_> {
         let count = self.length()?;
         let mut variants = Vec::new();
         for _ in 0..count {
-            let name = self.string()?;
+            let variant_name = self.string()?;
             let offset = self.pos;
-            let payload = match self.byte()? {
+            let payload_tag = self.byte()?;
+            // A string union is only ever written for an all-unit enum, so a
+            // variant payload here is a state the encoder cannot produce.
+            if matches!(representation, owned::Representation::StringUnion)
+                && payload_tag != variant::UNIT
+            {
+                return Err(DecodeError::StringUnionVariant {
+                    enum_name: name,
+                    variant: variant_name,
+                    offset,
+                });
+            }
+            let payload = match payload_tag {
                 variant::UNIT => owned::Payload::Unit,
                 variant::TUPLE => owned::Payload::Tuple(self.nodes()?),
                 variant::STRUCT => owned::Payload::Struct(self.fields()?),
@@ -266,7 +369,10 @@ impl Reader<'_> {
                     });
                 }
             };
-            variants.push(owned::Variant { name, payload });
+            variants.push(owned::Variant {
+                name: variant_name,
+                payload,
+            });
         }
         Ok(owned::Enum {
             name,

@@ -11,6 +11,7 @@ use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote, quote_spanned};
+use syn::ext::IdentExt as _;
 use syn::spanned::Spanned as _;
 use syn::{Data, DeriveInput, Fields, Ident, Variant, parse_macro_input};
 
@@ -22,6 +23,19 @@ use syn::{Data, DeriveInput, Fields, Ident, Variant, parse_macro_input};
 /// `extern crate self as waterui_ts_schema`, so the `FoundCrate::Itself` arm
 /// works in its own tests and doctests as well as in its library.
 fn ts_schema_path() -> syn::Result<TokenStream2> {
+    // Inside `waterui-internal` the facade is this crate: `src/lib.rs`
+    // declares `extern crate self as waterui`, so `crate` is the `waterui`
+    // the expansion names — the same special case `waterui_crate_path` in
+    // `lib.rs` makes. `CARGO_TARGET_TMPDIR` is set only when the package's
+    // integration tests compile, and there `crate` would name the test binary
+    // instead, so those expansions take the facade arm like any other
+    // consumer.
+    if std::env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-internal")
+        && std::env::var_os("CARGO_TARGET_TMPDIR").is_none()
+    {
+        return Ok(quote!(crate::ts::schema));
+    }
+
     match crate_name("waterui") {
         Ok(FoundCrate::Itself) => return Ok(quote!(crate::ts::schema)),
         Ok(FoundCrate::Name(name)) => {
@@ -62,6 +76,7 @@ fn named_fields(path: &TokenStream2, fields: &syn::FieldsNamed) -> TokenStream2 
             .ident
             .as_ref()
             .expect("a named field has an identifier")
+            .unraw()
             .to_string();
         let ty = type_schema(path, &field.ty);
         quote!(#path::FieldSchema { name: #name, ty: #ty })
@@ -91,7 +106,7 @@ fn struct_schema(
              a tuple or unit struct has no property names to project",
         ));
     };
-    let literal = name.to_string();
+    let literal = name.unraw().to_string();
     let fields = named_fields(path, fields);
     Ok(quote! {
         #path::TypeSchema::Struct(#path::StructSchema {
@@ -138,11 +153,11 @@ fn enum_schema(
         quote!(#path::EnumRepresentation::DEFAULT_TAGGED)
     };
     let variants = data.variants.iter().map(|variant| {
-        let literal = variant.ident.to_string();
+        let literal = variant.ident.unraw().to_string();
         let payload = variant_payload(path, variant);
         quote!(#path::VariantSchema { name: #literal, payload: #payload })
     });
-    let literal = name.to_string();
+    let literal = name.unraw().to_string();
     Ok(quote! {
         #path::TypeSchema::Enum(#path::EnumSchema {
             name: #literal,
@@ -215,10 +230,14 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
     };
 
     let name = &input.ident;
-    let length = format_ident!("__WATERUI_TS_PROPS_LEN_{}", name);
-    let encoded = format_ident!("__WATERUI_TS_PROPS_ENCODED_{}", name);
-    let meta = format_ident!("waterui_meta_tsprops_{}", name);
-    let meta_doc = format!("The encoded props contract of `{name}`, read back by the `water` CLI.");
+    // The metadata symbol the CLI enumerates carries the type's name, not its
+    // spelling: `r#Type` and `Type` are the same type to the contract.
+    let unraw = name.unraw();
+    let length = format_ident!("__WATERUI_TS_PROPS_LEN_{}", unraw);
+    let encoded = format_ident!("__WATERUI_TS_PROPS_ENCODED_{}", unraw);
+    let meta = format_ident!("waterui_meta_tsprops_{}", unraw);
+    let meta_doc =
+        format!("The encoded props contract of `{unraw}`, read back by the `water` CLI.");
 
     quote! {
         #schema
