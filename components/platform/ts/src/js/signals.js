@@ -462,7 +462,7 @@ export function isAccessor(value) {
 const STORE_NODE = Symbol("waterui.store-node");
 const storeNodes = new WeakMap();
 
-function isStoreable(value) {
+function isStorable(value) {
   return value !== null && typeof value === "object";
 }
 
@@ -479,7 +479,7 @@ function nodeFor(raw) {
 }
 
 function unwrapStore(value) {
-  if (isStoreable(value)) {
+  if (isStorable(value)) {
     const node = value[STORE_NODE];
     if (node !== undefined) {
       return node.raw;
@@ -511,7 +511,7 @@ function bumpKeys(node) {
 }
 
 function wrapChild(node, key, value) {
-  if (!isStoreable(value)) {
+  if (!isStorable(value)) {
     return value;
   }
   let child = node.children.get(key);
@@ -607,7 +607,7 @@ function applySetStore(root, args) {
   let target = root;
   for (let i = 0; i < args.length - 2; i += 1) {
     target = target[args[i]];
-    if (!isStoreable(unwrapStore(target))) {
+    if (!isStorable(unwrapStore(target))) {
       throw new Error(
         `setStore() path segment "${String(args[i])}" does not resolve to a store object`,
       );
@@ -620,7 +620,7 @@ function applySetStore(root, args) {
     return;
   }
   const previous = target[key];
-  if (isStoreable(unwrapStore(previous))) {
+  if (isStorable(unwrapStore(previous))) {
     // An object leaf gets the proxy so the function can mutate it; a
     // non-undefined return replaces the leaf instead.
     const result = value(previous);
@@ -641,7 +641,7 @@ function applySetStore(root, args) {
 function replaceContents(proxy, source) {
   const raw = unwrapStore(source);
   const target = proxy[STORE_NODE].raw;
-  if (!isStoreable(raw) || Array.isArray(raw) !== Array.isArray(target)) {
+  if (!isStorable(raw) || Array.isArray(raw) !== Array.isArray(target)) {
     throw new TypeError("setStore() replacement must be an object of the same kind");
   }
   for (const key of Object.keys(target)) {
@@ -667,7 +667,7 @@ function replaceContents(proxy, source) {
  * that mutates the store directly.
  */
 export function createStore(initial) {
-  if (!isStoreable(initial)) {
+  if (!isStorable(initial)) {
     throw new TypeError("createStore() expects an object or an array");
   }
   const store = new Proxy(initial, storeHandler);
