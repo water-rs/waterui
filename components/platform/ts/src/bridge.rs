@@ -61,6 +61,48 @@ pub enum Settled {
     Changed,
 }
 
+/// How JavaScript decides whether a value written to it is the one it holds.
+///
+/// The two answers are not a preference: they follow from what crossed the
+/// seam. Data crosses as a copy — a struct is a fresh object and a list a
+/// fresh array every time — so comparing it by reference would call every
+/// push a change. A retained handle crosses as itself, so comparing it
+/// structurally would call two different objects that happen to look alike
+/// the same one, and JavaScript would never receive the second.
+///
+/// JavaScript cannot tell the two apart, because a handle arrives there as an
+/// ordinary object. Rust can, from the [`JsValue`] it sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compare {
+    /// Data: compared structurally, key by key and index by index.
+    Structural,
+    /// A retained handle: compared with `Object.is`.
+    Identity,
+}
+
+impl Compare {
+    /// How a value that crossed as `value` has to be compared.
+    #[must_use]
+    pub const fn of(value: &JsValue) -> Self {
+        match value {
+            JsValue::Function(_) | JsValue::ObjectRef(_) | JsValue::Opaque(_) => Self::Identity,
+            JsValue::Undefined
+            | JsValue::Null
+            | JsValue::Bool(_)
+            | JsValue::Number(_)
+            | JsValue::BigInt(_)
+            | JsValue::String(_)
+            | JsValue::Array(_)
+            | JsValue::Object(_) => Self::Structural,
+        }
+    }
+
+    /// What the runtime's `write` takes as its third argument.
+    const fn by_identity(self) -> bool {
+        matches!(self, Self::Identity)
+    }
+}
+
 /// Everything one mount exported into JavaScript.
 ///
 /// A value exported into JavaScript — a signal wrapping a `Binding<T>`, the
@@ -528,14 +570,25 @@ impl Bridge {
     /// crossing back out is a fresh handle to Rust — and only JavaScript can
     /// see that two references are the same object.
     ///
+    /// `compare` says how JavaScript decides the value is already there and
+    /// the write can be skipped, which only this side knows; see [`Compare`].
+    ///
     /// # Errors
     ///
     /// Returns [`JsError`] before a bundle is loaded, when the write throws —
     /// which it does when the target turned out not to be writable — or when
     /// `write` answers something other than a boolean.
-    pub(crate) fn write_value(&self, source: &JsValue, value: JsValue) -> Result<Settled, JsError> {
+    pub(crate) fn write_value(
+        &self,
+        source: &JsValue,
+        value: JsValue,
+        compare: Compare,
+    ) -> Result<Settled, JsError> {
         let runtime = self.runtime_for("a reactive value can be written")?;
-        let answer = self.call(runtime.write(), &[source.clone(), value])?;
+        let answer = self.call(
+            runtime.write(),
+            &[source.clone(), value, JsValue::Bool(compare.by_identity())],
+        )?;
         match answer.as_bool() {
             Some(true) => Ok(Settled::Stood),
             Some(false) => Ok(Settled::Changed),

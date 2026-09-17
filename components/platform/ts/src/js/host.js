@@ -174,13 +174,22 @@ export function read(value) {
  * touched. Values that do differ are written, and the target's own comparator
  * decides whether that write is a change.
  *
+ * `identity` turns that comparison into `Object.is`. The native side passes
+ * it when the value it sent is a retained handle — a live object, a function,
+ * an opaque value — rather than data: a handle crosses as itself, so two
+ * handles that look alike are still two different things, and JavaScript
+ * cannot tell one from a plain object on its own.
+ *
  * @param {unknown} target
  * @param {unknown} value
+ * @param {boolean} [identity] - Compare with `Object.is` instead of
+ *   structurally, because `value` crossed as a handle.
  * @returns {boolean} Whether the target now holds exactly `value`.
  */
-export function write(target, value) {
+export function write(target, value, identity = false) {
+  const alreadyHolds = (held) => (identity ? Object.is(held, value) : bridgeEquals(held, value));
   if (isSignal(target)) {
-    if (bridgeEquals(read(target), value)) {
+    if (alreadyHolds(read(target))) {
       return true;
     }
     // An updater, not the value: `set` calls a function argument with the old
@@ -191,7 +200,7 @@ export function write(target, value) {
     return comparatorOf(target)(read(target), value);
   }
   if (target !== null && typeof target === "object" && typeof target.write === "function") {
-    if (bridgeEquals(read(target), value)) {
+    if (alreadyHolds(read(target))) {
       return true;
     }
     target.write(value);

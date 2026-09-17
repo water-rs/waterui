@@ -3,19 +3,25 @@
 use std::rc::Rc;
 
 use waterui_core::Environment;
-use waterui_ts_engine::{JsFunction, JsRuntime};
+use waterui_ts_engine::{JsFunction, JsRuntime, JsValue};
 
 use crate::Engine;
 use crate::bridge::Bridge;
-use crate::error::TsError;
+use crate::error::{TsError, kind_of};
 use crate::host::{self, HostFunctions, HostTable};
 use crate::runtime_global::RuntimeGlobal;
 
 /// The script name a bundle is attributed to in a stack trace.
 const BUNDLE_NAME: &str = "bundle.js";
 
-/// Clears whatever is published at the runtime global.
-const CLEAR_RUNTIME_GLOBAL: &str = "globalThis.__waterui_runtime = undefined;";
+/// Clears whatever is published at the runtime global, and answers with what
+/// is published there afterwards.
+///
+/// The assignment is a sloppy-mode one, which fails silently on a
+/// non-writable property rather than throwing, so the script reads the
+/// property back as its completion value and the caller checks it.
+const CLEAR_RUNTIME_GLOBAL: &str =
+    "globalThis.__waterui_runtime = undefined;\nglobalThis.__waterui_runtime;";
 
 /// The script name the clearing is attributed to in a stack trace.
 const CLEAR_NAME: &str = "waterui:load";
@@ -116,12 +122,23 @@ impl TsRuntime {
         Ok(())
     }
 
-    /// Clears whatever is published at the runtime global.
+    /// Clears whatever is published at the runtime global, and checks it went.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TsError::RuntimeGlobalNotCleared`] when something is still
+    /// published there afterwards.
     fn clear_runtime_global(&self) -> Result<(), TsError> {
-        self.bridge
+        let left = self
+            .bridge
             .engine()
             .eval(CLEAR_RUNTIME_GLOBAL, CLEAR_NAME)?;
-        Ok(())
+        if matches!(left, JsValue::Undefined) {
+            return Ok(());
+        }
+        Err(TsError::RuntimeGlobalNotCleared {
+            found: kind_of(&left),
+        })
     }
 
     /// The runtime the loaded bundle published.

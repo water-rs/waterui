@@ -75,8 +75,16 @@ export declare function read<T>(value: MaybeReactive<T> | HostReactive<T>): T;
  * Answers whether the value stood — `true` when reading the target back gives
  * exactly what was written, `false` when an effect changed it — compared with
  * the comparator the target settles on.
+ *
+ * A value the target already holds is not written at all: data is compared
+ * structurally, and a value the native side sent as a retained handle is
+ * compared by identity, which it asks for with `identity`.
  */
-export declare function write<T>(target: Signal<T> | HostReactive<T>, value: T): boolean;
+export declare function write<T>(
+  target: Signal<T> | HostReactive<T>,
+  value: T,
+  identity?: boolean,
+): boolean;
 
 /** Runs `callback` on every settled change, with no initial call. */
 export declare function subscribe<T>(

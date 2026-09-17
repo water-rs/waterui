@@ -538,6 +538,11 @@ fn an_object_payload_confirmed_back_does_not_re_notify_javascript() {
         "the change reached Rust"
     );
     assert_eq!(
+        integer(&runtime, "globalThis.fixture.writes"),
+        1,
+        "the confirmation crossed: the cell pushed what the binding holds"
+    );
+    assert_eq!(
         integer(&runtime, "globalThis.fixture.pointNotifications"),
         1,
         "the value the cell confirms back is the one already there, and \
@@ -579,6 +584,82 @@ fn a_rust_binding_exported_to_javascript_round_trips() {
 
     eval(&runtime, "globalThis.fixture.held.set(8)");
     assert_eq!(binding.get(), 8, "a JavaScript write reaches the binding");
+}
+
+#[test]
+fn a_hole_javascript_authored_is_replaced_by_the_value_rust_holds() {
+    let runtime = runtime();
+    let bridge = runtime.bridge();
+    let _scope = bridge.open_scope();
+    let hold = function(&runtime, "globalThis.fixture.hold");
+
+    let binding = Binding::container(vec![Some(1_u32), Some(2), Some(3)]);
+    let exported = binding
+        .clone()
+        .into_js(bridge)
+        .expect("a binding exports as a signal");
+    bridge
+        .call(&hold, &[exported])
+        .expect("JavaScript holds it");
+
+    // A hole is not a value: JavaScript reads `undefined` there, so Rust
+    // holds `None`, and what Rust holds has to come back as an explicit
+    // `null` — an array walked with `every` would skip the index entirely
+    // and call the two equal.
+    eval(&runtime, "globalThis.fixture.held.set([1, , 3])");
+    assert_eq!(binding.get(), vec![Some(1_u32), None, Some(3)]);
+    assert_eq!(
+        eval(&runtime, "1 in globalThis.fixture.held()"),
+        JsValue::Bool(true),
+        "the confirmation filled the hole"
+    );
+    assert_eq!(
+        eval(&runtime, "globalThis.fixture.held()[1]"),
+        JsValue::Null,
+        "with the value Rust holds there"
+    );
+}
+
+#[test]
+fn a_retained_object_pushed_from_rust_crosses_by_identity() {
+    let runtime = runtime();
+    let bridge = runtime.bridge();
+    let _scope = bridge.open_scope();
+    let hold = function(&runtime, "globalThis.fixture.hold");
+
+    let shape = || JsValue::Object(vec![(String::from("tag"), JsValue::Number(1.0))]);
+    let first = bridge.engine().retain(&shape()).expect("retains an object");
+    let second = bridge.engine().retain(&shape()).expect("retains another");
+
+    let binding = Binding::container(JsValue::ObjectRef(first));
+    let exported = binding
+        .clone()
+        .into_js(bridge)
+        .expect("a binding exports as a signal");
+    bridge
+        .call(&hold, &[exported])
+        .expect("JavaScript holds it");
+    eval(
+        &runtime,
+        "globalThis.fixture.first = globalThis.fixture.held()",
+    );
+
+    // The two handles carry the same entries, so comparing what crossed
+    // structurally would leave JavaScript holding the first object forever.
+    binding.set(JsValue::ObjectRef(second));
+    assert_eq!(
+        eval(
+            &runtime,
+            "globalThis.fixture.held() === globalThis.fixture.first"
+        ),
+        JsValue::Bool(false),
+        "JavaScript received the second object, not a value that looks like it"
+    );
+    assert_eq!(
+        eval(&runtime, "globalThis.fixture.held().tag"),
+        JsValue::Number(1.0),
+        "and it is the retained object, with its contents"
+    );
 }
 
 #[test]
@@ -1404,6 +1485,36 @@ fn a_bundle_that_published_before_it_threw_leaves_nothing_for_the_next_one() {
     assert!(
         error.to_string().contains("installRuntimeGlobal"),
         "the bundle that published nothing is refused: {error}"
+    );
+}
+
+#[test]
+fn a_runtime_global_that_cannot_be_cleared_is_refused_by_name() {
+    let runtime =
+        TsRuntime::new(Environment::new(), TestHost::default()).expect("the runtime constructs");
+    // Assigning to a non-writable property fails silently in a classic
+    // script, so a residue nobody can clear would otherwise be read as the
+    // runtime of whatever loads next.
+    eval(
+        &runtime,
+        "Object.defineProperty(globalThis, '__waterui_runtime', {
+           value: { pretending: true },
+           writable: false,
+           configurable: false,
+         })",
+    );
+
+    let error = runtime
+        .load(FIXTURE)
+        .expect_err("the runtime global cannot be cleared");
+    assert!(
+        error.to_string().contains("non-writable"),
+        "the error says the property cannot be cleared: {error}"
+    );
+    assert_eq!(
+        eval(&runtime, "typeof globalThis.fixture"),
+        JsValue::String(String::from("undefined")),
+        "and the bundle never ran: a load that cannot start fresh does not start"
     );
 }
 

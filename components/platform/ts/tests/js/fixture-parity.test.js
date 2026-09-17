@@ -14,16 +14,20 @@
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { createSignal, isSignal } from "../../src/js/signals.js";
+import { createMemo, createSignal, isSignal } from "../../src/js/signals.js";
 import {
+  getHost,
   installHost,
+  isAccessor,
   read,
   subscribe,
+  toAccessor,
   toSignal,
   uninstallHost,
   write,
 } from "../../src/js/host.js";
 import { mount, useLocale, useTheme } from "../../src/js/contexts.js";
+import { makeCallback } from "../../src/js/runtime-global.js";
 import { createFakeHost } from "./fake-host.js";
 
 const FIXTURE = readFileSync(new URL("../fixtures/runtime.js", import.meta.url), "utf8");
@@ -38,9 +42,10 @@ function loadFixture() {
 /**
  * The two implementations of the entries these scenarios use.
  *
- * `useTheme` / `useLocale` are not runtime-global entries — a module imports
- * them from the library and the bridge never calls them — so the fixture's
- * stand-ins are read off `globalThis.fixture` and put beside the rest here.
+ * `useTheme`, `useLocale` and `getHost` are not runtime-global entries — a
+ * module imports the first two from the library and `getHost` is internal, so
+ * the fixture's stand-ins are read off `globalThis.fixture` and put beside the
+ * rest here.
  */
 const FIXTURE_RUNTIME = loadFixture();
 const RUNTIMES = [
@@ -50,19 +55,25 @@ const RUNTIMES = [
       ...FIXTURE_RUNTIME,
       useTheme: globalThis.fixture.useTheme,
       useLocale: globalThis.fixture.useLocale,
+      getHost: globalThis.fixture.getHost,
     },
   ],
   [
     "the library",
     {
       createSignal,
+      createMemo,
       isSignal,
+      isAccessor,
       read,
       write,
       subscribe,
       toSignal,
+      toAccessor,
       installHost,
       uninstallHost,
+      getHost,
+      makeCallback,
       mount,
       useTheme,
       useLocale,
@@ -279,6 +290,266 @@ describe("the Rust fixture and the library agree", () => {
       locale: "en-GB",
       afterDispose: "dark",
       subscribersLeft: 0,
+    });
+  });
+
+  test("a value equal to the one held is not written, a different one is", () => {
+    const seen = agreed((runtime) => {
+      const signal = runtime.createSignal({ items: [1, 2], label: "a" });
+      let notified = 0;
+      runtime.subscribe(signal, () => {
+        notified += 1;
+      });
+      // A fresh object with the same contents: what every payload crossing
+      // the seam looks like.
+      const copy = runtime.write(signal, { items: [1, 2], label: "a" });
+      const afterCopy = notified;
+      const change = runtime.write(signal, { items: [1, 3], label: "a" });
+      return { copy, change, afterCopy, notified, label: runtime.read(signal).label };
+    });
+
+    expect(seen).toEqual({
+      copy: true,
+      change: true,
+      afterCopy: 0,
+      notified: 1,
+      label: "a",
+    });
+  });
+
+  test("an array with a value where the held one has a hole is a change", () => {
+    const seen = agreed((runtime) => {
+      const sparse = [1, , 3];
+      const signal = runtime.createSignal(sparse);
+      let notified = 0;
+      runtime.subscribe(signal, () => {
+        notified += 1;
+      });
+      const stood = runtime.write(signal, [1, 9, 3]);
+      const held = runtime.read(signal);
+      return { stood, notified, filled: 1 in held, value: held[1] };
+    });
+
+    expect(seen).toEqual({ stood: true, notified: 1, filled: true, value: 9 });
+  });
+
+  test("the same entries in another order are a change", () => {
+    const seen = agreed((runtime) => {
+      const signal = runtime.createSignal({ a: 1, b: 2 });
+      let notified = 0;
+      runtime.subscribe(signal, () => {
+        notified += 1;
+      });
+      const stood = runtime.write(signal, { b: 2, a: 1 });
+      return { stood, notified, keys: Object.keys(runtime.read(signal)) };
+    });
+
+    expect(seen).toEqual({ stood: true, notified: 1, keys: ["b", "a"] });
+  });
+
+  test("a value written as a handle is compared by identity", () => {
+    const seen = agreed((runtime) => {
+      const held = { tag: 1 };
+      const signal = runtime.createSignal(held);
+      let notified = 0;
+      runtime.subscribe(signal, () => {
+        notified += 1;
+      });
+      const lookalike = { tag: 1 };
+      const stood = runtime.write(signal, lookalike, true);
+      const received = runtime.read(signal) === lookalike;
+      const again = runtime.write(signal, lookalike, true);
+      return { stood, again, received, notified };
+    });
+
+    expect(seen).toEqual({ stood: true, again: true, received: true, notified: 1 });
+  });
+
+  test("a difference deeper than the comparison looks is written", () => {
+    const seen = agreed((runtime) => {
+      const nest = (leaf) => {
+        let value = leaf;
+        for (let depth = 0; depth < 200; depth += 1) {
+          value = { inner: value };
+        }
+        return value;
+      };
+      const signal = runtime.createSignal(nest(1));
+      let notified = 0;
+      runtime.subscribe(signal, () => {
+        notified += 1;
+      });
+      const deeper = nest(1);
+      const stood = runtime.write(signal, deeper);
+      return { stood, notified, received: runtime.read(signal) === deeper };
+    });
+
+    // Past the bound the two are reported different and the write goes
+    // through, which is the safe answer: JavaScript ends up holding what the
+    // native side sent.
+    expect(seen).toEqual({ stood: true, notified: 1, received: true });
+  });
+
+  test("a host table missing an entry is refused where it is installed", () => {
+    const seen = agreed((runtime) => {
+      const host = createFakeHost();
+      const { invoke, ...withoutInvoke } = host;
+      let message = null;
+      try {
+        runtime.installHost(withoutInvoke);
+      } catch (error) {
+        message = error.message;
+      }
+      const installed = (() => {
+        try {
+          runtime.getHost();
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      return { message, installed };
+    });
+
+    expect(seen.message).toMatch(/invoke/);
+    expect(seen.installed).toBe(false);
+  });
+
+  test("the modifier names cross as an array and become a set", () => {
+    const seen = agreed((runtime) => {
+      const host = createFakeHost();
+      runtime.installHost({ ...host, modifiers: ["padding", "background"] });
+      const { modifiers } = runtime.getHost();
+      const observed = {
+        isSet: modifiers instanceof Set,
+        has: modifiers.has("padding"),
+        size: modifiers.size,
+      };
+      runtime.uninstallHost();
+      return observed;
+    });
+
+    expect(seen).toEqual({ isSet: true, has: true, size: 2 });
+  });
+
+  test("a callback wrapper dispatches through the installed invoke", () => {
+    const seen = agreed((runtime) => {
+      const host = createFakeHost();
+      runtime.installHost(host);
+      const callback = runtime.makeCallback(7);
+      const answer = callback("a", 2);
+      // Reassigning the entry afterwards must not divert the wrapper: it
+      // holds the function the table was installed with.
+      host.invoke = () => "diverted";
+      const again = callback("b");
+      runtime.uninstallHost();
+      return { answer, again, invocations: host.invocations };
+    });
+
+    expect(seen).toEqual({
+      answer: "invoked",
+      again: "invoked",
+      invocations: [
+        [7, "a", 2],
+        [7, "b"],
+      ],
+    });
+  });
+
+  test("a host value that reads and writes is written through", () => {
+    const seen = agreed((runtime) => {
+      let held = 1;
+      let writes = 0;
+      const cell = {
+        read: () => held,
+        write(value) {
+          writes += 1;
+          held = value;
+        },
+      };
+      const changed = runtime.write(cell, 2);
+      const again = runtime.write(cell, 2);
+      return { changed, again, held, writes, isAccessor: runtime.isAccessor(cell) };
+    });
+
+    expect(seen).toEqual({ changed: true, again: true, held: 2, writes: 1, isAccessor: true });
+  });
+
+  test("a host value that announces its changes is followed and released", () => {
+    const seen = agreed((runtime) => {
+      let held = "start";
+      const subscribers = new Set();
+      const source = {
+        read: () => held,
+        subscribe(callback) {
+          subscribers.add(callback);
+          return () => subscribers.delete(callback);
+        },
+      };
+      const push = (value) => {
+        held = value;
+        for (const subscriber of [...subscribers]) {
+          subscriber(value);
+        }
+      };
+      const values = [];
+      const dispose = runtime.subscribe(source, (value) => values.push(value));
+      push("next");
+      dispose();
+      push("after");
+      return { values, left: subscribers.size, read: runtime.read(source) };
+    });
+
+    expect(seen).toEqual({ values: ["next"], left: 0, read: "after" });
+  });
+
+  test("toAccessor lifts a constant, a thunk and a host value alike", () => {
+    const seen = agreed((runtime) => {
+      const constant = runtime.toAccessor(3);
+      const thunk = runtime.toAccessor(() => 4);
+      const hostValue = runtime.toAccessor({ read: () => 5 });
+      return [constant(), thunk(), hostValue()];
+    });
+
+    expect(seen).toEqual([3, 4, 5]);
+  });
+
+  test("a memo evaluates once, and again only after what it read changed", () => {
+    const seen = agreed((runtime) => {
+      const source = runtime.createSignal(1);
+      const unrelated = runtime.createSignal("x");
+      let computations = 0;
+      const memo = runtime.createMemo(() => {
+        computations += 1;
+        return source() + 1;
+      });
+      const first = memo();
+      const second = memo();
+      const afterCreation = computations;
+      runtime.write(unrelated, "y");
+      const afterUnrelated = memo();
+      const untouched = computations;
+      runtime.write(source, 5);
+      const afterChange = memo();
+      return {
+        first,
+        second,
+        afterCreation,
+        afterUnrelated,
+        untouched,
+        afterChange,
+        computations,
+      };
+    });
+
+    expect(seen).toEqual({
+      first: 2,
+      second: 2,
+      afterCreation: 1,
+      afterUnrelated: 2,
+      untouched: 1,
+      afterChange: 6,
+      computations: 2,
     });
   });
 });

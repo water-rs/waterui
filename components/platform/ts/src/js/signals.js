@@ -101,16 +101,39 @@ function equalAtDepth(a, b, depth) {
     return false;
   }
   if (Array.isArray(a) && Array.isArray(b)) {
-    return (
-      a.length === b.length && a.every((item, index) => equalAtDepth(item, b[index], depth + 1))
-    );
+    if (a.length !== b.length) {
+      return false;
+    }
+    // Index by index rather than with `every`, which skips holes: a hole and
+    // a value at the same index are different values, and an array walked by
+    // `every` would have neither visited.
+    for (let index = 0; index < a.length; index += 1) {
+      const present = index in a;
+      if (present !== (index in b)) {
+        return false;
+      }
+      if (present && !equalAtDepth(a[index], b[index], depth + 1)) {
+        return false;
+      }
+    }
+    return true;
   }
   if (isPlainObject(a) && isPlainObject(b)) {
+    // In order, because the native side's own equality is: an object crosses
+    // as its entries in insertion order, and the same entries in another
+    // order are a different value there. Calling them equal here would drop
+    // a reordering the native side made.
     const keys = Object.keys(a);
-    return (
-      keys.length === Object.keys(b).length &&
-      keys.every((key) => Object.hasOwn(b, key) && equalAtDepth(a[key], b[key], depth + 1))
-    );
+    const otherKeys = Object.keys(b);
+    if (keys.length !== otherKeys.length) {
+      return false;
+    }
+    for (const [index, key] of keys.entries()) {
+      if (key !== otherKeys[index] || !equalAtDepth(a[key], b[key], depth + 1)) {
+        return false;
+      }
+    }
+    return true;
   }
   return false;
 }
@@ -128,6 +151,13 @@ function equalAtDepth(a, b, depth) {
  * Everything else — a function, a signal, a native handle, a class instance —
  * is compared by identity, the only meaningful answer for a thing that was
  * never copied.
+ *
+ * Two details follow from the native side's own equality rather than from
+ * JavaScript's. Arrays are compared index by index including their holes,
+ * because a hole and a value are different values. Objects are compared in
+ * key order, because a native object is a list of entries in insertion order
+ * and reordering it is a change there even though nothing was added or
+ * removed.
  *
  * @param {unknown} a
  * @param {unknown} b
@@ -555,7 +585,7 @@ export function isAccessor(value) {
 const STORE_NODE = Symbol("waterui.store-node");
 const storeNodes = new WeakMap();
 
-function isStoreable(value) {
+function isStorable(value) {
   return value !== null && typeof value === "object";
 }
 
@@ -572,7 +602,7 @@ function nodeFor(raw) {
 }
 
 function unwrapStore(value) {
-  if (isStoreable(value)) {
+  if (isStorable(value)) {
     const node = value[STORE_NODE];
     if (node !== undefined) {
       return node.raw;
@@ -604,7 +634,7 @@ function bumpKeys(node) {
 }
 
 function wrapChild(node, key, value) {
-  if (!isStoreable(value)) {
+  if (!isStorable(value)) {
     return value;
   }
   let child = node.children.get(key);
@@ -700,7 +730,7 @@ function applySetStore(root, args) {
   let target = root;
   for (let i = 0; i < args.length - 2; i += 1) {
     target = target[args[i]];
-    if (!isStoreable(unwrapStore(target))) {
+    if (!isStorable(unwrapStore(target))) {
       throw new Error(
         `setStore() path segment "${String(args[i])}" does not resolve to a store object`,
       );
@@ -713,7 +743,7 @@ function applySetStore(root, args) {
     return;
   }
   const previous = target[key];
-  if (isStoreable(unwrapStore(previous))) {
+  if (isStorable(unwrapStore(previous))) {
     // An object leaf gets the proxy so the function can mutate it; a
     // non-undefined return replaces the leaf instead.
     const result = value(previous);
@@ -734,7 +764,7 @@ function applySetStore(root, args) {
 function replaceContents(proxy, source) {
   const raw = unwrapStore(source);
   const target = proxy[STORE_NODE].raw;
-  if (!isStoreable(raw) || Array.isArray(raw) !== Array.isArray(target)) {
+  if (!isStorable(raw) || Array.isArray(raw) !== Array.isArray(target)) {
     throw new TypeError("setStore() replacement must be an object of the same kind");
   }
   for (const key of Object.keys(target)) {
@@ -760,7 +790,7 @@ function replaceContents(proxy, source) {
  * that mutates the store directly.
  */
 export function createStore(initial) {
-  if (!isStoreable(initial)) {
+  if (!isStorable(initial)) {
     throw new TypeError("createStore() expects an object or an array");
   }
   const store = new Proxy(initial, storeHandler);

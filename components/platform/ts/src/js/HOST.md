@@ -26,15 +26,17 @@ Everything the runtime hands the host is one of four shapes:
     (`v()`) and writable (`v.set`, `v.update`); a plain function or a
     `{ read() }` object is a read-only accessor. Anything else is a constant.
   - `read(v)` — current value, untracked; constants pass through.
-  - `write(v, x) -> boolean` — writes a signal or a `{ write }` host value;
-    throws on read-only inputs. `x` is stored verbatim: a signal's `set` reads
-    a function argument as an updater, so `write` passes one that returns `x`,
-    and a callback or a memo crossing from Rust is stored rather than called.
-    The answer is whether the value stood: `true` when reading `v` back gives
-    exactly `x`, `false` when an effect changed it while the write settled.
-    Equality is the target's own comparator — SameValue unless the signal was
-    created with another — so the two sides never disagree about what counts
-    as a change.
+  - `write(v, x, identity?) -> boolean` — writes a signal or a `{ write }`
+    host value; throws on read-only inputs. `x` is stored verbatim: a signal's
+    `set` reads a function argument as an updater, so `write` passes one that
+    returns `x`, and a callback or a memo crossing from Rust is stored rather
+    than called. The answer is whether the value stood: `true` when reading
+    `v` back gives exactly `x`, `false` when an effect changed it while the
+    write settled. Equality is the target's own comparator — SameValue unless
+    the signal was created with another — so the two sides never disagree
+    about what counts as a change. A value `v` already holds is not written at
+    all; `identity` says to decide that with `Object.is` because `x` crossed
+    as a retained handle rather than as data.
   - `subscribe(v, callback) -> dispose` — runs `callback(value)` on every
     settled change, glitch-free, with no initial call. This is the push half
     of the `Signal<T> ↔ Binding<T>` mapping: the bridge materializes a JS
@@ -217,7 +219,7 @@ The bundle entry the CLI generates therefore ends with one call —
 | `mount(render)` | Mounts one module under a fresh root scope. |
 | `isSignal(v)` / `isAccessor(v)` | Classifies a reactive input that crossed as a function handle. |
 | `read(v)` | Seeds a materialized cell, untracked. |
-| `write(target, value)` | Pushes a Rust value into a JS signal, and answers whether it stood. |
+| `write(target, value, identity)` | Pushes a Rust value into a JS signal, and answers whether it stood. |
 | `subscribe(source, callback)` | The push half of the mapping; returns the dispose the cell owns. |
 | `toSignal(v)` / `toAccessor(v)` | Used by the runtime itself; the bridge only requires them to be present. |
 | `createSignal(value)` | Creates the JS signal a Rust `Binding<T>` is exported as. |
@@ -281,10 +283,23 @@ That is the equality a signal uses to decide whether a set is a change. The
 skip in `write` is a different question — "is this the value already here?"
 — asked of a value that has just crossed the seam, so it uses `bridgeEquals`:
 primitives, arrays and plain objects compare structurally, because a payload
-crossing from Rust is a fresh copy every time, and functions, handles and
-class instances compare by identity, because those cross as handles and a
-copy would be a different object. The comparison is depth-bounded; a cyclic
-graph cannot cross the seam in the first place.
+crossing from Rust is a fresh copy every time, and functions and class
+instances compare by identity, because a copy of one would be a different
+object. The comparison is depth-bounded; a cyclic graph cannot cross the seam
+in the first place.
+
+Two of its rules come from the native side's equality rather than from
+JavaScript's. Arrays are compared index by index including holes, because a
+hole and a value are different values there. Objects are compared in key
+order, because a native object is its entries in insertion order and
+reordering them is a change even when nothing was added or removed.
+
+A retained handle — a live object, a function, an opaque value — arrives in
+JavaScript as an ordinary object, so nothing here can tell it from data.
+Rust can, from the value it sent, and passes `identity` to `write` when it
+did: two handles that look alike are still two different things, and
+comparing them structurally would leave JavaScript holding the first one
+forever.
 
 A cell also always pushes what its binding holds at the moment its watcher
 runs, never the value the notification carried: a watcher registered earlier
