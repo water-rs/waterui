@@ -16,20 +16,27 @@ use waterui_testing::ui;
 /// Regenerates the guide's two illustrations.
 ///
 /// This is a documentation generator, not an assertion: it renders real
-/// frames through the offscreen backend and writes PNGs into the source
-/// tree, so it stays ignored in the suite and runs on demand with
+/// frames through the offscreen backend and writes PNGs, so it stays
+/// ignored in the suite and runs on demand with
 ///
 /// ```bash
 /// cargo nextest run -p waterui-ts -E 'test(export_jsx_order_illustrations)' --run-ignored all
 /// ```
 ///
+/// Binary images are not tracked in this repository; they are served from
+/// `assets.waterui.dev`. The frames are written under the target directory
+/// (`CARGO_TARGET_TMPDIR/jsx-illustrations`, printed by the test), and the
+/// guide references them at `https://assets.waterui.dev/docs/jsx/<name>`,
+/// where a regenerated pair is uploaded to replace the old one.
+///
 /// The subject is the text the guide shows, on a fixed 240×120 viewport at
 /// scale 1, in the same blue for both orders so only the order changes.
 #[test]
-#[ignore = "documentation generator: writes docs/illustrations; run with --run-ignored all"]
+#[ignore = "documentation generator: writes the guide's frames; run with --run-ignored all"]
 fn export_jsx_order_illustrations() {
-    let illustrations =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs/illustrations");
+    let illustrations = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("jsx-illustrations");
+    std::fs::create_dir_all(&illustrations).expect("creating the illustrations directory");
+    tracing::info!(directory = %illustrations.display(), "writing the guide's frames");
 
     // `<Text padding={16} background={…}>`: the padding sits inside the
     // background, so the colour covers the inset too.

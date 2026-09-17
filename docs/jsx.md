@@ -52,7 +52,11 @@ the inset transparent:
 
 | `<Text padding={16} background={accent}>` | `<Text background={accent} padding={16}>` |
 |---|---|
-| ![the colour covers the inset](illustrations/jsx-order-padding-then-background.png) | ![the colour hugs the text](illustrations/jsx-order-background-then-padding.png) |
+| ![the colour covers the inset](https://assets.waterui.dev/docs/jsx/jsx-order-padding-then-background.png) | ![the colour hugs the text](https://assets.waterui.dev/docs/jsx/jsx-order-background-then-padding.png) |
+
+Both frames are real renders of the two Rust chains above through the
+offscreen backend, produced by the `export_jsx_order_illustrations` test in
+`components/platform/ts/tests/illustrations.rs`.
 
 The transform preserves written order by emitting properties in source
 order, and the runtime applies them to the element in enumeration order —
@@ -205,6 +209,16 @@ contract, checked like any other.
 The expansion also records the mount in a `waterui_meta_tsx_*` static, so
 `water build` learns which modules the binary mounts and bundles exactly
 those.
+
+### Testing and previewing a mounted module
+
+A `tsx!` view is tested like any other, with `#[waterui::test]` over the
+mounted tree, and previewed with `#[preview]`. Both hosts need the bundle:
+`water test` builds it and hands its path to the test host in the
+`WATERUI_TS_BUNDLE` environment variable, and `water preview` does the same
+for the preview host. Under bare `cargo nextest run` nothing sets the
+variable, so mounting a module fails with a message naming it and
+`water test`; a test that mounts no TypeScript never needs it.
 
 ## Contexts
 

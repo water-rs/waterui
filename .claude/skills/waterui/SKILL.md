@@ -561,9 +561,10 @@ let view = tsx!(
   with `<Show>` `<For by>` `<Suspense>` `<Box>` for control flow and `createSignal`,
   `createMemo`, `createContext`/`useContext`, `useTheme`, `useLocale` from the same
   module. `<Text>` children localize through the same `TranslationCatalog` as `text(…)`.
-- Tests are ordinary `#[waterui::test]`s over the mounted tree: `water test` (or
-  `cargo nextest run`) drives a `tsx!` view through `waterui-testing` exactly like a
-  Rust one.
+- Tests are ordinary `#[waterui::test]`s over the mounted tree, run through `water test`:
+  it builds the bundle and hands its path to the test host in `WATERUI_TS_BUNDLE`, and
+  `water preview` does the same for a `#[preview]`. Under bare `cargo nextest run`
+  nothing sets it, so a `tsx!` mount fails naming the variable and `water test`.
 - The engine differs by platform: JavaScriptCore on iOS, macOS, tvOS and visionOS;
   QuickJS-NG on Android, Linux and Windows; **unsupported on watchOS** — the platform
   has no JavaScriptCore and embedding QuickJS-NG there is not supported.
