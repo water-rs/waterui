@@ -84,8 +84,12 @@ impl TsRuntime {
         }
         self.bridge.engine().eval(bundle, BUNDLE_NAME)?;
         let runtime = RuntimeGlobal::read(self.bridge.engine())?;
+        // Installed first, published second. The `OnceCell` behind the bridge
+        // is the record that a bundle loaded, so publishing a runtime whose
+        // host installation then failed would burn it: every retry would be
+        // refused as an already-loaded bundle although nothing is usable.
+        host::install(&self.bridge, &self.table, &self.host, &runtime)?;
         self.bridge.set_runtime(runtime)?;
-        host::install(&self.bridge, &self.table, &self.host)?;
         Ok(())
     }
 

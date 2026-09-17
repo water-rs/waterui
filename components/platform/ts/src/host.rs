@@ -7,10 +7,13 @@
 //! the engine registers, the argument shapes they hold JavaScript to, and the
 //! table object `installHost` receives.
 //!
-//! Two entries never reach the table. `environment()` is answered from the
-//! `Environment` the runtime was constructed with, because the framework owns
-//! those values, and `invoke` is the bridge's own: it dispatches every
+//! Two entries are the bridge's own rather than the catalog's. `environment()`
+//! is answered from the `Environment` the runtime was constructed with,
+//! because the framework owns those values, and `invoke` dispatches every
 //! registered Rust closure, from a prop callback to a signal subscription.
+//! Both travel in the table all the same: the runtime takes them from what it
+//! was installed with, never from `globalThis.__waterui_host`, which is a
+//! writable global a bundle can reassign while it evaluates.
 
 use std::rc::Rc;
 
@@ -21,6 +24,7 @@ use waterui_ts_engine::{JsError, JsFunction, JsRuntime, JsValue};
 use crate::bridge::{Bridge, WeakBridge};
 use crate::environment::host_environment;
 use crate::error::{TsError, kind_of};
+use crate::runtime_global::RuntimeGlobal;
 use crate::view::ViewSlot;
 
 /// The native views a TypeScript module's JSX turns into.
@@ -153,11 +157,27 @@ const ENVIRONMENT: HostEntry = HostEntry {
     source: "globalThis.__waterui_host.environment",
 };
 
-/// Every entry the table object carries, in the order it is built.
-const ENTRIES: [HostEntry; 7] = [CREATE, MODIFY, TEXT, SHOW, EACH, SUSPENSE, ENVIRONMENT];
-
 /// The entry every registered Rust closure is dispatched through.
-const INVOKE: &str = "invoke";
+///
+/// It is in the table like the rest: `makeCallback` wraps the installed
+/// `invoke`, so a bundle cannot redirect every callback in the runtime by
+/// assigning to `globalThis.__waterui_host.invoke` while it evaluates.
+const INVOKE: HostEntry = HostEntry {
+    name: "invoke",
+    source: "globalThis.__waterui_host.invoke",
+};
+
+/// Every entry the table object carries, in the order it is built.
+const ENTRIES: [HostEntry; 8] = [
+    INVOKE,
+    CREATE,
+    MODIFY,
+    TEXT,
+    SHOW,
+    EACH,
+    SUSPENSE,
+    ENVIRONMENT,
+];
 
 /// The script name the host reads are attributed to in a stack trace.
 const SOURCE_NAME: &str = "waterui:host";
@@ -186,7 +206,7 @@ pub struct HostFunctions(Vec<(&'static str, JsFunction)>);
 pub fn register(bridge: &Bridge, table: &Rc<dyn HostTable>) -> Result<HostFunctions, TsError> {
     let engine = bridge.engine();
 
-    engine.register(INVOKE, {
+    engine.register(INVOKE.name, {
         let callbacks = Rc::clone(bridge.callbacks());
         move |args: &[JsValue]| {
             let id = args
@@ -287,14 +307,18 @@ pub fn register(bridge: &Bridge, table: &Rc<dyn HostTable>) -> Result<HostFuncti
 /// `__waterui_host`, so a bundle that reassigns a property of that global
 /// while it evaluates changes nothing about the table the runtime receives.
 ///
+/// The runtime is passed in rather than read off the bridge: installation
+/// happens before the bundle's runtime is published, so a bundle whose
+/// `installHost` throws leaves the runtime unloaded and loadable again.
+///
 /// # Errors
 ///
-/// Returns [`TsError`] when no bundle is loaded, or when `installHost` rejects
-/// the table.
+/// Returns [`TsError`] when `installHost` rejects the table.
 pub fn install(
     bridge: &Bridge,
     table: &Rc<dyn HostTable>,
     host: &HostFunctions,
+    runtime: &RuntimeGlobal,
 ) -> Result<(), TsError> {
     let mut object: Vec<(String, JsValue)> = host
         .0
@@ -314,7 +338,6 @@ pub fn install(
         ),
     ));
 
-    let runtime = bridge.runtime()?;
     bridge.call(runtime.install_host(), &[JsValue::Object(object)])?;
     Ok(())
 }

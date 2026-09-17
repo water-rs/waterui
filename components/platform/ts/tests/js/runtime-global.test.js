@@ -67,43 +67,38 @@ describe("installRuntimeGlobal", () => {
 });
 
 describe("makeCallback", () => {
-  test("routes the call to __waterui_host.invoke with the id first", () => {
-    const seen = [];
-    globalThis.__waterui_host = {
-      invoke(...args) {
-        seen.push(args);
-        return "answered";
-      },
-    };
+  test("routes the call to the installed host's invoke, with the id first", () => {
+    const table = createFakeHost();
+    installHost(table);
 
     const callback = makeCallback(7);
-    expect(callback(1, "two")).toBe("answered");
-    expect(seen).toEqual([[7, 1, "two"]]);
+    expect(callback(1, "two")).toBe("invoked");
+    expect(table.invocations).toEqual([[7, 1, "two"]]);
   });
 
-  test("names the missing entry when the bridge registered nothing", () => {
-    expect(() => makeCallback(1)).toThrow(/__waterui_host\.invoke/);
-  });
-
-  test("captures invoke once, so a later reassignment cannot divert the call", () => {
-    const seen = [];
-    globalThis.__waterui_host = {
-      invoke(...args) {
-        seen.push(args);
-      },
-    };
-
-    const callback = makeCallback(3);
-    globalThis.__waterui_host.invoke = () => {
-      throw new Error("the wrapper read the global again");
-    };
-
-    callback("value");
-    expect(seen).toEqual([[3, "value"]]);
+  test("says so when no host is installed", () => {
+    expect(() => makeCallback(1)).toThrow(/no host installed/);
   });
 
   test("refuses an id that is not the number the bridge assigns", () => {
     expect(() => makeCallback("1")).toThrow(/numeric id/);
+  });
+
+  test("dispatches through the installed invoke, not the mutable global", () => {
+    const table = createFakeHost();
+    installHost(table);
+    const callback = makeCallback(3);
+
+    // A bundle reassigning the global — the entry the bridge registered is
+    // what was installed, and what every wrapper must keep calling.
+    globalThis.__waterui_host = {
+      invoke() {
+        throw new Error("the wrapper read the global");
+      },
+    };
+
+    expect(callback("value")).toBe("invoked");
+    expect(table.invocations).toEqual([[3, "value"]]);
   });
 });
 

@@ -1,6 +1,10 @@
 // Type surface for signals.js.
 
-/** `false` disables equality; a function compares old and new. */
+/**
+ * `false` disables equality; a function compares old and new. The default is
+ * SameValue (`Object.is`), so `NaN` equals itself and `-0` differs from `0` —
+ * the equality the native side of the runtime has.
+ */
 export type EqualsFn<T> = false | ((previous: T, next: T) => boolean);
 
 export interface SignalOptions<T> {
@@ -38,6 +42,12 @@ export interface Owner {
 }
 
 export declare function createSignal<T>(initial: T, options?: SignalOptions<T>): Signal<T>;
+
+/**
+ * The comparator a source settles a write with: its own if it is a signal or
+ * a memo, SameValue for anything else.
+ */
+export declare function comparatorOf(source: unknown): (a: unknown, b: unknown) => boolean;
 
 export declare function createMemo<T>(
   compute: (previous: T | undefined) => T,

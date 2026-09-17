@@ -27,9 +27,14 @@ Everything the runtime hands the host is one of four shapes:
     `{ read() }` object is a read-only accessor. Anything else is a constant.
   - `read(v)` — current value, untracked; constants pass through.
   - `write(v, x) -> boolean` — writes a signal or a `{ write }` host value;
-    throws on read-only inputs. The answer is whether the value stood: `true`
-    when reading `v` back gives exactly `x`, `false` when an effect changed it
-    while the write settled.
+    throws on read-only inputs. `x` is stored verbatim: a signal's `set` reads
+    a function argument as an updater, so `write` passes one that returns `x`,
+    and a callback or a memo crossing from Rust is stored rather than called.
+    The answer is whether the value stood: `true` when reading `v` back gives
+    exactly `x`, `false` when an effect changed it while the write settled.
+    Equality is the target's own comparator — SameValue unless the signal was
+    created with another — so the two sides never disagree about what counts
+    as a change.
   - `subscribe(v, callback) -> dispose` — runs `callback(value)` on every
     settled change, glitch-free, with no initial call. This is the push half
     of the `Signal<T> ↔ Binding<T>` mapping: the bridge materializes a JS
@@ -166,6 +171,13 @@ neither the framework nor a view reads an inset number. An accessor that could
 only ever answer zeroes would fake a primitive that does not exist, so the
 asymmetry is documented rather than hidden.
 
+## `invoke(id, …args)`
+
+Dispatches one Rust closure from the bridge's registry. It is the bridge's own
+entry rather than the catalog's, and it is in the table for the reason given
+under the runtime global: what the runtime calls must be what the engine
+registered.
+
 ## `modifiers: ReadonlySet<string> | readonly string[]`
 
 The attribute names that are view modifiers (`"padding"`, `"background"`,
@@ -204,9 +216,14 @@ The bundle entry the CLI generates therefore ends with one call —
 | `makeCallback(id)` | The JS function wrapping a Rust closure held in the bridge's registry. |
 | `modules` | Module id → that module's default export. |
 
-`makeCallback(id)` calls `__waterui_host.invoke(id, …args)`; `invoke` is the
-one entry the bridge registers for every Rust closure that JavaScript calls,
-from a prop callback to a signal subscription.
+`makeCallback(id)` calls the installed host's `invoke(id, …args)`, the one
+entry the bridge registers for every Rust closure JavaScript calls, from a prop
+callback to a signal subscription. It is taken from the table, not from
+`globalThis.__waterui_host`: that global is writable, and a bundle that
+reassigned an entry of it while it evaluated would otherwise become what every
+callback wrapper — and every host call — dispatches through. The bridge
+captures each host function as it registers it, before any bundle exists, and
+installs those.
 
 ## Materialization, and what keeps it from oscillating
 
@@ -240,6 +257,21 @@ fresh handle there, and only JavaScript can see that two references are the
 same object. Classifying each notification against a remembered value instead
 would also mistake a real correction for an echo whenever the pushed value
 reappears later in the same settle.
+
+The equality both sides settle on is SameValue, which is why this runtime's
+signals default to `Object.is` rather than the `===` most signal libraries
+use. It differs on exactly two values, and both matter here: `NaN` equals
+itself, so a float written twice propagates once instead of on every write,
+and `-0` is not `0`, so a Rust value written over its opposite sign is a real
+change rather than a write JavaScript drops and Rust is then corrected out of.
+
+A cell also always pushes what its binding holds at the moment its watcher
+runs, never the value the notification carried: a watcher registered earlier
+may have written again, and a late notification must not resurrect the value
+it was raised with. Suppression during an inbound apply is a count, not a
+blanket: exactly one notification belongs to the apply itself, and anything
+beyond it is another Rust watcher answering the change, which is pushed once
+the apply is over.
 
 Every materialized cell owns its subscription's dispose function and its watch
 guard, and disposes the JavaScript subscription when it is dropped.

@@ -315,6 +315,79 @@ fn an_effect_that_clamps_a_write_is_read_back_once() {
 }
 
 #[test]
+fn a_rust_watcher_that_writes_during_an_inbound_apply_reaches_javascript() {
+    let runtime = runtime();
+    let source = eval(&runtime, "globalThis.fixture.counter");
+
+    let binding: Binding<u32> = runtime
+        .bridge()
+        .materialize_binding(&source)
+        .expect("a signal materializes");
+
+    // JavaScript clamps anything above ten, and Rust answers a clamped ten
+    // with a write of its own. Both corrections happen while one change is
+    // still being delivered.
+    eval(
+        &runtime,
+        "globalThis.fixture.counter.__subscribe((value) => {
+           if (value > 10) { globalThis.fixture.counter.set(10); }
+         })",
+    );
+    let _guard = binding.watch({
+        let binding = binding.clone();
+        move |context: nami::watcher::Context<u32>| {
+            if context.into_value() == 10 {
+                binding.set(0);
+            }
+        }
+    });
+
+    binding.set(40);
+
+    assert_eq!(
+        binding.get(),
+        0,
+        "the Rust answer to the clamp is the state"
+    );
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.counter()"),
+        0,
+        "and JavaScript was told about it, instead of being left at the clamp"
+    );
+}
+
+#[test]
+fn a_rust_watcher_that_answers_an_inbound_change_reaches_javascript() {
+    let runtime = runtime();
+    let source = eval(
+        &runtime,
+        "globalThis.fixture.text = globalThis.__waterui_runtime.createSignal('start')",
+    );
+
+    let binding: Binding<String> = runtime
+        .bridge()
+        .materialize_binding(&source)
+        .expect("a signal materializes");
+    let _guard = binding.watch({
+        let binding = binding.clone();
+        move |context: nami::watcher::Context<String>| {
+            if context.into_value() == "x" {
+                binding.set(String::from("y"));
+            }
+        }
+    });
+
+    eval(&runtime, "globalThis.fixture.text.set('x')");
+
+    assert_eq!(binding.get(), "y");
+    assert_eq!(
+        eval(&runtime, "globalThis.fixture.text()"),
+        JsValue::String(String::from("y")),
+        "a Rust write made while an inbound value was being applied is not lost"
+    );
+}
+
+#[test]
 fn a_host_accessor_becomes_a_pushed_computed() {
     let runtime = runtime();
     let source = eval(&runtime, "globalThis.fixture.label");
@@ -451,6 +524,120 @@ fn a_rust_binding_exported_to_javascript_round_trips() {
 
     eval(&runtime, "globalThis.fixture.held.set(8)");
     assert_eq!(binding.get(), 8, "a JavaScript write reaches the binding");
+}
+
+#[test]
+fn a_watcher_registered_before_the_export_cannot_push_a_stale_value() {
+    let runtime = runtime();
+    let bridge = runtime.bridge();
+    let _scope = bridge.open_scope();
+    let hold = function(&runtime, "globalThis.fixture.hold");
+
+    // Registered first, so nami calls it first: by the time the cell's own
+    // watcher runs, the value its notification carries is already history.
+    let binding = Binding::container(0_u32);
+    let _guard = binding.watch({
+        let binding = binding.clone();
+        move |context: nami::watcher::Context<u32>| {
+            if context.into_value() == 1 {
+                binding.set(2);
+            }
+        }
+    });
+
+    let exported = binding.clone().into_js(bridge).expect("a binding exports");
+    bridge
+        .call(&hold, &[exported])
+        .expect("JavaScript holds it");
+
+    binding.set(1);
+
+    assert_eq!(binding.get(), 2);
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.held()"),
+        2,
+        "the cell pushes what the binding holds, not what its notification carried"
+    );
+}
+
+#[test]
+fn a_value_that_is_a_function_is_stored_and_not_called() {
+    let runtime = runtime();
+    let bridge = runtime.bridge();
+    let _scope = bridge.open_scope();
+    let hold = function(&runtime, "globalThis.fixture.hold");
+
+    let binding = Binding::container(JsValue::Number(1.0));
+    let exported = binding.clone().into_js(bridge).expect("a binding exports");
+    bridge
+        .call(&hold, &[exported])
+        .expect("JavaScript holds it");
+
+    // A callback, a memo, a signal: anything a props payload may carry is a
+    // function on the JavaScript side, and a signal's `set` reads a function
+    // argument as an updater.
+    let probe = eval(&runtime, "globalThis.fixture.probe");
+    binding.set(probe);
+
+    assert_eq!(
+        eval(
+            &runtime,
+            "globalThis.fixture.held() === globalThis.fixture.probe"
+        ),
+        JsValue::Bool(true),
+        "the function itself is what JavaScript holds"
+    );
+    assert_eq!(
+        integer(&runtime, "globalThis.fixture.probeCalls"),
+        0,
+        "and writing it did not call it"
+    );
+}
+
+#[test]
+fn a_float_keeps_the_value_rust_set_it_to() {
+    let runtime = runtime();
+    let bridge = runtime.bridge();
+    let _scope = bridge.open_scope();
+    let hold = function(&runtime, "globalThis.fixture.hold");
+
+    let binding = Binding::container(0.0_f64);
+    let exported = binding.clone().into_js(bridge).expect("a binding exports");
+    bridge
+        .call(&hold, &[exported])
+        .expect("JavaScript holds it");
+    eval(
+        &runtime,
+        "globalThis.notified = 0;
+         globalThis.fixture.held.__subscribe(() => { globalThis.notified += 1; })",
+    );
+
+    binding.set(f64::NAN);
+    assert!(binding.get().is_nan(), "Rust kept the NaN it set");
+    assert_eq!(
+        eval(&runtime, "Number.isNaN(globalThis.fixture.held())"),
+        JsValue::Bool(true)
+    );
+    assert_eq!(integer(&runtime, "globalThis.notified"), 1);
+
+    binding.set(f64::NAN);
+    assert_eq!(
+        integer(&runtime, "globalThis.notified"),
+        1,
+        "NaN written over NaN is not a change on either side"
+    );
+
+    binding.set(0.0);
+    binding.set(-0.0);
+    assert!(
+        binding.get().is_sign_negative(),
+        "Rust kept the negative zero it set, instead of being corrected to +0"
+    );
+    assert_eq!(
+        eval(&runtime, "Object.is(globalThis.fixture.held(), -0)"),
+        JsValue::Bool(true),
+        "and JavaScript holds the same value, by the same equality"
+    );
 }
 
 #[test]
@@ -1019,8 +1206,12 @@ fn a_bundle_cannot_replace_a_host_function_before_it_is_installed() {
     let host = TestHost::default();
     let runtime = TsRuntime::new(Environment::new(), host.clone()).expect("the runtime constructs");
     // `__waterui_host` is an ordinary mutable global, and this bundle
-    // reassigns one of its entries on the way to installing the runtime.
-    let tampered = format!("globalThis.__waterui_host.create = () => 'hijacked';\n{FIXTURE}");
+    // reassigns two of its entries on the way to installing the runtime: the
+    // one the table carries, and the one every callback dispatches through.
+    let tampered = format!(
+        "globalThis.__waterui_host.create = () => 'hijacked';
+         globalThis.__waterui_host.invoke = () => 'hijacked';\n{FIXTURE}"
+    );
     runtime.load(&tampered).expect("the bundle loads");
 
     eval(
@@ -1031,6 +1222,51 @@ fn a_bundle_cannot_replace_a_host_function_before_it_is_installed() {
         *host.calls.borrow(),
         vec![Call::Create(String::from("VStack"))],
         "the installed table carries the function the engine registered"
+    );
+
+    let bridge = runtime.bridge();
+    let _scope = bridge.open_scope();
+    let called = Rc::new(Cell::new(0_u32));
+    let callback: Box<dyn Fn(u32)> = Box::new({
+        let called = Rc::clone(&called);
+        move |value| called.set(value)
+    });
+    let exported = callback.into_js(bridge).expect("a callback exports");
+    let hold = function(&runtime, "globalThis.fixture.hold");
+    bridge
+        .call(&hold, &[exported])
+        .expect("JavaScript holds it");
+    eval(&runtime, "globalThis.fixture.held(5)");
+    assert_eq!(
+        called.get(),
+        5,
+        "and a callback dispatches through the invoke the engine registered"
+    );
+}
+
+#[test]
+fn a_bundle_whose_host_installation_fails_can_be_loaded_again() {
+    let runtime =
+        TsRuntime::new(Environment::new(), TestHost::default()).expect("the runtime constructs");
+    let refusing = format!(
+        "{FIXTURE}
+         globalThis.__waterui_runtime = {{
+           ...globalThis.__waterui_runtime,
+           installHost: () => {{ throw new Error('this host is not welcome'); }},
+         }};"
+    );
+
+    let error = runtime
+        .load(&refusing)
+        .expect_err("the host installation throws");
+    assert!(error.to_string().contains("not welcome"), "{error}");
+
+    // Nothing was published, so the runtime is still loadable.
+    runtime.load(FIXTURE).expect("a second attempt loads");
+    assert_eq!(
+        eval(&runtime, "typeof globalThis.fixture.host.create"),
+        JsValue::String(String::from("function")),
+        "and the host it installs is the real one"
     );
 }
 
