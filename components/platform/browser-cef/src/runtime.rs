@@ -154,7 +154,7 @@ impl PlatformSandbox {
         ))
     }
 
-    fn info(&self) -> *mut u8 {
+    const fn info(&self) -> *mut u8 {
         self.0.as_ptr().cast()
     }
 }
