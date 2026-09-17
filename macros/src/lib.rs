@@ -1733,6 +1733,13 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
 /// it, an absolute path, or a file that does not exist is a compile error
 /// naming the path.
 ///
+/// "The file that mounts the module" is the file the path literal is written
+/// in, as it is for `include_str!`: a `macro_rules!` that expands to a `tsx!`
+/// with a literal of its own resolves that literal beside the file defining
+/// the `macro_rules!`, not beside its caller. A wrapper macro that takes the
+/// path from its caller passes the caller's literal through and resolves it
+/// beside the caller.
+///
 /// # Props
 ///
 /// The props argument is a struct literal, which is what names the props type

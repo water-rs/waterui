@@ -267,7 +267,9 @@ fn take_mounted(
                 found: "nothing",
             })
     };
-    let view = bridge.take_view(entry("handle")?)?;
+    // `dispose` first: once the root scope exists it is reachable only through
+    // this function, so a handle that cannot be taken still gets its tree
+    // torn down rather than left running until the runtime goes.
     let dispose = entry("dispose")?;
     let JsValue::Function(dispose) = dispose else {
         return Err(TsError::MountedEntry {
@@ -275,6 +277,18 @@ fn take_mounted(
             name: "dispose",
             found: kind_of(dispose),
         });
+    };
+    let view = match entry("handle").and_then(|handle| Ok(bridge.take_view(handle)?)) {
+        Ok(view) => view,
+        Err(error) => {
+            if let Err(dispose_error) = bridge.call(dispose, &[]) {
+                tracing::error!(
+                    %dispose_error,
+                    "disposing a TypeScript module whose mount could not be taken failed"
+                );
+            }
+            return Err(error);
+        }
     };
     Ok((view, dispose.clone()))
 }

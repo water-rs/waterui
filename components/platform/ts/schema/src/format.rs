@@ -93,10 +93,10 @@ pub(crate) mod kind {
 
 /// What the byte after the version says a payload is, for the error a decoder
 /// handed the wrong kind raises.
-pub(crate) const fn payload_kind(byte: Option<u8>) -> &'static str {
+pub(crate) const fn payload_kind(byte: u8) -> &'static str {
     match byte {
-        Some(kind::CATALOG) => "a component catalog",
-        Some(kind::MOUNT) => "a mount point",
+        kind::CATALOG => "a component catalog",
+        kind::MOUNT => "a mount point",
         _ => "a props type tree",
     }
 }
