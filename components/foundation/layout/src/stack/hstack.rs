@@ -168,7 +168,11 @@ impl Layout for HStackLayout {
         }
 
         let spacing = self.spacing.get();
-        let measurements = measure_stack(Axis::Horizontal, proposal, spacing, children);
+        // The main axis keeps the proposal this row was measured with; the cross
+        // axis is the row's resolved extent, so a row made taller than its
+        // proposal by a rigid child hands that height to every child.
+        let placement = proposal.with_height(Some(bounds.height()));
+        let measurements = measure_stack(Axis::Horizontal, placement, spacing, children);
 
         let (intrinsic_above, _intrinsic_below) =
             hstack_intrinsic_cross_metrics(&measurements, self.alignment);

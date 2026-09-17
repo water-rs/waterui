@@ -452,3 +452,94 @@ fn cross_axis_fill_preserves_its_minimum_in_small_bounds() {
         assert_eq!(*placements[0].frame.size(), axis_size(axis, 40.0, 10.0));
     }
 }
+
+/// A leaf that wraps: it takes the width it is offered (never more than its
+/// unwrapped width) and grows taller the narrower it gets.
+struct WrappingLeaf {
+    axis: Axis,
+    unwrapped: f32,
+    area: f32,
+}
+
+impl SubView for WrappingLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let cross = cross_proposal(self.axis, proposal)
+            .unwrap_or(self.unwrapped)
+            .clamp(1.0, self.unwrapped);
+        ViewDimensions::new(axis_size(self.axis, self.area / cross, cross))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+fn cross_proposal(axis: Axis, proposal: ProposalSize) -> Option<f32> {
+    if axis.is_horizontal() {
+        proposal.height
+    } else {
+        proposal.width
+    }
+}
+
+/// A stack widened past its proposal by a rigid child proposes its resolved
+/// cross extent at placement: the wrapping sibling lays out across the whole
+/// stack, as `SwiftUI`'s does, instead of staying wrapped at the proposal.
+#[test]
+fn placement_proposes_the_resolved_cross_extent() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let layout = stack(axis);
+        let rigid = RangeLeaf {
+            axis,
+            minimum: 40.0,
+            ideal: 40.0,
+            maximum: 40.0,
+            cross: 414.0,
+        };
+        let wrapping = WrappingLeaf {
+            axis,
+            unwrapped: 414.0,
+            area: 414.0 * 10.0,
+        };
+        let proposal = axis_proposal(axis, None, Some(370.0));
+        let measured = layout.size_that_fits(proposal, &[&rigid, &wrapping]);
+        // Measured at 370 the wrapping child needs two lines' worth of main
+        // extent; the rigid child widens the stack to 414 regardless.
+        assert_extent(cross_extent(axis, measured), 414.0, "stack cross extent");
+
+        let bounds = Rect::from_size(axis_size(axis, main_extent(axis, measured), 414.0));
+        let placements = layout.place(bounds, proposal, &[&rigid, &wrapping]);
+        assert_eq!(
+            cross_proposal(axis, placements[1].proposal),
+            Some(414.0),
+            "the wrapping child is proposed the stack's resolved cross extent"
+        );
+        assert_extent(
+            cross_extent(axis, *placements[1].frame.size()),
+            414.0,
+            "wrapping child cross extent",
+        );
+        assert_extent(
+            main_extent(axis, *placements[1].frame.size()),
+            10.0,
+            "wrapping child main extent (one line)",
+        );
+        assert_eq!(
+            main_proposal(axis, placements[0].proposal),
+            main_proposal(axis, proposal),
+            "the main axis keeps the measurement proposal"
+        );
+    }
+}
+
+const fn cross_extent(axis: Axis, size: Size) -> f32 {
+    if axis.is_horizontal() {
+        size.height
+    } else {
+        size.width
+    }
+}

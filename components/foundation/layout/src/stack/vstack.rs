@@ -98,7 +98,13 @@ impl Layout for VStackLayout {
         }
 
         let spacing = self.spacing.get();
-        let measurements = measure_stack(Axis::Vertical, proposal, spacing, children);
+        // The main axis keeps the proposal this column was measured with; the
+        // cross axis is the column's resolved extent. A column widened past its
+        // proposal by an unshrinkable row hands that width to every child, so a
+        // title lays out across the column it actually has instead of staying
+        // wrapped at the width the column was asked to fit.
+        let placement = proposal.with_width(Some(bounds.width()));
+        let measurements = measure_stack(Axis::Vertical, placement, spacing, children);
 
         let has_explicit_alignment_guides = measurements.iter().any(|measurement| {
             measurement
