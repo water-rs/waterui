@@ -191,18 +191,18 @@ waterui-icons-lucide = { version = "0.1.2", path = "components/icon/lucide" }
 waterui-icons-native = { version = "0.1.2", path = "components/icon/native" }
 waterui-locale = { version = "0.1.2", path = "utils/locale" }
 waterui-map = { version = "0.1.2", path = "components/data/map" }
-waterkit-location = "0.1.2"
-waterkit-screen = "0.1.2"
-waterkit-audio = { version = "0.1.2", default-features = false }
-waterkit-clipboard = "0.1.2"
-waterkit-permission = "0.1.2"
-waterkit-dialog = "0.1.2"
-waterkit-fs = "0.1.2"
-waterkit-haptic = "0.1.2"
-waterkit-camera = "0.1.2"
-waterkit-codec = { version = "0.1.2", default-features = false }
-waterkit-video = { version = "0.1.2", features = ["streaming"] }
-waterkit-build = "0.1.2"
+waterkit-location = "0.1.3"
+waterkit-screen = "0.1.3"
+waterkit-audio = { version = "0.1.3", default-features = false }
+waterkit-clipboard = "0.1.3"
+waterkit-permission = "0.1.3"
+waterkit-dialog = "0.1.3"
+waterkit-fs = "0.1.3"
+waterkit-haptic = "0.1.3"
+waterkit-camera = "0.1.3"
+waterkit-codec = { version = "0.1.3", default-features = false }
+waterkit-video = { version = "0.1.3", features = ["streaming"] }
+waterkit-build = "0.1.3"
 waterui-backend-core = { version = "0.1.2", path = "backends/core", default-features = false }
 filtrate = "0.2.0"
 filtrate-core = "0.2.0"
