@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::{TsMapKey, TsType, TypeSchema, tree::NumberKind};
 
@@ -95,16 +96,22 @@ macro_rules! callback_schema {
     };
 }
 
-/// One set of impls per callable arity, up to eight arguments: boxed closures
-/// in every `Send`/`Sync` flavour, bare reference-counted closures (`Rc` is
-/// neither `Send` nor `Sync`, so only that spelling exists), and plain `fn`
-/// pointers. Eight is the documented cap — see [`TsType`](crate::TsType).
+/// One set of impls per callable arity, up to eight arguments: boxed and
+/// atomically reference-counted closures in every `Send`/`Sync` flavour —
+/// `Arc<dyn Fn(A) + Send + Sync>` is the canonical shared callback — bare
+/// `Rc` closures (`Rc` is neither `Send` nor `Sync`, so only that spelling
+/// exists), and plain `fn` pointers. Eight is the documented cap — see
+/// [`TsType`](crate::TsType).
 macro_rules! callback_schemas {
     ($($argument:ident),*) => {
         callback_schema!(Box<dyn Fn($($argument),*)>, $($argument),*);
         callback_schema!(Box<dyn Fn($($argument),*) + Send>, $($argument),*);
         callback_schema!(Box<dyn Fn($($argument),*) + Sync>, $($argument),*);
         callback_schema!(Box<dyn Fn($($argument),*) + Send + Sync>, $($argument),*);
+        callback_schema!(Arc<dyn Fn($($argument),*)>, $($argument),*);
+        callback_schema!(Arc<dyn Fn($($argument),*) + Send>, $($argument),*);
+        callback_schema!(Arc<dyn Fn($($argument),*) + Sync>, $($argument),*);
+        callback_schema!(Arc<dyn Fn($($argument),*) + Send + Sync>, $($argument),*);
         callback_schema!(Rc<dyn Fn($($argument),*)>, $($argument),*);
         callback_schema!(fn($($argument),*), $($argument),*);
     };

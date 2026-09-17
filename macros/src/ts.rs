@@ -27,9 +27,9 @@ fn ts_schema_path() -> syn::Result<TokenStream2> {
     // declares `extern crate self as waterui`, so `crate` is the `waterui`
     // the expansion names — the same special case `waterui_crate_path` in
     // `lib.rs` makes. `CARGO_TARGET_TMPDIR` is set only when the package's
-    // integration tests compile, and there `crate` would name the test binary
-    // instead, so those expansions take the facade arm like any other
-    // consumer.
+    // integration tests and benches compile, and there `crate` would name
+    // the test or bench binary instead, so those expansions take the facade
+    // arm like any other consumer.
     if std::env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-internal")
         && std::env::var_os("CARGO_TARGET_TMPDIR").is_none()
     {

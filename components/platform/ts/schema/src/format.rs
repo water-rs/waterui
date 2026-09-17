@@ -14,6 +14,16 @@
 /// contract is worse than none.
 pub const FORMAT_VERSION: u8 = 1;
 
+/// The deepest node nesting the format permits.
+///
+/// Both sides enforce it: the const encoder asserts it while writing, so an
+/// encoding that exceeds it fails const evaluation, and the runtime decoder
+/// fails with [`DecodeError::TooDeep`](crate::DecodeError::TooDeep) past it —
+/// decoding is recursive, so an unbounded payload would recurse unboundedly
+/// and overflow the stack. Sixty-four is far past any real props schema while
+/// keeping the deepest legal payload inside a small stack budget.
+pub const MAX_DEPTH: usize = 64;
+
 /// Node tags. Discriminants are written by hand rather than derived from
 /// declaration order so that reordering [`TypeSchema`](crate::TypeSchema)
 /// cannot silently change the wire format.

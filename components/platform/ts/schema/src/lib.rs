@@ -84,9 +84,9 @@ mod tree;
 #[cfg(test)]
 mod tests;
 
-pub use decode::{DecodeError, MAX_DEPTH, decode};
+pub use decode::{DecodeError, decode};
 pub use encode::{contract_hash, encode, encoded_len, payload};
-pub use format::FORMAT_VERSION;
+pub use format::{FORMAT_VERSION, MAX_DEPTH};
 pub use tree::{
     EnumRepresentation, EnumSchema, FieldSchema, NumberKind, StructSchema, TypeSchema,
     VariantPayload, VariantSchema,

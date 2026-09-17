@@ -167,6 +167,10 @@ canvas = ["dep:waterui-canvas"]
 chart = ["dep:waterui-chart"]
 barcode = ["dep:waterui-barcode"]
 particle = ["dep:waterui-particle"]
+# `ts` is deliberately absent: the TypeScript runtime will link a JavaScript
+# engine and a bundle loader, so an application that mounts TypeScript view
+# modules opts in explicitly rather than paying for them through the
+# full-feature set — the same reasoning `markdown-math` carries above.
 all = [
     "canvas",
     "chart",
