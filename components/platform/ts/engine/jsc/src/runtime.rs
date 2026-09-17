@@ -1,33 +1,44 @@
 //! `JsRuntime` over the system `JavaScriptCore.framework`.
 //!
 //! One [`JscRuntime`] owns one `JSContext`. Retained handles carry
-//! `Retained<JSValue>`; opaque Rust values cross as a JavaScript object
-//! carrying a symbol-keyed index into a registry the runtime owns —
-//! JavaScript can hold and pass the box but cannot reach the `Rc`.
+//! `Retained<JSValue>` — a `JSValue` keeps its context alive, so a handle
+//! outlives the runtime safely. Opaque Rust values cross as instances of a
+//! private `JSClass` whose objects hold the `Rc` as private data and release
+//! it in the class finalizer; no JavaScript-visible property names the
+//! identity.
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::ffi::c_void;
 use std::fmt;
 use std::ptr;
 use std::rc::Rc;
 
 use block2::{ManualBlockEncoding, RcBlock};
 use objc2::Message;
-use objc2::rc::Retained;
+use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
 use objc2_foundation::{NSArray, NSString, NSURL};
-use objc2_javascript_core::{JSContext, JSValue};
+use objc2_javascript_core::{
+    JSClassCreate, JSClassDefinition, JSClassRef, JSClassRelease, JSContext, JSObjectGetPrivate,
+    JSObjectMake, JSObjectRef, JSValue, kJSClassAttributeNone,
+};
 use waterui_ts_engine::handle::Handle;
 use waterui_ts_engine::{
-    BigInt, HostFunction, JsError, JsFunction, JsObject, JsRuntime, JsValue, Opaque,
+    BigInt, HostFunction, JsError, JsFunction, JsObject, JsRuntime, JsValue, MAX_CONVERSION_DEPTH,
+    Opaque,
 };
 
 /// The namespace object host functions register under:
 /// `globalThis.__waterui_host`.
 const HOST_NAMESPACE: &str = "__waterui_host";
 
-/// The opaque registry: `Rc`s boxed for JavaScript to hold.
-type Registry = Rc<RefCell<Vec<Rc<dyn Any>>>>;
+unsafe extern "C-unwind" {
+    /// `JSSynchronousGarbageCollectForDebugging` — exported by the framework
+    /// and declared in `JSBase.h`; runs a full synchronous collection,
+    /// including conservative-stack and external-reference scanning, where
+    /// `JSGarbageCollect` can defer finalization.
+    fn JSSynchronousGarbageCollectForDebugging(ctx: objc2_javascript_core::JSContextRef);
+}
 
 /// `text` as an `NSString`.
 fn ns(text: &str) -> Retained<NSString> {
@@ -105,6 +116,46 @@ fn property_string(value: &JSValue, key: &str) -> Option<String> {
     string(&property)
 }
 
+/// `JSObjectFinalizeCallback` for the opaque-box class: takes the
+/// `Box<Rc<dyn Any>>` the object carried back and drops it — a box
+/// JavaScript drops releases its `Rc`. The callback must not allocate or
+/// collect; dropping a `Box` does neither.
+unsafe extern "C-unwind" fn opaque_finalize(object: JSObjectRef) {
+    // SAFETY: `box_opaque` stored a `Box<Rc<dyn Any>>` pointer as the
+    // object's private data, and `finalize` runs exactly once per object.
+    let data = unsafe { JSObjectGetPrivate(object) };
+    if !data.is_null() {
+        // SAFETY: `data` is the unique `Box` pointer stored at creation.
+        unsafe { drop(Box::from_raw(data.cast::<Rc<dyn Any>>())) };
+    }
+}
+
+/// The class definition for opaque boxes: every callback `None` except
+/// `finalize`, so the boxes expose no JavaScript-visible surface — no
+/// property, no name lookup, no constructor. `JSClassCreate` reads it once;
+/// it never outlives the call.
+fn opaque_class_definition() -> JSClassDefinition {
+    JSClassDefinition {
+        version: 0,
+        attributes: kJSClassAttributeNone,
+        className: c"WaterUiOpaque".as_ptr(),
+        parentClass: ptr::null_mut(),
+        staticValues: ptr::null(),
+        staticFunctions: ptr::null(),
+        initialize: None,
+        finalize: Some(opaque_finalize),
+        hasProperty: None,
+        getProperty: None,
+        setProperty: None,
+        deleteProperty: None,
+        getPropertyNames: None,
+        callAsFunction: None,
+        callAsConstructor: None,
+        hasInstance: None,
+        convertToType: None,
+    }
+}
+
 /// The block signature `id (^)(void)` — `RcBlock::new` attaches no
 /// signature, and `JavaScriptCore` only converts a block to a JavaScript
 /// function when `_Block_signature` parses, so the encoding is declared
@@ -128,13 +179,14 @@ unsafe impl ManualBlockEncoding for HostBlockEncoding {
 /// directions, cloned into each block.
 #[derive(Clone)]
 struct Bridge {
-    /// `{ keys, isFunction }` — helpers the Objective-C API lacks. Held, not
-    /// installed on the global object, so they never leak into the script's
-    /// namespace.
+    /// `{ keys, isFunction, isPlainObject, kindName }` — helpers the
+    /// Objective-C API lacks. Held, not installed on the global object, so
+    /// they never leak into the script's namespace.
     helpers: Retained<JSValue>,
-    /// The symbol marking a boxed [`Opaque`] on its JavaScript object.
-    opaque_key: Retained<JSValue>,
-    registry: Registry,
+    /// The class identifying opaque boxes. A non-owning copy of the one ref
+    /// `JscRuntime::new` created — the runtime releases it on drop, and live
+    /// boxes keep the class alive through their own refs until then.
+    opaque_class: JSClassRef,
 }
 
 impl Bridge {
@@ -147,7 +199,17 @@ impl Bridge {
     }
 
     /// Rust → JavaScript.
-    fn to_js(&self, context: &JSContext, value: &JsValue) -> Result<Retained<JSValue>, JsError> {
+    fn to_js(
+        &self,
+        context: &JSContext,
+        value: &JsValue,
+        depth: usize,
+    ) -> Result<Retained<JSValue>, JsError> {
+        if depth > MAX_CONVERSION_DEPTH {
+            return Err(JsError::conversion(
+                "a value graph deeper than the conversion limit cannot cross the bridge",
+            ));
+        }
         let created = match value {
             JsValue::Undefined => Some(undefined(context)),
             // SAFETY: `context` is a live context.
@@ -178,7 +240,7 @@ impl Bridge {
                 let array = unsafe { JSValue::valueWithNewArrayInContext(Some(context)) };
                 if let Some(array) = &array {
                     for (index, item) in items.iter().enumerate() {
-                        let item = self.to_js(context, item)?;
+                        let item = self.to_js(context, item, depth + 1)?;
                         // SAFETY: `array` and `item` are live `JSValue`s.
                         unsafe {
                             array.setObject_atIndexedSubscript(Some(as_id(&item)), index);
@@ -192,7 +254,7 @@ impl Bridge {
                 let object = unsafe { JSValue::valueWithNewObjectInContext(Some(context)) };
                 if let Some(object) = &object {
                     for (key, item) in entries {
-                        let item = self.to_js(context, item)?;
+                        let item = self.to_js(context, item, depth + 1)?;
                         // SAFETY: `object` and `item` are live `JSValue`s;
                         // the key is a live `NSString`, converted to a JS
                         // string.
@@ -215,7 +277,17 @@ impl Bridge {
     }
 
     /// JavaScript → Rust.
-    fn to_rust(&self, value: &JSValue) -> Result<JsValue, JsError> {
+    fn to_rust(
+        &self,
+        context: &JSContext,
+        value: &JSValue,
+        depth: usize,
+    ) -> Result<JsValue, JsError> {
+        if depth > MAX_CONVERSION_DEPTH {
+            return Err(JsError::conversion(
+                "an object graph deeper than the conversion limit cannot cross the bridge",
+            ));
+        }
         // SAFETY: every predicate and conversion in this block is called on
         // the live `value` or on a `JSValue` it produced.
         unsafe {
@@ -254,7 +326,7 @@ impl Bridge {
             if value.isObject() {
                 // Functions are objects; check them first so they stay
                 // callable rather than collapsing into entries.
-                if self.is_function(value)? {
+                if self.is_function(context, value)? {
                     return Ok(JsValue::Function(JsFunction::from_handle(Handle::new(
                         value.retain(),
                     ))));
@@ -269,19 +341,25 @@ impl Bridge {
                         let item = value.objectAtIndexedSubscript(index).ok_or_else(|| {
                             JsError::conversion("an array element could not be read")
                         })?;
-                        items.push(self.to_rust(&item)?);
+                        items.push(self.to_rust(context, &item, depth + 1)?);
                     }
                     return Ok(JsValue::Array(items));
                 }
-                if let Some(opaque) = self.unbox(value)? {
+                if let Some(opaque) = self.unbox(context, value) {
                     return Ok(JsValue::Opaque(opaque));
                 }
+                if !self.is_plain_object(context, value)? {
+                    return Err(JsError::conversion(format!(
+                        "a {} cannot cross the bridge",
+                        self.kind_name(context, value)
+                    )));
+                }
                 let mut entries = Vec::new();
-                for key in self.keys(value)? {
+                for key in self.keys(context, value)? {
                     let item = value
                         .valueForProperty(Some(&ns(&key)))
                         .ok_or_else(|| JsError::conversion("an object entry could not be read"))?;
-                    entries.push((key, self.to_rust(&item)?));
+                    entries.push((key, self.to_rust(context, &item, depth + 1)?));
                 }
                 return Ok(JsValue::Object(entries));
             }
@@ -291,31 +369,57 @@ impl Bridge {
         ))
     }
 
-    /// `typeof value === 'function'`, which the Objective-C API cannot answer
-    /// (`isObject` is true for functions too).
-    fn is_function(&self, value: &JSValue) -> Result<bool, JsError> {
+    /// Calls the named helper on `value`. On failure any pending exception
+    /// is drained so it cannot leak into the next engine operation.
+    fn helper_call(
+        &self,
+        context: &JSContext,
+        name: &str,
+        value: &JSValue,
+    ) -> Result<Retained<JSValue>, JsError> {
         let arguments = NSArray::from_retained_slice(&[Self::as_argument(value)]);
-        // SAFETY: `helpers` is a live `JSValue` holding an `isFunction`
-        // function, and `arguments` holds a `JSValue` as `id`.
+        // SAFETY: `helpers` is a live `JSValue` holding named functions, and
+        // `arguments` holds a `JSValue` as `id`.
         let result = unsafe {
             self.helpers
-                .invokeMethod_withArguments(Some(&ns("isFunction")), Some(&arguments))
-        }
-        .ok_or_else(|| JsError::new("Error", "the isFunction helper call failed"))?;
+                .invokeMethod_withArguments(Some(&ns(name)), Some(&arguments))
+        };
+        result.ok_or_else(|| {
+            // SAFETY: `context` is a live context; drain anything pending.
+            unsafe { context.setException(None) };
+            JsError::new("Error", format!("the {name} helper call failed"))
+        })
+    }
+
+    /// `typeof value === 'function'`, which the Objective-C API cannot answer
+    /// (`isObject` is true for functions too).
+    fn is_function(&self, context: &JSContext, value: &JSValue) -> Result<bool, JsError> {
+        let result = self.helper_call(context, "isFunction", value)?;
         // SAFETY: `result` is a live `JSValue`.
         Ok(unsafe { result.isBoolean() && result.toBool() })
     }
 
+    /// Whether `object` is plain: `Object.prototype` or `null` prototype.
+    /// Everything else — `Map`, `Date`, `Error`, `Promise`, class instances —
+    /// is an exotic that has no `JsValue`.
+    fn is_plain_object(&self, context: &JSContext, value: &JSValue) -> Result<bool, JsError> {
+        let result = self.helper_call(context, "isPlainObject", value)?;
+        // SAFETY: `result` is a live `JSValue`.
+        Ok(unsafe { result.isBoolean() && result.toBool() })
+    }
+
+    /// `Object.prototype.toString.call(value)` → `"Map"`, `"Date"`, … — the
+    /// kind a conversion error names.
+    fn kind_name(&self, context: &JSContext, value: &JSValue) -> String {
+        self.helper_call(context, "kindName", value)
+            .ok()
+            .and_then(|result| string(&result))
+            .unwrap_or_else(|| String::from("object"))
+    }
+
     /// `Object.keys(value)` — the engine has no Objective-C API for it.
-    fn keys(&self, value: &JSValue) -> Result<Vec<String>, JsError> {
-        let arguments = NSArray::from_retained_slice(&[Self::as_argument(value)]);
-        // SAFETY: `helpers` holds a `keys` function and `arguments` a
-        // `JSValue` as `id`.
-        let keys = unsafe {
-            self.helpers
-                .invokeMethod_withArguments(Some(&ns("keys")), Some(&arguments))
-        }
-        .ok_or_else(|| JsError::new("Error", "the keys helper call failed"))?;
+    fn keys(&self, context: &JSContext, value: &JSValue) -> Result<Vec<String>, JsError> {
+        let keys = self.helper_call(context, "keys", value)?;
         // SAFETY: `keys` is a live `JSValue` — an array of strings.
         unsafe {
             let length = keys
@@ -334,56 +438,61 @@ impl Bridge {
         }
     }
 
-    /// Boxes `opaque` as a JavaScript object carrying its registry index
-    /// under the unguessable symbol key.
+    /// Boxes `opaque` as an instance of the opaque class — the `Rc` is the
+    /// object's private data, released by `opaque_finalize` when JavaScript
+    /// drops the box. Each crossing creates a new box.
     fn box_opaque(
         &self,
         context: &JSContext,
         opaque: &Opaque,
     ) -> Result<Retained<JSValue>, JsError> {
-        let index = {
-            let mut registry = self.registry.borrow_mut();
-            registry.push(opaque.inner().clone());
-            registry.len() - 1
+        let data = Box::into_raw(Box::new(opaque.inner().clone()));
+        // SAFETY: `context` is a live context and `opaque_class` a live
+        // class; on success the object owns `data` until `opaque_finalize`
+        // takes it back.
+        let object = unsafe {
+            JSObjectMake(
+                context.JSGlobalContextRef().cast_const(),
+                self.opaque_class,
+                data.cast::<c_void>(),
+            )
         };
-        // SAFETY: `context` is a live context.
-        let boxed = unsafe { JSValue::valueWithNewObjectInContext(Some(context)) }
-            .ok_or_else(|| JsError::new("Error", "JavaScriptCore could not create an object"))?;
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "a registry index is bounded by the number of boxed values, always exact in a double"
-        )]
-        let index = index as f64;
-        // SAFETY: `context` is a live context.
-        let marker = unsafe { JSValue::valueWithDouble_inContext(index, Some(context)) }
-            .ok_or_else(|| JsError::new("Error", "JavaScriptCore could not create a number"))?;
-        // SAFETY: `boxed`, `marker` and `opaque_key` are live `JSValue`s.
-        unsafe {
-            boxed.setObject_forKeyedSubscript(Some(as_id(&marker)), Some(as_id(&self.opaque_key)));
+        if object.is_null() {
+            // SAFETY: `data` was not adopted; reclaim the `Box`.
+            unsafe { drop(Box::from_raw(data)) };
+            return Err(JsError::new(
+                "Error",
+                "JavaScriptCore could not box an opaque value",
+            ));
         }
-        Ok(boxed)
+        // SAFETY: `object` is a live object in `context`; a `JSObjectRef`
+        // doubles as its `JSValueRef`.
+        unsafe { JSValue::valueWithJSValueRef_inContext(object.cast_const(), Some(context)) }
+            .ok_or_else(|| JsError::new("Error", "JavaScriptCore could not wrap the opaque box"))
     }
 
-    /// The `Rc` a boxed object points at, or `None` when it is not a box.
-    fn unbox(&self, value: &JSValue) -> Result<Option<Opaque>, JsError> {
-        // SAFETY: `value` and `opaque_key` are live `JSValue`s.
-        let marker = unsafe { value.objectForKeyedSubscript(Some(as_id(&self.opaque_key))) };
-        let Some(marker) = marker else {
-            return Ok(None);
-        };
-        // SAFETY: `marker` is a live `JSValue`.
-        if unsafe { marker.isUndefined() } {
-            return Ok(None);
+    /// The `Rc` a box carries, or `None` when `value` is not a box. The
+    /// check is engine-native — no JavaScript-visible property marks a box,
+    /// so a plain object can never be mistaken for one.
+    fn unbox(&self, context: &JSContext, value: &JSValue) -> Option<Opaque> {
+        // SAFETY: `context` is a live context.
+        let context_ref = unsafe { context.JSGlobalContextRef() }.cast_const();
+        // SAFETY: `value` is a live `JSValue`.
+        let value_ref = unsafe { value.JSValueRef() };
+        // SAFETY: both refs are live and `opaque_class` is a live class.
+        if !unsafe { JSValue::is_object_of_class(context_ref, value_ref, self.opaque_class) } {
+            return None;
         }
-        // SAFETY: `marker` is a live `JSValue` holding the registry index.
-        let index = unsafe { marker.toInt64() };
-        let boxed = usize::try_from(index)
-            .ok()
-            .and_then(|index| self.registry.borrow().get(index).cloned())
-            .ok_or_else(|| {
-                JsError::conversion("an opaque handle names a slot that does not exist")
-            })?;
-        Ok(Some(Opaque::from_inner(boxed)))
+        // SAFETY: the class check guarantees the private data is the
+        // `Box<Rc<dyn Any>>` `box_opaque` stored.
+        let data = unsafe { JSObjectGetPrivate(value_ref.cast_mut()) };
+        if data.is_null() {
+            return None;
+        }
+        // SAFETY: `data` is a `Box<Rc<dyn Any>>` still owned by the object;
+        // it is only borrowed for the clone.
+        let rc = unsafe { &*data.cast::<Rc<dyn Any>>() }.clone();
+        Some(Opaque::from_inner(rc))
     }
 }
 
@@ -397,8 +506,7 @@ fn restore(handle: &Handle) -> Result<Retained<JSValue>, JsError> {
 
 /// The `JavaScriptCore` engine.
 ///
-/// `!Send + !Sync`: a `JSContext` is bound to the thread that created it, and
-/// the registry `Rc` pins the struct to it too.
+/// `!Send + !Sync`: a `JSContext` is bound to the thread that created it.
 pub struct JscRuntime {
     context: Retained<JSContext>,
     bridge: Bridge,
@@ -412,6 +520,15 @@ impl JscRuntime {
         // SAFETY: clears the pending exception just captured.
         unsafe { self.context.setException(None) };
         Some(exception_error(&exception))
+    }
+}
+
+impl Drop for JscRuntime {
+    fn drop(&mut self) {
+        // SAFETY: `opaque_class` is the one owned ref `new` created; live
+        // boxes keep the class alive through their own refs, so releasing
+        // here cannot orphan a finalizer.
+        unsafe { JSClassRelease(self.bridge.opaque_class) };
     }
 }
 
@@ -434,77 +551,127 @@ impl JsRuntime for JscRuntime {
             global
                 .setObject_forKeyedSubscript(Some(as_id(&host)), Some(as_id(&ns(HOST_NAMESPACE))));
         }
-        // `keys` and `isFunction` have no Objective-C API; one constant,
-        // known-good expression installs them.
+        // `keys`, `isFunction`, `isPlainObject` and `kindName` have no
+        // Objective-C API; one constant, known-good expression installs them.
         // SAFETY: `context` is a live context.
         let helpers = unsafe {
             context.evaluateScript(Some(&ns("Object.freeze({\
                     keys: (object) => Object.keys(object),\
-                    isFunction: (value) => typeof value === 'function'\
+                    isFunction: (value) => typeof value === 'function',\
+                    isPlainObject: (value) => {\
+                        const prototype = Object.getPrototypeOf(value);\
+                        return prototype === null || prototype === Object.prototype;\
+                    },\
+                    kindName: (value) => Object.prototype.toString.call(value).slice(8, -1)\
                 })")))
         }
         .ok_or_else(|| JsError::new("Error", "JavaScriptCore could not create the helpers"))?;
-        // SAFETY: `context` is a live context.
-        let opaque_key = unsafe {
-            JSValue::valueWithNewSymbolFromDescription_inContext(
-                Some(&ns("waterui.opaque")),
-                Some(&context),
-            )
+        // The one owned ref to the opaque-box class; `JscRuntime::drop`
+        // releases it.
+        let definition = opaque_class_definition();
+        // SAFETY: the definition is a valid struct that lives for the call.
+        let opaque_class = unsafe { JSClassCreate(&raw const definition) };
+        if opaque_class.is_null() {
+            return Err(JsError::new(
+                "Error",
+                "JavaScriptCore could not create the opaque class",
+            ));
         }
-        .ok_or_else(|| JsError::new("Error", "JavaScriptCore could not create a symbol"))?;
         Ok(Self {
             context,
             bridge: Bridge {
                 helpers,
-                opaque_key,
-                registry: Registry::default(),
+                opaque_class,
             },
         })
     }
 
     fn eval(&self, source: &str, name: &str) -> Result<JsValue, JsError> {
-        // SAFETY: clears any stale pending exception before evaluating.
-        unsafe { self.context.setException(None) };
-        let script = ns(source);
-        // `name` is an arbitrary string; `URLWithString` returns `None` for
-        // one it cannot parse, which `evaluateScript` accepts.
-        let url = NSURL::URLWithString(&ns(name));
-        // SAFETY: `context` is a live context and `script` a live `NSString`.
-        let result = unsafe {
-            self.context
-                .evaluateScript_withSourceURL(Some(&script), url.as_deref())
-        };
-        if let Some(exception) = self.take_exception() {
-            return Err(exception);
-        }
-        let result = result.ok_or_else(|| {
-            JsError::new("Error", "evaluation produced no value and no exception")
-        })?;
-        self.bridge.to_rust(&result)
+        // Every `valueWith…` produces an autoreleased object; the pool keeps
+        // them from accumulating in whatever pool the caller happens to run
+        // under — and lets a dropped box be finalized promptly.
+        autoreleasepool(|_| {
+            // SAFETY: clears any stale pending exception before evaluating.
+            unsafe { self.context.setException(None) };
+            let script = ns(source);
+            // `name` is an arbitrary string; `URLWithString` returns `None`
+            // for one it cannot parse, which `evaluateScript` accepts.
+            let url = NSURL::URLWithString(&ns(name));
+            // SAFETY: `context` is a live context and `script` a live
+            // `NSString`.
+            let result = unsafe {
+                self.context
+                    .evaluateScript_withSourceURL(Some(&script), url.as_deref())
+            };
+            if let Some(exception) = self.take_exception() {
+                return Err(exception);
+            }
+            let result = result.ok_or_else(|| {
+                JsError::new("Error", "evaluation produced no value and no exception")
+            })?;
+            self.bridge.to_rust(&self.context, &result, 0)
+        })
     }
 
     fn call(&self, function: &JsFunction, args: &[JsValue]) -> Result<JsValue, JsError> {
-        let function = restore(function.handle())?;
-        let mut marshaled = Vec::with_capacity(args.len());
-        for arg in args {
-            let arg = self.bridge.to_js(&self.context, arg)?;
-            marshaled.push(Bridge::as_argument(&arg));
-        }
-        let marshaled = NSArray::from_retained_slice(&marshaled);
-        // SAFETY: clears any stale pending exception before calling.
-        unsafe { self.context.setException(None) };
-        // SAFETY: `function` is a live `JSValue` in `context` and `argv`
-        // holds `JSValue`s as `id`.
-        let result = unsafe { function.callWithArguments(Some(&marshaled)) };
-        if let Some(exception) = self.take_exception() {
-            return Err(exception);
-        }
-        let result = result
-            .ok_or_else(|| JsError::new("Error", "the call produced no value and no exception"))?;
-        self.bridge.to_rust(&result)
+        autoreleasepool(|_| {
+            let function = restore(function.handle())?;
+            let mut marshaled = Vec::with_capacity(args.len());
+            for arg in args {
+                let arg = self.bridge.to_js(&self.context, arg, 0)?;
+                marshaled.push(Bridge::as_argument(&arg));
+            }
+            let marshaled = NSArray::from_retained_slice(&marshaled);
+            // SAFETY: clears any stale pending exception before calling.
+            unsafe { self.context.setException(None) };
+            // SAFETY: `function` is a live `JSValue` in `context` and `argv`
+            // holds `JSValue`s as `id`.
+            let result = unsafe { function.callWithArguments(Some(&marshaled)) };
+            if let Some(exception) = self.take_exception() {
+                return Err(exception);
+            }
+            let result = result.ok_or_else(|| {
+                JsError::new("Error", "the call produced no value and no exception")
+            })?;
+            self.bridge.to_rust(&self.context, &result, 0)
+        })
     }
 
     fn register(
+        &self,
+        name: &str,
+        function: impl Fn(&[JsValue]) -> Result<JsValue, JsError> + 'static,
+    ) -> Result<(), JsError> {
+        autoreleasepool(|_| self.register_inner(name, function))
+    }
+
+    fn retain(&self, value: &JsValue) -> Result<JsObject, JsError> {
+        autoreleasepool(|_| match value {
+            JsValue::Object(_) | JsValue::ObjectRef(_) | JsValue::Function(_) => {
+                let value = self.bridge.to_js(&self.context, value, 0)?;
+                Ok(JsObject::from_handle(Handle::new(value)))
+            }
+            _ => Err(JsError::conversion(
+                "only JavaScript objects and functions can be retained",
+            )),
+        })
+    }
+
+    fn collect_garbage(&self) {
+        // The synchronous-debug entry point runs a complete collection —
+        // including the external-reference scan that releases objects pinned
+        // only by dead `JSValue` wrappers — where `JSGarbageCollect` leaves
+        // them marked.
+        // SAFETY: `context` is a live context.
+        unsafe {
+            JSSynchronousGarbageCollectForDebugging(self.context.JSGlobalContextRef().cast_const());
+        }
+    }
+}
+
+impl JscRuntime {
+    /// The body of [`JsRuntime::register`], run inside an autorelease pool.
+    fn register_inner(
         &self,
         name: &str,
         function: impl Fn(&[JsValue]) -> Result<JsValue, JsError> + 'static,
@@ -542,7 +709,7 @@ impl JsRuntime for JscRuntime {
                         },
                         objc2::Message::retain,
                     );
-                    match bridge.to_rust(&value) {
+                    match bridge.to_rust(&context, &value, 0) {
                         Ok(value) => converted.push(value),
                         Err(error) => {
                             return Retained::autorelease_return(throw(&context, &error));
@@ -553,7 +720,7 @@ impl JsRuntime for JscRuntime {
             // `autorelease_return`: a block returns its object at +0, the
             // same convention `valueWithObject_inContext` callers follow.
             match host(&converted) {
-                Ok(value) => match bridge.to_js(&context, &value) {
+                Ok(value) => match bridge.to_js(&context, &value, 0) {
                     Ok(value) => Retained::autorelease_return(value),
                     Err(error) => Retained::autorelease_return(throw(&context, &error)),
                 },
@@ -567,6 +734,13 @@ impl JsRuntime for JscRuntime {
         // to a JS string.
         let namespace = unsafe { global.objectForKeyedSubscript(Some(as_id(&ns(HOST_NAMESPACE)))) }
             .ok_or_else(|| JsError::new("Error", "the __waterui_host namespace is missing"))?;
+        // SAFETY: `namespace` is a live `JSValue`.
+        if !unsafe { namespace.isObject() } {
+            return Err(JsError::new(
+                "Error",
+                "__waterui_host is not an object; registration is impossible",
+            ));
+        }
         // SAFETY: a heap block is an Objective-C object (`NSBlock`), a valid
         // `id`; JavaScriptCore retains it as the function it installs, so it
         // outlives this `RcBlock`.
@@ -579,19 +753,12 @@ impl JsRuntime for JscRuntime {
                 Some(as_id(&ns(name))),
             );
         }
-        Ok(())
-    }
-
-    fn retain(&self, value: &JsValue) -> Result<JsObject, JsError> {
-        match value {
-            JsValue::Object(_) | JsValue::ObjectRef(_) | JsValue::Function(_) => {
-                let value = self.bridge.to_js(&self.context, value)?;
-                Ok(JsObject::from_handle(Handle::new(value)))
-            }
-            _ => Err(JsError::conversion(
-                "only JavaScript objects and functions can be retained",
-            )),
+        // `setObject_forKeyedSubscript` reports failure only through the
+        // context's pending exception — drain it instead of returning `Ok`.
+        if let Some(exception) = self.take_exception() {
+            return Err(exception);
         }
+        Ok(())
     }
 }
 

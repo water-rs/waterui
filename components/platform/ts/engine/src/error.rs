@@ -49,13 +49,10 @@ impl JsError {
 impl fmt::Display for JsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.name, self.message)?;
-        // A `stack` string's first line already reads `name: message`; append
-        // only the frames so the rendered error is not duplicated.
-        if let Some(stack) = &self.stack
-            && let Some((_, frames)) = stack.split_once('\n')
-            && !frames.is_empty()
-        {
-            write!(f, "\n{frames}")?;
+        // Neither engine prefixes its stack with a `name: message` line —
+        // render it whole so the throw-site frame is never lost.
+        if let Some(stack) = &self.stack {
+            write!(f, "\n{stack}")?;
         }
         Ok(())
     }

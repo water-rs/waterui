@@ -25,6 +25,14 @@ use crate::handle::Handle;
 /// exactly. Integers past it cross the seam as [`BigInt`].
 pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
+/// [`MAX_SAFE_INTEGER`] as a double — exact, and cheaper than a cast.
+const MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
+
+/// The deepest nesting a [`JsValue`] or a JavaScript object graph may have
+/// and still cross the bridge; deeper or cyclic graphs fail conversion with
+/// a typed error rather than overflow the stack.
+pub const MAX_CONVERSION_DEPTH: usize = 128;
+
 /// An integer that crosses the bridge as a JavaScript `bigint`.
 ///
 /// Equality is numeric — `Signed(5)` equals `Unsigned(5)` — because the two
@@ -143,18 +151,24 @@ impl JsValue {
     }
 
     /// The integer as `i64`: a [`BigInt`](Self::BigInt) in range, or a
-    /// [`Number`](Self::Number) holding an exact `i64` — the bit-exact check
-    /// rejects fractions, `-0.0`, `NaN` and infinities for free.
+    /// [`Number`](Self::Number) inside the safe-integer range holding an
+    /// exact `i64`. The range check rejects doubles past `±2^53` — where one
+    /// double stands for several integers and the `as` cast would saturate —
+    /// and the bit-exact round-trip rejects fractions, `-0.0`, `NaN` and
+    /// infinities.
     #[must_use]
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
-        reason = "the casts are validated bit-exact by the to_bits comparison"
+        reason = "the casts are validated bit-exact by the to_bits comparison inside the safe-integer range"
     )]
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Self::BigInt(value) => value.as_i64(),
             Self::Number(value) => {
+                if value.abs() > MAX_SAFE_INTEGER_F64 {
+                    return None;
+                }
                 let as_int = *value as i64;
                 ((as_int as f64).to_bits() == value.to_bits()).then_some(as_int)
             }
@@ -163,18 +177,22 @@ impl JsValue {
     }
 
     /// The integer as `u64`: a [`BigInt`](Self::BigInt) in range, or a
-    /// [`Number`](Self::Number) holding an exact `u64`.
+    /// [`Number`](Self::Number) inside the safe-integer range holding an
+    /// exact `u64`.
     #[must_use]
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss,
-        reason = "the casts are validated bit-exact by the to_bits comparison"
+        reason = "the casts are validated bit-exact by the to_bits comparison inside the safe-integer range"
     )]
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Self::BigInt(value) => value.as_u64(),
             Self::Number(value) => {
+                if !(0.0..=MAX_SAFE_INTEGER_F64).contains(value) {
+                    return None;
+                }
                 let as_int = *value as u64;
                 ((as_int as f64).to_bits() == value.to_bits()).then_some(as_int)
             }
@@ -393,6 +411,12 @@ pub struct JsFunction(Handle);
 /// the same object, so mutations are shared and identity comparisons hold.
 /// Produced by [`JsRuntime::retain`](crate::JsRuntime::retain); cloning
 /// shares the reference.
+///
+/// Retaining a [`JsValue::Function`] also yields a `JsObject` — a function
+/// is an object, and the handle crosses back through
+/// [`JsValue::ObjectRef`]. The two handles refer to the same JavaScript
+/// value, but `ptr_eq` between the `JsObject` and the original `JsFunction`
+/// is `false`: each `retain` wraps a fresh reference.
 #[derive(Clone)]
 pub struct JsObject(Handle);
 
@@ -401,6 +425,11 @@ pub struct JsObject(Handle);
 /// `AnyView`, materialized signals and other runtime state cross the seam
 /// this way: JavaScript receives a box it can hand back to a host function
 /// or return from a callback, and the same `Rc` comes out the other side.
+///
+/// Every crossing into JavaScript creates a *new* box — the engines own the
+/// `Rc` as private data and release it when JavaScript drops the box — so
+/// box identity is not guaranteed across crossings; the bridge caches the
+/// boxes it needs stable.
 #[derive(Clone)]
 pub struct Opaque(Rc<dyn Any>);
 
@@ -422,15 +451,15 @@ impl Opaque {
         Rc::ptr_eq(&self.0, &other.0)
     }
 
-    /// The boxed `Rc`, for engines that store it in a registry.
+    /// The boxed `Rc`, for engines storing it as a box's private data.
     #[doc(hidden)]
     #[must_use]
     pub const fn inner(&self) -> &Rc<dyn Any> {
         &self.0
     }
 
-    /// A box around an already-erased `Rc`, for engines restoring one from
-    /// their registry.
+    /// A box around an already-erased `Rc`, for engines recovering one from
+    /// a box's private data.
     #[doc(hidden)]
     #[must_use]
     pub const fn from_inner(inner: Rc<dyn Any>) -> Self {
@@ -554,12 +583,14 @@ mod tests {
         assert_eq!(JsValue::Number(-0.0).as_i64(), None);
         assert_eq!(JsValue::Number(f64::NAN).as_i64(), None);
         assert_eq!(JsValue::Number(f64::INFINITY).as_i64(), None);
-        // 2^53 + 1 as a double rounds to 2^53 + 2 — still exact as an i64,
-        // but it arrived as a `number`, which is what `as_i64` reports.
-        assert_eq!(
-            JsValue::Number(9_007_199_254_740_992.0).as_i64(),
-            Some(9_007_199_254_740_992)
-        );
+        // Past the safe-integer range one double stands for several
+        // integers, so it never reads as an exact integer.
+        assert_eq!(JsValue::Number(9_007_199_254_740_992.0).as_i64(), None);
+        // ±2^63 and 2^64 saturate `as` casts; the range check must reject
+        // them before the cast runs.
+        assert_eq!(JsValue::Number(9_223_372_036_854_775_808.0).as_i64(), None);
+        assert_eq!(JsValue::Number(-9_223_372_036_854_775_808.0).as_i64(), None);
+        assert_eq!(JsValue::Number(18_446_744_073_709_551_616.0).as_u64(), None);
         assert_eq!(JsValue::from(String::from("x")).as_i64(), None);
     }
 }

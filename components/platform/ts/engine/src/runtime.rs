@@ -31,8 +31,10 @@ pub trait JsRuntime: 'static {
     where
         Self: Sized;
 
-    /// Evaluates `source` as a classic script, named `name` in stack traces,
-    /// and converts the completion value.
+    /// Evaluates `source` as a classic script — sloppy mode, like an inline
+    /// `<script>` — named `name` in stack traces, and converts the
+    /// completion value. A bundle opts into strict mode with its own
+    /// `"use strict"` directive.
     ///
     /// # Errors
     ///
@@ -69,13 +71,22 @@ pub trait JsRuntime: 'static {
     /// Retains a JavaScript object as an opaque [`JsObject`] handle.
     ///
     /// [`JsValue::Object`] data materializes as a fresh JavaScript object and
-    /// is retained; [`JsValue::ObjectRef`] and [`JsValue::Function`] clone
-    /// their existing reference. The handle goes back into JavaScript through
-    /// [`JsValue::ObjectRef`].
+    /// is retained; [`JsValue::ObjectRef`] and [`JsValue::Function`] refer to
+    /// their existing value. Retaining a function yields a `JsObject`
+    /// wrapping that same function — it crosses back through
+    /// [`JsValue::ObjectRef`], and `ptr_eq` between it and the original
+    /// [`JsFunction`] is `false` because each handle is a fresh reference.
+    /// The handle goes back into JavaScript through [`JsValue::ObjectRef`].
     ///
     /// # Errors
     ///
     /// Returns [`JsError`] when `value` is not an object — scalars need no
     /// handle, and [`JsValue::Opaque`] is already one.
     fn retain(&self, value: &JsValue) -> Result<JsObject, JsError>;
+
+    /// Runs the engine's garbage collector over the context now.
+    ///
+    /// Tests and memory-pressure hooks call this; the common path relies on
+    /// the engine collecting on its own.
+    fn collect_garbage(&self);
 }

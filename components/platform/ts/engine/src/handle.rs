@@ -1,9 +1,10 @@
 //! The retained-value payload behind `JsFunction` and `JsObject`.
 //!
 //! The payload is the engine's own reference — `JSValue` on JavaScriptCore,
-//! `Persistent` on QuickJS-NG — carried as `Rc<dyn Any>` so this crate stays
-//! engine-free. Engine crates downcast back to their own type; `None` means
-//! the handle belongs to a different engine, which they treat as an error.
+//! a `Persistent` plus its `Context` on QuickJS-NG so the handle keeps its
+//! runtime alive — carried as `Rc<dyn Any>` so this crate stays engine-free.
+//! Engine crates downcast back to their own type; `None` means the handle
+//! belongs to a different engine, which they treat as an error.
 
 use std::any::Any;
 use std::fmt;

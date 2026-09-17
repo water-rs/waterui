@@ -10983,10 +10983,6 @@ dependencies = [
 [[package]]
 name = "waterui-ts-engine"
 version = "0.1.0"
-dependencies = [
- "thiserror 2.0.20",
- "waterui-core",
-]
 
 [[package]]
 name = "waterui-ts-engine-jsc"

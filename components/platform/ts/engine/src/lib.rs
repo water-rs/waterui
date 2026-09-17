@@ -22,4 +22,6 @@ pub mod conformance;
 
 pub use error::JsError;
 pub use runtime::{HostFunction, JsRuntime};
-pub use value::{BigInt, JsFunction, JsObject, JsValue, MAX_SAFE_INTEGER, Opaque};
+pub use value::{
+    BigInt, JsFunction, JsObject, JsValue, MAX_CONVERSION_DEPTH, MAX_SAFE_INTEGER, Opaque,
+};

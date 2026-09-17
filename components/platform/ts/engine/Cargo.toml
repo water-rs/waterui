@@ -10,10 +10,6 @@ description = "Engine-agnostic JavaScript runtime contract for WaterUI TypeScrip
 keywords = ["typescript", "javascript", "waterui", "ui", "gui"]
 categories = ["gui"]
 
-[dependencies]
-waterui-core.workspace = true
-thiserror.workspace = true
-
 [features]
 # The conformance suite every engine implementation runs. Assertions, so off
 # by default and on in engine test binaries only.

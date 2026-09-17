@@ -1,38 +1,89 @@
 //! `JsRuntime` over QuickJS-NG via `rquickjs`.
 //!
 //! One [`QuickJsRuntime`] owns one `QuickJS` context. Retained handles carry
-//! `Persistent<Value<'static>>`; opaque Rust values cross as a JavaScript
-//! object whose `__waterui_opaque` property indexes a registry the runtime
-//! owns — JavaScript can hold and pass the box but cannot reach the `Rc`.
+//! a `Persistent` plus the `Context` that produced them, so a handle keeps
+//! its runtime alive instead of aborting in `JS_FreeRuntime`. Opaque Rust
+//! values cross as `QuickJS` class instances holding the `Rc` as private
+//! data — the class `Drop` is the finalizer, and no JavaScript-visible
+//! property names the identity.
 
-use std::cell::RefCell;
+use std::any::Any;
 use std::fmt;
 use std::rc::Rc;
 
+use rquickjs::class::{Class, JsClass, Readable, Trace, Tracer};
 use rquickjs::context::EvalOptions;
-use rquickjs::function::{Args, Rest};
+use rquickjs::function::{Args, Rest, This};
 use rquickjs::{
-    Array, BigInt as QBigInt, Coerced, Context, Ctx, Exception, Function, IntoJs, Object,
-    Persistent, Type, Value,
+    Array, BigInt as QBigInt, Coerced, Constructor, Context, Ctx, Exception, Function, IntoJs,
+    JsLifetime, Object, Persistent, Type, Value,
 };
 use waterui_ts_engine::handle::Handle;
 use waterui_ts_engine::{
-    BigInt, HostFunction, JsError, JsFunction, JsObject, JsRuntime, JsValue, Opaque,
+    BigInt, HostFunction, JsError, JsFunction, JsObject, JsRuntime, JsValue, MAX_CONVERSION_DEPTH,
+    Opaque,
 };
-
-/// The property a boxed [`Opaque`] carries: the index of its `Rc` in the
-/// runtime's registry.
-const OPAQUE_KEY: &str = "__waterui_opaque";
 
 /// The namespace object host functions register under:
 /// `globalThis.__waterui_host`.
 const HOST_NAMESPACE: &str = "__waterui_host";
 
-/// The retained reference behind `JsFunction` and `JsObject`.
-type Retained = Persistent<Value<'static>>;
+/// A boxed `Rc<dyn Any>` as a `QuickJS` class instance: the `Rc` is the
+/// instance's private data and `Drop` is the class finalizer, so a box
+/// JavaScript drops releases it. No JavaScript-visible property carries the
+/// identity, so a plain object is never mistaken for a box.
+struct OpaqueBox {
+    value: Rc<dyn Any>,
+}
 
-/// The opaque registry: `Rc`s boxed for JavaScript to hold.
-type Registry = Rc<RefCell<Vec<Rc<dyn std::any::Any>>>>;
+impl<'js> Trace<'js> for OpaqueBox {
+    fn trace<'a>(&self, _tracer: Tracer<'a, 'js>) {}
+}
+
+// SAFETY: `OpaqueBox` holds no JavaScript values — no `'js` lifetime derives
+// from it, so `Changed` is the type itself.
+unsafe impl JsLifetime<'_> for OpaqueBox {
+    type Changed<'to> = Self;
+}
+
+impl<'js> JsClass<'js> for OpaqueBox {
+    const NAME: &'static str = "WaterUiOpaque";
+
+    type Mutable = Readable;
+
+    /// No JavaScript constructor — boxes come into existence only when a
+    /// `JsValue::Opaque` crosses into JavaScript.
+    fn constructor(_ctx: &Ctx<'js>) -> rquickjs::Result<Option<Constructor<'js>>> {
+        Ok(None)
+    }
+}
+
+/// Per-context lookups `from_js` needs, kept as `QuickJS` userdata so a
+/// host-function callback reaches them through its `Ctx`.
+struct Bridge {
+    /// `Object.prototype` — the line between plain objects and exotics.
+    object_prototype: Persistent<Object<'static>>,
+    /// `Object.prototype.toString` — names a rejected exotic's kind.
+    to_string_tag: Persistent<Function<'static>>,
+}
+
+// SAFETY: `Bridge` holds only `'static` persistents — no `'js` lifetime
+// derives from it.
+unsafe impl JsLifetime<'_> for Bridge {
+    type Changed<'to> = Self;
+}
+
+/// The retained reference behind `JsFunction` and `JsObject`: the
+/// `Persistent` plus the `Context` that produced it, so a handle keeps its
+/// context — and the `Runtime` the context owns — alive instead of aborting
+/// in `JS_FreeRuntime`.
+struct Retained {
+    /// The persistent handle; declared before `context` so it drops while
+    /// the context is still alive.
+    value: Persistent<Value<'static>>,
+    /// Keeps the producing context alive for as long as the handle lives.
+    context: Context,
+}
 
 /// The QuickJS-NG engine.
 ///
@@ -40,7 +91,6 @@ type Registry = Rc<RefCell<Vec<Rc<dyn std::any::Any>>>>;
 pub struct QuickJsRuntime {
     /// Owns the underlying `Runtime` — `Context` keeps it alive.
     context: Context,
-    registry: Registry,
 }
 
 impl QuickJsRuntime {
@@ -51,62 +101,55 @@ impl QuickJsRuntime {
             .map_err(|error| map_error(ctx, &error))
     }
 
-    /// Boxes `opaque` as a JavaScript object holding its registry index.
-    fn box_opaque<'js>(
-        ctx: &Ctx<'js>,
-        registry: &Registry,
-        opaque: &Opaque,
-    ) -> Result<Value<'js>, JsError> {
-        let index = {
-            let mut registry = registry.borrow_mut();
-            registry.push(opaque.inner().clone());
-            registry.len() - 1
+    /// Whether `object` is plain: `Object.prototype` or `null` prototype.
+    /// Everything else — `Map`, `Date`, `Error`, `Promise`, class instances —
+    /// is an exotic that has no `JsValue`.
+    fn is_plain<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<bool, JsError> {
+        let Some(prototype) = object.get_prototype() else {
+            return Ok(true);
         };
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "a registry index is bounded by the number of boxed values, always exact in a double"
-        )]
-        let index = index as f64;
-        let object = Object::new(ctx.clone()).map_err(|error| map_error(ctx, &error))?;
-        object
-            .set(OPAQUE_KEY, index)
+        let bridge = ctx
+            .userdata::<Bridge>()
+            .ok_or_else(|| JsError::new("Error", "the context lost its bridge userdata"))?;
+        let object_prototype = bridge
+            .object_prototype
+            .clone()
+            .restore(ctx)
             .map_err(|error| map_error(ctx, &error))?;
-        Ok(object.into_value())
+        Ok(prototype.as_value() == object_prototype.as_value())
     }
 
-    /// The `Rc` a boxed object points at, or `None` when it is not a box.
-    fn unbox<'js>(
-        ctx: &Ctx<'js>,
-        registry: &Registry,
-        object: &Object<'js>,
-    ) -> Result<Option<Opaque>, JsError> {
-        if !object
-            .contains_key(OPAQUE_KEY)
-            .map_err(|error| map_error(ctx, &error))?
-        {
-            return Ok(None);
-        }
-        let index: f64 = object
-            .get(OPAQUE_KEY)
-            .map_err(|error| map_error(ctx, &error))?;
-        #[expect(
-            clippy::cast_sign_loss,
-            clippy::cast_possible_truncation,
-            reason = "registry indices are non-negative and always fit usize"
-        )]
-        let index = index as usize;
-        let boxed = registry.borrow().get(index).cloned().ok_or_else(|| {
-            JsError::conversion("an opaque handle names a slot that does not exist")
-        })?;
-        Ok(Some(Opaque::from_inner(boxed)))
+    /// `Object.prototype.toString.call(value)` → `"Map"`, `"Date"`, … — the
+    /// kind a conversion error names.
+    fn kind_name<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> String {
+        let tagged = ctx.userdata::<Bridge>().and_then(|bridge| {
+            let to_string = bridge.to_string_tag.clone().restore(ctx).ok()?;
+            to_string
+                .call::<_, String>((This(value.clone()),))
+                .map_or_else(
+                    |_| {
+                        // Drain the pending exception so it cannot leak into
+                        // the next engine operation.
+                        let _ = ctx.catch();
+                        None
+                    },
+                    Some,
+                )
+        });
+        tagged
+            .as_deref()
+            .and_then(|tag| tag.strip_prefix("[object "))
+            .and_then(|tag| tag.strip_suffix(']'))
+            .map_or_else(|| value.type_name().to_owned(), str::to_owned)
     }
 
     /// Rust → JavaScript.
-    fn to_js<'js>(
-        ctx: &Ctx<'js>,
-        registry: &Registry,
-        value: &JsValue,
-    ) -> Result<Value<'js>, JsError> {
+    fn to_js<'js>(ctx: &Ctx<'js>, value: &JsValue, depth: usize) -> Result<Value<'js>, JsError> {
+        if depth > MAX_CONVERSION_DEPTH {
+            return Err(JsError::conversion(
+                "a value graph deeper than the conversion limit cannot cross the bridge",
+            ));
+        }
         let fail = |error: rquickjs::Error| map_error(ctx, &error);
         Ok(match value {
             JsValue::Undefined => Value::new_undefined(ctx.clone()),
@@ -124,7 +167,7 @@ impl QuickJsRuntime {
                 let array = Array::new(ctx.clone()).map_err(fail)?;
                 for (index, item) in items.iter().enumerate() {
                     array
-                        .set(index, Self::to_js(ctx, registry, item)?)
+                        .set(index, Self::to_js(ctx, item, depth + 1)?)
                         .map_err(fail)?;
                 }
                 array.into_value()
@@ -133,23 +176,37 @@ impl QuickJsRuntime {
                 let object = Object::new(ctx.clone()).map_err(fail)?;
                 for (key, item) in entries {
                     object
-                        .set(key.as_str(), Self::to_js(ctx, registry, item)?)
+                        .set(key.as_str(), Self::to_js(ctx, item, depth + 1)?)
                         .map_err(fail)?;
                 }
                 object.into_value()
             }
             JsValue::Function(function) => restore(ctx, function.handle())?,
             JsValue::ObjectRef(object) => restore(ctx, object.handle())?,
-            JsValue::Opaque(opaque) => Self::box_opaque(ctx, registry, opaque)?,
+            JsValue::Opaque(opaque) => Class::instance(
+                ctx.clone(),
+                OpaqueBox {
+                    value: opaque.inner().clone(),
+                },
+            )
+            .map_err(fail)?
+            .into_value(),
         })
     }
 
-    /// JavaScript → Rust.
+    /// JavaScript → Rust. `context` is the `Context` behind `ctx`; a
+    /// converted function retains it so its handle outlives the runtime.
     fn from_js<'js>(
         ctx: &Ctx<'js>,
-        registry: &Registry,
+        context: &Context,
         value: &Value<'js>,
+        depth: usize,
     ) -> Result<JsValue, JsError> {
+        if depth > MAX_CONVERSION_DEPTH {
+            return Err(JsError::conversion(
+                "an object graph deeper than the conversion limit cannot cross the bridge",
+            ));
+        }
         let fail = |error: rquickjs::Error| map_error(ctx, &error);
         Ok(match value.type_of() {
             Type::Undefined => JsValue::Undefined,
@@ -172,7 +229,7 @@ impl QuickJsRuntime {
                 }
             }
             Type::Function | Type::Constructor => JsValue::Function(JsFunction::from_handle(
-                Handle::new(Persistent::save(ctx, value.clone())),
+                retain_value(ctx, context, value.clone()),
             )),
             Type::Array => {
                 let array = value
@@ -181,7 +238,12 @@ impl QuickJsRuntime {
                     .ok_or_else(|| JsError::conversion("an array-typed value is not an array"))?;
                 let mut items = Vec::with_capacity(array.len());
                 for item in array.iter::<Value<'js>>() {
-                    items.push(Self::from_js(ctx, registry, &item.map_err(fail)?)?);
+                    items.push(Self::from_js(
+                        ctx,
+                        context,
+                        &item.map_err(fail)?,
+                        depth + 1,
+                    )?);
                 }
                 JsValue::Array(items)
             }
@@ -190,22 +252,23 @@ impl QuickJsRuntime {
                     .clone()
                     .into_object()
                     .ok_or_else(|| JsError::conversion("an object-typed value is not an object"))?;
-                if let Some(opaque) = Self::unbox(ctx, registry, &object)? {
-                    return Ok(JsValue::Opaque(opaque));
-                }
-                if matches!(value.type_of(), Type::Object) {
-                    let mut entries = Vec::with_capacity(object.len());
-                    for pair in object.props::<String, Value<'js>>() {
-                        let (key, item) = pair.map_err(fail)?;
-                        entries.push((key, Self::from_js(ctx, registry, &item)?));
-                    }
-                    JsValue::Object(entries)
-                } else {
-                    return Err(JsError::conversion(format!(
-                        "a {} cannot cross the bridge",
-                        value.type_name()
+                if let Some(class) = Class::<OpaqueBox>::from_object(&object) {
+                    return Ok(JsValue::Opaque(Opaque::from_inner(
+                        class.borrow().value.clone(),
                     )));
                 }
+                if !Self::is_plain(ctx, &object)? {
+                    return Err(JsError::conversion(format!(
+                        "a {} cannot cross the bridge",
+                        Self::kind_name(ctx, value)
+                    )));
+                }
+                let mut entries = Vec::with_capacity(object.len());
+                for pair in object.props::<String, Value<'js>>() {
+                    let (key, item) = pair.map_err(fail)?;
+                    entries.push((key, Self::from_js(ctx, context, &item, depth + 1)?));
+                }
+                JsValue::Object(entries)
             }
             other => {
                 return Err(JsError::conversion(format!(
@@ -217,17 +280,25 @@ impl QuickJsRuntime {
     }
 }
 
+/// Wraps `value` in a handle that keeps its context alive.
+fn retain_value<'js>(ctx: &Ctx<'js>, context: &Context, value: Value<'js>) -> Handle {
+    Handle::new(Retained {
+        value: Persistent::save(ctx, value),
+        context: context.clone(),
+    })
+}
+
 /// Builds the JavaScript-side host function. A free function so the closure's
 /// `ctx` and `args` can share one named `'js` — `Value` is invariant over it,
 /// so two `'_` holes would never unify.
 fn make_host_function<'js>(
     ctx: &Ctx<'js>,
     host: HostFunction,
-    registry: Registry,
+    context: Context,
 ) -> Result<Function<'js>, JsError> {
     Function::new(
         ctx.clone(),
-        move |ctx: Ctx<'js>, Rest(args): Rest<Value<'js>>| host_call(&ctx, &args, &host, &registry),
+        move |ctx: Ctx<'js>, Rest(args): Rest<Value<'js>>| host_call(&ctx, &context, &args, &host),
     )
     .map_err(|error| map_error(ctx, &error))
 }
@@ -236,21 +307,19 @@ fn make_host_function<'js>(
 /// converts (or throws) the result.
 fn host_call<'js>(
     ctx: &Ctx<'js>,
+    context: &Context,
     args: &[Value<'js>],
     host: &HostFunction,
-    registry: &Registry,
 ) -> rquickjs::Result<Value<'js>> {
     let mut converted = Vec::with_capacity(args.len());
     for arg in args {
-        match QuickJsRuntime::from_js(ctx, registry, arg) {
+        match QuickJsRuntime::from_js(ctx, context, arg, 0) {
             Ok(value) => converted.push(value),
             Err(error) => return Err(throw(ctx, &error)),
         }
     }
     match host(&converted) {
-        Ok(value) => {
-            QuickJsRuntime::to_js(ctx, registry, &value).map_err(|error| throw(ctx, &error))
-        }
+        Ok(value) => QuickJsRuntime::to_js(ctx, &value, 0).map_err(|error| throw(ctx, &error)),
         Err(error) => Err(throw(ctx, &error)),
     }
 }
@@ -260,7 +329,15 @@ fn restore<'js>(ctx: &Ctx<'js>, handle: &Handle) -> Result<Value<'js>, JsError> 
     let retained = handle
         .downcast::<Retained>()
         .ok_or_else(|| JsError::conversion("a handle from a different engine was passed in"))?;
-    (*retained)
+    // A handle restores only into the context that produced it.
+    let same_context = retained.context.as_raw() == ctx.as_raw();
+    if !same_context {
+        return Err(JsError::conversion(
+            "a handle from a different QuickJS context was passed in",
+        ));
+    }
+    retained
+        .value
         .clone()
         .restore(ctx)
         .map_err(|error| map_error(ctx, &error))
@@ -317,29 +394,45 @@ impl JsRuntime for QuickJsRuntime {
             rquickjs::Runtime::new().map_err(|error| JsError::new("Error", error.to_string()))?;
         let context =
             Context::full(&runtime).map_err(|error| JsError::new("Error", error.to_string()))?;
-        let this = Self {
-            context,
-            registry: Registry::default(),
-        };
-        this.context.with(|ctx| {
+        context.with(|ctx| {
             ctx.globals()
                 .set(
                     HOST_NAMESPACE,
                     Object::new(ctx.clone()).map_err(|e| map_error(&ctx, &e))?,
                 )
-                .map_err(|error| map_error(&ctx, &error))
+                .map_err(|error| map_error(&ctx, &error))?;
+            // `Object.prototype` and its `toString` are fetched once so a
+            // script rewriting `globalThis.Object` cannot change what counts
+            // as plain or how exotics are named.
+            let object_prototype: Object<'_> = ctx
+                .globals()
+                .get::<_, Object<'_>>("Object")
+                .and_then(|ctor| ctor.get("prototype"))
+                .map_err(|error| map_error(&ctx, &error))?;
+            let to_string_tag: Function<'_> = object_prototype
+                .get("toString")
+                .map_err(|error| map_error(&ctx, &error))?;
+            ctx.store_userdata(Bridge {
+                object_prototype: Persistent::save(&ctx, object_prototype),
+                to_string_tag: Persistent::save(&ctx, to_string_tag),
+            })
+            .map_err(|_| JsError::new("Error", "the context rejected its bridge userdata"))?;
+            Ok(())
         })?;
-        Ok(this)
+        Ok(Self { context })
     }
 
     fn eval(&self, source: &str, name: &str) -> Result<JsValue, JsError> {
         self.context.with(|ctx| {
+            // Classic scripts are sloppy — matching JavaScriptCore; a bundle
+            // opts in with its own `"use strict"` directive.
             let mut options = EvalOptions::default();
             options.filename = Some(name.to_owned());
+            options.strict = false;
             let value = ctx
                 .eval_with_options::<Value<'_>, Vec<u8>>(source.into(), options)
                 .map_err(|error| map_error(&ctx, &error))?;
-            Self::from_js(&ctx, &self.registry, &value)
+            Self::from_js(&ctx, &self.context, &value, 0)
         })
     }
 
@@ -352,13 +445,13 @@ impl JsRuntime for QuickJsRuntime {
             let mut packed = Args::new(ctx.clone(), args.len());
             for arg in args {
                 packed
-                    .push_arg(Self::to_js(&ctx, &self.registry, arg)?)
+                    .push_arg(Self::to_js(&ctx, arg, 0)?)
                     .map_err(|error| map_error(&ctx, &error))?;
             }
             let value = function
                 .call_arg::<Value<'_>>(packed)
                 .map_err(|error| map_error(&ctx, &error))?;
-            Self::from_js(&ctx, &self.registry, &value)
+            Self::from_js(&ctx, &self.context, &value, 0)
         })
     }
 
@@ -368,9 +461,9 @@ impl JsRuntime for QuickJsRuntime {
         function: impl Fn(&[JsValue]) -> Result<JsValue, JsError> + 'static,
     ) -> Result<(), JsError> {
         let host: HostFunction = Rc::new(function);
-        let registry = self.registry.clone();
+        let context = self.context.clone();
         self.context.with(|ctx| {
-            let function = make_host_function(&ctx, host, registry)?;
+            let function = make_host_function(&ctx, host, context)?;
             Self::host_namespace(&ctx)?
                 .set(name, function)
                 .map_err(|error| map_error(&ctx, &error))
@@ -380,15 +473,21 @@ impl JsRuntime for QuickJsRuntime {
     fn retain(&self, value: &JsValue) -> Result<JsObject, JsError> {
         self.context.with(|ctx| match value {
             JsValue::Object(_) | JsValue::ObjectRef(_) | JsValue::Function(_) => {
-                let value = Self::to_js(&ctx, &self.registry, value)?;
-                Ok(JsObject::from_handle(Handle::new(Persistent::save(
-                    &ctx, value,
-                ))))
+                let value = Self::to_js(&ctx, value, 0)?;
+                Ok(JsObject::from_handle(retain_value(
+                    &ctx,
+                    &self.context,
+                    value,
+                )))
             }
             _ => Err(JsError::conversion(
                 "only JavaScript objects and functions can be retained",
             )),
         })
+    }
+
+    fn collect_garbage(&self) {
+        self.context.with(|ctx| ctx.run_gc());
     }
 }
 
