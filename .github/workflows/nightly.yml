@@ -5,7 +5,8 @@ name: Nightly
 # for on every push and that a change cannot break in the default-features
 # shape lives here: the workspace tests and doctests, every clippy shape,
 # macOS and Windows, the all-features runs, the macOS suites, the examples,
-# the web view bridge's JavaScript suite, coverage and the `cargo hack
+# the JavaScript suites (the web view bridge's and the TS runtime's),
+# coverage and the `cargo hack
 # --each-feature` sweep. `ci.yml` is the per-change gate. The backend
 # repositories drive the examples on their platforms in their own nightlies;
 # they do not run this suite, and nothing else does either.
@@ -53,6 +54,10 @@ jobs:
   webview-js:
     name: WebView JavaScript
     uses: ./.github/workflows/webview-js.yml
+
+  ts-js:
+    name: TypeScript Runtime JavaScript
+    uses: ./.github/workflows/ts-js.yml
 
   windows:
     name: Windows
@@ -132,7 +137,7 @@ jobs:
 
   test-report:
     name: Test Report
-    needs: [test, windows, webview-js]
+    needs: [test, windows, webview-js, ts-js]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -149,7 +154,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, windows, coverage, feature-checks, webview-js, test-report]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, test-report]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -193,7 +198,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js, promote]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, promote]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5
