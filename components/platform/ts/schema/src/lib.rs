@@ -58,9 +58,19 @@
 //!
 //! A third payload records a *mount point*: one `tsx!` call site, naming the
 //! module it mounts and the props contract it is typed against. See
-//! [`encode_mount`] and [`decode_mount`]. The three kinds are told apart by
-//! the byte after the version, so no decoder can read another kind as a
-//! malformed payload of its own.
+//! [`encode_mount`] and [`decode_mount`]. A fourth carries one half of the
+//! *runtime fingerprint* — the JavaScript library's hash or the component
+//! catalog's — see [`encode_runtime_half`], [`decode_runtime_half`] and
+//! [`RuntimeFingerprint`]. The four kinds are told apart by the byte after
+//! the version, so no decoder can read another kind as a malformed payload of
+//! its own.
+//!
+//! # The bundle manifest
+//!
+//! The same crate defines what a built bundle says about itself and what its
+//! signature covers: [`BundleManifest`] and [`SignedManifest`]. The `water`
+//! CLI writes and signs them; the runtime's bundle loader verifies them. They
+//! live here so both sides serialize the signed bytes through one type.
 //!
 //! # Type mapping
 //!
@@ -95,8 +105,10 @@ mod decode;
 mod encode;
 pub mod format;
 mod impls;
+mod manifest;
 mod mount;
 pub mod owned;
+mod runtime;
 mod tree;
 
 #[cfg(test)]
@@ -107,9 +119,17 @@ pub use catalog::{
     attributes_of, catalog_encoded_len, decode_catalog, encode_catalog,
 };
 pub use decode::{DecodeError, decode};
-pub use encode::{contract_hash, encode, encoded_len, payload};
+pub use encode::{HASH_BASIS, contract_hash, encode, encoded_len, hash_extend, payload};
 pub use format::{FORMAT_VERSION, MAX_ARRAY_LEN, MAX_DEPTH};
+pub use manifest::{
+    BundleFile, BundleManifest, ContractHash, HexBytes, HexError, Sha256Digest, SignatureBytes,
+    SignedManifest,
+};
 pub use mount::{MountPoint, decode_mount, encode_mount, mount_encoded_len, struct_name};
+pub use runtime::{
+    FingerprintParseError, RuntimeFingerprint, RuntimeHalf, RuntimePart, decode_runtime_half,
+    encode_runtime_half, runtime_half_encoded_len,
+};
 pub use tree::{
     EnumRepresentation, EnumSchema, FieldSchema, NumberKind, StructSchema, TypeSchema,
     VariantPayload, VariantSchema,

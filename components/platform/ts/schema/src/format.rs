@@ -77,18 +77,32 @@ pub(crate) mod tag {
 
 /// What a payload carries, written straight after the version byte.
 ///
-/// Three kinds of payload share the format and the version: a props contract,
-/// which is one type tree; the component catalog; and a mount point. A type
-/// tree starts with a node tag, so the other two announce themselves with
-/// bytes no node tag uses, and each decoder refuses the kinds that are not
-/// its own rather than reading one as a malformed payload of its own.
+/// Four kinds of payload share the format and the version: a props contract,
+/// which is one type tree; the component catalog; a mount point; and one half
+/// of the runtime fingerprint. A type tree starts with a node tag, so the
+/// other three announce themselves with bytes no node tag uses, and each
+/// decoder refuses the kinds that are not its own rather than reading one as
+/// a malformed payload of its own.
 pub(crate) mod kind {
     /// The component catalog: [`decode_catalog`](crate::decode_catalog) reads
     /// it, and [`decode`](crate::decode) refuses it.
     pub const CATALOG: u8 = 0x20;
     /// One `tsx!` mount point: [`decode_mount`](crate::decode_mount) reads it,
-    /// and the other two decoders refuse it.
+    /// and the other decoders refuse it.
     pub const MOUNT: u8 = 0x21;
+    /// One half of the runtime fingerprint — the JavaScript library's hash or
+    /// the component catalog's: [`decode_runtime_half`](crate::decode_runtime_half)
+    /// reads it, and the other decoders refuse it.
+    pub const RUNTIME_HALF: u8 = 0x22;
+}
+
+/// Which half of the runtime fingerprint a [`kind::RUNTIME_HALF`] payload
+/// carries, written straight after the kind byte.
+pub(crate) mod runtime_part {
+    /// [`RuntimePart::Library`](crate::RuntimePart::Library).
+    pub const LIBRARY: u8 = 1;
+    /// [`RuntimePart::Catalog`](crate::RuntimePart::Catalog).
+    pub const CATALOG: u8 = 2;
 }
 
 /// What the byte after the version says a payload is, for the error a decoder
@@ -97,6 +111,7 @@ pub(crate) const fn payload_kind(byte: Option<u8>) -> &'static str {
     match byte {
         Some(kind::CATALOG) => "a component catalog",
         Some(kind::MOUNT) => "a mount point",
+        Some(kind::RUNTIME_HALF) => "a runtime fingerprint half",
         _ => "a props type tree",
     }
 }
