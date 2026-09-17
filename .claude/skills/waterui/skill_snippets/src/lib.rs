@@ -25,4 +25,5 @@ pub mod ref_reactivity;
 pub mod ref_styling;
 pub mod ref_testing;
 pub mod ref_troubleshooting;
+pub mod ref_ts;
 pub mod skill_md;

@@ -712,6 +712,22 @@ mod catalog {
     }
 
     #[test]
+    fn the_modifier_order_sentence_is_a_sentence() {
+        // The generator copies the constant into every modifier's doc
+        // comment verbatim, so it has to be a complete sentence here —
+        // a fragment or a missing full stop would be copied everywhere.
+        assert!(
+            !crate::MODIFIER_ORDER_SENTENCE.is_empty(),
+            "the sentence every modifier's doc opens with cannot be empty"
+        );
+        assert!(
+            crate::MODIFIER_ORDER_SENTENCE.ends_with('.'),
+            "the sentence must end with a full stop: {:?}",
+            crate::MODIFIER_ORDER_SENTENCE
+        );
+    }
+
+    #[test]
     fn a_union_renders_as_the_typescript_union() {
         assert_eq!(PADDING.to_string(), "boolean | number | EdgeInsets");
     }
