@@ -105,7 +105,13 @@ impl QuickJsRuntime {
     /// Everything else — `Map`, `Date`, `Error`, `Promise`, class instances —
     /// is an exotic that has no `JsValue`.
     fn is_plain<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<bool, JsError> {
-        let Some(prototype) = object.get_prototype() else {
+        let prototype = object.get_prototype();
+        // A revoked `Proxy` arms a pending `TypeError` in `JS_GetPrototype`
+        // (and yields the exception sentinel, never equal to
+        // `Object.prototype`); drain it so it cannot leak into the next
+        // engine operation. With no exception pending `catch` is cheap.
+        let _ = ctx.catch();
+        let Some(prototype) = prototype else {
             return Ok(true);
         };
         let bridge = ctx
@@ -252,7 +258,14 @@ impl QuickJsRuntime {
                     .clone()
                     .into_object()
                     .ok_or_else(|| JsError::conversion("an object-typed value is not an object"))?;
-                if let Some(class) = Class::<OpaqueBox>::from_object(&object) {
+                let boxed = Class::<OpaqueBox>::from_object(&object);
+                if boxed.is_none() {
+                    // `JS_GetOpaque2` arms a pending `TypeError` on every
+                    // non-box object; drain it so it cannot leak into the
+                    // next engine operation.
+                    let _ = ctx.catch();
+                }
+                if let Some(class) = boxed {
                     return Ok(JsValue::Opaque(Opaque::from_inner(
                         class.borrow().value.clone(),
                     )));
@@ -485,7 +498,10 @@ impl JsRuntime for QuickJsRuntime {
             )),
         })
     }
+}
 
+#[cfg(test)]
+impl waterui_ts_engine::conformance::CollectGarbage for QuickJsRuntime {
     fn collect_garbage(&self) {
         self.context.with(|ctx| ctx.run_gc());
     }

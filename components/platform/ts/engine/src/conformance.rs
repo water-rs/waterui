@@ -12,6 +12,17 @@ use std::rc::Rc;
 
 use crate::{BigInt, JsError, JsRuntime, JsValue, Opaque};
 
+/// Forces a garbage collection so a test can observe finalization.
+///
+/// The production contract never exposes the collector — when and how an
+/// engine reclaims is the engine's business — so each engine crate
+/// implements this trait under `#[cfg(test)]` only, through whatever
+/// test-only hook its engine offers.
+pub trait CollectGarbage {
+    /// Runs a full collection now.
+    fn collect_garbage(&self);
+}
+
 fn runtime<R: JsRuntime>() -> R {
     R::new().expect("the engine constructs")
 }
@@ -413,7 +424,7 @@ fn scrub_dead_stack(depth: usize) {
 /// # Panics
 ///
 /// Panics on conformance failure — each function is a test body.
-pub fn opaque_boxes_are_finalized<R: JsRuntime>() {
+pub fn opaque_boxes_are_finalized<R: JsRuntime + CollectGarbage>() {
     let rt = runtime::<R>();
     let identity = identity_function(&rt);
     let value = Rc::new(String::from("state"));
@@ -425,6 +436,9 @@ pub fn opaque_boxes_are_finalized<R: JsRuntime>() {
     }
     scrub_dead_stack(8192);
     rt.collect_garbage();
+    // A finalizer may run on a helper thread and only hand the box back;
+    // one more operation lets the owner thread release what it queued.
+    rt.eval("null", "conformance.js").expect("evaluates");
     assert_eq!(
         Rc::strong_count(&value),
         1,
@@ -522,6 +536,48 @@ pub fn register_reports_namespace_failure<R: JsRuntime>() {
     rt.eval("__waterui_host = 0", "conformance.js")
         .expect("overwrites");
     assert!(rt.register("f", |_| Ok(JsValue::Undefined)).is_err());
+}
+
+/// Conversion probes that miss — a non-box checked against the opaque
+/// class, a revoked `Proxy` asked for its prototype — must not leave a
+/// pending exception behind: the next operation stays clean.
+///
+/// # Panics
+///
+/// Panics on conformance failure — each function is a test body.
+pub fn plain_objects_leave_no_pending_exception<R: JsRuntime>() {
+    let rt = runtime::<R>();
+    for _ in 0..10 {
+        assert_eq!(
+            rt.eval("({a: 1})", "conformance.js").expect("evaluates"),
+            JsValue::Object(vec![(String::from("a"), JsValue::Number(1.0))])
+        );
+    }
+    assert_eq!(
+        rt.eval("40 + 2", "conformance.js")
+            .expect("no pending exception survived the conversions"),
+        JsValue::Number(42.0)
+    );
+}
+
+/// A script rewriting `globalThis.Object` cannot change what converts —
+/// engines capture the helpers they need at construction.
+///
+/// # Panics
+///
+/// Panics on conformance failure — each function is a test body.
+pub fn rewritten_globals_do_not_change_conversion<R: JsRuntime>() {
+    let rt = runtime::<R>();
+    rt.eval("Object.keys = () => []", "conformance.js")
+        .expect("the rewrite evaluates");
+    assert_eq!(
+        rt.eval("({a: 1, b: 'x'})", "conformance.js")
+            .expect("evaluates"),
+        JsValue::Object(vec![
+            (String::from("a"), JsValue::Number(1.0)),
+            (String::from("b"), JsValue::String(String::from("x"))),
+        ])
+    );
 }
 
 /// Expands the conformance suite into `#[test]` functions for an engine.
@@ -651,6 +707,18 @@ macro_rules! conformance_tests {
         #[test]
         fn register_reports_namespace_failure() {
             $crate::conformance::register_reports_namespace_failure::<$engine>();
+        }
+
+        /// Missed conversion probes leave no pending exception.
+        #[test]
+        fn plain_objects_leave_no_pending_exception() {
+            $crate::conformance::plain_objects_leave_no_pending_exception::<$engine>();
+        }
+
+        /// Rewritten `Object` globals cannot change what converts.
+        #[test]
+        fn rewritten_globals_do_not_change_conversion() {
+            $crate::conformance::rewritten_globals_do_not_change_conversion::<$engine>();
         }
     };
 }

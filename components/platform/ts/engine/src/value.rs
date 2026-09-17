@@ -593,4 +593,18 @@ mod tests {
         assert_eq!(JsValue::Number(18_446_744_073_709_551_616.0).as_u64(), None);
         assert_eq!(JsValue::from(String::from("x")).as_i64(), None);
     }
+
+    #[test]
+    fn integer_reads_accept_the_safe_boundary() {
+        // Exactly 2^53 - 1 still reads as an integer — an off-by-one in
+        // the boundary comparison would reject it.
+        assert_eq!(
+            JsValue::Number(9_007_199_254_740_991.0).as_i64(),
+            Some(9_007_199_254_740_991)
+        );
+        assert_eq!(
+            JsValue::Number(9_007_199_254_740_991.0).as_u64(),
+            Some(9_007_199_254_740_991)
+        );
+    }
 }

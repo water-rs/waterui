@@ -21,6 +21,8 @@ pub type HostFunction = Rc<dyn Fn(&[JsValue]) -> Result<JsValue, JsError>>;
 ///
 /// A runtime owns a fresh global object. Host functions register under the
 /// `__waterui_host` namespace object on it (`globalThis.__waterui_host.<name>`).
+/// When and how the engine reclaims garbage is the engine's business; the
+/// contract never exposes a collector.
 pub trait JsRuntime: 'static {
     /// Creates a runtime with a fresh global object.
     ///
@@ -83,10 +85,4 @@ pub trait JsRuntime: 'static {
     /// Returns [`JsError`] when `value` is not an object — scalars need no
     /// handle, and [`JsValue::Opaque`] is already one.
     fn retain(&self, value: &JsValue) -> Result<JsObject, JsError>;
-
-    /// Runs the engine's garbage collector over the context now.
-    ///
-    /// Tests and memory-pressure hooks call this; the common path relies on
-    /// the engine collecting on its own.
-    fn collect_garbage(&self);
 }

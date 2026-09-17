@@ -3,15 +3,18 @@
 //! One [`JscRuntime`] owns one `JSContext`. Retained handles carry
 //! `Retained<JSValue>` — a `JSValue` keeps its context alive, so a handle
 //! outlives the runtime safely. Opaque Rust values cross as instances of a
-//! private `JSClass` whose objects hold the `Rc` as private data and release
-//! it in the class finalizer; no JavaScript-visible property names the
-//! identity.
+//! private `JSClass` whose objects hold the `Rc` as private data; the class
+//! finalizer — which may run on any thread — only hands the box back to a
+//! pending-free list the owner thread drains, so the non-atomic `Rc` never
+//! drops off-thread. No JavaScript-visible property names the identity.
 
 use std::any::Any;
 use std::ffi::c_void;
 use std::fmt;
+use std::mem::ManuallyDrop;
 use std::ptr;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use block2::{ManualBlockEncoding, RcBlock};
 use objc2::Message;
@@ -31,14 +34,6 @@ use waterui_ts_engine::{
 /// The namespace object host functions register under:
 /// `globalThis.__waterui_host`.
 const HOST_NAMESPACE: &str = "__waterui_host";
-
-unsafe extern "C-unwind" {
-    /// `JSSynchronousGarbageCollectForDebugging` — exported by the framework
-    /// and declared in `JSBase.h`; runs a full synchronous collection,
-    /// including conservative-stack and external-reference scanning, where
-    /// `JSGarbageCollect` can defer finalization.
-    fn JSSynchronousGarbageCollectForDebugging(ctx: objc2_javascript_core::JSContextRef);
-}
 
 /// `text` as an `NSString`.
 fn ns(text: &str) -> Retained<NSString> {
@@ -116,18 +111,50 @@ fn property_string(value: &JSValue, key: &str) -> Option<String> {
     string(&property)
 }
 
-/// `JSObjectFinalizeCallback` for the opaque-box class: takes the
-/// `Box<Rc<dyn Any>>` the object carried back and drops it — a box
-/// JavaScript drops releases its `Rc`. The callback must not allocate or
-/// collect; dropping a `Box` does neither.
+/// What an opaque box carries as `JSObject` private data: the `Rc` plus a
+/// handle to the owning runtime's pending-free list, so the class
+/// finalizer — which `JSObjectRef.h` warns may run on any thread — can
+/// hand the box back to the owner thread instead of dropping a non-atomic
+/// `Rc` itself.
+struct OpaquePrivate {
+    /// The opaque `Rc` the box holds. Created, cloned and dropped only on
+    /// the thread that owns the runtime.
+    value: Rc<dyn Any>,
+    /// The list `opaque_finalize` pushes this box's pointer onto.
+    pending_free: Arc<Mutex<Vec<PendingFree>>>,
+}
+
+/// A `Box<OpaquePrivate>` pointer handed from a class finalizer — any
+/// thread — to the owner thread, which reconstructs and drops it.
+struct PendingFree(*mut OpaquePrivate);
+
+// SAFETY: only the raw pointer crosses threads. The finalizer touches
+// `pending_free` — a `Mutex`, safe from any thread — and nothing else; the
+// `Box` and the `Rc` inside it are reconstructed and dropped only on the
+// owner thread, where every clone of that `Rc` was made.
+unsafe impl Send for PendingFree {}
+
+/// `JSObjectFinalizeCallback` for the opaque-box class. A finalizer may run
+/// on any thread and must neither allocate GC objects nor call
+/// `JSContextRef` functions — and a `Box<Rc<dyn Any>>` dropped here would
+/// race the non-atomic refcount and run `!Send` destructors on a foreign
+/// thread. It therefore only moves the pointer onto the runtime's
+/// pending-free list; the owner thread drains it and does the drop.
 unsafe extern "C-unwind" fn opaque_finalize(object: JSObjectRef) {
-    // SAFETY: `box_opaque` stored a `Box<Rc<dyn Any>>` pointer as the
+    // SAFETY: `box_opaque` stored a `Box<OpaquePrivate>` pointer as the
     // object's private data, and `finalize` runs exactly once per object.
-    let data = unsafe { JSObjectGetPrivate(object) };
-    if !data.is_null() {
-        // SAFETY: `data` is the unique `Box` pointer stored at creation.
-        unsafe { drop(Box::from_raw(data.cast::<Rc<dyn Any>>())) };
+    let data = unsafe { JSObjectGetPrivate(object) }.cast::<OpaquePrivate>();
+    if data.is_null() {
+        return;
     }
+    // SAFETY: `data` is a live `Box` pointer stored at creation; the only
+    // field touched on this thread is `pending_free`, a `Mutex`.
+    let pending_free = unsafe { &(*data).pending_free };
+    if let Ok(mut pending) = pending_free.lock() {
+        pending.push(PendingFree(data));
+    }
+    // A poisoned list leaks the box rather than risking an off-thread drop —
+    // poisoning means the owner thread already panicked while draining.
 }
 
 /// The class definition for opaque boxes: every callback `None` except
@@ -187,6 +214,9 @@ struct Bridge {
     /// `JscRuntime::new` created — the runtime releases it on drop, and live
     /// boxes keep the class alive through their own refs until then.
     opaque_class: JSClassRef,
+    /// Boxes whose finalizers ran on another thread, waiting for the owner
+    /// thread to drop the `Rc`s they carry.
+    pending_free: Arc<Mutex<Vec<PendingFree>>>,
 }
 
 impl Bridge {
@@ -439,17 +469,21 @@ impl Bridge {
     }
 
     /// Boxes `opaque` as an instance of the opaque class — the `Rc` is the
-    /// object's private data, released by `opaque_finalize` when JavaScript
-    /// drops the box. Each crossing creates a new box.
+    /// object's private data, handed back to the owner thread's
+    /// pending-free list by `opaque_finalize` when JavaScript drops the
+    /// box. Each crossing creates a new box.
     fn box_opaque(
         &self,
         context: &JSContext,
         opaque: &Opaque,
     ) -> Result<Retained<JSValue>, JsError> {
-        let data = Box::into_raw(Box::new(opaque.inner().clone()));
+        let data = Box::into_raw(Box::new(OpaquePrivate {
+            value: opaque.inner().clone(),
+            pending_free: Arc::clone(&self.pending_free),
+        }));
         // SAFETY: `context` is a live context and `opaque_class` a live
         // class; on success the object owns `data` until `opaque_finalize`
-        // takes it back.
+        // hands it to the pending-free list.
         let object = unsafe {
             JSObjectMake(
                 context.JSGlobalContextRef().cast_const(),
@@ -484,14 +518,14 @@ impl Bridge {
             return None;
         }
         // SAFETY: the class check guarantees the private data is the
-        // `Box<Rc<dyn Any>>` `box_opaque` stored.
+        // `Box<OpaquePrivate>` `box_opaque` stored.
         let data = unsafe { JSObjectGetPrivate(value_ref.cast_mut()) };
         if data.is_null() {
             return None;
         }
-        // SAFETY: `data` is a `Box<Rc<dyn Any>>` still owned by the object;
-        // it is only borrowed for the clone.
-        let rc = unsafe { &*data.cast::<Rc<dyn Any>>() }.clone();
+        // SAFETY: `data` is a `Box<OpaquePrivate>` still owned by the
+        // object; it is only borrowed for the clone, on the owner thread.
+        let rc = unsafe { &*data.cast::<OpaquePrivate>() }.value.clone();
         Some(Opaque::from_inner(rc))
     }
 }
@@ -508,11 +542,35 @@ fn restore(handle: &Handle) -> Result<Retained<JSValue>, JsError> {
 ///
 /// `!Send + !Sync`: a `JSContext` is bound to the thread that created it.
 pub struct JscRuntime {
-    context: Retained<JSContext>,
+    /// `ManuallyDrop` so `Drop` can release the context — running any
+    /// teardown finalizers — *before* the last pending-free drain, on the
+    /// owner thread.
+    context: ManuallyDrop<Retained<JSContext>>,
     bridge: Bridge,
 }
 
 impl JscRuntime {
+    /// Drops every box a finalizer handed back, on the owner thread.
+    /// `opaque_finalize` may run on any thread and a non-atomic `Rc`
+    /// refcount may only change here, so the finalizer only queues the
+    /// pointer; this runs at the head of every public operation and on
+    /// drop.
+    fn drain_pending(&self) {
+        let pending = std::mem::take(
+            &mut *self
+                .bridge
+                .pending_free
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for PendingFree(data) in pending {
+            // SAFETY: `data` is a `Box<OpaquePrivate>` `box_opaque` created
+            // and `opaque_finalize` handed over exactly once; this is the
+            // owner thread, so dropping the `Rc` inside is safe.
+            unsafe { drop(Box::from_raw(data)) };
+        }
+    }
+
     /// Drains the context's pending exception into a `JsError`.
     fn take_exception(&self) -> Option<JsError> {
         // SAFETY: `context` is a live context.
@@ -525,6 +583,12 @@ impl JscRuntime {
 
 impl Drop for JscRuntime {
     fn drop(&mut self) {
+        self.drain_pending();
+        // SAFETY: `context` is `ManuallyDrop`ped exactly once, here — a
+        // finalizer context teardown runs still finds the pending-free
+        // list alive, and the drain below frees whatever it queued.
+        unsafe { ManuallyDrop::drop(&mut self.context) };
+        self.drain_pending();
         // SAFETY: `opaque_class` is the one owned ref `new` created; live
         // boxes keep the class alive through their own refs, so releasing
         // here cannot orphan a finalizer.
@@ -552,18 +616,27 @@ impl JsRuntime for JscRuntime {
                 .setObject_forKeyedSubscript(Some(as_id(&host)), Some(as_id(&ns(HOST_NAMESPACE))));
         }
         // `keys`, `isFunction`, `isPlainObject` and `kindName` have no
-        // Objective-C API; one constant, known-good expression installs them.
+        // Objective-C API; one constant, known-good expression installs
+        // them. Everything they need from `Object` is captured in a local
+        // at construction, so a script rewriting `globalThis.Object`
+        // cannot change what converts.
         // SAFETY: `context` is a live context.
         let helpers = unsafe {
-            context.evaluateScript(Some(&ns("Object.freeze({\
-                    keys: (object) => Object.keys(object),\
-                    isFunction: (value) => typeof value === 'function',\
-                    isPlainObject: (value) => {\
-                        const prototype = Object.getPrototypeOf(value);\
-                        return prototype === null || prototype === Object.prototype;\
-                    },\
-                    kindName: (value) => Object.prototype.toString.call(value).slice(8, -1)\
-                })")))
+            context.evaluateScript(Some(&ns("Object.freeze((() => {\
+                    const objectKeys = Object.keys;\
+                    const getPrototype = Object.getPrototypeOf;\
+                    const objectPrototype = Object.prototype;\
+                    const toString = Object.prototype.toString;\
+                    return {\
+                        keys: (object) => objectKeys(object),\
+                        isFunction: (value) => typeof value === 'function',\
+                        isPlainObject: (value) => {\
+                            const prototype = getPrototype(value);\
+                            return prototype === null || prototype === objectPrototype;\
+                        },\
+                        kindName: (value) => toString.call(value).slice(8, -1)\
+                    };\
+                })())")))
         }
         .ok_or_else(|| JsError::new("Error", "JavaScriptCore could not create the helpers"))?;
         // The one owned ref to the opaque-box class; `JscRuntime::drop`
@@ -578,10 +651,11 @@ impl JsRuntime for JscRuntime {
             ));
         }
         Ok(Self {
-            context,
+            context: ManuallyDrop::new(context),
             bridge: Bridge {
                 helpers,
                 opaque_class,
+                pending_free: Arc::new(Mutex::new(Vec::new())),
             },
         })
     }
@@ -591,6 +665,7 @@ impl JsRuntime for JscRuntime {
         // them from accumulating in whatever pool the caller happens to run
         // under — and lets a dropped box be finalized promptly.
         autoreleasepool(|_| {
+            self.drain_pending();
             // SAFETY: clears any stale pending exception before evaluating.
             unsafe { self.context.setException(None) };
             let script = ns(source);
@@ -615,6 +690,7 @@ impl JsRuntime for JscRuntime {
 
     fn call(&self, function: &JsFunction, args: &[JsValue]) -> Result<JsValue, JsError> {
         autoreleasepool(|_| {
+            self.drain_pending();
             let function = restore(function.handle())?;
             let mut marshaled = Vec::with_capacity(args.len());
             for arg in args {
@@ -646,26 +722,18 @@ impl JsRuntime for JscRuntime {
     }
 
     fn retain(&self, value: &JsValue) -> Result<JsObject, JsError> {
-        autoreleasepool(|_| match value {
-            JsValue::Object(_) | JsValue::ObjectRef(_) | JsValue::Function(_) => {
-                let value = self.bridge.to_js(&self.context, value, 0)?;
-                Ok(JsObject::from_handle(Handle::new(value)))
+        autoreleasepool(|_| {
+            self.drain_pending();
+            match value {
+                JsValue::Object(_) | JsValue::ObjectRef(_) | JsValue::Function(_) => {
+                    let value = self.bridge.to_js(&self.context, value, 0)?;
+                    Ok(JsObject::from_handle(Handle::new(value)))
+                }
+                _ => Err(JsError::conversion(
+                    "only JavaScript objects and functions can be retained",
+                )),
             }
-            _ => Err(JsError::conversion(
-                "only JavaScript objects and functions can be retained",
-            )),
         })
-    }
-
-    fn collect_garbage(&self) {
-        // The synchronous-debug entry point runs a complete collection —
-        // including the external-reference scan that releases objects pinned
-        // only by dead `JSValue` wrappers — where `JSGarbageCollect` leaves
-        // them marked.
-        // SAFETY: `context` is a live context.
-        unsafe {
-            JSSynchronousGarbageCollectForDebugging(self.context.JSGlobalContextRef().cast_const());
-        }
     }
 }
 
@@ -676,6 +744,9 @@ impl JscRuntime {
         name: &str,
         function: impl Fn(&[JsValue]) -> Result<JsValue, JsError> + 'static,
     ) -> Result<(), JsError> {
+        self.drain_pending();
+        // SAFETY: clears any stale pending exception before registering.
+        unsafe { self.context.setException(None) };
         let host: HostFunction = Rc::new(function);
         let bridge = self.bridge.clone();
         // JavaScriptCore marshals declared block parameters from the call;
@@ -765,5 +836,26 @@ impl JscRuntime {
 impl fmt::Debug for JscRuntime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("JscRuntime(..)")
+    }
+}
+
+// `JSSynchronousGarbageCollectForDebugging` is test-only SPI: it is
+// declared in WebKit's private `JSBasePrivate.h`, not the SDK's public
+// `JSBase.h`, and App Review flags the symbol — it must never leave
+// `cfg(test)`. Tests need it because plain `JSGarbageCollect` can defer
+// the external-reference scan that releases objects pinned only by dead
+// `JSValue` wrappers, making finalization unobservable.
+#[cfg(test)]
+unsafe extern "C" {
+    fn JSSynchronousGarbageCollectForDebugging(ctx: objc2_javascript_core::JSContextRef);
+}
+
+#[cfg(test)]
+impl waterui_ts_engine::conformance::CollectGarbage for JscRuntime {
+    fn collect_garbage(&self) {
+        // SAFETY: `context` is a live context.
+        unsafe {
+            JSSynchronousGarbageCollectForDebugging(self.context.JSGlobalContextRef().cast_const());
+        }
     }
 }
