@@ -113,8 +113,22 @@ pub enum TypeSchema {
     String,
     /// `Option<T>`, projected as `T | null`.
     Option(&'static Self),
-    /// A homogeneous sequence — `Vec<T>`, a slice or an array — projected as `T[]`.
+    /// A homogeneous sequence of any length — `Vec<T>` or a slice —
+    /// projected as `T[]`.
     List(&'static Self),
+    /// A fixed-length array — `[T; N]` — projected as the tuple type
+    /// `[T, T, …]` with one slot per element.
+    ///
+    /// The length is part of the type because it is part of the contract: the
+    /// conversion refuses an array of any other length, and `T[]` would
+    /// promise TypeScript something the seam does not accept.
+    Array {
+        /// The element type.
+        item: &'static Self,
+        /// How many elements the array carries, at most
+        /// [`MAX_ARRAY_LEN`](crate::MAX_ARRAY_LEN).
+        len: usize,
+    },
     /// A string-keyed map, projected as `Record<K, V>`.
     Map {
         /// The key type; a string type by construction, see
@@ -231,6 +245,16 @@ impl fmt::Display for TypeSchema {
             Self::String => f.write_str("string"),
             Self::Option(inner) => write!(f, "{inner} | null"),
             Self::List(inner) => write!(f, "{inner}[]"),
+            Self::Array { item, len } => {
+                f.write_str("[")?;
+                for index in 0..*len {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                f.write_str("]")
+            }
             Self::Map { key, value } => write!(f, "Record<{key}, {value}>"),
             Self::Signal(inner) => write!(f, "Signal<{inner}>"),
             Self::Accessor(inner) => write!(f, "Accessor<{inner}>"),

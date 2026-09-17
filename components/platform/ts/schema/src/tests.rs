@@ -142,6 +142,43 @@ fn schemas_of_mapped_types_compose() {
 }
 
 #[test]
+fn a_fixed_length_array_declares_its_length() {
+    const FOUR: TypeSchema = <[u32; 4] as TsType>::SCHEMA;
+    const ENCODED: [u8; encoded_len(&FOUR) + 1] = encode(&FOUR);
+    const LIST: TypeSchema = <Vec<u32> as TsType>::SCHEMA;
+    const LIST_ENCODED: [u8; encoded_len(&LIST) + 1] = encode(&LIST);
+
+    assert_eq!(
+        FOUR,
+        TypeSchema::Array {
+            item: &TypeSchema::Number(NumberKind::U32),
+            len: 4,
+        },
+        "an array is not a list: the conversion refuses any other length"
+    );
+    assert_eq!(
+        FOUR.to_string(),
+        "[number, number, number, number]",
+        "and the projection says so"
+    );
+    assert_eq!(
+        <[u8; 0] as TsType>::SCHEMA.to_string(),
+        "[]",
+        "an empty array projects as the empty tuple"
+    );
+
+    assert_eq!(
+        decode(payload(&ENCODED)).expect("the encoding decodes"),
+        owned::Schema::from(&FOUR)
+    );
+    assert_ne!(
+        contract_hash(payload(&ENCODED)),
+        contract_hash(payload(&LIST_ENCODED)),
+        "a fixed-length array and a list are different contracts"
+    );
+}
+
+#[test]
 fn every_callable_spelling_is_a_callback() {
     const ONE_NUMBER: TypeSchema = TypeSchema::Callback(&[TypeSchema::Number(NumberKind::U32)]);
     assert_eq!(<Box<dyn Fn(u32)> as TsType>::SCHEMA, ONE_NUMBER);
@@ -336,6 +373,16 @@ fn decoding_rejects_empty_names() {
 mod encoder_invariants {
     use crate::{EnumRepresentation, EnumSchema, TypeSchema, VariantPayload, VariantSchema};
     use crate::{StructSchema, encoded_len};
+
+    #[test]
+    #[should_panic(expected = "cannot be projected as a TypeScript tuple type")]
+    fn encoding_rejects_an_array_longer_than_the_projection() {
+        const BAD: TypeSchema = TypeSchema::Array {
+            item: &TypeSchema::Bool,
+            len: crate::MAX_ARRAY_LEN + 1,
+        };
+        let _ = encoded_len(&BAD);
+    }
 
     #[test]
     #[should_panic(expected = "a map crossing the props seam has a string key")]

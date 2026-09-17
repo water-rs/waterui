@@ -12,7 +12,17 @@
 /// A decoder that meets a version it does not implement fails rather than
 /// guessing: the schema is a compatibility contract, and a half-understood
 /// contract is worse than none.
-pub const FORMAT_VERSION: u8 = 1;
+pub const FORMAT_VERSION: u8 = 2;
+
+/// The most elements a fixed-length array may project as a tuple type.
+///
+/// `[T; N]` becomes the TypeScript tuple `[T, T, …]` with one element written
+/// out per slot, so a large `N` produces a type nobody can read and a `.d.ts`
+/// nobody wants to compile. Past this bound the answer is `Vec<T>`, which
+/// projects as `T[]` and carries no length in its type. The const encoder
+/// asserts it, so an array too long for the projection fails the build rather
+/// than the generator.
+pub const MAX_ARRAY_LEN: usize = 256;
 
 /// The deepest node nesting the format permits.
 ///
@@ -55,6 +65,9 @@ pub(crate) mod tag {
     pub const STRUCT: u8 = 12;
     /// [`TypeSchema::Enum`](crate::TypeSchema::Enum).
     pub const ENUM: u8 = 13;
+    /// [`TypeSchema::Array`](crate::TypeSchema::Array), followed by its length
+    /// and its element node.
+    pub const ARRAY: u8 = 14;
 }
 
 /// Enum representation tags.

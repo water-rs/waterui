@@ -25,6 +25,13 @@ pub enum Schema {
     Option(Box<Self>),
     /// See [`TypeSchema::List`].
     List(Box<Self>),
+    /// See [`TypeSchema::Array`].
+    Array {
+        /// The element type.
+        item: Box<Self>,
+        /// How many elements the array carries.
+        len: usize,
+    },
     /// See [`TypeSchema::Map`].
     Map {
         /// The key type.
@@ -118,6 +125,10 @@ impl From<&TypeSchema> for Schema {
             TypeSchema::String => Self::String,
             TypeSchema::Option(inner) => Self::Option(Box::new(Self::from(*inner))),
             TypeSchema::List(inner) => Self::List(Box::new(Self::from(*inner))),
+            TypeSchema::Array { item, len } => Self::Array {
+                item: Box::new(Self::from(*item)),
+                len: *len,
+            },
             TypeSchema::Map { key, value } => Self::Map {
                 key: Box::new(Self::from(*key)),
                 value: Box::new(Self::from(*value)),

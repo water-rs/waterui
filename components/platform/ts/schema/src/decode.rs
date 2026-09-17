@@ -4,7 +4,7 @@
 //! `waterui_meta_tsprops_*` static — back into an [`owned::Schema`]. Every
 //! malformed input is an error, never a partial or guessed tree.
 
-use crate::format::{FORMAT_VERSION, MAX_DEPTH, representation, tag, variant};
+use crate::format::{FORMAT_VERSION, MAX_ARRAY_LEN, MAX_DEPTH, representation, tag, variant};
 use crate::owned;
 use crate::tree::NumberKind;
 
@@ -39,6 +39,20 @@ pub enum DecodeError {
         /// Where it was read.
         offset: usize,
     },
+    /// A fixed-length array is longer than the projection allows.
+    #[error(
+        "the array at byte {offset} carries {len} elements, more than the {limit} a tuple type \
+         projects"
+    )]
+    ArrayTooLong {
+        /// The length the payload carries.
+        len: usize,
+        /// The largest length the format projects.
+        limit: usize,
+        /// Where the length starts.
+        offset: usize,
+    },
+
     /// A length does not fit in a `usize` on this platform.
     #[error("the length at byte {offset} does not fit in a usize")]
     LengthOverflow {
@@ -276,6 +290,21 @@ impl Reader<'_> {
             tag::STRING => owned::Schema::String,
             tag::OPTION => owned::Schema::Option(self.child()?),
             tag::LIST => owned::Schema::List(self.child()?),
+            tag::ARRAY => {
+                let offset = self.pos;
+                let len = self.length()?;
+                if len > MAX_ARRAY_LEN {
+                    return Err(DecodeError::ArrayTooLong {
+                        len,
+                        limit: MAX_ARRAY_LEN,
+                        offset,
+                    });
+                }
+                owned::Schema::Array {
+                    item: self.child()?,
+                    len,
+                }
+            }
             tag::MAP => {
                 let key_offset = self.pos;
                 let key = self.child()?;
