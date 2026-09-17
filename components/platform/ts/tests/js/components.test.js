@@ -124,6 +124,22 @@ describe("For", () => {
     ).toThrow(/needs `by`/);
   });
 
+  test("refuses two rows sharing one key", () => {
+    const items = createSignal(["a", "a"]);
+    expect(() =>
+      createRoot(() => jsx(For, { each: items, children: (item) => row(item) })),
+    ).toThrow(/have the key/);
+  });
+
+  test("refuses two rows whose `by` answers one key", () => {
+    const items = createSignal([{ id: "a" }, { id: "a" }]);
+    expect(() =>
+      createRoot(() =>
+        jsx(For, { each: items, by: (item) => item.id, children: (item) => row(item) }),
+      ),
+    ).toThrow(/have the key/);
+  });
+
   test("reconciles by `by` and keeps an index accessor current", () => {
     const a = { id: "a" };
     const b = { id: "b" };

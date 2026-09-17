@@ -572,10 +572,9 @@ impl View for Rebuilt {
 
 /// A value one component builds for its parent to take.
 ///
-/// `<Column>`, `<TreeNode>` and `<Tab>` are not views: they are the pieces
-/// `Table`, `TreeView` and `Tabs` are assembled from. They still cross as
-/// handles, because every child does, so each carries its value in a slot the
-/// parent empties.
+/// `<Column>` and `<Tab>` are not views: they are the pieces `Table` and
+/// `Tabs` are assembled from. They still cross as handles, because every child
+/// does, so each carries its value in a slot the parent empties.
 struct Carried<T: 'static>(RefCell<Option<T>>);
 
 impl<T: 'static> Carried<T> {

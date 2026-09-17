@@ -90,8 +90,20 @@ export function createFakeHost(environment = {}) {
           const items = list() ?? [];
           const previous = slot.entries;
           const byKey = new Map(previous.map((entry) => [entry.key, entry]));
+          const seen = new Set();
           const next = items.map((item, index) => {
             const key = keyOf(item);
+            // Two rows sharing one key is a list that cannot be reconciled, and
+            // the Rust table refuses it by name. A fake that accepted it would
+            // silently collapse the two and make a test pass that the real host
+            // fails.
+            if (seen.has(key)) {
+              throw new TypeError(
+                `two items of this <For> have the key ${JSON.stringify(key)}: give \`by\` ` +
+                  "something unique, or make the items themselves distinct",
+              );
+            }
+            seen.add(key);
             const kept = byKey.get(key);
             if (kept !== undefined && !kept.used) {
               kept.used = true;
