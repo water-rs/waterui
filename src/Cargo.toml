@@ -55,7 +55,7 @@ waterui-math = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
 waterui-inspector-protocol = { workspace = true, optional = true }
-waterui-ts-schema = { workspace = true, optional = true }
+waterui-ts = { workspace = true, optional = true }
 waterkit-haptic = { workspace = true, optional = true }
 # The self-drawn video realization. Selected by `video-gpu` rather than by
 # `video`, because whether it is the realization is a property of the platform's
@@ -133,11 +133,12 @@ video = ["dep:waterui-video"]
 # native player to bridge selects this.
 video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
 webview = ["dep:waterui-webview"]
-# The TypeScript props contract schema behind `waterui::ts::schema` — the
-# `TsType`/`TsProps` derives whose encoded contract the `water` CLI reads back
-# out of a debug artifact. Off by default: only a shell that mounts TypeScript
-# view modules needs it.
-ts = ["dep:waterui-ts-schema"]
+# The TypeScript runtime behind `waterui::ts`: the embedded JavaScript engine,
+# the signal bridge, and the props contract schema (`waterui::ts::schema`)
+# whose encoded form the `water` CLI reads back out of a debug artifact. Off by
+# default: only a shell that mounts TypeScript view modules needs it, and it
+# links a JavaScript engine.
+ts = ["dep:waterui-ts"]
 navigation-restoration = ["waterui-navigation/serde"]
 # Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
 # with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which

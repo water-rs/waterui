@@ -6,6 +6,25 @@
 //! const evaluation and parks the bytes in a `waterui_meta_tsprops_*`
 //! `#[used] static` — the canonical channel from a proc macro to the `water`
 //! CLI. The expansion is a pure read: no file is opened and no tool is run.
+//!
+//! # The runtime half
+//!
+//! When the runtime crate is reachable — the expansion resolves through
+//! `waterui` or `waterui-ts` — the derives also emit the conversions that
+//! carry a value of the type across the seam the schema describes:
+//!
+//! * `#[derive(TsType)]` emits `IntoJs` and `FromJs`, because a nested data
+//!   type travels both ways: out as a props field, back in as a callback
+//!   argument. A type carrying a value that only travels outwards — a
+//!   callback, which is registered rather than read — declares `#[ts(one_way)]`
+//!   and gets `IntoJs` alone.
+//! * `#[derive(TsProps)]` emits `IntoJs` only. Props are handed to a module;
+//!   nothing ever reads a props struct back out of JavaScript, and requiring
+//!   it to be readable would rule out the callbacks props exist to carry.
+//!
+//! A crate that depends on `waterui-ts-schema` alone — the `water` CLI, which
+//! decodes schemas out of an artifact and links none of the framework — gets
+//! the schema and nothing else.
 
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
@@ -15,14 +34,17 @@ use syn::ext::IdentExt as _;
 use syn::spanned::Spanned as _;
 use syn::{Data, DeriveInput, Fields, Ident, Variant, parse_macro_input};
 
-/// Path to the `waterui-ts-schema` items the expansion names.
+/// Path to the `waterui-ts` items the expansion names, when the runtime crate
+/// is reachable at all.
 ///
-/// An application reaches the crate through the `waterui` facade; a crate that
-/// depends on the schema crate directly names it directly, under whatever name
-/// `Cargo.toml` gives it. The schema crate itself declares
-/// `extern crate self as waterui_ts_schema`, so the `FoundCrate::Itself` arm
-/// works in its own tests and doctests as well as in its library.
-fn ts_schema_path() -> syn::Result<TokenStream2> {
+/// An application reaches it through the `waterui` facade as `waterui::ts`; a
+/// crate that depends on the runtime directly names it directly, under
+/// whatever name `Cargo.toml` gives it. `waterui-ts` declares
+/// `extern crate self as waterui_ts`, so the `FoundCrate::Itself` arm works in
+/// its own tests and doctests as well as in its library. `None` means the
+/// expansion can see the schema crate only — the `water` CLI is the case — and
+/// the conversions are left out.
+fn ts_path() -> Option<TokenStream2> {
     // Inside `waterui-internal` the facade is this crate: `src/lib.rs`
     // declares `extern crate self as waterui`, so `crate` is the `waterui`
     // the expansion names — the same special case `waterui_crate_path` in
@@ -33,16 +55,36 @@ fn ts_schema_path() -> syn::Result<TokenStream2> {
     if std::env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-internal")
         && std::env::var_os("CARGO_TARGET_TMPDIR").is_none()
     {
-        return Ok(quote!(crate::ts::schema));
+        return Some(quote!(crate::ts));
     }
 
     match crate_name("waterui") {
-        Ok(FoundCrate::Itself) => return Ok(quote!(crate::ts::schema)),
+        Ok(FoundCrate::Itself) => return Some(quote!(crate::ts)),
         Ok(FoundCrate::Name(name)) => {
             let ident = Ident::new(&name, Span::call_site());
-            return Ok(quote!(::#ident::ts::schema));
+            return Some(quote!(::#ident::ts));
         }
         Err(_) => {}
+    }
+    match crate_name("waterui-ts") {
+        Ok(FoundCrate::Itself) => Some(quote!(::waterui_ts)),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = Ident::new(&name, Span::call_site());
+            Some(quote!(::#ident))
+        }
+        Err(_) => None,
+    }
+}
+
+/// Path to the `waterui-ts-schema` items the expansion names.
+///
+/// The runtime crate re-exports the schema crate as `schema`, so a consumer
+/// that has the runtime names it through there and one copy of the crate
+/// serves both halves of the expansion. A crate that depends on the schema
+/// alone names it directly.
+fn ts_schema_path() -> syn::Result<TokenStream2> {
+    if let Some(ts) = ts_path() {
+        return Ok(quote!(#ts::schema));
     }
     match crate_name("waterui-ts-schema") {
         Ok(FoundCrate::Itself) => Ok(quote!(::waterui_ts_schema)),
@@ -195,6 +237,276 @@ fn ts_type_impl(path: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenSt
     })
 }
 
+/// Whether the type declared `#[ts(one_way)]`.
+///
+/// A type carrying a value that only travels outwards — a callback, which the
+/// bridge registers rather than reads — cannot be read back out of a
+/// JavaScript value, so it says so and the derive emits `IntoJs` alone.
+fn is_one_way(input: &DeriveInput) -> syn::Result<bool> {
+    let mut one_way = false;
+    for attribute in &input.attrs {
+        if !attribute.path().is_ident("ts") {
+            continue;
+        }
+        attribute.parse_nested_meta(|meta| {
+            if meta.path.is_ident("one_way") {
+                one_way = true;
+                return Ok(());
+            }
+            Err(meta.error(
+                "the TypeScript derives take one attribute: `#[ts(one_way)]`, for a type that \
+                 crosses only into TypeScript",
+            ))
+        })?;
+    }
+    Ok(one_way)
+}
+
+/// `(field access, projected property name)` for every named field.
+fn named_field_names(fields: &syn::FieldsNamed) -> Vec<(&Ident, String)> {
+    fields
+        .named
+        .iter()
+        .map(|field| {
+            let ident = field
+                .ident
+                .as_ref()
+                .expect("a named field has an identifier");
+            (ident, ident.unraw().to_string())
+        })
+        .collect()
+}
+
+/// `IntoJs` for a struct with named fields, or for a struct-shaped variant.
+fn object_expression(
+    ts: &TokenStream2,
+    fields: &syn::FieldsNamed,
+    access: impl Fn(&Ident) -> TokenStream2,
+) -> TokenStream2 {
+    let entries = named_field_names(fields).into_iter().map(|(ident, name)| {
+        let value = access(ident);
+        quote! {
+            (
+                ::std::string::String::from(#name),
+                #ts::IntoJs::into_js(#value, bridge)?,
+            )
+        }
+    });
+    quote!(#ts::engine::JsValue::Object(::std::vec![#(#entries),*]))
+}
+
+/// The `Self::Variant(f0, f1)` bindings of a tuple variant.
+fn tuple_bindings(fields: &syn::FieldsUnnamed) -> Vec<Ident> {
+    (0..fields.unnamed.len())
+        .map(|index| format_ident!("field{index}"))
+        .collect()
+}
+
+/// The `impl IntoJs` a derive emits.
+fn into_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let name = &input.ident;
+    let body = match &input.data {
+        Data::Struct(data) => {
+            let Fields::Named(fields) = &data.fields else {
+                return Err(syn::Error::new(
+                    data.fields.span(),
+                    "a TypeScript object type needs named fields",
+                ));
+            };
+            object_expression(ts, fields, |ident| quote!(self.#ident))
+        }
+        Data::Enum(data) => {
+            let string_union = data
+                .variants
+                .iter()
+                .all(|variant| matches!(variant.fields, Fields::Unit));
+            let arms = data.variants.iter().map(|variant| {
+                let ident = &variant.ident;
+                let literal = ident.unraw().to_string();
+                if string_union {
+                    return quote! {
+                        Self::#ident => #ts::engine::JsValue::String(
+                            ::std::string::String::from(#literal),
+                        ),
+                    };
+                }
+                match &variant.fields {
+                    Fields::Unit => quote! {
+                        Self::#ident => #ts::support::tagged_object(
+                            #literal,
+                            ::core::option::Option::None,
+                        ),
+                    },
+                    Fields::Unnamed(fields) => {
+                        let bindings = tuple_bindings(fields);
+                        quote! {
+                            Self::#ident(#(#bindings),*) => #ts::support::tagged_object(
+                                #literal,
+                                ::core::option::Option::Some(
+                                    #ts::engine::JsValue::Array(::std::vec![
+                                        #(#ts::IntoJs::into_js(#bindings, bridge)?),*
+                                    ]),
+                                ),
+                            ),
+                        }
+                    }
+                    Fields::Named(fields) => {
+                        let bindings: Vec<&Ident> = named_field_names(fields)
+                            .into_iter()
+                            .map(|(ident, _)| ident)
+                            .collect();
+                        let object = object_expression(ts, fields, |ident| quote!(#ident));
+                        quote! {
+                            Self::#ident { #(#bindings),* } => #ts::support::tagged_object(
+                                #literal,
+                                ::core::option::Option::Some(#object),
+                            ),
+                        }
+                    }
+                }
+            });
+            quote!(match self { #(#arms)* })
+        }
+        Data::Union(_) => {
+            return Err(syn::Error::new(
+                name.span(),
+                "a union has no TypeScript projection",
+            ));
+        }
+    };
+
+    Ok(quote! {
+        impl #ts::IntoJs for #name {
+            fn into_js(
+                self,
+                bridge: &#ts::Bridge,
+            ) -> ::core::result::Result<#ts::engine::JsValue, #ts::engine::JsError> {
+                ::core::result::Result::Ok(#body)
+            }
+        }
+    })
+}
+
+/// The `impl FromJs` `#[derive(TsType)]` emits unless the type is one-way.
+fn from_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let name = &input.ident;
+    let type_name = name.unraw().to_string();
+    let body = match &input.data {
+        Data::Struct(data) => {
+            let Fields::Named(fields) = &data.fields else {
+                return Err(syn::Error::new(
+                    data.fields.span(),
+                    "a TypeScript object type needs named fields",
+                ));
+            };
+            let fields = named_field_names(fields).into_iter().map(|(ident, name)| {
+                quote!(#ident: #ts::support::field(entries, #type_name, #name, bridge)?)
+            });
+            quote! {
+                let entries = #ts::support::entries(value, #type_name)?;
+                ::core::result::Result::Ok(Self { #(#fields),* })
+            }
+        }
+        Data::Enum(data) => {
+            let string_union = data
+                .variants
+                .iter()
+                .all(|variant| matches!(variant.fields, Fields::Unit));
+            let arms = data.variants.iter().map(|variant| {
+                let ident = &variant.ident;
+                let literal = ident.unraw().to_string();
+                match &variant.fields {
+                    Fields::Unit => quote!(#literal => ::core::result::Result::Ok(Self::#ident),),
+                    Fields::Unnamed(fields) => {
+                        let arity = fields.unnamed.len();
+                        let elements = (0..arity).map(|index| {
+                            quote!(#ts::support::element(items, #type_name, #literal, #index, bridge)?)
+                        });
+                        quote! {
+                            #literal => {
+                                let payload = #ts::support::payload(content, #type_name, #literal)?;
+                                let items = #ts::support::tuple_items(
+                                    payload, #type_name, #literal, #arity,
+                                )?;
+                                ::core::result::Result::Ok(Self::#ident(#(#elements),*))
+                            }
+                        }
+                    }
+                    Fields::Named(fields) => {
+                        let fields = named_field_names(fields).into_iter().map(|(ident, name)| {
+                            quote!(#ident: #ts::support::field(entries, #type_name, #name, bridge)?)
+                        });
+                        quote! {
+                            #literal => {
+                                let payload = #ts::support::payload(content, #type_name, #literal)?;
+                                let entries = #ts::support::entries(payload, #type_name)?;
+                                ::core::result::Result::Ok(Self::#ident { #(#fields),* })
+                            }
+                        }
+                    }
+                }
+            });
+            if string_union {
+                quote! {
+                    let name = #ts::support::variant_name(value, #type_name)?;
+                    match name {
+                        #(#arms)*
+                        _ => ::core::result::Result::Err(
+                            #ts::support::unknown_variant(#type_name, name),
+                        ),
+                    }
+                }
+            } else {
+                quote! {
+                    let (name, content) = #ts::support::tagged(value, #type_name)?;
+                    match name {
+                        #(#arms)*
+                        _ => ::core::result::Result::Err(
+                            #ts::support::unknown_variant(#type_name, name),
+                        ),
+                    }
+                }
+            }
+        }
+        Data::Union(_) => {
+            return Err(syn::Error::new(
+                name.span(),
+                "a union has no TypeScript projection",
+            ));
+        }
+    };
+
+    Ok(quote! {
+        impl #ts::FromJs for #name {
+            fn from_js(
+                value: &#ts::engine::JsValue,
+                bridge: &#ts::Bridge,
+            ) -> ::core::result::Result<Self, #ts::engine::JsError> {
+                #body
+            }
+        }
+    })
+}
+
+/// The runtime conversions, when the runtime crate is reachable.
+///
+/// `both` asks for `FromJs` as well as `IntoJs`: a nested data type crosses
+/// both ways, while props only ever travel into TypeScript.
+fn conversions(input: &DeriveInput, both: bool) -> syn::Result<TokenStream2> {
+    let Some(ts) = ts_path() else {
+        return Ok(TokenStream2::new());
+    };
+    let into_js = into_js_impl(&ts, input)?;
+    if !both || is_one_way(input)? {
+        return Ok(into_js);
+    }
+    let from_js = from_js_impl(&ts, input)?;
+    Ok(quote! {
+        #into_js
+        #from_js
+    })
+}
+
 /// Expand `#[derive(TsType)]`.
 pub fn derive_ts_type(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -202,10 +514,19 @@ pub fn derive_ts_type(input: TokenStream) -> TokenStream {
         Ok(path) => path,
         Err(error) => return error.into_compile_error().into(),
     };
-    match ts_type_impl(&path, &input) {
-        Ok(tokens) => tokens.into(),
-        Err(error) => error.into_compile_error().into(),
+    let schema = match ts_type_impl(&path, &input) {
+        Ok(tokens) => tokens,
+        Err(error) => return error.into_compile_error().into(),
+    };
+    let conversions = match conversions(&input, true) {
+        Ok(tokens) => tokens,
+        Err(error) => return error.into_compile_error().into(),
+    };
+    quote! {
+        #schema
+        #conversions
     }
+    .into()
 }
 
 /// Expand `#[derive(TsProps)]`.
@@ -228,6 +549,13 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens,
         Err(error) => return error.into_compile_error().into(),
     };
+    // Props travel one way: a module receives them, and nothing reads a props
+    // struct back out of JavaScript. Requiring it to be readable would rule
+    // out the callbacks and views props exist to carry.
+    let conversions = match conversions(&input, false) {
+        Ok(tokens) => tokens,
+        Err(error) => return error.into_compile_error().into(),
+    };
 
     let name = &input.ident;
     // The metadata symbol the CLI enumerates carries the type's name, not its
@@ -241,6 +569,7 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
 
     quote! {
         #schema
+        #conversions
 
         #[doc(hidden)]
         #[allow(non_upper_case_globals)]

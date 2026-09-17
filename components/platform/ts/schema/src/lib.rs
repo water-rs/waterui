@@ -102,6 +102,14 @@ pub use tree::{
 /// Use this for the types nested inside a props struct. The root props struct
 /// derives [`macro@TsProps`] instead, which also emits the artifact metadata.
 ///
+/// Where the TypeScript runtime is reachable — a crate that depends on
+/// `waterui` or `waterui-ts` — the derive also emits the `IntoJs` and `FromJs`
+/// conversions that carry a value of the type across the seam this schema
+/// describes, because a nested data type travels both ways: out as a props
+/// field, back in as a callback argument. A type carrying a value that only
+/// travels outwards — a callback, which the bridge registers rather than
+/// reads — declares `#[ts(one_way)]` and gets `IntoJs` alone.
+///
 /// A field whose type has no [`TsType`] projection is a compile error naming
 /// the field and its type — there is no implicit fallback:
 ///
@@ -123,6 +131,11 @@ pub use waterui_macros::TsType;
 /// Emits everything [`macro@TsType`] does, plus [`TsProps::ENCODED`],
 /// [`TsProps::CONTRACT_HASH`] and the `waterui_meta_tsprops_<Type>` artifact
 /// static the `water` CLI reads back.
+///
+/// Where the TypeScript runtime is reachable the derive also emits `IntoJs`,
+/// and only `IntoJs`: props are handed to a module, and nothing reads a props
+/// struct back out of JavaScript — requiring it to be readable would rule out
+/// the callbacks and views props exist to carry.
 ///
 /// Props are the object a module receives, so the root type is a struct with
 /// named fields:

@@ -171,22 +171,19 @@ pub use waterui_navigation as navigation;
 #[cfg(feature = "gpu")]
 pub use waterui_svg as svg;
 pub use waterui_text as text;
-/// TypeScript-facing surface.
+/// TypeScript-facing surface: the runtime, the props contract, and the seam
+/// between a JavaScript signal and a `Binding`.
+///
+/// This is `waterui-ts` re-exported, which carries the props schema crate as
+/// `waterui::ts::schema`, so a `TsType`/`TsProps` derive on a crate that
+/// consumes the facade finds every item the expansion uses.
 #[cfg(feature = "ts")]
 pub mod ts {
-    /// The props contract schema a mounted TypeScript view module is typed
-    /// against.
-    ///
-    /// This is `waterui-ts-schema` re-exported, so a `TsType`/`TsProps` derive
-    /// on a crate that consumes the facade can name `waterui::ts::schema` and
-    /// find every item the expansion uses.
-    pub mod schema {
-        pub use waterui_ts_schema::*;
-    }
+    pub use waterui_ts::*;
 
-    /// `crate::ts::schema` is the path `ts_schema_path` emits for expansions
-    /// inside `waterui-internal`; deriving here exercises that arm, so a typo
-    /// in it fails this crate's own tests.
+    /// `crate::ts` is the path the derives emit for expansions inside
+    /// `waterui-internal`; deriving here exercises that arm, so a typo in it
+    /// fails this crate's own tests.
     #[cfg(all(test, feature = "ts"))]
     mod tests {
         use super::schema::{TsProps, contract_hash};

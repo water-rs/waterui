@@ -1659,7 +1659,16 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// Use it for the types nested inside a props struct; the root props struct
 /// derives [`macro@TsProps`], which also emits the artifact metadata.
-#[proc_macro_derive(TsType)]
+///
+/// When the TypeScript runtime is reachable — the expansion resolves through
+/// `waterui` or `waterui-ts` — the derive also emits the `IntoJs` and `FromJs`
+/// conversions that carry a value of the type across the seam, because a
+/// nested data type travels both ways: out as a props field, back in as a
+/// callback argument. A type that carries a value which only travels
+/// outwards — a callback, which the bridge registers rather than reads —
+/// declares `#[ts(one_way)]` and gets `IntoJs` alone. A crate that depends on
+/// `waterui-ts-schema` alone gets the schema and nothing else.
+#[proc_macro_derive(TsType, attributes(ts))]
 pub fn derive_ts_type(input: TokenStream) -> TokenStream {
     ts::derive_ts_type(input)
 }
@@ -1676,7 +1685,12 @@ pub fn derive_ts_type(input: TokenStream) -> TokenStream {
 ///
 /// The symbol name carries the type name alone, so one binary may hold only
 /// one props type of a given name.
-#[proc_macro_derive(TsProps)]
+///
+/// When the TypeScript runtime is reachable the derive also emits `IntoJs`,
+/// and only `IntoJs`: props are handed to a module, and nothing reads a props
+/// struct back out of JavaScript — requiring it to be readable would rule out
+/// the callbacks and views props exist to carry.
+#[proc_macro_derive(TsProps, attributes(ts))]
 pub fn derive_ts_props(input: TokenStream) -> TokenStream {
     ts::derive_ts_props(input)
 }
