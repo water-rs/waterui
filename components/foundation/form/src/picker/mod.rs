@@ -36,9 +36,9 @@ pub enum PickerStyle {
     /// Displays all options vertically with radio button indicators.
     ///
     /// Platforms without a radio group render their inline picker instead:
-    /// iOS has no radio group in UIKit or SwiftUI, so the Apple backend
+    /// iOS has no radio group in `UIKit` or `SwiftUI`, so the Apple backend
     /// renders this style as the inline wheel picker there, exactly as
-    /// SwiftUI's `.inline` style does in the same place, while macOS keeps
+    /// `SwiftUI`'s `.inline` style does in the same place, while macOS keeps
     /// its native radio buttons. The asymmetry is documented rather than
     /// faked with a self-drawn list.
     Radio,
