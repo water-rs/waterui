@@ -415,6 +415,9 @@ webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
 # `tsx!` mount, and the props contract schema (`waterui::ts::schema`) whose
 # encoded contract the `water` CLI reads back out of a debug artifact.
 ts = ["waterui-internal/ts", "waterui-dylib?/ts"]
+# The over-the-air update client for TypeScript view bundles (`waterui::ts::Ota`).
+# Implies `ts`; off by default and outside `all` for the same reason `ts` is.
+ts-ota = ["ts", "waterui-internal/ts-ota", "waterui-dylib?/ts-ota"]
 navigation-restoration = [
     "waterui-internal/navigation-restoration",
     "waterui-dylib?/navigation-restoration",

@@ -43,8 +43,9 @@ mod values;
 
 use suiteki::Str;
 use waterui_ts::schema::{
-    CatalogSchema, ChildrenSlot, ComponentSchema, ModifierSchema, TsType, TypeSchema,
-    attributes_of, catalog_encoded_len, encode_catalog, payload,
+    CatalogSchema, ChildrenSlot, ComponentSchema, ModifierSchema, RuntimePart, TsType, TypeSchema,
+    attributes_of, catalog_encoded_len, contract_hash, encode_catalog, encode_runtime_half,
+    payload, runtime_half_encoded_len,
 };
 
 #[cfg(feature = "media")]
@@ -346,6 +347,42 @@ pub static waterui_meta_ts_catalog: [u8; catalog_encoded_len(&CATALOG) + 1] = EN
 /// The encoded catalog without its terminator: the exact bytes the CLI
 /// recovers from the artifact.
 pub const CATALOG_ENCODED: &[u8] = payload(&ENCODED);
+
+/// The catalog half of the runtime fingerprint: the hash of
+/// [`CATALOG_ENCODED`].
+///
+/// A bundle is compiled against this vocabulary, so a build whose catalog
+/// differs — a component added, an attribute changed, `<Image>` present or
+/// not — is a different runtime to a bundle, and the fingerprint says so.
+pub const CATALOG_HASH: u64 = contract_hash(CATALOG_ENCODED);
+
+/// The encoded catalog half, NUL-terminated as the artifact static carries
+/// it.
+const CATALOG_HALF: [u8; runtime_half_encoded_len(RuntimePart::Catalog, CATALOG_HASH) + 1] =
+    encode_runtime_half(RuntimePart::Catalog, CATALOG_HASH);
+
+/// The catalog half of the runtime fingerprint, read back by the `water` CLI.
+///
+/// The CLI combines it with `waterui_meta_ts_runtime_library` from the
+/// runtime crate's rlib into the fingerprint a bundle manifest carries.
+/// Emitted on the same terms as [`waterui_meta_ts_catalog`]: `#[used]` keeps
+/// it in the rlib, the NUL ends it, and the debug gate keeps it out of a
+/// shipped application.
+#[cfg(debug_assertions)]
+#[used]
+#[expect(
+    non_upper_case_globals,
+    reason = "tooling enumerates the symbol by its `waterui_meta_` prefix, so the name is the \
+              contract"
+)]
+pub static waterui_meta_ts_runtime_catalog: [u8; runtime_half_encoded_len(
+    RuntimePart::Catalog,
+    CATALOG_HASH,
+) + 1] = CATALOG_HALF;
+
+/// The encoded catalog half without its terminator: the exact bytes the CLI
+/// recovers from the artifact.
+pub const CATALOG_HALF_ENCODED: &[u8] = payload(&CATALOG_HALF);
 
 /// The entry for `name`, or `None` when the catalog has none.
 #[must_use]

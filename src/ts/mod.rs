@@ -11,6 +11,11 @@
 //! [`Mount`]; the runtime it mounts into is the one the application's bundle
 //! loader installed in the environment as a [`RuntimeHandle`].
 //!
+//! The bundle a launch runs comes from the [`Loader`], and the fingerprint it
+//! verifies bundles against is [`RUNTIME_FINGERPRINT`], assembled here because
+//! this is where both halves are in reach. With the `ts-ota` feature the
+//! update client (`Ota`, `BundleStore`) is here too.
+//!
 //! What lives *here* rather than in that crate is the vocabulary: the
 //! [`catalog`] of components a JSX tag may name and the [`Components`] host
 //! table that builds them. The facade is the one crate that reaches every
@@ -26,6 +31,20 @@ pub mod catalog;
 mod components;
 
 pub use components::Components;
+
+/// The runtime fingerprint of this build: the JavaScript library
+/// `waterui-ts` embeds and the component [`catalog`] this crate publishes,
+/// under the schema format version.
+///
+/// This is the value the CLI-generated leaf crate writes into its
+/// [`Requirement`], and the value the `water` CLI derives from the two
+/// artifact statics `waterui_meta_ts_runtime_library` and
+/// `waterui_meta_ts_runtime_catalog` when it builds a bundle's manifest. Both
+/// are the same two constants combined by the same constructor, so a bundle
+/// the CLI built for this build verifies against this binary, and one built
+/// for any other does not.
+pub const RUNTIME_FINGERPRINT: schema::RuntimeFingerprint =
+    schema::RuntimeFingerprint::new(LIBRARY_HASH, catalog::CATALOG_HASH);
 
 /// `crate::ts` is the path the derives emit for expansions inside
 /// `waterui-internal`; deriving here exercises that arm, so a typo in it

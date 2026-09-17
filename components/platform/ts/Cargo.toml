@@ -23,6 +23,51 @@ nami.workspace = true
 suiteki.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# The bundle loader verifies every bundle's manifest — the baseline's too —
+# against the binary's requirement: the manifest is JSON, and the bundle
+# file's identity inside it is a SHA-256 digest.
+serde_json.workspace = true
+sha2 = { version = "0.11", default-features = false }
+
+# Everything below is the over-the-air client, behind `ota`: the store a
+# downloaded bundle is cached in (its state file is a serde JSON store), the
+# signature check, and the fetch itself. A baseline-only application leaves
+# the feature off and links none of it.
+serde = { workspace = true, features = ["derive", "std"], optional = true }
+ed25519-dalek = { version = "3", default-features = false, features = ["fast"], optional = true }
+waterkit-fs = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+executor-core = { workspace = true, optional = true }
+blocking = { workspace = true, optional = true }
+
+# The HTTP client is `zenwave`, with the per-target TLS split every fetching
+# crate in the workspace uses: the platform's own TLS on Apple, rustls
+# everywhere else that has a socket, and the browser's fetch on wasm.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+zenwave = { workspace = true, features = ["native-tls"], optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+zenwave = { workspace = true, features = ["rustls"], optional = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_vendor = "apple", target_os = "android")))'.dependencies]
+zenwave = { workspace = true, features = ["rustls"], optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+zenwave = { workspace = true, optional = true }
+
+[features]
+# The over-the-air update client: fetches a signed manifest and the bundle it
+# names, verifies both, and caches them for the next launch. Off by default;
+# the loader, the requirement manifest and the baseline are always present.
+ota = [
+    "dep:serde",
+    "dep:ed25519-dalek",
+    "dep:waterkit-fs",
+    "dep:url",
+    "dep:executor-core",
+    "dep:blocking",
+    "dep:zenwave",
+]
 
 # Apple platforms use the system JavaScriptCore — zero added binary size.
 # watchOS is excluded: it ships no JavaScriptCore and the runtime is
@@ -47,6 +92,12 @@ waterui-testing = { path = "../../../testing" }
 # through a user crate's rlib.
 object = { version = "0.37", default-features = false, features = ["read", "std"] }
 rustc-demangle = "0.1"
+# The OTA tests sign real bundles with a key generated in the test, serve
+# them from a socket the test owns, and cache them in a directory that goes
+# away with the test.
+getrandom.workspace = true
+tempfile = "3"
+futures-lite.workspace = true
 
 [lints]
 workspace = true
