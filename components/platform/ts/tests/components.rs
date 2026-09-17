@@ -1122,6 +1122,28 @@ fn ts_two_items_with_one_key_are_refused() {
 }
 
 #[test]
+fn ts_two_whole_numbers_past_the_integer_range_are_two_rows() {
+    // Both are whole and both are far past `i64::MAX`, so a key taken by
+    // casting saturates them to one integer and the list above refuses them as
+    // two rows sharing a key — a list JavaScript tells apart, reported as an
+    // authoring mistake nobody made. Keyed by their bits they are the two rows
+    // they are.
+    let module = Module::mount(&module(
+        r#"waterui.jsx("VStack", {
+            children: waterui.jsx(waterui.For, {
+                each: [1e21, 2e21],
+                children: (item) => waterui.jsx("Text", { children: `row ${item}` }),
+            }),
+        })"#,
+    ));
+    let tree = module.tree();
+    assert!(
+        tree.contains("row 1e+21") && tree.contains("row 2e+21"),
+        "both rows are in the tree: {tree}"
+    );
+}
+
+#[test]
 fn ts_a_departed_row_releases_what_it_exported() {
     // Every `<For>` row exports an index accessor. Owned by the mount, those
     // would pile up one per departed row for as long as the module lived; owned

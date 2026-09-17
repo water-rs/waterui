@@ -65,6 +65,17 @@ impl Identifiable for ItemKey {
     }
 }
 
+/// The `f64` values that are exactly an `i64`: whole, and inside ±2^63.
+///
+/// The bound is what keeps a large number a number. `1e21` and `2e21` are both
+/// whole and both far past `i64::MAX`, so a cast saturates them — to the same
+/// `i64::MAX` — and two rows JavaScript tells apart would arrive here as one
+/// key, which reads as an authoring mistake nobody made. Outside this range a
+/// number keeps its bits instead, which is what [`ItemKey::Number`] already
+/// does for a fraction.
+const INTEGER_KEYS: core::ops::Range<f64> =
+    -9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0;
+
 impl ItemKey {
     /// The key a value carries, or an error explaining what has to be given
     /// instead.
@@ -75,15 +86,19 @@ impl ItemKey {
                 .as_i64()
                 .map(Self::Integer)
                 .ok_or_else(|| JsError::conversion("a key past the range of a 64-bit integer")),
-            JsValue::Number(number) => Ok(if number.fract() == 0.0 && number.is_finite() {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "the value has no fractional part and is finite, so the cast is exact"
-                )]
-                Self::Integer(*number as i64)
-            } else {
-                Self::Number(number.to_bits())
-            }),
+            // Infinities and `NaN` are outside the range, so they take the
+            // same path a fraction does and keep their bits.
+            JsValue::Number(number) => {
+                Ok(if INTEGER_KEYS.contains(number) && number.fract() == 0.0 {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "the value is whole and inside the i64 range, so the cast is exact"
+                    )]
+                    Self::Integer(*number as i64)
+                } else {
+                    Self::Number(number.to_bits())
+                })
+            }
             JsValue::String(text) => Ok(Self::Text(Str::from(text.clone()))),
             other if keyed => Err(JsError::conversion(format!(
                 "<For by={{…}}> answered {}, which cannot be a key: return a string, a number or \
