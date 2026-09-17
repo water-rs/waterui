@@ -65,6 +65,12 @@ struct Bridge {
     object_prototype: Persistent<Object<'static>>,
     /// `Object.prototype.toString` — names a rejected exotic's kind.
     to_string_tag: Persistent<Function<'static>>,
+    /// `Object.getPrototypeOf` — the prototype probe. Called as a JS
+    /// function so a revoked `Proxy` throws a `TypeError` the caller sees
+    /// as an error; `rquickjs::Object::get_prototype` would wrap the
+    /// exception sentinel as an object instead (and trip its own debug
+    /// assertion).
+    get_prototype_of: Persistent<Function<'static>>,
 }
 
 // SAFETY: `Bridge` holds only `'static` persistents — no `'js` lifetime
@@ -103,20 +109,31 @@ impl QuickJsRuntime {
 
     /// Whether `object` is plain: `Object.prototype` or `null` prototype.
     /// Everything else — `Map`, `Date`, `Error`, `Promise`, class instances —
-    /// is an exotic that has no `JsValue`.
-    fn is_plain<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<bool, JsError> {
-        let Some(prototype) = object.get_prototype() else {
-            return Ok(true);
-        };
+    /// is an exotic that has no `JsValue`. A revoked `Proxy` is an error:
+    /// `Object.getPrototypeOf` throws, and `map_error` drains that throw.
+    /// `pub(crate)` so the test module can assert the probe leaves no
+    /// pending exception behind.
+    pub(crate) fn is_plain<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<bool, JsError> {
         let bridge = ctx
             .userdata::<Bridge>()
             .ok_or_else(|| JsError::new("Error", "the context lost its bridge userdata"))?;
+        let get_prototype_of = bridge
+            .get_prototype_of
+            .clone()
+            .restore(ctx)
+            .map_err(|error| map_error(ctx, &error))?;
+        let prototype: Value<'js> = get_prototype_of
+            .call((object.clone(),))
+            .map_err(|error| map_error(ctx, &error))?;
+        if prototype.is_null() {
+            return Ok(true);
+        }
         let object_prototype = bridge
             .object_prototype
             .clone()
             .restore(ctx)
             .map_err(|error| map_error(ctx, &error))?;
-        Ok(prototype.as_value() == object_prototype.as_value())
+        Ok(prototype == *object_prototype.as_value())
     }
 
     /// `Object.prototype.toString.call(value)` → `"Map"`, `"Date"`, … — the
@@ -252,7 +269,14 @@ impl QuickJsRuntime {
                     .clone()
                     .into_object()
                     .ok_or_else(|| JsError::conversion("an object-typed value is not an object"))?;
-                if let Some(class) = Class::<OpaqueBox>::from_object(&object) {
+                let boxed = Class::<OpaqueBox>::from_object(&object);
+                if boxed.is_none() {
+                    // `JS_GetOpaque2` arms a pending `TypeError` on every
+                    // non-box object; drain it so it cannot leak into the
+                    // next engine operation.
+                    let _ = ctx.catch();
+                }
+                if let Some(class) = boxed {
                     return Ok(JsValue::Opaque(Opaque::from_inner(
                         class.borrow().value.clone(),
                     )));
@@ -401,13 +425,18 @@ impl JsRuntime for QuickJsRuntime {
                     Object::new(ctx.clone()).map_err(|e| map_error(&ctx, &e))?,
                 )
                 .map_err(|error| map_error(&ctx, &error))?;
-            // `Object.prototype` and its `toString` are fetched once so a
-            // script rewriting `globalThis.Object` cannot change what counts
-            // as plain or how exotics are named.
-            let object_prototype: Object<'_> = ctx
+            // `Object.prototype`, its `toString` and `Object.getPrototypeOf`
+            // are fetched once so a script rewriting `globalThis.Object`
+            // cannot change what counts as plain or how exotics are named.
+            let object_ctor: Object<'_> = ctx
                 .globals()
                 .get::<_, Object<'_>>("Object")
-                .and_then(|ctor| ctor.get("prototype"))
+                .map_err(|error| map_error(&ctx, &error))?;
+            let object_prototype: Object<'_> = object_ctor
+                .get("prototype")
+                .map_err(|error| map_error(&ctx, &error))?;
+            let get_prototype_of: Function<'_> = object_ctor
+                .get("getPrototypeOf")
                 .map_err(|error| map_error(&ctx, &error))?;
             let to_string_tag: Function<'_> = object_prototype
                 .get("toString")
@@ -415,6 +444,7 @@ impl JsRuntime for QuickJsRuntime {
             ctx.store_userdata(Bridge {
                 object_prototype: Persistent::save(&ctx, object_prototype),
                 to_string_tag: Persistent::save(&ctx, to_string_tag),
+                get_prototype_of: Persistent::save(&ctx, get_prototype_of),
             })
             .map_err(|_| JsError::new("Error", "the context rejected its bridge userdata"))?;
             Ok(())
@@ -485,7 +515,10 @@ impl JsRuntime for QuickJsRuntime {
             )),
         })
     }
+}
 
+#[cfg(test)]
+impl waterui_ts_engine::conformance::CollectGarbage for QuickJsRuntime {
     fn collect_garbage(&self) {
         self.context.with(|ctx| ctx.run_gc());
     }
@@ -494,5 +527,47 @@ impl JsRuntime for QuickJsRuntime {
 impl fmt::Debug for QuickJsRuntime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("QuickJsRuntime(..)")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The conversion probes drain the exceptions they arm:
+    /// `JS_GetOpaque2` leaves a pending `TypeError` on every non-box
+    /// object, and the prototype probe throws on a revoked `Proxy`.
+    /// Neither may survive to the next operation — `ctx.has_exception()`
+    /// reads the real pending-exception slot, which the generic `JsRuntime`
+    /// surface cannot observe.
+    #[test]
+    fn conversion_probes_drain_pending_exceptions() {
+        let runtime = QuickJsRuntime::new().expect("the engine constructs");
+        // `eval` converts the plain object, running the `JS_GetOpaque2`
+        // miss inside `from_js`; a missed drain would stay armed here.
+        runtime
+            .eval("({a: 1})", "probe.js")
+            .expect("a plain object converts");
+        runtime.context.with(|ctx| {
+            assert!(
+                !ctx.has_exception(),
+                "the opaque-box probe left a pending exception"
+            );
+            let revoked: Value<'_> = ctx
+                .eval(
+                    "(() => { const p = Proxy.revocable({}, {}); p.revoke(); return p.proxy; })()",
+                )
+                .expect("the revoked proxy evaluates");
+            let object = revoked.into_object().expect("a proxy is an object");
+            // The prototype probe throws on the revoked proxy; the throw
+            // must come back as the error, not stay armed in the slot.
+            let error = QuickJsRuntime::is_plain(&ctx, &object)
+                .expect_err("a revoked proxy has no readable prototype");
+            assert_eq!(error.name, "TypeError");
+            assert!(
+                !ctx.has_exception(),
+                "the revoked-proxy probe left a pending exception"
+            );
+        });
     }
 }
