@@ -24,7 +24,6 @@ use syn::{Expr, ExprStruct, LitStr, Token};
 use crate::ts::{ts_path, ts_schema_path};
 
 /// `tsx!("./promo.tsx", PromoProps { … })`, parsed.
-#[derive(Debug)]
 struct Tsx {
     /// The module path as written, relative to the file that mounts it.
     path: LitStr,
@@ -363,51 +362,73 @@ mod tests {
 
         use crate::tsx::Tsx;
 
-        fn parse(input: proc_macro2::TokenStream) -> syn::Result<Tsx> {
+        /// The parse, or a panic naming `what` it was meant to accept.
+        ///
+        /// `Result::expect` would need `Tsx: Debug`, and `syn`'s types only
+        /// carry `Debug` under its `extra-traits` feature, which this crate
+        /// does not ask for and cannot rely on a dependent to unify in.
+        fn parsed(input: proc_macro2::TokenStream, what: &str) -> Tsx {
             syn::parse2::<Tsx>(input)
+                .ok()
+                .unwrap_or_else(|| panic!("{what}"))
+        }
+
+        /// The message the parse was refused with.
+        fn refusal(input: proc_macro2::TokenStream, what: &str) -> String {
+            syn::parse2::<Tsx>(input)
+                .err()
+                .unwrap_or_else(|| panic!("{what}"))
+                .to_string()
         }
 
         #[test]
         fn a_module_path_alone_is_a_mount_with_no_props() {
-            let parsed = parse(quote!("./promo.tsx")).expect("a path alone parses");
+            let parsed = parsed(quote!("./promo.tsx"), "a path alone parses");
             assert_eq!(parsed.path.value(), "./promo.tsx");
             assert!(parsed.props.is_none());
         }
 
         #[test]
         fn a_trailing_comma_is_still_a_mount_with_no_props() {
-            let parsed = parse(quote!("./promo.tsx",)).expect("a trailing comma parses");
+            let parsed = parsed(quote!("./promo.tsx",), "a trailing comma parses");
             assert!(parsed.props.is_none());
         }
 
         #[test]
         fn a_struct_literal_names_the_props_type() {
-            let parsed = parse(quote!("./promo.tsx", PromoProps { headline: title }))
-                .expect("a struct literal parses");
+            let parsed = parsed(
+                quote!("./promo.tsx", PromoProps { headline: title }),
+                "a struct literal parses",
+            );
             let props = parsed.props.expect("the props are carried");
             assert!(props.path.is_ident("PromoProps"));
         }
 
         #[test]
         fn a_props_expression_that_is_not_a_struct_literal_is_refused() {
-            let error = parse(quote!("./promo.tsx", make_props()))
-                .expect_err("the props type has to be named at the mount site");
-            let message = error.to_string();
+            let message = refusal(
+                quote!("./promo.tsx", make_props()),
+                "the props type has to be named at the mount site",
+            );
             assert!(message.contains("struct literal"), "{message}");
             assert!(message.contains("..props"), "{message}");
         }
 
         #[test]
         fn a_module_path_that_is_not_a_string_literal_is_refused() {
-            let error =
-                parse(quote!(MODULE, PromoProps {})).expect_err("the path is a string literal");
-            assert!(error.to_string().contains("string literal"), "{error}");
+            let message = refusal(
+                quote!(MODULE, PromoProps {}),
+                "the path is a string literal",
+            );
+            assert!(message.contains("string literal"), "{message}");
         }
 
         #[test]
         fn a_third_argument_is_refused() {
-            parse(quote!("./promo.tsx", PromoProps {}, extra))
-                .expect_err("tsx! takes a path and at most one props literal");
+            refusal(
+                quote!("./promo.tsx", PromoProps {}, extra),
+                "tsx! takes a path and at most one props literal",
+            );
         }
     }
 
