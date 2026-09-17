@@ -274,12 +274,28 @@ static void water_toplevel_constructed(GObject *object)
         WPE_TOPLEVEL_STATE_ACTIVE);
 }
 
+static gboolean water_toplevel_view_resized(
+    WPEToplevel *toplevel,
+    WPEView *view,
+    gpointer user_data)
+{
+    int width, height;
+    (void)user_data;
+    wpe_toplevel_get_size(toplevel, &width, &height);
+    wpe_view_resized(view, width, height);
+    return FALSE;
+}
+
 static gboolean water_toplevel_resize(
     WPEToplevel *toplevel,
     int width,
     int height)
 {
     wpe_toplevel_resized(toplevel, width, height);
+    wpe_toplevel_foreach_view(
+        toplevel,
+        water_toplevel_view_resized,
+        NULL);
     return TRUE;
 }
 
@@ -338,7 +354,7 @@ static WPEDRMDevice *water_display_get_drm_device(WPEDisplay *display)
 static WPEBufferFormats *water_display_get_preferred_buffer_formats(
     WPEDisplay *display)
 {
-    return ((WaterDisplay *)display)->formats;
+    return g_object_ref(((WaterDisplay *)display)->formats);
 }
 
 static gboolean water_display_use_explicit_sync(WPEDisplay *display)
@@ -480,7 +496,6 @@ WaterWpeRuntime *water_wpe_runtime_new(char **error)
         DRM_FORMAT_XRGB8888,
         DRM_FORMAT_MOD_LINEAR);
     display->formats = wpe_buffer_formats_builder_end(builder);
-    wpe_buffer_formats_builder_unref(builder);
     runtime->display = WPE_DISPLAY(display);
     return runtime;
 }
@@ -1251,7 +1266,6 @@ static void water_wpe_cookies_ready(
     char *json = json_generator_to_data(generator, &length);
     async->callback(async->user_data, true, json, length);
     g_free(json);
-    json_node_free(root);
     g_object_unref(generator);
     g_object_unref(builder);
     g_list_free_full(cookies, (GDestroyNotify)soup_cookie_free);
