@@ -19,15 +19,8 @@ runs:
       # not there resolves an empty index instead of failing, so apt then
       # reports every package as unlocatable and the install step aborts —
       # which is how the WPE runtime legs of the CLI release died.
-      run: |
-        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-          list=/etc/apt/sources.list.d/ubuntu.sources
-        elif [ -s /etc/apt/sources.list ]; then
-          list=/etc/apt/sources.list
-        else
-          echo "::error::no Ubuntu archive source file on this runner"
-          exit 1
-        fi
-        sudo apt-get update \
-          -o Dir::Etc::SourceList="$list" \
-          -o Dir::Etc::SourceParts=/dev/null
+      # The script lives beside this file so a composite action in this
+      # directory tree can run it directly: a `uses: ./...` reference resolves
+      # against the calling workflow's checkout, which is another repository
+      # when this action is consumed as `water-rs/waterui/.github/actions/...@dev`.
+      run: bash "${{ github.action_path }}/refresh.sh"
