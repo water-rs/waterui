@@ -9,7 +9,7 @@ bridge: a signal write in TypeScript updates exactly the view that reads it,
 and a `Binding` the Rust side pushes reaches TypeScript as a signal.
 
 The vocabulary is the catalog — the component and modifier names encoded in
-`waterui::ts::CATALOG` — so the names this guide uses are the ones the
+`waterui::ts::catalog::CATALOG` — so the names this guide uses are the ones the
 generated `.d.ts` declares. A tag the catalog does not carry is a typed
 error, not a fallback.
 
@@ -138,8 +138,8 @@ render function receiving the item and an accessor of its index:
 ```
 
 Keys must be unique and stable — a `by` that answers the same key for two
-rows, or a key outside the domain the host can hold, is an error at mount,
-not a silent mis-render.
+rows, or a key outside the domain the host can hold, is an error at mount
+and a panic on a later update, never a silent mis-render.
 
 `<Suspense fallback={…}>…</Suspense>` is the host-driven pending state:
 the fallback shows while the children are pending.
@@ -267,8 +267,8 @@ mounted tree.
 
 A string child is a translation key, and a key the catalog does not carry
 renders as the key itself — exactly what `Text::localized` does. A number
-child is verbatim: `<Text>{count()}</Text>` is `text!("{count}")`, a
-formatted value rather than a lookup.
+child is verbatim — `Text::verbatim` of the value as formatted, never a
+lookup — and it follows the signal like any other dynamic position.
 
 ## Engines and platform support
 
@@ -278,5 +278,7 @@ The JavaScript engine is selected by target:
   binary size.
 - **Android, Linux, Windows** — `QuickJS-NG`, embedded.
 - **watchOS** — unsupported. The platform ships no `JavaScriptCore`, and
-  embedding `QuickJS-NG` is not supported there either, so `tsx!` does not
-  compile on watchOS. The asymmetry is documented, not faked.
+  embedding `QuickJS-NG` is not supported there either, so the `ts`
+  feature does not build on watchOS at all: the runtime crate is a compile
+  error there, before any `tsx!` is reached. The asymmetry is documented,
+  not faked.
