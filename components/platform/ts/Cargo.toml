@@ -14,6 +14,16 @@ categories = ["gui"]
 waterui-ts-engine.workspace = true
 waterui-ts-schema.workspace = true
 waterui-core.workspace = true
+# The component vocabulary the catalog declares. These are the crates the
+# facade already depends on unconditionally, so a TypeScript application links
+# nothing its Rust half did not already link. The facade itself is deliberately
+# absent: it depends on this crate under its `ts` feature, and a dependency
+# back would be a cycle.
+waterui-layout.workspace = true
+waterui-controls.workspace = true
+waterui-text.workspace = true
+waterui-form.workspace = true
+waterui-shape = { workspace = true, default-features = false }
 # The theme the mounted module sees: `ColorScheme` and the environment's
 # colour tokens. `default-features = false` keeps the GPU stack out — this
 # crate reads colour values, it never draws.
@@ -33,6 +43,20 @@ waterui-ts-engine-jsc.workspace = true
 # Everywhere else — Android, Linux, Windows — the embedded QuickJS-NG engine.
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
 waterui-ts-engine-quickjs.workspace = true
+
+[dev-dependencies]
+# The equivalence tests mount the JSX form and the Rust form of every catalog
+# entry and compare accessibility trees, so they author ordinary WaterUI views
+# through the facade. A dev-dependency may close the cycle the library one
+# cannot.
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
+hydrolysis-m3.workspace = true
+# The catalog test reads `waterui_meta_ts_catalog` back out of the test
+# executable's own symbol table, which is the path the `water` CLI takes
+# through a user crate's rlib.
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
+rustc-demangle = "0.1"
 
 [lints]
 workspace = true

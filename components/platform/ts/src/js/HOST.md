@@ -84,7 +84,7 @@ and takes precedence when both are present.
 
 ## `modify(handle, name, value) -> Handle`
 
-Applies modifier `name` (`"padding"`, `"background"`, `"foreground"`, …) to
+Applies modifier `name` (`"padding"`, `"background"`, `"width"`, …) to
 the view and returns the resulting handle — which may be the same handle or a
 new one; callers always use the return value.
 
@@ -94,6 +94,11 @@ order; the host applies them in receive order. `value` is a reactive input.
 
 A modifier attribute that arrives through a JSX spread is rejected by the
 runtime before any host call — the host never has to detect that case.
+
+A modifier whose Rust counterpart takes a view takes one here too: `background`
+accepts a colour object, reactive like any other value, or a handle —
+`background={<Gradient />}` — and which one it got decides whether the
+background is a painted colour or a view laid out behind the content.
 
 ## `text(content) -> Handle`
 
@@ -114,8 +119,12 @@ carries the update.
 ## `each(each, render, by?) -> Handle`
 
 Maps to WaterUI's `AnyViews` identity reconciliation. `each` is a reactive
-input reading the item list. Identity is `by(item)` when given, referential
-identity otherwise. On every change the host reconciles: a retained key keeps
+input reading the item list. Identity is `by(item)` when given. Without it an
+item identifies itself, which only a primitive can do: an object crosses the
+engine seam as a copy, so its referential identity is gone by the time the host
+sees it, and a list of objects without `by` is a typed error naming the fix
+rather than a list that silently rebuilds every row. On every change the host
+reconciles: a retained key keeps
 its branch (the branch's `index` accessor updates if its position moved), a
 new key calls `render(item, index)` once, and a removed key's branch is
 disposed. `render` receives the item and an accessor of its current index.
@@ -125,6 +134,12 @@ disposed. `render` receives the item and an accessor of its current index.
 Maps to WaterUI's `Suspense`. The host presents `fallback?.()` while the
 `children()` branch's resources are pending and the children branch once
 resolved, disposing whichever branch leaves.
+
+The JavaScript runtime has no resource primitive, so nothing a `children()`
+branch builds out of JSX alone can be pending: that branch renders
+synchronously and is what the host presents. A Rust-composed subtree placed
+under the boundary suspends through its own `Suspense`, which the backend
+presents as it always has.
 
 ## `environment() -> HostEnvironment`
 

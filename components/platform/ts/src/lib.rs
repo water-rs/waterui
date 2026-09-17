@@ -46,7 +46,9 @@ extern crate self as waterui_ts;
 
 mod bridge;
 mod callback;
+pub mod catalog;
 mod cell;
+mod components;
 mod convert;
 mod environment;
 mod error;
@@ -66,6 +68,7 @@ pub use waterui_ts_engine as engine;
 pub use waterui_ts_schema as schema;
 
 pub use bridge::{Bridge, MountScope, ReactiveSource};
+pub use components::Components;
 pub use convert::{FromJs, IntoJs, support};
 pub use environment::{HostLocale, Theme, locale, theme};
 pub use error::TsError;
