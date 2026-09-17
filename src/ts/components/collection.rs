@@ -25,7 +25,8 @@ use waterui_core::views::ForEach;
 use waterui_core::{AnyView, Environment, Metadata, Retain, View};
 use waterui_layout::stack::{HStack, VStack, ZStack};
 
-use crate::component::list::{List, ListItem};
+use crate::component::list::{List, ListDelete, ListItem, ListMove};
+use crate::ts::catalog::ListAttributes;
 use waterui_ts::engine::{JsError, JsFunction, JsValue};
 
 use super::control_flow::Branch;
@@ -65,6 +66,17 @@ impl Identifiable for ItemKey {
     }
 }
 
+/// The `f64` values that are exactly an `i64`: whole, and inside ±2^63.
+///
+/// The bound is what keeps a large number a number. `1e21` and `2e21` are both
+/// whole and both far past `i64::MAX`, so a cast saturates them — to the same
+/// `i64::MAX` — and two rows JavaScript tells apart would arrive here as one
+/// key, which reads as an authoring mistake nobody made. Outside this range a
+/// number keeps its bits instead, which is what [`ItemKey::Number`] already
+/// does for a fraction.
+const INTEGER_KEYS: core::ops::Range<f64> =
+    -9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0;
+
 impl ItemKey {
     /// The key a value carries, or an error explaining what has to be given
     /// instead.
@@ -75,15 +87,19 @@ impl ItemKey {
                 .as_i64()
                 .map(Self::Integer)
                 .ok_or_else(|| JsError::conversion("a key past the range of a 64-bit integer")),
-            JsValue::Number(number) => Ok(if number.fract() == 0.0 && number.is_finite() {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "the value has no fractional part and is finite, so the cast is exact"
-                )]
-                Self::Integer(*number as i64)
-            } else {
-                Self::Number(number.to_bits())
-            }),
+            // Infinities and `NaN` are outside the range, so they take the
+            // same path a fraction does and keep their bits.
+            JsValue::Number(number) => {
+                Ok(if INTEGER_KEYS.contains(number) && number.fract() == 0.0 {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "the value is whole and inside the i64 range, so the cast is exact"
+                    )]
+                    Self::Integer(*number as i64)
+                } else {
+                    Self::Number(number.to_bits())
+                })
+            }
             JsValue::String(text) => Ok(Self::Text(Str::from(text.clone()))),
             other if keyed => Err(JsError::conversion(format!(
                 "<For by={{…}}> answered {}, which cannot be a key: return a string, a number or \
@@ -112,13 +128,14 @@ struct Item {
     /// The branch this item is currently presented through, disposed when the
     /// item leaves or is realized again.
     branch: Option<Branch>,
-    /// What this item exported into JavaScript — its index accessor, and
-    /// whatever its render callback exported while it was building.
+    /// The index accessor this item exported into JavaScript.
     ///
     /// The item owns it rather than the mount: a list that churns adds and
     /// removes rows for as long as it is on screen, and exports that belonged
     /// to the mount's scope would accumulate one signal and one cell per
-    /// departed row until the whole module was disposed.
+    /// departed row until the whole module was disposed. What the item's
+    /// *render callback* exports belongs to the [`Branch`] it built, which is
+    /// shorter-lived still — an item realized again replaces its branch.
     #[expect(
         dead_code,
         reason = "the scope is held, not read: what the item exported lives exactly as long as it"
@@ -169,7 +186,8 @@ impl EachState {
             let binding = Binding::container(index);
             // The scope is opened around this item's export and closed again
             // straight away, so nothing else lands in it; what it owns lives as
-            // long as the item does and is released with it.
+            // long as the item does and is released with it. The render
+            // callback runs later and under the branch's own scope.
             let scope = bridge.open_scope();
             let accessor = bridge.export_computed(&binding.computed())?;
             self.items.borrow_mut().insert(
@@ -288,15 +306,43 @@ pub fn into_vstack(
 /// Every item is a row, so membership changes reach the backend as row
 /// insertions and removals rather than as a rebuilt list — which is what
 /// `List::new(ForEach…)` gives a Rust author.
-pub fn into_list(collection: &Collection, editing: Option<Computed<bool>>) -> AnyView {
+pub fn into_list(collection: &Collection, attributes: ListAttributes) -> AnyView {
     let items = collection.items();
     let list = List::new(ForEach::new(collection.keys(), move |key| {
         ListItem::new(items(key))
     }));
-    match editing {
-        Some(editing) => AnyView::new(Metadata::new(list.editing(editing), collection.retain())),
-        None => AnyView::new(Metadata::new(list, collection.retain())),
+    let ListAttributes {
+        editing,
+        on_delete,
+        on_move,
+    } = attributes;
+    if editing.is_none() && on_delete.is_none() && on_move.is_none() {
+        return AnyView::new(Metadata::new(list, collection.retain()));
     }
+    // A list that names a handler but not `editing` takes the `false` a plain
+    // Rust list carries: the handler is wired and the controls it enables stay
+    // out of the way until edit mode is on.
+    let mut list = list.editing(editing.unwrap_or_else(|| Computed::new(false)));
+    if let Some(action) = on_delete {
+        list =
+            list.on_delete(move |ListDelete(index): ListDelete| action.call((row_index(index),)));
+    }
+    if let Some(action) = on_move {
+        list = list.on_move(move |ListMove(movement): ListMove| {
+            action.call((row_index(movement.from()), row_index(movement.to())));
+        });
+    }
+    AnyView::new(Metadata::new(list, collection.retain()))
+}
+
+/// A row's index as JavaScript receives it.
+///
+/// A `<For>` refuses a list longer than a 32-bit index can address when it
+/// reconciles it, so every index a list can report is one — and `u32` is what
+/// crosses as a `number`, where `usize` would cross as a `bigint` and make
+/// `onDelete` take one for no reason.
+fn row_index(index: usize) -> u32 {
+    u32::try_from(index).expect("a <For> refuses a list longer than a 32-bit index can address")
 }
 
 /// Builds the collection `<For each={…}>` evaluates to.

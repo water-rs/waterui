@@ -78,7 +78,12 @@ getter-props are already resolved: a dynamic attribute arrives as an
 accessor, so every config value is a reactive input
 (`T | Signal<T> | (() => T)`) or a plain constant — the host never sees a
 property getter and must not read the property eagerly. `on*` attributes are
-event callbacks and are invoked, never subscribed.
+event callbacks and are invoked, never subscribed — with the values their
+event carries, in the order the component's catalog entry declares them.
+`onTap()` carries none; `<List onDelete>` carries the deleted row's index and
+`<List onMove>` the index a row left and the index it arrived at. One
+declaration is both the signature in the generated `.d.ts` and the call the
+handler receives, so the two cannot disagree.
 
 `children` is the normalized child list: an array whose elements are
 `Handle | string | number | boolean | null | Accessor<…>`. `null`, `undefined`,

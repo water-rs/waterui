@@ -15,6 +15,88 @@
 import { createEffect, createRoot, createSignal } from "../../src/js/signals.js";
 import { toSignal } from "../../src/js/host.js";
 
+// 2^63: a whole number strictly inside ±2^63 is exactly an i64, and one
+// outside it is not. `ItemKey::of` keys the first kind as an integer and the
+// second by its bits, so 1e21 and 2e21 are two keys rather than one saturated
+// integer — and 1 and 1n are one key, because both are that same integer.
+const INTEGER_BOUND = 9223372036854775808;
+const INTEGER_BOUND_BIG = 9223372036854775808n;
+
+// One scratch view, because reading a float's bits is how two numbers that are
+// not the same number are told apart — including two NaNs, which `===` and a
+// `Set` both call equal.
+const FLOAT_BITS = new DataView(new ArrayBuffer(8));
+
+// `waterui_ts::kind_of`, for the refusals below.
+function kindOf(value) {
+  if (value === null) {
+    return "null";
+  }
+  switch (typeof value) {
+    case "undefined":
+      return "undefined";
+    case "boolean":
+      return "a boolean";
+    case "number":
+      return "a number";
+    case "bigint":
+      return "a bigint";
+    case "string":
+      return "a string";
+    case "function":
+      return "a function";
+    default:
+      return Array.isArray(value) ? "an array" : "an object";
+  }
+}
+
+// The key one item carries, in the domain the native side reconciles in.
+//
+// This is `ItemKey::of` (src/ts/components/collection.rs) value for value, and
+// it is spelled out rather than left to a `Set` because the two domains
+// disagree in both directions: SameValueZero tells `1` from `1n`, which are
+// one `Integer(1)` there, and calls two NaNs equal, which are two `Number`
+// keys there whenever their payloads differ. A fake that reconciled by the raw
+// value would accept lists the real host refuses, and refuse lists it accepts.
+//
+// `keyed` says whether the value came from `by`, which is the only thing that
+// changes: what a `by` answered has to be a key, while an item that is not a
+// primitive is asked for a `by` instead.
+function itemKey(value, keyed) {
+  switch (typeof value) {
+    case "boolean":
+      return `bool:${value}`;
+    case "string":
+      return `text:${value}`;
+    case "bigint":
+      if (value < -INTEGER_BOUND_BIG || value >= INTEGER_BOUND_BIG) {
+        throw new TypeError("a key past the range of a 64-bit integer");
+      }
+      return `int:${value}`;
+    case "number":
+      if (Number.isInteger(value) && value >= -INTEGER_BOUND && value < INTEGER_BOUND) {
+        return `int:${BigInt(value)}`;
+      }
+      FLOAT_BITS.setFloat64(0, value);
+      return `number:${FLOAT_BITS.getBigUint64(0).toString(16)}`;
+    default:
+      throw new TypeError(
+        keyed
+          ? `<For by={…}> answered ${kindOf(value)}, which cannot be a key: return a string, ` +
+            "a number or a boolean"
+          : `<For each={…}> was given items of ${kindOf(value)}, whose identity cannot cross ` +
+            "into the native side: an object crosses as data, so two references Rust sees are " +
+            "two values. Give <For> a `by` that answers a stable key",
+      );
+  }
+}
+
+// A key as the duplicate-row error names it, which is `ItemKey`'s own Display:
+// a string in backticks, anything else as it was written.
+function displayKey(value) {
+  return typeof value === "string" ? `\`${value}\`` : String(value);
+}
+
 export function createFakeHost(environment = {}) {
   const calls = [];
   const invocations = [];
@@ -73,25 +155,31 @@ export function createFakeHost(environment = {}) {
       // engine seam an object arrives as a copy, so the Rust table has no
       // referential identity to reconcile by and demands `by`; a fake that
       // reconciled objects would make a test pass that the real host refuses.
-      const keyOf =
-        by ??
-        ((item) => {
-          if (item !== null && (typeof item === "object" || typeof item === "function")) {
-            throw new TypeError(
-              "<For> over objects needs `by`: an object crosses to the host as a copy, so its " +
-                "referential identity is gone by the time rows are reconciled",
-            );
-          }
-          return item;
-        });
+      // What `by` answers is held to the same domain, because the key it
+      // returns is the key that crosses.
+      const keyed = by !== undefined && by !== null;
+      const keyOf = keyed ? by : (item) => item;
       slot.dispose = createRoot((dispose) => {
         const list = toSignal(each);
         createEffect(() => {
           const items = list() ?? [];
           const previous = slot.entries;
           const byKey = new Map(previous.map((entry) => [entry.key, entry]));
+          const seen = new Set();
           const next = items.map((item, index) => {
-            const key = keyOf(item);
+            const answered = keyOf(item);
+            const key = itemKey(answered, keyed);
+            // Two rows sharing one key is a list that cannot be reconciled, and
+            // the Rust table refuses it by name. A fake that accepted it would
+            // silently collapse the two and make a test pass that the real host
+            // fails.
+            if (seen.has(key)) {
+              throw new TypeError(
+                `two items of this <For> have the key ${displayKey(answered)}: give \`by\` ` +
+                  "something unique, or make the items themselves distinct",
+              );
+            }
+            seen.add(key);
             const kept = byKey.get(key);
             if (kept !== undefined && !kept.used) {
               kept.used = true;
@@ -107,7 +195,9 @@ export function createFakeHost(environment = {}) {
               handle: inner.handle,
               dispose: () => {
                 inner.dispose();
-                calls.push(["dispose-item", key]);
+                // The key as the author wrote it, not as it is normalized:
+                // what a test asserts on is the value it put in the list.
+                calls.push(["dispose-item", answered]);
               },
             };
           });

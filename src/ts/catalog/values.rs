@@ -12,6 +12,8 @@
 //! type projects to, because a Rust field has one type. Those write their own
 //! [`TsType`] impl directly beside the conversion that reads the same shapes.
 
+use core::marker::PhantomData;
+
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_core::AnyView;
@@ -570,57 +572,142 @@ pub enum ScrollAxis {
     Both,
 }
 
+/// What a [`JsAction`] is called with: the event's values as a tuple, in
+/// declaration order.
+///
+/// This is the outbound mirror of the inbound conversion in
+/// `waterui-ts`'s `convert::callback`, which reads a Rust closure's arguments
+/// off a JavaScript call with [`FromJs`] in the order the schema's `Callback`
+/// node lists them. Here the same list is written rather than read: the
+/// tuple's elements *are* that node's argument types, and the values cross
+/// with [`IntoJs`] in the same order. One list drives both, so the signature
+/// an author reads in the generated `.d.ts` and the call their handler
+/// receives cannot come apart.
+///
+/// Eight is the cap, as it is for every other callable spelling the schema
+/// carries.
+pub trait ActionArguments {
+    /// Each argument's type, in declaration order.
+    const TYPES: &'static [TypeSchema];
+
+    /// Converts each argument, in declaration order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JsError`] when an argument cannot cross the engine seam.
+    fn into_js_arguments(self, bridge: &Bridge) -> Result<Vec<JsValue>, JsError>;
+}
+
+impl ActionArguments for () {
+    const TYPES: &'static [TypeSchema] = &[];
+
+    fn into_js_arguments(self, _bridge: &Bridge) -> Result<Vec<JsValue>, JsError> {
+        Ok(Vec::new())
+    }
+}
+
+/// One tuple arity.
+macro_rules! action_arguments {
+    ($($parameter:ident: $value:ident),+) => {
+        impl<$($parameter: IntoJs + TsType),+> ActionArguments for ($($parameter,)+) {
+            const TYPES: &'static [TypeSchema] = &[$(<$parameter as TsType>::SCHEMA),+];
+
+            fn into_js_arguments(self, bridge: &Bridge) -> Result<Vec<JsValue>, JsError> {
+                let ($($value,)+) = self;
+                Ok(vec![$($value.into_js(bridge)?),+])
+            }
+        }
+    };
+}
+
+action_arguments!(A: a);
+action_arguments!(A: a, B: b);
+action_arguments!(A: a, B: b, C: c);
+action_arguments!(A: a, B: b, C: c, D: d);
+action_arguments!(A: a, B: b, C: c, D: d, E: e);
+action_arguments!(A: a, B: b, C: c, D: d, E: e, F: f);
+action_arguments!(A: a, B: b, C: c, D: d, E: e, F: f, G: g);
+action_arguments!(A: a, B: b, C: c, D: d, E: e, F: f, G: g, H: h);
+
 /// A JavaScript function the host calls: an event handler, never a value that
 /// is read or subscribed to.
+///
+/// `Args` is what the event carries, so the type is the handler's signature:
+/// `JsAction<(u32,)>` projects to `(arg0: number) => void` and is called with
+/// that one number, while the bare `JsAction` projects to `() => void` and is
+/// called with `()`. The arguments are one tuple rather than one type per
+/// arity, which is why an attribute declaring a handler declares its whole
+/// signature in one place.
 ///
 /// The bridge is captured with the function, because calling back into
 /// JavaScript needs the engine. Dropping the runtime while a view still holds
 /// one is not a crash: the call reports that the runtime is gone.
-#[derive(Clone)]
-pub struct JsAction {
+pub struct JsAction<Args = ()> {
     function: JsFunction,
     bridge: waterui_ts::WeakBridge,
+    /// The arguments the handler takes. They are written out at every call and
+    /// never stored, which is what the `fn(Args)` spelling says.
+    arguments: PhantomData<fn(Args)>,
 }
 
-impl core::fmt::Debug for JsAction {
+impl<Args> Clone for JsAction<Args> {
+    fn clone(&self) -> Self {
+        Self {
+            function: self.function.clone(),
+            bridge: self.bridge.clone(),
+            arguments: PhantomData,
+        }
+    }
+}
+
+impl<Args> core::fmt::Debug for JsAction<Args> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("JsAction").finish_non_exhaustive()
     }
 }
 
-impl JsAction {
-    /// Calls the handler, logging a JavaScript exception rather than
-    /// unwinding into the backend that delivered the event.
-    pub fn call(&self) {
+impl<Args: ActionArguments> JsAction<Args> {
+    /// Calls the handler with the values the event carried, logging a
+    /// JavaScript exception rather than unwinding into the backend that
+    /// delivered the event.
+    pub fn call(&self, arguments: Args) {
         let Some(bridge) = self.bridge.upgrade() else {
             tracing::warn!(
                 "a TypeScript event handler fired after its runtime was dropped, and did nothing"
             );
             return;
         };
-        if let Err(error) = bridge.call(&self.function, &[]) {
+        let arguments = match arguments.into_js_arguments(&bridge) {
+            Ok(arguments) => arguments,
+            Err(error) => {
+                tracing::error!(%error, "a TypeScript event handler's arguments could not cross");
+                return;
+            }
+        };
+        if let Err(error) = bridge.call(&self.function, &arguments) {
             tracing::error!(%error, "a TypeScript event handler threw");
         }
     }
 }
 
-impl TsType for JsAction {
-    const SCHEMA: TypeSchema = TypeSchema::Callback(&[]);
+impl<Args: ActionArguments> TsType for JsAction<Args> {
+    const SCHEMA: TypeSchema = TypeSchema::Callback(Args::TYPES);
 }
 
-impl FromJs for JsAction {
+impl<Args> FromJs for JsAction<Args> {
     fn from_js(value: &JsValue, bridge: &Bridge) -> Result<Self, JsError> {
         match value {
             JsValue::Function(function) => Ok(Self {
                 function: function.clone(),
                 bridge: bridge.downgrade(),
+                arguments: PhantomData,
             }),
             other => Err(expected("a function", other)),
         }
     }
 }
 
-impl IntoJs for JsAction {
+impl<Args> IntoJs for JsAction<Args> {
     /// The function itself: a handler that came from JavaScript goes back as
     /// what it was.
     fn into_js(self, _bridge: &Bridge) -> Result<JsValue, JsError> {

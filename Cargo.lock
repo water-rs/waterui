@@ -10977,7 +10977,6 @@ dependencies = [
 name = "waterui-ts"
 version = "0.1.0"
 dependencies = [
- "hydrolysis-m3",
  "nami",
  "object",
  "rustc-demangle",

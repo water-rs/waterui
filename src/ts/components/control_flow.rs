@@ -5,6 +5,17 @@
 //! host owns *when* a branch is presented and disposes it exactly once when it
 //! stops being, which [`Branch`]'s own `Drop` guarantees — a branch that is
 //! replaced is disposed by the assignment that replaced it.
+//!
+//! [`Branch::render`] is also where a render callback's *exports* get an
+//! owner. A callback reaches back into the host while it builds — a nested
+//! `<Show>` exports its `when` accessor, a control registers a callback, a
+//! `<For>` materializes its list — and every one of those lands in whatever
+//! mount scope is open. The scope open around a render callback is therefore
+//! the branch's own: opened before the call, closed into a [`ScopeOwner`] the
+//! branch holds, released when the branch is replaced or dropped. Without it a
+//! `<Show>` inside a churning row would leave one cell, one JavaScript memo
+//! and one dedup entry in the mount's scope per departed row, for the life of
+//! the mount.
 
 use core::cell::RefCell;
 use std::rc::Rc;
@@ -14,12 +25,24 @@ use waterui_core::{AnyView, Dynamic, Metadata, Retain};
 use waterui_ts::engine::{JsError, JsFunction, JsValue};
 
 use waterui_ts::ViewSlot;
-use waterui_ts::{Bridge, WeakBridge};
+use waterui_ts::{Bridge, ScopeOwner, WeakBridge};
 
-/// One realized branch: the view it produced, and its teardown.
+/// One realized branch: the view it produced, its teardown, and what it
+/// exported while building.
 pub struct Branch {
     dispose: Option<JsFunction>,
     bridge: WeakBridge,
+    /// Everything the render callback exported into JavaScript while it ran.
+    ///
+    /// The branch owns it rather than the mount, because a branch is exactly
+    /// as long-lived as the subtree it built: replacing it releases the
+    /// subtree's signals with the subtree.
+    #[expect(
+        dead_code,
+        reason = "the scope is held, not read: what the callback exported lives exactly as long \
+                  as the branch it built"
+    )]
+    exports: ScopeOwner,
 }
 
 impl core::fmt::Debug for Branch {
@@ -32,6 +55,9 @@ impl Branch {
     /// Calls a render callback and takes the view out of the branch it
     /// returned.
     ///
+    /// The callback runs under a scope of the branch's own, so whatever it
+    /// exports while building belongs to the subtree it builds.
+    ///
     /// # Errors
     ///
     /// Returns [`JsError`] when the callback throws, or when what it returned
@@ -41,7 +67,9 @@ impl Branch {
         render: &JsFunction,
         arguments: &[JsValue],
     ) -> Result<(AnyView, Self), JsError> {
+        let scope = bridge.open_scope();
         let branch = bridge.call(render, arguments)?;
+        let exports = scope.close();
         let entries = branch.as_object().ok_or_else(|| {
             JsError::conversion(format!(
                 "a control-flow render callback returned {}, not a {{ handle, dispose }} branch",
@@ -73,6 +101,7 @@ impl Branch {
             Self {
                 dispose,
                 bridge: bridge.downgrade(),
+                exports,
             },
         ))
     }

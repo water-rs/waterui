@@ -338,7 +338,7 @@ fn collections(
             // the list asks. So a list's content is a collection, which is also
             // the fine-grained path the framework wants for a list.
             match collection::splice(children::content(bridge, children)?) {
-                Spliced::Lazy(items) => collection::into_list(&items, attributes.editing),
+                Spliced::Lazy(items) => collection::into_list(&items, attributes),
                 Spliced::Fixed(_) => {
                     return Err(JsError::conversion(
                         "<List> takes a <For> as its content. A list realizes a row again \
@@ -440,7 +440,7 @@ fn controls(
             let label = children::label(bridge, component, attributes.label, children)?;
             let button = Button::new(label);
             Ok(match attributes.on_tap {
-                Some(action) => AnyView::new(button.action(move || action.call())),
+                Some(action) => AnyView::new(button.action(move || action.call(()))),
                 None => AnyView::new(button),
             })
         }
@@ -572,10 +572,9 @@ impl View for Rebuilt {
 
 /// A value one component builds for its parent to take.
 ///
-/// `<Column>`, `<TreeNode>` and `<Tab>` are not views: they are the pieces
-/// `Table`, `TreeView` and `Tabs` are assembled from. They still cross as
-/// handles, because every child does, so each carries its value in a slot the
-/// parent empties.
+/// `<Column>` and `<Tab>` are not views: they are the pieces `Table` and
+/// `Tabs` are assembled from. They still cross as handles, because every child
+/// does, so each carries its value in a slot the parent empties.
 struct Carried<T: 'static>(RefCell<Option<T>>);
 
 impl<T: 'static> Carried<T> {

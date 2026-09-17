@@ -148,13 +148,22 @@ pub struct PickerAttributes {
     pub label: Option<AnyView>,
 }
 
-/// Every view modifier, and the value each one takes.
-///
 /// `<List>`: a native list of rows.
 #[derive(Debug, TsType)]
 pub struct ListAttributes {
-    /// Whether the list is in edit mode, which shows delete handles.
+    /// Whether the list is in edit mode, which shows the controls for the
+    /// handlers below: a row has a delete control when the list can delete,
+    /// and a reorder handle when it can move.
     pub editing: Option<Computed<bool>>,
+    /// Runs when a row's delete control is used, with the index of the row
+    /// that was deleted. A list with no handler shows no delete control,
+    /// because the control would do nothing.
+    #[ts(rename = "onDelete")]
+    pub on_delete: Option<JsAction<(u32,)>>,
+    /// Runs when a row is moved, with the index it left and the index it
+    /// arrived at. A list with no handler shows no reorder handle.
+    #[ts(rename = "onMove")]
+    pub on_move: Option<JsAction<(u32, u32)>>,
 }
 
 /// `<Progress>`: determinate or indeterminate progress.
