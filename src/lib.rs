@@ -112,9 +112,10 @@ pub mod prelude {
 
     // Asset types
     #[cfg(feature = "assets")]
+    pub use super::{AssetError, AssetKind, Data, asset, assets, include_bundle};
+    #[cfg(all(feature = "assets", not(target_arch = "wasm32")))]
     pub use super::{
-        AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset,
-        LargeFile, LargeFileAsset, VideoAsset, asset, assets, include_bundle,
+        AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFile, LargeFileAsset, VideoAsset,
     };
 
     // Re-export macros. The UI-test attribute is `ui_test` here rather than
@@ -178,11 +179,13 @@ pub use waterui_webview as webview;
 
 // Asset types re-exported for convenience
 #[doc(inline)]
-#[cfg(feature = "assets")]
+#[cfg(all(feature = "assets", not(target_arch = "wasm32")))]
 pub use waterui_assets::{
     AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset, LargeFile,
     LargeFileAsset, VideoAsset,
 };
+#[cfg(all(feature = "assets", target_arch = "wasm32"))]
+pub use waterui_assets::{AssetError, AssetKind, Data};
 /// `include_web!("web")` — the one-macro web frontend. Its expansion speaks
 /// [`webview`](crate::webview)'s asset-origin API and serves a staged
 /// [`Bundle`], so it is exported only when both features are on.
