@@ -1587,6 +1587,17 @@ impl ToJavaStruct for crate::components::layout::WuiContainer {
     }
 }
 
+/// `WuiSpacer -> SpacerStruct(minLength: Float)`
+impl ToJavaStruct for crate::components::layout::WuiSpacer {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/SpacerStruct"))
+            .expect("SpacerStruct class not found");
+        env.new_object(&class, jni_sig!("(F)V"), &[JValue::Float(self.min_length)])
+            .expect("Failed to create SpacerStruct")
+    }
+}
+
 /// `WuiNavigationView -> NavigationViewStruct`
 impl ToJavaStruct for crate::components::navigation::WuiNavigationView {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {

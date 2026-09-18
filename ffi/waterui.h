@@ -5029,6 +5029,21 @@ typedef struct WuiMapStatus {
 } WuiMapStatus;
 
 /**
+ * C ABI mirror of [`Spacer`], a flexible space that expands to fill
+ * available space on the enclosing stack's main axis.
+ *
+ * `min_length` is the floor the stack keeps under compression: per
+ * `docs/layout-spec.md` §5/§6, a hosted spacer answers its minimum length on
+ * the stack's main axis and zero on the cross axis, whatever the proposal.
+ */
+typedef struct WuiSpacer {
+  /**
+   * The length this spacer never shrinks below on the stack's main axis.
+   */
+  float min_length;
+} WuiSpacer;
+
+/**
  * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
  */
 typedef struct WuiArraySlice_____WuiAnyView {
@@ -9951,8 +9966,16 @@ void waterui_drop_binding_map_status(WuiBinding_MapStatus *binding);
 void waterui_drop_layout(struct WuiLayout *value);
 
 /**
- * Returns the type ID for Spacer views as a 128-bit value.
- * `Spacer` is a raw view that stretches to fill available space.
+ * # Safety
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
+struct WuiSpacer waterui_force_as_spacer(struct WuiAnyView *view);
+
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
  */
 struct WuiTypeId waterui_spacer_id(void);
 
