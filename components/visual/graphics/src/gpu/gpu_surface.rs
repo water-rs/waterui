@@ -28,7 +28,7 @@ use waterui_core::{Environment, MainThreadBound, Native, NativeView, View};
 use crate::gpu::input::SurfaceInputEvent;
 use crate::gpu::texture::TextureRowLayout;
 use crate::scene_view::SceneInvalidator;
-use crate::shared_context::{GpuRuntime, SceneEngine, SharedSceneRenderer};
+use crate::shared_context::{DeviceLoss, GpuRuntime, SceneEngine, SharedSceneRenderer};
 
 type ErasedSetupFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 
@@ -127,6 +127,13 @@ pub struct GpuContext<'a> {
     /// Clone this during `setup()` and call `request_redraw()` when external
     /// data arrives (e.g., nami signal change, timer, network response).
     pub redraw_handle: RedrawHandle,
+    /// Whether the device behind this context has been lost.
+    ///
+    /// Clone this during `setup()` into any work that touches the device off
+    /// the frame path — a worker thread rasterizing tiles — and stop that work
+    /// once it reports `true`: every wgpu call on a lost device fails, and the
+    /// rebuilt context re-runs `setup()` to replace what the worker made.
+    pub device_loss: DeviceLoss,
 }
 
 impl fmt::Debug for GpuContext<'_> {
@@ -160,6 +167,7 @@ impl<'a> GpuContext<'a> {
         scene_renderer: &'a Arc<SharedSceneRenderer>,
         max_samples: NonZeroU32,
         redraw_handle: RedrawHandle,
+        device_loss: DeviceLoss,
     ) -> Self {
         Self {
             adapter,
@@ -170,6 +178,7 @@ impl<'a> GpuContext<'a> {
             scene_renderer,
             msaa_samples: preferred_msaa_samples(adapter, surface_format, max_samples),
             redraw_handle,
+            device_loss,
         }
     }
 
@@ -1483,6 +1492,7 @@ impl GpuSurface {
             scene_renderer,
             msaa_samples,
             redraw_handle: redraw.clone(),
+            device_loss: shared.device_loss(),
         };
         self.setup(&context, env).await;
 

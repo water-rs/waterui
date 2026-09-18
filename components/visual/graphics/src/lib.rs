@@ -71,7 +71,7 @@ pub use texture::{TextureRowLayout, upload_texture};
 pub use shader_surface::ShaderSurface;
 #[cfg(feature = "gpu")]
 pub use shared_context::{
-    GpuRuntime, SceneEngine, SharedContextError, SharedGpuContext, SharedSceneRenderer,
+    DeviceLoss, GpuRuntime, SceneEngine, SharedContextError, SharedGpuContext, SharedSceneRenderer,
     drain_device_before_teardown,
 };
 

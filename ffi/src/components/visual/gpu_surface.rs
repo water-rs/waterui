@@ -577,6 +577,7 @@ fn spawn_renderer_setup(state: &WuiGpuSurfaceState, format: wgpu::TextureFormat)
                     gpu.scene_renderer(),
                     msaa_max_samples,
                     redraw_handle.clone(),
+                    gpu.device_loss(),
                 );
                 std::panic::AssertUnwindSafe(gpu_surface.setup(&ctx, env))
                     .catch_unwind()
