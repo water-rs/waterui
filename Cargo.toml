@@ -221,7 +221,7 @@ waterui-mcp-protocol = { version = "0.1.0", path = "components/devtools/mcp/prot
 # `cargo publish` keeps (a patch entry would go unused and warn on every cargo
 # command). The release commit that drops the patch table below drops the
 # `git` halves too.
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "5e38be3d96e24ad4ed65f5efd452c9315d1ee974", version = "0.2.0" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "f04112baaf77caae4d6bfcefebede9e91cf48d98", version = "0.2.0" }
 # `waterui-winui` is unpublished and Windows-only; the `water` CLI reads this
 # entry to scaffold a generated launcher crate pinned to the same revision.
 waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "37a980a42ceedad3ff32ee50f27dddacdd495033", version = "0.1.0" }
