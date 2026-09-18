@@ -144,17 +144,6 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_emptyId<'local>(
     super::with_env(&mut env, |env| type_id_to_java(env, type_id).into_raw())
 }
 
-/// Get the spacer type ID.
-/// `Spacer` is defined specially in `layout.rs`.
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_spacerId<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-) -> jobject {
-    let type_id = WuiTypeId::of::<waterui_core::Native<waterui::component::spacer::Spacer>>();
-    super::with_env(&mut env, |env| type_id_to_java(env, type_id).into_raw())
-}
-
 #[cfg(feature = "webview")]
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_webViewId<'local>(
