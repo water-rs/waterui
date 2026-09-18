@@ -8604,7 +8604,10 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
 dependencies = [
+ "js-sys",
  "libc",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -10612,9 +10615,11 @@ dependencies = [
  "sys-locale",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
+ "wasm-bindgen",
  "waterui",
  "waterui-core",
  "waterui-locale",
+ "web-sys",
 ]
 
 [[package]]
