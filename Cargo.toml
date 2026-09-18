@@ -57,9 +57,9 @@ android-min-api-level = 26
 # revisions when scaffolding a project; neither backend rides a gitlink.
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 # Proposal-aware placement requires the matching native layout contract.
-apple-backend-revision = "ae0e0e3272905af6d1043839a9d30e23b78aca6c"
+apple-backend-version = "0.3.0"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "b0755be91c1354c5a76c09aaf2daef08005c51c4"
+android-backend-revision = "03e7523e088ea764d4019848dcd194007e4a23dc"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
 # `[workspace.dependencies]` below.
@@ -221,10 +221,10 @@ waterui-mcp-protocol = { version = "0.1.0", path = "components/devtools/mcp/prot
 # `cargo publish` keeps (a patch entry would go unused and warn on every cargo
 # command). The release commit that drops the patch table below drops the
 # `git` halves too.
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "183b146211fe0583241a655b87924faae59cee3b", version = "0.2.0" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "5e38be3d96e24ad4ed65f5efd452c9315d1ee974", version = "0.2.0" }
 # `waterui-winui` is unpublished and Windows-only; the `water` CLI reads this
 # entry to scaffold a generated launcher crate pinned to the same revision.
-waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "18fa03852593221e2a7a80c2847cdb0e2d24716f", version = "0.1.0" }
+waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "37a980a42ceedad3ff32ee50f27dddacdd495033", version = "0.1.0" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.4.1", path = "utils/dylib", default-features = false }
