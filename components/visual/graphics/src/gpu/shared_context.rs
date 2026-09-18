@@ -116,6 +116,24 @@ pub struct DeviceLoss {
 }
 
 impl DeviceLoss {
+    /// Starts observing `device`: installs its device-lost callback so the
+    /// returned handle reports the loss the moment the driver announces it.
+    ///
+    /// wgpu keeps one lost callback per device, so this belongs to whoever
+    /// owns the device — [`SharedGpuContext`] for the runtime's device, or a
+    /// host that opened its own (a GTK backend adopting a `GLArea`'s
+    /// adapter) — and is called once, right after the device is created.
+    #[must_use]
+    pub fn observe(device: &wgpu::Device) -> Self {
+        let handle = Self::default();
+        let recorder = handle.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            tracing::error!(?reason, message, "WaterUI GPU device was lost");
+            recorder.record(format!("{reason:?}: {message}"));
+        });
+        handle
+    }
+
     /// Whether the driver has reported this device lost.
     #[must_use]
     pub fn is_lost(&self) -> bool {
@@ -366,12 +384,7 @@ impl SharedGpuContext {
         // Device loss otherwise surfaces only as a bare `Validation` status on the
         // next swapchain acquire, with the reason discarded; record it so the
         // failure names its cause.
-        let device_lost = DeviceLoss::default();
-        let lost_slot = device_lost.clone();
-        device.set_device_lost_callback(move |reason, message| {
-            tracing::error!(?reason, message, "WaterUI GPU runtime device was lost");
-            lost_slot.record(format!("{reason:?}: {message}"));
-        });
+        let device_lost = DeviceLoss::observe(&device);
 
         let device = Arc::new(device);
         let queue = Arc::new(queue);
