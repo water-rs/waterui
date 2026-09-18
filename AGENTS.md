@@ -509,6 +509,16 @@ waterui_ffi::export!();  // Generates FFI entry points
   that previously shipped behind green Rust checks: replies crossing as
   base64, a frozen `waterui` object breaking `state`/`watch`, and integers
   past 2^53 losing low bits in either direction.
+- **The TypeScript runtime has a JavaScript unit suite that Cargo does not
+  discover.** `components/platform/ts/src/js/` is injected into the JS engine
+  as the `waterui` virtual module. If you touch it, run:
+
+  ```bash
+  bun test components/platform/ts/tests/js/
+  ```
+
+  Nightly runs it through `ts-js.yml` the same way as the web view bridge
+  suite: a required check that blocks certified-version promotion.
 - Use `tracing::debug!` and `water run --logs debug` for debugging runtime issues
 
 ### Error Handling
