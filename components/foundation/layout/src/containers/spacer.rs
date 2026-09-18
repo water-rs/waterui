@@ -68,6 +68,17 @@ impl Spacer {
     pub const fn flexible() -> Self {
         Self { min_length: 0.0 }
     }
+
+    /// The length this spacer never shrinks below along the axis it expands on.
+    ///
+    /// A backend hosting the spacer answers this on the enclosing stack's main
+    /// axis whatever the proposal (and zero on the cross axis); the stack then
+    /// keeps it as the spacer's floor under compression and hands the spacer
+    /// any surplus on top of it.
+    #[must_use]
+    pub const fn min_length(&self) -> f32 {
+        self.min_length
+    }
 }
 
 /// Layout implementation for a single spacer.

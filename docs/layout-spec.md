@@ -254,9 +254,12 @@ returns the original geometry when reverted.
   from the width proposal the grid was measured with — the one documented
   exception to §2.3, kept so a content-sized grid keeps its content-sized
   columns.
-- **Spacer**: `MainAxis`, minimum length 0 (`spacer_min(n)`); it takes the
-  allocation the stack gives it, answers zero on every other axis and under
-  every other container, and claims nothing in a `ZStack`.
+- **Spacer**: `MainAxis`; on the stack's main axis it answers its minimum
+  length (`spacer_min(n)`, 0 by default) to every proposal, so that length is
+  the floor §4.2 keeps under compression — `spacer_min(40)` in a 50 pt column
+  keeps 40 pt and the content around it compresses by priority — and it takes
+  whatever surplus the stack allocates it. It answers zero on every other
+  axis and under every other container, and claims nothing in a `ZStack`.
 - **Divider**: 1 pt on the stack's main axis, fills the cross axis, drawn in
   the `BorderColor` theme slot.
 - **Lazy containers** (`List`, lazy stacks): virtualised along one axis with
@@ -287,7 +290,8 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
   narrower or wider than the viewport (a wider content crosses both edges by
   the same amount). A scroll surface that touches window chrome extends under
   it (safe-area extension rule).
-- **Spacer** hosted natively answers zero to every proposal.
+- **Spacer** hosted natively answers its minimum length on the stack's main
+  axis and zero on the cross axis, whatever the proposal (§5).
 - **GPU surfaces, images, shapes, colours**: `Both`; an image with an
   intrinsic size answers it to `None` and fits the proposal otherwise.
 

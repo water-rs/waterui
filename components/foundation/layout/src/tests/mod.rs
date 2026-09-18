@@ -59,6 +59,28 @@ impl SubView for CompressibleView {
     }
 }
 
+/// The column counterpart of [`CompressibleView`]: shrinks to whatever
+/// main-axis extent a `VStack` proposes, down to `floor`, and keeps its width.
+pub struct CompressibleHeightView {
+    pub(crate) ideal: Size,
+    pub(crate) floor: f32,
+}
+
+impl SubView for CompressibleHeightView {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let height = proposal.height.map_or(self.ideal.height, |proposed| {
+            proposed.clamp(self.floor, self.ideal.height)
+        });
+        ViewDimensions::new(Size::new(self.ideal.width, height))
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
 /// A mock [`SubView`] that respects width proposals (like Text).
 /// When given a width constraint, it wraps and increases height.
 /// When given None, it returns intrinsic single-line size.
@@ -112,6 +134,59 @@ impl SubView for SpacerView {
     }
     fn priority(&self) -> i32 {
         Spacer::DEFAULT_LAYOUT_PRIORITY
+    }
+}
+
+/// A spacer with a minimum length, as the layout contract defines the leaf: it
+/// answers `min_length` on the stack's main axis whatever the proposal, zero on
+/// the cross axis, stretches along the main axis and sits in the lowest
+/// priority band. The floor a stack sees is therefore exactly `min_length`.
+struct MinLengthSpacerView {
+    min_length: f32,
+    axis: StretchAxis,
+}
+
+impl SubView for MinLengthSpacerView {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(match self.axis {
+            StretchAxis::Horizontal => Size::new(self.min_length, 0.0),
+            StretchAxis::Vertical => Size::new(0.0, self.min_length),
+            _ => unreachable!("MinLengthSpacerView models one physical stack axis"),
+        })
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        self.axis
+    }
+    fn priority(&self) -> i32 {
+        Spacer::DEFAULT_LAYOUT_PRIORITY
+    }
+}
+
+/// A child that fills its main axis from a content floor — a list or a scroll
+/// view with `intrinsic` points of content: it takes whatever it is offered
+/// above that floor and never reports less than it, at an explicit priority.
+struct ContentFillView {
+    intrinsic: f32,
+    axis: StretchAxis,
+    priority: i32,
+}
+
+impl SubView for ContentFillView {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let fill =
+            |proposed: Option<f32>| proposed.map_or(self.intrinsic, |p| p.max(self.intrinsic));
+        let size = match self.axis {
+            StretchAxis::Horizontal => Size::new(fill(proposal.width), self.intrinsic),
+            StretchAxis::Vertical => Size::new(self.intrinsic, fill(proposal.height)),
+            _ => unreachable!("ContentFillView models one physical fill axis"),
+        };
+        ViewDimensions::new(size)
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        self.axis
+    }
+    fn priority(&self) -> i32 {
+        self.priority
     }
 }
 
@@ -1955,4 +2030,283 @@ fn one_element_tuple_is_a_single_child_payload() {
     accepts_view(vstack((spacer(),)));
     accepts_view(hstack((spacer(),)));
     accepts_view(zstack((spacer(),)));
+}
+
+// ============================================================================
+// Deficit distribution: a flexible child keeps the floor it measures
+// ============================================================================
+
+/// `Spacer::new(40.0)` between two rows in a 50pt column keeps its 40 points
+/// and the rows compress into what is left, the way `SwiftUI` lays it out. The
+/// spacer's floor is what it reports when proposed `0` — its minimum length —
+/// the same floor a fixed child gets, so a stretching child is never handed
+/// less than it measured merely because the column is short.
+#[test]
+fn a_spacer_keeps_its_minimum_length_when_the_column_is_short_bounded_proposal() {
+    let layout = VStackLayout {
+        alignment: HorizontalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let top = CompressibleHeightView {
+        ideal: Size::new(80.0, 30.0),
+        floor: 0.0,
+    };
+    let spacer = MinLengthSpacerView {
+        min_length: 40.0,
+        axis: StretchAxis::Vertical,
+    };
+    let bottom = CompressibleHeightView {
+        ideal: Size::new(80.0, 30.0),
+        floor: 0.0,
+    };
+    let children: Vec<&dyn SubView> = vec![&top, &spacer, &bottom];
+
+    let bounds = Rect::new(Point::zero(), Size::new(80.0, 50.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        (placements[1].frame.height() - 40.0).abs() < 0.01,
+        "the spacer keeps its 40pt minimum, got {}",
+        placements[1].frame.height()
+    );
+    assert!(
+        (placements[0].frame.height() - 5.0).abs() < 0.01
+            && (placements[2].frame.height() - 5.0).abs() < 0.01,
+        "the rows split the remaining 10pt, got {} and {}",
+        placements[0].frame.height(),
+        placements[2].frame.height()
+    );
+    assert!(
+        (placements[2].frame.y() - 45.0).abs() < 0.01,
+        "the bottom row sits below the spacer, got y {}",
+        placements[2].frame.y()
+    );
+    for (i, placement) in placements.iter().enumerate() {
+        assert_rect_within_bounds(&placement.frame, &bounds, &format!("child {i}"));
+    }
+    assert_no_overlap(&placements, "vertical");
+}
+
+/// The row mirror: `Spacer::new(40.0)` between two labels in a 50pt row.
+#[test]
+fn a_spacer_keeps_its_minimum_length_when_the_row_is_short_bounded_proposal() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let leading = CompressibleView {
+        ideal: Size::new(30.0, 20.0),
+        floor: 0.0,
+    };
+    let spacer = MinLengthSpacerView {
+        min_length: 40.0,
+        axis: StretchAxis::Horizontal,
+    };
+    let trailing = CompressibleView {
+        ideal: Size::new(30.0, 20.0),
+        floor: 0.0,
+    };
+    let children: Vec<&dyn SubView> = vec![&leading, &spacer, &trailing];
+
+    let bounds = Rect::new(Point::zero(), Size::new(50.0, 20.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        (placements[1].frame.width() - 40.0).abs() < 0.01,
+        "the spacer keeps its 40pt minimum, got {}",
+        placements[1].frame.width()
+    );
+    assert!(
+        (placements[0].frame.width() - 5.0).abs() < 0.01
+            && (placements[2].frame.width() - 5.0).abs() < 0.01,
+        "the labels split the remaining 10pt, got {} and {}",
+        placements[0].frame.width(),
+        placements[2].frame.width()
+    );
+    assert!(
+        (placements[2].frame.x() - 45.0).abs() < 0.01,
+        "the trailing label sits after the spacer, got x {}",
+        placements[2].frame.x()
+    );
+    for (i, placement) in placements.iter().enumerate() {
+        assert_rect_within_bounds(&placement.frame, &bounds, &format!("child {i}"));
+    }
+    assert_no_overlap(&placements, "horizontal");
+}
+
+/// A spacer without a minimum measures `0` when proposed `0`, so it is the
+/// first thing to give way: it collapses entirely before any row loses a point.
+#[test]
+fn a_zero_minimum_spacer_still_collapses_before_the_column_content_bounded_proposal() {
+    let layout = VStackLayout {
+        alignment: HorizontalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let top = CompressibleHeightView {
+        ideal: Size::new(80.0, 30.0),
+        floor: 10.0,
+    };
+    let spacer = MinLengthSpacerView {
+        min_length: 0.0,
+        axis: StretchAxis::Vertical,
+    };
+    let bottom = CompressibleHeightView {
+        ideal: Size::new(80.0, 30.0),
+        floor: 10.0,
+    };
+    let children: Vec<&dyn SubView> = vec![&top, &spacer, &bottom];
+
+    let bounds = Rect::new(Point::zero(), Size::new(80.0, 50.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        placements[1].frame.height().abs() < 0.01,
+        "a zero-minimum spacer collapses first, got {}",
+        placements[1].frame.height()
+    );
+    assert!(
+        (placements[0].frame.height() - 25.0).abs() < 0.01
+            && (placements[2].frame.height() - 25.0).abs() < 0.01,
+        "the rows share the whole column once the spacer is gone, got {} and {}",
+        placements[0].frame.height(),
+        placements[2].frame.height()
+    );
+    assert_no_overlap(&placements, "vertical");
+}
+
+/// The row mirror of the zero-minimum spacer collapsing first.
+#[test]
+fn a_zero_minimum_spacer_still_collapses_before_the_row_content_bounded_proposal() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let leading = CompressibleView {
+        ideal: Size::new(30.0, 20.0),
+        floor: 10.0,
+    };
+    let spacer = MinLengthSpacerView {
+        min_length: 0.0,
+        axis: StretchAxis::Horizontal,
+    };
+    let trailing = CompressibleView {
+        ideal: Size::new(30.0, 20.0),
+        floor: 10.0,
+    };
+    let children: Vec<&dyn SubView> = vec![&leading, &spacer, &trailing];
+
+    let bounds = Rect::new(Point::zero(), Size::new(50.0, 20.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        placements[1].frame.width().abs() < 0.01,
+        "a zero-minimum spacer collapses first, got {}",
+        placements[1].frame.width()
+    );
+    assert!(
+        (placements[0].frame.width() - 25.0).abs() < 0.01
+            && (placements[2].frame.width() - 25.0).abs() < 0.01,
+        "the labels share the whole row once the spacer is gone, got {} and {}",
+        placements[0].frame.width(),
+        placements[2].frame.width()
+    );
+    assert_no_overlap(&placements, "horizontal");
+}
+
+/// A list with 70pt of content beside a 50pt row, in a 100pt column: the
+/// equal share of the deficit would be 50pt, below what the list reports when
+/// proposed `0`. The list keeps its 70pt floor, the row at the same priority
+/// gives up the difference, and the row at a lower priority is squeezed to its
+/// floor before either of them loses anything.
+#[test]
+fn a_stretcher_above_the_deficit_share_keeps_its_floor_in_a_column_bounded_proposal() {
+    let layout = VStackLayout {
+        alignment: HorizontalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let list = ContentFillView {
+        intrinsic: 70.0,
+        axis: StretchAxis::Vertical,
+        priority: 0,
+    };
+    let row = CompressibleHeightView {
+        ideal: Size::new(70.0, 50.0),
+        floor: 0.0,
+    };
+    let footer = ContentFillView {
+        intrinsic: 0.0,
+        axis: StretchAxis::Vertical,
+        priority: -1,
+    };
+    let children: Vec<&dyn SubView> = vec![&list, &row, &footer];
+
+    let bounds = Rect::new(Point::zero(), Size::new(70.0, 100.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        (placements[0].frame.height() - 70.0).abs() < 0.01,
+        "the list keeps the 70pt it measured, got {}",
+        placements[0].frame.height()
+    );
+    assert!(
+        (placements[1].frame.height() - 30.0).abs() < 0.01,
+        "the row at the same priority absorbs the deficit, got {}",
+        placements[1].frame.height()
+    );
+    assert!(
+        placements[2].frame.height().abs() < 0.01,
+        "the lower-priority filler gives way first, got {}",
+        placements[2].frame.height()
+    );
+    assert_no_overlap(&placements, "vertical");
+}
+
+/// The row mirror: a 70pt-wide fill beside a 50pt label in a 100pt row.
+#[test]
+fn a_stretcher_above_the_deficit_share_keeps_its_floor_in_a_row_bounded_proposal() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let fill = ContentFillView {
+        intrinsic: 70.0,
+        axis: StretchAxis::Horizontal,
+        priority: 0,
+    };
+    let label = CompressibleView {
+        ideal: Size::new(50.0, 20.0),
+        floor: 0.0,
+    };
+    let trailing = ContentFillView {
+        intrinsic: 0.0,
+        axis: StretchAxis::Horizontal,
+        priority: -1,
+    };
+    let children: Vec<&dyn SubView> = vec![&fill, &label, &trailing];
+
+    let bounds = Rect::new(Point::zero(), Size::new(100.0, 70.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        (placements[0].frame.width() - 70.0).abs() < 0.01,
+        "the fill keeps the 70pt it measured, got {}",
+        placements[0].frame.width()
+    );
+    assert!(
+        (placements[1].frame.width() - 30.0).abs() < 0.01,
+        "the label at the same priority absorbs the deficit, got {}",
+        placements[1].frame.width()
+    );
+    assert!(
+        placements[2].frame.width().abs() < 0.01,
+        "the lower-priority filler gives way first, got {}",
+        placements[2].frame.width()
+    );
+    assert_no_overlap(&placements, "horizontal");
 }
