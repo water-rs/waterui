@@ -10950,7 +10950,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=d3f7cfc0b133bb97beac191110f7ceaf8b1a9398#d3f7cfc0b133bb97beac191110f7ceaf8b1a9398"
+source = "git+https://github.com/water-rs/video-gpu?rev=e208a44b995883cfda7053f2cf12894e9f1a4ba9#e208a44b995883cfda7053f2cf12894e9f1a4ba9"
 dependencies = [
  "async-channel",
  "executor-core",
