@@ -1,0 +1,27 @@
+[package]
+name = "waterui-ts"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "TypeScript views for WaterUI: a JavaScript runtime embedded in-process"
+keywords = ["typescript", "javascript", "waterui", "ui", "gui"]
+categories = ["gui"]
+
+[dependencies]
+waterui-ts-engine.workspace = true
+
+# Apple platforms use the system JavaScriptCore — zero added binary size.
+# watchOS is excluded: it ships no JavaScriptCore and the runtime is
+# unsupported there, which `compile_error!` in the crate states directly.
+[target.'cfg(all(target_vendor = "apple", not(target_os = "watchos")))'.dependencies]
+waterui-ts-engine-jsc.workspace = true
+
+# Everywhere else — Android, Linux, Windows — the embedded QuickJS-NG engine.
+[target.'cfg(not(target_vendor = "apple"))'.dependencies]
+waterui-ts-engine-quickjs.workspace = true
+
+[lints]
+workspace = true

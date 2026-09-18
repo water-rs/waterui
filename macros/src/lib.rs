@@ -38,6 +38,7 @@ fn waterui_crate_path() -> syn::Result<TokenStream2> {
 
 mod javascript;
 mod js_api;
+mod ts;
 
 /// Exposes an `impl` block to the page.
 ///
@@ -1645,4 +1646,37 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+/// Derives the TypeScript projection of a struct or enum.
+///
+/// The projection is an associated `const SCHEMA` built from the field types'
+/// own schemas, so aliases, generic arguments and `cfg`s are resolved by the
+/// compiler rather than by reading how a type is spelled. A struct becomes an
+/// object type and needs named fields; an enum whose variants are all unit
+/// variants becomes a union of string literals, and an enum carrying data
+/// becomes a tagged object.
+///
+/// Use it for the types nested inside a props struct; the root props struct
+/// derives [`macro@TsProps`], which also emits the artifact metadata.
+#[proc_macro_derive(TsType)]
+pub fn derive_ts_type(input: TokenStream) -> TokenStream {
+    ts::derive_ts_type(input)
+}
+
+/// Derives the props contract of a TypeScript view module's root props struct.
+///
+/// Emits everything [`macro@TsType`] does, plus the contract's encoded form,
+/// its hash, and a `#[cfg(debug_assertions)] #[used] static` named
+/// `waterui_meta_tsprops_<Type>` holding the encoding. That static is how the
+/// contract reaches the `water` CLI: `#[used]` keeps it in the object file and
+/// the rlib, so the CLI reads it out of a dev-profile host build's symbol
+/// table instead of parsing source. The encoding happens entirely during const
+/// evaluation, and the debug gate keeps the bytes out of shipped binaries.
+///
+/// The symbol name carries the type name alone, so one binary may hold only
+/// one props type of a given name.
+#[proc_macro_derive(TsProps)]
+pub fn derive_ts_props(input: TokenStream) -> TokenStream {
+    ts::derive_ts_props(input)
 }

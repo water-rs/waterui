@@ -1563,6 +1563,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "const-fnv1a-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32b13ea120a812beba79e34316b3942a857c86ec1593cb34f27bb28272ce2cca"
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6284,6 +6290,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-javascript-core"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a1e6550c4caed348956ce3370c9ffeca70bb1dbed4fa96112e7c6170e074586"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "objc2-media-toolbox"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7305,6 +7323,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "relative-path"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bca40a312222d8ba74837cb474edef44b37f561da5f773981007a10bbaa992b0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "reminders-example"
 version = "0.1.0"
 dependencies = [
@@ -7435,6 +7462,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "rquickjs"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7d96fb23e8ff51c8d4772ea84e44b5238543b7d81e9cc23c0219511a8f16482"
+dependencies = [
+ "rquickjs-core",
+]
+
+[[package]]
+name = "rquickjs-core"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c6dbfedfbf458dc119c21ccd032c7527d185210b11a1ae796cd04106e6db280"
+dependencies = [
+ "hashbrown 0.17.1",
+ "relative-path",
+ "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-sys"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53d0aaff245bed1c6f3c39e477fb6b98d710d9d298bfec7c8dfc589bed0e5cef"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -10917,6 +10973,52 @@ dependencies = [
  "waterui-testing",
  "waterui-text",
  "web-sys",
+]
+
+[[package]]
+name = "waterui-ts"
+version = "0.1.0"
+dependencies = [
+ "waterui-ts-engine",
+ "waterui-ts-engine-jsc",
+ "waterui-ts-engine-quickjs",
+]
+
+[[package]]
+name = "waterui-ts-engine"
+version = "0.1.0"
+
+[[package]]
+name = "waterui-ts-engine-jsc"
+version = "0.1.0"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-foundation",
+ "objc2-javascript-core",
+ "waterui-ts-engine",
+]
+
+[[package]]
+name = "waterui-ts-engine-quickjs"
+version = "0.1.0"
+dependencies = [
+ "rquickjs",
+ "waterui-ts-engine",
+]
+
+[[package]]
+name = "waterui-ts-schema"
+version = "0.1.0"
+dependencies = [
+ "const-fnv1a-hash",
+ "object",
+ "rustc-demangle",
+ "serde",
+ "suiteki",
+ "thiserror 2.0.20",
+ "waterui-core",
+ "waterui-macros",
 ]
 
 [[package]]

@@ -8,6 +8,13 @@ members = [
     "components/foundation/*",
     "components/multimedia/*",
     "components/platform/*",
+    # The `ts` family directory holds more than one crate, so its members are
+    # listed one by one; the glob above picks up `components/platform/ts`
+    # itself and stops there.
+    "components/platform/ts/schema",
+    "components/platform/ts/engine",
+    "components/platform/ts/engine/jsc",
+    "components/platform/ts/engine/quickjs",
     "components/visual/*",
     "utils/*",
     "src",
@@ -114,6 +121,10 @@ aither-mcp = { version = "0.4", default-features = false }
 bincode = { version = "2.0.1", features = ["serde"] }
 bitflags = "2.13.2"
 blocking = "1.7.0"
+# FNV-1a that evaluates in a `const` context, which is what the TypeScript
+# props contract hash needs: the same hash is computed by the compiler into the
+# binary and by the CLI from the artifact.
+const-fnv1a-hash = "1.1.0"
 executor-core = { version = "0.7.1", features = ["std"]}
 # No crate in this workspace runs a future on `futures`' own executor — every
 # host installs its own `LocalExecutor` — so the default `executor` feature is
@@ -236,6 +247,21 @@ shaderloom = "0.1.2"
 hydrolysis-m3 = "0.3.0"
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.3.1", path = "macros" }
+waterui-ts-schema = { version = "0.1.0", path = "components/platform/ts/schema" }
+waterui-ts = { version = "0.1.0", path = "components/platform/ts" }
+waterui-ts-engine = { version = "0.1.0", path = "components/platform/ts/engine" }
+waterui-ts-engine-jsc = { version = "0.1.0", path = "components/platform/ts/engine/jsc" }
+waterui-ts-engine-quickjs = { version = "0.1.0", path = "components/platform/ts/engine/quickjs" }
+# QuickJS-NG through `rquickjs` — the embedded engine for every non-Apple
+# target. (`rquickjs-sys` vendors the QuickJS-NG fork, not the original
+# Bellard tree.)
+rquickjs = "0.13"
+# The system JavaScriptCore, reached through the objc2 family. Used only by
+# `waterui-ts-engine-jsc`, which gates them on `target_vendor = "apple"`.
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = "0.3"
+objc2-javascript-core = "0.3"
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
 # 29, not 30, and not by neglect: `vello` 0.10.0 — the newest release — pins
