@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn a_max_only_frame_reports_its_childs_floor_on_a_min_size_query() {
+    fn a_max_only_frame_reports_the_child_floor_on_a_min_size_query() {
         // `.frame(maxWidth: .infinity)` around a rigid 220pt child: a zero
         // proposal is the min-size query, and the frame's floor is the child's
         // answer, not the bare offer. Reporting 0 lets a stack starve the slot
