@@ -12,6 +12,14 @@
 //! This library aims to minimize the unsafe code needed when working with FFI while
 //! maintaining performance and flexibility.
 
+// The `Send` obligation on the GPU runtime handed across the C ABI (the
+// runtime, its shared context, the shared scene renderer and the hybrid
+// renderer's texture-format table) runs deeper than rustc's default limit of
+// 128 when an Apple app links the crate; rustc warns today
+// (`recursion_depth_exceeding_limit`, rust-lang/rust#159228) and will refuse
+// the crate outright.
+#![recursion_limit = "256"]
+
 #[cfg(not(feature = "std"))]
 compile_error!("waterui-ffi requires the `std` feature.");
 #[cfg(all(feature = "c-api", feature = "android-jni"))]
