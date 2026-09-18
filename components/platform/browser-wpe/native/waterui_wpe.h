@@ -9,8 +9,14 @@
 extern "C" {
 #endif
 
-#define WATER_WPE_ABI_VERSION 3
+#define WATER_WPE_ABI_VERSION 4
 #define WATER_WPE_MAX_PLANES 4
+
+/* Which `WPEBuffer` subclass produced a `WaterWpeFrame`. */
+enum {
+    WATER_WPE_BUFFER_DMA_BUF = 1,
+    WATER_WPE_BUFFER_SHM = 2,
+};
 
 typedef struct WaterWpeRuntime WaterWpeRuntime;
 typedef struct WaterWpePage WaterWpePage;
@@ -33,6 +39,15 @@ typedef struct {
     uint32_t offsets[WATER_WPE_MAX_PLANES];
     uint32_t strides[WATER_WPE_MAX_PLANES];
     int rendering_fence_fd;
+    /* One of the `WATER_WPE_BUFFER_*` constants. */
+    uint32_t kind;
+    /* `WATER_WPE_BUFFER_SHM` frames only: the buffer's own pixels, borrowed
+     * for the token's lifetime — the token keeps the `WPEBuffer`, owner of the
+     * `GBytes`, alive. `format` still reports a DRM fourcc; the bridge
+     * translates WPE's `WPEPixelFormat`. */
+    const uint8_t *shm_data;
+    size_t shm_len;
+    uint32_t shm_stride;
 } WaterWpeFrame;
 
 typedef void (*WaterWpeDestroyNotify)(void *user_data);

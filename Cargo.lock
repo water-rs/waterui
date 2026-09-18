@@ -10174,6 +10174,7 @@ dependencies = [
  "futures",
  "keycode",
  "kurbo",
+ "libc",
  "libloading 0.9.0",
  "nami",
  "num-traits",
