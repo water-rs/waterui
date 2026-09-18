@@ -601,7 +601,12 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     let env = Environment::new().extending(SceneViewMergeToParent);
 
     let surface = platform.surface();
-    renderer.set_frame_resources(surface.adapter(), surface.device(), surface.queue());
+    renderer.set_frame_resources(
+        surface.adapter(),
+        surface.device(),
+        surface.queue(),
+        surface.device_loss(),
+    );
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
@@ -621,6 +626,7 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
         adapter: surface.adapter(),
         device: surface.device(),
         queue: surface.queue(),
+        device_loss: surface.device_loss().clone(),
         texture: Some(frame.texture()),
         view: frame.view(),
         format: surface.format(),

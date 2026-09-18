@@ -94,7 +94,67 @@ pub struct SharedGpuContext {
     /// `get_current_texture` collapses a dead device into a bare `Validation`
     /// status with no scoped error, so the acquire path reads this to name the
     /// real cause instead of panicking on a shape that cannot be reconfigured.
-    device_lost: Arc<Mutex<Option<String>>>,
+    device_lost: DeviceLoss,
+}
+
+/// A view onto whether one context's device has been lost.
+///
+/// wgpu reports a loss exactly once, through the callback the runtime installs
+/// at creation, and every resource call after it fails: `create_texture` hands
+/// back an invalid handle and the first use of that handle raises a validation
+/// error that wgpu treats as fatal. Work that runs off the frame path — a
+/// raster worker streaming tiles from its own thread — never sees the frame
+/// owner's rebuild, so it takes a clone of this handle at setup and asks it
+/// before each batch of wgpu calls; once the answer is `true` the only correct
+/// move is to stop, because the next [`GpuView::setup`] on the rebuilt context
+/// replaces everything the worker was producing.
+///
+/// [`GpuView::setup`]: super::gpu_surface::GpuView::setup
+#[derive(Clone, Debug, Default)]
+pub struct DeviceLoss {
+    reason: Arc<Mutex<Option<String>>>,
+}
+
+impl DeviceLoss {
+    /// Starts observing `device`: installs its device-lost callback so the
+    /// returned handle reports the loss the moment the driver announces it.
+    ///
+    /// wgpu keeps one lost callback per device, so this belongs to whoever
+    /// owns the device — [`SharedGpuContext`] for the runtime's device, or a
+    /// host that opened its own (a GTK backend adopting a `GLArea`'s
+    /// adapter) — and is called once, right after the device is created.
+    #[must_use]
+    pub fn observe(device: &wgpu::Device) -> Self {
+        let handle = Self::default();
+        let recorder = handle.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            tracing::error!(?reason, message, "WaterUI GPU device was lost");
+            recorder.record(format!("{reason:?}: {message}"));
+        });
+        handle
+    }
+
+    /// Whether the driver has reported this device lost.
+    #[must_use]
+    pub fn is_lost(&self) -> bool {
+        self.reason().is_some()
+    }
+
+    /// The reason the driver gave for the loss, once it reported one.
+    #[must_use]
+    pub fn reason(&self) -> Option<String> {
+        self.reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn record(&self, reason: String) {
+        *self
+            .reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+    }
 }
 
 /// Which engine rasterizes scenes on a given device.
@@ -324,15 +384,7 @@ impl SharedGpuContext {
         // Device loss otherwise surfaces only as a bare `Validation` status on the
         // next swapchain acquire, with the reason discarded; record it so the
         // failure names its cause.
-        let device_lost = Arc::new(Mutex::new(None::<String>));
-        let lost_slot = Arc::clone(&device_lost);
-        device.set_device_lost_callback(move |reason, message| {
-            tracing::error!(?reason, message, "WaterUI GPU runtime device was lost");
-            *lost_slot
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(format!("{reason:?}: {message}"));
-        });
+        let device_lost = DeviceLoss::observe(&device);
 
         let device = Arc::new(device);
         let queue = Arc::new(queue);
@@ -380,20 +432,22 @@ impl SharedGpuContext {
     /// runtime is created.
     #[must_use]
     pub fn device_lost_reason(&self) -> Option<String> {
-        self.device_lost
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.device_lost.reason()
+    }
+
+    /// A handle that answers whether this context's device has been lost,
+    /// for work that runs off the frame path and cannot wait for the owning
+    /// runtime's rebuild to reach it.
+    #[must_use]
+    pub fn device_loss(&self) -> DeviceLoss {
+        self.device_lost.clone()
     }
 
     /// Records a device loss the driver never reported, for tests that
     /// exercise the runtime's recreation path.
     #[doc(hidden)]
     pub fn mark_device_lost_for_testing(&self, reason: &str) {
-        *self
-            .device_lost
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason.to_owned());
+        self.device_lost.record(reason.to_owned());
     }
 }
 
@@ -878,6 +932,25 @@ mod tests {
         assert!(fresh.device_lost_reason().is_none());
         assert_ne!(fresh.generation(), stale_generation);
         assert!(stale.device_lost_reason().is_some());
+    }
+
+    /// A worker takes its [`DeviceLoss`] handle at setup, long before any
+    /// loss; the handle must report the loss the context records later, and
+    /// a handle from the rebuilt context must not.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_device_loss_handle_taken_at_setup_reports_a_later_loss() {
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("device-loss observation requires a working GPU runtime");
+        let stale = runtime.context();
+        let handle = stale.device_loss();
+        assert!(!handle.is_lost());
+
+        stale.mark_device_lost_for_testing("simulated device loss");
+
+        assert!(handle.is_lost());
+        assert_eq!(handle.reason().as_deref(), Some("simulated device loss"));
+        assert!(!runtime.context().device_loss().is_lost());
     }
 
     fn adapter_features_with_16bit_norm() -> wgpu::Features {

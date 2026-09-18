@@ -3641,7 +3641,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/hydrolysis?rev=d3a513d0f4410d1b2593e0309c24ea94d92cf99e#d3a513d0f4410d1b2593e0309c24ea94d92cf99e"
+source = "git+https://github.com/water-rs/hydrolysis?rev=1d88f06abd9acf727a19eaa2d3743670493f6547#1d88f06abd9acf727a19eaa2d3743670493f6547"
 dependencies = [
  "accesskit",
  "async-task",
@@ -10652,7 +10652,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=090526a4add5123e0153a12d159955c6d08582d4#090526a4add5123e0153a12d159955c6d08582d4"
+source = "git+https://github.com/water-rs/map-gpu?rev=fa83ba7be6feb932d15cd37f14810ab79653f4aa#fa83ba7be6feb932d15cd37f14810ab79653f4aa"
 dependencies = [
  "blocking",
  "bytemuck",
@@ -10789,7 +10789,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?rev=781fedd3e13bcc31e6db8dd082c863da3465fb1e#781fedd3e13bcc31e6db8dd082c863da3465fb1e"
+source = "git+https://github.com/water-rs/particle?rev=9bd736b9ecaef4b902b8a55680d214b385e4a186#9bd736b9ecaef4b902b8a55680d214b385e4a186"
 dependencies = [
  "bytemuck",
  "encase",
