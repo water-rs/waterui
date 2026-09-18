@@ -221,10 +221,10 @@ waterui-mcp-protocol = { version = "0.1.0", path = "components/devtools/mcp/prot
 # `cargo publish` keeps (a patch entry would go unused and warn on every cargo
 # command). The release commit that drops the patch table below drops the
 # `git` halves too.
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "f04112baaf77caae4d6bfcefebede9e91cf48d98", version = "0.2.0" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "06c5eadf10f657d8e742b79cab59b44c02dce439", version = "0.2.0" }
 # `waterui-winui` is unpublished and Windows-only; the `water` CLI reads this
 # entry to scaffold a generated launcher crate pinned to the same revision.
-waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "37a980a42ceedad3ff32ee50f27dddacdd495033", version = "0.1.0" }
+waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "61d8e81839c9b869eeab60ab11c65628720554e0", version = "0.1.0" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.4.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.4.1", path = "utils/dylib", default-features = false }
@@ -482,11 +482,11 @@ waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "0a7efbf3
 waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "fb4a1a1de3bae3b9da60cb475cb3a10e161e4525" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "b5ec25f94728d65755de959e01800d2b54326b89" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "646d2eb1c7dda8c78283fd168e726fb260a84e65" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "090526a4add5123e0153a12d159955c6d08582d4" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "781fedd3e13bcc31e6db8dd082c863da3465fb1e" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "fa83ba7be6feb932d15cd37f14810ab79653f4aa" }
+waterui-particle = { git = "https://github.com/water-rs/particle", rev = "9bd736b9ecaef4b902b8a55680d214b385e4a186" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "2272a62b4bcd7b3d1deb3ba03ba8a88ff927616a" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "e208a44b995883cfda7053f2cf12894e9f1a4ba9" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "d3a513d0f4410d1b2593e0309c24ea94d92cf99e" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "1d88f06abd9acf727a19eaa2d3743670493f6547" }
 hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "2ddf27c2a9f5d0c4a04c4d586462a429eefa8bd7" }
 waterui-math = { git = "https://github.com/water-rs/math", rev = "ffa8e42e4f04ffd2396bf0466eae46a2b9e00c53" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
