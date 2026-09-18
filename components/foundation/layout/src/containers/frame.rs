@@ -314,6 +314,13 @@ fn frame_child_proposal_axis(
 /// to a hundred points. The extent it grows into is the one it was offered —
 /// the parent's proposal, or the ideal when the parent proposed nothing.
 ///
+/// A zero proposal is not an offer, though: it is the min-size query, and the
+/// frame's floor is its child's answer, clamped by the frame's own
+/// constraints. A frame that claims it can shrink to nothing while the content
+/// it aligns needs room reports a minimum it cannot honour — and a stack that
+/// trusts that minimum starves the slot while the child is still laid out at
+/// its full extent, centred over the frame's surroundings.
+///
 /// Without a maximum there is nothing to grow into, so the frame adopts its
 /// child's sizing behaviour on that axis: it is exactly as big as the child it
 /// measured, clamped up by any minimum. That is what keeps `.frame(minHeight:
@@ -334,7 +341,7 @@ fn frame_resolved_axis(
     ideal: Option<f32>,
     max: Option<f32>,
 ) -> f32 {
-    let content = if max.is_some() {
+    let content = if max.is_some() && parent_proposal != Some(0.0) {
         parent_proposal.or(ideal).unwrap_or(child_size)
     } else {
         child_size
@@ -567,6 +574,46 @@ mod tests {
                 Size::new(width, 10.0)
             );
         }
+    }
+
+    #[test]
+    fn a_max_only_frame_reports_its_childs_floor_on_a_min_size_query() {
+        // `.frame(maxWidth: .infinity)` around a rigid 220pt child: a zero
+        // proposal is the min-size query, and the frame's floor is the child's
+        // answer, not the bare offer. Reporting 0 lets a stack starve the slot
+        // while the frame still centres the child's full extent over its
+        // surroundings.
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(f32::INFINITY)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(220.0, 40.0),
+        };
+
+        let size = layout.size_that_fits(ProposalSize::ZERO, &[&child]);
+        assert_extent(size.width, 220.0, "the frame's minimum width");
+
+        // A real offer still grows into it.
+        let size = layout.size_that_fits(ProposalSize::new(Some(500.0), None), &[&child]);
+        assert_extent(size.width, 500.0, "the frame's offered width");
+    }
+
+    #[test]
+    fn a_bounded_maximum_clamps_the_reported_floor() {
+        // `.frame(maxWidth: 100)` over a 220pt child: the reported floor is the
+        // child's answer limited by the frame's own maximum, neither the offer
+        // nor the child's whole extent.
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(100.0)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(220.0, 40.0),
+        };
+
+        let size = layout.size_that_fits(ProposalSize::ZERO, &[&child]);
+        assert_extent(size.width, 100.0, "the frame's clamped minimum width");
     }
 
     struct MockSubView {
