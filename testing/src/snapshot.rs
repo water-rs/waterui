@@ -87,7 +87,12 @@ impl TestHost {
         );
 
         let surface = platform.surface();
-        renderer.set_frame_resources(surface.adapter(), surface.device(), surface.queue());
+        renderer.set_frame_resources(
+            surface.adapter(),
+            surface.device(),
+            surface.queue(),
+            surface.device_loss(),
+        );
         renderer.reset_scene();
         renderer.begin_rebuild_frame();
         let env = self.env.clone().extending(SceneViewMergeToParent);
@@ -107,6 +112,7 @@ impl TestHost {
             adapter: surface.adapter(),
             device: surface.device(),
             queue: surface.queue(),
+            device_loss: surface.device_loss().clone(),
             texture: Some(frame.texture()),
             view: frame.view(),
             format: surface.format(),
