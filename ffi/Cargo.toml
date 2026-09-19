@@ -64,7 +64,6 @@ waterui-chromium = { workspace = true, optional = true }
 # this crate's decision any more: the composition root installs it, selected by
 # the application's `waterui/video-gpu` feature.
 waterui-video-gpu = { workspace = true, optional = true }
-tracing-android = "0.2"
 ndk-context = "0.1.1"
 jni = "0.22.4"
 ndk-sys = "0.6"
