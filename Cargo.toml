@@ -57,9 +57,9 @@ android-min-api-level = 26
 # revisions when scaffolding a project; neither backend rides a gitlink.
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 # Proposal-aware placement requires the matching native layout contract.
-apple-backend-revision = "ae0e0e3272905af6d1043839a9d30e23b78aca6c"
+apple-backend-version = "0.3.0"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "b0755be91c1354c5a76c09aaf2daef08005c51c4"
+android-backend-revision = "03e7523e088ea764d4019848dcd194007e4a23dc"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
 # `[workspace.dependencies]` below.
