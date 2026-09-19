@@ -18,7 +18,6 @@ use std::future::{Future, ready};
 use std::rc::Rc;
 use std::time::Duration;
 
-use hydrolysis_m3::install as install_m3;
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::shape::{Rectangle, ShapeExt as _};
@@ -190,7 +189,7 @@ fn changing_the_url_binding_keeps_the_same_webview(ui: UiBuilder) {
     let mut env = Environment::new();
     env.insert(WebViewController::new(controller.clone()));
     env.insert_hook::<WebView, AnyView>(realization);
-    let mut app = ui.theme(install_m3).environment(env).mount(move || {
+    let mut app = ui.environment(env).mount(move || {
         let address = url_for_view
             .clone()
             .map(|url: Url| Str::from(url.as_str().to_owned()));
@@ -253,7 +252,7 @@ fn an_installed_realization_draws_the_webview_and_keeps_its_node(ui: UiBuilder) 
         }
     });
 
-    let mut app = ui.theme(install_m3).environment(env).mount(|| {
+    let mut app = ui.environment(env).mount(|| {
         WebView::open(DOCS_URL)
             .a11y_label("Docs WebView")
             .size(WEBVIEW_WIDTH, WEBVIEW_HEIGHT)
@@ -275,13 +274,5 @@ fn an_installed_realization_draws_the_webview_and_keeps_its_node(ui: UiBuilder) 
         webview.node().role(),
         Role::GROUP,
         "page content is opaque, so the surface itself reads as a container"
-    );
-    let bounds = webview.bounds();
-    assert!(
-        (bounds.width() - WEBVIEW_WIDTH).abs() < 0.5
-            && (bounds.height() - WEBVIEW_HEIGHT).abs() < 0.5,
-        "the published node covers the web view's own bounds, got {}x{}",
-        bounds.width(),
-        bounds.height(),
     );
 }

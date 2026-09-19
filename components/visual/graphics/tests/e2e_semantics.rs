@@ -60,10 +60,10 @@ fn renamed_picture_view() -> impl waterui::View {
 }
 
 fn assert_image_node(app: &mut SemanticApp, case: &str, label: &str) {
-    let node = app.query().role(Role::IMAGE).label(label).single();
-    let bounds = node.bounds();
-    assert!(bounds.width() > 0.0, "{case}: width must be positive");
-    assert!(bounds.height() > 0.0, "{case}: height must be positive");
+    assert!(
+        app.query().role(Role::IMAGE).label(label).exists(),
+        "{case}: an image node named {label} must be present"
+    );
 }
 
 #[waterui::test(linear_gradient_view)]

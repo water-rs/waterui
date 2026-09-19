@@ -8,8 +8,8 @@ use accesskit::{Action, ActionData, NodeId as AccessibilityNodeId};
 use aither_core::llm::tool::ToolResult;
 use async_channel::Sender;
 use waterui_testing::{
-    DragOptions, KeyCode, NodeId, OffscreenApp, Role, Selector, VIRTUAL_FRAME, WaitOptions,
-    WaitResult,
+    DragOptions, KeyCode, NodeId, OffscreenApp, Role, RuntimeDriver, Selector, SemanticApp,
+    VIRTUAL_FRAME, WaitOptions, WaitResult,
 };
 
 use waterui_mcp_protocol::{
@@ -316,8 +316,8 @@ fn resolve_role(name: &str) -> Result<Role, String> {
 ///
 /// Returns a message when `role` is not a searchable name, when both scope
 /// anchors are set, or when a scope anchor does not resolve.
-fn selector_from(
-    app: &mut waterui_testing::SemanticApp,
+fn selector_from<R: RuntimeDriver>(
+    app: &mut SemanticApp<R>,
     args: &SelectorArgs,
 ) -> Result<Selector, String> {
     if args.within.is_some() && args.children_of.is_some() {
@@ -363,7 +363,7 @@ fn selector_from(
     if let Some(hidden) = args.hidden {
         selector = selector.hidden(hidden);
     }
-    let mut scope = |id: u64| -> Result<waterui_testing::ElementRef, String> {
+    let mut scope = |id: u64| -> Result<waterui_testing::ElementRef<R>, String> {
         app.element(NodeId::from(AccessibilityNodeId(id)))
             .ok_or_else(|| format!("scope anchor node #{id} is not in the current tree"))
     };

@@ -3,57 +3,29 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::driver::{A11yDriver, DriverPumpResult};
+use crate::driver::{DriverPumpResult, ResourceSampler};
 use accesskit::{ActionRequest as AccessibilityActionRequest, NodeId as AccessibilityNodeId};
-use hydrolysis::{HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, PlatformWindow};
-use hydrolysis_m3::install as install_m3;
+use hydrolysis::InputEvent;
 use vello::kurbo::Shape;
-use waterui::Computed;
-use waterui::View;
 use waterui::ViewExt as _;
-use waterui::app::App;
-use waterui::color::ResolvedColor;
-use waterui::component::{hstack, text, vstack};
+use waterui::component::{text, vstack};
 use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::color::Srgb;
 use waterui::graphics::{Scene2D, SceneContent, SceneView};
-use waterui::layout::frame::Frame;
 use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
-use waterui::theme;
 use waterui_canvas::Canvas;
-use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{Point, Rect, Size};
-use waterui_core::{AnyView, Environment, Native};
-
-use crate::snapshot::readback_texture_rgba8;
+use waterui_core::{AnyView, Native, View};
 
 #[derive(Debug)]
 struct NoopDriver;
 
-impl A11yDriver for NoopDriver {
-    fn pump(
-        &mut self,
-        _content: &AnyViewBuilder<AnyView>,
-        _env: &Environment,
-        _capture_snapshot: bool,
-    ) -> DriverPumpResult {
+impl RuntimeDriver for NoopDriver {
+    fn pump_at(&mut self, _at: std::time::Instant, _capture_snapshot: bool) -> DriverPumpResult {
         DriverPumpResult {
             rebuilt: false,
-            tree_update: None,
-            snapshot: None,
-            ui_focus: None,
-        }
-    }
-
-    fn pump_step(
-        &mut self,
-        _step: std::time::Duration,
-        _content: &AnyViewBuilder<AnyView>,
-        _env: &Environment,
-    ) -> DriverPumpResult {
-        DriverPumpResult {
-            rebuilt: false,
+            profile: hydrolysis::FrameProfile::default(),
             tree_update: None,
             snapshot: None,
             ui_focus: None,
@@ -68,55 +40,16 @@ impl A11yDriver for NoopDriver {
         false
     }
 
-    fn perform_action(&mut self, _request: AccessibilityActionRequest, _env: &Environment) -> bool {
+    fn perform_accessibility_action(&mut self, _request: AccessibilityActionRequest) -> bool {
         false
     }
 
-    fn hover_at(&mut self, _x: f32, _y: f32, _env: &Environment) {}
+    fn push_input_event(&mut self, _event: InputEvent) {}
 
-    fn pointer_down(&mut self, _x: f32, _y: f32, _env: &Environment) {}
+    fn request_redraw(&mut self) {}
 
-    fn pointer_move(&mut self, _x: f32, _y: f32, _env: &Environment) {}
-
-    fn pointer_up(&mut self, _x: f32, _y: f32, _env: &Environment) {}
-
-    fn secondary_click(&mut self, _x: f32, _y: f32, _env: &Environment) {}
-
-    fn scroll_at(
-        &mut self,
-        _x: f32,
-        _y: f32,
-        _dx: f32,
-        _dy: f32,
-        _is_line_delta: bool,
-        _env: &Environment,
-    ) {
-    }
-
-    fn text_input(&mut self, _text: String, _env: &Environment) {}
-
-    fn key_press(
-        &mut self,
-        _key: hydrolysis::KeyCode,
-        _modifiers: hydrolysis::Modifiers,
-        _env: &Environment,
-    ) {
-    }
-
-    fn magnify_at(&mut self, _x: f32, _y: f32, _factor: f32, _env: &Environment) {}
-
-    fn clear_ui_focus(&mut self, _env: &Environment) -> bool {
+    fn clear_ui_focus(&mut self) -> bool {
         false
-    }
-
-    fn request_redraw(&mut self, _content: &AnyViewBuilder<AnyView>, _env: &Environment) {}
-
-    fn pump_frame(
-        &mut self,
-        _content: &AnyViewBuilder<AnyView>,
-        _env: &Environment,
-    ) -> crate::driver::FrameTiming {
-        crate::driver::FrameTiming::default()
     }
 }
 
@@ -200,15 +133,15 @@ fn scoped_tree() -> TreeSnapshot {
     ])
 }
 
-fn mounted(tree: TreeSnapshot) -> SemanticApp {
+fn mounted(tree: TreeSnapshot) -> SemanticApp<NoopDriver> {
     SemanticApp {
-        env: Environment::new(),
-        content: AnyViewBuilder::new(|| AnyView::new(())),
-        driver: Box::new(NoopDriver),
+        runtime: NoopDriver,
         tree,
         ui_focus: None,
         revision: 2,
         viewport: (0, 0),
+        clock: None,
+        resources: ResourceSampler::new(),
     }
 }
 
@@ -222,64 +155,22 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     String::from("<non-string panic>")
 }
 
+/// A view that draws widget chrome mounts on the semantic pipeline: the scroll
+/// view's container and the button's node are products of the view tree and
+/// the widgets' semantics — no style package is installed (#290).
 #[test]
-fn smoke_snapshot_size_matches_target() {
-    let host = TestHost::new(Environment::new(), 64, 48);
-    let snapshot = host.render(());
-    assert_eq!(snapshot.width, 64);
-    assert_eq!(snapshot.height, 48);
-    assert_eq!(snapshot.rgba8.len(), 64 * 48 * 4);
-}
-
-#[test]
-fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
-    let mut app = ui()
-        .viewport(240, 120)
-        .theme(|env: &mut Environment| {
-            install_m3(env);
-            theme::install_color_signal::<theme::color::Foreground>(
-                env,
-                Computed::constant(ResolvedColor {
-                    red: 1.0,
-                    green: 1.0,
-                    blue: 1.0,
-                    opacity: 1.0,
-                    headroom: 1.0,
-                }),
-            );
-        })
-        .mount_offscreen(|| {
-            vstack((text("Theme slot").body(), text("Theme slot").body())).background(Srgb::BLACK)
-        });
-    assert_eq!(
-        app.query()
-            .role(Role::LABEL)
-            .label("Theme slot")
-            .all()
-            .len(),
-        2,
-        "theme slot text should stay queryable under custom theme environment"
-    );
-    let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 240);
-    assert_eq!(snapshot.height, 120);
-    assert_eq!(snapshot.rgba8.len(), 240 * 120 * 4);
-}
-
-/// A view that draws widget chrome mounts under the default theme: the scroll
-/// view's scrollbar and the button both read a widget theme from the
-/// environment, and `ui()` used to install none (#290).
-#[test]
-fn default_theme_renders_hydrolysis_widgets() {
-    let mut app = ui().viewport(240, 160).mount_offscreen(|| {
+fn scroll_view_and_button_structure_mounts_without_a_style() {
+    let mut app = ui().viewport(240, 160).mount(|| {
         ScrollView::vertical(vstack((
             waterui::component::button("Submit"),
             text("Scrolled content").body(),
         )))
     });
     assert_eq!(app.query().role(Role::BUTTON).all().len(), 1);
-    let snapshot = app.snapshot();
-    assert_eq!(snapshot.rgba8.len(), 240 * 160 * 4);
+    app.query()
+        .role(Role::LABEL)
+        .label("Scrolled content")
+        .assert_exists();
 }
 
 #[test]
@@ -294,24 +185,9 @@ fn semantic_builder_does_not_require_theme_package() {
         .single();
 }
 
-/// `mount_app` runs the application path: the app's own environment — theme
-/// included, as a real app installs it — is mounted verbatim, and the
-/// configured scale factor scales the captured snapshot.
-#[test]
-fn mount_app_hosts_main_window_with_app_environment() {
-    let mut env = Environment::new();
-    install_default_theme(&mut env);
-    let app = App::new(|| text("Mounted app").body(), env);
-    let mut app = ui().viewport(200, 100).scale_factor(2.0).mount_app(app);
-    app.query().label("Mounted app").assert_exists();
-    let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 400);
-    assert_eq!(snapshot.height, 200);
-}
-
 #[test]
 fn a11y_identifier_flows_from_modifier_to_selector() {
-    let mut app = ui().theme(install_m3).mount(|| {
+    let mut app = ui().mount(|| {
         vstack((
             waterui::component::button("Submit").a11y_id("login.submit"),
             waterui::component::button("Submit"),
@@ -330,109 +206,17 @@ fn a11y_identifier_flows_from_modifier_to_selector() {
     app.query().identifier("login.submit").tap();
 }
 
+/// Explicit `.color(...)` is a view-tree attribute: on the semantic pipeline
+/// the two labels stay queryable with it set.
 #[test]
-fn themed_builder_exposes_offscreen_perf_closure_api() {
-    let report = ui()
-        .viewport(96, 72)
-        .theme(install_m3)
-        .perf_config(PerfConfig {
-            warmups: 1,
-            samples: 3,
-            repetitions: 1,
-        })
-        .perf_with(
-            || text("Measured").body(),
-            |perf| {
-                perf.measure("steady", |run| {
-                    let _ = run
-                        .app()
-                        .query()
-                        .role(Role::LABEL)
-                        .label("Measured")
-                        .single();
-                });
-            },
-        );
-
-    let measurements = report.measurements();
-    assert_eq!(measurements.len(), 1);
-    assert_eq!(measurements[0].name, "steady");
-    let stats = measurements[0].stats();
-    assert_eq!(stats.samples, 3);
-}
-
-#[test]
-fn themed_builder_default_perf_requests_redraw() {
-    let report = ui()
-        .viewport(96, 72)
-        .theme(install_m3)
-        .perf_config(PerfConfig {
-            warmups: 1,
-            samples: 3,
-            repetitions: 1,
-        })
-        .perf(|| text("Redraw measured").body());
-
-    let measurements = report.measurements();
-    assert_eq!(measurements.len(), 1);
-    assert_eq!(measurements[0].name, "steady-redraw");
-    let stats = measurements[0].stats();
-    assert_eq!(stats.samples, 3);
-    assert_eq!(stats.rebuilt_frames, 0);
-    assert!(
-        stats.phases.render.p95 > Duration::ZERO,
-        "default perf should measure real redraw frames"
-    );
-}
-
-#[test]
-fn ui_test_environment_builder_preserves_custom_theme() {
-    let mut app = ui()
-        .viewport(240, 120)
-        .theme(|env: &mut Environment| {
-            install_m3(env);
-            theme::install_color_signal::<theme::color::Foreground>(
-                env,
-                Computed::constant(ResolvedColor {
-                    red: 1.0,
-                    green: 1.0,
-                    blue: 1.0,
-                    opacity: 1.0,
-                    headroom: 1.0,
-                }),
-            );
-        })
-        .mount_offscreen(|| {
-            vstack((text("Mounted theme").body(), text("Mounted theme").body()))
-                .background(Srgb::BLACK)
-        });
-    assert_eq!(
-        app.query()
-            .role(Role::LABEL)
-            .label("Mounted theme")
-            .all()
-            .len(),
-        2,
-        "UiBuilder environment builder should keep mounted text semantics intact"
-    );
-    let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 240);
-    assert_eq!(snapshot.height, 120);
-    assert_eq!(snapshot.rgba8.len(), 240 * 120 * 4);
-}
-
-#[test]
-fn smoke_text_color_snapshot_preserves_semantic_labels() {
-    let mut app = ui()
-        .viewport(240, 120)
-        .theme(install_m3)
-        .mount_offscreen(|| {
-            vstack((
-                text("Explicit color").body().color(Srgb::WHITE),
-                text("Explicit color").body().color(Srgb::WHITE),
-            ))
-            .background(Srgb::BLACK)
-        });
+fn explicit_text_color_preserves_semantic_labels() {
+    let mut app = ui().viewport(240, 120).mount(|| {
+        vstack((
+            text("Explicit color").body().color(Srgb::WHITE),
+            text("Explicit color").body().color(Srgb::WHITE),
+        ))
+        .background(Srgb::BLACK)
+    });
     assert_eq!(
         app.query()
             .role(Role::LABEL)
@@ -445,7 +229,7 @@ fn smoke_text_color_snapshot_preserves_semantic_labels() {
 }
 
 #[test]
-fn smoke_text_snapshot_preserves_semantic_labels() {
+fn smoke_text_preserves_semantic_labels() {
     let mut app = ui().viewport(240, 120).mount(|| {
         vstack((
             text("Focused datum").body().foreground(Srgb::WHITE),
@@ -495,30 +279,30 @@ fn tappable_composed_view_exposes_clickable_accessibility_node() {
         .assert_not_exists();
 }
 
+/// A `Canvas` composes to `SceneView`, whose accessibility metadata is a
+/// product of the view tree — the IMAGE role and its label exist on the
+/// semantic pipeline with nothing rendered.
 #[test]
-fn ui_test_snapshot_renders_text_after_canvas() {
-    let mut app = ui()
-        .viewport(320, 320)
-        .theme(install_m3)
-        .mount_offscreen(|| {
-            vstack((
-                Canvas::new(|ctx| {
-                    ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                    ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
-                })
-                .size(240.0, 180.0)
-                .a11y_role(waterui::accessibility::AccessibilityRole::Image)
-                .a11y_label("Canvas layer"),
-                text("W")
-                    .size(48.0)
-                    .color(Srgb::WHITE)
-                    .body()
-                    .padding_with(6.0)
-                    .a11y_label("Letter W"),
-            ))
-            .spacing(6.0)
-            .background(Srgb::BLACK)
-        });
+fn canvas_and_text_expose_accessibility_nodes_semantically() {
+    let mut app = ui().viewport(320, 320).mount(|| {
+        vstack((
+            Canvas::new(|ctx| {
+                ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
+                ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+            })
+            .size(240.0, 180.0)
+            .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+            .a11y_label("Canvas layer"),
+            text("W")
+                .size(48.0)
+                .color(Srgb::WHITE)
+                .body()
+                .padding_with(6.0)
+                .a11y_label("Letter W"),
+        ))
+        .spacing(6.0)
+        .background(Srgb::BLACK)
+    });
     app.query()
         .role(Role::IMAGE)
         .label("Canvas layer")
@@ -527,28 +311,22 @@ fn ui_test_snapshot_renders_text_after_canvas() {
         .role(Role::LABEL)
         .label("Letter W")
         .assert_exists();
-    let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 320);
-    assert_eq!(snapshot.height, 320);
 }
 
+/// A `SceneView` marked to merge exposes its accessibility node on the
+/// semantic pipeline: the role and label are view-tree metadata, the scene's
+/// pixels are the rendered pipeline's concern.
 #[test]
-fn smoke_canvas_snapshot_preserves_accessibility_metadata() {
-    let mut app = ui().viewport(96, 72).theme(install_m3).mount_offscreen(|| {
-        Canvas::new(|ctx| {
-            ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
-            ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
-        })
-        .a11y_role(waterui::accessibility::AccessibilityRole::Image)
-        .a11y_label("Canvas smoke")
+fn scene_view_exposes_accessibility_node_semantically() {
+    let mut app = ui().viewport(96, 72).mount(|| {
+        SceneView::new(TestSceneContent(Rc::new(Cell::new(false))))
+            .a11y_role(waterui::accessibility::AccessibilityRole::Image)
+            .a11y_label("Scene layer")
     });
     app.query()
         .role(Role::IMAGE)
-        .label("Canvas smoke")
+        .label("Scene layer")
         .assert_exists();
-    let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 96);
-    assert_eq!(snapshot.height, 72);
 }
 
 struct TestSceneContent(Rc<Cell<bool>>);
@@ -575,7 +353,7 @@ impl SceneContent for TestSceneContent {
 
 #[test]
 fn scene_view_body_merges_to_native_when_marker_is_present() {
-    let env = Environment::new().extending(SceneViewMergeToParent);
+    let env = waterui_core::Environment::new().extending(SceneViewMergeToParent);
     let body = SceneView::new(TestSceneContent(Rc::new(Cell::new(false)))).body(&env);
     let any = AnyView::new(body);
     assert!(
@@ -584,68 +362,33 @@ fn scene_view_body_merges_to_native_when_marker_is_present() {
     );
 }
 
+/// `spawn_local` work scheduled from `on_appear` drains on the semantic
+/// pipeline too — the parked-task executor is runtime-agnostic.
 #[test]
-fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
-    let build_called = Rc::new(Cell::new(false));
-    let mut platform = OffscreenWindow::on_context(
-        OffscreenGpuContext::new_for_tests_blocking(),
-        96,
-        72,
-        wgpu::TextureFormat::Rgba8Unorm,
-    );
-    let mut renderer = {
-        let surface = platform.surface();
-        HydrolysisRenderer::new(surface.adapter(), surface.device())
-    };
-    let bounds = vello::kurbo::Rect::new(0.0, 0.0, 96.0, 72.0);
-    let env = Environment::new().extending(SceneViewMergeToParent);
+fn semantic_mount_drains_spawned_local_work() {
+    use waterui::task::spawn_local;
+    use waterui::{Binding, ViewExt as _};
 
-    let surface = platform.surface();
-    renderer.set_frame_resources(
-        surface.adapter(),
-        surface.device(),
-        surface.queue(),
-        surface.device_loss(),
-    );
-    renderer.reset_scene();
-    renderer.begin_rebuild_frame();
-    renderer.capture_window_tree(
-        AnyView::new(SceneView::new(TestSceneContent(Rc::clone(&build_called)))),
-        &env,
-        bounds,
-        vello::kurbo::Affine::IDENTITY,
-        vello::kurbo::Affine::IDENTITY,
-    );
-    renderer.finish_rebuild_frame();
-    assert!(build_called.get(), "expected scene view build_scene to run");
+    let status = Binding::container(String::from("idle"));
+    let status_for_view = status.clone();
 
-    let frame = surface
-        .acquire()
-        .expect("waterui-testing failed to acquire offscreen frame");
-    renderer.render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
-        adapter: surface.adapter(),
-        device: surface.device(),
-        queue: surface.queue(),
-        device_loss: surface.device_loss().clone(),
-        texture: Some(frame.texture()),
-        view: frame.view(),
-        format: surface.format(),
-        width: 96,
-        height: 72,
-        base_color: vello::peniko::Color::TRANSPARENT,
+    let mut app = ui().mount(move || {
+        waterui::text!("{status_for_view}")
+            .on_appear(|status: waterui::State<Binding<String>>| {
+                spawn_local(async move {
+                    status.set(String::from("ready"));
+                })
+                .detach();
+            })
+            .state(&status_for_view)
     });
-    let rgba8 = readback_texture_rgba8(surface.device(), surface.queue(), frame.texture(), 96, 72);
-    renderer.clear_frame_resources();
-    surface.present(frame);
 
-    let snapshot = Snapshot {
-        width: 96,
-        height: 72,
-        rgba8,
-    };
-    assert_eq!(snapshot.width, 96);
-    assert_eq!(snapshot.height, 72);
-    assert_eq!(snapshot.rgba8.len(), 96 * 72 * 4);
+    let status_selector = Selector::default().role(Role::LABEL).label("ready");
+    assert!(
+        app.wait_for_existence(&status_selector, Duration::from_millis(500)),
+        "expected the semantic runtime to drain spawn_local task and update the binding"
+    );
+    assert_eq!(status.get().as_str(), "ready");
 }
 
 #[test]
@@ -940,140 +683,6 @@ fn stale_handle_panics_for_interaction_and_relative_query() {
 }
 
 #[test]
-fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
-    use waterui::gesture::{
-        DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
-    };
-    use waterui::prelude::text;
-    use waterui::{Binding, SignalExt as _, ViewExt as _, state};
-    use waterui_core::extract::Use;
-
-    #[state]
-    #[derive(Clone)]
-    struct DragOffset(Binding<f32>);
-
-    #[state]
-    #[derive(Clone)]
-    struct ZoomScale(Binding<f32>);
-
-    #[state]
-    #[derive(Clone)]
-    struct HoverState(Binding<bool>);
-
-    let offset = Binding::f32(0.0);
-    let scale = Binding::f32(1.0);
-    let hovered = Binding::bool(false);
-
-    let mut app = ui().viewport(160, 160).mount({
-        let offset = offset.clone();
-        let scale = scale.clone();
-        let hovered = hovered.clone();
-        move || {
-            let drag_offset_state = DragOffset(offset.clone());
-            let zoom_scale_state = ZoomScale(scale.clone());
-            let hover_state = HoverState(hovered.clone());
-            let hovered_opacity = hovered
-                .clone()
-                .map(|hovered| if hovered { 1.0 } else { 0.68 });
-            let surface = text("interactive canvas")
-                .padding()
-                .size(120.0, 120.0)
-                .offset(offset.clone(), 0.0)
-                .scale(scale.clone(), scale.clone())
-                .opacity(hovered_opacity);
-            surface
-                .gesture_observer(GestureObserver::new(
-                    DragGesture::new(0.0),
-                    |DragOffset(offset): DragOffset, drag: Use<DragEvent>| {
-                        offset.set(drag.translation.x);
-                    },
-                ))
-                .state(&drag_offset_state)
-                .gesture_observer(GestureObserver::new(
-                    MagnificationGesture::new(1.0),
-                    |ZoomScale(scale): ZoomScale, magnification: Use<MagnificationEvent>| {
-                        scale.set(magnification.scale);
-                    },
-                ))
-                .state(&zoom_scale_state)
-                .on_hover_enter(|HoverState(hovered): HoverState| hovered.set(true))
-                .on_hover_exit(|HoverState(hovered): HoverState| hovered.set(false))
-                .state(&hover_state)
-        }
-    });
-
-    let initial_bounds = app.query().label("interactive canvas").single().bounds();
-    assert!(initial_bounds.width() > 0.0 && initial_bounds.height() > 0.0);
-
-    app.query().label("interactive canvas").hover();
-    assert!(hovered.get(), "hover should update the tracked binding");
-
-    let center_before_drag = app.query().label("interactive canvas").single().center();
-    app.magnify_at(center_before_drag.0, center_before_drag.1, 1.2);
-    assert!(
-        (scale.get() - 1.2).abs() < 0.001,
-        "magnify should update the tracked scale binding"
-    );
-
-    app.query().label("interactive canvas").drag_by(24.0, 0.0);
-    assert!(
-        (offset.get() - 24.0).abs() < 0.001,
-        "drag should update the tracked offset binding"
-    );
-
-    let center_after_drag = app.query().label("interactive canvas").single().center();
-    app.magnify_at(center_after_drag.0, center_after_drag.1, 1.4);
-    assert!(
-        (scale.get() - 1.4).abs() < 0.001,
-        "second magnify should update the tracked scale binding"
-    );
-
-    let updated_bounds = app.query().label("interactive canvas").single().bounds();
-    assert!(
-        updated_bounds.width() > initial_bounds.width(),
-        "magnify should grow the accessible bounds width"
-    );
-    assert!(
-        updated_bounds.height() > initial_bounds.height(),
-        "magnify should grow the accessible bounds height"
-    );
-    assert!(
-        updated_bounds.x() > initial_bounds.x(),
-        "drag should move the accessible bounds horizontally"
-    );
-}
-
-#[test]
-fn ui_test_drains_local_tasks_through_headless_runtime() {
-    use waterui::task::spawn_local;
-    use waterui::{Binding, ViewExt as _};
-
-    let status = Binding::container(String::from("idle"));
-    let status_for_view = status.clone();
-
-    let mut app = ui().theme(install_m3).mount_offscreen(move || {
-        waterui::text!("{status_for_view}")
-            .on_appear(|status: waterui::State<Binding<String>>| {
-                spawn_local(async move {
-                    status.set(String::from("ready"));
-                })
-                .detach();
-            })
-            .state(&status_for_view)
-    });
-
-    let deadline = std::time::Instant::now() + Duration::from_millis(200);
-    while status.get() != "ready" && std::time::Instant::now() < deadline {
-        let _ = app.snapshot();
-    }
-    assert_eq!(
-        status.get().as_str(),
-        "ready",
-        "expected headless runtime to drain spawn_local task and update the binding"
-    );
-}
-
-#[test]
 fn ui_focus_is_separate_from_accessibility_focus() {
     use waterui::form::secure::Secure;
     use waterui::prelude::*;
@@ -1088,7 +697,7 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     let username = Binding::container(Str::from(""));
     let password = Binding::container(Secure::default());
     let focus_for_view = focus.clone();
-    let mut app = ui().theme(hydrolysis_m3::install).mount(move || {
+    let mut app = ui().mount(move || {
         vstack((
             TextField::new(text("Username"), &username).focused(&focus_for_view, Field::Username),
             SecureField::new(text("Password"), &password).focused(&focus_for_view, Field::Password),
@@ -1157,7 +766,7 @@ fn runtime_focus_writes_move_and_clear_ui_focus() {
     let username = Binding::container(Str::from(""));
     let password = Binding::container(Secure::default());
     let focus_for_view = focus.clone();
-    let mut app = ui().theme(hydrolysis_m3::install).mount(move || {
+    let mut app = ui().mount(move || {
         vstack((
             TextField::new(text("Username"), &username).focused(&focus_for_view, Field::Username),
             SecureField::new(text("Password"), &password).focused(&focus_for_view, Field::Password),
@@ -1196,9 +805,8 @@ fn ui_focus_accepts_a_new_target_after_being_cleared() {
     let focus = Binding::container(None::<i32>);
     let value = Binding::container(Str::from(""));
     let focus_for_view = focus.clone();
-    let mut app = ui()
-        .theme(hydrolysis_m3::install)
-        .mount(move || TextField::new(text("Field"), &value).focused(&focus_for_view, 0));
+    let mut app =
+        ui().mount(move || TextField::new(text("Field"), &value).focused(&focus_for_view, 0));
 
     let selector = Selector::default().role(Role::TEXT_INPUT).label("Field");
 
@@ -1220,9 +828,7 @@ fn focused_modifier_without_a_text_anchor_panics() {
     use waterui::prelude::*;
 
     let focus = Binding::container(None::<i32>);
-    let _app = ui()
-        .theme(hydrolysis_m3::install)
-        .mount(move || button("No anchor").focused(&focus, 0));
+    let _app = ui().mount(move || button("No anchor").focused(&focus, 0));
 }
 
 #[test]
@@ -1233,7 +839,7 @@ fn focused_modifier_with_two_text_anchors_panics() {
     let focus = Binding::container(None::<i32>);
     let first = Binding::container(Str::from(""));
     let second = Binding::container(Str::from(""));
-    let _app = ui().theme(hydrolysis_m3::install).mount(move || {
+    let _app = ui().mount(move || {
         vstack((
             TextField::new(text("First"), &first),
             TextField::new(text("Second"), &second),
@@ -1250,7 +856,7 @@ fn focused_modifier_twice_on_the_same_control_panics() {
     let focus_a = Binding::container(None::<i32>);
     let focus_b = Binding::container(None::<i32>);
     let value = Binding::container(Str::from(""));
-    let _app = ui().theme(hydrolysis_m3::install).mount(move || {
+    let _app = ui().mount(move || {
         TextField::new(text("Field"), &value)
             .focused(&focus_a, 0)
             .focused(&focus_b, 1)
@@ -1263,9 +869,7 @@ fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
 
     let value = Binding::container(Str::from(""));
     let value_for_view = value.clone();
-    let mut app = ui()
-        .theme(hydrolysis_m3::install)
-        .mount(move || TextField::new(text("Full Name"), &value_for_view));
+    let mut app = ui().mount(move || TextField::new(text("Full Name"), &value_for_view));
 
     app.query()
         .role(Role::TEXT_INPUT)
@@ -1282,138 +886,6 @@ fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
             "each retained refresh must preserve the caret after the committed prefix"
         );
     }
-}
-
-// ============================================================================
-// Async GPU setup must complete before a frame is captured (issue #149)
-// ============================================================================
-
-use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, wgpu};
-
-/// A `GpuView` whose `setup` yields before it is ready, the way a real one does
-/// while it builds pipelines. It draws nothing until setup has completed, so a
-/// capture taken before the executor has driven that future sees only the
-/// window background.
-#[derive(Debug)]
-struct DeferredClearRenderer {
-    color: wgpu::Color,
-    ready: Rc<Cell<bool>>,
-}
-
-impl GpuView for DeferredClearRenderer {
-    #[expect(
-        clippy::future_not_send,
-        reason = "GpuView::setup runs on the main thread and takes &mut Environment, which is Rc-backed and deliberately !Send"
-    )]
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
-        YieldOnce::default().await;
-        self.ready.set(true);
-    }
-
-    fn render(&mut self, frame: &mut GpuFrame) {
-        if !self.ready.get() {
-            return;
-        }
-        let mut encoder = frame
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("hydrolysis_deferred_gpu_surface_encoder"),
-            });
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("hydrolysis_deferred_gpu_surface_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.color),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        }
-        frame.queue.submit([encoder.finish()]);
-    }
-}
-
-/// Returns `Pending` exactly once, so a future awaiting it needs a second poll.
-#[derive(Default)]
-struct YieldOnce {
-    polled: bool,
-}
-
-impl std::future::Future for YieldOnce {
-    type Output = ();
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
-        if self.polled {
-            return std::task::Poll::Ready(());
-        }
-        self.polled = true;
-        cx.waker().wake_by_ref();
-        std::task::Poll::Pending
-    }
-}
-
-/// A `GpuSurface` must reach the captured frame even though its `setup` is
-/// async. Capturing the very first pumped frame photographs the surface before
-/// any GPU content exists — the regression that made every GPU preview in the
-/// book render as a flat background.
-#[test]
-fn headless_capture_waits_for_async_gpu_setup() {
-    let ready = Rc::new(Cell::new(false));
-    let ready_for_view = Rc::clone(&ready);
-    let content = AnyViewBuilder::new(move || {
-        AnyView::new(GpuSurface::new(DeferredClearRenderer {
-            color: wgpu::Color {
-                r: 1.0,
-                g: 0.0,
-                b: 0.0,
-                a: 1.0,
-            },
-            ready: Rc::clone(&ready_for_view),
-        }))
-    });
-
-    let mut env = Environment::new();
-    hydrolysis::testing::install_theme(&mut env);
-    install_m3(&mut env);
-    let mut runtime = hydrolysis::HeadlessRuntime::new_for_tests(env, content, 64, 64);
-
-    // Pump until the frame settles, exactly as the preview runtime does.
-    let mut settled = false;
-    for _ in 0..64 {
-        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt {
-            settled = true;
-            break;
-        }
-    }
-    assert!(settled, "frame never settled");
-    assert!(
-        ready.get(),
-        "the async GpuView::setup must have been driven to completion"
-    );
-
-    let snapshot = runtime
-        .pump_at(true, std::time::Instant::now())
-        .snapshot
-        .expect("capture must produce a snapshot");
-    let center = ((snapshot.width as usize / 2)
-        + (snapshot.height as usize / 2) * snapshot.width as usize)
-        * 4;
-    assert_eq!(
-        &snapshot.rgba8[center..center + 3],
-        &[255, 0, 0],
-        "the GpuSurface content must be present in the captured frame"
-    );
 }
 
 /// A query answers about the app's state now, not as of the last interaction.
@@ -1447,17 +919,19 @@ fn a_query_sees_state_changed_since_the_last_pump() {
         .assert_not_exists();
 }
 
-/// An app that never comes to rest still answers queries promptly.
+/// An app whose only activity is visual-only repaint still answers queries
+/// promptly.
 ///
-/// An indeterminate indicator keeps the runtime unsettled forever, so a read
-/// that waited for quiescence would spend its whole pump budget on every
-/// query and still find the app busy. Reading waits on *unapplied* work
-/// instead, which is a state the app does reach between changes.
+/// An indeterminate indicator repaints forever on a rendered runtime, but that
+/// work never moves semantic state — so the semantic runtime settles with the
+/// indicator on screen, and a query never waits on a pump budget it cannot
+/// satisfy. What queries wait on is *unapplied* work, which is the state the
+/// app leaves whenever a binding changes.
 #[test]
-fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
+fn a_visually_animating_app_still_settles_and_stays_current() {
     let label = waterui::reactive::binding(waterui::Str::from("before"));
     let probe = label.clone();
-    let mut app = crate::ui().theme(install_m3).mount(move || {
+    let mut app = crate::ui().mount(move || {
         vstack((
             waterui::component::progress::loading().label("Loading"),
             Text::computed(label.clone()),
@@ -1465,17 +939,17 @@ fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
     });
 
     assert!(
-        !app.driver.is_settled(),
-        "an indeterminate indicator keeps the runtime busy for as long as it is on screen"
+        app.runtime.is_settled(),
+        "an indeterminate indicator repaints forever but moves no semantic state — the semantic runtime settles"
     );
     assert!(
-        !app.driver.has_pending_semantic_update(),
-        "busy is not the same as stale: with nothing unapplied the tree is current"
+        !app.runtime.has_pending_semantic_update(),
+        "with nothing unapplied the tree is current"
     );
 
     probe.set(waterui::Str::from("after"));
     assert!(
-        app.driver.has_pending_semantic_update(),
+        app.runtime.has_pending_semantic_update(),
         "a signal change leaves an update the last flush did not apply"
     );
 
@@ -1484,155 +958,7 @@ fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
         .label("after")
         .assert_exists();
     assert!(
-        !app.driver.has_pending_semantic_update(),
+        !app.runtime.has_pending_semantic_update(),
         "reading the tree must have applied the update, not merely waited for it"
-    );
-}
-
-/// Scene content that *is* a size: 100 x 200 logical points, twice as tall as
-/// it is wide. Stands in for an SVG's `viewBox`, an image's pixel dimensions,
-/// or a formula's typeset box — everything the intrinsic-size hook exists for.
-struct NaturallySizedContent;
-
-impl NaturallySizedContent {
-    const NATURAL: Size = Size {
-        width: 100.0,
-        height: 200.0,
-    };
-}
-
-impl SceneContent for NaturallySizedContent {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
-        let rect = vello::kurbo::Rect::from_origin_size(
-            vello::kurbo::Point::ZERO,
-            vello::kurbo::Size::new(f64::from(width), f64::from(height)),
-        )
-        .to_path(0.1);
-        let brush: vello::peniko::Brush = vello::peniko::Color::new([0.0, 0.4, 1.0, 1.0]).into();
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            vello::kurbo::Affine::IDENTITY,
-            &brush,
-            None,
-            &rect,
-        );
-        false
-    }
-
-    fn intrinsic_size(&self) -> Option<Size> {
-        Some(Self::NATURAL)
-    }
-}
-
-fn naturally_sized_scene() -> impl View {
-    SceneView::new(NaturallySizedContent)
-        .a11y_role(waterui::accessibility::AccessibilityRole::Image)
-        .a11y_label("Intrinsic scene")
-}
-
-fn sizeless_scene() -> impl View {
-    SceneView::new(TestSceneContent(Rc::new(Cell::new(false))))
-        .a11y_role(waterui::accessibility::AccessibilityRole::Image)
-        .a11y_label("Sizeless scene")
-}
-
-fn scene_bounds(app: &mut SemanticApp, label: &str) -> NodeBounds {
-    app.query().role(Role::IMAGE).label(label).single().bounds()
-}
-
-/// (a) The scroll axis proposes nothing, so the scene is laid out at the height
-/// it naturally is instead of collapsing to zero — the defect in #253. The
-/// viewport is deliberately shorter than the content so the scroll view's
-/// `max(content, viewport)` cannot hide the answer.
-#[test]
-fn scene_with_a_natural_size_keeps_it_on_an_unconstrained_scroll_axis() {
-    let mut app = ui()
-        .viewport(100, 120)
-        .theme(install_m3)
-        .mount(|| ScrollView::vertical(naturally_sized_scene()));
-
-    let bounds = scene_bounds(&mut app, "Intrinsic scene");
-    assert!(
-        (bounds.height() - NaturallySizedContent::NATURAL.height).abs() < 0.5,
-        "the unconstrained scroll axis must resolve to the natural height, got {}",
-        bounds.height()
-    );
-}
-
-/// (b) Given a box, the scene still fills it: an intrinsic size is what layout
-/// falls back to, never a cap on what a container may ask for.
-#[test]
-fn scene_with_a_natural_size_still_fills_a_frame() {
-    let mut app = ui().viewport(400, 400).theme(install_m3).mount(|| {
-        Frame::new(naturally_sized_scene())
-            .width(160.0)
-            .height(90.0)
-    });
-
-    let bounds = scene_bounds(&mut app, "Intrinsic scene");
-    assert!(
-        (bounds.width() - 160.0).abs() < 0.5 && (bounds.height() - 90.0).abs() < 0.5,
-        "a framed scene must fill its frame, got {}x{}",
-        bounds.width(),
-        bounds.height()
-    );
-}
-
-/// (c) One axis named, the other open: the natural aspect ratio settles the open
-/// one. A vertical scroll view names the width and leaves the height open, which
-/// is exactly the `.resizable()`-image case in #253.
-#[test]
-fn one_named_axis_drives_the_other_by_the_natural_aspect_ratio() {
-    let mut app = ui()
-        .viewport(200, 120)
-        .theme(install_m3)
-        .mount(|| ScrollView::vertical(naturally_sized_scene()));
-
-    let bounds = scene_bounds(&mut app, "Intrinsic scene");
-    // 200 is twice the natural width, so the height is twice the natural height.
-    assert!(
-        (bounds.width() - 200.0).abs() < 0.5 && (bounds.height() - 400.0).abs() < 0.5,
-        "the natural 100x200 ratio must carry the named width to the open height, got {}x{}",
-        bounds.width(),
-        bounds.height()
-    );
-}
-
-/// Content with no size of its own is untouched by any of this: it still fills
-/// whatever the scroll view gives it.
-#[test]
-fn scene_without_a_natural_size_still_fills_its_container() {
-    let mut app = ui()
-        .viewport(200, 120)
-        .theme(install_m3)
-        .mount(|| ScrollView::vertical(sizeless_scene()));
-
-    let bounds = scene_bounds(&mut app, "Sizeless scene");
-    assert!(
-        (bounds.width() - 200.0).abs() < 0.5 && (bounds.height() - 120.0).abs() < 0.5,
-        "a scene with no natural size must fill the viewport, got {}x{}",
-        bounds.width(),
-        bounds.height()
-    );
-}
-
-/// A scene that is naturally a size is content-sized: it takes its own width in
-/// a row and leaves the rest to its sibling, rather than eating the row the way
-/// a background or a shader legitimately does.
-#[test]
-fn a_naturally_sized_scene_does_not_eat_the_row() {
-    let mut app = ui().viewport(400, 200).theme(install_m3).mount(|| {
-        hstack((
-            naturally_sized_scene(),
-            text("beside it").a11y_label("beside it"),
-        ))
-    });
-
-    let bounds = scene_bounds(&mut app, "Intrinsic scene");
-    assert!(
-        (bounds.width() - NaturallySizedContent::NATURAL.width).abs() < 0.5,
-        "a content-sized scene takes its own width and leaves the rest of the row \
-         to its sibling, got {}",
-        bounds.width()
     );
 }

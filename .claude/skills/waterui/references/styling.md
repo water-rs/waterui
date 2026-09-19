@@ -297,27 +297,43 @@ use waterui_icons_sf_symbol as sf;
 
 ## Material 3 with the Hydrolysis renderer
 
-Hydrolysis (the self-drawn GPU renderer) gets widget chrome from a backend-neutral
-`WidgetTheme`. For Material 3 output, install the theme package before running:
+Hydrolysis (the self-drawn GPU renderer) is styled by construction: every entry point
+takes a `hydrolysis::Style` value, and `Material3` is the Material Design 3 one:
 
 ```rust
-hydrolysis_m3::install(&mut env);        // light baseline
-hydrolysis_m3::install_dark(&mut env);
+hydrolysis::run(app(env), hydrolysis_m3::Material3::defaults());   // light+dark baseline
+hydrolysis::run(app(env), hydrolysis_m3::Material3::dark());
 ```
 
-Seed-based Material You theming takes an `Argb` seed (a tuple struct over `0xAARRGGBB`,
+Tests take the same style through `theme =` — see `references/testing.md`:
+
+```rust
+#[waterui::test(view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
+```
+
+To install a scheme into a scoped environment instead of running the whole app under
+it — a themed subtree like `examples/reply`'s `ReplyTheme` — call the `Style` trait's
+`install_tokens` directly:
+
+```rust
+use hydrolysis::Style;
+
+Material3::with_colors(my_scheme).install_tokens(&mut scoped_env);
+```
+
+Seed-based Material You styles take an `Argb` seed (a tuple struct over `0xAARRGGBB`,
 re-exported by `hydrolysis_m3`) and a `MaterialColorMode`:
 
 ```rust
-use hydrolysis_m3::{Argb, MaterialColorMode, MaterialColorSource, install_with_color_schemes};
+use hydrolysis_m3::{Argb, Material3, MaterialColorMode, MaterialColorSource};
 
-hydrolysis_m3::install_with_seed(&mut env, Argb(0xFF6750A4));                       // light
-hydrolysis_m3::install_with_seed_mode(&mut env, Argb(0xFF6750A4), MaterialColorMode::Dark);
+Material3::with_seed(Argb(0xFF6750A4));                               // light
+Material3::with_seed_mode(Argb(0xFF6750A4), MaterialColorMode::Dark); // dark
 
-// Full control: build paired schemes from a source, install one by reference.
+// Full control: build paired schemes from a source, pick one mode.
 let source = MaterialColorSource::new(Argb(0xFF6750A4));   // variant, contrast, spec version
-let schemes = source.schemes();                            // paired light/dark
-install_with_color_schemes(&mut env, &schemes, MaterialColorMode::Light);
+let schemes = source.schemes();                          // paired light/dark
+Material3::with_color_schemes(&schemes, MaterialColorMode::Light);
 ```
 
 Material-specific role tokens live in `hydrolysis_m3::color::*` (`Primary`, `OnPrimary`,

@@ -3635,7 +3635,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/hydrolysis?rev=1d88f06abd9acf727a19eaa2d3743670493f6547#1d88f06abd9acf727a19eaa2d3743670493f6547"
+source = "git+https://github.com/water-rs/hydrolysis?rev=479e25d0657f1c638163ec1571e9a7efb6e4142f#479e25d0657f1c638163ec1571e9a7efb6e4142f"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3680,8 +3680,9 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=2ddf27c2a9f5d0c4a04c4d586462a429eefa8bd7#2ddf27c2a9f5d0c4a04c4d586462a429eefa8bd7"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=db678de7a5844485fb7fd146da9cd0ec88064e46#db678de7a5844485fb7fd146da9cd0ec88064e46"
 dependencies = [
+ "hydrolysis",
  "material-color-utils",
  "num-traits",
  "vello",
@@ -7316,6 +7317,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "reply-example"
 version = "0.1.0"
 dependencies = [
+ "hydrolysis",
  "hydrolysis-m3",
  "waterui",
  "waterui-icons-material-icon",
@@ -8016,6 +8018,7 @@ checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 name = "skill_snippets"
 version = "0.1.0"
 dependencies = [
+ "hydrolysis",
  "hydrolysis-m3",
  "jiff",
  "serde",
@@ -10017,7 +10020,6 @@ dependencies = [
 name = "waterui"
 version = "0.4.1"
 dependencies = [
- "hydrolysis-m3",
  "image",
  "waterui-dylib",
  "waterui-internal",
@@ -10234,7 +10236,6 @@ name = "waterui-controls"
 version = "0.3.2"
 dependencies = [
  "executor-core",
- "hydrolysis-m3",
  "nami",
  "waterui",
  "waterui-core",
@@ -10329,7 +10330,6 @@ version = "0.3.2"
 dependencies = [
  "bcrypt",
  "getrandom 0.4.3",
- "hydrolysis-m3",
  "jiff",
  "nami",
  "regex",
@@ -10488,7 +10488,6 @@ version = "0.1.2"
 dependencies = [
  "async-channel",
  "futures-lite",
- "hydrolysis-m3",
  "smol",
  "tracing",
  "waterui",
@@ -10608,7 +10607,6 @@ dependencies = [
 name = "waterui-macros"
 version = "0.3.1"
 dependencies = [
- "hydrolysis-m3",
  "icu_locale_core",
  "icu_locid",
  "icu_locid_transform",
@@ -10631,7 +10629,6 @@ dependencies = [
  "waterkit-location",
  "waterui",
  "waterui-core",
- "waterui-map-gpu",
  "waterui-testing",
  "waterui-url",
 ]
@@ -10734,7 +10731,6 @@ dependencies = [
  "filtrate-core",
  "futures",
  "futures-lite",
- "hydrolysis-m3",
  "image",
  "tracing",
  "waterkit-codec",
@@ -10758,7 +10754,6 @@ name = "waterui-navigation"
 version = "0.3.2"
 dependencies = [
  "erased-serde",
- "hydrolysis-m3",
  "nami",
  "serde",
  "serde_json",
@@ -10864,7 +10859,6 @@ dependencies = [
  "bitflags 2.13.2",
  "executor-core",
  "hydrolysis",
- "hydrolysis-m3",
  "image",
  "pollster 1.0.1",
  "serde_json",
@@ -10885,7 +10879,6 @@ dependencies = [
  "android_clipboard",
  "arboard",
  "executor-core",
- "hydrolysis-m3",
  "nami",
  "parley",
  "pulldown-cmark",
@@ -10973,7 +10966,6 @@ dependencies = [
  "base64 0.23.1",
  "cookie",
  "executor-core",
- "hydrolysis-m3",
  "percent-encoding",
  "serde",
  "serde_json",

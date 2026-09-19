@@ -13,7 +13,7 @@ categories.workspace = true
 
 [dependencies]
 waterui-mcp-protocol.workspace = true
-waterui-testing.workspace = true
+waterui-testing = { version = "0.4.1", path = "../../../../testing" }
 accesskit = "0.25"
 aither-core.workspace = true
 aither-mcp = { workspace = true, features = ["server"] }

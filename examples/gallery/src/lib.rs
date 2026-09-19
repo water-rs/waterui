@@ -654,13 +654,13 @@ mod tests {
     use super::{catalog, new_state};
     use core::time::Duration;
     use waterui::Str;
-    use waterui_testing::{Role, UiBuilder};
+    use waterui_testing::{Role, Styled, UiBuilder};
 
     /// Selecting each control in turn shows its demo — a smoke test that every
     /// catalog entry resolves and renders (the per-component MD3 visual review was
     /// done out-of-band with GPU snapshots).
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn every_control_renders_its_demo(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn every_control_renders_its_demo(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
             catalog(
@@ -693,8 +693,8 @@ mod tests {
 
     /// The drawer lists every group header and control, and the detail pane shows
     /// the selected control's live demo.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn catalog_lists_controls(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn catalog_lists_controls(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
             catalog(
@@ -716,8 +716,8 @@ mod tests {
     }
 
     /// Selecting a control shows its live demo in the detail pane.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn selecting_control_shows_demo(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn selecting_control_shows_demo(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
             catalog(
@@ -738,8 +738,8 @@ mod tests {
 
     /// Collapsing a group removes its items (and releases their space), while the
     /// rest of the catalog stays intact.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn collapsing_group_removes_items(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn collapsing_group_removes_items(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
             catalog(
@@ -766,8 +766,8 @@ mod tests {
 
     /// Re-expanding a collapsed group restores its items: the transition's enter
     /// path brings the rows back (and they settle into the accessibility tree).
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn expanding_group_restores_items(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn expanding_group_restores_items(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
             catalog(
@@ -796,8 +796,8 @@ mod tests {
 
     /// A demo control is actually interactive: tapping a button increments the
     /// shared counter (state is owned externally, so it persists across rebuilds).
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn button_demo_is_interactive(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn button_demo_is_interactive(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
             catalog(
@@ -823,8 +823,10 @@ mod tests {
     /// The two styles report different accesskit roles (`Switch` vs.
     /// `CheckBox`), so this also pins that `ToggleStyle` maps to distinct
     /// accessibility semantics rather than one shared role.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn toggle_demo_flips_switch_and_checkbox_bindings(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn toggle_demo_flips_switch_and_checkbox_bindings(
+        ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+    ) {
         let (selected, groups_open, rows, state) = new_state();
         let wifi = state.wifi.clone();
         let bluetooth = state.bluetooth.clone();
@@ -884,8 +886,10 @@ mod tests {
     /// increment/decrement moves `DemoState::volume` by the slider's a11y
     /// step (`(range.end() - range.start()) / 100.0`, which is `1.0` for the
     /// demo's `0.0..=100.0` range), and the live echo text tracks it.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn slider_demo_increment_decrement_updates_volume(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn slider_demo_increment_decrement_updates_volume(
+        ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+    ) {
         let (selected, groups_open, rows, state) = new_state();
         let volume = state.volume.clone();
         let mut app = ui.mount(move || {
@@ -941,8 +945,10 @@ mod tests {
     /// increment/decrement moves `DemoState::quantity` by the stepper's fixed
     /// step of `1`, clamped to its `0..=10` range, and the live echo text
     /// tracks it.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn stepper_demo_increment_decrement_updates_quantity(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn stepper_demo_increment_decrement_updates_quantity(
+        ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+    ) {
         let (selected, groups_open, rows, state) = new_state();
         let quantity = state.quantity.clone();
         let mut app = ui.mount(move || {
@@ -994,8 +1000,8 @@ mod tests {
     /// Selecting the Text Field demo and setting its text through
     /// accessibility updates `DemoState::name`, and the live echo text
     /// tracks it.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn text_field_demo_set_text_updates_name(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn text_field_demo_set_text_updates_name(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
         let (selected, groups_open, rows, state) = new_state();
         let name = state.name.clone();
         let mut app = ui.mount(move || {
@@ -1040,8 +1046,10 @@ mod tests {
     /// control from the re-expanded group swaps the detail heading — which
     /// the [`NavigationView`](waterui::navigation::NavigationView) backend
     /// exposes as accesskit's `Header` role — to that control's title.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn expanding_a_collapsed_group_and_selecting_its_control_switches_the_heading(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn expanding_a_collapsed_group_and_selecting_its_control_switches_the_heading(
+        ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+    ) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
             catalog(
@@ -1098,8 +1106,8 @@ mod tests {
     /// Visual acceptance for the drawer: the selected row's active indicator and
     /// the Stepper demo's controls, both reviewed by eye.
     #[ignore = "writes visual acceptance PNG files for direct image review"]
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn catalog_drawer_and_stepper_render(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn catalog_drawer_and_stepper_render(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app: waterui_testing::OffscreenApp = ui.mount_offscreen(move || {
             catalog(

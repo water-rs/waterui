@@ -5,13 +5,10 @@ use accesskit::{
 };
 use hydrolysis::{
     FrameProfile, HeadlessRuntime, InputEvent, KeyCode, KeyState, Modifiers, PointerButton,
-    PointerKind, TouchPhase,
+    PointerKind, SemanticRuntime, TouchPhase,
 };
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, get_current_pid};
-use waterui_core::handler::AnyViewBuilder;
-use waterui_core::{AnyView, Environment};
 
-use crate::app::{DriverMode, RuntimeFlavor};
 use crate::semantics::NodeId;
 use crate::snapshot::Snapshot;
 
@@ -24,21 +21,20 @@ const TEST_POINTER_ID: u64 = 0;
 /// executes pumps — wall-clock scheduling jitter never leaks into captures.
 pub const VIRTUAL_FRAME: Duration = Duration::from_millis(16);
 
-pub trait A11yDriver {
-    fn pump(
-        &mut self,
-        content: &AnyViewBuilder<AnyView>,
-        env: &Environment,
-        capture_snapshot: bool,
-    ) -> DriverPumpResult;
-    /// Advances the virtual animation clock by exactly `step` and pumps one
-    /// frame without snapshot readback.
-    fn pump_step(
-        &mut self,
-        step: Duration,
-        content: &AnyViewBuilder<AnyView>,
-        env: &Environment,
-    ) -> DriverPumpResult;
+/// The runtime contract a [`crate::SemanticApp`] drives.
+///
+/// Implemented by Hydrolysis's two headless runtimes: [`SemanticRuntime`], the
+/// semantic pipeline a [`crate::UiBuilder`] mounts with [`crate::UiBuilder::mount`],
+/// and [`HeadlessRuntime`], the rendered pipeline a styled builder mounts with
+/// `UiBuilder<Styled<S>>::mount_offscreen`. The trait is closed to this crate's
+/// use: every method is a pass-through to the runtime's inherent API, so a
+/// downstream crate never needs to name it — [`crate::SemanticApp`] is
+/// parameterized by the runtime itself.
+pub trait RuntimeDriver {
+    /// Pumps one frame at `at`. `capture_snapshot` requests a framebuffer
+    /// readback; runtimes that render honor it, the semantic runtime ignores
+    /// it and returns no snapshot.
+    fn pump_at(&mut self, at: Instant, capture_snapshot: bool) -> DriverPumpResult;
     /// Whether the mounted runtime is quiescent: no queued input, no spawned
     /// work awaiting a drain, and no renderer-scheduled semantic work.
     fn is_settled(&self) -> bool;
@@ -49,53 +45,109 @@ pub trait A11yDriver {
     /// frames of its own accord (animations, gliding scrolls) does not count,
     /// so waiting on this terminates even in an app that never comes to rest.
     fn has_pending_semantic_update(&self) -> bool;
-    /// The current virtual frame instant, if any pump has run yet. Perf runs
-    /// seed their own frame clock from this so interleaved clocks stay
-    /// monotone.
-    fn clock(&self) -> Option<Instant> {
-        None
-    }
     /// Returns whether the runtime handled the accessibility action.
-    fn perform_action(&mut self, request: AccessibilityActionRequest, env: &Environment) -> bool;
-    fn hover_at(&mut self, x: f32, y: f32, env: &Environment);
-    fn pointer_down(&mut self, x: f32, y: f32, env: &Environment);
-    fn pointer_move(&mut self, x: f32, y: f32, env: &Environment);
-    /// Presses and releases the secondary button, which is what opens a context
-    /// menu.
-    fn secondary_click(&mut self, x: f32, y: f32, env: &Environment);
-    fn pointer_up(&mut self, x: f32, y: f32, env: &Environment);
-    fn scroll_at(
-        &mut self,
-        x: f32,
-        y: f32,
-        dx: f32,
-        dy: f32,
-        is_line_delta: bool,
-        env: &Environment,
-    );
-    fn text_input(&mut self, text: String, env: &Environment);
-    fn key_press(&mut self, key: KeyCode, modifiers: Modifiers, env: &Environment);
-    fn magnify_at(&mut self, x: f32, y: f32, factor: f32, env: &Environment);
+    fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool;
+    /// Queues an input event for the next pump.
+    ///
+    /// Only keyboard and IME input has a semantic target — the focused node —
+    /// so the semantic runtime drops geometry-routed events; a session that
+    /// needs them mounts the rendered runtime, where this is meaningful.
+    fn push_input_event(&mut self, event: InputEvent);
+    /// Requests a re-emit on the next pump, as a platform's redraw request
+    /// would.
+    fn request_redraw(&mut self);
     /// Returns whether anything held UI focus to clear.
-    fn clear_ui_focus(&mut self, env: &Environment) -> bool;
-    fn request_redraw(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment);
-    fn pump_frame(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> FrameTiming;
-    fn pump_frame_at(
-        &mut self,
-        content: &AnyViewBuilder<AnyView>,
-        env: &Environment,
-        _at: Instant,
-    ) -> FrameTiming {
-        self.pump_frame(content, env)
-    }
+    fn clear_ui_focus(&mut self) -> bool;
 }
 
+/// What one pump produced: whether it rebuilt, the phase timings, the
+/// accessibility tree update, the captured snapshot when one was requested,
+/// and the UI focus target when the runtime tracks one.
 #[derive(Debug)]
 pub struct DriverPumpResult {
     pub(crate) rebuilt: bool,
+    pub(crate) profile: FrameProfile,
     pub(crate) tree_update: Option<AccessibilityTreeUpdate>,
     pub(crate) snapshot: Option<Snapshot>,
     pub(crate) ui_focus: Option<NodeId>,
+}
+
+impl RuntimeDriver for SemanticRuntime {
+    fn pump_at(&mut self, at: Instant, _capture_snapshot: bool) -> DriverPumpResult {
+        let result = Self::pump_at(self, at);
+        DriverPumpResult {
+            rebuilt: result.rebuilt,
+            profile: result.profile,
+            tree_update: result.tree_update,
+            snapshot: None,
+            ui_focus: result.ui_focus.map(NodeId::from),
+        }
+    }
+
+    fn is_settled(&self) -> bool {
+        Self::is_settled(self)
+    }
+
+    fn has_pending_semantic_update(&self) -> bool {
+        Self::has_pending_semantic_update(self)
+    }
+
+    fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
+        Self::perform_accessibility_action(self, request)
+    }
+
+    fn push_input_event(&mut self, event: InputEvent) {
+        Self::push_input_event(self, event);
+    }
+
+    fn request_redraw(&mut self) {
+        Self::request_redraw(self);
+    }
+
+    fn clear_ui_focus(&mut self) -> bool {
+        Self::clear_ui_focus(self)
+    }
+}
+
+impl RuntimeDriver for HeadlessRuntime {
+    fn pump_at(&mut self, at: Instant, capture_snapshot: bool) -> DriverPumpResult {
+        let result = Self::pump_at(self, capture_snapshot, at);
+        DriverPumpResult {
+            rebuilt: result.rebuilt,
+            profile: result.profile,
+            tree_update: result.tree_update,
+            snapshot: result.snapshot.map(|snapshot| Snapshot {
+                width: snapshot.width,
+                height: snapshot.height,
+                rgba8: snapshot.rgba8,
+            }),
+            ui_focus: result.ui_focus.map(NodeId::from),
+        }
+    }
+
+    fn is_settled(&self) -> bool {
+        Self::is_settled(self)
+    }
+
+    fn has_pending_semantic_update(&self) -> bool {
+        Self::has_pending_semantic_update(self)
+    }
+
+    fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
+        Self::perform_accessibility_action(self, request)
+    }
+
+    fn push_input_event(&mut self, event: InputEvent) {
+        Self::push_input_event(self, event);
+    }
+
+    fn request_redraw(&mut self) {
+        Self::request_redraw(self);
+    }
+
+    fn clear_ui_focus(&mut self) -> bool {
+        Self::clear_ui_focus(self)
+    }
 }
 
 /// Timing collected for one complete offscreen Hydrolysis frame.
@@ -120,343 +172,21 @@ pub struct ResourceSample {
     pub memory_bytes: u64,
 }
 
-pub struct HydrolysisA11yDriver {
-    width: u32,
-    height: u32,
-    mode: DriverMode,
-    flavor: RuntimeFlavor,
-    scale_factor: f64,
-    runtime: Option<HeadlessRuntime>,
-    /// Virtual frame clock: starts at the first pump's wall time and advances
-    /// by a fixed step per pump, decoupling animation sampling from host
-    /// scheduling. Perf pumps overwrite it so interleaved clocks stay
-    /// monotone.
-    clock: Option<Instant>,
-    resources: ResourceSampler,
-}
-
-impl HydrolysisA11yDriver {
-    pub(crate) const fn new(
-        width: u32,
-        height: u32,
-        mode: DriverMode,
-        flavor: RuntimeFlavor,
-        scale_factor: f64,
-    ) -> Self {
-        Self {
-            width,
-            height,
-            mode,
-            flavor,
-            scale_factor,
-            runtime: None,
-            clock: None,
-            resources: ResourceSampler::new(),
-        }
-    }
-
-    fn runtime(
-        &mut self,
-        content: &AnyViewBuilder<AnyView>,
-        env: &Environment,
-    ) -> &mut HeadlessRuntime {
-        self.runtime.get_or_insert_with(|| {
-            let runtime = match self.flavor {
-                RuntimeFlavor::Test => HeadlessRuntime::new_for_tests(
-                    env.clone(),
-                    content.clone(),
-                    self.width,
-                    self.height,
-                ),
-                RuntimeFlavor::Application => {
-                    HeadlessRuntime::new(env.clone(), content.clone(), self.width, self.height)
-                }
-            };
-            runtime.with_scale_factor(self.scale_factor)
-        })
-    }
-
-    /// Advances the virtual clock by `step` and returns the new frame instant.
-    fn tick(&mut self, step: Duration) -> Instant {
-        let next = self
-            .clock
-            .map_or_else(Instant::now, |current| current + step);
-        self.clock = Some(next);
-        next
-    }
-
-    fn convert(result: hydrolysis::HeadlessPumpResult) -> DriverPumpResult {
-        DriverPumpResult {
-            rebuilt: result.rebuilt,
-            tree_update: result.tree_update,
-            snapshot: result.snapshot.map(|snapshot| Snapshot {
-                width: snapshot.width,
-                height: snapshot.height,
-                rgba8: snapshot.rgba8,
-            }),
-            ui_focus: result.ui_focus.map(NodeId::from),
-        }
-    }
-}
-
-impl A11yDriver for HydrolysisA11yDriver {
-    fn pump(
-        &mut self,
-        content: &AnyViewBuilder<AnyView>,
-        env: &Environment,
-        capture_snapshot: bool,
-    ) -> DriverPumpResult {
-        // Run work `TestLocalExecutor` parked — a runnable a timer or I/O
-        // reactor re-queued since the last frame — before the frame's own
-        // executor drain.
-        let _ = crate::executor::drain_parked_local_work();
-        let at = self.tick(VIRTUAL_FRAME);
-        let result = if capture_snapshot {
-            self.runtime(content, env).pump_at(true, at)
-        } else {
-            match self.mode {
-                DriverMode::Semantic => self.runtime(content, env).pump_semantic_at(at),
-                DriverMode::Offscreen => self.runtime(content, env).pump_at(false, at),
-            }
-        };
-        Self::convert(result)
-    }
-
-    fn pump_step(
-        &mut self,
-        step: Duration,
-        content: &AnyViewBuilder<AnyView>,
-        env: &Environment,
-    ) -> DriverPumpResult {
-        let _ = crate::executor::drain_parked_local_work();
-        let at = self.tick(step);
-        let result = match self.mode {
-            DriverMode::Semantic => self.runtime(content, env).pump_semantic_at(at),
-            DriverMode::Offscreen => self.runtime(content, env).pump_at(false, at),
-        };
-        Self::convert(result)
-    }
-
-    fn is_settled(&self) -> bool {
-        self.runtime
-            .as_ref()
-            .is_none_or(HeadlessRuntime::is_settled)
-    }
-
-    fn has_pending_semantic_update(&self) -> bool {
-        self.runtime
-            .as_ref()
-            .is_some_and(HeadlessRuntime::has_pending_semantic_update)
-    }
-
-    fn clock(&self) -> Option<Instant> {
-        self.clock
-    }
-
-    fn perform_action(&mut self, request: AccessibilityActionRequest, env: &Environment) -> bool {
-        let _ = env;
-        self.runtime
-            .as_mut()
-            .expect("waterui-testing driver action requested before runtime initialization")
-            .perform_accessibility_action(request)
-    }
-
-    fn hover_at(&mut self, x: f32, y: f32, _env: &Environment) {
-        let runtime = self
-            .runtime
-            .as_mut()
-            .expect("waterui-testing hover requested before runtime initialization");
-        runtime.push_input_event(InputEvent::PointerMove {
-            id: TEST_POINTER_ID,
-            kind: PointerKind::Mouse,
-            x,
-            y,
-        });
-    }
-
-    fn pointer_down(&mut self, x: f32, y: f32, _env: &Environment) {
-        let runtime = self
-            .runtime
-            .as_mut()
-            .expect("waterui-testing pointer down requested before runtime initialization");
-        runtime.push_input_event(InputEvent::PointerDown {
-            id: TEST_POINTER_ID,
-            kind: PointerKind::Mouse,
-            x,
-            y,
-            button: PointerButton::Primary,
-        });
-    }
-
-    fn secondary_click(&mut self, x: f32, y: f32, _env: &Environment) {
-        let runtime = self
-            .runtime
-            .as_mut()
-            .expect("waterui-testing secondary click requested before runtime initialization");
-        runtime.push_input_event(InputEvent::PointerDown {
-            id: TEST_POINTER_ID,
-            kind: PointerKind::Mouse,
-            x,
-            y,
-            button: PointerButton::Secondary,
-        });
-        runtime.push_input_event(InputEvent::PointerUp {
-            id: TEST_POINTER_ID,
-            kind: PointerKind::Mouse,
-            x,
-            y,
-            button: PointerButton::Secondary,
-        });
-    }
-
-    fn pointer_move(&mut self, x: f32, y: f32, _env: &Environment) {
-        let runtime = self
-            .runtime
-            .as_mut()
-            .expect("waterui-testing pointer move requested before runtime initialization");
-        runtime.push_input_event(InputEvent::PointerMove {
-            id: TEST_POINTER_ID,
-            kind: PointerKind::Mouse,
-            x,
-            y,
-        });
-    }
-
-    fn pointer_up(&mut self, x: f32, y: f32, _env: &Environment) {
-        let runtime = self
-            .runtime
-            .as_mut()
-            .expect("waterui-testing pointer up requested before runtime initialization");
-        runtime.push_input_event(InputEvent::PointerUp {
-            id: TEST_POINTER_ID,
-            kind: PointerKind::Mouse,
-            x,
-            y,
-            button: PointerButton::Primary,
-        });
-    }
-
-    fn scroll_at(
-        &mut self,
-        x: f32,
-        y: f32,
-        dx: f32,
-        dy: f32,
-        is_line_delta: bool,
-        _env: &Environment,
-    ) {
-        let runtime = self
-            .runtime
-            .as_mut()
-            .expect("waterui-testing scroll requested before runtime initialization");
-        runtime.push_input_event(InputEvent::Scroll {
-            x,
-            y,
-            dx,
-            dy,
-            is_line_delta,
-        });
-    }
-
-    fn text_input(&mut self, text: String, _env: &Environment) {
-        let runtime = self
-            .runtime
-            .as_mut()
-            .expect("waterui-testing text_input requested before runtime initialization");
-        runtime.push_input_event(InputEvent::TextInput { text });
-    }
-
-    fn key_press(&mut self, key: KeyCode, modifiers: Modifiers, _env: &Environment) {
-        let runtime = self
-            .runtime
-            .as_mut()
-            .expect("waterui-testing key_press requested before runtime initialization");
-        runtime.push_input_event(InputEvent::Key {
-            logical_key: key.to_w3c_key(),
-            // A synthesized keystroke has no physical key behind it.
-            physical_code: hydrolysis::keyboard_types::Code::Unidentified,
-            repeat: false,
-            key,
-            state: KeyState::Pressed,
-            modifiers,
-        });
-    }
-
-    fn magnify_at(&mut self, x: f32, y: f32, factor: f32, _env: &Environment) {
-        let runtime = self
-            .runtime
-            .as_mut()
-            .expect("waterui-testing magnify requested before runtime initialization");
-        runtime.push_input_event(InputEvent::Magnification {
-            x,
-            y,
-            delta: 0.0,
-            phase: TouchPhase::Started,
-        });
-        runtime.push_input_event(InputEvent::Magnification {
-            x,
-            y,
-            delta: factor - 1.0,
-            phase: TouchPhase::Moved,
-        });
-        runtime.push_input_event(InputEvent::Magnification {
-            x,
-            y,
-            delta: 0.0,
-            phase: TouchPhase::Ended,
-        });
-    }
-
-    fn clear_ui_focus(&mut self, _env: &Environment) -> bool {
-        self.runtime
-            .as_mut()
-            .expect("waterui-testing clear_ui_focus requested before runtime initialization")
-            .clear_ui_focus()
-    }
-
-    fn request_redraw(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) {
-        self.runtime(content, env).request_redraw();
-    }
-
-    fn pump_frame(&mut self, content: &AnyViewBuilder<AnyView>, env: &Environment) -> FrameTiming {
-        let at = self.tick(VIRTUAL_FRAME);
-        self.pump_frame_at(content, env, at)
-    }
-
-    fn pump_frame_at(
-        &mut self,
-        content: &AnyViewBuilder<AnyView>,
-        env: &Environment,
-        at: Instant,
-    ) -> FrameTiming {
-        // Adopt the caller's clock so interleaved semantic pumps stay monotone.
-        self.clock = Some(at);
-        let _ = crate::executor::drain_parked_local_work();
-        let started_at = std::time::Instant::now();
-        let outcome = self.runtime(content, env).pump_at(false, at);
-        FrameTiming {
-            total: outcome.profile.total.max(started_at.elapsed()),
-            rebuilt: outcome.rebuilt,
-            profile: outcome.profile,
-            resources: self.resources.sample(),
-        }
-    }
-}
-
-struct ResourceSampler {
+/// Samples process CPU and memory for perf frames.
+pub struct ResourceSampler {
     system: Option<System>,
     pid: Option<sysinfo::Pid>,
 }
 
 impl ResourceSampler {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             system: None,
             pid: None,
         }
     }
 
-    fn sample(&mut self) -> ResourceSample {
+    pub fn sample(&mut self) -> ResourceSample {
         let pid = *self.pid.get_or_insert_with(|| {
             get_current_pid().expect("waterui-testing perf: failed to resolve current process id")
         });
@@ -482,4 +212,105 @@ impl ResourceSampler {
             memory_bytes: process.memory(),
         }
     }
+}
+
+pub const fn pointer_move_event(x: f32, y: f32) -> InputEvent {
+    InputEvent::PointerMove {
+        id: TEST_POINTER_ID,
+        kind: PointerKind::Mouse,
+        x,
+        y,
+    }
+}
+
+pub const fn pointer_down_event(x: f32, y: f32) -> InputEvent {
+    InputEvent::PointerDown {
+        id: TEST_POINTER_ID,
+        kind: PointerKind::Mouse,
+        x,
+        y,
+        button: PointerButton::Primary,
+    }
+}
+
+pub const fn pointer_up_event(x: f32, y: f32) -> InputEvent {
+    InputEvent::PointerUp {
+        id: TEST_POINTER_ID,
+        kind: PointerKind::Mouse,
+        x,
+        y,
+        button: PointerButton::Primary,
+    }
+}
+
+/// Presses and releases the secondary button, which is what opens a context
+/// menu.
+pub const fn secondary_click_events(x: f32, y: f32) -> [InputEvent; 2] {
+    [
+        InputEvent::PointerDown {
+            id: TEST_POINTER_ID,
+            kind: PointerKind::Mouse,
+            x,
+            y,
+            button: PointerButton::Secondary,
+        },
+        InputEvent::PointerUp {
+            id: TEST_POINTER_ID,
+            kind: PointerKind::Mouse,
+            x,
+            y,
+            button: PointerButton::Secondary,
+        },
+    ]
+}
+
+pub const fn scroll_event(x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) -> InputEvent {
+    InputEvent::Scroll {
+        x,
+        y,
+        dx,
+        dy,
+        is_line_delta,
+    }
+}
+
+pub const fn text_input_event(text: String) -> InputEvent {
+    InputEvent::TextInput { text }
+}
+
+pub fn key_press_event(key: KeyCode, modifiers: Modifiers) -> InputEvent {
+    InputEvent::Key {
+        logical_key: key.to_w3c_key(),
+        // A synthesized keystroke has no physical key behind it.
+        physical_code: hydrolysis::keyboard_types::Code::Unidentified,
+        repeat: false,
+        key,
+        state: KeyState::Pressed,
+        modifiers,
+    }
+}
+
+/// The `Started`/`Moved`/`Ended` sequence one magnification (pinch) gesture
+/// dispatches; `factor` is the gesture's cumulative scale.
+pub fn magnification_events(x: f32, y: f32, factor: f32) -> [InputEvent; 3] {
+    [
+        InputEvent::Magnification {
+            x,
+            y,
+            delta: 0.0,
+            phase: TouchPhase::Started,
+        },
+        InputEvent::Magnification {
+            x,
+            y,
+            delta: factor - 1.0,
+            phase: TouchPhase::Moved,
+        },
+        InputEvent::Magnification {
+            x,
+            y,
+            delta: 0.0,
+            phase: TouchPhase::Ended,
+        },
+    ]
 }

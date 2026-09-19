@@ -18,7 +18,6 @@ nami.workspace = true
 
 [dev-dependencies]
 waterui = { path = "../../.." }
-waterui-map-gpu.workspace = true
 waterui-testing = { path = "../../../testing" }
 waterui-url.workspace = true
 
