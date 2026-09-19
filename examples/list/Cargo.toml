@@ -18,4 +18,4 @@ waterui.workspace = true
 
 [dev-dependencies]
 waterui-testing.workspace = true
-hydrolysis-m3.workspace = true
+hydrolysis_m3.workspace = true

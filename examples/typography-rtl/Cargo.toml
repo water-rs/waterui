@@ -18,5 +18,5 @@ dev = ["waterui/dynamic_linking"]
 waterui.workspace = true
 
 [dev-dependencies]
-hydrolysis-m3.workspace = true
+hydrolysis_m3.workspace = true
 waterui-testing.workspace = true

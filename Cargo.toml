@@ -233,7 +233,20 @@ waterui-dew = { git = "https://github.com/water-rs/dew", rev = "753bd9ded8292265
 waterui = { version = "0.4.1", path = "." }
 waterui-icons-codegen = { version = "0.1.1", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
-hydrolysis-m3 = "0.3.0"
+# `#[waterui::test]` renders through the Material 3 widget theme, which
+# depends back on this workspace, so a dozen crates need it in
+# [dev-dependencies]. They take it through the underscore alias below: the
+# key carries no `version`, so `cargo package` strips it from published
+# manifests — a kept `hydrolysis-m3 ^0.3.0` would make every foundation
+# crate require a renderer release that itself requires the foundation, and
+# neither side could publish first. The underscore key keeps the extern
+# name `hydrolysis_m3`, so no `use` site changes. Keep its `rev` identical
+# to this entry and the `[patch.crates-io]` pin so the graph holds one
+# hydrolysis-m3.
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "2ddf27c2a9f5d0c4a04c4d586462a429eefa8bd7", version = "0.3.0" }
+hydrolysis_m3 = { package = "hydrolysis-m3", git = "https://github.com/water-rs/hydrolysis-m3", rev = "2ddf27c2a9f5d0c4a04c4d586462a429eefa8bd7" }
+waterui_map_gpu = { package = "waterui-map-gpu", git = "https://github.com/water-rs/map-gpu", rev = "fa83ba7be6feb932d15cd37f14810ab79653f4aa" }
+waterui_canvas = { package = "waterui-canvas", git = "https://github.com/water-rs/canvas", rev = "fb4a1a1de3bae3b9da60cb475cb3a10e161e4525" }
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.3.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
@@ -342,7 +355,7 @@ waterui-dylib = { workspace = true, optional = true }
 
 [dev-dependencies]
 waterui-testing = { path = "testing" }
-hydrolysis-m3.workspace = true
+hydrolysis_m3.workspace = true
 # Writes the test portrait the avatar visual acceptance renders. PNG only:
 # the encoder is all these tests need.
 image = { version = "0.25.10", default-features = false, features = ["png"] }
