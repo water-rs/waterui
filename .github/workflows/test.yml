@@ -16,6 +16,8 @@ env:
   CARGO_TERM_COLOR: always
   # rust-cache is the only cache layer (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
+  # Pinned so the install-tools cache key tracks exactly what is installed.
+  NEXTEST_VERSION: "0.9.145"
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
 
 # Parallel jobs instead of one serial leg per platform (#329), with the
@@ -217,7 +219,9 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-      - uses: taiki-e/install-action@nextest
+      - uses: ./.github/actions/install-tools
+        with:
+          tool: cargo-nextest@${{ env.NEXTEST_VERSION }}
       # One full-workspace pass under default features. Every crate's own
       # optional features are the `all-features` job below (Linux) and
       # `macos-all-features` (macOS). The `trybuild_*` macro contract tests run
@@ -279,7 +283,9 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-      - uses: taiki-e/install-action@nextest
+      - uses: ./.github/actions/install-tools
+        with:
+          tool: cargo-nextest@${{ env.NEXTEST_VERSION }}
       # The `trybuild_*` binaries each drive a cold fixture build of the
       # framework that is independent of the outer feature set; they already
       # ran once in the default-features `test` job on this OS, so this pass
@@ -332,7 +338,9 @@ jobs:
           cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - uses: taiki-e/install-action@nextest
+      - uses: ./.github/actions/install-tools
+        with:
+          tool: cargo-nextest@${{ env.NEXTEST_VERSION }}
       # Of the excluded crates, `waterui-core`'s stable feature shape runs
       # below; the FFI C surfaces and the CEF runtime shape are
       # host-independent and the Linux job covers them, and the compile-only
@@ -445,7 +453,9 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-      - uses: taiki-e/install-action@nextest
+      - uses: ./.github/actions/install-tools
+        with:
+          tool: cargo-nextest@${{ env.NEXTEST_VERSION }}
       - name: Clippy (examples)
         if: runner.os == 'Linux'
         run: cargo clippy --locked --profile ci-check -p '*-example' --all-targets -- -D warnings

@@ -22,9 +22,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-edit
-        uses: taiki-e/install-action@v2
+        uses: ./.github/actions/install-tools
         with:
-          tool: cargo-edit
+          tool: cargo-edit@0.13.13
 
       - name: Check Rust dependencies
         run: |

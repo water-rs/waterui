@@ -1,0 +1,50 @@
+name: Install CI tools
+description: >-
+  Installs prebuilt CI tools through taiki-e/install-action behind an
+  actions/cache entry keyed by the exact tool spec. A run whose entry already
+  exists restores the binaries and never touches the network, so a transient
+  CDN failure in a tool's release download can no longer take down a leg that
+  has installed the tool once (#1116). The cache only saves on `success()`,
+  so an interrupted install cannot leave a poisoned entry.
+
+inputs:
+  tool:
+    description: >-
+      Spec handed verbatim to install-action's `tool` input: `name@version`,
+      comma- or whitespace-separated when installing several tools. The
+      version pin is what makes the cache key exact — never pass a bare
+      `name`, or the key stops tracking what is installed.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # install-action installs into `$CARGO_HOME/bin` when a rustup cargo sits
+    # there and into `~/.install-action/bin` when no toolchain exists at all,
+    # so both candidate directories are cached. Both must exist before the
+    # cache step runs — actions/cache refuses to save a path that is missing.
+    - name: Compute the cache key
+      id: key
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.cargo/bin" "$HOME/.install-action/bin"
+        slug="$(tr -cs 'A-Za-z0-9._@+' '-' <<< '${{ inputs.tool }}' | sed -e 's/^-//' -e 's/-$//')"
+        echo "slug=$slug" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v6.1.0
+      id: cache
+      with:
+        path: |
+          ~/.cargo/bin
+          ~/.install-action/bin
+        key: install-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.slug }}
+    - uses: taiki-e/install-action@v2
+      if: steps.cache.outputs.cache-hit != 'true'
+      with:
+        tool: ${{ inputs.tool }}
+    # On a cache hit install-action never ran, so nothing added its fallback
+    # bin directory to PATH. Adding it unconditionally is harmless where it is
+    # empty — every tool a cargo-less job installs lives there, and cargo jobs
+    # keep their tools in `~/.cargo/bin`, which is already on PATH.
+    - name: Expose the fallback bin directory
+      shell: pwsh
+      run: Add-Content "$env:GITHUB_PATH" "$HOME/.install-action/bin"

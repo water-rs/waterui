@@ -22,6 +22,8 @@ env:
   CARGO_TERM_COLOR: always
   # rust-cache is the only cache layer (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
+  # Pinned so the install-tools cache key tracks exactly what is installed.
+  NEXTEST_VERSION: "0.9.145"
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
 
 jobs:
@@ -52,7 +54,9 @@ jobs:
           cache-on-failure: true
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
-      - uses: taiki-e/install-action@nextest
+      - uses: ./.github/actions/install-tools
+        with:
+          tool: cargo-nextest@${{ env.NEXTEST_VERSION }}
       # Four crates cannot be tested here, for reasons that are not bugs:
       #
       # waterui-dylib is the dynamic-link anchor — a Rust `dylib` on purpose, so
@@ -125,7 +129,9 @@ jobs:
           cache-on-failure: true
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
-      - uses: taiki-e/install-action@nextest
+      - uses: ./.github/actions/install-tools
+        with:
+          tool: cargo-nextest@${{ env.NEXTEST_VERSION }}
       - name: Test (root crate, every feature but dynamic_linking)
         run: cargo nextest run --locked --features all --profile ci
       # The `trybuild_*` binaries each drive a cold fixture build that is

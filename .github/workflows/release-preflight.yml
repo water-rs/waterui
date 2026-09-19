@@ -42,7 +42,7 @@ jobs:
       - id: baseline
         run: |
           set -euo pipefail
-          if curl -sfL https://index.crates.io/wa/te/waterui \
+          if curl -sfL --retry 5 --retry-all-errors https://index.crates.io/wa/te/waterui \
                | grep -q '"yanked":false'; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
@@ -63,16 +63,29 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-rust
       - uses: ./.github/actions/setup-linux-deps
-      - uses: taiki-e/install-action@cargo-binstall
+      # One cache entry covers the whole tooling set: both installers land in
+      # `~/.cargo/bin`, and the key carries the exact version of each tool so a
+      # warm run skips every download. The versions are pinned because a bare
+      # name would freeze the key while the tool moved on.
+      - uses: actions/cache@v6.1.0
+        id: registry-tools
+        with:
+          path: ~/.cargo/bin
+          key: install-tools-${{ runner.os }}-${{ runner.arch }}-cargo-local-registry-0.2.12-margo-0.1.7
+      - uses: taiki-e/install-action@v2
+        if: steps.registry-tools.outputs.cache-hit != 'true'
+        with:
+          tool: cargo-binstall
       - name: Install registry tooling
+        if: steps.registry-tools.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          cargo binstall -y cargo-local-registry
+          cargo binstall -y cargo-local-registry@0.2.12
           # margo is not on crates.io; upstream publishes it to its own sparse
           # index. Installing from the repo is not an option: its manifest's
           # dev-dependencies name a registry that only exists in that repo's
           # config, so `cargo install --git` cannot read the package at all.
-          cargo install margo --index sparse+https://integer32llc.github.io/margo/
+          cargo install margo --version 0.1.7 --index sparse+https://integer32llc.github.io/margo/
       - name: Package the publishable set
         run: |
           set -euo pipefail

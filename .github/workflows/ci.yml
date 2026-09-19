@@ -129,9 +129,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      # Pinned: on `@master` the tool upgrades itself, and a new dictionary
-      # turns a green job red with no change to the repository.
-      - uses: crate-ci/typos@v1.49.0
+      # Pinned to the version `crate-ci/typos@v1.49.0` carried: a new
+      # dictionary turns a green job red with no change to the repository.
+      # install-tools restores the binary from cache, so the download the
+      # action used to pay every run no longer happens on a warm cache.
+      - uses: ./.github/actions/install-tools
+        with:
+          tool: typos-cli@1.49.0
+      - run: typos
 
   # The release scripts derive the certified `framework.json` from the root
   # manifest; their tests pin that derivation to the tree, so they run whenever
@@ -144,7 +149,21 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      # uv itself is a network download like every other tool here, so it
+      # gets the same cache: the pinned version is the key, a hit restores the
+      # tool-cache directory and skips setup-uv entirely.
+      - uses: actions/cache@v6.1.0
+        id: uv
+        with:
+          path: ${{ runner.tool_cache }}/uv
+          key: install-tools-${{ runner.os }}-${{ runner.arch }}-uv-0.12.17
       - uses: astral-sh/setup-uv@v6
+        if: steps.uv.outputs.cache-hit != 'true'
+        with:
+          version: "0.12.17"
+      - name: Expose the cached uv
+        if: steps.uv.outputs.cache-hit == 'true'
+        run: dirname "$(find "$RUNNER_TOOL_CACHE/uv" -name uv -type f | head -1)" >> "$GITHUB_PATH"
       - name: Manifest derivation tests
         run: uv run --with pytest pytest .github/scripts
 
@@ -187,13 +206,15 @@ jobs:
       # Prebuilt, like cargo-deny below: `rustsec/audit-check` compiles
       # cargo-audit from a fresh resolution on every run, which put a broken,
       # newly published dependency of the *tool* on our critical path (#316).
-      - uses: taiki-e/install-action@cargo-audit
+      # One call installs all three under a single cache entry keyed by the
+      # exact spec; a warm run restores the binaries without the download.
+      - uses: ./.github/actions/install-tools
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-machete@0.9.2
       - name: Security audit
         run: cargo audit
-      - uses: taiki-e/install-action@cargo-deny
       - name: License and ban check
         run: cargo deny check licenses bans
-      - uses: taiki-e/install-action@cargo-machete
       - name: Unused dependencies
         run: |
           cargo machete --with-metadata

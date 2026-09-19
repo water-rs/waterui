@@ -3,13 +3,42 @@ description: >
   Installs `dxc`, which `shaderloom` needs to compile WGSL to DXIL and which
   the Windows runner image does not ship, then proves the binary answers
   `dxc --version` — the check the call sites used to spell out as a second
-  step. Pinned by commit so a bump is one edit, not five.
+  step. The download is cached under a key built from the release and archive
+  names, so a transient CDN failure cannot take a leg down once the archive
+  has been fetched once (#1116). The upstream action is pinned by commit so a
+  bump is one edit, not five; keep `dxc-release`/`dxc-filename` in step with
+  its defaults when the pin moves.
+
+inputs:
+  dxc-release:
+    description: DirectXShaderCompiler release tag to download.
+    required: false
+    default: "v1.8.2505.1"
+  dxc-filename:
+    description: Archive filename inside that release.
+    required: false
+    default: "dxc_2025_07_14.zip"
 
 runs:
   using: composite
   steps:
+    - uses: actions/cache@v6.1.0
+      id: cache
+      with:
+        path: dxc
+        key: install-tools-${{ runner.os }}-${{ runner.arch }}-dxc-${{ inputs.dxc-release }}-${{ inputs.dxc-filename }}
     - name: Install DirectX Shader Compiler
+      if: steps.cache.outputs.cache-hit != 'true'
       uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+      with:
+        dxc-release: ${{ inputs.dxc-release }}
+        dxc-filename: ${{ inputs.dxc-filename }}
+    # On a cache hit the upstream step never ran, so nothing put `dxc` on
+    # PATH. Adding it unconditionally is harmless — on a miss the entry simply
+    # appears twice.
+    - name: Expose dxc
+      shell: pwsh
+      run: Add-Content "$env:GITHUB_PATH" (Convert-Path dxc)
     - name: Verify DirectX Shader Compiler
       shell: pwsh
       run: dxc --version

@@ -81,8 +81,9 @@ runs:
     # whose postinst runs ldconfig, and a plain `dpkg -i` restore without it
     # leaves the linker cache stale until something else happens to rebuild
     # it. Pinned to a release tag rather than the floating `@v1` for the same
-    # reason `crate-ci/typos` is pinned above: an unpinned action changing
-    # behavior underneath a caching step is a hard failure mode to diagnose.
+    # reason the tool installs are pinned by version: an unpinned action
+    # changing behavior underneath a caching step is a hard failure mode to
+    # diagnose.
     - name: Install native dependencies
       id: apt
       uses: awalsh128/cache-apt-pkgs-action@v1.6.3
