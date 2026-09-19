@@ -420,48 +420,73 @@ pub fn styling_block_12() {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Material 3 with the Hydrolysis renderer" — blocks 14 and 15
-// need the `hydrolysis-m3` dev-dependency, so they sit behind the
-// `compile-gate-tests` feature. They must never be executed.
+// styling.md § "## Material 3 with the Hydrolysis renderer" — blocks 14–17
+// need the `hydrolysis` and `hydrolysis-m3` dev-dependencies, so they sit
+// behind the `compile-gate-tests` feature. They must never be executed.
 // ---------------------------------------------------------------------------
 #[cfg(all(test, feature = "compile-gate-tests"))]
 mod material3 {
     use waterui::prelude::*;
 
+    /// Glue: the `app(env) -> App` every example library exposes.
+    fn app(env: Environment) -> waterui::app::App {
+        waterui::app::App::new(move || vstack((text("demo"),)), env)
+    }
+
     // -----------------------------------------------------------------------
-    // styling.md § "## Material 3" — rust block 14/15
-    // Listing: two installer alternatives.
+    // styling.md § "## Material 3" — rust block 14/17
+    // Listing: the style is a `hydrolysis::Style` value the entry point takes.
     // -----------------------------------------------------------------------
     #[test]
     fn styling_block_14() {
         {
-            let mut env = Environment::new();
-            hydrolysis_m3::install(&mut env); // light baseline
+            let env = Environment::new();
+            hydrolysis::run(app(env), hydrolysis_m3::Material3::defaults()); // light+dark baseline
         }
         {
-            let mut env = Environment::new();
-            hydrolysis_m3::install_dark(&mut env);
+            let env = Environment::new();
+            hydrolysis::run(app(env), hydrolysis_m3::Material3::dark());
         }
     }
 
     // -----------------------------------------------------------------------
-    // styling.md § "## Material 3" — rust block 15/15
+    // styling.md § "## Material 3" — rust block 15/17
+    // -----------------------------------------------------------------------
+    fn view() -> impl View {
+        vstack((text("demo"),))
+    }
+
+    #[waterui::test(view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
+    fn styling_block_15(_app: &mut waterui_testing::OffscreenApp) {}
+
+    // -----------------------------------------------------------------------
+    // styling.md § "## Material 3" — rust block 16/17
+    // Scoped install: the `Style` trait's `install_tokens` on one environment.
     // -----------------------------------------------------------------------
     #[test]
-    fn styling_block_15() {
-        let mut env = Environment::new();
+    fn styling_block_16() {
+        use hydrolysis::Style;
+        use hydrolysis_m3::{Material3, MaterialColorScheme};
 
-        use hydrolysis_m3::{
-            Argb, MaterialColorMode, MaterialColorSource, install_with_color_schemes,
-        };
+        let my_scheme = MaterialColorScheme::baseline_light();
+        let mut scoped_env = Environment::new();
+        Material3::with_colors(my_scheme).install_tokens(&mut scoped_env);
+    }
 
-        hydrolysis_m3::install_with_seed(&mut env, Argb(0xFF6750A4)); // light
-        hydrolysis_m3::install_with_seed_mode(&mut env, Argb(0xFF6750A4), MaterialColorMode::Dark);
+    // -----------------------------------------------------------------------
+    // styling.md § "## Material 3" — rust block 17/17
+    // -----------------------------------------------------------------------
+    #[test]
+    fn styling_block_17() {
+        use hydrolysis_m3::{Argb, Material3, MaterialColorMode, MaterialColorSource};
 
-        // Full control: build paired schemes from a source, install one by reference.
+        let _ = Material3::with_seed(Argb(0xFF6750A4)); // light
+        let _ = Material3::with_seed_mode(Argb(0xFF6750A4), MaterialColorMode::Dark); // dark
+
+        // Full control: build paired schemes from a source, pick one mode.
         let source = MaterialColorSource::new(Argb(0xFF6750A4)); // variant, contrast, spec version
         let schemes = source.schemes(); // paired light/dark
-        install_with_color_schemes(&mut env, &schemes, MaterialColorMode::Light);
+        let _ = Material3::with_color_schemes(&schemes, MaterialColorMode::Light);
     }
 
     // -----------------------------------------------------------------------

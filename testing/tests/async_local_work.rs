@@ -15,7 +15,7 @@ fn settle_publishes_task_finished_after_wall_clock_io() {
     // Mounting settles the app. The `on_appear` task is parked on a
     // wall-clock timer — invisible to runnable-queue quiescence — so its
     // result reaches the tree only if settling gives it real time.
-    let mut app = ui().mount_offscreen(move || {
+    let mut app = ui().mount(move || {
         waterui::text!("{status}")
             .on_appear(|status: waterui::State<Binding<String>>| {
                 spawn_local(async move {
@@ -27,8 +27,5 @@ fn settle_publishes_task_finished_after_wall_clock_io() {
             .state(&status)
     });
 
-    app.semantic_mut()
-        .query()
-        .label_contains("ready")
-        .assert_exists();
+    app.query().label_contains("ready").assert_exists();
 }

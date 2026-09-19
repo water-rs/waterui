@@ -1,10 +1,11 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use hydrolysis::Style;
 use waterui_core::{AnyView, View};
 
-use crate::app::{OffscreenApp, UiBuilder};
-use crate::driver::FrameTiming;
+use crate::app::{OffscreenApp, Styled, UiBuilder};
+use crate::driver::{self, FrameTiming};
 
 const PERF_FRAME_RATE: u32 = 120;
 
@@ -334,11 +335,7 @@ impl PerfRun<'_> {
     ///
     /// Panics if the synthetic frame clock overflows.
     pub fn frame(&mut self) -> FrameTiming {
-        let timing = self.app.app.driver.pump_frame_at(
-            &self.app.app.content,
-            &self.app.app.env,
-            *self.frame_at,
-        );
+        let timing = self.app.app.pump_frame_at(*self.frame_at);
         *self.frame_at = self
             .frame_at
             .checked_add(self.frame_interval)
@@ -348,33 +345,39 @@ impl PerfRun<'_> {
 
     /// Queues a pointer move for the next measured frame without settling the app.
     pub fn pointer_move(&mut self, x: f32, y: f32) {
-        self.app.app.driver.pointer_move(x, y, &self.app.app.env);
+        self.app
+            .app
+            .runtime
+            .push_input_event(driver::pointer_move_event(x, y));
     }
 
     /// Queues a primary pointer down for the next measured frame without settling the app.
     pub fn pointer_down(&mut self, x: f32, y: f32) {
-        self.app.app.driver.pointer_down(x, y, &self.app.app.env);
+        self.app
+            .app
+            .runtime
+            .push_input_event(driver::pointer_down_event(x, y));
     }
 
     /// Queues a primary pointer up for the next measured frame without settling the app.
     pub fn pointer_up(&mut self, x: f32, y: f32) {
-        self.app.app.driver.pointer_up(x, y, &self.app.app.env);
+        self.app
+            .app
+            .runtime
+            .push_input_event(driver::pointer_up_event(x, y));
     }
 
     /// Queues a wheel/trackpad scroll event for the next measured frame without settling the app.
     pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) {
         self.app
             .app
-            .driver
-            .scroll_at(x, y, dx, dy, is_line_delta, &self.app.app.env);
+            .runtime
+            .push_input_event(driver::scroll_event(x, y, dx, dy, is_line_delta));
     }
 
     /// Requests a redraw for the next measured frame without changing semantic state.
     pub fn redraw(&mut self) {
-        self.app
-            .app
-            .driver
-            .request_redraw(&self.app.app.content, &self.app.app.env);
+        self.app.app.runtime.request_redraw();
     }
 
     /// Accesses semantic assertions and interactions during a performance run.
@@ -386,11 +389,11 @@ impl PerfRun<'_> {
 
 /// Records performance scenarios for one view.
 ///
-/// The view factory is erased internally, so user-facing signatures (bench
-/// bodies, automation closures) stay a plain `&mut PerfApp`.
+/// The builder — style included — and the view factory are erased internally,
+/// so user-facing signatures (bench bodies, automation closures) stay a plain
+/// `&mut PerfApp`.
 pub struct PerfApp {
-    builder: UiBuilder,
-    view_fn: Rc<dyn Fn() -> AnyView>,
+    mount: Box<dyn Fn() -> OffscreenApp>,
     config: PerfConfig,
     report: PerfReport,
 }
@@ -398,7 +401,6 @@ pub struct PerfApp {
 impl core::fmt::Debug for PerfApp {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PerfApp")
-            .field("builder", &self.builder)
             .field("config", &self.config)
             .field("report", &self.report)
             .finish_non_exhaustive()
@@ -406,14 +408,24 @@ impl core::fmt::Debug for PerfApp {
 }
 
 impl PerfApp {
-    pub(crate) fn new<F, V>(builder: UiBuilder, view_fn: F, config: PerfConfig) -> Self
+    pub(crate) fn new<F, V, S>(
+        builder: UiBuilder<Styled<S>>,
+        view_fn: F,
+        config: PerfConfig,
+    ) -> Self
     where
         F: Fn() -> V + 'static,
         V: View + 'static,
+        S: Style + Clone,
     {
+        let view_fn = Rc::new(move || AnyView::new(view_fn()));
         Self {
-            builder,
-            view_fn: Rc::new(move || AnyView::new(view_fn())),
+            mount: Box::new(move || {
+                builder.clone().mount_offscreen({
+                    let view_fn = Rc::clone(&view_fn);
+                    move || view_fn()
+                })
+            }),
             config,
             report: PerfReport {
                 measurements: Vec::new(),
@@ -442,11 +454,10 @@ impl PerfApp {
                 .expect("perf sample count should fit usize"),
         );
         for _ in 0..self.config.repetitions {
-            let view_fn = Rc::clone(&self.view_fn);
-            let mut app = self.builder.clone().mount_offscreen(move || view_fn());
-            // Seed from the driver's virtual clock (the mount already pumped)
+            let mut app = (self.mount)();
+            // Seed from the session's virtual clock (the mount already pumped)
             // so perf frames and interleaved semantic pumps stay monotone.
-            let mut frame_at = app.app.driver.clock().unwrap_or_else(Instant::now);
+            let mut frame_at = app.app.clock.unwrap_or_else(Instant::now);
             let frame_interval = Duration::from_secs(1) / PERF_FRAME_RATE;
             for _ in 0..self.config.warmups {
                 let mut run = PerfRun {

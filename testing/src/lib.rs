@@ -1,11 +1,15 @@
-//! Headless rendering and accessibility-first test utilities for `WaterUI`.
+//! Accessibility-first test utilities for `WaterUI`, on Hydrolysis's two
+//! headless pipelines.
 //!
-//! `waterui-testing` runs inside ordinary `cargo test` targets. [`ui`] builds a
-//! test session; theme and render mode are orthogonal: [`UiBuilder::theme`]
-//! swaps the theme package (Material 3, the theme a generated project installs,
-//! by default) and
-//! [`UiBuilder::mount`] / [`UiBuilder::mount_offscreen`] pick between the fast
-//! semantic runtime and the GPU-backed offscreen runtime.
+//! `waterui-testing` runs inside ordinary `cargo test` targets. [`ui`] builds
+//! a test session on the *semantic* runtime — a GPU-free pipeline whose
+//! accessibility tree is a product of the view tree and the widgets'
+//! semantics, so it carries no style package and answers no geometry:
+//! [`UiBuilder::mount`] is all a `UiBuilder<NoStyle>` offers. Tests that need
+//! pixels, bounds, pointer gestures or frame timing carry a
+//! [`hydrolysis::Style`] through [`UiBuilder::theme`] and mount the *rendered*
+//! runtime through `mount_offscreen` — the distinction is in the type, not a
+//! runtime check, so a semantic query has no `bounds()` method.
 //!
 //! # `cargo test` Integration
 //!
@@ -14,7 +18,7 @@
 //!     waterui::text("Login").body()
 //! }
 //!
-//! #[waterui::test(login_view, theme = hydrolysis_m3::install)]
+//! #[waterui::test(login_view)]
 //! fn login_smoke(app: &mut waterui_testing::SemanticApp) {
 //!     app.query()
 //!         .role(waterui_testing::Role::LABEL)
@@ -27,13 +31,24 @@
 //! take the configured [`UiBuilder`] by value (the manual-mount form):
 //!
 //! ```ignore
-//! #[waterui::test(theme = hydrolysis_m3::install)]
+//! #[waterui::test]
 //! fn stepper_updates(ui: waterui_testing::UiBuilder) {
 //!     let value = waterui::Binding::i32(2);
 //!     let value_for_view = value.clone();
 //!     let mut app = ui.mount(move || stepper("Limited", &value_for_view));
 //!     app.query().label("Limited").increment();
 //!     assert_eq!(value.get(), 3);
+//! }
+//! ```
+//!
+//! A rendered test names its style with `theme =`, and a whole [`App`]
+//! mounts through [`mount_app`]:
+//!
+//! ```ignore
+//! #[waterui::test(login_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
+//! fn login_rendered(app: &mut waterui_testing::OffscreenApp) {
+//!     let snapshot = app.snapshot();
+//!     assert_eq!(snapshot.width, 390);
 //! }
 //! ```
 //!
@@ -50,7 +65,7 @@
 //! patches) instead of sleeping. The animation clock is virtual: each pump
 //! advances it exactly one frame, so transition sampling is deterministic;
 //! [`OffscreenApp::pump_for`] lands on an exact phase of a transition, and
-//! waits (`wait_for_existence`, [`SemanticApp::wait_for`]) pump hot while work
+//! waits (`wait_for_existence`, `SemanticApp::wait_for`) pump hot while work
 //! is scheduled and only touch wall-clock time for work outside the runtime.
 //!
 //! Use semantic queries to resolve an [`ElementRef`], then drive interactions
@@ -66,7 +81,12 @@
 //! use waterui::graphics::color::Srgb;
 //! use waterui_testing::TestHost;
 //!
-//! let host = TestHost::new(Environment::new(), 320, 180);
+//! let host = TestHost::new(
+//!     Environment::new(),
+//!     320,
+//!     180,
+//!     hydrolysis_m3::Material3::defaults(),
+//! );
 //! let captured = host.capture_snapshot(
 //!     waterui::text("Preview")
 //!         .body()
@@ -98,17 +118,17 @@ pub(crate) mod wait;
 
 pub use accesskit::Role as AccessKitRole;
 pub use app::{
-    DragOptions, OffscreenApp, RuntimeFlavor, SemanticApp, ThemeInstaller, UiBuilder,
-    install_default_theme, ui,
+    DragOptions, NoStyle, OffscreenApp, RuntimeFlavor, SemanticApp, Styled, UiBuilder, mount_app,
+    ui,
 };
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
-pub use driver::{FrameTiming, VIRTUAL_FRAME};
+pub use driver::{FrameTiming, RuntimeDriver, VIRTUAL_FRAME};
 pub use executor::drain_parked_local_work;
 pub use executor::{TestLocalExecutor, install_test_executor};
-pub use hydrolysis::{KeyCode, Modifiers};
+pub use hydrolysis::{HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style};
 pub use perf::{PerfApp, PerfConfig, PerfMeasurement, PerfReport, PerfRun, PerfStats};
 pub use query::Query;
-pub use selector::{ElementRef, ElementSet, Selector};
+pub use selector::{ElementAnchor, ElementRef, ElementSet, Selector};
 pub use semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};
 pub use snapshot::{Snapshot, TestHost};
 pub use wait::{Expectation, WaitOptions, WaitResult};

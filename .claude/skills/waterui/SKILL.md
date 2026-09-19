@@ -409,9 +409,10 @@ value to a subtree rather than the whole app.
 
 Extraction is fast-fail: a missing type panics with a message naming it. That is
 deliberate — wrap the parameter in `Option<T>` (or use `env.get`) where absence is
-legitimate. It is also why a hand-built `Environment::new()` needs a theme installed
-before it can render themed views; theme tokens panic rather than falling back to a
-guessed color.
+legitimate. Theme tokens are the one absence that cannot happen: the runtimes install
+the framework's default colour and font set themselves, and a style's `install_tokens`
+layers over them at mount, so a hand-built `Environment::new()` resolves every `Font`
+and colour slot without an install step.
 
 `.state(&value)` from rule 3 is the same machinery with a narrower scope: it installs into
 the environment of one view, and a `State<T>` or `#[state]`-marked parameter reads it back.

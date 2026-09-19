@@ -5,7 +5,6 @@
 //! reuse stacks, padding, and theme tokens and ship no FFI types, so their
 //! contract is exactly what the accessibility tree exposes.
 
-use hydrolysis_m3::install as install_m3;
 use waterui::Binding;
 use waterui::component::badge::Badge;
 use waterui::widget::accordion::Accordion;
@@ -18,7 +17,7 @@ fn titled_card() -> impl waterui::View {
         .subtitle("Last 30 days")
 }
 
-#[waterui::test(titled_card, theme = install_m3)]
+#[waterui::test(titled_card)]
 fn card_exposes_title_subtitle_and_content(app: &mut SemanticApp) {
     app.query()
         .role(Role::LABEL)
@@ -34,7 +33,7 @@ fn card_exposes_title_subtitle_and_content(app: &mut SemanticApp) {
         .assert_exists();
 }
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test]
 fn badge_value_tracks_its_signal(ui: UiBuilder) {
     let unread = Binding::i32(3);
     let unread_for_view = unread.clone();
@@ -54,7 +53,7 @@ fn badge_value_tracks_its_signal(ui: UiBuilder) {
     app.query().role(Role::LABEL).label("3").assert_not_exists();
 }
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test]
 fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
     let expanded = Binding::bool(false);
     let expanded_for_view = expanded.clone();
@@ -67,7 +66,7 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
     });
 
     app.query()
-        .role(Role::LABEL)
+        .role(Role::BUTTON)
         .label("Details")
         .assert_exists();
     app.query()
@@ -75,8 +74,8 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
         .label("Hidden specifics")
         .assert_not_exists();
 
-    let header = app.query().role(Role::LABEL).label("Details").single();
-    header.tap_at(&mut app, 0.5, 0.5);
+    let header = app.query().role(Role::BUTTON).label("Details").single();
+    header.tap(&mut app);
     assert!(
         expanded.get(),
         "tapping the header must expand the accordion"
@@ -86,8 +85,8 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
         .label("Hidden specifics")
         .assert_exists();
 
-    let header = app.query().role(Role::LABEL).label("Details").single();
-    header.tap_at(&mut app, 0.5, 0.5);
+    let header = app.query().role(Role::BUTTON).label("Details").single();
+    header.tap(&mut app);
     assert!(
         !expanded.get(),
         "tapping the header again must collapse the accordion"
@@ -107,7 +106,7 @@ fn divided_stack() -> impl waterui::View {
     ))
 }
 
-#[waterui::test(divided_stack, theme = install_m3)]
+#[waterui::test(divided_stack)]
 fn divider_separates_content_without_hijacking_semantics(app: &mut SemanticApp) {
     app.query().role(Role::LABEL).label("Above").assert_exists();
     app.query().role(Role::LABEL).label("Below").assert_exists();
@@ -121,7 +120,7 @@ struct Profile {
     active: bool,
 }
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test]
 fn derived_form_edits_flow_back_into_the_struct_binding(ui: UiBuilder) {
     let profile = Binding::container(Profile::default());
     let profile_for_view = profile.clone();
@@ -151,7 +150,7 @@ struct Nickname {
     nickname: String,
 }
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test]
 fn single_field_derived_form_edits_flow_back_into_the_struct_binding(ui: UiBuilder) {
     let nickname = Binding::container(Nickname::default());
     let nickname_for_view = nickname.clone();

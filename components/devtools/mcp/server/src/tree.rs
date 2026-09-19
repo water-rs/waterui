@@ -33,7 +33,7 @@ pub fn role_name(role: Role) -> String {
 
 /// Renders the whole tree as the indented text form, including the
 /// `revision`/`viewport`/`focus` header line.
-pub fn render_text(app: &SemanticApp) -> String {
+pub fn render_text<R>(app: &SemanticApp<R>) -> String {
     let tree = app.tree();
     let (width, height) = app.viewport();
     let mut out = format!(
@@ -209,7 +209,7 @@ impl JsonNode {
 ///
 /// Returns the `serde_json` error if serialization fails; the value tree is
 /// self-contained, so this cannot fail in practice.
-pub fn render_json(app: &SemanticApp) -> serde_json::Result<String> {
+pub fn render_json<R>(app: &SemanticApp<R>) -> serde_json::Result<String> {
     let tree = app.tree();
     let root = JsonNode::from_snapshot(tree, &tree[tree.root()]);
     serde_json::to_string_pretty(&JsonTree {
@@ -223,7 +223,7 @@ pub fn render_json(app: &SemanticApp) -> serde_json::Result<String> {
 #[cfg(test)]
 mod tests {
     use waterui::component::{button, toggle, vstack};
-    use waterui_testing::{install_default_theme, ui};
+    use waterui_testing::ui;
 
     use super::{render_json, render_text};
 
@@ -232,7 +232,6 @@ mod tests {
     fn mounted_text() -> String {
         let enabled = waterui::Binding::bool(false);
         let app = ui()
-            .theme(install_default_theme)
             .viewport(200, 100)
             .mount(move || vstack((button("Save"), toggle("Enable", &enabled))));
         render_text(&app)
@@ -294,7 +293,6 @@ mod tests {
     fn json_tree_mirrors_node_fields() {
         let enabled = waterui::Binding::bool(false);
         let app = ui()
-            .theme(install_default_theme)
             .viewport(200, 100)
             .mount(move || vstack((button("Save"), toggle("Enable", &enabled))));
         let json: serde_json::Value =

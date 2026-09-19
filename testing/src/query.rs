@@ -1,16 +1,26 @@
+use hydrolysis::HeadlessRuntime;
+
 use crate::app::SemanticApp;
+use crate::driver::RuntimeDriver;
 use crate::selector::{ElementRef, ElementSet, Selector};
 use crate::semantics::Role;
 
 /// Chainable query builder bound to a mounted app session.
+///
+/// `R` is the session's runtime — `SemanticRuntime` on a style-free
+/// [`SemanticApp`], `HeadlessRuntime` on a rendered one. The semantic
+/// terminals (existence, accessibility actions, waits) exist on every query;
+/// the geometry terminals — `hover`, `tap_at`, `drag_by`, `magnify` — exist
+/// only on `Query<'_, HeadlessRuntime>`, so a semantic query has no way to
+/// reach for pixels.
 #[derive(Debug)]
 #[must_use = "a query does nothing until a terminal call such as `tap`, `assert_exists`, or `wait_for_existence`"]
-pub struct Query<'a> {
-    pub(crate) app: &'a mut SemanticApp,
+pub struct Query<'a, R = hydrolysis::SemanticRuntime> {
+    pub(crate) app: &'a mut SemanticApp<R>,
     pub(crate) selector: Selector,
 }
 
-impl Query<'_> {
+impl<R: RuntimeDriver> Query<'_, R> {
     /// Restricts the query to nodes with the given accessibility role.
     pub fn role(mut self, role: Role) -> Self {
         self.selector = self.selector.role(role);
@@ -36,13 +46,13 @@ impl Query<'_> {
     }
 
     /// Restricts the query to descendants of an element.
-    pub fn within(mut self, handle: &ElementRef) -> Self {
+    pub fn within(mut self, handle: &ElementRef<R>) -> Self {
         self.selector = self.selector.within(handle.clone());
         self
     }
 
     /// Restricts the query to direct children of an element.
-    pub fn children_of(mut self, handle: &ElementRef) -> Self {
+    pub fn children_of(mut self, handle: &ElementRef<R>) -> Self {
         self.selector = self.selector.children_of(handle.clone());
         self
     }
@@ -103,7 +113,7 @@ impl Query<'_> {
 
     /// Resolves all matching elements.
     #[must_use]
-    pub fn all(self) -> ElementSet {
+    pub fn all(self) -> ElementSet<R> {
         self.app.resolve_elements(&self.selector)
     }
 
@@ -113,7 +123,7 @@ impl Query<'_> {
     ///
     /// Panics if the selector resolves more than one element.
     #[must_use]
-    pub fn optional(self) -> Option<ElementRef> {
+    pub fn optional(self) -> Option<ElementRef<R>> {
         let all = self.app.resolve_elements(&self.selector);
         if all.is_empty() {
             return None;
@@ -130,7 +140,7 @@ impl Query<'_> {
 
     /// Resolves exactly one matching element.
     #[must_use]
-    pub fn single(self) -> ElementRef {
+    pub fn single(self) -> ElementRef<R> {
         self.app.resolve_single(&self.selector)
     }
 
@@ -233,6 +243,29 @@ impl Query<'_> {
         self.app.scroll_down_node(element.id());
     }
 
+    /// Expands the matching collapsible element.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the element does not handle the expand action.
+    pub fn expand(self) {
+        let element = self.app.resolve_single(&self.selector);
+        self.app.expand_node(element.id());
+    }
+
+    /// Collapses the matching expanded element.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the element does not handle the collapse action.
+    pub fn collapse(self) {
+        let element = self.app.resolve_single(&self.selector);
+        self.app.collapse_node(element.id());
+    }
+}
+
+/// The geometry terminals a query reaches only on the rendered runtime.
+impl Query<'_, HeadlessRuntime> {
     /// Moves hover to the matching element center.
     pub fn hover(self) {
         let element = self.app.resolve_single(&self.selector);
