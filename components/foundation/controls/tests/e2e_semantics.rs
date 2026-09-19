@@ -302,9 +302,10 @@ fn stepper_respects_range_bounds(ui: UiBuilder) {
 
     let mut app = ui.mount(move || control_shell(stepper("Limited", &value_for_view).range(0..=2)));
 
-    assert_rejected("stepper increment at max should report no change", || {
-        app.query().label("Limited").value("2").increment();
-    });
+    // A clamped increment is a handled activation that declines its effect,
+    // not a rejected action — the runtime reports it and the value stays put
+    // (hydrolysis 9bc8a3d).
+    app.query().label("Limited").value("2").increment();
     assert_eq!(value.get(), 2, "stepper value should remain clamped at max");
 }
 
@@ -567,3 +568,4 @@ fn disabled_button_ignores_action(ui: UiBuilder) {
     );
     assert_eq!(count.get(), 0, "disabled-button: action must not run");
 }
+

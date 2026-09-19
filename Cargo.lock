@@ -3635,7 +3635,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/hydrolysis?rev=a919016bcf2e774e1f090d06afb892d0c3d375d6#a919016bcf2e774e1f090d06afb892d0c3d375d6"
+source = "git+https://github.com/water-rs/hydrolysis?rev=67357344da0c6c24c218d1ccf478116354a4f0d6#67357344da0c6c24c218d1ccf478116354a4f0d6"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3680,7 +3680,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=db678de7a5844485fb7fd146da9cd0ec88064e46#db678de7a5844485fb7fd146da9cd0ec88064e46"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=b899c035a890c531b1489eefca4a7968de1d2a84#b899c035a890c531b1489eefca4a7968de1d2a84"
 dependencies = [
  "hydrolysis",
  "material-color-utils",

@@ -485,8 +485,8 @@ waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "fa83ba7b
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "9bd736b9ecaef4b902b8a55680d214b385e4a186" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "2272a62b4bcd7b3d1deb3ba03ba8a88ff927616a" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "e208a44b995883cfda7053f2cf12894e9f1a4ba9" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "a919016bcf2e774e1f090d06afb892d0c3d375d6" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "db678de7a5844485fb7fd146da9cd0ec88064e46" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "67357344da0c6c24c218d1ccf478116354a4f0d6" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "b899c035a890c531b1489eefca4a7968de1d2a84" }
 waterui-math = { git = "https://github.com/water-rs/math", rev = "ffa8e42e4f04ffd2396bf0466eae46a2b9e00c53" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
