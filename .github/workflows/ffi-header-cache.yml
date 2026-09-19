@@ -9,8 +9,6 @@ on:
     branches: [dev]
     paths:
       - ffi/**
-      - backends/apple
-      - backends/android
       - Cargo.lock
       - '**/Cargo.toml'
       - .github/actions/ffi-header/**
@@ -26,6 +24,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # cargo/rustup retry network failures three times by default; ten
+  # matches the budget install-action sets for its own downloads.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
   CARGO_INCREMENTAL: 0
 
 jobs:
@@ -38,8 +40,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: ./.github/actions/ffi-header
         with:
           save: 'true'

@@ -12,6 +12,7 @@
 //!         color: Color::srgb(0, 0, 0),
 //!         offset: style::Vector { x: 2.0, y: 2.0 },
 //!         radius: 4.0,
+//!         corner_radius: 8.0,
 //!     };
 //! }
 //! ```
@@ -87,7 +88,7 @@ impl Default for FloatingStyle {
 /// Represents a shadow effect that can be applied to UI elements.
 ///
 /// A shadow is defined by its color, offset from the original element,
-/// and blur radius.
+/// blur radius, and the corner radius of the element casting it.
 #[derive(Debug)]
 pub struct Shadow {
     /// The color of the shadow, including alpha for opacity.
@@ -96,6 +97,12 @@ pub struct Shadow {
     pub offset: Vector<f32>,
     /// The blur radius of the shadow in pixels.
     pub radius: f32,
+    /// The corner radius of the element casting the shadow.
+    ///
+    /// Backends that rasterize the shadow themselves draw a blurred rounded
+    /// rect; this must match the caster's corner radius or the shadow
+    /// silhouette won't follow the element's shape.
+    pub corner_radius: f32,
 }
 
 impl MetadataKey for Shadow {}
@@ -108,12 +115,14 @@ impl Shadow {
     /// * `color` - The color of the shadow
     /// * `offset` - The offset of the shadow from the original element
     /// * `radius` - The blur radius of the shadow in pixels
+    /// * `corner_radius` - The corner radius of the element casting the shadow
     #[must_use]
-    pub const fn new(color: Color, offset: Vector<f32>, radius: f32) -> Self {
+    pub const fn new(color: Color, offset: Vector<f32>, radius: f32, corner_radius: f32) -> Self {
         Self {
             color,
             offset,
             radius,
+            corner_radius,
         }
     }
 
@@ -128,6 +137,7 @@ impl Shadow {
             color: Color::srgb(0, 0, 0),
             offset: Vector { x: value, y: value },
             radius: value,
+            corner_radius: 0.0,
         }
     }
 }
@@ -138,6 +148,7 @@ impl Default for Shadow {
             color: Color::srgb(0, 0, 0),       // Default to black shadow
             offset: Vector { x: 0.0, y: 2.0 }, // Slightly below the element
             radius: 4.0,                       // Moderate blur
+            corner_radius: 0.0,
         }
     }
 }
@@ -150,6 +161,7 @@ impl<T: Into<f64>> From<T> for Shadow {
             color: Color::srgb(0, 0, 0),
             offset: Vector { x: 0.0, y: v },
             radius: v,
+            corner_radius: 0.0,
         }
     }
 }

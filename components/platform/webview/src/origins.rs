@@ -14,7 +14,7 @@
 //!     .bridge_origins(["https://app.waterui.dev", "https://docs.waterui.dev"])
 //! ```
 
-use waterui_str::Str;
+use suiteki::Str;
 use waterui_url::Url;
 
 /// Which origins may reach the bridge.
@@ -275,6 +275,30 @@ mod tests {
                     .expect("parses")
             )
         );
+    }
+
+    /// `WebView::open_assets` resolves `BridgeOrigins::Initial` against the entry
+    /// URL on the engine's asset origin, so the bridge narrows to it with no
+    /// extra plumbing — on both spellings the engines produce.
+    #[test]
+    fn the_initial_policy_admits_the_asset_origins() {
+        for (entry, same_origin, elsewhere) in [
+            (
+                "waterui://localhost/index.html",
+                "waterui://localhost/app.js",
+                "https://waterui.dev/",
+            ),
+            (
+                "https://waterui.localhost/index.html",
+                "https://waterui.localhost/app.js",
+                "https://waterui.dev/",
+            ),
+        ] {
+            let policy = policy(BridgeOrigins::Initial, entry);
+            assert!(policy.allows(&entry.parse::<Url>().expect("parses")));
+            assert!(policy.allows(&same_origin.parse::<Url>().expect("parses")));
+            assert!(!policy.allows(&elsewhere.parse::<Url>().expect("parses")));
+        }
     }
 
     /// The case that motivates the whole policy: a view that navigates away must

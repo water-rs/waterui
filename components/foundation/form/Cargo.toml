@@ -26,7 +26,7 @@ waterui-shape.workspace = true
 waterui-macros.workspace = true
 tracing.workspace = true
 zeroize = { version = "1.9.0", default-features = false }
-bcrypt = { version = "0.19.2", optional = true }
+bcrypt = { version = "0.19.3", optional = true }
 # `Regex` is only ever matched against form text, so the Unicode tables beyond
 # the perl classes (`\w`, `\d`, `\s`) that character classes need are dead
 # weight, as is the whole `unicode-case`/`unicode-script` set.

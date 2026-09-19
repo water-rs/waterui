@@ -22,11 +22,11 @@
 use std::{fmt::Debug, rc::Rc};
 
 use nami::{Binding, Computed, SignalExt as _, impl_constant, signal::IntoComputed};
+use suiteki::Str;
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View};
 use waterui_graphics::Color;
 use waterui_layout::{Point, Rect, Size};
-use waterui_str::Str;
 
 use crate::app::application_name;
 #[cfg(feature = "snackbar")]
@@ -443,6 +443,9 @@ impl WindowPresentation {
 /// [`WindowState::Closed`] to any other state. Closing the window resets the
 /// retained presentation binding so a subsequent open creates a new native
 /// window.
+///
+/// The returned view is invisible and must be placed in the tree, or the
+/// window is never presented.
 pub fn conditional_window<F>(presentation: &WindowPresentation, creator: F) -> impl View + use<F>
 where
     F: Fn(Binding<WindowState>) -> Window + 'static,

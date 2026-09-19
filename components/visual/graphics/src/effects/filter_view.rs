@@ -44,6 +44,7 @@ use crate::gpu_surface::RedrawHandle;
 type ErasedEffectSetupFuture<'a> = Pin<Box<dyn Future<Output = EffectSetupResult> + 'a>>;
 
 trait ErasedEffect: 'static {
+    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback);
     fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> ErasedEffectSetupFuture<'a>;
     fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult;
     fn encode_render(
@@ -57,6 +58,10 @@ trait ErasedEffect: 'static {
 }
 
 impl<T: Effect> ErasedEffect for T {
+    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
+        Effect::set_redraw_callback(self, callback);
+    }
+
     fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> ErasedEffectSetupFuture<'a> {
         Box::pin(Effect::setup(self, ctx))
     }
@@ -138,6 +143,8 @@ const fn temperature_tint_filter(
 pub struct AppliedFilter {
     filter: Box<dyn ErasedEffect>,
     redraw_handle: RedrawHandle,
+    /// Whether the effect's wake callback has been bound to `redraw_handle`.
+    wake_bound: bool,
 }
 
 impl fmt::Debug for AppliedFilter {
@@ -150,21 +157,60 @@ impl MetadataKey for AppliedFilter {}
 
 impl AppliedFilter {
     /// Create a new `AppliedFilter` from a GPU filter.
-    pub fn new<F: Effect>(mut filter: F) -> Self {
-        let redraw_handle = RedrawHandle::new();
-        let effect_redraw_handle = redraw_handle.clone();
-        filter.set_redraw_callback(Arc::new(move || {
-            effect_redraw_handle.request_redraw();
-        }));
+    pub fn new<F: Effect>(filter: F) -> Self {
         Self {
             filter: Box::new(filter),
-            redraw_handle,
+            redraw_handle: RedrawHandle::new(),
+            wake_bound: false,
         }
     }
 
-    /// Returns a clone of the handle used to wake the native renderer.
+    /// Builds one filter that runs `inner`'s filters and then `outer`'s.
+    ///
+    /// A component that filters its own body and a caller that filters the
+    /// component are two filters over one subtree, and the `impl View` boundary
+    /// between them hides the first from the second's type — so nothing at the
+    /// authoring layer can fuse them the way `Filtered::then` fuses a chain
+    /// written in one expression. Collapsing the pair here means one capture of
+    /// the content, one presentation target and one submission instead of two
+    /// of each (#521).
+    ///
+    /// The order is the order the filters were written: `inner` sees the
+    /// content, `outer` sees what `inner` produced.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either filter's wake callback is already bound, which means a
+    /// host is already driving it and it is no longer free to be folded in.
     #[must_use]
-    pub fn redraw_handle(&self) -> RedrawHandle {
+    pub fn chained(inner: Self, outer: Self) -> Self {
+        assert!(
+            !inner.wake_bound && !outer.wake_bound,
+            "AppliedFilter::chained needs filters no host is driving yet"
+        );
+        Self::new(EffectChain {
+            first: inner.filter,
+            second: outer.filter,
+            intermediate: None,
+        })
+    }
+
+    /// Returns a clone of the handle used to wake the native renderer, binding
+    /// the effect's wake callback to it on the first call.
+    ///
+    /// The binding waits for a host to ask because an effect accepts a wake
+    /// callback exactly once: a filter folded into a chain hands its effect to
+    /// that chain, which installs one callback of its own across both halves.
+    /// Binding at construction would spend that one installation on a handle no
+    /// host ever polls, and the fold would abort on the second attempt (#521).
+    pub fn redraw_handle(&mut self) -> RedrawHandle {
+        if !self.wake_bound {
+            let handle = self.redraw_handle.clone();
+            self.filter.set_redraw_callback(Arc::new(move || {
+                handle.request_redraw();
+            }));
+            self.wake_bound = true;
+        }
         self.redraw_handle.clone()
     }
 
@@ -223,6 +269,136 @@ impl AppliedFilter {
     #[must_use]
     pub fn redraw_hint(&self) -> bool {
         self.redraw_handle.is_dirty() || self.filter.redraw_hint()
+    }
+}
+
+/// Two effects over one capture: the first's output is the second's input.
+///
+/// A component that filters its own body, filtered again by its caller, is two
+/// `AppliedFilter`s over one subtree — and because the component returns
+/// `impl View`, no type-level chaining can see through the boundary to fuse
+/// them. Run as written that costs two captures of the same content, two
+/// presentation targets and two full-size intermediates for what is one chain
+/// of filters. [`AppliedFilter::chained`] collapses the pair into this, which
+/// the host then drives as a single filter.
+///
+/// Both halves are encoded into the caller's command encoder, so the pair still
+/// costs one submission. The one thing that cannot be shared is the texture
+/// between them: an effect reads a texture and writes another, so the chain
+/// owns the intermediate and sizes it by what the first half says it produces.
+struct EffectChain {
+    first: Box<dyn ErasedEffect>,
+    second: Box<dyn ErasedEffect>,
+    /// What the first half writes and the second half reads.
+    ///
+    /// Kept across frames and rebuilt only when the size or format it must
+    /// carry changes, because reallocating a full-size texture every frame is
+    /// most of what this chain exists to avoid.
+    intermediate: Option<wgpu::Texture>,
+}
+
+impl EffectChain {
+    /// The texture between the halves, made or remade to fit this frame.
+    fn intermediate_for<'a>(
+        intermediate: &'a mut Option<wgpu::Texture>,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> &'a wgpu::Texture {
+        let fits = intermediate.as_ref().is_some_and(|texture| {
+            texture.width() == width && texture.height() == height && texture.format() == format
+        });
+        if !fits {
+            *intermediate = Some(device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("filter chain intermediate"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }));
+        }
+        intermediate
+            .as_ref()
+            .expect("the chain intermediate was just made")
+    }
+}
+
+impl Effect for EffectChain {
+    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
+        self.first.set_redraw_callback(callback.clone());
+        self.second.set_redraw_callback(callback);
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "effect setup is driven by the UI-local GPU host executor and intentionally accepts non-Send effects, exactly as AppliedFilter::setup does"
+    )]
+    async fn setup(&mut self, ctx: &EffectContext<'_>) -> EffectSetupResult {
+        self.first.setup(ctx).await?;
+        self.second.setup(ctx).await
+    }
+
+    fn encode_render(
+        &mut self,
+        input: &EffectInput,
+        output: &EffectOutput,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult {
+        let Self {
+            first,
+            second,
+            intermediate,
+        } = self;
+        let (middle_width, middle_height) = first.output_size(input.width, input.height);
+        let texture = Self::intermediate_for(
+            intermediate,
+            input.device,
+            middle_width,
+            middle_height,
+            output.format,
+        );
+        let middle_output = EffectOutput {
+            device: input.device,
+            queue: input.queue,
+            texture,
+            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format: output.format,
+            width: middle_width,
+            height: middle_height,
+        };
+        let first_needs_redraw = first.encode_render(input, &middle_output, encoder)?;
+
+        let middle_input = EffectInput {
+            device: input.device,
+            queue: input.queue,
+            texture,
+            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            format: output.format,
+            width: middle_width,
+            height: middle_height,
+            timing: input.timing,
+        };
+        let second_needs_redraw = second.encode_render(&middle_input, output, encoder)?;
+
+        Ok(first_needs_redraw || second_needs_redraw)
+    }
+
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        let (middle_width, middle_height) = self.first.output_size(input_width, input_height);
+        self.second.output_size(middle_width, middle_height)
+    }
+
+    fn redraw_hint(&self) -> bool {
+        self.first.redraw_hint() || self.second.redraw_hint()
     }
 }
 
@@ -1504,3 +1680,124 @@ pub trait FilterViewExt: View + Sized {
 }
 
 impl<V: View> FilterViewExt for V {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::rc::Rc;
+    use core::cell::{Cell, RefCell};
+
+    /// What a probe lets a test see from the outside.
+    struct ProbeSpy {
+        wake: Rc<RefCell<Option<EffectRedrawCallback>>>,
+        installs: Rc<Cell<usize>>,
+    }
+
+    /// An effect that records what a host installs on it and by how much it
+    /// would resize its input.
+    struct ProbeEffect {
+        wake: Rc<RefCell<Option<EffectRedrawCallback>>>,
+        installs: Rc<Cell<usize>>,
+        scale: u32,
+    }
+
+    impl ProbeEffect {
+        fn new(scale: u32) -> (Self, ProbeSpy) {
+            let spy = ProbeSpy {
+                wake: Rc::new(RefCell::new(None)),
+                installs: Rc::new(Cell::new(0)),
+            };
+            let effect = Self {
+                wake: Rc::clone(&spy.wake),
+                installs: Rc::clone(&spy.installs),
+                scale,
+            };
+            (effect, spy)
+        }
+    }
+
+    impl Effect for ProbeEffect {
+        fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
+            self.installs.set(self.installs.get() + 1);
+            *self.wake.borrow_mut() = Some(callback);
+        }
+
+        fn setup(&mut self, _ctx: &EffectContext<'_>) -> impl Future<Output = EffectSetupResult> {
+            core::future::ready(Ok(()))
+        }
+
+        fn encode_render(
+            &mut self,
+            _input: &EffectInput,
+            _output: &EffectOutput,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) -> EffectRenderResult {
+            Ok(false)
+        }
+
+        fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+            (input_width * self.scale, input_height * self.scale)
+        }
+    }
+
+    /// An effect accepts a wake callback exactly once, so a filter that is
+    /// folded into a chain must not have spent that installation on a handle
+    /// the chain replaces (#521).
+    #[test]
+    fn a_chain_binds_each_half_once_onto_its_own_handle() {
+        let (inner_effect, inner) = ProbeEffect::new(1);
+        let (outer_effect, outer) = ProbeEffect::new(1);
+
+        let mut chained = AppliedFilter::chained(
+            AppliedFilter::new(inner_effect),
+            AppliedFilter::new(outer_effect),
+        );
+        let handle = chained.redraw_handle();
+
+        assert_eq!(inner.installs.get(), 1);
+        assert_eq!(outer.installs.get(), 1);
+
+        for spy in [&inner, &outer] {
+            assert!(!handle.take_dirty());
+            let wake = spy
+                .wake
+                .borrow()
+                .clone()
+                .expect("the chain installed a wake");
+            wake();
+            assert!(
+                handle.take_dirty(),
+                "a wake from either half must reach the handle the host polls"
+            );
+        }
+    }
+
+    /// The halves run in the order they were written, so the chain's output is
+    /// what the outer filter makes of the inner filter's output.
+    #[test]
+    fn a_chain_resizes_through_both_halves() {
+        let (inner_effect, _inner) = ProbeEffect::new(2);
+        let (outer_effect, _outer) = ProbeEffect::new(3);
+
+        let chained = AppliedFilter::chained(
+            AppliedFilter::new(inner_effect),
+            AppliedFilter::new(outer_effect),
+        );
+
+        assert_eq!(chained.output_size(10, 20), (60, 120));
+    }
+
+    /// A filter a host is already driving has spent its one installation, and
+    /// folding it in would leave the host's handle wired to nothing.
+    #[test]
+    #[should_panic(expected = "no host is driving yet")]
+    fn a_chain_refuses_a_filter_a_host_already_drives() {
+        let (inner_effect, _inner) = ProbeEffect::new(1);
+        let (outer_effect, _outer) = ProbeEffect::new(1);
+
+        let mut inner = AppliedFilter::new(inner_effect);
+        let _ = inner.redraw_handle();
+
+        let _ = AppliedFilter::chained(inner, AppliedFilter::new(outer_effect));
+    }
+}

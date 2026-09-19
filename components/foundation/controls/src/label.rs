@@ -225,6 +225,11 @@ pub struct Label {
 /// String, [`Text`], [`StyledStr`], [`Binding`], and [`Computed`] inputs use
 /// `WaterUI`'s i18n-aware semantic text pipeline. Use [`Label::new`] only when
 /// the visible label is an arbitrary view that differs from its spoken text.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be used as a control label",
+    label = "expected a label",
+    note = "`IntoLabel` is implemented by `&'static str`, `String`, `Str`, `StyledStr`, `Text`, `Label`, and `Binding<T>` / `Computed<T>` whose `T` is `IntoText`. For a label rendered as an arbitrary view, use `Label::new(semantic_text, || view)`."
+)]
 pub trait IntoLabel {
     /// Converts a value into a semantic label.
     fn into_label(self) -> Label;

@@ -3,7 +3,7 @@
 use waterui::app::App;
 use waterui::env::with;
 use waterui::locale::{Locale, locales};
-use waterui::prelude::theme_color::{MutedForeground, SurfaceVariant};
+use waterui::prelude::theme_color::SurfaceVariant;
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -17,9 +17,9 @@ fn type_scale() -> impl View {
             .footnote(),
         text("Caption — 字体 fallback follows locale and script.")
             .caption()
-            .foreground(MutedForeground),
+            .muted(),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(8.0)
 }
 
@@ -31,7 +31,7 @@ fn cjk_specimens() -> impl View {
         with(text("日本語：骨、直、門、関").body(), locales::JA),
         with(text("한국어: 한글과 漢字").body(), locales::KO),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(6.0)
 }
 
@@ -43,20 +43,18 @@ fn reading_order_panel(title: &'static str, body: &'static str, arrow: &'static 
             text("①").headline(),
             vstack((
                 text(body).body(),
-                text("WaterUI 2.0 · 2026")
-                    .caption()
-                    .foreground(MutedForeground),
+                text("WaterUI 2.0 · 2026").caption().muted(),
             ))
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
             spacer(),
             text(arrow).headline(),
         ))
         .spacing(12.0),
         TextField::new("Name / الاسم / שם", &input).prompt("Type here / اكتب هنا / הקלידו כאן"),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(12.0)
-    .padding_with(EdgeInsets::all(16.0))
+    .padding_with(16.0)
     .background(SurfaceVariant)
 }
 
@@ -82,7 +80,7 @@ pub fn typography_and_rtl() -> impl View {
                 "Semantic type styles, CJK fallback, mixed-script shaping, and logical RTL layout.",
             )
             .body()
-            .foreground(MutedForeground),
+            .muted(),
             Divider,
             type_scale(),
             Divider,
@@ -111,9 +109,9 @@ pub fn typography_and_rtl() -> impl View {
                 "←",
             ),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .spacing(16.0)
-        .padding_with(EdgeInsets::all(20.0)),
+        .padding_with(20.0),
     )
 }
 

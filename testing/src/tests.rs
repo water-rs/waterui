@@ -11,6 +11,7 @@ use vello::kurbo::Shape;
 use waterui::Computed;
 use waterui::View;
 use waterui::ViewExt as _;
+use waterui::app::App;
 use waterui::color::ResolvedColor;
 use waterui::component::{hstack, text, vstack};
 use waterui::graphics::SceneViewMergeToParent;
@@ -144,6 +145,7 @@ fn node(
         busy: false,
         hidden: false,
         children: Vec::new(),
+        actions: Vec::new(),
     }
 }
 
@@ -206,6 +208,7 @@ fn mounted(tree: TreeSnapshot) -> SemanticApp {
         tree,
         ui_focus: None,
         revision: 2,
+        viewport: (0, 0),
     }
 }
 
@@ -289,6 +292,21 @@ fn semantic_builder_does_not_require_theme_package() {
         .role(Role::LABEL)
         .label("Semantic only")
         .single();
+}
+
+/// `mount_app` runs the application path: the app's own environment — theme
+/// included, as a real app installs it — is mounted verbatim, and the
+/// configured scale factor scales the captured snapshot.
+#[test]
+fn mount_app_hosts_main_window_with_app_environment() {
+    let mut env = Environment::new();
+    install_default_theme(&mut env);
+    let app = App::new(|| text("Mounted app").body(), env);
+    let mut app = ui().viewport(200, 100).scale_factor(2.0).mount_app(app);
+    app.query().label("Mounted app").assert_exists();
+    let snapshot = app.snapshot();
+    assert_eq!(snapshot.width, 400);
+    assert_eq!(snapshot.height, 200);
 }
 
 #[test]
@@ -583,7 +601,12 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     let env = Environment::new().extending(SceneViewMergeToParent);
 
     let surface = platform.surface();
-    renderer.set_frame_resources(surface.adapter(), surface.device(), surface.queue());
+    renderer.set_frame_resources(
+        surface.adapter(),
+        surface.device(),
+        surface.queue(),
+        surface.device_loss(),
+    );
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
@@ -603,6 +626,7 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
         adapter: surface.adapter(),
         device: surface.device(),
         queue: surface.queue(),
+        device_loss: surface.device_loss().clone(),
         texture: Some(frame.texture()),
         view: frame.view(),
         format: surface.format(),
@@ -921,15 +945,18 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
         DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
     };
     use waterui::prelude::text;
-    use waterui::{Binding, SignalExt as _, State, ViewExt as _};
+    use waterui::{Binding, SignalExt as _, ViewExt as _, state};
     use waterui_core::extract::Use;
 
+    #[state]
     #[derive(Clone)]
     struct DragOffset(Binding<f32>);
 
+    #[state]
     #[derive(Clone)]
     struct ZoomScale(Binding<f32>);
 
+    #[state]
     #[derive(Clone)]
     struct HoverState(Binding<bool>);
 
@@ -957,21 +984,20 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
             surface
                 .gesture_observer(GestureObserver::new(
                     DragGesture::new(0.0),
-                    |State(DragOffset(offset)): State<DragOffset>, drag: Use<DragEvent>| {
+                    |DragOffset(offset): DragOffset, drag: Use<DragEvent>| {
                         offset.set(drag.translation.x);
                     },
                 ))
                 .state(&drag_offset_state)
                 .gesture_observer(GestureObserver::new(
                     MagnificationGesture::new(1.0),
-                    |State(ZoomScale(scale)): State<ZoomScale>,
-                     magnification: Use<MagnificationEvent>| {
+                    |ZoomScale(scale): ZoomScale, magnification: Use<MagnificationEvent>| {
                         scale.set(magnification.scale);
                     },
                 ))
                 .state(&zoom_scale_state)
-                .on_hover_enter(|State(HoverState(hovered)): State<HoverState>| hovered.set(true))
-                .on_hover_exit(|State(HoverState(hovered)): State<HoverState>| hovered.set(false))
+                .on_hover_enter(|HoverState(hovered): HoverState| hovered.set(true))
+                .on_hover_exit(|HoverState(hovered): HoverState| hovered.set(false))
                 .state(&hover_state)
         }
     });
@@ -1114,6 +1140,121 @@ fn ui_focus_is_separate_from_accessibility_focus() {
     assert_eq!(app.ui_focus(), None);
     assert_eq!(focus.get(), None);
     assert_eq!(app.tree().focus(), submit_id);
+}
+
+#[test]
+fn runtime_focus_writes_move_and_clear_ui_focus() {
+    use waterui::form::secure::Secure;
+    use waterui::prelude::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Field {
+        Username,
+        Password,
+    }
+
+    let focus = Binding::container(None::<Field>);
+    let username = Binding::container(Str::from(""));
+    let password = Binding::container(Secure::default());
+    let focus_for_view = focus.clone();
+    let mut app = ui().theme(hydrolysis_m3::install).mount(move || {
+        vstack((
+            TextField::new(text("Username"), &username).focused(&focus_for_view, Field::Username),
+            SecureField::new(text("Password"), &password).focused(&focus_for_view, Field::Password),
+        ))
+    });
+
+    let username_selector = Selector::default().role(Role::TEXT_INPUT).label("Username");
+    let password_selector = Selector::default()
+        .role(Role::PASSWORD_INPUT)
+        .label("Password");
+
+    assert_eq!(app.ui_focus(), None);
+
+    focus.set(Some(Field::Password));
+    assert!(
+        app.wait_for_ui_focus(&password_selector, Duration::from_millis(200)),
+        "a runtime write to the focus binding must move UI focus to the password field"
+    );
+    app.assert_ui_focus(&password_selector);
+
+    focus.set(Some(Field::Username));
+    assert!(
+        app.wait_for_ui_focus(&username_selector, Duration::from_millis(200)),
+        "a later write must move UI focus back to the username field"
+    );
+
+    focus.set(None);
+    app.settle();
+    assert_eq!(app.ui_focus(), None);
+}
+
+#[test]
+fn ui_focus_accepts_a_new_target_after_being_cleared() {
+    use waterui::prelude::*;
+
+    let focus = Binding::container(None::<i32>);
+    let value = Binding::container(Str::from(""));
+    let focus_for_view = focus.clone();
+    let mut app = ui()
+        .theme(hydrolysis_m3::install)
+        .mount(move || TextField::new(text("Field"), &value).focused(&focus_for_view, 0));
+
+    let selector = Selector::default().role(Role::TEXT_INPUT).label("Field");
+
+    focus.set(Some(0));
+    assert!(app.wait_for_ui_focus(&selector, Duration::from_millis(200)));
+
+    app.clear_ui_focus();
+    assert_eq!(app.ui_focus(), None);
+    assert_eq!(focus.get(), None);
+
+    app.query().role(Role::TEXT_INPUT).label("Field").focus();
+    app.assert_ui_focus(&selector);
+    assert_eq!(focus.get(), Some(0));
+}
+
+#[test]
+#[should_panic(expected = "requires exactly one TextField or SecureField")]
+fn focused_modifier_without_a_text_anchor_panics() {
+    use waterui::prelude::*;
+
+    let focus = Binding::container(None::<i32>);
+    let _app = ui()
+        .theme(hydrolysis_m3::install)
+        .mount(move || button("No anchor").focused(&focus, 0));
+}
+
+#[test]
+#[should_panic(expected = "found 2")]
+fn focused_modifier_with_two_text_anchors_panics() {
+    use waterui::prelude::*;
+
+    let focus = Binding::container(None::<i32>);
+    let first = Binding::container(Str::from(""));
+    let second = Binding::container(Str::from(""));
+    let _app = ui().theme(hydrolysis_m3::install).mount(move || {
+        vstack((
+            TextField::new(text("First"), &first),
+            TextField::new(text("Second"), &second),
+        ))
+        .focused(&focus, 0)
+    });
+}
+
+#[test]
+#[should_panic(expected = "multiple .focused()")]
+fn focused_modifier_twice_on_the_same_control_panics() {
+    use waterui::prelude::*;
+
+    let focus_a = Binding::container(None::<i32>);
+    let focus_b = Binding::container(None::<i32>);
+    let value = Binding::container(Str::from(""));
+    let _app = ui().theme(hydrolysis_m3::install).mount(move || {
+        TextField::new(text("Field"), &value)
+            .focused(&focus_a, 0)
+            .focused(&focus_b, 1)
+    });
 }
 
 #[test]

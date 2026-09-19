@@ -41,6 +41,7 @@ use core::time::Duration;
 use executor_core::spawn_local;
 use nami::Binding;
 use nami::collection::List;
+use suiteki::Str;
 use waterui_controls::{Button, ButtonStyle, button, label};
 use waterui_core::animation::Animation;
 use waterui_core::extract::State;
@@ -52,16 +53,17 @@ use waterui_core::{SignalExt, View};
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
-use waterui_layout::safe_area::SafeAreaInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{Alignment, hstack};
-use waterui_layout::{AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView};
-use waterui_str::Str;
+use waterui_layout::{
+    AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
+};
+use waterui_macros::state;
 use waterui_text::{font::Font, text::text};
 
 use crate::AnyView;
 use crate::ViewExt;
-use crate::shape::{FilledShape, Path, RoundedRectangle, ShapeExt};
+use crate::shape::{FilledShape, FixedRoundedRectangle, Path, ShapeExt};
 use crate::style::{Shadow, Vector};
 use waterui_graphics::color::Color;
 
@@ -150,9 +152,9 @@ pub struct SnackbarTheme {
     pub content_padding: EdgeInsets,
     /// Margin between the bar and the window's safe area.
     ///
-    /// This is spacing only. The hardware insets — notch, status bar, home
-    /// indicator — come from [`SafeAreaInsets`] and are added on top, so a
-    /// theme never has to guess them.
+    /// This is spacing only. The backend places the host clear of the
+    /// hardware — notch, status bar, home indicator — so a theme never has to
+    /// guess those insets.
     pub viewport_padding: EdgeInsets,
     /// Gap between message and action.
     pub content_spacing: f32,
@@ -175,10 +177,9 @@ pub struct SnackbarTheme {
     pub close_state_layer_size: f32,
     /// Minimum height for single-line snackbars.
     pub single_line_min_height: f32,
-    /// Container corner radius in logical units for shadows.
+    /// Container corner radius in logical units — the same length traces the
+    /// fill and the shadows.
     pub corner_radius: f32,
-    /// Normalized corner radius for clipping and filled shape rendering.
-    pub clip_radius: f32,
     /// Shadow color.
     pub shadow_color: Color,
     /// Shadow blur radius.
@@ -220,7 +221,6 @@ impl SnackbarTheme {
             close_state_layer_size: 40.0,
             single_line_min_height: 48.0,
             corner_radius: 4.0,
-            clip_radius: 0.08,
             shadow_color: Color::srgb(0, 0, 0).with_opacity(0.2),
             shadow_radius: 3.0,
             shadow_offset_y: 3.0,
@@ -255,7 +255,6 @@ impl SnackbarTheme {
             close_state_layer_size: 32.0,
             single_line_min_height: 50.0,
             corner_radius: 15.0,
-            clip_radius: 0.3,
             shadow_color: Color::srgb(0, 0, 0).with_opacity(0.18),
             shadow_radius: 18.0,
             shadow_offset_y: 6.0,
@@ -568,6 +567,7 @@ struct SnackbarManagerState {
 ///     })
 /// }
 /// ```
+#[state]
 #[derive(Clone)]
 pub struct SnackbarManager {
     state: Rc<RefCell<SnackbarManagerState>>,
@@ -927,8 +927,18 @@ impl Layout for HugWidth {
         Size::new(child.width.clamp(self.min, self.max), child.height)
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
-        children.iter().map(|_| bounds).collect()
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
+        // The row fills the resolved bar width; height keeps the incoming proposal.
+        let child_proposal = ProposalSize::new(Some(bounds.width()), proposal.height);
+        children
+            .iter()
+            .map(|_| SubviewPlacement::new(bounds, child_proposal))
+            .collect()
     }
 
     fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
@@ -966,11 +976,13 @@ impl View for StackedSnackbarView {
             theme.shadow_color.clone(),
             Vector::new(0.0, theme.shadow_offset_y),
             theme.shadow_radius,
+            theme.corner_radius,
         );
         let ambient_shadow = Shadow::new(
             theme.ambient_shadow_color.clone(),
             Vector::new(0.0, theme.ambient_shadow_offset_y),
             theme.ambient_shadow_radius,
+            theme.corner_radius,
         );
 
         // The appear hook runs after this subtree's first flush, once the animated
@@ -997,7 +1009,7 @@ impl View for StackedSnackbarView {
                     .height(theme.single_line_min_height),),
             )
             .background(
-                RoundedRectangle::new(theme.clip_radius).fill(theme.container_color.clone()),
+                FixedRoundedRectangle::new(theme.corner_radius).fill(theme.container_color.clone()),
             )
             .shadow(ambient_shadow)
             .shadow(shadow)
@@ -1008,13 +1020,9 @@ impl View for StackedSnackbarView {
             .offset(0.0, item.stack_offset.with(enter_animation)),
         )
         .alignment(position.to_alignment())
-        // Clear of the hardware first, then of the window edge by the theme's
-        // own margin. The backend publishes the insets and republishes them on
-        // rotation, so this pads reactively instead of rebuilding the bar.
-        .padding_with(SafeAreaInsets::resolve_with_margin(
-            env,
-            theme.viewport_padding,
-        ))
+        // The backend places this host clear of the hardware; the theme's own
+        // margin keeps the bar off the window edge.
+        .padding_with(theme.viewport_padding)
     }
 }
 

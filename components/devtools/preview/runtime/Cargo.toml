@@ -13,6 +13,7 @@ categories.workspace = true
 
 [dependencies]
 waterui-core.workspace = true
+waterui-internal.workspace = true
 waterui-layout.workspace = true
 waterui-preview-protocol.workspace = true
 tracing.workspace = true

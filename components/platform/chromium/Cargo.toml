@@ -12,15 +12,26 @@ categories = ["gui", "web-programming"]
 
 [dependencies]
 async-channel = "2.5"
+base64 = "0.23"
 chromiumoxide_cdp = "0.9.1"
 chromiumoxide_types = "0.9.1"
+executor-core.workspace = true
 futures.workspace = true
 serde.workspace = true
 serde_json = "1.0"
 thiserror.workspace = true
+tracing.workspace = true
 waterui-core.workspace = true
 waterui-layout.workspace = true
+waterui-macros.workspace = true
 waterui-url.workspace = true
+waterui-webview.workspace = true
+
+[dev-dependencies]
+# `futures::executor::block_on` in the CdpSession tests needs the `executor`
+# feature, which the workspace `futures` dep does not enable; a workspace-wide
+# build papers over it through feature unification.
+futures = { workspace = true, features = ["executor"] }
 
 [lints]
 workspace = true

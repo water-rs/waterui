@@ -20,6 +20,8 @@ use waterui::app::App;
 use waterui::form::picker::{Picker, PickerItem};
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::regional::current_settings;
+use waterui::regional::set_locale_tag;
 use waterui_locale::format::date::{
     DateStyle, SimpleDate, SimpleTime, TimeStyle, format_date,
     format_datetime_with_regional_context,
@@ -117,13 +119,13 @@ fn date_section(locale: Computed<Locale>) -> impl View {
         .computed();
     let timezone = locale
         .clone()
-        .map(|_| waterui::regional::current_settings().timezone().to_string())
+        .map(|_| current_settings().timezone().to_string())
         .computed();
     let datetime_with_zone = locale
         .clone()
         .map(|_| {
             format_datetime_with_regional_context(
-                &waterui::regional::current_settings(),
+                &current_settings(),
                 &SimpleDate::new(2006, 3, 20),
                 &SimpleTime::new(9, 30, 0),
                 DateStyle::Long,
@@ -218,7 +220,7 @@ fn scene(system_locale: Locale) -> impl View {
     // Create binding for selected locale code
     let selection = Binding::container(initial_code);
     // Initialize shared runtime locale from the picker's initial value.
-    waterui::regional::set_locale_tag(initial_code).expect("picker locale tag must be valid");
+    set_locale_tag(initial_code).expect("picker locale tag must be valid");
 
     scroll(
         vstack((
@@ -237,10 +239,10 @@ fn scene(system_locale: Locale) -> impl View {
             // leaves update when the selection changes.
             formatted_content(selection.clone().map(locale_from_code).computed()),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
     .on_change(&selection, |code| {
-        waterui::regional::set_locale_tag(code).expect("picker locale tag must be valid");
+        set_locale_tag(code).expect("picker locale tag must be valid");
     })
 }
 

@@ -9,12 +9,12 @@ use fmt::Display;
 
 use nami::signal::{IntoComputed, IntoSignal};
 use nami::{Binding, Computed, Signal, SignalExt};
+use suiteki::Str;
 use waterui_core::configurable;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_core::{Environment, View, flatten_signal};
 use waterui_graphics::color::Color;
 use waterui_locale::{Locale, TranslationCatalog, locale_binding};
-use waterui_str::Str;
 
 use crate::font::FontWeight;
 use crate::{font::Font, styled::StyledStr};
@@ -93,6 +93,11 @@ impl core::cmp::PartialOrd for Text {
 }
 
 /// Conversion trait for semantic text construction.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be used as WaterUI text",
+    label = "expected a text value",
+    note = "`IntoText` is implemented by `&'static str`, `String`, `Str`, `StyledStr`, `Text`, and `Binding<T>` / `Computed<T>` whose `T` is `IntoText` — pass an owned `String`/`Str` or a reactive binding rather than `&String` or `Option<_>`."
+)]
 pub trait IntoText {
     /// Convert a value into semantic text.
     fn into_text(self) -> Text;
@@ -545,6 +550,15 @@ impl Text {
     /// Sets the font to bold.
     pub fn bold(self) -> Self {
         self.weight(FontWeight::Bold)
+    }
+
+    /// Asks for the platform's fixed-pitch face, keeping the font's slot,
+    /// size and weight.
+    pub fn monospaced(self) -> Self {
+        self.map_config(|mut config| {
+            config.content = config.content.map(StyledStr::monospaced).computed();
+            config
+        })
     }
 
     /// Sets the italic style.

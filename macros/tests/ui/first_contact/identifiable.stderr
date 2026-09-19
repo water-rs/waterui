@@ -1,0 +1,112 @@
+error[E0277]: `Row` has no stable WaterUI identity
+  --> tests/ui/first_contact/identifiable.rs:16:20
+   |
+16 |     Lazy::for_each(rows, |row| text(row.name))
+   |     -------------- ^^^^ expected a type implementing `Identifiable`
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `Identifiable` is not implemented for `Row`
+  --> tests/ui/first_contact/identifiable.rs:9:1
+   |
+ 9 | struct Row {
+   | ^^^^^^^^^^
+   = note: Collections such as `ForEach` and `List` diff items by id, so each item needs `Identifiable`: derive it with `#[derive(Identifiable)]` and `#[id]` on the identifier field (`use waterui::Identifiable;` — the derive is not in the prelude), for a type you do not own, wrap the value with `.use_id(..)` / `.self_id()`.
+help: the following other types implement trait `Identifiable`
+  --> $WORKSPACE/core/src/foundation/id.rs
+   |
+   | / impl<T, F, Id> Identifiable for UseId<T, F>
+   | | where
+   | |     F: Fn(&T) -> Id,
+   | |     Id: Ord + Hash + Clone,
+   | |___________________________^ `UseId<T, F>`
+...
+   |   impl<T: Hash + Ord + Clone> Identifiable for SelfId<T> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SelfId<T>`
+   |
+  ::: $WORKSPACE/src/component/table.rs
+   |
+   |   impl Identifiable for TableColumn {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TableColumn`
+note: required by a bound in `waterui::component::lazy::Lazy::for_each`
+  --> $WORKSPACE/src/component/lazy.rs
+   |
+   |     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
+   |            -------- required by a bound in this associated function
+...
+   |         C::Item: Identifiable,
+   |                  ^^^^^^^^^^^^ required by this bound in `Lazy::for_each`
+
+error[E0277]: `Row` has no stable WaterUI identity
+  --> tests/ui/first_contact/identifiable.rs:16:5
+   |
+16 |     Lazy::for_each(rows, |row| text(row.name))
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected a type implementing `Identifiable`
+   |
+help: the trait `Identifiable` is not implemented for `Row`
+  --> tests/ui/first_contact/identifiable.rs:9:1
+   |
+ 9 | struct Row {
+   | ^^^^^^^^^^
+   = note: Collections such as `ForEach` and `List` diff items by id, so each item needs `Identifiable`: derive it with `#[derive(Identifiable)]` and `#[id]` on the identifier field (`use waterui::Identifiable;` — the derive is not in the prelude), for a type you do not own, wrap the value with `.use_id(..)` / `.self_id()`.
+help: the following other types implement trait `Identifiable`
+  --> $WORKSPACE/core/src/foundation/id.rs
+   |
+   | / impl<T, F, Id> Identifiable for UseId<T, F>
+   | | where
+   | |     F: Fn(&T) -> Id,
+   | |     Id: Ord + Hash + Clone,
+   | |___________________________^ `UseId<T, F>`
+...
+   |   impl<T: Hash + Ord + Clone> Identifiable for SelfId<T> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SelfId<T>`
+   |
+  ::: $WORKSPACE/src/component/table.rs
+   |
+   |   impl Identifiable for TableColumn {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TableColumn`
+note: required by a bound in `waterui::component::lazy::Lazy::for_each`
+  --> $WORKSPACE/src/component/lazy.rs
+   |
+   |     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
+   |            -------- required by a bound in this associated function
+...
+   |         C::Item: Identifiable,
+   |                  ^^^^^^^^^^^^ required by this bound in `Lazy::for_each`
+
+error[E0277]: `Row` has no stable WaterUI identity
+  --> tests/ui/first_contact/identifiable.rs:14:16
+   |
+14 | fn broken() -> impl View {
+   |                ^^^^^^^^^ expected a type implementing `Identifiable`
+   |
+help: the trait `Identifiable` is not implemented for `Row`
+  --> tests/ui/first_contact/identifiable.rs:9:1
+   |
+ 9 | struct Row {
+   | ^^^^^^^^^^
+   = note: Collections such as `ForEach` and `List` diff items by id, so each item needs `Identifiable`: derive it with `#[derive(Identifiable)]` and `#[id]` on the identifier field (`use waterui::Identifiable;` — the derive is not in the prelude), for a type you do not own, wrap the value with `.use_id(..)` / `.self_id()`.
+help: the following other types implement trait `Identifiable`
+  --> $WORKSPACE/core/src/foundation/id.rs
+   |
+   | / impl<T, F, Id> Identifiable for UseId<T, F>
+   | | where
+   | |     F: Fn(&T) -> Id,
+   | |     Id: Ord + Hash + Clone,
+   | |___________________________^ `UseId<T, F>`
+...
+   |   impl<T: Hash + Ord + Clone> Identifiable for SelfId<T> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SelfId<T>`
+   |
+  ::: $WORKSPACE/src/component/table.rs
+   |
+   |   impl Identifiable for TableColumn {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TableColumn`
+note: required by a bound in `waterui::component::lazy::Lazy::for_each`
+  --> $WORKSPACE/src/component/lazy.rs
+   |
+   |     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
+   |            -------- required by a bound in this associated function
+...
+   |         C::Item: Identifiable,
+   |                  ^^^^^^^^^^^^ required by this bound in `Lazy::for_each`

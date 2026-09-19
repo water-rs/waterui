@@ -34,6 +34,7 @@ use fmt::Debug;
 
 use alloc::{rc::Rc, vec::Vec};
 use nami::watcher::BoxWatcherGuard;
+use smallvec::SmallVec;
 
 /// The logical horizontal direction used by layout containers.
 ///
@@ -516,6 +517,23 @@ impl ViewDimensions {
     }
 }
 
+/// A child's frame and the size proposal selected to produce its layout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SubviewPlacement {
+    /// The child frame in the parent layout's coordinate space.
+    pub frame: Rect,
+    /// The proposal used to measure and recursively place the child; it is not inferred from the frame.
+    pub proposal: ProposalSize,
+}
+
+impl SubviewPlacement {
+    /// Pairs a placed frame with its selected measurement proposal.
+    #[must_use]
+    pub const fn new(frame: Rect, proposal: ProposalSize) -> Self {
+        Self { frame, proposal }
+    }
+}
+
 /// A child view together with its placed frame inside a container.
 #[derive(Clone, Copy)]
 pub struct PlacedSubview<'a> {
@@ -523,12 +541,15 @@ pub struct PlacedSubview<'a> {
     pub view: &'a dyn SubView,
     /// The child frame in container-local coordinates.
     pub frame: Rect,
+    /// The proposal selected for this child's placement.
+    pub proposal: ProposalSize,
 }
 
 impl Debug for PlacedSubview<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PlacedSubview")
             .field("frame", &self.frame)
+            .field("proposal", &self.proposal)
             .finish_non_exhaustive()
     }
 }
@@ -536,17 +557,18 @@ impl Debug for PlacedSubview<'_> {
 impl<'a> PlacedSubview<'a> {
     /// Creates a placed subview.
     #[must_use]
-    pub const fn new(view: &'a dyn SubView, frame: Rect) -> Self {
-        Self { view, frame }
+    pub const fn new(view: &'a dyn SubView, placement: SubviewPlacement) -> Self {
+        Self {
+            view,
+            frame: placement.frame,
+            proposal: placement.proposal,
+        }
     }
 
     /// Returns the child's dimensions for its placed size proposal.
     #[must_use]
     pub fn dimensions(&self) -> ViewDimensions {
-        self.view.measure(ProposalSize::new(
-            Some(self.frame.width()),
-            Some(self.frame.height()),
-        ))
+        self.view.measure(self.proposal)
     }
 
     /// Returns the resolved horizontal guide in container coordinates.
@@ -789,9 +811,10 @@ pub fn with_memoized_children<R>(
     children: &[&dyn SubView],
     pass: impl FnOnce(&[&dyn SubView]) -> R,
 ) -> R {
-    let memoized: Vec<MemoizedSubView<'_>> =
+    let memoized: SmallVec<[MemoizedSubView<'_>; 4]> =
         children.iter().copied().map(MemoizedSubView::new).collect();
-    let refs: Vec<&dyn SubView> = memoized.iter().map(|child| child as &dyn SubView).collect();
+    let refs: SmallVec<[&dyn SubView; 4]> =
+        memoized.iter().map(|child| child as &dyn SubView).collect();
     pass(&refs)
 }
 
@@ -834,14 +857,24 @@ pub trait Layout: Debug + Any {
 
     /// Place children within the given bounds.
     ///
-    /// Called after sizing is complete. Returns a rect for each child
-    /// specifying its position and size within `bounds`.
+    /// Called after sizing is complete. `proposal` is the measurement input
+    /// selected for this layout — the proposal it was asked to fit — never the
+    /// last probe it sent a child or a proposal converted back from `bounds`.
+    /// Returns one [`SubviewPlacement`] per child, in exactly the order
+    /// `children` was given; each placement retains the proposal the child was
+    /// measured and recursively placed with.
     ///
     /// # Arguments
     ///
     /// * `bounds` - The rectangle this layout should fill
+    /// * `proposal` - The size proposal selected to measure this layout
     /// * `children` - References to child proxies (may query sizes again)
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect>;
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement>;
 
     /// Returns an explicit horizontal guide for this container, if any.
     fn explicit_horizontal(
@@ -910,6 +943,11 @@ pub trait Layout: Debug + Any {
 /// Children are memoized for the duration of the call (see
 /// [`with_memoized_children`]): sizing, placement and guide resolution all probe
 /// the same children, so without it each child is measured several times over.
+///
+/// Only finite measurements resolve explicit guides: a maximum-size probe may
+/// answer with an unbounded extent, and placing children or resolving guides
+/// against infinite geometry is meaningless, so an infinite axis returns the
+/// measured size without calling `place` at all.
 #[must_use]
 pub fn measure_layout(
     layout: &dyn Layout,
@@ -927,12 +965,15 @@ fn measure_layout_memoized(
     children: &[&dyn SubView],
 ) -> ViewDimensions {
     let size = layout.size_that_fits(proposal, children);
+    if size.width.is_infinite() || size.height.is_infinite() {
+        return ViewDimensions::new(size);
+    }
     let bounds = Rect::from_size(size);
-    let child_rects = layout.place(bounds, children);
-    let placed_subviews: Vec<PlacedSubview<'_>> = children
+    let child_placements = layout.place(bounds, proposal, children);
+    let placed_subviews: SmallVec<[PlacedSubview<'_>; 4]> = children
         .iter()
-        .zip(child_rects.iter().copied())
-        .map(|(view, frame)| PlacedSubview::new(*view, frame))
+        .zip(child_placements.iter().copied())
+        .map(|(view, placement)| PlacedSubview::new(*view, placement))
         .collect();
 
     let mut dimensions = ViewDimensions::new(size);
@@ -1632,5 +1673,143 @@ mod tests {
 
         assert_eq!(memo.priority(), inner.priority());
         assert_eq!(memo.stretch_axis(), inner.stretch_axis());
+    }
+
+    /// A leaf whose size ignores the proposal but whose `Leading` guide marks
+    /// the proposal it was measured with: `1` for an unspecified width, `2`
+    /// for a concrete one.
+    struct GuideProbe;
+
+    impl SubView for GuideProbe {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            let marker = if proposal.width.is_none() { 1.0 } else { 2.0 };
+            ViewDimensions::new(Size::new(160.0, 20.0))
+                .with_horizontal(HorizontalAlignment::Leading, marker)
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
+        }
+
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn placed_subview_measures_selected_proposal_not_frame() {
+        let frame = Rect::new(Point::zero(), Size::new(160.0, 20.0));
+        let unspecified = ProposalSize::UNSPECIFIED;
+        let fixed = ProposalSize::new(Some(160.0), Some(20.0));
+
+        let placed_unspecified =
+            PlacedSubview::new(&GuideProbe, SubviewPlacement::new(frame, unspecified));
+        let placed_fixed = PlacedSubview::new(&GuideProbe, SubviewPlacement::new(frame, fixed));
+
+        assert_eq!(placed_unspecified.proposal, unspecified);
+        assert_eq!(placed_fixed.proposal, fixed);
+        assert_eq!(
+            placed_unspecified
+                .dimensions()
+                .explicit_horizontal(HorizontalAlignment::Leading),
+            Some(1.0),
+            "the same frame must not re-derive a proposal: the unspecified one was selected"
+        );
+        assert_eq!(
+            placed_fixed
+                .dimensions()
+                .explicit_horizontal(HorizontalAlignment::Leading),
+            Some(2.0),
+            "the same frame must not re-derive a proposal: the fixed one was selected"
+        );
+    }
+
+    /// A container that records every proposal handed to `place` and places
+    /// each child at the full bounds under that same proposal.
+    #[derive(Debug)]
+    struct RecordingLayout {
+        proposals: core::cell::RefCell<Vec<ProposalSize>>,
+    }
+
+    impl Layout for RecordingLayout {
+        fn size_that_fits(&self, _proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+            Size::new(160.0, 20.0)
+        }
+
+        fn place(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+            children: &[&dyn SubView],
+        ) -> Vec<SubviewPlacement> {
+            self.proposals.borrow_mut().push(proposal);
+            children
+                .iter()
+                .map(|_| SubviewPlacement::new(bounds, proposal))
+                .collect()
+        }
+
+        fn explicit_horizontal(
+            &self,
+            alignment: HorizontalAlignment,
+            _bounds: Rect,
+            children: &[PlacedSubview<'_>],
+        ) -> Option<f32> {
+            children.first()?.explicit_horizontal(alignment)
+        }
+    }
+
+    #[test]
+    fn measure_layout_forwards_selected_proposal_to_placement() {
+        let layout = RecordingLayout {
+            proposals: core::cell::RefCell::new(Vec::new()),
+        };
+        let child = GuideProbe;
+        let children: [&dyn SubView; 1] = [&child];
+
+        let proposals = [
+            ProposalSize::UNSPECIFIED,
+            ProposalSize::new(Some(160.0), Some(20.0)),
+            ProposalSize::UNSPECIFIED,
+        ];
+        let guides: Vec<Option<f32>> = proposals
+            .iter()
+            .map(|proposal| {
+                measure_layout(&layout, *proposal, &children)
+                    .explicit_horizontal(HorizontalAlignment::Leading)
+            })
+            .collect();
+
+        assert_eq!(guides, [Some(1.0), Some(2.0), Some(1.0)]);
+        assert_eq!(*layout.proposals.borrow(), proposals.to_vec());
+    }
+
+    /// A container whose measurement is unbounded; `place` must never run for
+    /// a maximum-size probe because placement needs finite geometry.
+    #[derive(Debug)]
+    struct InfiniteLayout;
+
+    impl Layout for InfiniteLayout {
+        fn size_that_fits(&self, _proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+            Size::new(f32::INFINITY, 20.0)
+        }
+
+        fn place(
+            &self,
+            _bounds: Rect,
+            _proposal: ProposalSize,
+            _children: &[&dyn SubView],
+        ) -> Vec<SubviewPlacement> {
+            panic!("an infinite measurement must never reach placement")
+        }
+    }
+
+    #[test]
+    fn maximum_measurement_does_not_place_unbounded_geometry() {
+        let dimensions = measure_layout(&InfiniteLayout, ProposalSize::INFINITY, &[]);
+
+        assert_eq!(dimensions.size, Size::new(f32::INFINITY, 20.0));
+        assert!(dimensions.explicit_horizontal_guides().next().is_none());
+        assert!(dimensions.explicit_vertical_guides().next().is_none());
     }
 }

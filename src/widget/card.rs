@@ -3,7 +3,7 @@ use crate::prelude::*;
 use crate::style::{Shadow, Vector};
 use waterui_graphics::color::Color;
 use waterui_layout::stack::vstack;
-use waterui_shape::{RoundedRectangle, ShapeExt};
+use waterui_shape::{FixedRoundedRectangle, ShapeExt};
 use waterui_text::{IntoText, font::Title};
 
 /// Visual style for a [`Card`].
@@ -46,10 +46,9 @@ pub struct CardStyleTokens {
     pub outline_color: Color,
     /// Border width.
     pub outline_width: f32,
-    /// Corner radius in logical units for borders.
+    /// Corner radius in logical units — the same length traces the fill, the
+    /// border, and the shadow.
     pub corner_radius: f32,
-    /// Normalized corner radius for clipping.
-    pub clip_radius: f32,
     /// Shadow color.
     pub shadow_color: Color,
     /// Shadow blur radius.
@@ -88,7 +87,7 @@ pub struct Card<Content> {
     style: CardStyle,
 }
 
-impl<Content> Card<Content> {
+impl<Content: View> Card<Content> {
     // Creates a new card with the specified content.
 
     /// # Arguments
@@ -136,18 +135,21 @@ where
             tokens.shadow_color.clone(),
             Vector::new(0.0, tokens.shadow_offset_y),
             tokens.shadow_radius,
+            tokens.corner_radius,
         );
         let ambient_shadow = Shadow::new(
             tokens.ambient_shadow_color.clone(),
             Vector::new(0.0, tokens.ambient_shadow_offset_y),
             tokens.ambient_shadow_radius,
+            tokens.corner_radius,
         );
         AnyView::new(
             vstack((self.title, self.subtitle, self.content))
                 .spacing(theme.content_spacing)
                 .padding_with(theme.content_padding)
                 .background(
-                    RoundedRectangle::new(tokens.clip_radius).fill(tokens.container_color.clone()),
+                    FixedRoundedRectangle::new(tokens.corner_radius)
+                        .fill(tokens.container_color.clone()),
                 )
                 .border_with(
                     Border::new(tokens.outline_color.clone(), tokens.outline_width)
@@ -163,6 +165,6 @@ where
 ///
 /// # Arguments
 /// * `content` - The main content of the card.
-pub const fn card<Content>(content: Content) -> Card<Content> {
+pub const fn card<Content: View>(content: Content) -> Card<Content> {
     Card::new(content)
 }

@@ -36,6 +36,11 @@ fn extract_or_panic<T: Extractor>(env: &Environment, state: &mut ExtractionState
 }
 
 /// A repeatable handler that can extract arguments from the environment.
+#[diagnostic::on_unimplemented(
+    message = "this handler's parameters cannot be extracted from the environment",
+    label = "expected a handler whose parameters implement `Extractor`",
+    note = "A WaterUI handler takes no parameters or parameters implementing `Extractor`: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, and `impl_extractor!` marks a `Clone` type installed as an environment value. Repeated parameters of the same state type bind positionally — the first `.state()` call feeds the first parameter of that type."
+)]
 pub trait Handler<Args, T = ()>: 'static {
     /// Invokes the handler using values extracted from `env`.
     fn call(&mut self, env: &Environment) -> T;

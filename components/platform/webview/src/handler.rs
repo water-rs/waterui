@@ -1,9 +1,9 @@
 use std::{any::Any, pin::Pin, rc::Rc};
 
 use cookie::Cookie;
+use suiteki::Str;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Computed, Signal, impl_debug};
-use waterui_str::Str;
 
 use crate::{BackendEvent, WatcherGuard};
 use waterui_url::Url;
@@ -118,6 +118,17 @@ webview_handle! {
 
         /// Sets a cookie for the web view.
         fn set_cookie(&self, cookie: Cookie<'static>);
+
+        /// The origin this view serves bundled assets under, when it was
+        /// opened with an [`AssetServer`](crate::AssetServer).
+        ///
+        /// The value is the engine's own answer, not a guess: `waterui://localhost`
+        /// on the `WebKit` family and CEF, `https://waterui.localhost` where only
+        /// `https` can be a secure context. `None` when the view was created
+        /// without an asset server — or when the engine has no interception
+        /// facility at all, which [`WebView::open_assets`](crate::WebView::open_assets)
+        /// treats as a configuration error.
+        fn asset_origin(&self) -> Option<Url>;
     }
 
     // The four below change shape at the boundary: the public form takes or

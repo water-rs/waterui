@@ -4,8 +4,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::fmt;
+use core::time::Duration;
 use num_traits::ToPrimitive;
-use std::time::Instant;
 
 use encase::{ShaderSize, UniformBuffer};
 
@@ -188,6 +188,7 @@ impl Default for AnimatedMeshGradientConfig {
 
 mod shader_types {
     use super::ANIMATED_MESH_PALETTE_LEN;
+    use crate::shader_types::{ShaderVec2, ShaderVec4};
     use encase::ShaderType;
 
     #[derive(Debug, Clone, Copy, ShaderType)]
@@ -196,29 +197,34 @@ mod shader_types {
         pub(super) speed: f32,
         pub(super) warp: f32,
         pub(super) _pad0: f32,
-        pub(super) resolution: [f32; 2],
-        pub(super) _pad1: [f32; 2],
-        pub(super) palette: [[f32; 4]; ANIMATED_MESH_PALETTE_LEN],
+        // `ShaderVec2`/`ShaderVec4`, not `[f32; N]`: encase maps a Rust array
+        // to a WGSL `array`, whose stride must be a multiple of 16 in the
+        // uniform address space — a plain array makes the whole struct
+        // illegal there. The shader vectors register as real WGSL vectors.
+        pub(super) resolution: ShaderVec2,
+        pub(super) _pad1: ShaderVec2,
+        pub(super) palette: [ShaderVec4; ANIMATED_MESH_PALETTE_LEN],
     }
 }
 
+use crate::shader_types::{ShaderVec2, ShaderVec4};
 use shader_types::AnimatedMeshUniforms;
 
 struct AnimatedMeshRenderer {
     config: AnimatedMeshGradientConfig,
-    palette_gpu: [[f32; 4]; ANIMATED_MESH_PALETTE_LEN],
+    palette_gpu: [ShaderVec4; ANIMATED_MESH_PALETTE_LEN],
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     pipeline_format: Option<wgpu::TextureFormat>,
-    start_time: Instant,
+    start: Option<Duration>,
 }
 
 impl AnimatedMeshRenderer {
     fn new(config: AnimatedMeshGradientConfig) -> Self {
-        let mut palette_gpu = [[0.0; 4]; ANIMATED_MESH_PALETTE_LEN];
+        let mut palette_gpu = [ShaderVec4::ZERO; ANIMATED_MESH_PALETTE_LEN];
         for (dst, src) in palette_gpu.iter_mut().zip(config.palette.iter()) {
-            *dst = [src.red, src.green, src.blue, src.opacity];
+            *dst = ShaderVec4::from_array([src.red, src.green, src.blue, src.opacity]);
         }
 
         Self {
@@ -228,7 +234,7 @@ impl AnimatedMeshRenderer {
             uniform_buffer: None,
             bind_group: None,
             pipeline_format: None,
-            start_time: Instant::now(),
+            start: None,
         }
     }
 }
@@ -309,7 +315,7 @@ impl GpuView for AnimatedMeshRenderer {
         self.uniform_buffer = Some(uniform_buffer);
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
-        self.start_time = Instant::now();
+        self.start = None;
         core::future::ready(())
     }
 
@@ -331,14 +337,18 @@ impl GpuView for AnimatedMeshRenderer {
             return;
         };
 
-        let elapsed = self.start_time.elapsed().as_secs_f32();
+        // The frame clock comes from the backend, so it works on targets where
+        // `std::time::Instant` does not exist (wasm32) and stays deterministic
+        // under preview/offscreen pumping.
+        let start = *self.start.get_or_insert_with(|| frame.elapsed());
+        let elapsed = frame.elapsed().saturating_sub(start).as_secs_f32();
         let uniforms = AnimatedMeshUniforms {
             time: elapsed,
             speed: self.config.speed,
             warp: self.config.warp,
             _pad0: 0.0,
-            resolution: [u32_to_f32(frame.width), u32_to_f32(frame.height)],
-            _pad1: [0.0; 2],
+            resolution: ShaderVec2::new(u32_to_f32(frame.width), u32_to_f32(frame.height)),
+            _pad1: ShaderVec2::ZERO,
             palette: self.palette_gpu,
         };
 
@@ -417,10 +427,34 @@ impl View for AnimatedMeshGradient {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.inner
     }
+
+    /// Resolves to `GpuSurface`, which stretches on both axes.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
 }
 
 fn u32_to_f32(value: u32) -> f32 {
     value
         .to_f32()
         .expect("animated_mesh_gradient: dimension must be representable as f32")
+}
+
+#[cfg(all(test, feature = "gpu"))]
+mod uniform_layout_tests {
+    use super::shader_types::AnimatedMeshUniforms;
+    use encase::ShaderType;
+
+    /// `AnimatedMeshUniforms` must be legal in the uniform address space.
+    ///
+    /// WGSL requires an array in a uniform buffer to have a stride that is a
+    /// multiple of 16, and encase maps every Rust array to a WGSL array — so a
+    /// `[f32; 2]` field silently makes the struct illegal. Nothing catches that
+    /// until the first draw calls `UniformBuffer::write`, which is deep inside
+    /// the GPU path and only reachable once a `GpuView`'s async setup has
+    /// completed. This asserts the layout up front instead.
+    #[test]
+    fn animated_mesh_uniforms_are_uniform_address_space_compatible() {
+        AnimatedMeshUniforms::assert_uniform_compat();
+    }
 }

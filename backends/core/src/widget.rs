@@ -1,7 +1,7 @@
 //! Widget chrome contracts shared by rendering backends and theme packages.
 
 use core::time::Duration;
-use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
+use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii, Vec2};
 use nami::signal::IntoComputed;
 use waterui_controls::button::{ButtonSize, ButtonStyle};
 use waterui_controls::toggle::ToggleStyle;
@@ -61,6 +61,19 @@ pub trait DrawContext {
     fn fill_path(&mut self, path: &BezPath, brush: &Brush);
     /// Stroke a Bezier path.
     fn stroke_path(&mut self, path: &BezPath, brush: &Brush, width: f64);
+    /// Draw a blurred shadow behind a rounded rectangle.
+    ///
+    /// Elevated surfaces — menus, dialogs, pickers — cast their elevation
+    /// through this primitive rather than filling the rect itself, so the
+    /// shadow follows `radii` instead of a hard-cornered bounds rect.
+    fn draw_shadow(
+        &mut self,
+        rect: Rect,
+        radii: RoundedRectRadii,
+        offset: Vec2,
+        blur: f64,
+        color: peniko::Color,
+    );
     /// Push a temporary drawing layer.
     fn push_layer(&mut self, alpha: f32, clip: Option<&Rect>);
     /// Push a temporary drawing layer clipped to a rounded rectangle.
@@ -670,6 +683,10 @@ pub struct PickerMetrics {
     pub popup_row_height: f64,
     /// Popup menu corner radius.
     pub popup_corner_radius: f64,
+    /// Minimum width of one segmented-picker segment, including its
+    /// `horizontal_inset` padding on both sides (M3 `ButtonDefaults.MinWidth`
+    /// is 58dp per segment; unused by non-segmented styles).
+    pub segment_min_width: f64,
 }
 
 /// Slider layout metrics.
@@ -1009,13 +1026,19 @@ pub struct BadgeMetrics {
     pub large_size: f64,
     /// Horizontal padding inside a large labeled badge.
     pub large_horizontal_padding: f64,
-    /// Horizontal offset from the content center for a small badge.
+    /// Inset of the badge's leading edge from the content's trailing edge for
+    /// a small badge. Renderers place the badge's leading edge at
+    /// `trailing_edge - small_offset_x` in left-to-right layout and mirror it
+    /// to the leading edge in right-to-left layout.
     pub small_offset_x: f64,
-    /// Vertical offset from the content top for a small badge.
+    /// Downward overlap of the badge's bottom edge past the content's top edge
+    /// for a small badge: the badge's bottom sits at `top + small_offset_y`.
     pub small_offset_y: f64,
-    /// Horizontal offset from the content center for a large badge.
+    /// Inset of the badge's leading edge from the content's trailing edge for
+    /// a large badge; mirrors to the leading edge in right-to-left layout.
     pub large_offset_x: f64,
-    /// Vertical offset from the content top for a large badge.
+    /// Downward overlap of the badge's bottom edge past the content's top edge
+    /// for a large badge: the badge's bottom sits at `top + large_offset_y`.
     pub large_offset_y: f64,
 }
 
@@ -1332,12 +1355,16 @@ pub trait WidgetTheme {
         _is_last: bool,
     ) {
     }
-    /// Draw one segmented picker state layer.
+    /// Draw one segmented picker state layer. `is_first`/`is_last` select the
+    /// item-shape radii the layer must be clipped to: the first item rounds
+    /// its leading side, the last its trailing side, middle items are square.
     fn draw_segmented_picker_state_layer(
         &self,
         _draw: &mut dyn DrawContext,
         _bounds: Rect,
         _selected: bool,
+        _is_first: bool,
+        _is_last: bool,
         _state: WidgetInteractionState,
     ) {
     }

@@ -1,18 +1,27 @@
 name: Nightly
 
-# The full matrix (#379), once a day against `dev` and on demand. Every
-# check that a pull request used to pay for on every push and that a change
-# cannot break in the default-features shape lives here: every clippy shape,
-# macOS and Windows, the all-features runs, the macOS suites, the examples
-# on macOS, coverage and the `cargo hack --each-feature` sweep. `ci.yml` is
-# the per-change gate. A red nightly opens one tracking issue and keeps it
-# current instead of failing a run nobody is watching.
+# The framework's own test run (#923): the full matrix (#379), once a day
+# against `dev` and on demand. Every check that a pull request used to pay
+# for on every push and that a change cannot break in the default-features
+# shape lives here: the workspace tests and doctests, every clippy shape,
+# macOS and Windows, the all-features runs, the macOS suites, the examples,
+# the web view bridge's JavaScript suite, coverage and the `cargo hack
+# --each-feature` sweep. `ci.yml` is the per-change gate. The backend
+# repositories drive the examples on their platforms in their own nightlies;
+# they do not run this suite, and nothing else does either.
+#
+# A green run certifies its commit as an immutable `nightly-*` prerelease,
+# which `water channel nightly` resolves and the `Nightly healthy` check in
+# ci.yml requires on a pull request into `main`: a red nightly blocks the
+# release, not integration on `dev`. A red scheduled run opens one tracking
+# issue and keeps it current instead of failing a run nobody is watching.
 
 on:
-  # Off-peak UTC, staggered against the bench (05:41) and dependency (Mon
-  # 09:00) schedules so the runs do not compete for the org's job cap.
+  # Off-peak UTC, after the backend nightlies (02:00–06:47 UTC) have left
+  # the organization's concurrent-job cap and clear of the Monday 09:00
+  # dependency check.
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "11 8 * * *"
   workflow_dispatch:
 
 permissions:
@@ -31,7 +40,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # rust-cache is the only cache layer (see the note in ci.yml).
+  # cargo/rustup retry network failures three times by default; ten
+  # matches the budget install-action sets for its own downloads.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+  # rust-cache and the install-tool binary caches are the only cache
+  # layers (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
 
 jobs:
@@ -57,18 +71,6 @@ jobs:
     # it belongs to the nightly matrix, not to any per-change gate.
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - uses: ./.github/actions/setup-linux-deps
-        # The instrumented run executes the same GPU-backed snapshot tests as
-        # Test / ubuntu-latest, so it needs the same software Vulkan ICD. Without
-        # it wgpu picks the EGL/llvmpipe GL adapter instead, which is not the
-        # backend those tests are baselined against.
-        with:
-          gpu: "true"
       # Its own key: an instrumented build shares no artifacts with the
       # ordinary ones, so storing it under the shared key would just overwrite
       # a useful tarball with one nothing else can restore. The target dir is
@@ -78,14 +80,28 @@ jobs:
       # reused by every dev push. Coverage recompiles each run, as before,
       # while restoring only the shared Cargo dependency sources. The full
       # instrumented suite and its upload are unchanged by that allocation.
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
+          components: llvm-tools-preview
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
           save-if: false
           cache-on-failure: true
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: taiki-e/install-action@nextest
+      - uses: ./.github/actions/setup-linux-deps
+        # The instrumented run executes the same GPU-backed snapshot tests as
+        # Test / ubuntu-latest, so it needs the same software Vulkan ICD. Without
+        # it wgpu picks the EGL/llvmpipe GL adapter instead, which is not the
+        # backend those tests are baselined against.
+        with:
+          gpu: "true"
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-llvm-cov@0.9.1
+          path: ~/.cargo/bin/cargo-llvm-cov*
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.145
+          path: ~/.cargo/bin/cargo-nextest*
       - name: Prepare coverage target dir
         run: |
           mkdir -p target/llvm-cov-target
@@ -94,7 +110,11 @@ jobs:
       # cargo's build profile. The ci profile matters here because it disables
       # fail-fast — without it a single failing test ends the run and hides the
       # state of every test after it (see #153, where one failure masked 632).
-      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --features waterui/all --lcov --output-path lcov.info
+      # The `trybuild_*` binaries shell out to a fixture build that does not
+      # depend on the feature set and already ran in `test`; an instrumented
+      # rebuild of the same fixtures would measure nothing extra (trybuild's
+      # own target dir is not instrumented) and cost a cold framework compile.
+      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --features waterui/all --lcov --output-path lcov.info -E 'not binary(/^trybuild_/)'
         env:
           NEXTEST_PROFILE: ci
       - uses: codecov/codecov-action@v4
@@ -108,25 +128,27 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: ./.github/actions/setup-linux-deps
       # The single writer of `ci-ubuntu` (see Hygiene above).
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
           save-if: false
           cache-on-failure: true
-      - uses: taiki-e/install-action@cargo-hack
+      - uses: ./.github/actions/setup-linux-deps
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-hack@0.6.45
+          path: ~/.cargo/bin/cargo-hack*
       # `--feature-powerset` is deliberately absent. The workspace has ~33_800
       # feature combinations (waterui alone has 14 features = 16_384), so the
       # sweep either ran for 105 minutes or was cancelled at ~27 minutes having
       # proved nothing — it produced no signal in any recent run. `--each-feature`
       # is linear and catches the failure that actually happens: a feature that
       # does not build on its own.
-      - run: cargo hack check --locked --each-feature
+      # `--profile=ci-check` in the `=` form: cargo-hack forwards unknown flags
+      # to cargo verbatim, and only `flag=value` survives its parser.
+      - run: cargo hack check --locked --each-feature --profile=ci-check
 
   test-report:
     name: Test Report
@@ -160,13 +182,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-          submodules: recursive
       - name: Prepare the tested snapshot
         id: snapshot
-        run: python3 .github/scripts/prepare_nightly.py
+        run: python3 .github/scripts/framework_manifest.py nightly
       - name: Upload immutable snapshot assets
         if: steps.snapshot.outputs.eligible == 'true'
-        uses: softprops/action-gh-release@v2.3.2
+        uses: softprops/action-gh-release@v3.0.3
         with:
           tag_name: ${{ steps.snapshot.outputs.tag }}
           target_commitish: ${{ steps.snapshot.outputs.revision }}
@@ -181,7 +202,7 @@ jobs:
           body: |
             Certified framework revision: ${{ steps.snapshot.outputs.revision }}
             Full test run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-            framework.json records the tested dependency lock and submodule revisions.
+            framework.json records the tested dependency lock and backend revisions.
       - name: Publish the complete certification
         if: steps.snapshot.outputs.eligible == 'true'
         env:
@@ -189,7 +210,7 @@ jobs:
         run: gh release edit "$TAG" --draft=false --prerelease --latest=false
 
   # One issue per broken nightly, updated in place while it stays red, so a
-  # failure that nobody was watching at 03:17 UTC is on the board by morning.
+  # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
     needs: [test, windows, coverage, feature-checks, webview-js, promote]

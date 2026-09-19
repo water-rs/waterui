@@ -36,7 +36,8 @@ my-app/
 ├── Water.toml           # WaterUI project manifest
 ├── Cargo.toml
 ├── assets/
-│   └── Icon.svg         # single source for every platform icon
+│   ├── Icon.svg         # single source for every platform icon
+│   └── Launch.svg       # optional: launch screen artwork
 ├── i18n/                # optional: translation catalogs, one TOML per locale
 │   └── en-US.toml       #   (see references/i18n.md)
 └── src/
@@ -55,7 +56,8 @@ pub fn app(env: Environment) -> App {
 ```
 
 For state that must exist before the first view, build it in `app` and clone into the
-builder — this is also how you inject app-wide state that handlers reach with `State<T>`:
+builder — this is also how you inject app-wide state that handlers reach as a bare
+`#[state]`-marked parameter:
 
 ```rust
 pub fn app(env: Environment) -> App {
@@ -105,6 +107,10 @@ foreground = "#F5F5F7"
 muted_foreground = "#A0A0AE"
 accent = "#4A84F6"
 accent_foreground = "#FFFFFF"
+
+[launch]
+background = "#0B0B0F"           # optional: defaults to theme.background
+background_dark = "#000000"      # optional: defaults to background
 
 [permissions.internet]
 enable = true
@@ -167,6 +173,29 @@ start with the WaterUI logo, so replacing that one file rebrands the app everywh
 
 Everything else under `assets/` is bundled as a regular asset.
 
+## Launch screen
+
+The launch screen is what the platform shows from the tap on the icon until the app's
+first frame. No Rust runs while it is visible — the wasm is still downloading, the dylib
+is still loading — so it is declared once in `Water.toml` and staged by the CLI, never
+built as a view. `[launch]` carries the background for the light and dark appearance;
+one optional square `Launch.svg` (or `Launch.png`) at the root of `assets/` is the
+artwork, sized and placed by each platform's own rules. Colors are `#RRGGBB`, and a
+malformed one fails when the manifest is read.
+
+Defaults follow each platform's own convention rather than one shared look:
+
+| Platform | Without `[launch]` | With `Launch.*` |
+| --- | --- | --- |
+| iOS | system background, no artwork (a launch screen resembles the first screen) | centered, inside the safe area |
+| Android | the OS default: the launcher icon on the window background | shown as the splash icon, which Android masks to a circle |
+| Web (Hydrolysis) | theme background, the app icon, and a download progress bar | replaces the icon |
+| macOS, GTK, desktop Hydrolysis | nothing | ignored |
+
+Desktop platforms have no launch screen and take nothing from `[launch]`: the window
+appears with the app's first frame already in it (Hydrolysis keeps it hidden until then,
+macOS and GTK create it after the tree exists), so there is no moment for one to show.
+
 ## Running and building
 
 ```bash
@@ -217,8 +246,10 @@ You do not need `tracing` in your own `Cargo.toml`: the whole crate is re-export
 `waterui::log`:
 
 ```rust
-waterui::log::debug!(?value, "recomputed layout");
-waterui::log::info!("saved");
+use waterui::log::{debug, info};
+
+debug!(?value, "recomputed layout");
+info!("saved");
 ```
 
 ```bash

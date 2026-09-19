@@ -12,9 +12,9 @@ categories = ["gui"]
 
 [dependencies]
 waterui-icon.workspace = true
-waterui-str.workspace = true
+suiteki.workspace = true
 
 [lints]
 workspace = true
 [package.metadata.cargo-machete]
-ignored = ["waterui-str"]
+ignored = ["suiteki"]

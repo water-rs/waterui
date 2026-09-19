@@ -28,6 +28,7 @@ use core::cell::RefCell;
 use core::marker::PhantomData;
 use nami::watcher::Context;
 use nami::{Signal, watcher::Metadata as WatcherMetadata};
+use waterui_macros::state;
 
 /// A dynamic view that can be updated.
 ///
@@ -43,6 +44,11 @@ raw_view!(Dynamic);
 /// A handler for updating a Dynamic view.
 ///
 /// Provides methods to set new content for the associated Dynamic view.
+///
+/// Extracts through `State<Self>`, so `.state(&handler)` injects it and a bare
+/// `handler: DynamicHandler` parameter shares positions with
+/// `State<DynamicHandler>` ones.
+#[state]
 #[derive(Clone)]
 pub struct DynamicHandler(Rc<RefCell<DynamicHandlerState>>);
 

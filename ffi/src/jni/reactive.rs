@@ -38,7 +38,8 @@ const RESOLVED_COLOR_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(FFFF
 const BITMAP_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/BitmapStruct");
 const BITMAP_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(IILjava/nio/ByteBuffer;J)V");
 const RESOLVED_FONT_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/ResolvedFontStruct");
-const RESOLVED_FONT_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(FILjava/lang/String;)V");
+const RESOLVED_FONT_CTOR: &MethodSignature<'static, 'static> =
+    &jni_sig!("(FILjava/lang/String;IFF)V");
 const DATE_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/DateStruct");
 const DATE_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(III)V");
 const DATE_TIME_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/DateTimeStruct");
@@ -126,6 +127,9 @@ fn create_resolved_font_struct<'local>(
     size: f32,
     weight: i32,
     family: &str,
+    design: i32,
+    line_height: f32,
+    letter_spacing: f32,
 ) -> JObject<'local> {
     let family: JObject<'local> = if family.is_empty() {
         JObject::null()
@@ -141,6 +145,9 @@ fn create_resolved_font_struct<'local>(
             JValue::Float(size),
             JValue::Int(weight),
             JValue::Object(&family),
+            JValue::Int(design),
+            JValue::Float(line_height),
+            JValue::Float(letter_spacing),
         ],
     )
     .expect("Failed to create ResolvedFontStruct")
@@ -698,13 +705,24 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedF
     let resolved: ResolvedFont = computed.get();
     let ffi = resolved.into_ffi();
 
-    // Convert weight enum to int (the enum repr(C) matches Java expectations)
+    // The enums are repr(C), so their discriminants are the ordinals Kotlin
+    // expects.
     let weight_int = ffi.weight as i32;
+    let design_int = ffi.design as i32;
     // SAFETY: `ffi` is the owned FFI font this call just produced, so its family
     // string is moved out exactly once.
     let family: waterui::Str = unsafe { crate::IntoRust::into_rust(ffi.family) };
     super::with_env(&mut env, |env| {
-        create_resolved_font_struct(env, ffi.size, weight_int, family.as_str()).into_raw()
+        create_resolved_font_struct(
+            env,
+            ffi.size,
+            weight_int,
+            family.as_str(),
+            design_int,
+            ffi.line_height,
+            ffi.letter_spacing,
+        )
+        .into_raw()
     })
 }
 
@@ -1242,6 +1260,9 @@ unsafe extern "C" fn watcher_call_resolved_font(
                 JValue::Float(value.size).as_jni(),
                 JValue::Int(value.weight as i32).as_jni(),
                 JValue::Object(&family).as_jni(),
+                JValue::Int(value.design as i32).as_jni(),
+                JValue::Float(value.line_height).as_jni(),
+                JValue::Float(value.letter_spacing).as_jni(),
             ],
         );
 

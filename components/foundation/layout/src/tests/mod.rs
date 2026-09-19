@@ -3,11 +3,16 @@
 //! These tests define the expected behavior of the layout system for various
 //! edge cases and ensure consistency across all layout containers.
 
+mod contract;
+
 use alloc::{format, vec, vec::Vec};
 use nami::Computed;
 
+use crate::spacer::Spacer;
 use crate::stack::{HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment};
-use crate::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions};
+use crate::{
+    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement, ViewDimensions,
+};
 
 // ============================================================================
 // Test Infrastructure
@@ -45,6 +50,28 @@ impl SubView for CompressibleView {
             proposed.clamp(self.floor, self.ideal.width)
         });
         ViewDimensions::new(Size::new(width, self.ideal.height))
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// The column counterpart of [`CompressibleView`]: shrinks to whatever
+/// main-axis extent a `VStack` proposes, down to `floor`, and keeps its width.
+pub struct CompressibleHeightView {
+    pub(crate) ideal: Size,
+    pub(crate) floor: f32,
+}
+
+impl SubView for CompressibleHeightView {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let height = proposal.height.map_or(self.ideal.height, |proposed| {
+            proposed.clamp(self.floor, self.ideal.height)
+        });
+        ViewDimensions::new(Size::new(self.ideal.width, height))
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
@@ -106,11 +133,64 @@ impl SubView for SpacerView {
         StretchAxis::Both
     }
     fn priority(&self) -> i32 {
-        0
+        Spacer::DEFAULT_LAYOUT_PRIORITY
     }
 }
 
-/// A mock axis-expanding view (like [`TextField`], Slider).
+/// A spacer with a minimum length, as the layout contract defines the leaf: it
+/// answers `min_length` on the stack's main axis whatever the proposal, zero on
+/// the cross axis, stretches along the main axis and sits in the lowest
+/// priority band. The floor a stack sees is therefore exactly `min_length`.
+struct MinLengthSpacerView {
+    min_length: f32,
+    axis: StretchAxis,
+}
+
+impl SubView for MinLengthSpacerView {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(match self.axis {
+            StretchAxis::Horizontal => Size::new(self.min_length, 0.0),
+            StretchAxis::Vertical => Size::new(0.0, self.min_length),
+            _ => unreachable!("MinLengthSpacerView models one physical stack axis"),
+        })
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        self.axis
+    }
+    fn priority(&self) -> i32 {
+        Spacer::DEFAULT_LAYOUT_PRIORITY
+    }
+}
+
+/// A child that fills its main axis from a content floor — a list or a scroll
+/// view with `intrinsic` points of content: it takes whatever it is offered
+/// above that floor and never reports less than it, at an explicit priority.
+struct ContentFillView {
+    intrinsic: f32,
+    axis: StretchAxis,
+    priority: i32,
+}
+
+impl SubView for ContentFillView {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let fill =
+            |proposed: Option<f32>| proposed.map_or(self.intrinsic, |p| p.max(self.intrinsic));
+        let size = match self.axis {
+            StretchAxis::Horizontal => Size::new(fill(proposal.width), self.intrinsic),
+            StretchAxis::Vertical => Size::new(self.intrinsic, fill(proposal.height)),
+            _ => unreachable!("ContentFillView models one physical fill axis"),
+        };
+        ViewDimensions::new(size)
+    }
+    fn stretch_axis(&self) -> StretchAxis {
+        self.axis
+    }
+    fn priority(&self) -> i32 {
+        self.priority
+    }
+}
+
+/// A zero-ideal fill leaf with an unbounded maximum width.
 /// Expands to fill width, has fixed height.
 /// Uses [`StretchAxis::Horizontal`] - stretches WIDTH only, not HEIGHT.
 struct HorizontalExpandingView {
@@ -119,7 +199,7 @@ struct HorizontalExpandingView {
 
 impl SubView for HorizontalExpandingView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        let width = proposal.width.unwrap_or(f32::INFINITY);
+        let width = proposal.width.unwrap_or(0.0);
         ViewDimensions::new(Size::new(width, self.height))
     }
     fn stretch_axis(&self) -> StretchAxis {
@@ -130,7 +210,7 @@ impl SubView for HorizontalExpandingView {
     }
 }
 
-/// A mock vertical-expanding view.
+/// A zero-ideal fill leaf with an unbounded maximum height.
 /// Expands to fill height, has fixed width.
 /// Uses [`StretchAxis::Vertical`] - stretches HEIGHT only, not WIDTH.
 struct VerticalExpandingView {
@@ -180,7 +260,7 @@ impl SubView for GuidedBoxView {
 
 impl SubView for VerticalExpandingView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        let height = proposal.height.unwrap_or(f32::INFINITY);
+        let height = proposal.height.unwrap_or(0.0);
         ViewDimensions::new(Size::new(self.width, height))
     }
     fn stretch_axis(&self) -> StretchAxis {
@@ -226,11 +306,11 @@ fn assert_rect_within_bounds(rect: &Rect, bounds: &Rect, msg: &str) {
     );
 }
 
-fn assert_no_overlap(rects: &[Rect], axis: &str) {
-    for i in 0..rects.len() {
-        for j in (i + 1)..rects.len() {
-            let r1 = &rects[i];
-            let r2 = &rects[j];
+fn assert_no_overlap(placements: &[SubviewPlacement], axis: &str) {
+    for i in 0..placements.len() {
+        for j in (i + 1)..placements.len() {
+            let r1 = &placements[i].frame;
+            let r2 = &placements[j].frame;
 
             let overlap = match axis {
                 "horizontal" => {
@@ -253,12 +333,18 @@ fn assert_no_overlap(rects: &[Rect], axis: &str) {
     }
 }
 
+/// A finite offer deliberately used by placement-only tests.
+/// Tests that measure first forward their actual selected proposal instead.
+fn bounded_proposal(bounds: Rect) -> ProposalSize {
+    ProposalSize::new(Some(bounds.width()), Some(bounds.height()))
+}
+
 // ============================================================================
 // HStack Tests
 // ============================================================================
 
 #[test]
-fn test_hstack_children_exceed_bounds() {
+fn test_hstack_children_exceed_bounds_bounded_proposal() {
     // Case: HStack { Text("123") Spacer() Text("234") }.frame(width: 100)
     // When children's intrinsic widths + spacing exceed bounds,
     // children should be compressed to fit.
@@ -282,23 +368,23 @@ fn test_hstack_children_exceed_bounds() {
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 40.0));
     let children: Vec<&dyn SubView> = vec![&mut text1, &mut spacer, &mut text2];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // All children must fit within bounds
-    for (i, rect) in rects.iter().enumerate() {
-        assert_rect_within_bounds(rect, &bounds, &format!("child {i}"));
+    for (i, placement) in placements.iter().enumerate() {
+        assert_rect_within_bounds(&placement.frame, &bounds, &format!("child {i}"));
     }
 
     // Spacer should have zero or minimal width since children exceed bounds
     assert!(
-        rects[1].width() <= 0.001,
+        placements[1].frame.width() <= 0.001,
         "Spacer should be zero when children exceed bounds, got {}",
-        rects[1].width()
+        placements[1].frame.width()
     );
 }
 
 #[test]
-fn test_hstack_single_child_exceeds_bounds() {
+fn test_hstack_single_child_exceeds_bounds_bounded_proposal() {
     // A child that answers every proposal with 200pt is stating it cannot be
     // narrower, so it overflows a 100pt row rather than being clamped — the same
     // thing `.frame(width: 200)` does inside a narrower stack in SwiftUI. A
@@ -315,18 +401,18 @@ fn test_hstack_single_child_exceeds_bounds() {
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 50.0));
     let children: Vec<&dyn SubView> = vec![&mut wide_child];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
-    assert_eq!(rects.len(), 1);
+    assert_eq!(placements.len(), 1);
     assert!(
-        (rects[0].width() - 200.0).abs() < 0.001,
+        (placements[0].frame.width() - 200.0).abs() < 0.001,
         "the child reports 200pt at every proposal, so it must keep 200pt, got {}",
-        rects[0].width()
+        placements[0].frame.width()
     );
 }
 
 #[test]
-fn test_hstack_multiple_children_total_exceeds_bounds() {
+fn test_hstack_multiple_children_total_exceeds_bounds_bounded_proposal() {
     // Three rigid children — each answers every proposal with 50pt, so each is
     // saying it cannot shrink. The row then overflows rather than crushing them:
     // a child's reported minimum is binding, exactly as a `.frame(width:)` row
@@ -350,30 +436,35 @@ fn test_hstack_multiple_children_total_exceeds_bounds() {
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 40.0));
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2, &mut child3];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Each child keeps the width it insisted on ...
-    for (index, rect) in rects.iter().enumerate() {
+    for (index, placement) in placements.iter().enumerate() {
         assert!(
-            (rect.width() - 50.0).abs() < 0.001,
+            (placement.frame.width() - 50.0).abs() < 0.001,
             "child {index} reports 50pt at every proposal, so it must keep 50pt, got {}",
-            rect.width()
+            placement.frame.width()
         );
     }
 
     // ... the row overflows by the difference ...
-    let overflow = rects.last().expect("three children were placed").max_x() - bounds.max_x();
+    let overflow = placements
+        .last()
+        .expect("three children were placed")
+        .frame
+        .max_x()
+        - bounds.max_x();
     assert!(
         (overflow - 70.0).abs() < 0.001,
         "170pt of rigid content in 100pt must overflow by 70pt, got {overflow}"
     );
 
     // ... and overflowing must not pile children on top of each other.
-    assert_no_overlap(&rects, "horizontal");
+    assert_no_overlap(&placements, "horizontal");
 }
 
 #[test]
-fn test_hstack_with_flexible_text() {
+fn test_hstack_with_flexible_text_bounded_proposal() {
     // When children exceed bounds, they are compressed proportionally
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
@@ -391,10 +482,10 @@ fn test_hstack_with_flexible_text() {
     let bounds = Rect::new(Point::zero(), Size::new(150.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut label, &mut long_text];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // All children should fit within bounds
-    let total_children_width: f32 = rects.iter().map(waterui_core::layout::Rect::width).sum();
+    let total_children_width: f32 = placements.iter().map(|p| p.frame.width()).sum();
     let expected_max = bounds.width() - 10.0; // minus spacing
 
     assert!(
@@ -403,8 +494,8 @@ fn test_hstack_with_flexible_text() {
     );
 
     // Children should not overflow bounds
-    for (i, rect) in rects.iter().enumerate() {
-        assert_rect_within_bounds(rect, &bounds, &format!("child {i}"));
+    for (i, placement) in placements.iter().enumerate() {
+        assert_rect_within_bounds(&placement.frame, &bounds, &format!("child {i}"));
     }
 }
 
@@ -421,13 +512,14 @@ fn hstack_intrinsic_round_trip_does_not_spuriously_wrap_text() {
     let children: Vec<&dyn SubView> = vec![&mut title, &mut icon];
     let intrinsic = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
-    let rects = layout.place(
+    let placements = layout.place(
         Rect::new(Point::zero(), Size::new(intrinsic.width, 40.0)),
+        ProposalSize::UNSPECIFIED,
         &children,
     );
 
     assert_eq!(
-        rects[0].height(),
+        placements[0].frame.height(),
         20.0,
         "an intrinsic-size HStack must not wrap text due only to f32 round-trip noise"
     );
@@ -443,8 +535,8 @@ fn test_hstack_empty() {
     assert_eq!(size.height, 0.0);
 
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 100.0));
-    let rects = layout.place(bounds, &children);
-    assert!(rects.is_empty());
+    let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
+    assert!(placements.is_empty());
 }
 
 #[test]
@@ -465,7 +557,7 @@ fn test_hstack_single_child() {
 }
 
 #[test]
-fn test_hstack_multiple_spacers() {
+fn test_hstack_multiple_spacers_bounded_proposal() {
     // Multiple spacers should divide remaining space equally
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
@@ -493,26 +585,26 @@ fn test_hstack_multiple_spacers() {
         &mut child3,
     ];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Remaining space = 200 - 60 = 140, divided by 2 spacers = 70 each
-    assert_eq!(rects[0].width(), 20.0);
+    assert_eq!(placements[0].frame.width(), 20.0);
     assert!(
-        (rects[1].width() - 70.0).abs() < 0.001,
+        (placements[1].frame.width() - 70.0).abs() < 0.001,
         "Spacer 1 width: {}",
-        rects[1].width()
+        placements[1].frame.width()
     );
-    assert_eq!(rects[2].width(), 20.0);
+    assert_eq!(placements[2].frame.width(), 20.0);
     assert!(
-        (rects[3].width() - 70.0).abs() < 0.001,
+        (placements[3].frame.width() - 70.0).abs() < 0.001,
         "Spacer 2 width: {}",
-        rects[3].width()
+        placements[3].frame.width()
     );
-    assert_eq!(rects[4].width(), 20.0);
+    assert_eq!(placements[4].frame.width(), 20.0);
 }
 
 #[test]
-fn test_hstack_alignment_top() {
+fn test_hstack_alignment_top_bounded_proposal() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Top,
         spacing: Computed::constant(10.0),
@@ -528,15 +620,15 @@ fn test_hstack_alignment_top() {
     let bounds = Rect::new(Point::new(10.0, 10.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut short, &mut tall];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Both should be aligned to top (y = 10)
-    assert_eq!(rects[0].y(), 10.0);
-    assert_eq!(rects[1].y(), 10.0);
+    assert_eq!(placements[0].frame.y(), 10.0);
+    assert_eq!(placements[1].frame.y(), 10.0);
 }
 
 #[test]
-fn test_hstack_alignment_bottom() {
+fn test_hstack_alignment_bottom_bounded_proposal() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Bottom,
         spacing: Computed::constant(10.0),
@@ -552,15 +644,15 @@ fn test_hstack_alignment_bottom() {
     let bounds = Rect::new(Point::new(10.0, 10.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut short, &mut tall];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Both should be aligned to bottom
-    assert_eq!(rects[0].y() + rects[0].height(), 70.0); // 10 + 60
-    assert_eq!(rects[1].y() + rects[1].height(), 70.0);
+    assert_eq!(placements[0].frame.y() + placements[0].frame.height(), 70.0); // 10 + 60
+    assert_eq!(placements[1].frame.y() + placements[1].frame.height(), 70.0);
 }
 
 #[test]
-fn test_hstack_alignment_center() {
+fn test_hstack_alignment_center_bounded_proposal() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
         spacing: Computed::constant(10.0),
@@ -576,12 +668,12 @@ fn test_hstack_alignment_center() {
     let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut short, &mut tall];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Short child (20h) centered in 60h bounds: y = (60-20)/2 = 20
-    assert_eq!(rects[0].y(), 20.0);
+    assert_eq!(placements[0].frame.y(), 20.0);
     // Tall child (50h) centered in 60h bounds: y = (60-50)/2 = 5
-    assert_eq!(rects[1].y(), 5.0);
+    assert_eq!(placements[1].frame.y(), 5.0);
 }
 
 // ============================================================================
@@ -589,7 +681,7 @@ fn test_hstack_alignment_center() {
 // ============================================================================
 
 #[test]
-fn test_vstack_children_exceed_bounds() {
+fn test_vstack_children_exceed_bounds_bounded_proposal() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
         spacing: Computed::constant(10.0),
@@ -610,15 +702,15 @@ fn test_vstack_children_exceed_bounds() {
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2, &mut child3];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Children should not overlap
-    assert_no_overlap(&rects, "vertical");
+    assert_no_overlap(&placements, "vertical");
 }
 
 #[test]
-fn test_vstack_child_width_exceeds_bounds() {
-    // A child wider than bounds should be clamped to bounds width
+fn test_vstack_child_width_exceeds_bounds_bounded_proposal() {
+    // A rigid child retains its width and overflows a smaller host region.
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
         spacing: Computed::constant(0.0),
@@ -630,20 +722,17 @@ fn test_vstack_child_width_exceeds_bounds() {
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 50.0));
     let children: Vec<&dyn SubView> = vec![&mut wide_child];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
-    assert_eq!(rects.len(), 1);
-    assert!(
-        rects[0].width() <= bounds.width() + 0.001,
-        "Child width {} exceeds bounds width {}",
-        rects[0].width(),
-        bounds.width()
+    assert_eq!(placements.len(), 1);
+    assert_eq!(
+        placements[0].frame,
+        Rect::new(Point::new(-50.0, 0.0), Size::new(200.0, 30.0))
     );
-    assert_rect_within_bounds(&rects[0], &bounds, "wide child");
 }
 
 #[test]
-fn test_vstack_text_wrapping() {
+fn test_vstack_text_wrapping_bounded_proposal() {
     // Text in VStack should wrap to container width
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
@@ -656,26 +745,26 @@ fn test_vstack_text_wrapping() {
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 200.0));
     let children: Vec<&dyn SubView> = vec![&mut long_text];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Text should wrap to bounds width
     assert!(
-        rects[0].width() <= bounds.width() + 0.001,
+        placements[0].frame.width() <= bounds.width() + 0.001,
         "Text width {} exceeds bounds width {}",
-        rects[0].width(),
+        placements[0].frame.width(),
         bounds.width()
     );
 
     // Height should increase due to wrapping (200/100 = 2 lines)
     assert!(
-        rects[0].height() >= 40.0 - 0.001,
+        placements[0].frame.height() >= 40.0 - 0.001,
         "Text should wrap to multiple lines, height: {}",
-        rects[0].height()
+        placements[0].frame.height()
     );
 }
 
 #[test]
-fn test_vstack_with_axis_expanding_child() {
+fn test_vstack_with_axis_expanding_child_bounded_proposal() {
     // Axis-expanding views (TextField) should expand to container width
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
@@ -690,16 +779,16 @@ fn test_vstack_with_axis_expanding_child() {
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut label, &mut text_field];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Label keeps its intrinsic width
-    assert_eq!(rects[0].width(), 50.0);
+    assert_eq!(placements[0].frame.width(), 50.0);
 
     // TextField expands to bounds width (but clamped if infinite)
     assert!(
-        rects[1].width() <= bounds.width() + 0.001,
+        placements[1].frame.width() <= bounds.width() + 0.001,
         "TextField width {} should not exceed bounds {}",
-        rects[1].width(),
+        placements[1].frame.width(),
         bounds.width()
     );
 }
@@ -715,7 +804,7 @@ fn test_vstack_empty() {
 }
 
 #[test]
-fn test_vstack_alignment_leading() {
+fn test_vstack_alignment_leading_bounded_proposal() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
         spacing: Computed::constant(10.0),
@@ -731,15 +820,15 @@ fn test_vstack_alignment_leading() {
     let bounds = Rect::new(Point::new(10.0, 10.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut narrow, &mut wide];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Both should be aligned to leading edge (x = 10)
-    assert_eq!(rects[0].x(), 10.0);
-    assert_eq!(rects[1].x(), 10.0);
+    assert_eq!(placements[0].frame.x(), 10.0);
+    assert_eq!(placements[1].frame.x(), 10.0);
 }
 
 #[test]
-fn test_vstack_alignment_trailing() {
+fn test_vstack_alignment_trailing_bounded_proposal() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Trailing,
         spacing: Computed::constant(10.0),
@@ -755,15 +844,15 @@ fn test_vstack_alignment_trailing() {
     let bounds = Rect::new(Point::new(10.0, 10.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut narrow, &mut wide];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Both should be aligned to trailing edge
-    assert_eq!(rects[0].x() + rects[0].width(), 110.0); // 10 + 100
-    assert_eq!(rects[1].x() + rects[1].width(), 110.0);
+    assert_eq!(placements[0].frame.x() + placements[0].frame.width(), 110.0); // 10 + 100
+    assert_eq!(placements[1].frame.x() + placements[1].frame.width(), 110.0);
 }
 
 #[test]
-fn test_vstack_alignment_center() {
+fn test_vstack_alignment_center_bounded_proposal() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
         spacing: Computed::constant(10.0),
@@ -779,16 +868,16 @@ fn test_vstack_alignment_center() {
     let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 60.0));
     let children: Vec<&dyn SubView> = vec![&mut narrow, &mut wide];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Narrow (30w) centered in 100w: x = (100-30)/2 = 35
-    assert_eq!(rects[0].x(), 35.0);
+    assert_eq!(placements[0].frame.x(), 35.0);
     // Wide (80w) centered in 100w: x = (100-80)/2 = 10
-    assert_eq!(rects[1].x(), 10.0);
+    assert_eq!(placements[1].frame.x(), 10.0);
 }
 
 #[test]
-fn test_vstack_multiple_spacers() {
+fn test_vstack_multiple_spacers_bounded_proposal() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
         spacing: Computed::constant(0.0),
@@ -815,22 +904,22 @@ fn test_vstack_multiple_spacers() {
         &mut child3,
     ];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Remaining height = 200 - 60 = 140, divided by 2 spacers = 70 each
-    assert_eq!(rects[0].height(), 20.0);
+    assert_eq!(placements[0].frame.height(), 20.0);
     assert!(
-        (rects[1].height() - 70.0).abs() < 0.001,
+        (placements[1].frame.height() - 70.0).abs() < 0.001,
         "Spacer 1 height: {}",
-        rects[1].height()
+        placements[1].frame.height()
     );
-    assert_eq!(rects[2].height(), 20.0);
+    assert_eq!(placements[2].frame.height(), 20.0);
     assert!(
-        (rects[3].height() - 70.0).abs() < 0.001,
+        (placements[3].frame.height() - 70.0).abs() < 0.001,
         "Spacer 2 height: {}",
-        rects[3].height()
+        placements[3].frame.height()
     );
-    assert_eq!(rects[4].height(), 20.0);
+    assert_eq!(placements[4].frame.height(), 20.0);
 }
 
 // ============================================================================
@@ -838,7 +927,7 @@ fn test_vstack_multiple_spacers() {
 // ============================================================================
 
 #[test]
-fn test_hstack_in_vstack_respects_width() {
+fn test_hstack_in_vstack_respects_width_bounded_proposal() {
     // This simulates: VStack { HStack { "Name:" Text("long...") } }
     // The HStack should respect VStack's width constraint
 
@@ -862,19 +951,19 @@ fn test_hstack_in_vstack_respects_width() {
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 30.0));
     let children: Vec<&dyn SubView> = vec![&mut label, &mut long_text];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // All children must fit within bounds
-    for (i, rect) in rects.iter().enumerate() {
-        assert_rect_within_bounds(rect, &bounds, &format!("child {i}"));
+    for (i, placement) in placements.iter().enumerate() {
+        assert_rect_within_bounds(&placement.frame, &bounds, &format!("child {i}"));
     }
 
     // The last child's right edge should not exceed bounds
-    let last_rect = rects.last().unwrap();
+    let last_placement = placements.last().unwrap();
     assert!(
-        last_rect.x() + last_rect.width() <= bounds.width() + 0.001,
+        last_placement.frame.x() + last_placement.frame.width() <= bounds.width() + 0.001,
         "Content overflows bounds: {} > {}",
-        last_rect.x() + last_rect.width(),
+        last_placement.frame.x() + last_placement.frame.width(),
         bounds.width()
     );
 }
@@ -884,7 +973,7 @@ fn test_hstack_in_vstack_respects_width() {
 // ============================================================================
 
 #[test]
-fn test_hstack_size_respects_proposal() {
+fn test_hstack_reports_rigid_minimum_under_smaller_proposal() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
         spacing: Computed::constant(10.0),
@@ -897,18 +986,16 @@ fn test_hstack_size_respects_proposal() {
         size: Size::new(100.0, 30.0),
     };
 
-    // Intrinsic width would be 210 (100 + 10 + 100)
-    // But with proposal width = 150, should report 150 (capped to proposal)
+    // Both children reject proposals below 100, so their minimum total is 210.
+    // A smaller offer cannot turn that required extent into 150.
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
     let size = layout.size_that_fits(ProposalSize::new(Some(150.0), None), &children);
 
-    // HStack without spacers should cap its reported width to the proposal
-    // This ensures parent layouts get accurate sizing information
-    assert_eq!(size.width, 150.0);
+    assert_eq!(size, Size::new(210.0, 30.0));
 }
 
 #[test]
-fn test_vstack_size_respects_proposal() {
+fn test_vstack_reports_rigid_cross_axis_minimum() {
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
         spacing: Computed::constant(10.0),
@@ -923,10 +1010,10 @@ fn test_vstack_size_respects_proposal() {
 
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
-    // With width proposal, VStack should report min(max_child_width, proposal)
+    // The widest rigid child rejects the smaller cross-axis offer.
     let size = layout.size_that_fits(ProposalSize::new(Some(90.0), None), &children);
 
-    assert_eq!(size.width, 90.0); // Clamped to proposal
+    assert_eq!(size.width, 100.0); // Preserve the reported minimum.
     assert_eq!(size.height, 110.0); // 50 + 10 + 50
 }
 
@@ -935,7 +1022,7 @@ fn test_vstack_size_respects_proposal() {
 // ============================================================================
 
 #[test]
-fn test_zero_bounds() {
+fn test_zero_bounds_bounded_proposal() {
     let hstack = HStackLayout::default();
     let vstack = VStackLayout::default();
 
@@ -945,22 +1032,22 @@ fn test_zero_bounds() {
     let bounds = Rect::new(Point::zero(), Size::zero());
 
     let children: Vec<&dyn SubView> = vec![&mut child];
-    let rects = hstack.place(bounds, &children);
+    let placements = hstack.place(bounds, bounded_proposal(bounds), &children);
 
     // Should handle gracefully - child clamped to zero
-    assert!(rects[0].width() <= 0.001 || rects[0].width() <= 50.0);
+    assert!(placements[0].frame.width() <= 0.001 || placements[0].frame.width() <= 50.0);
 
     let mut child = FixedSizeView {
         size: Size::new(50.0, 30.0),
     };
     let children: Vec<&dyn SubView> = vec![&mut child];
-    let rects = vstack.place(bounds, &children);
+    let placements = vstack.place(bounds, bounded_proposal(bounds), &children);
 
-    assert!(rects[0].height() <= 0.001 || rects[0].height() <= 30.0);
+    assert!(placements[0].frame.height() <= 0.001 || placements[0].frame.height() <= 30.0);
 }
 
 #[test]
-fn test_negative_remaining_space_with_spacer() {
+fn test_negative_remaining_space_with_spacer_bounded_proposal() {
     // When children exceed bounds, spacer should get zero width, not negative
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
@@ -979,23 +1066,23 @@ fn test_negative_remaining_space_with_spacer() {
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 30.0));
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Spacer should never have negative dimensions
     assert!(
-        rects[1].width() >= 0.0,
+        placements[1].frame.width() >= 0.0,
         "Spacer has negative width: {}",
-        rects[1].width()
+        placements[1].frame.width()
     );
     assert!(
-        rects[1].height() >= 0.0,
+        placements[1].frame.height() >= 0.0,
         "Spacer has negative height: {}",
-        rects[1].height()
+        placements[1].frame.height()
     );
 }
 
 #[test]
-fn test_bounds_with_offset() {
+fn test_bounds_with_offset_bounded_proposal() {
     // Bounds starting at non-zero origin
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
@@ -1012,14 +1099,14 @@ fn test_bounds_with_offset() {
     let bounds = Rect::new(Point::new(50.0, 100.0), Size::new(200.0, 50.0));
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // First child should start at bounds origin
-    assert_eq!(rects[0].x(), 50.0);
+    assert_eq!(placements[0].frame.x(), 50.0);
 
     // All children should be within bounds
-    for (i, rect) in rects.iter().enumerate() {
-        assert_rect_within_bounds(rect, &bounds, &format!("child {i} with offset"));
+    for (i, placement) in placements.iter().enumerate() {
+        assert_rect_within_bounds(&placement.frame, &bounds, &format!("child {i} with offset"));
     }
 }
 
@@ -1046,7 +1133,8 @@ fn test_vstack_horizontal_expanding_child_height() {
 
     // Size that fits: no stretching child should share height
     let children: Vec<&dyn SubView> = vec![&mut label, &mut text_field, &mut button];
-    let size = layout.size_that_fits(ProposalSize::new(None, Some(300.0)), &children);
+    let proposal = ProposalSize::new(None, Some(300.0));
+    let size = layout.size_that_fits(proposal, &children);
 
     // Height should be sum of all children + spacing (no height distribution)
     // 20 + 10 + 40 + 10 + 44 = 124
@@ -1063,18 +1151,18 @@ fn test_vstack_horizontal_expanding_child_height() {
     let children: Vec<&dyn SubView> = vec![&mut label, &mut text_field, &mut button];
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 300.0));
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, proposal, &children);
 
     // TextField should keep its 40pt height, not stretch to fill remaining space
     assert_eq!(
-        rects[1].height(),
+        placements[1].frame.height(),
         40.0,
         "TextField height should be intrinsic, not stretched"
     );
 }
 
 #[test]
-fn test_vstack_with_both_spacer_and_horizontal_expanding() {
+fn test_vstack_with_both_spacer_and_horizontal_expanding_bounded_proposal() {
     // VStack with Spacer (Both) and TextField (Horizontal)
     // Only Spacer should stretch vertically
     let layout = VStackLayout {
@@ -1091,17 +1179,17 @@ fn test_vstack_with_both_spacer_and_horizontal_expanding() {
     let children: Vec<&dyn SubView> = vec![&mut label, &mut spacer, &mut text_field];
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 200.0));
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Label: 20pt
-    assert_eq!(rects[0].height(), 20.0);
+    assert_eq!(placements[0].frame.height(), 20.0);
     // TextField: 40pt (intrinsic, doesn't stretch vertically)
-    assert_eq!(rects[2].height(), 40.0);
+    assert_eq!(placements[2].frame.height(), 40.0);
     // Spacer gets remaining: 200 - 20 - 10 - 10 - 40 = 120pt
     assert!(
-        (rects[1].height() - 120.0).abs() < 0.001,
+        (placements[1].frame.height() - 120.0).abs() < 0.001,
         "Spacer height: {}",
-        rects[1].height()
+        placements[1].frame.height()
     );
 }
 
@@ -1130,8 +1218,8 @@ fn test_hstack_vertical_expanding_child_width() {
 }
 
 #[test]
-fn test_vstack_intrinsic_width_excludes_horizontal_stretch() {
-    // VStack intrinsic width should NOT include horizontally-stretching children
+fn test_vstack_intrinsic_width_includes_zero_ideal_fill() {
+    // Every finite ideal contributes, including the fill leaf's zero ideal.
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
         spacing: Computed::constant(10.0),
@@ -1140,7 +1228,7 @@ fn test_vstack_intrinsic_width_excludes_horizontal_stretch() {
     let mut label = FixedSizeView {
         size: Size::new(80.0, 20.0),
     };
-    let mut text_field = HorizontalExpandingView { height: 40.0 }; // Returns INFINITY width when unspecified
+    let mut text_field = HorizontalExpandingView { height: 40.0 }; // Zero ideal width; only the maximum query is infinite.
     let mut button = FixedSizeView {
         size: Size::new(100.0, 44.0),
     };
@@ -1148,14 +1236,13 @@ fn test_vstack_intrinsic_width_excludes_horizontal_stretch() {
     let children: Vec<&dyn SubView> = vec![&mut label, &mut text_field, &mut button];
     let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
-    // Width: max of non-horizontal-stretching children = max(80, 100) = 100
-    // TextField stretches horizontally so its infinity width doesn't contribute
+    // Width: max(80, 0, 100) = 100.
     assert_eq!(size.width, 100.0);
 }
 
 #[test]
-fn test_hstack_intrinsic_height_excludes_vertical_stretch() {
-    // HStack intrinsic height should NOT include vertically-stretching children
+fn test_hstack_intrinsic_height_includes_zero_ideal_fill() {
+    // Every finite ideal contributes, including the fill leaf's zero ideal.
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
         spacing: Computed::constant(10.0),
@@ -1164,7 +1251,7 @@ fn test_hstack_intrinsic_height_excludes_vertical_stretch() {
     let mut label = FixedSizeView {
         size: Size::new(50.0, 20.0),
     };
-    let mut vertical_component = VerticalExpandingView { width: 60.0 }; // Returns INFINITY height
+    let mut vertical_component = VerticalExpandingView { width: 60.0 }; // Zero ideal height; only the maximum query is infinite.
     let mut button = FixedSizeView {
         size: Size::new(100.0, 44.0),
     };
@@ -1172,13 +1259,12 @@ fn test_hstack_intrinsic_height_excludes_vertical_stretch() {
     let children: Vec<&dyn SubView> = vec![&mut label, &mut vertical_component, &mut button];
     let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
 
-    // Height: max of non-vertical-stretching children = max(20, 44) = 44
-    // vertical_component stretches vertically so its infinity height doesn't contribute
+    // Height: max(20, 0, 44) = 44.
     assert_eq!(size.height, 44.0);
 }
 
 #[test]
-fn test_vstack_multiple_vertical_stretch_children() {
+fn test_vstack_multiple_vertical_stretch_children_bounded_proposal() {
     // Multiple StretchAxis::Vertical children should share remaining height equally
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
@@ -1206,28 +1292,28 @@ fn test_vstack_multiple_vertical_stretch_children() {
     ];
 
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 200.0));
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Fixed children: 30 + 30 + 30 = 90
     // Remaining: 200 - 90 = 110
     // Each spacer: 110 / 2 = 55
-    assert_eq!(rects[0].height(), 30.0);
+    assert_eq!(placements[0].frame.height(), 30.0);
     assert!(
-        (rects[1].height() - 55.0).abs() < 0.001,
+        (placements[1].frame.height() - 55.0).abs() < 0.001,
         "Spacer 1 height: {}",
-        rects[1].height()
+        placements[1].frame.height()
     );
-    assert_eq!(rects[2].height(), 30.0);
+    assert_eq!(placements[2].frame.height(), 30.0);
     assert!(
-        (rects[3].height() - 55.0).abs() < 0.001,
+        (placements[3].frame.height() - 55.0).abs() < 0.001,
         "Spacer 2 height: {}",
-        rects[3].height()
+        placements[3].frame.height()
     );
-    assert_eq!(rects[4].height(), 30.0);
+    assert_eq!(placements[4].frame.height(), 30.0);
 }
 
 #[test]
-fn test_hstack_multiple_horizontal_stretch_children() {
+fn test_hstack_multiple_horizontal_stretch_children_bounded_proposal() {
     // Multiple StretchAxis::Horizontal children should share remaining width equally
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
@@ -1255,28 +1341,28 @@ fn test_hstack_multiple_horizontal_stretch_children() {
     ];
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Fixed children: 30 + 30 + 30 = 90
     // Remaining: 200 - 90 = 110
     // Each spacer: 110 / 2 = 55
-    assert_eq!(rects[0].width(), 30.0);
+    assert_eq!(placements[0].frame.width(), 30.0);
     assert!(
-        (rects[1].width() - 55.0).abs() < 0.001,
+        (placements[1].frame.width() - 55.0).abs() < 0.001,
         "Spacer 1 width: {}",
-        rects[1].width()
+        placements[1].frame.width()
     );
-    assert_eq!(rects[2].width(), 30.0);
+    assert_eq!(placements[2].frame.width(), 30.0);
     assert!(
-        (rects[3].width() - 55.0).abs() < 0.001,
+        (placements[3].frame.width() - 55.0).abs() < 0.001,
         "Spacer 2 width: {}",
-        rects[3].width()
+        placements[3].frame.width()
     );
-    assert_eq!(rects[4].width(), 30.0);
+    assert_eq!(placements[4].frame.width(), 30.0);
 }
 
 #[test]
-fn test_vstack_form_layout() {
+fn test_vstack_form_layout_bounded_proposal() {
     // Real-world scenario: Form with labels and text fields
     // VStack { Text("Name") TextField() Text("Email") TextField() Button() }
     let layout = VStackLayout {
@@ -1305,22 +1391,34 @@ fn test_vstack_form_layout() {
     ];
 
     let bounds = Rect::new(Point::zero(), Size::new(300.0, 500.0));
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Each TextField should have exactly 34pt height (not stretched)
-    assert_eq!(rects[1].height(), 34.0, "Name field should be 34pt");
-    assert_eq!(rects[3].height(), 34.0, "Email field should be 34pt");
+    assert_eq!(
+        placements[1].frame.height(),
+        34.0,
+        "Name field should be 34pt"
+    );
+    assert_eq!(
+        placements[3].frame.height(),
+        34.0,
+        "Email field should be 34pt"
+    );
 
     // Each TextField should expand to container width
-    assert_eq!(rects[1].width(), 300.0, "Name field should expand to width");
     assert_eq!(
-        rects[3].width(),
+        placements[1].frame.width(),
+        300.0,
+        "Name field should expand to width"
+    );
+    assert_eq!(
+        placements[3].frame.width(),
         300.0,
         "Email field should expand to width"
     );
 
     // No overlapping
-    assert_no_overlap(&rects, "vertical");
+    assert_no_overlap(&placements, "vertical");
 }
 
 #[test]
@@ -1345,9 +1443,9 @@ fn test_hstack_first_baseline_uses_text_baselines() {
     let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
     assert_eq!(size.height, 40.0);
 
-    let rects = layout.place(Rect::from_size(size), &children);
-    let left_baseline = rects[0].y() + left.first_baseline;
-    let right_baseline = rects[1].y() + right.first_baseline;
+    let placements = layout.place(Rect::from_size(size), ProposalSize::UNSPECIFIED, &children);
+    let left_baseline = placements[0].frame.y() + left.first_baseline;
+    let right_baseline = placements[1].frame.y() + right.first_baseline;
     assert!((left_baseline - right_baseline).abs() < f32::EPSILON);
 }
 
@@ -1371,14 +1469,14 @@ fn test_vstack_explicit_horizontal_alignment_uses_guides() {
     let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
     assert_eq!(size.width, 120.0);
 
-    let rects = layout.place(Rect::from_size(size), &children);
-    let top_guide = rects[0].x() + top.guide;
-    let bottom_guide = rects[1].x() + bottom.guide;
+    let placements = layout.place(Rect::from_size(size), ProposalSize::UNSPECIFIED, &children);
+    let top_guide = placements[0].frame.x() + top.guide;
+    let bottom_guide = placements[1].frame.x() + bottom.guide;
     assert!((top_guide - bottom_guide).abs() < f32::EPSILON);
 }
 
 #[test]
-fn test_vstack_form_with_spacer() {
+fn test_vstack_form_with_spacer_bounded_proposal() {
     // Form with spacer pushing button to bottom
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
@@ -1402,17 +1500,21 @@ fn test_vstack_form_with_spacer() {
     ];
 
     let bounds = Rect::new(Point::zero(), Size::new(300.0, 300.0));
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Label: 20, spacing: 8, TextField: 34, spacing: 8, Button: 44
     // Fixed content = 20 + 8 + 34 + 8 + 44 = 114
     // Spacer gets: 300 - 114 - 8 (one more spacing) = 178
 
-    assert_eq!(rects[0].height(), 20.0);
-    assert_eq!(rects[1].height(), 34.0, "TextField keeps intrinsic height");
+    assert_eq!(placements[0].frame.height(), 20.0);
+    assert_eq!(
+        placements[1].frame.height(),
+        34.0,
+        "TextField keeps intrinsic height"
+    );
     // Button at bottom
     assert_eq!(
-        rects[3].y() + rects[3].height(),
+        placements[3].frame.y() + placements[3].frame.height(),
         300.0,
         "Button should be at bottom"
     );
@@ -1434,7 +1536,7 @@ impl SubView for MainAxisSpacerView {
         StretchAxis::MainAxis
     }
     fn priority(&self) -> i32 {
-        0
+        Spacer::DEFAULT_LAYOUT_PRIORITY
     }
 }
 
@@ -1458,7 +1560,7 @@ impl SubView for CrossAxisDividerView {
 }
 
 #[test]
-fn test_vstack_main_axis_spacer() {
+fn test_vstack_main_axis_spacer_bounded_proposal() {
     // MainAxis spacer in VStack should expand vertically (the main axis of VStack)
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Center,
@@ -1476,21 +1578,21 @@ fn test_vstack_main_axis_spacer() {
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 200.0));
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Fixed children: 30 + 30 = 60
     // MainAxis spacer should expand: 200 - 60 = 140
-    assert_eq!(rects[0].height(), 30.0);
+    assert_eq!(placements[0].frame.height(), 30.0);
     assert_eq!(
-        rects[1].height(),
+        placements[1].frame.height(),
         140.0,
         "MainAxis spacer should expand vertically in VStack"
     );
-    assert_eq!(rects[2].height(), 30.0);
+    assert_eq!(placements[2].frame.height(), 30.0);
 }
 
 #[test]
-fn test_hstack_main_axis_spacer() {
+fn test_hstack_main_axis_spacer_bounded_proposal() {
     // MainAxis spacer in HStack should expand horizontally (the main axis of HStack)
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
@@ -1508,21 +1610,21 @@ fn test_hstack_main_axis_spacer() {
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut child1, &mut spacer, &mut child2];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Fixed children: 30 + 30 = 60
     // MainAxis spacer should expand: 200 - 60 = 140
-    assert_eq!(rects[0].width(), 30.0);
+    assert_eq!(placements[0].frame.width(), 30.0);
     assert_eq!(
-        rects[1].width(),
+        placements[1].frame.width(),
         140.0,
         "MainAxis spacer should expand horizontally in HStack"
     );
-    assert_eq!(rects[2].width(), 30.0);
+    assert_eq!(placements[2].frame.width(), 30.0);
 }
 
 #[test]
-fn test_vstack_cross_axis_divider() {
+fn test_vstack_cross_axis_divider_bounded_proposal() {
     // CrossAxis divider in VStack should expand horizontally (the cross axis of VStack)
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
@@ -1540,24 +1642,24 @@ fn test_vstack_cross_axis_divider() {
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut label, &mut divider, &mut button];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Divider should expand to full width of VStack (cross axis)
     assert_eq!(
-        rects[1].width(),
+        placements[1].frame.width(),
         200.0,
         "CrossAxis divider should expand to full width in VStack"
     );
     // Divider height should be its intrinsic thickness
     assert_eq!(
-        rects[1].height(),
+        placements[1].frame.height(),
         1.0,
         "CrossAxis divider should keep intrinsic height in VStack"
     );
 }
 
 #[test]
-fn test_hstack_cross_axis_divider() {
+fn test_hstack_cross_axis_divider_bounded_proposal() {
     // CrossAxis divider in HStack should expand vertically (the cross axis of HStack)
     let layout = HStackLayout {
         alignment: VerticalAlignment::Top,
@@ -1575,17 +1677,17 @@ fn test_hstack_cross_axis_divider() {
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut label, &mut divider, &mut button];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Divider should expand to full height of HStack (cross axis)
     assert_eq!(
-        rects[1].height(),
+        placements[1].frame.height(),
         100.0,
         "CrossAxis divider should expand to full height in HStack"
     );
     // Divider width should be its intrinsic thickness
     assert_eq!(
-        rects[1].width(),
+        placements[1].frame.width(),
         1.0,
         "CrossAxis divider should keep intrinsic width in HStack"
     );
@@ -1615,7 +1717,7 @@ impl SubView for HorizontalStretchView {
 }
 
 #[test]
-fn test_vstack_horizontal_stretch_textfield() {
+fn test_vstack_horizontal_stretch_textfield_bounded_proposal() {
     // StretchAxis::Horizontal in VStack should expand horizontally to full width
     // This tests TextField/Slider behavior
     let layout = VStackLayout {
@@ -1637,22 +1739,30 @@ fn test_vstack_horizontal_stretch_textfield() {
     let bounds = Rect::new(Point::zero(), Size::new(300.0, 200.0));
     let children: Vec<&dyn SubView> = vec![&mut label, &mut textfield, &mut button];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Label keeps its intrinsic width (alignment is Leading, not stretched)
-    assert_eq!(rects[0].width(), 50.0, "Label should keep intrinsic width");
+    assert_eq!(
+        placements[0].frame.width(),
+        50.0,
+        "Label should keep intrinsic width"
+    );
     // TextField should expand to full container width
     assert_eq!(
-        rects[1].width(),
+        placements[1].frame.width(),
         300.0,
         "Horizontal stretch TextField should expand to full width in VStack"
     );
     // Button keeps its intrinsic width
-    assert_eq!(rects[2].width(), 80.0, "Button should keep intrinsic width");
+    assert_eq!(
+        placements[2].frame.width(),
+        80.0,
+        "Button should keep intrinsic width"
+    );
 }
 
 #[test]
-fn test_hstack_horizontal_stretch_textfield() {
+fn test_hstack_horizontal_stretch_textfield_bounded_proposal() {
     // StretchAxis::Horizontal in HStack should also expand horizontally
     // But since HStack's main axis is horizontal, this behaves like MainAxis
     let layout = HStackLayout {
@@ -1674,21 +1784,30 @@ fn test_hstack_horizontal_stretch_textfield() {
     let bounds = Rect::new(Point::zero(), Size::new(300.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut label, &mut textfield, &mut button];
 
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     // Fixed children: 50 + 80 = 130, spacing: 20
     // Remaining for textfield: 300 - 130 - 20 = 150
-    assert_eq!(rects[0].width(), 50.0, "Label should keep intrinsic width");
     assert_eq!(
-        rects[1].width(),
+        placements[0].frame.width(),
+        50.0,
+        "Label should keep intrinsic width"
+    );
+    assert_eq!(
+        placements[1].frame.width(),
         150.0,
         "Horizontal stretch TextField should expand in HStack"
     );
-    assert_eq!(rects[2].width(), 80.0, "Button should keep intrinsic width");
+    assert_eq!(
+        placements[2].frame.width(),
+        80.0,
+        "Button should keep intrinsic width"
+    );
 }
 
 #[test]
-fn test_hstack_preserves_horizontal_stretch_min_width_when_fixed_content_overflows() {
+fn test_hstack_preserves_horizontal_stretch_min_width_when_fixed_content_overflows_bounded_proposal()
+ {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
         spacing: Computed::constant(8.0),
@@ -1707,10 +1826,10 @@ fn test_hstack_preserves_horizontal_stretch_min_width_when_fixed_content_overflo
 
     let bounds = Rect::new(Point::zero(), Size::new(180.0, 48.0));
     let children: Vec<&dyn SubView> = vec![&mut leading, &mut slider, &mut trailing];
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     assert_eq!(
-        rects[1].width(),
+        placements[1].frame.width(),
         72.0,
         "Horizontal stretch controls such as Slider must keep their intrinsic minimum width"
     );
@@ -1760,7 +1879,7 @@ fn test_stack_cross_axis_stretch_is_symmetric() {
 }
 
 #[test]
-fn test_hstack_keeps_nested_stack_content_sized_and_centered() {
+fn test_hstack_keeps_nested_stack_content_sized_and_centered_bounded_proposal() {
     let layout = HStackLayout {
         alignment: VerticalAlignment::Center,
         spacing: Computed::constant(0.0),
@@ -1776,24 +1895,24 @@ fn test_hstack_keeps_nested_stack_content_sized_and_centered() {
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
     let children: Vec<&dyn SubView> = vec![&mut nested, &mut sibling];
-    let rects = layout.place(bounds, &children);
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     assert_eq!(
-        rects[0].height(),
+        placements[0].frame.height(),
         20.0,
         "a nested HStack keeps its intrinsic height instead of filling the row"
     );
     assert_eq!(
-        rects[0].width(),
+        placements[0].frame.width(),
         40.0,
         "A nested HStack keeps its intrinsic main-axis width"
     );
     assert_eq!(
-        rects[0].y(),
+        placements[0].frame.y(),
         40.0,
         "an undersized nested stack is centered in the 100pt row"
     );
-    assert_eq!(rects[1].height(), 20.0);
+    assert_eq!(placements[1].frame.height(), 20.0);
 }
 
 // ============================================================================
@@ -1863,7 +1982,7 @@ fn a_row_of_labels_stays_content_sized() {
 /// its children asked for, each row reported — and was given — zero height,
 /// and a screen built this way rendered nothing at all.
 #[test]
-fn rows_of_fillers_share_the_column_they_sit_in() {
+fn rows_of_fillers_share_the_column_they_sit_in_bounded_proposal() {
     let column = VStackLayout {
         alignment: HorizontalAlignment::Center,
         spacing: Computed::constant(0.0),
@@ -1873,19 +1992,19 @@ fn rows_of_fillers_share_the_column_they_sit_in() {
     let children: Vec<&dyn SubView> = vec![&top, &bottom];
 
     let bounds = Rect::new(Point::zero(), Size::new(200.0, 100.0));
-    let rects = column.place(bounds, &children);
+    let placements = column.place(bounds, bounded_proposal(bounds), &children);
 
-    assert_eq!(rects.len(), 2);
-    for rect in &rects {
+    assert_eq!(placements.len(), 2);
+    for placement in &placements {
         assert!(
-            (rect.height() - 50.0).abs() < f32::EPSILON,
+            (placement.frame.height() - 50.0).abs() < f32::EPSILON,
             "each row takes half the column, got {}",
-            rect.height()
+            placement.frame.height()
         );
         assert!(
-            (rect.width() - 200.0).abs() < f32::EPSILON,
+            (placement.frame.width() - 200.0).abs() < f32::EPSILON,
             "and the full width, got {}",
-            rect.width()
+            placement.frame.width()
         );
     }
 }
@@ -1911,4 +2030,283 @@ fn one_element_tuple_is_a_single_child_payload() {
     accepts_view(vstack((spacer(),)));
     accepts_view(hstack((spacer(),)));
     accepts_view(zstack((spacer(),)));
+}
+
+// ============================================================================
+// Deficit distribution: a flexible child keeps the floor it measures
+// ============================================================================
+
+/// `Spacer::new(40.0)` between two rows in a 50pt column keeps its 40 points
+/// and the rows compress into what is left, the way `SwiftUI` lays it out. The
+/// spacer's floor is what it reports when proposed `0` — its minimum length —
+/// the same floor a fixed child gets, so a stretching child is never handed
+/// less than it measured merely because the column is short.
+#[test]
+fn a_spacer_keeps_its_minimum_length_when_the_column_is_short_bounded_proposal() {
+    let layout = VStackLayout {
+        alignment: HorizontalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let top = CompressibleHeightView {
+        ideal: Size::new(80.0, 30.0),
+        floor: 0.0,
+    };
+    let spacer = MinLengthSpacerView {
+        min_length: 40.0,
+        axis: StretchAxis::Vertical,
+    };
+    let bottom = CompressibleHeightView {
+        ideal: Size::new(80.0, 30.0),
+        floor: 0.0,
+    };
+    let children: Vec<&dyn SubView> = vec![&top, &spacer, &bottom];
+
+    let bounds = Rect::new(Point::zero(), Size::new(80.0, 50.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        (placements[1].frame.height() - 40.0).abs() < 0.01,
+        "the spacer keeps its 40pt minimum, got {}",
+        placements[1].frame.height()
+    );
+    assert!(
+        (placements[0].frame.height() - 5.0).abs() < 0.01
+            && (placements[2].frame.height() - 5.0).abs() < 0.01,
+        "the rows split the remaining 10pt, got {} and {}",
+        placements[0].frame.height(),
+        placements[2].frame.height()
+    );
+    assert!(
+        (placements[2].frame.y() - 45.0).abs() < 0.01,
+        "the bottom row sits below the spacer, got y {}",
+        placements[2].frame.y()
+    );
+    for (i, placement) in placements.iter().enumerate() {
+        assert_rect_within_bounds(&placement.frame, &bounds, &format!("child {i}"));
+    }
+    assert_no_overlap(&placements, "vertical");
+}
+
+/// The row mirror: `Spacer::new(40.0)` between two labels in a 50pt row.
+#[test]
+fn a_spacer_keeps_its_minimum_length_when_the_row_is_short_bounded_proposal() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let leading = CompressibleView {
+        ideal: Size::new(30.0, 20.0),
+        floor: 0.0,
+    };
+    let spacer = MinLengthSpacerView {
+        min_length: 40.0,
+        axis: StretchAxis::Horizontal,
+    };
+    let trailing = CompressibleView {
+        ideal: Size::new(30.0, 20.0),
+        floor: 0.0,
+    };
+    let children: Vec<&dyn SubView> = vec![&leading, &spacer, &trailing];
+
+    let bounds = Rect::new(Point::zero(), Size::new(50.0, 20.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        (placements[1].frame.width() - 40.0).abs() < 0.01,
+        "the spacer keeps its 40pt minimum, got {}",
+        placements[1].frame.width()
+    );
+    assert!(
+        (placements[0].frame.width() - 5.0).abs() < 0.01
+            && (placements[2].frame.width() - 5.0).abs() < 0.01,
+        "the labels split the remaining 10pt, got {} and {}",
+        placements[0].frame.width(),
+        placements[2].frame.width()
+    );
+    assert!(
+        (placements[2].frame.x() - 45.0).abs() < 0.01,
+        "the trailing label sits after the spacer, got x {}",
+        placements[2].frame.x()
+    );
+    for (i, placement) in placements.iter().enumerate() {
+        assert_rect_within_bounds(&placement.frame, &bounds, &format!("child {i}"));
+    }
+    assert_no_overlap(&placements, "horizontal");
+}
+
+/// A spacer without a minimum measures `0` when proposed `0`, so it is the
+/// first thing to give way: it collapses entirely before any row loses a point.
+#[test]
+fn a_zero_minimum_spacer_still_collapses_before_the_column_content_bounded_proposal() {
+    let layout = VStackLayout {
+        alignment: HorizontalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let top = CompressibleHeightView {
+        ideal: Size::new(80.0, 30.0),
+        floor: 10.0,
+    };
+    let spacer = MinLengthSpacerView {
+        min_length: 0.0,
+        axis: StretchAxis::Vertical,
+    };
+    let bottom = CompressibleHeightView {
+        ideal: Size::new(80.0, 30.0),
+        floor: 10.0,
+    };
+    let children: Vec<&dyn SubView> = vec![&top, &spacer, &bottom];
+
+    let bounds = Rect::new(Point::zero(), Size::new(80.0, 50.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        placements[1].frame.height().abs() < 0.01,
+        "a zero-minimum spacer collapses first, got {}",
+        placements[1].frame.height()
+    );
+    assert!(
+        (placements[0].frame.height() - 25.0).abs() < 0.01
+            && (placements[2].frame.height() - 25.0).abs() < 0.01,
+        "the rows share the whole column once the spacer is gone, got {} and {}",
+        placements[0].frame.height(),
+        placements[2].frame.height()
+    );
+    assert_no_overlap(&placements, "vertical");
+}
+
+/// The row mirror of the zero-minimum spacer collapsing first.
+#[test]
+fn a_zero_minimum_spacer_still_collapses_before_the_row_content_bounded_proposal() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let leading = CompressibleView {
+        ideal: Size::new(30.0, 20.0),
+        floor: 10.0,
+    };
+    let spacer = MinLengthSpacerView {
+        min_length: 0.0,
+        axis: StretchAxis::Horizontal,
+    };
+    let trailing = CompressibleView {
+        ideal: Size::new(30.0, 20.0),
+        floor: 10.0,
+    };
+    let children: Vec<&dyn SubView> = vec![&leading, &spacer, &trailing];
+
+    let bounds = Rect::new(Point::zero(), Size::new(50.0, 20.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        placements[1].frame.width().abs() < 0.01,
+        "a zero-minimum spacer collapses first, got {}",
+        placements[1].frame.width()
+    );
+    assert!(
+        (placements[0].frame.width() - 25.0).abs() < 0.01
+            && (placements[2].frame.width() - 25.0).abs() < 0.01,
+        "the labels share the whole row once the spacer is gone, got {} and {}",
+        placements[0].frame.width(),
+        placements[2].frame.width()
+    );
+    assert_no_overlap(&placements, "horizontal");
+}
+
+/// A list with 70pt of content beside a 50pt row, in a 100pt column: the
+/// equal share of the deficit would be 50pt, below what the list reports when
+/// proposed `0`. The list keeps its 70pt floor, the row at the same priority
+/// gives up the difference, and the row at a lower priority is squeezed to its
+/// floor before either of them loses anything.
+#[test]
+fn a_stretcher_above_the_deficit_share_keeps_its_floor_in_a_column_bounded_proposal() {
+    let layout = VStackLayout {
+        alignment: HorizontalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let list = ContentFillView {
+        intrinsic: 70.0,
+        axis: StretchAxis::Vertical,
+        priority: 0,
+    };
+    let row = CompressibleHeightView {
+        ideal: Size::new(70.0, 50.0),
+        floor: 0.0,
+    };
+    let footer = ContentFillView {
+        intrinsic: 0.0,
+        axis: StretchAxis::Vertical,
+        priority: -1,
+    };
+    let children: Vec<&dyn SubView> = vec![&list, &row, &footer];
+
+    let bounds = Rect::new(Point::zero(), Size::new(70.0, 100.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        (placements[0].frame.height() - 70.0).abs() < 0.01,
+        "the list keeps the 70pt it measured, got {}",
+        placements[0].frame.height()
+    );
+    assert!(
+        (placements[1].frame.height() - 30.0).abs() < 0.01,
+        "the row at the same priority absorbs the deficit, got {}",
+        placements[1].frame.height()
+    );
+    assert!(
+        placements[2].frame.height().abs() < 0.01,
+        "the lower-priority filler gives way first, got {}",
+        placements[2].frame.height()
+    );
+    assert_no_overlap(&placements, "vertical");
+}
+
+/// The row mirror: a 70pt-wide fill beside a 50pt label in a 100pt row.
+#[test]
+fn a_stretcher_above_the_deficit_share_keeps_its_floor_in_a_row_bounded_proposal() {
+    let layout = HStackLayout {
+        alignment: VerticalAlignment::Center,
+        spacing: Computed::constant(0.0),
+    };
+
+    let fill = ContentFillView {
+        intrinsic: 70.0,
+        axis: StretchAxis::Horizontal,
+        priority: 0,
+    };
+    let label = CompressibleView {
+        ideal: Size::new(50.0, 20.0),
+        floor: 0.0,
+    };
+    let trailing = ContentFillView {
+        intrinsic: 0.0,
+        axis: StretchAxis::Horizontal,
+        priority: -1,
+    };
+    let children: Vec<&dyn SubView> = vec![&fill, &label, &trailing];
+
+    let bounds = Rect::new(Point::zero(), Size::new(100.0, 70.0));
+    let placements = layout.place(bounds, bounded_proposal(bounds), &children);
+
+    assert!(
+        (placements[0].frame.width() - 70.0).abs() < 0.01,
+        "the fill keeps the 70pt it measured, got {}",
+        placements[0].frame.width()
+    );
+    assert!(
+        (placements[1].frame.width() - 30.0).abs() < 0.01,
+        "the label at the same priority absorbs the deficit, got {}",
+        placements[1].frame.width()
+    );
+    assert!(
+        placements[2].frame.width().abs() < 0.01,
+        "the lower-priority filler gives way first, got {}",
+        placements[2].frame.width()
+    );
+    assert_no_overlap(&placements, "horizontal");
 }

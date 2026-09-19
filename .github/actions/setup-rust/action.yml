@@ -1,0 +1,69 @@
+name: Setup Rust toolchain and cache
+description: >
+  Installs the Rust toolchain and restores the Cargo cache: the
+  `dtolnay/rust-toolchain` + `Swatinem/rust-cache` pair that sixteen jobs
+  used to spell out by hand, in five different cache configurations. Every
+  input maps one to one onto a knob of the wrapped action it feeds, so a
+  call site reads exactly like the block it replaced. `cache: "false"`
+  covers the jobs that install the toolchain and nothing else.
+
+inputs:
+  toolchain:
+    description: >
+      Toolchain spec handed to dtolnay/rust-toolchain: a channel (`stable`,
+      `beta`, `nightly`) or a pin such as `nightly-2026-09-09`.
+    required: false
+    default: "stable"
+  components:
+    description: Comma-separated rustup components to install.
+    required: false
+    default: ""
+  targets:
+    description: Comma-separated target triples to install for the toolchain.
+    required: false
+    default: ""
+  cache:
+    description: >
+      Whether Swatinem/rust-cache runs at all. "false" for jobs that only
+      need the toolchain itself.
+    required: false
+    default: "true"
+  shared-key:
+    description: rust-cache `shared-key`; empty keeps its job-based key.
+    required: false
+    default: ""
+  cache-targets:
+    description: rust-cache `cache-targets` — whether `target/` is cached.
+    required: false
+    default: "true"
+  cache-workspace-crates:
+    description: rust-cache `cache-workspace-crates`.
+    required: false
+    default: "false"
+  save-if:
+    description: >
+      rust-cache `save-if`. The caller's expression is already evaluated to
+      "true"/"false" by the time it arrives here.
+    required: false
+    default: "true"
+  cache-on-failure:
+    description: rust-cache `cache-on-failure`.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+    - uses: Swatinem/rust-cache@v2
+      if: inputs.cache == 'true'
+      with:
+        shared-key: ${{ inputs.shared-key }}
+        cache-targets: ${{ inputs.cache-targets }}
+        cache-workspace-crates: ${{ inputs.cache-workspace-crates }}
+        save-if: ${{ inputs.save-if }}
+        cache-on-failure: ${{ inputs.cache-on-failure }}

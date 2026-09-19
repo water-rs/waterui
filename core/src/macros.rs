@@ -325,3 +325,18 @@ macro_rules! impl_deref {
         }
     };
 }
+
+/// Configures a freshly-created environment with compile-time discovered app plugins.
+///
+/// This currently installs the runtime translation catalog generated from the caller's
+/// `i18n/*.toml` files — or the directory `WATERUI_I18N_DIR` names when the caller is a
+/// CLI-generated backend crate without an `i18n/` of its own. It is intended to be used
+/// at environment creation boundaries such as backend entry points.
+#[macro_export]
+macro_rules! configure_environment {
+    ($env:expr) => {{
+        let mut __waterui_env = $env;
+        $crate::plugin::Plugin::install($crate::catalog!(), &mut __waterui_env);
+        __waterui_env
+    }};
+}

@@ -6,7 +6,7 @@
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove};
-use waterui::prelude::theme_color::{Foreground, MutedForeground};
+use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -20,6 +20,7 @@ struct Record {
     id: u64,
 }
 
+#[state]
 #[derive(Clone)]
 struct DemoState {
     records: ReactiveList<Record>,
@@ -45,53 +46,51 @@ impl DemoState {
 fn record_row(record: Record) -> ListItem {
     ListItem::new(
         vstack((
-            text(format!("Record #{:06}", record.id))
+            text(text!("Record #{id:06}", id = record.id))
                 .sub_headline()
                 .foreground(Foreground),
             text("Materialized only while this row is visible")
                 .caption()
-                .foreground(MutedForeground),
+                .muted(),
         ))
-        .alignment(HorizontalAlignment::Leading)
-        .padding_with(EdgeInsets::symmetric(10.0, 16.0)),
+        .leading()
+        .padding_with((10.0, 16.0)),
     )
 }
 
-fn delete_record(ListDelete(index): ListDelete, State(state): State<DemoState>) {
+fn delete_record(ListDelete(index): ListDelete, state: DemoState) {
     let _ = state.records.remove(index);
     *state.remaining.get_mut() -= 1;
 }
 
-fn move_record(ListMove(movement): ListMove, State(state): State<DemoState>) {
+fn move_record(ListMove(movement): ListMove, state: DemoState) {
     let mut records = state.records.snapshot();
     let record = records.remove(movement.from());
     records.insert(movement.to(), record);
     let _ = state.records.replace(records);
 }
 
-fn jump_top(State(state): State<DemoState>) {
+fn jump_top(state: DemoState) {
     state.scroll.scroll_to(0);
 }
 
-fn jump_middle(State(state): State<DemoState>) {
+fn jump_middle(state: DemoState) {
     state.scroll.scroll_to((state.remaining.get() as usize) / 2);
 }
 
-fn jump_last(State(state): State<DemoState>) {
+fn jump_last(state: DemoState) {
     let remaining = state.remaining.get();
     if remaining > 0 {
         state.scroll.scroll_to(remaining as usize - 1);
     }
 }
 
-fn toggle_editing(State(state): State<DemoState>) {
-    state.editing.set(!state.editing.get());
+fn toggle_editing(state: DemoState) {
+    state.editing.toggle();
 }
 
 fn content(state: DemoState) -> impl View {
-    let edit_label = state
-        .editing
-        .map(|editing| if editing { "Done" } else { "Edit" });
+    let edit_label = state.editing.select("Done", "Edit");
     let list = List::for_each(state.records.clone(), record_row)
         .editing(state.editing.clone())
         .on_delete(delete_record)
@@ -106,7 +105,7 @@ fn content(state: DemoState) -> impl View {
                 remaining = state.remaining.clone()
             )
             .sub_headline()
-            .foreground(MutedForeground),
+            .muted(),
             hstack((
                 button("Top").bordered().action(jump_top),
                 button("Middle").bordered().action(jump_middle),
@@ -120,9 +119,9 @@ fn content(state: DemoState) -> impl View {
                 "Animated jumps and the draggable scrollbar keep only viewport rows materialized.",
             )
             .caption()
-            .foreground(MutedForeground),
+            .muted(),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .spacing(8.0)
         .padding(),
         Divider,

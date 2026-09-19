@@ -16,7 +16,7 @@ use waterui::preview;
 use waterui::reactive::Binding;
 use waterui::task::{sleep, spawn_local};
 
-const FRUIT_CARD_WIDTH: f32 = 152.0;
+const FRUIT_CARD_WIDTH: f32 = 160.0;
 
 /// A draggable fruit card
 fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl View {
@@ -74,7 +74,7 @@ fn fruit_basket(
         text!("{count_display}").size(14.0),
     ))
     .spacing(12.0)
-    .padding_with(EdgeInsets::all(24.0))
+    .padding_with(24.0)
     .min_width(280.0)
     .min_height(120.0)
     .background(Color::srgb_hex("#10B981").with_opacity(0.2))
@@ -102,7 +102,8 @@ fn fruit_basket(
             spawn_local(async move {
                 sleep(Duration::from_millis(200)).await;
                 bounce.set(1.0);
-            });
+            })
+            .detach();
         },
     )
     .drop_hover(&is_hovering)

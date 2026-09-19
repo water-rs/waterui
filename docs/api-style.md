@@ -96,7 +96,7 @@ Use this when:
 - AND each captured binding is genuinely consumed (no need to keep the
   outer name alive).
 
-### `State<T>` injection — bindings shared across handlers and views
+### `.state()` injection — bindings shared across handlers and views
 
 ```rust
 button("+1")
@@ -105,16 +105,19 @@ button("+1")
 ```
 
 Use this when the binding is also referenced elsewhere in the surrounding
-view — `State<T>` injection avoids littering the function with
-`let foo = foo.clone();` lines per handler.
+view — `.state()` injection avoids littering the function with
+`let foo = foo.clone();` lines per handler. `State<T>` is the wrapper for a
+type the app does not own, such as `Binding<T>`; for an owned `Clone` type,
+mark it `#[state]` and take the parameter bare (`c: StreamControl` below).
 
 ### Wrap-in-struct for many bindings
 
 `button(...).action(|State(a): ..., State(b): ..., State(c): ..., State(d): ...|).state(&a).state(&b).state(&c).state(&d)`
 is **the wrong remedy** for a multi-binding action. Wrap related bindings
-in a single `Clone` struct and inject one `State<MyStruct>`:
+in a single `Clone` struct marked `#[state]` and inject one value:
 
 ```rust
+#[state]
 #[derive(Clone)]
 struct StreamControl {
     document_index:  Binding<i32>,
@@ -127,7 +130,7 @@ struct StreamControl {
 let control = StreamControl { … };
 
 button("Prev doc")
-    .action(|State(c): State<StreamControl>| {
+    .action(|c: StreamControl| {
         cancel_stream(&c.streaming, &c.stream_revision);
         *c.document_index.get_mut() -= 1;
         reset_stream(&c.markdown, &c.char_progress);
@@ -152,7 +155,7 @@ Three different trigger semantics. Pick the one whose verb fits.
 |---|---|---|
 | `.action(...)` | A user gesture lands on the view (tap, click). Synchronous handler. | Button presses; one-shot UI commands. |
 | `.action_async(...)` | A user gesture lands; handler is awaited. Spawned as a task. | Async work triggered by tap (file picker, network call). |
-| `.on_change(&binding, ...)` | A reactive value the handler observes changes. | Side effects driven by state, not by gesture (writing locale tag when a picker selection changes; persisting settings; firing analytics). |
+| `.on_change(&binding, ...)` | A reactive value the handler observes changes. The handler is an `EventHandler`: the new value first, then `State<T>` extractors injected with `.state(..)`. | Side effects driven by state, not by gesture (writing locale tag when a picker selection changes; persisting settings; firing analytics). |
 
 `.on_change` is **not** a button-handler alternative — it fires on data flow,
 not on user input. If two of these look interchangeable, you probably want

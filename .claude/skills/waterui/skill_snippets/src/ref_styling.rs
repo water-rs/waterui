@@ -11,12 +11,12 @@ use waterui::prelude::*;
 // Listing: three token applications.
 // ---------------------------------------------------------------------------
 pub fn styling_block_01() {
-    use waterui::prelude::theme_color::{Accent, Foreground, MutedForeground, Surface};
+    use waterui::prelude::theme_color::{Accent, Foreground, Surface};
 
     let _: Option<Accent> = None;
 
     let _ = { text("Title").foreground(Foreground) };
-    let _ = { text("Caption").caption().foreground(MutedForeground) };
+    let _ = { text("Caption").caption().muted() };
     let card = Divider;
     let _ = { card.background(Surface) };
 }
@@ -28,8 +28,8 @@ pub fn styling_block_01() {
 // ---------------------------------------------------------------------------
 pub fn styling_token_as_value_prose() {
     use waterui::prelude::theme_color::{
-        AccentContainer, AccentForeground, Background, Border, SelectionContainer,
-        SelectionForeground, SurfaceVariant, Tertiary, TertiaryContainer,
+        AccentContainer, AccentForeground, Background, Border, Error, ErrorForeground,
+        SelectionContainer, SelectionForeground, SurfaceVariant, Tertiary, TertiaryContainer,
     };
 
     let indicator: Color = SurfaceVariant.into();
@@ -42,6 +42,7 @@ pub fn styling_token_as_value_prose() {
         SelectionContainer,
         SelectionForeground,
     );
+    let _ = (Error, ErrorForeground);
     let _ = SurfaceVariant.size(80.0, 40.0);
 }
 
@@ -201,6 +202,27 @@ pub fn styling_block_07() {
     let _ = {
         // any view is a valid background
         view.background(RoundedRectangle::new(0.18).fill(Surface))
+    };
+
+    // ---- glass ----
+    use waterui::background::Glass;
+    use waterui::prelude::theme_color::Accent;
+
+    let view = Divider;
+    let _ = {
+        view.background(Glass::regular()) // capsule pill, the default
+    };
+    let view = Divider;
+    let _ = {
+        view.background(Glass::clear().interactive(true)) // over media; reacts to touch
+    };
+    let view = Divider;
+    let _ = {
+        view.background(
+            Glass::regular()
+                .tint(Accent)
+                .shape(RoundedRectangle::new(0.2)),
+        )
     };
 }
 
@@ -367,6 +389,8 @@ pub fn styling_floating_prose() {
 // ---------------------------------------------------------------------------
 // styling.md § "## Icons" — rust block 12/15
 // ---------------------------------------------------------------------------
+// styling.md writes `mdi::`/`lucide::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn styling_block_12() {
     use waterui::prelude::theme_color::Accent;
 

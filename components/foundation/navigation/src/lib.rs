@@ -28,8 +28,9 @@ use waterui_controls::{ButtonStyle, IntoLabel, button};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, boxed_action};
 use waterui_core::{
     AnyView, Environment, Error, IgnorableMetadata, IntoSignal, Metadata, Native, NativeView,
-    Retain, Str, View, env::use_env, extract::Extractor, extract::Use, flatten_signal,
-    handler::ViewBuilder, impl_extractor, layout::StretchAxis, metadata::MetadataKey, raw_view,
+    Retain, Str, View, env::use_env, extract::ExtractionState, extract::Extractor, extract::State,
+    flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
+    metadata::MetadataKey, raw_view,
 };
 use waterui_graphics::color::{Color, ResolvedColor};
 use waterui_icon::SystemIcon;
@@ -45,7 +46,7 @@ pub use split::{
     ColumnWidth, NativeNavigationSplitStyle, NavigationSplitColumnVisibility,
     NavigationSplitLayout, NavigationSplitStyle, NavigationSplitView, split_style,
 };
-pub use tab::{Tab, Tabs, TabsLayout, tab_style};
+pub use tab::{Tab, TabBarMinimizeBehavior, TabRole, Tabs, TabsLayout, tab_style};
 pub use transition::{
     AnyNavigationTransition, NativeNavigationTransition, NavigationTransition,
     NavigationTransitionDestination, NavigationTransitionDirection, NavigationTransitionFrame,
@@ -598,9 +599,16 @@ impl<T: 'static + Clone + PartialEq> Navigator<T> {
     }
 }
 
-impl<T: 'static + Clone + PartialEq> Extractor for Navigator<T> {
+// Written out rather than `#[state]`: the impl is conditional —
+// `Navigator<T>: Clone` holds only when `T: Clone` — while `#[state]` copies
+// the type's own generics verbatim and would emit an unconditional impl.
+impl<T: Clone + 'static> Extractor for Navigator<T> {
     fn extract(env: &Environment) -> Result<Self, Error> {
-        <Use<Self> as Extractor>::extract(env).map(|value| value.0)
+        <State<Self> as Extractor>::extract(env).map(|state| state.0)
+    }
+
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        <State<Self> as Extractor>::extract_from_action(env, state).map(|value| value.0)
     }
 }
 
@@ -640,12 +648,6 @@ impl Navigator<ErasedNavigationRoute> {
     /// Atomically replaces a heterogeneous path.
     pub fn replace(&self, replacement: impl FnOnce(&mut NavigationPathReplacement)) {
         self.0.replace(replacement);
-    }
-}
-
-impl Extractor for Navigator<ErasedNavigationRoute> {
-    fn extract(env: &Environment) -> Result<Self, Error> {
-        <Use<Self> as Extractor>::extract(env).map(|value| value.0)
     }
 }
 
@@ -1206,7 +1208,7 @@ fn path_stack_body<R: Clone + 'static>(
     let navigator = Navigator(path.clone());
     NavigationStack::new_deferred(use_env(
         move |(receiver, mut local_env): (NavigationController, Environment)| {
-            local_env.insert(navigator.clone());
+            local_env.insert(State(navigator.clone()));
             receiver.retain_environment(local_env.clone());
             receiver.install_path_pop_handler({
                 let path = path.clone();
@@ -1240,6 +1242,12 @@ where
             },
         )
     }
+
+    /// Resolves through `path_stack_body` to a `NavigationStack<(), ()>` leaf,
+    /// which fills both axes.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
 }
 
 impl View for NavigationStack<NavigationPath<ErasedNavigationRoute>, HeterogeneousDestinations> {
@@ -1256,6 +1264,12 @@ impl View for NavigationStack<NavigationPath<ErasedNavigationRoute>, Heterogeneo
                 AnyViewBuilder::new(move || destinations.build(&route))
             },
         )
+    }
+
+    /// Resolves through `path_stack_body` to a `NavigationStack<(), ()>` leaf,
+    /// which fills both axes.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
     }
 }
 
@@ -1298,13 +1312,13 @@ where
         let value = self.value;
         // Plain for the same reason as `NavigationLink` above: the link is a
         // button in behaviour, not in chrome.
-        let link = if let Some(navigator) = env.get::<Navigator<T>>().cloned() {
+        let link = if let Ok(navigator) = Navigator::<T>::extract(env) {
             AnyView::new(
                 button(self.label)
                     .style(ButtonStyle::Plain)
                     .action(move || navigator.push(value.clone())),
             )
-        } else if let Some(navigator) = env.get::<Navigator<ErasedNavigationRoute>>().cloned() {
+        } else if let Ok(navigator) = Navigator::<ErasedNavigationRoute>::extract(env) {
             AnyView::new(
                 button(self.label)
                     .style(ButtonStyle::Plain)
@@ -1517,7 +1531,11 @@ mod tests {
         NavigationTransaction, NavigationView, Navigator, shared_prefix_len,
         subscribe_navigation_path,
     };
-    use waterui_core::{Environment, Metadata, handler::AnyViewBuilder};
+    use waterui_core::{
+        Environment, Metadata,
+        extract::{Extractor, State},
+        handler::AnyViewBuilder,
+    };
 
     #[expect(
         clippy::trivially_copy_pass_by_ref,
@@ -1709,7 +1727,7 @@ mod tests {
         let mut base_env = Environment::new();
         base_env.insert(BaseMarker);
         let mut retained_env = base_env.clone();
-        retained_env.insert(Navigator(NavigationPath::<TestRoute>::new()));
+        retained_env.insert(State(Navigator(NavigationPath::<TestRoute>::new())));
         controller.retain_environment(retained_env);
 
         controller.push_builder(AnyViewBuilder::new(|| {
@@ -1729,6 +1747,6 @@ mod tests {
             .expect("pushed content should carry retained navigation environment");
 
         assert!(metadata.value.get::<BaseMarker>().is_some());
-        assert!(metadata.value.get::<Navigator<TestRoute>>().is_some());
+        assert!(Navigator::<TestRoute>::extract(&metadata.value).is_ok());
     }
 }

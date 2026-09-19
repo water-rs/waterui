@@ -1,0 +1,5 @@
+error: '.' has no package.json — include_web! points at the web project root, not its build output
+ --> tests/ui/include_web/fail_no_package_json.rs:4:49
+  |
+4 |     let _ = waterui_assets_macros::include_web!(".");
+  |                                                 ^^^

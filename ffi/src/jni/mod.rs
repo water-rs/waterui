@@ -7,13 +7,16 @@
 
 extern crate std;
 
+#[cfg(target_os = "android")]
 pub mod android_runtime;
 pub mod components;
 pub mod convert;
+pub mod drag_drop;
 pub mod ffi_bridge;
 pub mod inspector;
 pub mod navigation;
 pub mod reactive;
+#[cfg(feature = "webview")]
 pub mod webview_bridge;
 
 pub use convert::JniPrimitive;

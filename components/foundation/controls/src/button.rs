@@ -60,29 +60,51 @@
 //!
 //! ## Environment Extraction
 //!
-//! Any extractor type can be used directly as an `action(...)` parameter. Any
-//! `Clone` type becomes one with [`impl_extractor!`](waterui_core::impl_extractor):
+//! Any extractor type can be used directly as an `action(...)` parameter, and
+//! an owned `Clone` type becomes one with `#[state]` — injected the same way
+//! as `State<T>` values, with `.state(&value)`:
+//!
+//! ```rust
+//! use waterui::prelude::*;
+//!
+//! #[state]
+//! #[derive(Clone)]
+//! struct CurrentUser(Str);
+//! # impl CurrentUser {
+//! #     fn rename(&self, _name: Str) {}
+//! # }
+//!
+//! # fn extracted(user: &CurrentUser) {
+//! button("Rename")
+//!     .action(|user: CurrentUser| {
+//!         user.rename(Str::from("Ada"));
+//!     })
+//!     .state(user);
+//! # }
+//! ```
+//!
+//! [`impl_extractor!`](waterui_core::impl_extractor) is the other channel: it
+//! marks a `Clone` type read straight from the environment — a value installed
+//! with `env.insert(..)` or `.with(..)`, typically by `app(env)` or a backend —
+//! not one injected through `.state()`:
 //!
 //! ```rust
 //! use waterui::impl_extractor;
 //! use waterui::prelude::*;
 //!
 //! #[derive(Clone)]
-//! struct CurrentUser(Str);
-//! impl_extractor!(CurrentUser);
-//!
-//! #[derive(Clone)]
 //! struct DatabaseConnection;
 //! impl_extractor!(DatabaseConnection);
 //! # impl DatabaseConnection {
-//! #     fn save_user_preferences(&self, _user: CurrentUser) {}
+//! #     fn save_user_preferences(&self) {}
 //! # }
 //!
-//! # fn extracted() {
+//! # fn extracted(db: &DatabaseConnection) {
 //! button("Save")
-//!     .action(|db: DatabaseConnection, user: CurrentUser| {
-//!         db.save_user_preferences(user);
-//!     });
+//!     .action(|db: DatabaseConnection| {
+//!         db.save_user_preferences();
+//!     })
+//!     .with(db.clone());
 //! # }
 //! ```
 //!
@@ -271,6 +293,17 @@ pub enum ButtonStyle {
     /// A prominent button with filled background color.
     /// Use for primary actions that should stand out.
     BorderedProminent,
+    /// A Liquid Glass capsule: the button floats over its content in the
+    /// platform's glass, taking its highlight from what is behind it.
+    ///
+    /// Glass is an Apple primitive. Backends without it render this as their
+    /// bordered style, since the emphasis is the same.
+    Glass,
+    /// A Liquid Glass capsule filled with the accent color, for the primary
+    /// action among glass controls.
+    ///
+    /// Backends without glass render this as their bordered-prominent style.
+    GlassProminent,
 }
 
 /// How large a button is drawn.

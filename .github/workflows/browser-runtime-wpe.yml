@@ -1,0 +1,142 @@
+name: WPE Runtime
+
+# Builds the self-contained WPE WebKit runtime the `water` CLI downloads for
+# the browser-wpe backend. This is the path #609 deleted out of build-cli.yml,
+# restored as its own workflow now that the four blockers in #155 are resolved.
+#
+# The build is a multi-hour from-source compile of WebKit, so it is never on
+# the dev gate or the nightly critical path: it runs on demand, and on a
+# `wpe-runtime-v*` tag push, which is how a built runtime is published. A tag
+# run ends by attaching the packaged runtime zips and the generated artifact
+# manifest to a GitHub Release on that tag.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["wpe-runtime-v*"]
+
+concurrency:
+  group: browser-runtime-wpe-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # cargo/rustup retry network failures three times by default; ten
+  # matches the budget install-action sets for its own downloads.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+  # rust-cache and the install-tool binary caches are the only cache
+  # layers (see the note in ci.yml).
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  runtime:
+    name: Build WPE runtime ${{ matrix.architecture }}
+    # 22.04 is the declared artifact floor: `source.toml` sets
+    # `maximum_glibc = "2.35"` and `build-runtime.sh` refuses to package
+    # against a newer glibc, so the runner image cannot move. The image ships
+    # GCC 11.4 while WebKit requires 12.2, so the job installs and selects GCC
+    # 12 (`CC`/`CXX` are the overrides `build-runtime.sh` reads; it rejects
+    # Clang outright). Jammy's archive carries gcc-12 12.3, so no toolchain
+    # PPA is needed.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    env:
+      CC: gcc-12
+      CXX: g++-12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            runner: ubuntu-22.04
+          - architecture: aarch64
+            runner: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The smoke run at the end of `build-runtime.sh` renders the staged
+      # runtime through wgpu, so this leg needs the software Vulkan stack too.
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+          gcc-version: "12"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: browser-runtime-${{ matrix.architecture }}
+          cache-on-failure: true
+
+      # Compiles WebKit and the bridge, packages the runtime zip with its
+      # .artifact.json metadata, and finishes by running run-smoke.py against
+      # the staged tree — the same validation a downloaded artifact gets.
+      - name: Build self-contained WPE runtime
+        run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts
+
+      - name: Upload WPE runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-runtime-wpe-${{ matrix.architecture }}
+          if-no-files-found: error
+          path: |
+            runtime-artifacts/*.zip
+            runtime-artifacts/*.artifact.json
+
+      - name: Upload WPE validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-validation-wpe-${{ matrix.architecture }}
+          if-no-files-found: error
+          path: |
+            runtime-artifacts/wpe-smoke-*.json
+            runtime-artifacts/wpe-smoke-*.png
+
+  # Two matrix legs feed one release, so publishing waits on both rather than
+  # letting each attach half a manifest — the same reason the deleted
+  # build-cli.yml made release-browser-runtime a separate job. Dispatch runs
+  # stop at the artifacts above; only a tag gets a release.
+  publish:
+    name: Publish WPE runtime
+    needs: runtime
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download browser runtime artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: browser-runtime-wpe-*
+          path: target/distrib
+          merge-multiple: true
+
+      - name: Generate browser runtime manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          python3 components/platform/browser-wpe/runtime/generate-manifest.py \
+            --base-url "$BASE_URL" \
+            --output target/distrib/browser-runtime-manifest.json \
+            target/distrib/*.artifact.json
+          find target/distrib -maxdepth 1 -name '*.artifact.json' -delete
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v2.3.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          make_latest: "false"
+          fail_on_unmatched_files: true
+          files: |
+            target/distrib/*.zip
+            target/distrib/browser-runtime-manifest.json

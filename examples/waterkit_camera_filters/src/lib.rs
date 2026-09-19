@@ -14,10 +14,11 @@ use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
 use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
 use waterui::prelude::slider::slider;
-use waterui::prelude::theme_color::{MutedForeground, Surface};
+use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
 
+#[state]
 #[derive(Clone)]
 struct CameraLabState {
     active_filter: Binding<usize>,
@@ -93,7 +94,7 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
         text("WaterUI + Waterkit Camera Filter Lab").title().bold(),
         text("Live camera preview via waterkit-camera, rendered and filtered with WaterUI GpuSurface.")
             .body()
-            .foreground(MutedForeground),
+            .muted(),
         Divider,
     ))
     .spacing(8.0);
@@ -101,9 +102,7 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
     let preview_section = vstack((
         text!("Filter: {filter_label}   |   Strength: {filter_strength:.2}").body(),
         preview,
-        text!("{preview_status}")
-            .caption()
-            .foreground(MutedForeground),
+        text!("{preview_status}").caption().muted(),
         hstack((button("Reconnect Camera Stream")
             .action(
                 |State(ticket): State<Binding<usize>>, State(status): State<Binding<Str>>| {
@@ -137,21 +136,18 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
         text("Waterkit Bridge").headline(),
         text!("{waterkit_status}").body(),
         text!("{permission_status}").body(),
-        text!("{camera_inventory}")
-            .footnote()
-            .foreground(MutedForeground),
+        text!("{camera_inventory}").footnote().muted(),
         button("Sync with Waterkit Camera")
-            .action_async(
-                |State(status): State<Binding<Str>>,
-                 State(permission): State<Binding<Str>>,
-                 State(inventory): State<Binding<Str>>| async move {
-                    sync_waterkit_camera(status, permission, inventory).await;
-                },
-            )
+            .action_async(|state: CameraLabState| async move {
+                sync_waterkit_camera(
+                    state.waterkit_status,
+                    state.permission_status,
+                    state.camera_inventory,
+                )
+                .await;
+            })
             .bordered_prominent()
-            .state(&state.waterkit_status)
-            .state(&state.permission_status)
-            .state(&state.camera_inventory),
+            .state(&state),
     ))
     .spacing(8.0);
 
@@ -217,7 +213,7 @@ impl SyntheticCameraPreviewRenderer {
 }
 
 impl GpuView for SyntheticCameraPreviewRenderer {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui::Environment) {}
+    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut Environment) {}
 
     fn render(&mut self, frame: &mut GpuFrame) {
         let (brightness, saturation, contrast, tint, vignette) =
@@ -492,7 +488,7 @@ impl CameraFilterRenderer {
 }
 
 impl GpuView for CameraFilterRenderer {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut waterui::Environment) {
+    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut Environment) {
         self.ensure_pipeline(ctx);
         self.start_camera_open(ctx.device, ctx.queue, false);
     }

@@ -32,9 +32,6 @@ slow-timeout = { period = "300s", terminate-after = 8 }
 fail-fast = false
 failure-output = "immediate-final"
 status-level = "retry"
-# GPU and emulator-backed tests are occasionally flaky on shared runners; a
-# retry keeps that from failing the branch, and the retry is reported.
-retries = { backoff = "fixed", count = 2, delay = "1s" }
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 # Same bench exemption as the default profile: smoke-mode benches are cheap,
@@ -62,24 +59,50 @@ slow-timeout = { period = "300s", terminate-after = 8 }
 filter = 'package(waterui-macros)'
 slow-timeout = { period = "120s", terminate-after = 15 }
 
+# GPU- and process-backed tests are occasionally flaky on shared runners — a
+# WARP device losing the memory race on Windows, Metal's shader cache racing
+# another process on a developer machine — so they get a retry, and the retry
+# is reported. Everything else is deterministic: a failure there is real, and
+# an unconditional retry would only double the runtime of a genuinely broken
+# suite while hiding the first failure's evidence. The set is the same one the
+# `gpu-device` test group below is built from: every package whose tests mount
+# a `waterui-testing` host or create a `wgpu` device.
+[[profile.ci.overrides]]
+filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-ffi) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example)'
+retries = { backoff = "fixed", count = 2, delay = "1s" }
+
 # How many wgpu devices may exist at once on the Windows runner.
 #
-# Nearly every test package here mounts a `waterui-testing` host, and each host
-# requests its own `wgpu::Device`. On a runner with a real GPU that is cheap; on
-# `windows-latest` there is no GPU at all, so every device is a WARP device
-# living in the machine's 16 GB alongside three others on its four cores. The
-# suite ran out: `selected_tooltip_exposes_accessibility_labels` and its
-# neighbours failed in `request_device` with `Core(Device(OutOfMemory))`,
-# exhausted their retries, and the same tests passed on retry in earlier runs —
-# the signature of sitting exactly at a memory limit rather than of a defect.
+# Every package in the filter mounts a `waterui-testing` host or creates a
+# `wgpu` device in its tests, and each host requests its own `wgpu::Device`.
+# On a runner with a real GPU that is cheap; on `windows-latest` there is no
+# GPU at all, so every device is a WARP device living in the machine's 16 GB
+# alongside three others on its four cores. The suite ran out:
+# `selected_tooltip_exposes_accessibility_labels` and its neighbours failed in
+# `request_device` with `Core(Device(OutOfMemory))`, exhausted their retries,
+# and the same tests passed on retry in earlier runs — the signature of
+# sitting exactly at a memory limit rather than of a defect.
 #
-# A cap, not a skip: every test still runs, two at a time instead of four, so
-# the peak number of live WARP devices halves. This lengthens the Windows job,
-# which is the cost of the runner having no GPU.
+# A cap, not a skip: every test still runs, the device-bearing ones two at a
+# time instead of four, so the peak number of live WARP devices halves while
+# the CPU-only suites — parsers, data structures, the macro contract tests —
+# keep full parallelism. This lengthens the device-bearing leg of the Windows
+# job, which is the cost of the runner having no GPU.
 #
 # Scoped to Windows because it is the only platform without one — the Linux
 # runners rasterize on llvmpipe, which is far cheaper per device, and macOS has
 # Metal.
+#
+# The package list is the workspace's direct dependents of `waterui-testing`,
+# `wgpu`, `hydrolysis` and `hydrolysis-m3` — the only ways a test binary here
+# can hold a device — minus the ones whose test code cannot run it:
+# `waterui-macros` carries `trybuild` compilers and pure derive tests,
+# `skill_snippets`' host-mounting transcriptions are compile-gated and never
+# run, and `waterkit-camera-filters-example` has no tests at all.
+# `rdeps(waterui-testing)` is not the filter: guppy's graph walks
+# dev-dependency edges transitively, which pulls in the whole workspace
+# through `waterui`'s dev-dependency. Keep the list in sync when a package's
+# dependency on the GPU stack changes.
 [test-groups.gpu-device]
 max-threads = 2
 
@@ -121,10 +144,10 @@ max-threads = 4
 
 [[profile.default.overrides]]
 platform = 'cfg(target_os = "macos")'
-filter = 'package(waterui-mermaid) or package(waterui) or package(waterui-testing)'
+filter = 'package(waterui) or package(waterui-testing)'
 test-group = 'metal-shader-compile'
 
 [[profile.ci.overrides]]
 platform = 'cfg(target_os = "windows")'
-filter = 'all()'
+filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-ffi) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example)'
 test-group = 'gpu-device'

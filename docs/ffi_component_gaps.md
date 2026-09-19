@@ -3,8 +3,8 @@
 Summary of view components exported in `ffi/waterui.h` that are **not** wired up in the Apple and Android backends.
 
 - Compared against the 29 `waterui_force_as_*` components defined in `ffi/waterui.h`.
-- Apple coverage pulled from `backends/apple/Sources/WaterUI/Core/AnyView.swift`.
-- Android coverage pulled from `backends/android/runtime/src/main/java/dev/waterui/android/runtime/RenderRegistry.kt`.
+- Apple coverage pulled from `Sources/WaterUI/Core/AnyView.swift` in `water-rs/apple-backend`.
+- Android coverage pulled from `runtime/src/main/java/dev/waterui/android/runtime/RenderRegistry.kt` in `water-rs/android-backend`.
 
 ## Missing per backend
 

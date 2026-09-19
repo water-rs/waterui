@@ -218,7 +218,7 @@ pub fn col(label: impl IntoText, rows: impl Views<View = Text> + 'static) -> Tab
 use crate::ViewExt;
 use crate::component::list::{List as UiList, ListItem};
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
-use waterui_graphics::color::Grey;
+use waterui_layout::Divider;
 use waterui_layout::stack::{HStack, HorizontalAlignment, vstack};
 
 #[derive(Clone)]
@@ -351,7 +351,7 @@ impl View for DefaultTableView {
         let visible = columns.map(|columns| !columns.is_empty());
         vstack((
             build_table_header(columns.clone()),
-            Grey.height(1.0).max_width(f32::INFINITY),
+            Divider,
             build_table_rows(columns),
         ))
         .alignment(HorizontalAlignment::Leading)

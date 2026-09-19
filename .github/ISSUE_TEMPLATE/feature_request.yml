@@ -1,0 +1,54 @@
+name: Feature request
+description: Propose a new capability, component, or API
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One issue carries one implementable change. Requests with genuinely separable parts belong in Discussions first, or as a parent issue that only groups sub-issues.
+
+        Title convention: `<area>: <capability>`, e.g. `components: row swipe actions beyond delete/move`.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What cannot be expressed with WaterUI today, or what the workaround costs.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The API or behavior you want. A Rust sketch of the view code a developer would write is ideal.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other shapes you evaluated — composing existing primitives, a backend hook, a separate crate — and why they fall short.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      description: Where this capability would live. Select every surface that applies.
+      multiple: true
+      options:
+        - Android backend
+        - Apple backend (iOS / macOS)
+        - GTK backend (Linux)
+        - Hydrolysis backend (desktop webview)
+        - Web / WASM frontend
+        - water CLI
+        - Core framework (runtime, layout, reactivity)
+        - Components
+        - FFI
+        - Graphics / rendering
+        - DevTools (inspector, MCP, preview)
+        - CI / release plumbing
+        - Not sure
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Platform API references, prior art, related issues.

@@ -2,12 +2,32 @@ use core::ops::Index;
 use std::collections::BTreeMap;
 
 use accesskit::{
-    Node as AccessibilityNode, NodeId as AccessibilityNodeId, Rect as AccessibilityRect,
-    Role as AccessibilityRole, Toggled as AccessibilityToggled,
+    Action as AccessibilityAction, Node as AccessibilityNode, NodeId as AccessibilityNodeId,
+    Rect as AccessibilityRect, Role as AccessibilityRole, Toggled as AccessibilityToggled,
     TreeUpdate as AccessibilityTreeUpdate,
 };
 
 use crate::selector::{ScopeRelation, Selector};
+
+/// The accessibility actions probed on every node when a snapshot is taken.
+///
+/// This is the set of actions external drivers (for example the MCP session in
+/// `waterui-mcp`) can dispatch.
+const PROBED_ACTIONS: [AccessibilityAction; 13] = [
+    AccessibilityAction::Click,
+    AccessibilityAction::Focus,
+    AccessibilityAction::SetValue,
+    AccessibilityAction::Increment,
+    AccessibilityAction::Decrement,
+    AccessibilityAction::ReplaceSelectedText,
+    AccessibilityAction::Expand,
+    AccessibilityAction::Collapse,
+    AccessibilityAction::ScrollDown,
+    AccessibilityAction::ScrollUp,
+    AccessibilityAction::ScrollLeft,
+    AccessibilityAction::ScrollRight,
+    AccessibilityAction::ScrollIntoView,
+];
 
 /// Stable role wrapper exposed by the testing API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -78,6 +98,8 @@ impl Role {
     pub const COLUMN_HEADER: Self = Self(AccessibilityRole::ColumnHeader);
     /// Logical grouping role.
     pub const GROUP: Self = Self(AccessibilityRole::Group);
+    /// Modal dialog role.
+    pub const DIALOG: Self = Self(AccessibilityRole::Dialog);
     /// Window root role.
     pub const WINDOW: Self = Self(AccessibilityRole::Window);
     /// Main landmark role.
@@ -231,6 +253,7 @@ pub struct NodeSnapshot {
     pub(crate) busy: bool,
     pub(crate) hidden: bool,
     pub(crate) children: Vec<NodeId>,
+    pub(crate) actions: Vec<AccessibilityAction>,
 }
 
 impl NodeSnapshot {
@@ -322,6 +345,15 @@ impl NodeSnapshot {
         &self.children
     }
 
+    /// Accessibility actions the node reported support for at capture time.
+    ///
+    /// Probed against a fixed list — the actions the `act` tool in
+    /// `waterui-mcp` can dispatch, plus `ScrollIntoView`.
+    #[must_use]
+    pub fn actions(&self) -> &[AccessibilityAction] {
+        &self.actions
+    }
+
     fn from_accesskit(id: AccessibilityNodeId, node: &AccessibilityNode) -> Self {
         let checked = match node.toggled() {
             Some(AccessibilityToggled::True) => Some(CheckedState::True),
@@ -350,6 +382,10 @@ impl NodeSnapshot {
             busy: node.is_busy(),
             hidden: node.is_hidden(),
             children: node.children().iter().copied().map(NodeId::from).collect(),
+            actions: PROBED_ACTIONS
+                .into_iter()
+                .filter(|action| node.supports_action(*action))
+                .collect(),
         }
     }
 }

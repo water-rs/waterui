@@ -9,7 +9,7 @@
 //! assistive technologies convey the intended experience.
 
 use nami::{Computed, impl_constant, signal::IntoComputed};
-use waterui_str::Str;
+use suiteki::Str;
 
 use crate::metadata::MetadataKey;
 use crate::{AnyView, Environment, IgnorableMetadata, View};
@@ -40,6 +40,42 @@ impl AccessibilityLabel {
     }
 
     /// The reactive label signal.
+    #[must_use]
+    pub const fn signal(&self) -> &Computed<Str> {
+        &self.0
+    }
+}
+
+/// Carries the semantic value of a component beside its label.
+///
+/// The value is the node's own text content — what the component *says* —
+/// rather than the name an application gives it. A formula's spoken
+/// mathematics, a chart's summary, or a document's title all live here, so a
+/// human-readable [`AccessibilityLabel`] like `"Euler's identity"` no longer
+/// has to replace them. Assistive technologies announce it after the label,
+/// matching `accessibilityValue` on `AppKit` and `aria-valuetext` on the web.
+///
+/// The value is reactive: a value derived from app state stays current without
+/// rebuilding the subtree, matching [`AccessibilityLabel`].
+#[derive(Debug, Clone)]
+pub struct AccessibilityValue(Computed<Str>);
+
+impl MetadataKey for AccessibilityValue {}
+
+impl AccessibilityValue {
+    /// Creates a value announced by assistive technologies after the label.
+    ///
+    /// Accepts a constant or any signal of [`Str`].
+    ///
+    /// ```
+    /// # use waterui_core::accessibility::AccessibilityValue;
+    /// let value = AccessibilityValue::new("e raised to i pi plus one equals zero");
+    /// ```
+    pub fn new(value: impl IntoComputed<Str>) -> Self {
+        Self(value.into_computed())
+    }
+
+    /// The reactive value signal.
     #[must_use]
     pub const fn signal(&self) -> &Computed<Str> {
         &self.0
@@ -145,6 +181,8 @@ pub enum AccessibilityRole {
     Option,
     /// Logical grouping container.
     Group,
+    /// Modal dialog or alert surface.
+    Dialog,
 }
 
 impl MetadataKey for AccessibilityRole {}

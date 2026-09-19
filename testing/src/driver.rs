@@ -11,7 +11,7 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, get_current_pid};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
 
-use crate::app::DriverMode;
+use crate::app::{DriverMode, RuntimeFlavor};
 use crate::semantics::NodeId;
 use crate::snapshot::Snapshot;
 
@@ -124,6 +124,8 @@ pub struct HydrolysisA11yDriver {
     width: u32,
     height: u32,
     mode: DriverMode,
+    flavor: RuntimeFlavor,
+    scale_factor: f64,
     runtime: Option<HeadlessRuntime>,
     /// Virtual frame clock: starts at the first pump's wall time and advances
     /// by a fixed step per pump, decoupling animation sampling from host
@@ -134,11 +136,19 @@ pub struct HydrolysisA11yDriver {
 }
 
 impl HydrolysisA11yDriver {
-    pub(crate) const fn new(width: u32, height: u32, mode: DriverMode) -> Self {
+    pub(crate) const fn new(
+        width: u32,
+        height: u32,
+        mode: DriverMode,
+        flavor: RuntimeFlavor,
+        scale_factor: f64,
+    ) -> Self {
         Self {
             width,
             height,
             mode,
+            flavor,
+            scale_factor,
             runtime: None,
             clock: None,
             resources: ResourceSampler::new(),
@@ -151,7 +161,18 @@ impl HydrolysisA11yDriver {
         env: &Environment,
     ) -> &mut HeadlessRuntime {
         self.runtime.get_or_insert_with(|| {
-            HeadlessRuntime::new_for_tests(env.clone(), content.clone(), self.width, self.height)
+            let runtime = match self.flavor {
+                RuntimeFlavor::Test => HeadlessRuntime::new_for_tests(
+                    env.clone(),
+                    content.clone(),
+                    self.width,
+                    self.height,
+                ),
+                RuntimeFlavor::Application => {
+                    HeadlessRuntime::new(env.clone(), content.clone(), self.width, self.height)
+                }
+            };
+            runtime.with_scale_factor(self.scale_factor)
         })
     }
 
@@ -185,6 +206,10 @@ impl A11yDriver for HydrolysisA11yDriver {
         env: &Environment,
         capture_snapshot: bool,
     ) -> DriverPumpResult {
+        // Run work `TestLocalExecutor` parked — a runnable a timer or I/O
+        // reactor re-queued since the last frame — before the frame's own
+        // executor drain.
+        let _ = crate::executor::drain_parked_local_work();
         let at = self.tick(VIRTUAL_FRAME);
         let result = if capture_snapshot {
             self.runtime(content, env).pump_at(true, at)
@@ -203,6 +228,7 @@ impl A11yDriver for HydrolysisA11yDriver {
         content: &AnyViewBuilder<AnyView>,
         env: &Environment,
     ) -> DriverPumpResult {
+        let _ = crate::executor::drain_parked_local_work();
         let at = self.tick(step);
         let result = match self.mode {
             DriverMode::Semantic => self.runtime(content, env).pump_semantic_at(at),
@@ -405,6 +431,7 @@ impl A11yDriver for HydrolysisA11yDriver {
     ) -> FrameTiming {
         // Adopt the caller's clock so interleaved semantic pumps stay monotone.
         self.clock = Some(at);
+        let _ = crate::executor::drain_parked_local_work();
         let started_at = std::time::Instant::now();
         let outcome = self.runtime(content, env).pump_at(false, at);
         FrameTiming {

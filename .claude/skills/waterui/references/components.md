@@ -80,14 +80,22 @@ Common modifiers on stacks:
 
 ```rust
 .spacing(8.0)
-.alignment(HorizontalAlignment::Leading)   // VerticalAlignment on hstack
-.padding()  /  .padding_with(16.0)  /  .padding_with(EdgeInsets::symmetric(10.0, 16.0))
+.leading()   // or .alignment(Leading); hstack aligns vertically: .top() / .centered() / .bottom()
+.padding()  /  .padding_with(16.0)  /  .padding_with((10.0, 16.0))
 ```
 
-`.padding_with` takes `impl IntoComputed<EdgeInsets>`: a bare number, an `EdgeInsets`, or
-a signal of one. Argument orders are traps worth memorizing —
-`EdgeInsets::new(top, bottom, leading, trailing)` (not CSS order) and
-`EdgeInsets::symmetric(vertical, horizontal)`.
+`.padding_with` takes `impl IntoComputed<EdgeInsets>`: a bare number (every edge), a
+`(vertical, horizontal)` pair, a `[top, bottom, leading, trailing]` array, an `EdgeInsets`,
+or a signal of one. `.padding_horizontal(x)` / `.padding_vertical(x)` pad one axis. Do not
+spell `EdgeInsets::all(x)` / `symmetric(v, h)` / `new(..)` at a padding call — the number,
+pair and array are those constructors. The orders are traps worth memorizing —
+`[top, bottom, leading, trailing]` (not CSS order) and `(vertical, horizontal)`.
+
+Alignment is a token or a method, never the qualified constant: `vstack(..).leading()` or
+`.alignment(Leading)`, `hstack(..).top()`, `zstack(..).top_leading()`. The tokens
+(`Leading`, `Trailing`, `Center`, `Top`, `Bottom`, `FirstBaseline`, `LastBaseline`, and the
+corners `TopLeading` …) convert only into the axis they are legal for, so
+`vstack(..).alignment(Top)` does not compile.
 
 Children are a tuple for a fixed set. For a runtime-length static set, collect — the
 iterator item must be a single concrete type, so heterogeneous helpers return `AnyView`:
@@ -205,6 +213,8 @@ button("Save")                              // Button<fn(&Environment)>
     .action(handler)                        // -> Button<impl FnMut(&Environment)>
     .action_async(|| async { … })
     .style(ButtonStyle::Plain)              // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
+                                            // | Glass | GlassProminent (Liquid Glass capsules on Apple;
+                                            //   bordered / bordered-prominent elsewhere)
     .state(&value)                          // inject handler state (repeatable)
 
 button(text!("{edit_label}"))               // a text! satisfies IntoLabel: reactive button titles need no watch
@@ -361,12 +371,13 @@ Lazy::hstack(ForEach::new(records.clone(), row))
 
 List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
-    .on_delete(|ListDelete(i), State(s): State<AppState>| { let _ = s.rows.remove(i); })
-    .on_move(|ListMove(m), State(s): State<AppState>| { /* m.from(), m.to() */ })
+    .on_delete(|ListDelete(i), s: AppState| { let _ = s.rows.remove(i); })
+    .on_move(|ListMove(m), s: AppState| { /* m.from(), m.to() */ })
     .scroll_controller(&controller)
 ```
 
 `ListDelete(index)` destructures to a `usize`; `ListMove(m)` exposes `.from()`/`.to()`.
+`AppState` is an owned `#[state]` type (SKILL.md rule 3), so handlers take it bare.
 
 For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
 modifiers, `VStack`/`HStack` have `for_each` too, and `collection_transition` animates
@@ -477,13 +488,14 @@ A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new(
 
 ## Overlays: snackbars, cards, suspense, full screen
 
-Every `Window` installs a `SnackbarManager`; reach it from any handler.
+Every `Window` installs a `SnackbarManager` through `.state()`; it is a `#[state]`-marked
+framework type, so handlers take it bare.
 
 ```rust
 use core::time::Duration;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 
-button("Save").action(|State(m): State<SnackbarManager>| {
+button("Save").action(|m: SnackbarManager| {
     m.show(
         Snackbar::new("Item moved to trash")
             .icon(mdi::delete())

@@ -7,11 +7,11 @@
 
 use waterui::app::App;
 use waterui::color::Srgb;
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::{Binding, binding};
 use waterui::window::Window;
+use waterui::window::WindowState::Normal;
 
 const BLUE: Srgb = Srgb::from_hex("#2196F3");
 const ORANGE_BG: Srgb = Srgb::from_hex("#FFF3E0");
@@ -46,23 +46,23 @@ fn toolbar_scene_section(status: &Binding<String>) -> impl View {
         text("Toolbar Labels").sub_headline(),
         text("The same semantic labels can render with text in content and icon-only in compact chrome. Screen readers keep reading the semantic title.")
             .body()
-            .foreground(MutedForeground),
+            .muted(),
         spacer().height(12.0),
-        text("Regular content").caption().foreground(MutedForeground),
+        text("Regular content").caption().muted(),
         toolbar_actions(status),
         spacer().height(8.0),
-        text("Compact toolbar").caption().foreground(MutedForeground),
+        text("Compact toolbar").caption().muted(),
         toolbar_actions(status).install(LabelDisplayMode::IconOnly),
         spacer().height(12.0),
         text!("Toolbar action: {status}")
             .font(font::Caption)
-            .foreground(MutedForeground),
+            .muted(),
     ))
     .padding()
 }
 
 fn window_toolbar(status: &Binding<String>) -> impl View {
-    toolbar_actions(status).padding_with(EdgeInsets::symmetric(6.0, 8.0))
+    toolbar_actions(status).padding_with((6.0, 8.0))
 }
 
 fn menu_section(selected: &Binding<String>) -> impl View {
@@ -70,7 +70,7 @@ fn menu_section(selected: &Binding<String>) -> impl View {
         text("Menu Component").sub_headline(),
         text("Tap the menu button to see nested buttons, submenus, and separators")
             .body()
-            .foreground(MutedForeground),
+            .muted(),
         spacer().height(12.0),
         Menu::new(
             "Choose an Option",
@@ -105,7 +105,7 @@ fn menu_section(selected: &Binding<String>) -> impl View {
         ),
         spacer().height(12.0),
         hstack((
-            text("Selected: ").caption().foreground(MutedForeground),
+            text("Selected: ").caption().muted(),
             text!("{selected}").body(),
         )),
     ))
@@ -117,7 +117,7 @@ fn styled_menu_section(action_log: &Binding<String>) -> impl View {
         text("Styled Menu").sub_headline(),
         text("The popup label stays a normal label, and menu rows can now be plain buttons")
             .body()
-            .foreground(MutedForeground),
+            .muted(),
         spacer().height(12.0),
         Menu::new(
             text("Actions").bold(),
@@ -144,9 +144,7 @@ fn styled_menu_section(action_log: &Binding<String>) -> impl View {
             ),
         ),
         spacer().height(12.0),
-        text!("{action_log}")
-            .font(font::Caption)
-            .foreground(MutedForeground),
+        text!("{action_log}").font(font::Caption).muted(),
     ))
     .padding()
 }
@@ -156,10 +154,10 @@ fn context_menu_section(context_action: &Binding<String>) -> impl View {
         text("Context Menu").sub_headline(),
         text("Long press the box below to see context menu")
             .body()
-            .foreground(MutedForeground),
+            .muted(),
         spacer().height(12.0),
         text("Long Press Me")
-            .padding_with(EdgeInsets::all(24.0))
+            .padding_with(24.0)
             .background(ORANGE_BG)
             .foreground(ORANGE_FG)
             .context_menu((
@@ -184,9 +182,7 @@ fn context_menu_section(context_action: &Binding<String>) -> impl View {
                     .state(context_action),
             )),
         spacer().height(12.0),
-        text!("{context_action}")
-            .font(font::Caption)
-            .foreground(MutedForeground),
+        text!("{context_action}").font(font::Caption).muted(),
     ))
     .padding()
 }
@@ -197,7 +193,7 @@ fn selection_menu_section(selection_action: &Binding<String>) -> impl View {
         text("Selection Menu").sub_headline(),
         text("Select text in the field and use its context menu")
             .body()
-            .foreground(MutedForeground),
+            .muted(),
         spacer().height(12.0),
         field("Draft", &draft).selection_menu((
             "Shout"
@@ -212,9 +208,7 @@ fn selection_menu_section(selection_action: &Binding<String>) -> impl View {
                 .state(selection_action),
         )),
         spacer().height(12.0),
-        text!("{selection_action}")
-            .font(font::Caption)
-            .foreground(MutedForeground),
+        text!("{selection_action}").font(font::Caption).muted(),
     ))
     .padding()
 }
@@ -222,9 +216,7 @@ fn selection_menu_section(selection_action: &Binding<String>) -> impl View {
 fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
     vstack((
         text("Context Menu on Views").sub_headline(),
-        text("Long press any colored box")
-            .body()
-            .foreground(MutedForeground),
+        text("Long press any colored box").body().muted(),
         spacer().height(12.0),
         hstack((
             text("Red")
@@ -279,9 +271,7 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
                 )),
         )),
         spacer().height(12.0),
-        text!("{view_action}")
-            .font(font::Caption)
-            .foreground(MutedForeground),
+        text!("{view_action}").font(font::Caption).muted(),
     ))
     .padding()
 }
@@ -298,7 +288,7 @@ fn scene(toolbar_status: Binding<String>) -> impl View {
             text("WaterUI Menu Examples").headline(),
             text("Demonstrating popup menus, nested menus, and context menus")
                 .body()
-                .foreground(MutedForeground),
+                .muted(),
             Divider,
             spacer().height(8.0),
             menu_section(&menu_selected),
@@ -316,7 +306,7 @@ fn scene(toolbar_status: Binding<String>) -> impl View {
             toolbar_scene_section(&toolbar_status),
             spacer().height(40.0),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 
@@ -332,12 +322,12 @@ pub fn app(env: Environment) -> App {
     let content_toolbar_status = toolbar_status.clone();
 
     App::new_with_windows(
-        [Window::new(
-            "WaterUI Menu Examples",
-            binding(waterui::window::WindowState::Normal),
-            move || scene(content_toolbar_status.clone()),
-        )
-        .toolbar(window_toolbar(&toolbar_status))],
+        [
+            Window::new("WaterUI Menu Examples", binding(Normal), move || {
+                scene(content_toolbar_status.clone())
+            })
+            .toolbar(window_toolbar(&toolbar_status)),
+        ],
         env,
     )
 }

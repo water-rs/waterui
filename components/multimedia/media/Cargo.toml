@@ -51,7 +51,7 @@ futures-lite.workspace = true
 hydrolysis-m3.workspace = true
 waterui = { path = "../../..", features = ["video-gpu"] }
 waterui-testing = { path = "../../../testing" }
-waterkit-codec = { path = "../../../kit/multimedia/codec", features = ["software-fallback"] }
+waterkit-codec = { version = "0.1.2", features = ["software-fallback"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 
 

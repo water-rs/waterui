@@ -12,7 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-waterui-str.workspace = true
+suiteki.workspace = true
 nami-core.workspace = true
 base64 = { version = "0.23", default-features = false, features = ["alloc"] }
 nami = { workspace = true, optional = true }

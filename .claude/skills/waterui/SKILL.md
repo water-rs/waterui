@@ -28,6 +28,7 @@ beyond pointers.
 | Colors, theme tokens, dark mode, icons, shapes, gradients, Material 3 | [references/styling.md](references/styling.md) |
 | Translations, plurals, locale switching, formatting, RTL | [references/i18n.md](references/i18n.md) |
 | `#[waterui::test]`, `#[waterui::bench]`, `#[preview]`, snapshots | [references/testing.md](references/testing.md) |
+| `water mcp` tool surface, animation stepping, agent drive loop | [references/mcp.md](references/mcp.md) |
 | `water` CLI, `Water.toml`, Cargo features, assets, permissions, platforms, embedded | [references/project.md](references/project.md) |
 | Compile errors, silent bugs, and their fixes | [references/troubleshooting.md](references/troubleshooting.md) |
 
@@ -74,10 +75,12 @@ and no collection applies. Check those three first, every time.
 ### 3. Inject handler state with `.state()`, do not capture clones
 
 `.action()` takes a *handler*: a function whose parameters are extractors resolved from
-the environment. `.state(&value)` puts a value in that environment; `State<T>` pulls it
-out. This keeps handlers as plain named functions instead of a thicket of `move` closures.
-The same machinery drives every callback in the framework — `.on_tap`, gestures, drops,
-menu commands, list edits — not just buttons.
+the environment. `.state(&value)` puts a value in that environment; an extractor pulls it
+out. `State<T>` is the wrapper for a type the app does not own — `Binding`, `Rc`, a
+third-party value; a `Clone` type the app *does* own gets `#[state]` once and is then
+written bare. This keeps handlers as plain named functions instead of a thicket of `move`
+closures. The same machinery drives every callback in the framework — `.on_tap`, gestures,
+drops, menu commands, list edits — not just buttons.
 
 ```rust
 button("Increment")
@@ -85,8 +88,9 @@ button("Increment")
     .state(&count)
 ```
 
-Repeated `State<T>` of the **same type** bind positionally: the first `.state()` call
-feeds the first `State<T>` parameter.
+Repeated parameters of the **same state type** bind positionally — bare `#[state]` types
+and `State<T>` spellings share one sequence: the first `.state()` call feeds the first
+parameter of that type.
 
 ```rust
 button("Search")
@@ -102,14 +106,15 @@ one `Clone` struct, inject it once on a container, and write handlers as free fu
 This is the idiomatic shape for a real screen:
 
 ```rust
+#[state]
 #[derive(Clone)]
 struct Editor {
     rows: ReactiveList<Row>,
     editing: Binding<bool>,
 }
 
-fn toggle_editing(State(state): State<Editor>) {
-    state.editing.set(!state.editing.get());
+fn toggle_editing(state: Editor) {
+    state.editing.toggle();
 }
 
 fn content(state: Editor) -> impl View {
@@ -214,11 +219,12 @@ opt-in facade features `canvas`, `chart`, `barcode` and `particle`, exposing the
 independent crates as `waterui::canvas`, `waterui::chart`, `waterui::barcode` and
 `waterui::particle`. Direct dependencies such as `waterui-chart` remain valid and expose
 the same types as the facade, including with dynamic linking. Maps and Mermaid diagrams
-use direct dependencies on `waterui-map` and `waterui-mermaid`. Mermaid additionally
-needs one call at the root of the app: a
+use direct dependencies on `waterui-map` and `waterui-mermaid`; `waterui-mermaid` lives
+in its own repository (water-rs/mermaid) and is a git dependency until it can be
+published. Mermaid additionally needs one call at the root of the app: a
 ```` ```mermaid ```` fence in Markdown stays plain code until the environment has
-`waterui_mermaid::install(&mut env)` (do it inside `use_env` at the root view, as
-`examples/markdown` does, so `water preview` gets it too). Keep
+`waterui_mermaid::install(&mut env)` (do it inside `use_env` at the root view, as the
+component repository's `examples/markdown` shows, so `water preview` gets it too). Keep
 the generated `dev = ["waterui/dynamic_linking"]` feature — it is what makes `water preview`
 and the fast dev loop link dynamically ([references/project.md](references/project.md)).
 
@@ -285,26 +291,31 @@ owned by a closure or a modifier.
 
 ### Text
 
-`text()` for static strings, `text!` for anything reactive, interpolated, or localized.
-`text!` is the i18n pipeline: the whole literal is a translation-catalog key, and its
-placeholder names are slot keys — bare identifiers, aliased with `name = expr` when the
-local has a different name ([references/i18n.md](references/i18n.md)).
+`text()` for static strings, `text!` for anything reactive, interpolated, or plural.
+Both localize: `text("Settings")` resolves through the `TranslationCatalog` installed in
+the environment at runtime, while `text!` embeds the translations at compile time — the
+whole literal is a translation-catalog key, and its placeholder names are slot keys,
+bare identifiers aliased with `name = expr` when the local has a different name
+([references/i18n.md](references/i18n.md)).
 
 ```rust
 text("Settings").title()                        // title/headline/sub_headline/body/caption/footnote
 text!("Count: {count}")                         // updates automatically
 text!("{unread} unread", unread = mail.count()) // aliasing an expression into a slot
 text!("Blur: {blur:.1}")                        // format specs work
+text("0x1F60").monospaced()                     // the platform's fixed-pitch face, same size
 ```
 
 Import the macro and write bare `text!` — never `waterui::text!`. On a `Text`, `.size(..)`
-is the *font* size (and shadows the two-argument frame `.size(w, h)`).
+is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced()` is a
+design, not a family: it keeps the slot and size and each backend picks its own monospaced
+face, so never spell a font name for code.
 
 ### Layout
 
 ```rust
 hstack((a, b, c)).spacing(8.0)
-vstack((a, b)).alignment(HorizontalAlignment::Leading).padding()
+vstack((a, b)).leading().padding()
 zstack((background, content))
 scroll(content)
 spacer()                    // flexible gap
@@ -345,14 +356,14 @@ clearer than a long `when` chain.
 ### Modifiers
 
 ```rust
-.padding() / .padding_with(16.0) / .padding_with(EdgeInsets::all(16.0))
+.padding() / .padding_with(16.0) / .padding_with((8.0, 16.0)) / .padding_horizontal(16.0)
 .background(color) / .foreground(color) / .overlay(view)
 .size(w, h) / .width(w) / .height(h) / .min_width(w) / .max_width(w) / .min_size(..) / .max_size(..)
 .scale(x, y) / .rotation(degrees) / .offset(x, y)     // two arguments, not one
 .border(color, width) / .shadow(shadow) / .clip(shape)
 .opacity(signal) / .visible(signal) / .disabled(signal)
 .blur(signal) / .brightness(..) / .contrast(..) / .saturation(..) / .grayscale(..) / .hue_rotation(..)
-.a11y_label(..) / .a11y_id("settings.wifi") / .a11y_role(..)
+.a11y_label(..) / .a11y_value(..) / .a11y_id("settings.wifi") / .a11y_role(..)
 .on_appear(..) / .on_change(&signal, ..) / .on_tap(..) / .gesture(g, handler) / .context_menu(items)
 .cursor(style) / .ignore_safe_area(EdgeSet::ALL) / .floating()
 ```
@@ -370,10 +381,11 @@ shared configuration without every intermediate function taking it as a paramete
 
 ```rust
 use waterui::env::{use_env, with};
+use waterui::impl_extractor;
 
 #[derive(Clone)]
 struct ApiClient { base_url: Str }
-waterui::impl_extractor!(ApiClient);          // makes it a handler/`use_env` parameter
+impl_extractor!(ApiClient);                   // makes it a handler/`use_env` parameter
 
 // Seeding, usually in `app(env)`:
 env.insert(client);                            // in place
@@ -402,7 +414,7 @@ before it can render themed views; theme tokens panic rather than falling back t
 guessed color.
 
 `.state(&value)` from rule 3 is the same machinery with a narrower scope: it installs into
-the environment of one view, and `State<T>` reads it back.
+the environment of one view, and a `State<T>` or `#[state]`-marked parameter reads it back.
 
 ### Accessibility is part of construction
 
@@ -452,6 +464,51 @@ interaction test and an accessibility check, which is why a component that canno
 tested this way is a bug rather than a gap. Details in
 [references/testing.md](references/testing.md).
 
+## Driving the app from an agent
+
+`water mcp` serves the running app to an agent over MCP: run it in the project root and
+it builds the app headless, then exposes the live accessibility tree, actions, and
+screenshots as tools. The server answers `initialize` and `tools/list` immediately, so
+a cold first build does not stall the client handshake — tool calls simply wait for the
+build.
+
+`water create` writes a project-level `.mcp.json` that points MCP clients at it:
+
+```json
+{
+  "mcpServers": {
+    "app": {
+      "command": "water",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+For clients that do not read `.mcp.json`, register the same server by hand. Codex, in
+`~/.codex/config.toml`:
+
+```toml
+[mcp_servers.app]
+command = "water"
+args = ["mcp"]
+```
+
+Cursor, in `.cursor/mcp.json`, uses the same shape as the generated file above.
+
+Once connected, the loop is: `snapshot` to read the tree, `act` (or `pointer` / `key` /
+`type_text`) by node id — every mutating tool returns the settled tree, so no follow-up
+`snapshot` is needed — `screenshot` when layout or appearance matters, `wait` for
+conditions instead of polling, then edit the source and `restart` to rebuild and relaunch
+with the changes. Node ids are stable across turns within a session. The full tool
+surface — state-filtered selectors, element-anchored pointer input, `settle: false` +
+`advance` for stepping through animations frame by frame — is in
+[references/mcp.md](references/mcp.md).
+
+`preview` renders a `#[preview]` function or an `expr` expression (e.g. `text("hi")`) and
+returns the PNG image content directly — use it to check one component without driving the
+whole app.
+
 ## Gotchas worth memorizing
 
 | Symptom | Cause | Fix |
@@ -464,15 +521,15 @@ tested this way is a bug rather than a gap. Details in
 | A background task dies instantly | the `spawn_local` handle cancels on drop | `.detach()` it |
 | `LongPressGesture::new(Duration…)` rejected | duration is a `u32` in backend time units | `LongPressGesture::new(500)` |
 | `.is_empty()` missing on a string signal | different name | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
-| Wrong binding arrives in a handler | positional `State<T>` | first `.state()` → first parameter |
+| Wrong binding arrives in a handler | positional `.state()` extraction | first `.state()` → first parameter of that type |
 | Scrolling or list updates are janky | `watch` over a `Vec` | `List::for_each` / `Lazy::for_each` / `SignalCollection` |
 | `ForEach<..>: View is not satisfied` | `ForEach` is a collection, not a view | `Lazy::for_each(..)`, or hand it to a container |
 | `.title("Inbox")` rejects its argument | `Text::title()` (font size) shadows the navigation title | title the container, or `NavigationView::new(title, content)` |
 | A test's wait can never fail | query `.wait_for_existence(..)` returns `bool` | wrap it in `assert!` |
-| `use of undeclared crate 'tracing'` | logging is re-exported | `waterui::log::debug!(..)` |
+| `use of undeclared crate 'tracing'` | logging is re-exported | `use waterui::log::debug;` then `debug!(..)` |
 | `borrowed data escapes outside of function` | views are `'static` | `&'static str` / `Str` / `impl IntoText`, or `impl View + use<>` |
 | type annotations needed after `binding(v)` | `binding` takes `impl Into<T>` | `Binding::i32(0)` etc., turbofish, or annotate |
 
-Rust rules still apply on top of these: no `println!` (use `waterui::log::debug!`,
-surfaced by `water run --logs debug`), and nothing blocking on the UI thread — use
+Rust rules still apply on top of these: no `println!` (import `waterui::log::debug` and
+use `debug!`, surfaced by `water run --logs debug`), and nothing blocking on the UI thread — use
 `.action_async`, `.task(..)`, or `waterui::task::{spawn_local, sleep}` with `.detach()`.

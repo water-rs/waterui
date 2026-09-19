@@ -38,7 +38,15 @@ runs:
     # list below, the baked index still names a .deb that has left the pool,
     # every fetch 404s, and `apt-fast` exits 0 anyway — leaving that step green
     # with nothing installed. Resolve against an index that matches the mirror.
-    - uses: ./.github/actions/refresh-apt-index
+    # Run the sibling action's script rather than `uses: ./...`: a relative
+    # `uses` resolves against the calling workflow's checkout, which is another
+    # repository when this action is consumed as
+    # `water-rs/waterui/.github/actions/setup-linux-deps@dev` (the cli nightly
+    # lost its Ignored-tests leg to "Can't find 'action.yml' under
+    # .github/actions/refresh-apt-index" in the cli checkout).
+    - name: Refresh the Ubuntu package index
+      shell: bash
+      run: bash "${{ github.action_path }}/../refresh-apt-index/refresh.sh"
 
     - name: Compute package list
       id: pkgs

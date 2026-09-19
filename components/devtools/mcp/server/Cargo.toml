@@ -1,0 +1,31 @@
+[package]
+name = "waterui-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../../../README.md"
+repository.workspace = true
+description = "MCP server that lets an agent drive a WaterUI app headless"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+waterui-mcp-protocol.workspace = true
+waterui-testing.workspace = true
+accesskit = "0.25"
+aither-core.workspace = true
+aither-mcp = { workspace = true, features = ["server"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+async-channel = "2.5"
+futures-lite.workspace = true
+tracing.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+waterui.workspace = true
+
+[lints]
+workspace = true

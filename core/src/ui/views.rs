@@ -27,6 +27,11 @@ use crate::id::{Identifiable, SelfId};
 /// `Views` extends the `Collection` trait by adding identity tracking capabilities.
 /// This allows for efficient diffing and reconciliation of UI elements during updates.
 /// Tip: the `get` method of `Collection` should return a unique identifier for each item.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a WaterUI view collection",
+    label = "expected a collection of views",
+    note = "`Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `Lazy::for_each` / `List::for_each` — whose items must implement `Identifiable`."
+)]
 pub trait Views {
     /// The type of unique identifier for items in the collection.
     /// Must implement `Hash` and `Ord` to ensure uniqueness and ordering.

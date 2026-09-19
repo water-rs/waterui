@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
 mod identifiable;
 mod locale;
+mod state;
 mod view_builder;
 
 fn waterui_crate_path() -> syn::Result<TokenStream2> {
@@ -241,6 +242,49 @@ pub fn view(input: TokenStream) -> TokenStream {
 /// can return different concrete `View` types under a shared `impl View`.
 pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
     view_builder::expand_attribute(args, &input)
+}
+
+/// Marks an owned `Clone` type as an [`Extractor`](waterui::extract::Extractor)
+/// over the `.state(&value)` injection channel.
+///
+/// `State<T>` is the wrapper for a type the app cannot implement traits for —
+/// `Binding<Str>`, a third-party value. Naming it for a type the app *does*
+/// own reads as an anti-pattern: mark the type `#[state]` once and handlers
+/// take the value bare.
+///
+/// ```rust
+/// use waterui::prelude::*;
+///
+/// #[state]
+/// #[derive(Clone)]
+/// struct Editor {
+///     doc: Binding<Str>,
+/// }
+/// # impl Editor {
+/// #     fn save(&self) {}
+/// # }
+///
+/// # fn view(editor: &Editor) -> impl View {
+/// button("Save")
+///     .action(|editor: Editor| editor.save())
+///     .state(editor)
+/// # }
+/// ```
+///
+/// The generated `Extractor` implementation delegates to
+/// [`State<Self>`](waterui::extract::State), so `.state(&value)` remains the
+/// injection mechanism and a bare `T` parameter shares extraction positions
+/// with `State<T>` parameters of the same type — the first `.state()` call
+/// feeds the first parameter of that type.
+///
+/// The type must be `Clone + 'static`; the requirement is enforced at the
+/// attribute so a missing `Clone` reports here rather than inside the
+/// expansion. For an owned type that should read a value installed directly in
+/// the environment instead of through `.state()`, use
+/// [`impl_extractor!`](waterui::impl_extractor).
+#[proc_macro_attribute]
+pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
+    state::expand(args, input)
 }
 
 /// Derives `Identifiable` using a struct field as the stable identifier.
@@ -894,6 +938,7 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
     // at compile time using CARGO_PKG_NAME
     let expanded = quote! {
         #(#fn_attrs)*
+        #[cfg_attr(not(debug_assertions), allow(dead_code))]
         #fn_vis #fn_sig #fn_block
 
         // Generate C export symbol for preview
@@ -1242,6 +1287,11 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
         Err(error) => return error.to_compile_error().into(),
     };
 
+    let waterui_path = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
     let attrs = &input_fn.attrs;
     let visibility = &input_fn.vis;
     let fn_name = &input_fn.sig.ident;
@@ -1250,7 +1300,15 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
     let arg_type = &typed_arg.ty;
     let async_wrapper = input_fn.sig.asyncness.is_some();
 
-    let mut builder = quote! { #testing_path::ui() };
+    // `catalog!` must expand in the test's own crate — that is where `i18n/`
+    // lives — so the configured environment comes from the expansion here
+    // rather than from inside `waterui-testing`.
+    let mut builder = quote! {
+        #testing_path::ui()
+            .environment(
+                #waterui_path::configure_environment!(#waterui_path::env::Environment::new())
+            )
+    };
     if let Some((width, height)) = &test_args.viewport {
         builder = quote! { #builder.viewport(#width, #height) };
     }
@@ -1510,6 +1568,11 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
         Err(error) => return error.to_compile_error().into(),
     };
 
+    let waterui_path = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
     let attrs = &input_fn.attrs;
     let visibility = &input_fn.vis;
     let bench_name = input_fn.sig.ident.to_string();
@@ -1521,7 +1584,12 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
     let arg_pattern = &typed_arg.pat;
     let arg_type = &typed_arg.ty;
 
-    let mut builder = quote! { #testing_path::ui() };
+    let mut builder = quote! {
+        #testing_path::ui()
+            .environment(
+                #waterui_path::configure_environment!(#waterui_path::env::Environment::new())
+            )
+    };
     if let Some((width, height)) = &bench_args.viewport {
         builder = quote! { #builder.viewport(#width, #height) };
     }

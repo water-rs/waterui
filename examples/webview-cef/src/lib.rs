@@ -6,6 +6,7 @@
 
 use waterui::Environment;
 use waterui::app::App;
+use waterui_browser_cef::install;
 
 /// Creates the standard `WebView` example drawn by the bundled CEF engine.
 ///
@@ -14,6 +15,6 @@ use waterui::app::App;
 /// `WebViewController` that opens CEF pages, and registers the realization that
 /// draws them. Nothing in the shared example code below mentions an engine.
 pub fn app(mut env: Environment) -> App {
-    waterui_browser_cef::install(&mut env);
+    install(&mut env);
     App::new(webview_example::demo, env)
 }

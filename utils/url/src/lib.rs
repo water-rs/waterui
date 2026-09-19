@@ -44,7 +44,7 @@ use alloc::string::{String, ToString};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use core::fmt;
-use waterui_str::Str;
+use suiteki::Str;
 
 #[cfg(feature = "std")]
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -931,6 +931,18 @@ impl RemoteDownloadError {
             Self::Http(_) | Self::ReadBody(_) => None,
         }
     }
+
+    /// Whether the failure is worth retrying: transport errors, truncated
+    /// bodies, throttling, and server errors. Other statuses are definitive.
+    #[must_use]
+    const fn is_transient(&self) -> bool {
+        match self {
+            Self::Http(_) | Self::ReadBody(_) => true,
+            Self::UnsuccessfulStatus(status) => {
+                matches!(*status, 408 | 429 | 500..=599)
+            }
+        }
+    }
 }
 
 #[cfg(feature = "std")]
@@ -970,6 +982,27 @@ pub async fn download_remote_bytes(url: &str) -> Result<Vec<u8>, RemoteDownloadE
 async fn download_remote_bytes_with_content_type(
     url: &str,
 ) -> Result<DownloadedRemoteBytes, RemoteDownloadError> {
+    // Transient failures are the common CI flake: release-asset hosts answer
+    // 5xx under load and connections reset mid-body. Retry a bounded number
+    // of times with backoff before surfacing the error.
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut backoff = core::time::Duration::from_millis(500);
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        match download_remote_once(url).await {
+            Err(error) if attempt < MAX_ATTEMPTS && error.is_transient() => {
+                tracing::warn!(%url, attempt, "remote download failed transiently; retrying");
+                std::thread::sleep(backoff);
+                backoff *= 3;
+            }
+            result => return result,
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+async fn download_remote_once(url: &str) -> Result<DownloadedRemoteBytes, RemoteDownloadError> {
     let mut client = zenwave::client();
     let response = client
         .method(Method::GET, url)

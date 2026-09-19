@@ -5,21 +5,26 @@ use nami::{Computed, Signal, signal::IntoComputed, watcher::BoxWatcherGuard};
 use waterui_core::{AnyView, View, layout::LayoutInvalidationCallback};
 
 use crate::{
-    HorizontalAlignment, Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView,
-    VerticalAlignment, container::FixedContainer,
+    HorizontalAlignment, Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis,
+    SubView, SubviewPlacement, VerticalAlignment, container::FixedContainer,
 };
 
 /// Layout that insets its single child by the configured edge values.
 ///
-/// The insets are reactive, so a window that republishes its safe area on
-/// rotation (see [`SafeAreaInsets`](super::safe_area::SafeAreaInsets)) moves the
-/// padded content without the subtree being rebuilt.
+/// The insets are reactive, so a change to them moves the padded content
+/// without the subtree being rebuilt.
 #[derive(Debug, Clone)]
 pub struct PaddingLayout {
     edges: Computed<EdgeInsets>,
 }
 
 impl Layout for PaddingLayout {
+    /// Padding is transparent to its content: it insets the child within
+    /// whatever bounds it is given, so the child's axis is the answer.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        children.first().copied().unwrap_or_default()
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         let edges = self.edges.get();
         // The horizontal and vertical space consumed by padding.
@@ -61,7 +66,12 @@ impl Layout for PaddingLayout {
         )
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        _proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
@@ -78,7 +88,15 @@ impl Layout for PaddingLayout {
             (bounds.height() - vertical_padding).max(0.0),
         );
 
-        vec![Rect::new(child_origin, child_size)]
+        // Placement proposes the region the child is placed in: the bounds
+        // less the insets, so a padded child stretched by its container lays
+        // out across the room it actually has.
+        let child_proposal = ProposalSize::new(Some(child_size.width), Some(child_size.height));
+
+        vec![SubviewPlacement::new(
+            Rect::new(child_origin, child_size),
+            child_proposal,
+        )]
     }
 
     fn explicit_horizontal(
@@ -119,13 +137,70 @@ pub struct EdgeInsets {
 
 nami::impl_constant!(EdgeInsets);
 
-#[allow(clippy::cast_possible_truncation)]
-impl<T: Into<f64>> From<T> for EdgeInsets {
-    fn from(value: T) -> Self {
-        let v = value.into() as f32;
-        Self::all(v)
-    }
+/// Equal insets on every edge from one number — `.padding_with(16.0)` —
+/// for every numeric type `f64` converts from, which is the set the former
+/// `From<T: Into<f64>>` blanket covered. The blanket had to go so the tuple
+/// and array conversions below could exist beside it (coherence forbids a
+/// concrete `From<(f32, f32)>` next to a blanket over `Into<f64>`).
+macro_rules! from_scalar {
+    (lossless: $($ty:ty),+ $(,)?) => {
+        $(
+            impl From<$ty> for EdgeInsets {
+                fn from(value: $ty) -> Self {
+                    Self::all(f32::from(value))
+                }
+            }
+        )+
+    };
+    (lossy: $($ty:ty),+ $(,)?) => {
+        $(
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+            impl From<$ty> for EdgeInsets {
+                fn from(value: $ty) -> Self {
+                    Self::all(value as f32)
+                }
+            }
+        )+
+    };
 }
+
+from_scalar!(lossless: f32, i8, i16, u8, u16);
+from_scalar!(lossy: f64, i32, u32);
+
+/// `(vertical, horizontal)` — the [`EdgeInsets::symmetric`] order:
+/// `.padding_with((8.0, 16.0))`. The `f64` form is what an unsuffixed
+/// literal pair infers to as a constant signal.
+macro_rules! from_pair {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            #[allow(clippy::cast_possible_truncation)]
+            impl From<($ty, $ty)> for EdgeInsets {
+                fn from((vertical, horizontal): ($ty, $ty)) -> Self {
+                    Self::symmetric(vertical as f32, horizontal as f32)
+                }
+            }
+        )+
+    };
+}
+
+from_pair!(f32, f64);
+
+/// `[top, bottom, leading, trailing]` — the [`EdgeInsets::new`] order:
+/// `.padding_with([4.0, 12.0, 16.0, 16.0])`.
+macro_rules! from_quad {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            #[allow(clippy::cast_possible_truncation)]
+            impl From<[$ty; 4]> for EdgeInsets {
+                fn from([top, bottom, leading, trailing]: [$ty; 4]) -> Self {
+                    Self::new(top as f32, bottom as f32, leading as f32, trailing as f32)
+                }
+            }
+        )+
+    };
+}
+
+from_quad!(f32, f64);
 
 impl core::ops::Add for EdgeInsets {
     type Output = Self;
@@ -234,6 +309,12 @@ impl View for Padding {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, vec![self.content])
     }
+
+    /// Resolves to `FixedContainer` over the same layout and single child;
+    /// reports what that container would.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis(&[self.content.stretch_axis()])
+    }
 }
 
 #[cfg(test)]
@@ -303,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn test_padding_placement() {
+    fn test_padding_placement_bounded_proposal() {
         let layout = PaddingLayout {
             edges: EdgeInsets::new(10.0, 20.0, 15.0, 25.0).into_computed(),
         };
@@ -314,15 +395,16 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut child];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
         // Child origin is offset by leading and top
-        assert!((rects[0].x() - 15.0).abs() < f32::EPSILON);
-        assert!((rects[0].y() - 10.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.x() - 15.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.y() - 10.0).abs() < f32::EPSILON);
 
         // Child size is bounds minus padding
-        assert!((rects[0].width() - 60.0).abs() < f32::EPSILON); // 100 - 15 - 25
-        assert!((rects[0].height() - 70.0).abs() < f32::EPSILON); // 100 - 10 - 20
+        assert!((placements[0].frame.width() - 60.0).abs() < f32::EPSILON); // 100 - 15 - 25
+        assert!((placements[0].frame.height() - 70.0).abs() < f32::EPSILON); // 100 - 10 - 20
     }
 
     #[test]

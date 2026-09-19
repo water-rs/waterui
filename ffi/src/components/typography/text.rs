@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use waterui::Str;
 use waterui::layout::HorizontalAlignment;
 pub use waterui_text::font::ResolvedFont;
-use waterui_text::font::{Body, Font, FontWeight};
+use waterui_text::font::{Body, Font, FontDesign, FontWeight};
 use waterui_text::styled::{Style, StyledStr};
 use waterui_text::{Text, TextConfig};
 
@@ -20,6 +20,12 @@ pub struct WuiResolvedFont {
     pub weight: WuiFontWeight,
     /// Font family name (empty string means system default).
     pub family: WuiStr,
+    /// The design the platform face is chosen from when `family` is empty.
+    pub design: WuiFontDesign,
+    /// Absolute line height in points; `0.0` keeps the face's natural metrics.
+    pub line_height: f32,
+    /// Additional spacing between adjacent glyphs in points.
+    pub letter_spacing: f32,
 }
 
 impl IntoFFI for ResolvedFont {
@@ -31,6 +37,9 @@ impl IntoFFI for ResolvedFont {
             family: self
                 .family
                 .map_or_else(|| waterui::Str::from("").into_ffi(), IntoFFI::into_ffi),
+            design: self.design.into_ffi(),
+            line_height: self.line_height.unwrap_or(0.0),
+            letter_spacing: self.letter_spacing,
         }
     }
 }
@@ -46,11 +55,19 @@ impl IntoRust for WuiResolvedFont {
         // matching FFI constructor; it is consumed here and not observed
         // again.
         let family_str: waterui::Str = unsafe { self.family.into_rust() };
-        if family_str.is_empty() {
+        // SAFETY: `design` is a plain enum value; there is nothing to own.
+        let design = unsafe { self.design.into_rust() };
+        let mut font = if family_str.is_empty() {
             ResolvedFont::new(self.size, weight)
         } else {
             ResolvedFont::with_family(self.size, weight, family_str)
         }
+        .with_design(design);
+        // `0.0` encodes "natural metrics"; anything else is an absolute line
+        // height the backend resolved for this slot.
+        font.line_height = (self.line_height > 0.0).then_some(self.line_height);
+        font.letter_spacing = self.letter_spacing;
+        font
     }
 }
 
@@ -68,6 +85,16 @@ into_ffi!(
         Bold,
         UltraBold,
         Black,
+    }
+);
+
+into_ffi!(
+    FontDesign,
+    /// Which of the platform's own faces a font is drawn in when it names no
+    /// family: the proportional default, or the fixed-pitch face.
+    pub enum WuiFontDesign {
+        Default,
+        Monospaced,
     }
 );
 
@@ -289,12 +316,16 @@ pub extern "C" fn waterui_resolved_font_new(size: f32, weight: WuiFontWeight) ->
         size,
         weight,
         family: waterui::Str::from("").into_ffi(),
+        design: WuiFontDesign::Default,
+        line_height: 0.0,
+        letter_spacing: 0.0,
     }
 }
 
 /// Creates a concrete `Font` from resolved font properties.
 ///
-/// `family` can be an empty string to indicate system font.
+/// `family` can be an empty string to indicate system font, in which case
+/// `design` says which of the platform's own faces to use.
 ///
 /// # Safety
 /// `family` must contain valid UTF-8 bytes.
@@ -303,6 +334,7 @@ pub unsafe extern "C" fn waterui_font_from_resolved(
     size: f32,
     weight: WuiFontWeight,
     family: WuiStr,
+    design: WuiFontDesign,
 ) -> *mut WuiFont {
     // SAFETY: the caller contract makes `weight` an owning handle from the matching
     // FFI constructor; it is consumed here and not observed again.
@@ -310,8 +342,10 @@ pub unsafe extern "C" fn waterui_font_from_resolved(
     // SAFETY: the caller contract makes `family` an owning handle from the matching
     // FFI constructor; it is consumed here and not observed again.
     let family: Str = unsafe { family.into_rust() };
+    // SAFETY: `design` is a plain enum value; there is nothing to own.
+    let design = unsafe { design.into_rust() };
 
-    let mut font = Font::from(Body).size(size).weight(weight);
+    let mut font = Font::from(Body).size(size).weight(weight).design(design);
     if !family.is_empty() {
         font = font.family(family);
     }

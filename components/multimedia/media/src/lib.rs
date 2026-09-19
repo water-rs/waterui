@@ -141,4 +141,14 @@ impl View for Media {
             Self::Video(url) => AnyView::new(waterui_video::video_player(url)),
         }
     }
+
+    /// The axis depends on the variant; each resolves to a different leaf, so
+    /// ask that leaf.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        match self {
+            Self::Image(url) => Photo::new(url.clone()).stretch_axis(),
+            Self::LivePhoto(live) => LivePhoto::new(live.clone()).stretch_axis(),
+            Self::Video(url) => waterui_video::video_player(url.clone()).stretch_axis(),
+        }
+    }
 }

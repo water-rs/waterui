@@ -14,6 +14,7 @@ use nami::{
     watcher::{Context, Metadata as WatcherMetadata},
 };
 use native_executor::sleep;
+use suiteki::Str;
 use tree_sitter::{InputEdit, Parser, Point, Tree};
 use waterui_core::{
     AnyView, Metadata, Retain, View,
@@ -21,7 +22,6 @@ use waterui_core::{
     id::Identifiable,
 };
 use waterui_layout::stack::{HorizontalAlignment, VStack};
-use waterui_str::Str;
 use waterui_text::styled::StyledStr;
 
 use crate::{

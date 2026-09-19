@@ -18,8 +18,11 @@ proc-macro2 = "1"
 proc-macro-crate = "3"
 quote = "1"
 syn = { version = "3", features = ["full", "parsing"] }
-waterui-assets.workspace = true
+waterui-assets-core.workspace = true
 waterui-assets-planner.workspace = true
+
+[dev-dependencies]
+trybuild = "1.0"
 
 [lints]
 workspace = true

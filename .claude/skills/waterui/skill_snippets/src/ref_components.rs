@@ -45,14 +45,14 @@ pub fn components_block_02() {
     let _ = { stack.spacing(8.0) };
     let stack = vstack((text("a"), text("b")));
     let _ = {
-        stack.alignment(HorizontalAlignment::Leading) // VerticalAlignment on hstack
+        stack.leading() // or .alignment(Leading); hstack aligns vertically: .top() / .centered() / .bottom()
     };
     let stack = vstack((text("a"), text("b")));
     let _ = { stack.padding() };
     let stack = vstack((text("a"), text("b")));
     let _ = { stack.padding_with(16.0) };
     let stack = vstack((text("a"), text("b")));
-    let _ = { stack.padding_with(EdgeInsets::symmetric(10.0, 16.0)) };
+    let _ = { stack.padding_with((10.0, 16.0)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -65,8 +65,11 @@ pub fn components_block_03() {
             "tab"
         }
     }
+    // The doc mandates `fn(usize) -> AnyView`: heterogeneous helpers erase so
+    // the collect below can unify them.
+    #[allow(unknown_lints, needless_anyview)]
     fn photo_tile(i: usize) -> AnyView {
-        text(format!("tile {i}")).anyview()
+        text!("tile {i}").anyview()
     }
     let tabs = [Tab, Tab];
 
@@ -236,6 +239,8 @@ pub fn components_block_10() {
 // components.md § "## Controls" — rust block 11/28
 // Listing: three label-display-mode forms.
 // ---------------------------------------------------------------------------
+// components.md writes `lucide::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn components_block_11() {
     fn toolbar_row() -> impl View {
         hstack((
@@ -277,6 +282,8 @@ pub fn components_block_12() {
             .action(handler) // -> Button<impl FnMut(&Environment)>
             .action_async(|| async {}) // [ellipsis filled]
             .style(ButtonStyle::Plain) // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
+            // | Glass | GlassProminent (Liquid Glass capsules on Apple;
+            //   bordered / bordered-prominent elsewhere)
             .state(&value) // inject handler state (repeatable)
     };
 
@@ -342,6 +349,8 @@ pub fn components_button_style_shorthands() {
 // ---------------------------------------------------------------------------
 // components.md § "## Controls" — rust block 13/28
 // ---------------------------------------------------------------------------
+// components.md writes `mdi::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn components_block_13() {
     fn message_row(_message: Str) -> impl View {
         text("row")
@@ -487,10 +496,8 @@ pub fn components_block_18() {
     };
 
     let _: Option<Code> = None;
-    let _ = code(
-        waterui::prelude::highlight::Language::Plaintext,
-        "fn main() {}",
-    );
+    use waterui::prelude::highlight::Language;
+    let _ = code(Language::Plaintext, "fn main() {}");
     let _ = rich_text(Vec::new());
 }
 
@@ -549,6 +556,7 @@ pub mod components_block_20 {
     use waterui::prelude::*;
     use waterui::reactive::collection::List as ReactiveList;
 
+    #[state]
     #[derive(Clone)]
     pub struct AppState {
         pub rows: ReactiveList<Record>,
@@ -585,10 +593,10 @@ pub mod components_block_20 {
         let _ = {
             List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
                 .editing(is_editing.clone()) // impl IntoComputed<bool>
-                .on_delete(|ListDelete(i), State(s): State<AppState>| {
+                .on_delete(|ListDelete(i), s: AppState| {
                     let _ = s.rows.remove(i);
                 })
-                .on_move(|ListMove(m), State(_s): State<AppState>| {
+                .on_move(|ListMove(m), _s: AppState| {
                     let _ = (m.from(), m.to()); // [ellipsis filled]
                 })
                 .scroll_controller(&controller)
@@ -737,6 +745,7 @@ pub mod components_block_24 {
 // ---------------------------------------------------------------------------
 pub fn components_block_25() {
     use alloc::collections::BTreeSet;
+    use waterui::color::Srgb;
     use waterui::form::Calendar;
     use waterui::form::picker::color::ColorPicker;
     use waterui::form::picker::date::{DatePicker, DatePickerType};
@@ -754,7 +763,7 @@ pub fn components_block_25() {
     let visible_month = binding(Date::constant(2026, 3, 1));
     let marked_days: Binding<BTreeSet<Date>> = binding(BTreeSet::<Date>::new());
     let date_set: Binding<BTreeSet<Date>> = binding(BTreeSet::<Date>::new());
-    let color: Binding<Color> = binding(Color::from(waterui::color::Srgb::from_hex("#4A84F6")));
+    let color: Binding<Color> = binding(Color::from(Srgb::from_hex("#4A84F6")));
     let urls: Binding<Vec<Url>> = binding(Vec::<Url>::new());
 
     let _ = {
@@ -807,13 +816,15 @@ pub fn components_picker_seeding_prose() {
     unused_must_use,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
+// Verbatim: components.md writes `mdi::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn components_block_26() {
     fn restore() {}
 
     use core::time::Duration;
     use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 
-    button("Save").action(|State(m): State<SnackbarManager>| {
+    button("Save").action(|m: SnackbarManager| {
         m.show(
             Snackbar::new("Item moved to trash")
                 .icon(mdi::delete())

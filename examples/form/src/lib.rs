@@ -5,6 +5,7 @@
 //! - Various form field types (text, bool, numeric, slider)
 //! - Reactive data binding with live preview
 //! - Manual form control composition
+use core::num::NonZeroUsize;
 use waterui::app::App;
 use waterui::prelude::*;
 use waterui::prelude::{slider::slider, stepper::stepper};
@@ -48,6 +49,7 @@ fn scene(
     settings: Binding<AppSettings>,
     registration: Binding<RegistrationForm>,
     custom_name: Binding<Str>,
+    custom_bio: Binding<Str>,
     custom_enabled: Binding<bool>,
     custom_count: Binding<i32>,
     custom_slider: Binding<f64>,
@@ -106,6 +108,10 @@ fn scene(
                 "Building forms manually with individual controls",
                 // TextField with label and placeholder
                 TextField::new("Username", &custom_name).prompt("Enter your username"),
+                // Multi-line text field
+                TextField::new("Bio", &custom_bio)
+                    .prompt("Tell us about yourself")
+                    .line_limit(NonZeroUsize::new(3).unwrap()),
                 // Toggle with label
                 Toggle::new("Enable Feature", &custom_enabled),
                 // Stepper with custom range
@@ -117,6 +123,7 @@ fn scene(
                 Divider,
                 text("Manual Controls Preview:").bold(),
                 text!("Username: {custom_name}"),
+                text!("Bio: {custom_bio}"),
                 text!("Feature Enabled: {custom_enabled}"),
                 text!("Count: {custom_count}"),
                 text!("Progress: {custom_slider}"),
@@ -133,6 +140,7 @@ pub fn app(mut env: Environment) -> App {
     let settings = AppSettings::binding();
     let registration = RegistrationForm::binding();
     let custom_name = binding("");
+    let custom_bio = binding("");
     let custom_enabled = binding(false);
     let custom_count = binding(5);
     let custom_slider = binding(0.5);
@@ -160,6 +168,7 @@ pub fn app(mut env: Environment) -> App {
                 settings.clone(),
                 registration.clone(),
                 custom_name.clone(),
+                custom_bio.clone(),
                 custom_enabled.clone(),
                 custom_count.clone(),
                 custom_slider.clone(),
@@ -178,7 +187,7 @@ fn sample_card() -> impl View {
         Divider,
         hstack((text("Status:").bold(), text("Active"))),
     ))
-    .padding_with(EdgeInsets::all(16.0))
+    .padding_with(16.0)
 }
 
 /// Self-contained entry: owns its own form bindings so it embeds anywhere
@@ -188,6 +197,7 @@ pub fn demo() -> impl View {
     scene(
         AppSettings::binding(),
         RegistrationForm::binding(),
+        binding(""),
         binding(""),
         binding(false),
         binding(5),

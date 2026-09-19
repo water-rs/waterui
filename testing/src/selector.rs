@@ -141,14 +141,16 @@ impl Selector {
         self
     }
 
+    /// Restricts matches to descendants of `handle`.
     #[must_use]
-    pub(crate) fn within(mut self, handle: ElementRef) -> Self {
+    pub fn within(mut self, handle: ElementRef) -> Self {
         self.scope = Some(QueryScope::descendants(handle));
         self
     }
 
+    /// Restricts matches to direct children of `handle`.
     #[must_use]
-    pub(crate) fn children_of(mut self, handle: ElementRef) -> Self {
+    pub fn children_of(mut self, handle: ElementRef) -> Self {
         self.scope = Some(QueryScope::children(handle));
         self
     }
@@ -381,7 +383,7 @@ impl ElementRef {
     /// Performs a click/tap action.
     pub fn tap(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "tap");
-        app.perform_action(self.node_id, AccessibilityAction::Click, None);
+        app.perform_action_expect(self.node_id, AccessibilityAction::Click, None);
     }
 
     /// Performs a pointer tap at the provided normalized coordinates.
@@ -394,7 +396,7 @@ impl ElementRef {
     /// Requests accessibility focus on the element.
     pub fn focus(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "focus");
-        app.perform_action(self.node_id, AccessibilityAction::Focus, None);
+        app.perform_action_expect(self.node_id, AccessibilityAction::Focus, None);
     }
 
     /// Moves hover to the element center.
@@ -454,7 +456,7 @@ impl ElementRef {
     /// Sets textual value on editable controls.
     pub fn set_text(&self, app: &mut SemanticApp, value: impl Into<String>) {
         app.assert_current_element(self, "set_text");
-        app.perform_action(
+        app.perform_action_expect(
             self.node_id,
             AccessibilityAction::SetValue,
             Some(AccessibilityActionData::Value(
@@ -466,19 +468,19 @@ impl ElementRef {
     /// Increments current value for slider/stepper-like controls.
     pub fn increment(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "increment");
-        app.perform_action(self.node_id, AccessibilityAction::Increment, None);
+        app.perform_action_expect(self.node_id, AccessibilityAction::Increment, None);
     }
 
     /// Decrements current value for slider/stepper-like controls.
     pub fn decrement(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "decrement");
-        app.perform_action(self.node_id, AccessibilityAction::Decrement, None);
+        app.perform_action_expect(self.node_id, AccessibilityAction::Decrement, None);
     }
 
     /// Scrolls down when supported by the node.
     pub fn scroll_down(&self, app: &mut SemanticApp) {
         app.assert_current_element(self, "scroll_down");
-        app.perform_action(self.node_id, AccessibilityAction::ScrollDown, None);
+        app.perform_action_expect(self.node_id, AccessibilityAction::ScrollDown, None);
     }
 }
 

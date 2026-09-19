@@ -30,10 +30,11 @@
 //! ```
 
 use nami::signal::IntoComputed;
+use suiteki::Str;
 use waterui_core::{AnyView, Computed, IgnorableMetadata, View, metadata::MetadataKey};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_layout::BackgroundView;
-use waterui_str::Str;
+use waterui_shape::{Capsule, Shape, ShapeKind};
 
 use crate::gradient::{
     AngularGradient, ColorStop, Gradient, LinearGradient, MeshGradient, MeshVertex, RadialGradient,
@@ -80,6 +81,33 @@ impl IntoBackground for Material {
 
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
         IgnorableMetadata::new(AnyView::new(content), MaterialBackground(self))
+    }
+}
+
+/// A Liquid Glass background metadata.
+///
+/// This is an ignorable metadata delegated to native backends, the same way
+/// [`MaterialBackground`] is: a backend that has the platform's glass primitive
+/// projects it, and any other backend approximates it or renders the content
+/// without a background.
+///
+/// Use via the `.background(Glass::…)` API rather than directly:
+///
+/// ```rust
+/// use waterui::prelude::*;
+///
+/// let pill = text!("Now Playing").padding().background(Glass::regular());
+/// ```
+#[derive(Debug, Clone)]
+pub struct GlassBackground(pub Glass);
+
+impl MetadataKey for GlassBackground {}
+
+impl IntoBackground for Glass {
+    type Output<Content: View> = IgnorableMetadata<GlassBackground>;
+
+    fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
+        IgnorableMetadata::new(AnyView::new(content), GlassBackground(self))
     }
 }
 
@@ -144,6 +172,144 @@ pub enum Material {
 }
 
 nami::impl_constant!(Material);
+
+/// The two looks a Liquid Glass surface can have.
+///
+/// Glass is not a position on the [`Material`] thickness scale: it has its own
+/// parameter set, so it is a separate type rather than a sixth material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GlassStyle {
+    /// The standard glass: lensing and highlights over a light diffusion of
+    /// the content behind it, legible over anything.
+    #[default]
+    Regular,
+    /// Glass with less diffusion, for surfaces over media or colorful content
+    /// that should stay visible through it.
+    Clear,
+}
+
+/// A Liquid Glass background.
+///
+/// Glass is the chrome-layer surface of iOS 26 and macOS 26: a lens over the
+/// content behind it rather than a frosted pane. It is distinct from
+/// [`Material`] on purpose — Apple keeps `.regularMaterial` and `glassEffect`
+/// apart as well — and it stays an asymmetric primitive: Apple backends
+/// project it onto the platform's glass effect, other backends approximate or
+/// ignore it.
+///
+/// Glass takes its outline from the effect itself rather than from an outer
+/// clip, because a mask over a glass surface destroys its refraction and
+/// highlights. The shape is therefore part of the glass; it is a capsule
+/// unless [`Glass::shape`] says otherwise.
+///
+/// # Examples
+///
+/// ```rust
+/// use waterui::prelude::*;
+/// use waterui::shape::RoundedRectangle;
+///
+/// // A floating pill
+/// let pill = text!("Now Playing").padding().background(Glass::regular());
+///
+/// // A tinted, touch-reactive card over a photo
+/// let card = text!("Save")
+///     .padding()
+///     .background(
+///         Glass::clear()
+///             .interactive(true)
+///             .tint(Color::srgb(20, 120, 255))
+///             .shape(RoundedRectangle::new(0.2)),
+///     );
+/// ```
+#[derive(Debug, Clone)]
+pub struct Glass {
+    style: GlassStyle,
+    interactive: bool,
+    tint: Option<Color>,
+    shape: ShapeKind,
+}
+
+impl Default for Glass {
+    fn default() -> Self {
+        Self::new(GlassStyle::default())
+    }
+}
+
+impl Glass {
+    /// Creates glass of the given style with the default parameters: not
+    /// interactive, untinted, capsule-shaped.
+    #[must_use]
+    pub fn new(style: GlassStyle) -> Self {
+        Self {
+            style,
+            interactive: false,
+            tint: None,
+            shape: Capsule.shape_kind(),
+        }
+    }
+
+    /// Regular glass, the default look.
+    #[must_use]
+    pub fn regular() -> Self {
+        Self::new(GlassStyle::Regular)
+    }
+
+    /// Clear glass, for surfaces over media.
+    #[must_use]
+    pub fn clear() -> Self {
+        Self::new(GlassStyle::Clear)
+    }
+
+    /// Whether the glass reacts to touch and pointer interaction with the
+    /// platform's own press and hover effects.
+    #[must_use]
+    pub const fn interactive(mut self, interactive: bool) -> Self {
+        self.interactive = interactive;
+        self
+    }
+
+    /// Washes the glass with a color.
+    #[must_use]
+    pub fn tint(mut self, color: impl Into<Color>) -> Self {
+        self.tint = Some(color.into());
+        self
+    }
+
+    /// The outline of the glass surface.
+    #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "shapes are unit values passed by value everywhere else (`.clip(Capsule)`); a reference here would read as a different API"
+    )]
+    pub fn shape(mut self, shape: impl Shape) -> Self {
+        self.shape = shape.shape_kind();
+        self
+    }
+
+    /// The glass style.
+    #[must_use]
+    pub const fn style(&self) -> GlassStyle {
+        self.style
+    }
+
+    /// Whether the glass reacts to interaction.
+    #[must_use]
+    pub const fn is_interactive(&self) -> bool {
+        self.interactive
+    }
+
+    /// The tint, if any.
+    #[must_use]
+    pub const fn tint_color(&self) -> Option<&Color> {
+        self.tint.as_ref()
+    }
+
+    /// The outline of the glass surface.
+    #[must_use]
+    pub const fn shape_kind(&self) -> ShapeKind {
+        self.shape
+    }
+}
 
 impl MetadataKey for Background {}
 

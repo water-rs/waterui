@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use waterui_core::{impl_debug, impl_extractor};
 
-use crate::{AnyWebViewHandle, WebView, WebViewHandle};
+use crate::{AnyWebViewHandle, WebView, WebViewConfig, WebViewHandle};
 
 /// A trait for custom web view controllers.
 ///
@@ -10,7 +10,12 @@ use crate::{AnyWebViewHandle, WebView, WebViewHandle};
 /// The created web view starts blank - use `go_to(url)` to navigate after creation.
 pub trait CustomWebViewController: 'static {
     /// Opens a new blank web view and returns its handle.
-    fn open(&self) -> impl WebViewHandle;
+    ///
+    /// `config` carries creation-time inputs the engine can only honor while
+    /// the native view is constructed — the asset server behind the engine's
+    /// local asset origin is registered on a `WKWebViewConfiguration`, a
+    /// `WebContext` or a request context before the first navigation.
+    fn open(&self, config: WebViewConfig) -> impl WebViewHandle;
 }
 
 /// A controller for managing web view instances.
@@ -32,54 +37,34 @@ impl WebViewController {
         }
     }
 
-    /// A controller for a build that has no web engine.
-    ///
-    /// Its web views accept every configuration a page-backed one does, occupy
-    /// their layout slot, publish their accessibility node, report an empty
-    /// history and load nothing. Install it when this build genuinely has no
-    /// engine — a renderer compiled without a `webview-*` feature, an embedded
-    /// target, a headless test — so a portable view tree containing a
-    /// [`WebView`](crate::WebView) still runs there.
-    ///
-    /// Nothing installs this on your behalf. A build that expects an engine and
-    /// has none still fails where the web view is created, rather than quietly
-    /// showing an empty rectangle.
-    ///
-    /// ```
-    /// use waterui_core::Signal;
-    /// use waterui_webview::WebViewController;
-    ///
-    /// let controller = WebViewController::without_engine();
-    /// let webview = controller.open();
-    /// assert!(!webview.can_go_back().get());
-    /// ```
-    #[must_use]
-    pub fn without_engine() -> Self {
-        Self::new(crate::no_engine::NoEngineController)
-    }
-
     /// Opens a new blank web view.
     ///
     /// The web view starts blank - use `go_to(url)` on the returned view to navigate.
     #[must_use]
     pub fn open(&self) -> WebView {
-        WebView::from_handle(self.open_handle())
+        self.open_with(WebViewConfig::default())
+    }
+
+    /// Opens a new blank web view honoring `config`'s creation-time inputs.
+    #[must_use]
+    pub fn open_with(&self, config: WebViewConfig) -> WebView {
+        WebView::from_handle(self.open_handle(config))
     }
 
     /// Opens a new blank web view and returns the underlying handle.
     #[must_use]
-    pub(crate) fn open_handle(&self) -> AnyWebViewHandle {
-        self.controller.open()
+    pub(crate) fn open_handle(&self, config: WebViewConfig) -> AnyWebViewHandle {
+        self.controller.open(config)
     }
 }
 
 trait WebViewControllerImpl: 'static {
-    fn open(&self) -> AnyWebViewHandle;
+    fn open(&self, config: WebViewConfig) -> AnyWebViewHandle;
 }
 
 impl<T: CustomWebViewController> WebViewControllerImpl for T {
-    fn open(&self) -> AnyWebViewHandle {
-        AnyWebViewHandle::new(CustomWebViewController::open(self))
+    fn open(&self, config: WebViewConfig) -> AnyWebViewHandle {
+        AnyWebViewHandle::new(CustomWebViewController::open(self, config))
     }
 }
 

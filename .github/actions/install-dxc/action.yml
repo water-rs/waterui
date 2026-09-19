@@ -1,0 +1,37 @@
+name: Install DirectX Shader Compiler
+description: >
+  Installs `dxc`, which `shaderloom` needs to compile WGSL to DXIL and which
+  the Windows runner image does not ship, then proves the binary answers
+  `dxc --version` — the check the call sites used to spell out as a second
+  step. Pinned by commit so a bump is one edit, not five.
+
+runs:
+  using: composite
+  steps:
+    # tracel-ai's action is a bare `curl --retry 5` of a GitHub release
+    # asset — the same exposure as every other tool download here
+    # (#1120). The key carries the pinned release below; a hit skips the
+    # download and the action entirely.
+    - uses: actions/cache@v4
+      id: cache
+      with:
+        path: dxc
+        key: install-tool-v1-${{ runner.os }}-${{ runner.arch }}-dxc@v1.8.2505.1
+    - name: Install DirectX Shader Compiler
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+      with:
+        # The release and filename stay explicit even though they match
+        # the pinned action's defaults — they are what the cache key
+        # records, so a bump edits this file once.
+        dxc-release: v1.8.2505.1
+        dxc-filename: dxc_2025_07_14.zip
+    # On a hit the zip never ran, so the PATH line the upstream step
+    # writes is missing; add the same directory it would have.
+    - name: Add dxc to PATH
+      if: steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: cygpath --windows "$PWD/dxc" >> "$GITHUB_PATH"
+    - name: Verify DirectX Shader Compiler
+      shell: pwsh
+      run: dxc --version
