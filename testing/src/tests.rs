@@ -266,17 +266,20 @@ fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
     assert_eq!(snapshot.rgba8.len(), 240 * 120 * 4);
 }
 
-/// A view that draws widget chrome mounts under the default theme: the scroll
-/// view's scrollbar and the button both read a widget theme from the
-/// environment, and `ui()` used to install none (#290).
+/// A view that draws widget chrome mounts under an explicit real theme: the
+/// scroll view's scrollbar and the button both read a widget theme from the
+/// environment (#290 — `ui()` still installs none; the test now selects one).
 #[test]
-fn default_theme_renders_hydrolysis_widgets() {
-    let mut app = ui().viewport(240, 160).mount_offscreen(|| {
-        ScrollView::vertical(vstack((
-            waterui::component::button("Submit"),
-            text("Scrolled content").body(),
-        )))
-    });
+fn m3_theme_renders_hydrolysis_widgets() {
+    let mut app = ui()
+        .viewport(240, 160)
+        .theme(theme_with(install_m3))
+        .mount_offscreen(|| {
+            ScrollView::vertical(vstack((
+                waterui::component::button("Submit"),
+                text("Scrolled content").body(),
+            )))
+        });
     assert_eq!(app.query().role(Role::BUTTON).all().len(), 1);
     let snapshot = app.snapshot();
     assert_eq!(snapshot.rgba8.len(), 240 * 160 * 4);
@@ -286,6 +289,7 @@ fn default_theme_renders_hydrolysis_widgets() {
 fn semantic_builder_does_not_require_theme_package() {
     let mut app = ui()
         .viewport(180, 80)
+        .theme(install_test_theme)
         .mount(|| text("Semantic only").body());
     let _ = app
         .query()
@@ -300,7 +304,7 @@ fn semantic_builder_does_not_require_theme_package() {
 #[test]
 fn mount_app_hosts_main_window_with_app_environment() {
     let mut env = Environment::new();
-    install_default_theme(&mut env);
+    theme_with(install_m3).install(&mut env);
     let app = App::new(|| text("Mounted app").body(), env);
     let mut app = ui().viewport(200, 100).scale_factor(2.0).mount_app(app);
     app.query().label("Mounted app").assert_exists();
@@ -446,7 +450,7 @@ fn smoke_text_color_snapshot_preserves_semantic_labels() {
 
 #[test]
 fn smoke_text_snapshot_preserves_semantic_labels() {
-    let mut app = ui().viewport(240, 120).mount(|| {
+    let mut app = ui().viewport(240, 120).theme(install_test_theme).mount(|| {
         vstack((
             text("Focused datum").body().foreground(Srgb::WHITE),
             text("Selected datum").body().foreground(Srgb::WHITE),
@@ -467,18 +471,21 @@ fn smoke_text_snapshot_preserves_semantic_labels() {
 fn tappable_composed_view_exposes_clickable_accessibility_node() {
     let tapped = Rc::new(Cell::new(false));
     let tapped_for_view = Rc::clone(&tapped);
-    let mut app = ui().viewport(160, 96).mount(move || {
-        text("Assist")
-            .body()
-            .padding_with(6.0)
-            .on_tap({
-                let tapped_for_view = Rc::clone(&tapped_for_view);
-                move || tapped_for_view.set(true)
-            })
-            .a11y_label("Assist")
-            .a11y_role(waterui::accessibility::AccessibilityRole::Button)
-            .a11y_children(waterui::accessibility::AccessibilityChildren::ExcludeDescendants)
-    });
+    let mut app = ui()
+        .viewport(160, 96)
+        .theme(install_test_theme)
+        .mount(move || {
+            text("Assist")
+                .body()
+                .padding_with(6.0)
+                .on_tap({
+                    let tapped_for_view = Rc::clone(&tapped_for_view);
+                    move || tapped_for_view.set(true)
+                })
+                .a11y_label("Assist")
+                .a11y_role(waterui::accessibility::AccessibilityRole::Button)
+                .a11y_children(waterui::accessibility::AccessibilityChildren::ExcludeDescendants)
+        });
 
     app.query()
         .role(Role::BUTTON)
@@ -964,7 +971,7 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
     let scale = Binding::f32(1.0);
     let hovered = Binding::bool(false);
 
-    let mut app = ui().viewport(160, 160).mount({
+    let mut app = ui().viewport(160, 160).theme(install_test_theme).mount({
         let offset = offset.clone();
         let scale = scale.clone();
         let hovered = hovered.clone();
@@ -1428,7 +1435,9 @@ fn headless_capture_waits_for_async_gpu_setup() {
 fn a_query_sees_state_changed_since_the_last_pump() {
     let label = waterui::reactive::binding(waterui::Str::from("before"));
     let probe = label.clone();
-    let mut app = crate::ui().mount(move || vstack((Text::computed(label.clone()),)));
+    let mut app = crate::ui()
+        .theme(install_test_theme)
+        .mount(move || vstack((Text::computed(label.clone()),)));
 
     app.query()
         .role(crate::Role::LABEL)
@@ -1635,4 +1644,101 @@ fn a_naturally_sized_scene_does_not_eat_the_row() {
          to its sibling, got {}",
         bounds.width()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic test theme (`install_test_theme`)
+// ---------------------------------------------------------------------------
+//
+// The fixture mounts every widget family through the real Hydrolysis widget
+// path — the same build, layout, and accessibility code a shipped theme
+// drives; only the metrics and chrome differ. These tests are its conformance
+// coverage: they pin the semantic contract the fixture exists to serve, and
+// the rejection rules that keep it out of visual and performance paths.
+
+/// Button, toggle, slider, stepper, text input, and progress all build and
+/// report their roles/labels under the synthetic theme — no style package.
+#[test]
+fn test_theme_mounts_widget_families_semantically() {
+    use waterui::prelude::*;
+
+    let enabled = Binding::bool(false);
+    let volume = Binding::f64(0.5);
+    let limited = Binding::i32(1);
+    let name = Binding::container(Str::from(""));
+
+    let mut app = ui().theme(install_test_theme).mount(move || {
+        vstack((
+            button("Save"),
+            toggle("Wi-Fi", &enabled),
+            slider("Volume", &volume),
+            stepper("Limited", &limited),
+            TextField::new(text("Name"), &name),
+            waterui::component::progress::loading().label("Loading"),
+        ))
+    });
+
+    app.query().role(Role::BUTTON).label("Save").assert_exists();
+    app.query()
+        .role(Role::SWITCH)
+        .label("Wi-Fi")
+        .assert_exists();
+    app.query().role(Role::SLIDER).assert_exists();
+    app.query().label("Limited").assert_exists();
+    app.query().role(Role::TEXT_INPUT).assert_exists();
+    app.query().label("Loading").assert_exists();
+}
+
+/// Interactions route through the fixture's deterministic geometry: a tap on
+/// the toggle flips its binding exactly as it would under a real theme.
+#[test]
+fn test_theme_routes_interactions() {
+    use waterui::prelude::*;
+
+    let enabled = Binding::bool(false);
+    let enabled_for_view = enabled.clone();
+    let mut app = ui()
+        .theme(install_test_theme)
+        .mount(move || toggle("Wi-Fi", &enabled_for_view));
+    app.query().role(Role::SWITCH).tap();
+    assert!(enabled.get(), "tapping the toggle flips the binding");
+}
+
+/// `theme_with` installs the renderer base tokens before the caller's
+/// installer, so a package sees the same environment it would inside an
+/// application — and still supplies the widget theme itself (the composer
+/// never pre-installs the synthetic metrics).
+#[test]
+fn theme_with_installs_base_before_the_theme() {
+    let saw_base_scheme = Rc::new(Cell::new(false));
+    let saw_base_scheme_for_theme = Rc::clone(&saw_base_scheme);
+    let mut app = ui()
+        .theme(theme_with(move |env: &mut Environment| {
+            saw_base_scheme_for_theme.set(theme::installed_color_scheme(env).is_some());
+            install_test_theme(env);
+        }))
+        .mount(|| text("composed"));
+    app.query().label("composed").assert_exists();
+    assert!(
+        saw_base_scheme.get(),
+        "the caller's installer ran before the base tokens"
+    );
+}
+
+/// An unconfigured builder fails at mount with the theme-selection guidance —
+/// no test silently inherits a presentation it did not choose.
+#[test]
+#[should_panic(expected = "no theme selected")]
+fn mount_without_theme_panics() {
+    let _app = ui().mount(|| text("unthemed"));
+}
+
+/// The fixture is semantic-only: offscreen mounting refuses it rather than
+/// capturing a workload no real theme produces.
+#[test]
+#[should_panic(expected = "synthetic test theme cannot drive offscreen")]
+fn mount_offscreen_rejects_the_test_theme() {
+    let _app = ui()
+        .theme(install_test_theme)
+        .mount_offscreen(|| text("pixels"));
 }

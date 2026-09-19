@@ -28,6 +28,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 waterui.workspace = true
+hydrolysis_m3.workspace = true
 
 [lints]
 workspace = true

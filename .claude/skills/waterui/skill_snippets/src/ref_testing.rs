@@ -64,7 +64,7 @@ pub mod gated {
     // -----------------------------------------------------------------------
     use waterui_testing::{Role, SemanticApp};
 
-    #[waterui::test(login_view, theme = hydrolysis_m3::install, viewport = (360, 320))]
+    #[waterui::test(login_view, theme = waterui_testing::install_test_theme, viewport = (360, 320))]
     fn login_flow(app: &mut SemanticApp) {
         app.query().role(Role::BUTTON).label("Login").tap();
         app.query().label("Welcome").assert_exists();
@@ -75,7 +75,7 @@ pub mod gated {
     // -----------------------------------------------------------------------
     use waterui_testing::UiBuilder;
 
-    #[waterui::test(theme = hydrolysis_m3::install)]
+    #[waterui::test(theme = waterui_testing::install_test_theme)]
     fn stepper_updates(ui: UiBuilder) {
         let value = Binding::i32(2);
         let for_view = value.clone();
@@ -225,7 +225,7 @@ pub mod gated {
     // -----------------------------------------------------------------------
     use waterui_testing::OffscreenApp;
 
-    #[waterui::test(demo, theme = hydrolysis_m3::install, offscreen, viewport = (390, 844))]
+    #[waterui::test(demo, theme = waterui_testing::theme_with(hydrolysis_m3::install), offscreen, viewport = (390, 844))]
     fn renders(app: &mut OffscreenApp) {
         app.pump_for(Duration::from_millis(120)); // advance the virtual clock exactly
         app.capture_snapshot("gallery", "cards", "settled");
@@ -246,7 +246,7 @@ pub mod gated {
     // -----------------------------------------------------------------------
     use waterui_testing::PerfApp;
 
-    #[waterui::bench(dashboard, theme = hydrolysis_m3::install, viewport = (390, 844), max_p95_us = 8_000)]
+    #[waterui::bench(dashboard, theme = waterui_testing::theme_with(hydrolysis_m3::install), viewport = (390, 844), max_p95_us = 8_000)]
     fn dashboard_redraw(perf: &mut PerfApp) {
         perf.measure("steady-redraw", |run| run.redraw());
         perf.measure("wheel-scroll", |run| {
@@ -261,7 +261,7 @@ pub mod gated {
     // -----------------------------------------------------------------------
     #[waterui::bench(
         dashboard,
-        theme = hydrolysis_m3::install,
+        theme = waterui_testing::theme_with(hydrolysis_m3::install),
         max_mean_us = 8_000,
         max_rebuild_ratio = 0.5,
         max_scene_layers = 64,

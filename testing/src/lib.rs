@@ -1,11 +1,21 @@
 //! Headless rendering and accessibility-first test utilities for `WaterUI`.
 //!
 //! `waterui-testing` runs inside ordinary `cargo test` targets. [`ui`] builds a
-//! test session; theme and render mode are orthogonal: [`UiBuilder::theme`]
-//! swaps the theme package (Material 3, the theme a generated project installs,
-//! by default) and
-//! [`UiBuilder::mount`] / [`UiBuilder::mount_offscreen`] pick between the fast
-//! semantic runtime and the GPU-backed offscreen runtime.
+//! test session; theme and render mode are orthogonal. [`UiBuilder::theme`]
+//! selects the presentation the session mounts under — deliberately with no
+//! default, so every test declares what it runs under:
+//!
+//! - [`install_test_theme`] — the harness's synthetic fixture for semantic
+//!   contract tests (roles, labels, values, actions, states, tree structure).
+//!   Deterministic, style-package-free; offscreen, snapshot, and performance
+//!   entry points reject it.
+//! - [`theme_with`] — composes the renderer's base tokens with a real theme
+//!   package (`theme_with(hydrolysis_m3::install)` reproduces the presentation
+//!   generated `WaterUI` applications ship with). Required for visual,
+//!   snapshot, animation, and performance tests.
+//!
+//! [`UiBuilder::mount`] / [`UiBuilder::mount_offscreen`] then pick between the
+//! fast semantic runtime and the GPU-backed offscreen runtime.
 //!
 //! # `cargo test` Integration
 //!
@@ -14,7 +24,7 @@
 //!     waterui::text("Login").body()
 //! }
 //!
-//! #[waterui::test(login_view, theme = hydrolysis_m3::install)]
+//! #[waterui::test(login_view, theme = waterui_testing::install_test_theme)]
 //! fn login_smoke(app: &mut waterui_testing::SemanticApp) {
 //!     app.query()
 //!         .role(waterui_testing::Role::LABEL)
@@ -27,7 +37,7 @@
 //! take the configured [`UiBuilder`] by value (the manual-mount form):
 //!
 //! ```ignore
-//! #[waterui::test(theme = hydrolysis_m3::install)]
+//! #[waterui::test(theme = waterui_testing::install_test_theme)]
 //! fn stepper_updates(ui: waterui_testing::UiBuilder) {
 //!     let value = waterui::Binding::i32(2);
 //!     let value_for_view = value.clone();
@@ -94,12 +104,12 @@ mod query;
 mod selector;
 mod semantics;
 mod snapshot;
+mod theme;
 pub(crate) mod wait;
 
 pub use accesskit::Role as AccessKitRole;
 pub use app::{
-    DragOptions, OffscreenApp, RuntimeFlavor, SemanticApp, ThemeInstaller, UiBuilder,
-    install_default_theme, ui,
+    DragOptions, OffscreenApp, RuntimeFlavor, SemanticApp, ThemeInstaller, UiBuilder, ui,
 };
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 pub use driver::{FrameTiming, VIRTUAL_FRAME};
@@ -111,6 +121,7 @@ pub use query::Query;
 pub use selector::{ElementRef, ElementSet, Selector};
 pub use semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};
 pub use snapshot::{Snapshot, TestHost};
+pub use theme::{TestWidgetTheme, install_test_theme, theme_with};
 pub use wait::{Expectation, WaitOptions, WaitResult};
 
 /// Internal async bridge used by `#[waterui::test(...)]` expansion.

@@ -10,7 +10,7 @@ fn search_icon_view() -> impl waterui::View {
         .a11y_label("Search")
 }
 
-#[waterui::test(search_icon_view)]
+#[waterui::test(search_icon_view, theme = waterui_testing::install_test_theme)]
 fn material_icon_exposes_accessibility_image(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)

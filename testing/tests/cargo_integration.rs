@@ -12,7 +12,7 @@ fn sample_view() -> impl waterui::View {
         .background(Srgb::BLACK)
 }
 
-#[waterui::test(sample_view)]
+#[waterui::test(sample_view, theme = waterui_testing::install_test_theme)]
 fn waterui_test_macro_runs_inside_cargo_test(app: &mut waterui_testing::SemanticApp) {
     let label = app
         .query()
@@ -24,7 +24,10 @@ fn waterui_test_macro_runs_inside_cargo_test(app: &mut waterui_testing::Semantic
 
 #[test]
 fn direct_ui_test_mount_runs_inside_cargo_test() {
-    let mut app = ui().viewport(240, 120).mount(sample_view);
+    let mut app = ui()
+        .theme(waterui_testing::install_test_theme)
+        .viewport(240, 120)
+        .mount(sample_view);
     let label = app
         .query()
         .role(Role::LABEL)

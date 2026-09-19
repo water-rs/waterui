@@ -25,7 +25,7 @@ fn morph_shape_view() -> impl waterui::View {
         .a11y_label("Morph shape")
 }
 
-#[waterui::test(filled_circle_view)]
+#[waterui::test(filled_circle_view, theme = waterui_testing::install_test_theme)]
 fn filled_shape_exposes_accessibility_image(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)
@@ -33,7 +33,7 @@ fn filled_shape_exposes_accessibility_image(app: &mut SemanticApp) {
         .assert_exists();
 }
 
-#[waterui::test(morph_shape_view)]
+#[waterui::test(morph_shape_view, theme = waterui_testing::install_test_theme)]
 fn morph_shape_exposes_accessibility_image(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)

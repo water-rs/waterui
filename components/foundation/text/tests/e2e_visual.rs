@@ -27,7 +27,7 @@ fn styled_text_view() -> impl waterui::View {
     .a11y_role(AccessibilityRole::Text)
 }
 
-#[waterui::test(plain_text_view)]
+#[waterui::test(plain_text_view, theme = waterui_testing::install_test_theme)]
 fn text_renders_visible_content(app: &mut SemanticApp) {
     app.query()
         .role(Role::LABEL)
@@ -35,7 +35,7 @@ fn text_renders_visible_content(app: &mut SemanticApp) {
         .assert_exists();
 }
 
-#[waterui::test(styled_text_view)]
+#[waterui::test(styled_text_view, theme = waterui_testing::install_test_theme)]
 fn styled_text_renders_multiple_styles(app: &mut SemanticApp) {
     app.query()
         .role(Role::LABEL)

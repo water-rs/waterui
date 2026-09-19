@@ -66,7 +66,7 @@ fn assert_image_node(app: &mut SemanticApp, case: &str, label: &str) {
     assert!(bounds.height() > 0.0, "{case}: height must be positive");
 }
 
-#[waterui::test(linear_gradient_view)]
+#[waterui::test(linear_gradient_view, theme = waterui_testing::install_test_theme)]
 fn linear_gradient_exposes_accessibility_image(app: &mut SemanticApp) {
     assert_image_node(
         app,
@@ -75,7 +75,7 @@ fn linear_gradient_exposes_accessibility_image(app: &mut SemanticApp) {
     );
 }
 
-#[waterui::test(animated_mesh_gradient_view)]
+#[waterui::test(animated_mesh_gradient_view, theme = waterui_testing::install_test_theme)]
 fn animated_mesh_gradient_exposes_accessibility_image(app: &mut SemanticApp) {
     assert_image_node(
         app,
@@ -84,7 +84,7 @@ fn animated_mesh_gradient_exposes_accessibility_image(app: &mut SemanticApp) {
     );
 }
 
-#[waterui::test(shader_surface_view)]
+#[waterui::test(shader_surface_view, theme = waterui_testing::install_test_theme)]
 fn shader_surface_exposes_accessibility_image(app: &mut SemanticApp) {
     assert_image_node(
         app,
@@ -93,12 +93,12 @@ fn shader_surface_exposes_accessibility_image(app: &mut SemanticApp) {
     );
 }
 
-#[waterui::test(labeled_picture_view)]
+#[waterui::test(labeled_picture_view, theme = waterui_testing::install_test_theme)]
 fn a_picture_offers_its_own_name(app: &mut SemanticApp) {
     assert_image_node(app, "a-picture-offers-its-own-name", "Warning sign");
 }
 
-#[waterui::test(renamed_picture_view)]
+#[waterui::test(renamed_picture_view, theme = waterui_testing::install_test_theme)]
 fn the_application_label_wins_over_the_pictures_own(app: &mut SemanticApp) {
     assert_image_node(
         app,

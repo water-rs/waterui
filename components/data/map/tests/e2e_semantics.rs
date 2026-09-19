@@ -53,7 +53,7 @@ fn map_env() -> Environment {
     env
 }
 
-#[waterui::test(viewport = (420, 320))]
+#[waterui::test(theme = waterui_testing::install_test_theme, viewport = (420, 320))]
 fn map_exposes_accessibility_surface_and_reactive_annotations(ui: UiBuilder) {
     let region = Binding::container(initial_region());
     let annotations = Binding::container(initial_annotations());

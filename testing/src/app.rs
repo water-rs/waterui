@@ -40,21 +40,20 @@ pub fn ui() -> UiBuilder {
     UiBuilder::new()
 }
 
-/// Installs the theme a test runs under when it names none.
+/// Panic message for mounting a view without a selected theme.
 ///
-/// This is the complete Hydrolysis theme: the backend's own test installer
-/// supplies the base tokens its renderers read, and Material 3 supplies
-/// everything a view can draw with — colour and font tokens, typography, and
-/// the widget theme that every Hydrolysis control reads its chrome from.
-/// Material 3 is what a generated project installs, so
-/// a test sees what the application's window shows, and a scroll view, a
-/// button or a toggle mounts under `ui()` without the test binary opting into
-/// a theme package first. Its tokens replace the backend installer's, which
-/// exist for renderer tests that run without a theme package.
-pub fn install_default_theme(env: &mut Environment) {
-    hydrolysis::testing::install_theme(env);
-    hydrolysis_m3::install_defaults(env);
-}
+/// Hydrolysis cannot measure or build a widget without a `WidgetTheme` in the
+/// environment, and the harness carries no implicit one: a test must declare
+/// which presentation it runs under rather than silently inheriting whatever
+/// the harness happens to ship.
+const THEME_NOT_SELECTED: &str = "waterui-testing: no theme selected — Hydrolysis requires a \
+WidgetTheme to build, measure, or draw widgets, and `ui()` deliberately carries none so every \
+test declares its presentation. For a semantic contract test select the synthetic fixture with \
+`.theme(waterui_testing::install_test_theme)`; for application fidelity select a real theme, e.g. \
+`.theme(waterui_testing::theme_with(hydrolysis_m3::install))`.";
+
+/// The theme-installation step stored on a configured [`UiBuilder`].
+type ThemeStep = Rc<dyn Fn(&mut Environment)>;
 
 /// Which Hydrolysis headless runtime backs a session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,17 +67,19 @@ pub enum RuntimeFlavor {
 
 /// Runtime test host and configuration.
 ///
-/// Theme and render mode are orthogonal: [`Self::theme`] swaps the installed
-/// theme package (defaulting to [`install_default_theme`]), while
-/// [`Self::mount`] / [`Self::mount_offscreen`] pick between the fast semantic
-/// runtime and the GPU-backed offscreen runtime. Any theme works in either
-/// mode.
+/// Theme and render mode are orthogonal: [`Self::theme`] selects the
+/// installed presentation — deliberately with no default, so every test
+/// declares what it runs under — while [`Self::mount`] /
+/// [`Self::mount_offscreen`] pick between the fast semantic runtime and the
+/// GPU-backed offscreen runtime. Any theme works in either mode; the
+/// synthetic [`crate::install_test_theme`] fixture is semantic-only and is
+/// rejected by the offscreen and performance entry points.
 #[derive(Clone)]
 pub struct UiBuilder {
     env: Environment,
     width: u32,
     height: u32,
-    theme: Rc<dyn Fn(&mut Environment)>,
+    theme: Option<ThemeStep>,
     perf_config: PerfConfig,
     flavor: RuntimeFlavor,
     scale_factor: f64,
@@ -103,14 +104,21 @@ impl Default for UiBuilder {
 }
 
 impl UiBuilder {
-    /// Creates a default semantic UI test runtime (390x844 viewport).
+    /// Creates a semantic UI test runtime (390x844 viewport) with no theme
+    /// selected.
+    ///
+    /// Hydrolysis requires a `WidgetTheme` to build, measure, or draw any
+    /// widget — semantic sessions included — and the harness ships no
+    /// implicit one. [`Self::mount`] and [`Self::mount_offscreen`] panic
+    /// unless [`Self::theme`] has been called; [`Self::mount_app`] is exempt
+    /// because the mounted [`App`] owns its environment.
     #[must_use]
     pub fn new() -> Self {
         Self {
             env: Environment::new(),
             width: 390,
             height: 844,
-            theme: Rc::new(install_default_theme),
+            theme: None,
             perf_config: PerfConfig::default(),
             flavor: RuntimeFlavor::Test,
             scale_factor: 1.0,
@@ -134,11 +142,15 @@ impl UiBuilder {
         self
     }
 
-    /// Replaces the default theme ([`install_default_theme`]) with a theme
-    /// package.
+    /// Selects the presentation this session mounts under.
+    ///
+    /// The installer replaces the whole theme step: it is responsible for the
+    /// renderer base tokens as well as the widget realizations. Compose both
+    /// with [`crate::theme_with`], or select the synthetic fixture with
+    /// [`crate::install_test_theme`] for semantic contract tests.
     #[must_use]
     pub fn theme<U: ThemeInstaller>(mut self, theme: U) -> Self {
-        self.theme = Rc::new(move |env| theme.install(env));
+        self.theme = Some(Rc::new(move |env| theme.install(env)));
         self
     }
 
@@ -176,8 +188,9 @@ impl UiBuilder {
     }
 
     fn themed_env(&self) -> Environment {
+        let theme = self.theme.as_ref().expect(THEME_NOT_SELECTED);
         let mut env = self.env.clone();
-        (self.theme)(&mut env);
+        theme(&mut env);
         // The harness mounts views without going through `App::new`, which is
         // where a real app installs the self-drawn realizations the facade
         // carries. Install them here so a test binary that enables
@@ -193,7 +206,8 @@ impl UiBuilder {
     ///
     /// # Panics
     ///
-    /// Panics if the initial Hydrolysis semantic pass does not produce an accessibility tree.
+    /// Panics if [`Self::theme`] was never called, or if the initial
+    /// Hydrolysis semantic pass does not produce an accessibility tree.
     pub fn mount<V, F>(self, view_fn: F) -> SemanticApp
     where
         V: View + 'static,
@@ -215,16 +229,29 @@ impl UiBuilder {
     ///
     /// # Panics
     ///
-    /// Panics if the initial Hydrolysis offscreen frame does not produce an accessibility tree.
+    /// Panics if [`Self::theme`] was never called, if the selected theme is
+    /// the synthetic [`crate::install_test_theme`] fixture (its chrome is
+    /// never painted — captures would describe a workload no real theme
+    /// produces), or if the initial Hydrolysis offscreen frame does not
+    /// produce an accessibility tree.
     pub fn mount_offscreen<V, F>(self, view_fn: F) -> OffscreenApp
     where
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
+        let env = self.themed_env();
+        assert!(
+            env.get::<crate::theme::SyntheticThemeMarker>().is_none(),
+            "waterui-testing: the synthetic test theme cannot drive offscreen or snapshot \
+sessions — its draw methods are no-ops, so captures would show a workload no real theme \
+produces. Select a real theme instead, e.g. \
+`.theme(waterui_testing::theme_with(hydrolysis_m3::install))`, or keep \
+`install_test_theme` for semantic contract tests."
+        );
         let content = AnyViewBuilder::new(move || AnyView::new(view_fn()));
         OffscreenApp {
             app: mount_app(
-                self.themed_env(),
+                env,
                 self.width,
                 self.height,
                 content,

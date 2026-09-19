@@ -1243,7 +1243,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 /// #   button("Login").action(|| {})
 /// }
 ///
-/// #[waterui::test(login_view, theme = hydrolysis_m3::install, viewport = (360, 320))]
+/// #[waterui::test(login_view, theme = waterui_testing::install_test_theme, viewport = (360, 320))]
 /// fn login_flow(app: &mut waterui_testing::SemanticApp) {
 ///     app.query().role(waterui_testing::Role::BUTTON).label("Login").tap();
 /// }
@@ -1258,7 +1258,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 ///
 /// ```rust
 /// # use waterui::prelude::*;
-/// #[waterui::test(theme = hydrolysis_m3::install)]
+/// #[waterui::test(theme = waterui_testing::install_test_theme)]
 /// fn stepper_updates_binding(ui: waterui_testing::UiBuilder) {
 ///     let value = Binding::i32(2);
 ///     let value_for_view = value.clone();
@@ -1511,7 +1511,7 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 /// #   text("Dashboard")
 /// }
 ///
-/// #[waterui::bench(dashboard, theme = hydrolysis_m3::install, viewport = (390, 844), max_p95_us = 8_000)]
+/// #[waterui::bench(dashboard, theme = waterui_testing::theme_with(hydrolysis_m3::install), viewport = (390, 844), max_p95_us = 8_000)]
 /// fn dashboard_redraw(perf: &mut waterui_testing::PerfApp) {
 ///     perf.measure("steady-redraw", |run| run.redraw());
 /// }
@@ -1531,7 +1531,7 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 /// #     let value = value.clone();
 /// #     button("Increment").action(move || *value.get_mut() += 1)
 /// # }
-/// #[waterui::bench(theme = hydrolysis_m3::install, max_rebuild_ratio = 0.2)]
+/// #[waterui::bench(theme = waterui_testing::theme_with(hydrolysis_m3::install), max_rebuild_ratio = 0.2)]
 /// fn counter_updates(ui: waterui_testing::UiBuilder) -> waterui_testing::PerfReport {
 ///     let value = Binding::i32(0);
 ///     let value_for_view = value.clone();

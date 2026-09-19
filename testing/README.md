@@ -16,14 +16,14 @@ hydrolysis-m3 = "0.2"
 use waterui_testing::{Role, SemanticApp, UiBuilder};
 
 // Mounting form: the macro mounts a no-arg view function.
-#[waterui::test(login_view, theme = hydrolysis_m3::install, viewport = (360, 320))]
+#[waterui::test(login_view, theme = waterui_testing::install_test_theme, viewport = (360, 320))]
 fn login_flow(app: &mut SemanticApp) {
     app.query().role(Role::BUTTON).label("Login").tap();
     app.query().label("Welcome").assert_exists();
 }
 
 // Manual-mount form: the test owns Bindings the view closes over.
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test(theme = waterui_testing::install_test_theme)]
 fn stepper_updates(ui: UiBuilder) {
     let value = Binding::i32(2);
     let value_for_view = value.clone();
@@ -35,10 +35,13 @@ fn stepper_updates(ui: UiBuilder) {
 
 ## Design
 
-- **Theme and render mode are orthogonal.** `.theme(installer)` swaps the theme package
-  (Material 3 by default, the theme a generated project installs); `mount()` is the fast
-  semantic runtime,
-  `mount_offscreen()` the GPU-backed one. Any theme works in either mode.
+- **Theme and render mode are orthogonal.** `.theme(installer)` selects the
+  presentation — deliberately with no default, so every test declares what it runs
+  under. `install_test_theme` is the synthetic fixture for semantic contract tests (no
+  style package needed); `theme_with(hydrolysis_m3::install)` reproduces the theme a
+  generated project installs and is required for offscreen, snapshot, and performance
+  paths, which reject the fixture. `mount()` is the fast semantic runtime,
+  `mount_offscreen()` the GPU-backed one.
 - **Interactions are assertions.** `tap`, `set_text`, `increment`, `focus`, drags and key
   presses return `()` and panic when the runtime reports the accessibility action
   unhandled. Tests for disabled/clamped controls assert the panic (`catch_unwind`).

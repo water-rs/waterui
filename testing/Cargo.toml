@@ -13,11 +13,13 @@ categories.workspace = true
 
 [dependencies]
 hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
-# This crate depends on the theme for real, so it takes the versioned
-# workspace entry — the published manifest must keep its registry
-# requirement. Dev-deps use the same pin inline without a version instead,
-# which `cargo package` strips.
-hydrolysis-m3.workspace = true
+waterui-backend-core = { workspace = true, features = ["widgets"] }
+waterui-controls.workspace = true
+waterui-form.workspace = true
+waterui-graphics.workspace = true
+waterui-text.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
 waterui-core.workspace = true
 waterui.workspace = true
 wgpu.workspace = true
@@ -33,6 +35,9 @@ serde_json.workspace = true
 [dev-dependencies]
 async-io = "2.6"
 bitflags.workspace = true
+# This crate's own widget tests render through the Material 3 theme — a
+# dev-only concern, so it takes the version-less alias `cargo package` strips.
+hydrolysis_m3.workspace = true
 waterui_canvas.workspace = true
 waterui-layout.workspace = true
 

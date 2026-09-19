@@ -223,7 +223,7 @@ pub fn render_json(app: &SemanticApp) -> serde_json::Result<String> {
 #[cfg(test)]
 mod tests {
     use waterui::component::{button, toggle, vstack};
-    use waterui_testing::{install_default_theme, ui};
+    use waterui_testing::{install_test_theme, ui};
 
     use super::{render_json, render_text};
 
@@ -232,7 +232,7 @@ mod tests {
     fn mounted_text() -> String {
         let enabled = waterui::Binding::bool(false);
         let app = ui()
-            .theme(install_default_theme)
+            .theme(install_test_theme)
             .viewport(200, 100)
             .mount(move || vstack((button("Save"), toggle("Enable", &enabled))));
         render_text(&app)
@@ -294,7 +294,7 @@ mod tests {
     fn json_tree_mirrors_node_fields() {
         let enabled = waterui::Binding::bool(false);
         let app = ui()
-            .theme(install_default_theme)
+            .theme(install_test_theme)
             .viewport(200, 100)
             .mount(move || vstack((button("Save"), toggle("Enable", &enabled))));
         let json: serde_json::Value =

@@ -60,20 +60,30 @@ Tests drive the real accessibility tree. That makes each test simultaneously an
 interaction test and an accessibility assertion, which is why a component that cannot be
 tested this way is a defect rather than a coverage gap.
 
-Add the dev-dependencies:
+Add the dev-dependency:
 
 ```toml
 [dev-dependencies]
 waterui-testing = "…"
-hydrolysis-m3 = "…"
 ```
+
+Every mounted test selects its presentation with `theme = <installer>` — the harness
+carries no implicit theme, so a mount without one fails with an actionable error. Two
+choices cover almost everything:
+
+- `waterui_testing::install_test_theme` — the synthetic fixture for semantic contract
+  tests (roles, labels, values, actions, states). No style package needed.
+- `waterui_testing::theme_with(hydrolysis_m3::install)` — the renderer base tokens plus a
+  real theme, reproducing what generated applications ship with. Required for offscreen,
+  snapshot, animation, and performance tests (the fixture is rejected there); add
+  `hydrolysis-m3` as a dev-dependency to use it.
 
 **Mounting form** — the macro mounts a no-argument view function and hands you the session:
 
 ```rust
 use waterui_testing::{Role, SemanticApp};
 
-#[waterui::test(login_view, theme = hydrolysis_m3::install, viewport = (360, 320))]
+#[waterui::test(login_view, theme = waterui_testing::install_test_theme, viewport = (360, 320))]
 fn login_flow(app: &mut SemanticApp) {
     app.query().role(Role::BUTTON).label("Login").tap();
     app.query().label("Welcome").assert_exists();
@@ -85,7 +95,7 @@ fn login_flow(app: &mut SemanticApp) {
 ```rust
 use waterui_testing::UiBuilder;
 
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test(theme = waterui_testing::install_test_theme)]
 fn stepper_updates(ui: UiBuilder) {
     let value = Binding::i32(2);
     let for_view = value.clone();
@@ -184,7 +194,7 @@ Add the `offscreen` flag (the parameter becomes `&mut OffscreenApp`) or call
 `ui.mount_offscreen(..)`:
 
 ```rust
-#[waterui::test(demo, theme = hydrolysis_m3::install, offscreen, viewport = (390, 844))]
+#[waterui::test(demo, theme = waterui_testing::theme_with(hydrolysis_m3::install), offscreen, viewport = (390, 844))]
 fn renders(app: &mut OffscreenApp) {
     app.pump_for(Duration::from_millis(120));       // advance the virtual clock exactly
     app.capture_snapshot("gallery", "cards", "settled");
@@ -213,7 +223,7 @@ counters.
 ```rust
 use waterui_testing::PerfApp;
 
-#[waterui::bench(dashboard, theme = hydrolysis_m3::install, viewport = (390, 844), max_p95_us = 8_000)]
+#[waterui::bench(dashboard, theme = waterui_testing::theme_with(hydrolysis_m3::install), viewport = (390, 844), max_p95_us = 8_000)]
 fn dashboard_redraw(perf: &mut PerfApp) {
     perf.measure("steady-redraw", |run| run.redraw());
     perf.measure("wheel-scroll", |run| {

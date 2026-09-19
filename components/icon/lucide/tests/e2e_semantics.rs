@@ -10,7 +10,7 @@ fn home_icon_view() -> impl waterui::View {
         .a11y_label("Home")
 }
 
-#[waterui::test(home_icon_view)]
+#[waterui::test(home_icon_view, theme = waterui_testing::install_test_theme)]
 fn lucide_icon_exposes_accessibility_image(app: &mut SemanticApp) {
     app.query().role(Role::IMAGE).label("Home").assert_exists();
 }
@@ -27,7 +27,7 @@ fn labeled_icon_pair_view() -> impl waterui::View {
     ))
 }
 
-#[waterui::test(labeled_icon_pair_view)]
+#[waterui::test(labeled_icon_pair_view, theme = waterui_testing::install_test_theme)]
 fn lucide_icons_keep_distinct_labels_and_identifiers(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)

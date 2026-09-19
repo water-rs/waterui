@@ -11,14 +11,14 @@ use waterui::component::{button, field, toggle, vstack};
 use waterui::text;
 use waterui::{Binding, Str};
 use waterui_mcp::{ServerInfo, serve};
-use waterui_testing::{OffscreenApp, install_default_theme, ui};
+use waterui_testing::{OffscreenApp, theme_with, ui};
 
 fn mount() -> OffscreenApp {
     let enabled = Binding::bool(false);
     let count = Binding::container(0_i32);
     let label = Binding::container(String::from("count: 0"));
     let name = Binding::container(Str::from_static(""));
-    ui().theme(install_default_theme)
+    ui().theme(theme_with(hydrolysis_m3::install))
         .viewport(200, 100)
         .mount_offscreen(move || {
             let count = count.clone();

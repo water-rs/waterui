@@ -14,7 +14,7 @@ fn icon_glyph_view() -> impl waterui::View {
         .a11y_label("Glyph icon")
 }
 
-#[waterui::test(icon_glyph_view)]
+#[waterui::test(icon_glyph_view, theme = waterui_testing::install_test_theme)]
 fn icon_glyph_exposes_accessibility_image(app: &mut SemanticApp) {
     app.query()
         .role(Role::IMAGE)

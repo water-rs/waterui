@@ -181,7 +181,7 @@ fn realization(env: &Environment, webview: WebView) -> AnyView {
 /// and a fresh one built — is a second `open` on the controller, so that is
 /// what this reads: one opened web view, navigated once at mount and once by
 /// the write, while the value derived from the same binding follows too.
-#[waterui::test(viewport = (420, 420))]
+#[waterui::test(theme = waterui_testing::install_test_theme, viewport = (420, 420))]
 fn changing_the_url_binding_keeps_the_same_webview(ui: UiBuilder) {
     let url = binding(Url::new(DOCS_URL));
     let url_for_view = url.clone();
@@ -238,7 +238,7 @@ fn changing_the_url_binding_keeps_the_same_webview(ui: UiBuilder) {
 /// the engine path: the node a screen reader gets when nothing in the host
 /// tree can see into the page, and the role the realization gives it in place
 /// of the `Image` a graphics leaf would default to.
-#[waterui::test(viewport = (420, 420))]
+#[waterui::test(theme = waterui_testing::install_test_theme, viewport = (420, 420))]
 fn an_installed_realization_draws_the_webview_and_keeps_its_node(ui: UiBuilder) {
     let drawn = Rc::new(Cell::new(false));
     let mut env = Environment::new();
