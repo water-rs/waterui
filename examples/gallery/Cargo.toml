@@ -19,4 +19,4 @@ waterui-icons-material-icon.workspace = true
 
 [dev-dependencies]
 waterui-testing.workspace = true
-hydrolysis_m3.workspace = true
+hydrolysis-m3.workspace = true

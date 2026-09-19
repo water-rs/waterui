@@ -44,4 +44,4 @@ serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 waterui-testing.workspace = true
-hydrolysis_m3.workspace = true
+hydrolysis-m3.workspace = true

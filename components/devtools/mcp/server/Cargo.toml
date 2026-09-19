@@ -13,9 +13,7 @@ categories.workspace = true
 
 [dependencies]
 waterui-mcp-protocol.workspace = true
-# Not the workspace entry: this crate mounts the harness for real and must
-# carry a resolvable requirement into its published manifest.
-waterui-testing = { version = "0.4.1", path = "../../../../testing" }
+waterui-testing.workspace = true
 accesskit = "0.25"
 aither-core.workspace = true
 aither-mcp = { workspace = true, features = ["server"] }

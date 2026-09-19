@@ -24,7 +24,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 waterui-testing = { path = "../../../../testing" }
-hydrolysis_m3.workspace = true
+hydrolysis-m3.workspace = true
 
 [lints]
 workspace = true
