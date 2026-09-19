@@ -18,6 +18,13 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  # cargo/rustup retry network failures three times by default; ten
+  # matches the budget install-action sets for its own downloads.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
 jobs:
   semver:
     name: Local API vs published baseline
@@ -42,8 +49,16 @@ jobs:
       - id: baseline
         run: |
           set -euo pipefail
-          if curl -sfL https://index.crates.io/wa/te/waterui \
-               | grep -q '"yanked":false'; then
+          index="$RUNNER_TEMP/waterui-index"
+          code="$(curl -sL --retry 10 -o "$index" -w '%{http_code}' https://index.crates.io/wa/te/waterui)"
+          # 404 is a real answer (nothing published yet); a transport or
+          # CDN failure must fail the job rather than silently skip the
+          # baseline check.
+          if [[ "$code" != 2* && "$code" != 404 ]]; then
+            echo "::error::the crates.io index probe failed with HTTP $code"
+            exit 1
+          fi
+          if [[ "$code" == 2* ]] && grep -q '"yanked":false' "$index"; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -63,16 +78,24 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-rust
       - uses: ./.github/actions/setup-linux-deps
-      - uses: taiki-e/install-action@cargo-binstall
-      - name: Install registry tooling
-        run: |
-          set -euo pipefail
-          cargo binstall -y cargo-local-registry
-          # margo is not on crates.io; upstream publishes it to its own sparse
-          # index. Installing from the repo is not an option: its manifest's
-          # dev-dependencies name a registry that only exists in that repo's
-          # config, so `cargo install --git` cannot read the package at all.
-          cargo install margo --index sparse+https://integer32llc.github.io/margo/
+      - name: Install cargo-local-registry
+        uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-local-registry@0.2.12
+          path: ~/.cargo/bin/cargo-local-registry*
+      # margo is not on crates.io; upstream publishes it to its own sparse
+      # index, which install-action's fallback cannot reach. Installing
+      # from the repo is not an option either: its manifest's
+      # dev-dependencies name a registry that only exists in that repo's
+      # config, so `cargo install --git` cannot read the package at all.
+      - uses: actions/cache@v4
+        id: margo
+        with:
+          path: ~/.cargo/bin/margo*
+          key: install-tool-v1-${{ runner.os }}-${{ runner.arch }}-margo@0.1.7
+      - name: Install margo
+        if: steps.margo.outputs.cache-hit != 'true'
+        run: cargo install margo --version 0.1.7 --index sparse+https://integer32llc.github.io/margo/
       - name: Package the publishable set
         run: |
           set -euo pipefail

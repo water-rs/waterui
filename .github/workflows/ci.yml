@@ -40,7 +40,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # rust-cache is the only cache layer here. GHA-backed sccache used to sit in
+  # cargo/rustup retry network failures three times by default; ten
+  # matches the budget install-action sets for its own downloads.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+  # rust-cache and the install-tool binary caches are the only cache
+  # layers here. GHA-backed sccache used to sit in
   # front of it and measured a 2-8% hit rate while holding 38% of the
   # repository's 10GB Actions cache quota, so its main effect was evicting the
   # rust-cache tarballs that do work and putting every job back on a cold
@@ -129,9 +134,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      # Pinned: on `@master` the tool upgrades itself, and a new dictionary
-      # turns a green job red with no change to the repository.
-      - uses: crate-ci/typos@v1.49.0
+      # Pinned like every other tool install: a new dictionary turns a
+      # green job red with no change to the repository. crate-ci/typos
+      # downloaded this same binary on every run; install-tool caches it.
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: typos@1.49.0
+          path: ~/.cargo/bin/typos*
+      - run: typos
 
   # The release scripts derive the certified `framework.json` from the root
   # manifest; their tests pin that derivation to the tree, so they run whenever
@@ -175,7 +185,7 @@ jobs:
       # build script) and it never runs a GUI/audio/video stack, so this job
       # does not need the full setup-linux-deps package list.
       - uses: ./.github/actions/refresh-apt-index
-      - run: sudo apt-get install -y nasm
+      - run: sudo apt-get -o Acquire::Retries=10 install -y nasm
       # The audit and deny checks run against the COMMITTED Cargo.lock — the
       # dependency set the workspace actually builds. A `cargo generate-lockfile`
       # step used to precede them; it silently re-resolved everything to the
@@ -187,13 +197,22 @@ jobs:
       # Prebuilt, like cargo-deny below: `rustsec/audit-check` compiles
       # cargo-audit from a fresh resolution on every run, which put a broken,
       # newly published dependency of the *tool* on our critical path (#316).
-      - uses: taiki-e/install-action@cargo-audit
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-audit@0.22.2
+          path: ~/.cargo/bin/cargo-audit*
       - name: Security audit
         run: cargo audit
-      - uses: taiki-e/install-action@cargo-deny
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-deny@0.20.2
+          path: ~/.cargo/bin/cargo-deny*
       - name: License and ban check
         run: cargo deny check licenses bans
-      - uses: taiki-e/install-action@cargo-machete
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-machete@0.9.2
+          path: ~/.cargo/bin/cargo-machete*
       - name: Unused dependencies
         run: |
           cargo machete --with-metadata

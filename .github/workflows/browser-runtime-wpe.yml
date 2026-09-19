@@ -24,7 +24,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # rust-cache is the only cache layer (see the note in ci.yml).
+  # cargo/rustup retry network failures three times by default; ten
+  # matches the budget install-action sets for its own downloads.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+  # rust-cache and the install-tool binary caches are the only cache
+  # layers (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
 
 jobs:
