@@ -151,7 +151,7 @@ mod bench {
     // rebuild-ratio budget guards that invariant.
     #[waterui::bench(
         demo,
-        theme = hydrolysis_m3::install,
+        theme = hydrolysis_m3::Material3::defaults(),
         viewport = (390, 844),
         max_rebuild_ratio = 0.1,
     )]

@@ -1,10 +1,13 @@
+use core::marker::PhantomData;
 use core::ops::Index;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use accesskit::{Action as AccessibilityAction, ActionData as AccessibilityActionData};
+use hydrolysis::HeadlessRuntime;
 
 use crate::app::SemanticApp;
+use crate::driver::RuntimeDriver;
 use crate::semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role};
 
 /// Chainable semantic selector.
@@ -143,15 +146,15 @@ impl Selector {
 
     /// Restricts matches to descendants of `handle`.
     #[must_use]
-    pub fn within(mut self, handle: ElementRef) -> Self {
-        self.scope = Some(QueryScope::descendants(handle));
+    pub fn within<R>(mut self, handle: ElementRef<R>) -> Self {
+        self.scope = Some(QueryScope::descendants(handle.into_anchor()));
         self
     }
 
     /// Restricts matches to direct children of `handle`.
     #[must_use]
-    pub fn children_of(mut self, handle: ElementRef) -> Self {
-        self.scope = Some(QueryScope::children(handle));
+    pub fn children_of<R>(mut self, handle: ElementRef<R>) -> Self {
+        self.scope = Some(QueryScope::children(handle.into_anchor()));
         self
     }
 
@@ -288,25 +291,32 @@ impl Selector {
     }
 }
 
-/// Resolved element handle.
+/// The runtime-free identity and snapshot of a resolved element.
+///
+/// A `Selector` scopes to one of these through [`Selector::within`] /
+/// [`Selector::children_of`], so the scope survives independent of which
+/// runtime resolved the handle — the anchor only ever names a node, never
+/// drives the runtime.
 #[derive(Debug, Clone)]
-pub struct ElementRef {
+pub struct ElementAnchor {
     pub(crate) node_id: NodeId,
     pub(crate) node: NodeSnapshot,
     pub(crate) revision: u64,
 }
 
-impl ElementRef {
+impl ElementAnchor {
+    pub(crate) const fn new(node_id: NodeId, node: NodeSnapshot, revision: u64) -> Self {
+        Self {
+            node_id,
+            node,
+            revision,
+        }
+    }
+
     /// Returns the stable node id.
     #[must_use]
     pub const fn id(&self) -> NodeId {
         self.node_id
-    }
-
-    /// Returns the node snapshot captured when this handle was resolved.
-    #[must_use]
-    pub const fn node(&self) -> &NodeSnapshot {
-        &self.node
     }
 
     #[must_use]
@@ -336,7 +346,136 @@ impl ElementRef {
         );
         summary
     }
+}
 
+/// Resolved element handle.
+///
+/// `R` is the runtime the handle was resolved from — `SemanticRuntime` for a
+/// style-free [`SemanticApp`], `HeadlessRuntime` for a rendered one. The
+/// parameter is what splits the surface: accessibility actions exist on every
+/// `ElementRef`, while the geometry and pointer methods exist only on
+/// `ElementRef<HeadlessRuntime>` — a semantic element has no `bounds()`.
+pub struct ElementRef<R = hydrolysis::SemanticRuntime> {
+    pub(crate) node_id: NodeId,
+    pub(crate) node: NodeSnapshot,
+    pub(crate) revision: u64,
+    marker: PhantomData<fn() -> R>,
+}
+
+impl<R> Clone for ElementRef<R> {
+    fn clone(&self) -> Self {
+        Self::new(self.node_id, self.node.clone(), self.revision)
+    }
+}
+
+impl<R> core::fmt::Debug for ElementRef<R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ElementRef")
+            .field("node_id", &self.node_id)
+            .field("node", &self.node)
+            .field("revision", &self.revision)
+            .finish()
+    }
+}
+
+impl<R> ElementRef<R> {
+    pub(crate) const fn new(node_id: NodeId, node: NodeSnapshot, revision: u64) -> Self {
+        Self {
+            node_id,
+            node,
+            revision,
+            marker: PhantomData,
+        }
+    }
+
+    /// Returns the stable node id.
+    #[must_use]
+    pub const fn id(&self) -> NodeId {
+        self.node_id
+    }
+
+    /// Returns the node snapshot captured when this handle was resolved.
+    #[must_use]
+    pub const fn node(&self) -> &NodeSnapshot {
+        &self.node
+    }
+
+    #[must_use]
+    pub(crate) fn anchor(&self) -> ElementAnchor {
+        ElementAnchor::new(self.node_id, self.node.clone(), self.revision)
+    }
+
+    #[must_use]
+    pub(crate) fn into_anchor(self) -> ElementAnchor {
+        ElementAnchor::new(self.node_id, self.node, self.revision)
+    }
+
+    #[must_use]
+    pub(crate) fn debug_summary(&self) -> String {
+        self.anchor().debug_summary()
+    }
+}
+
+/// The semantic surface every element handle exposes: accessibility actions.
+impl<R: RuntimeDriver> ElementRef<R> {
+    /// Performs a click/tap action.
+    pub fn tap(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "tap");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Click, None);
+    }
+
+    /// Requests accessibility focus on the element.
+    pub fn focus(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "focus");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Focus, None);
+    }
+
+    /// Sets textual value on editable controls.
+    pub fn set_text(&self, app: &mut SemanticApp<R>, value: impl Into<String>) {
+        app.assert_current_element(self, "set_text");
+        app.perform_action_expect(
+            self.node_id,
+            AccessibilityAction::SetValue,
+            Some(AccessibilityActionData::Value(
+                value.into().into_boxed_str(),
+            )),
+        );
+    }
+
+    /// Increments current value for slider/stepper-like controls.
+    pub fn increment(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "increment");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Increment, None);
+    }
+
+    /// Decrements current value for slider/stepper-like controls.
+    pub fn decrement(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "decrement");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Decrement, None);
+    }
+
+    /// Scrolls down when supported by the node.
+    pub fn scroll_down(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "scroll_down");
+        app.perform_action_expect(self.node_id, AccessibilityAction::ScrollDown, None);
+    }
+
+    /// Expands a collapsible node.
+    pub fn expand(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "expand");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Expand, None);
+    }
+
+    /// Collapses an expanded node.
+    pub fn collapse(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "collapse");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Collapse, None);
+    }
+}
+
+/// The geometry and pointer surface only a rendered session's elements
+/// expose.
+impl ElementRef<HeadlessRuntime> {
     /// Returns node bounds.
     ///
     /// # Panics
@@ -380,48 +519,46 @@ impl ElementRef {
         )
     }
 
-    /// Performs a click/tap action.
-    pub fn tap(&self, app: &mut SemanticApp) {
-        app.assert_current_element(self, "tap");
-        app.perform_action_expect(self.node_id, AccessibilityAction::Click, None);
-    }
-
     /// Performs a pointer tap at the provided normalized coordinates.
-    pub fn tap_at(&self, app: &mut SemanticApp, normalized_x: f32, normalized_y: f32) {
+    pub fn tap_at(
+        &self,
+        app: &mut SemanticApp<HeadlessRuntime>,
+        normalized_x: f32,
+        normalized_y: f32,
+    ) {
         app.assert_current_element(self, "tap_at");
         let (x, y) = self.normalized_point(normalized_x, normalized_y);
         app.tap_at(x, y);
     }
 
-    /// Requests accessibility focus on the element.
-    pub fn focus(&self, app: &mut SemanticApp) {
-        app.assert_current_element(self, "focus");
-        app.perform_action_expect(self.node_id, AccessibilityAction::Focus, None);
-    }
-
     /// Moves hover to the element center.
-    pub fn hover(&self, app: &mut SemanticApp) {
+    pub fn hover(&self, app: &mut SemanticApp<HeadlessRuntime>) {
         app.assert_current_element(self, "hover");
         let (x, y) = self.center();
         app.hover_at(x, y);
     }
 
     /// Moves hover to the provided normalized coordinates within the element.
-    pub fn hover_at(&self, app: &mut SemanticApp, normalized_x: f32, normalized_y: f32) {
+    pub fn hover_at(
+        &self,
+        app: &mut SemanticApp<HeadlessRuntime>,
+        normalized_x: f32,
+        normalized_y: f32,
+    ) {
         app.assert_current_element(self, "hover_at");
         let (x, y) = self.normalized_point(normalized_x, normalized_y);
         app.hover_at(x, y);
     }
 
     /// Drags from the element center by the provided delta.
-    pub fn drag_by(&self, app: &mut SemanticApp, dx: f32, dy: f32) {
+    pub fn drag_by(&self, app: &mut SemanticApp<HeadlessRuntime>, dx: f32, dy: f32) {
         self.drag_by_with(app, dx, dy, crate::app::DragOptions::default());
     }
 
     /// Drags from the element center by a delta with step/timing control.
     pub fn drag_by_with(
         &self,
-        app: &mut SemanticApp,
+        app: &mut SemanticApp<HeadlessRuntime>,
         dx: f32,
         dy: f32,
         options: crate::app::DragOptions,
@@ -434,7 +571,7 @@ impl ElementRef {
     /// Drags between two normalized coordinates within the element.
     pub fn drag_between(
         &self,
-        app: &mut SemanticApp,
+        app: &mut SemanticApp<HeadlessRuntime>,
         from_x: f32,
         from_y: f32,
         to_x: f32,
@@ -447,52 +584,47 @@ impl ElementRef {
     }
 
     /// Applies a magnification gesture centered on the element.
-    pub fn magnify(&self, app: &mut SemanticApp, factor: f32) {
+    pub fn magnify(&self, app: &mut SemanticApp<HeadlessRuntime>, factor: f32) {
         app.assert_current_element(self, "magnify");
         let (x, y) = self.center();
         app.magnify_at(x, y, factor);
     }
-
-    /// Sets textual value on editable controls.
-    pub fn set_text(&self, app: &mut SemanticApp, value: impl Into<String>) {
-        app.assert_current_element(self, "set_text");
-        app.perform_action_expect(
-            self.node_id,
-            AccessibilityAction::SetValue,
-            Some(AccessibilityActionData::Value(
-                value.into().into_boxed_str(),
-            )),
-        );
-    }
-
-    /// Increments current value for slider/stepper-like controls.
-    pub fn increment(&self, app: &mut SemanticApp) {
-        app.assert_current_element(self, "increment");
-        app.perform_action_expect(self.node_id, AccessibilityAction::Increment, None);
-    }
-
-    /// Decrements current value for slider/stepper-like controls.
-    pub fn decrement(&self, app: &mut SemanticApp) {
-        app.assert_current_element(self, "decrement");
-        app.perform_action_expect(self.node_id, AccessibilityAction::Decrement, None);
-    }
-
-    /// Scrolls down when supported by the node.
-    pub fn scroll_down(&self, app: &mut SemanticApp) {
-        app.assert_current_element(self, "scroll_down");
-        app.perform_action_expect(self.node_id, AccessibilityAction::ScrollDown, None);
-    }
 }
 
 /// A collection of resolved elements.
-#[derive(Debug, Clone, Default)]
-pub struct ElementSet {
-    elements: Vec<ElementRef>,
+pub struct ElementSet<R = hydrolysis::SemanticRuntime> {
+    elements: Vec<ElementRef<R>>,
     by_id: BTreeMap<NodeId, usize>,
 }
 
-impl ElementSet {
-    pub(crate) fn new(elements: Vec<ElementRef>, _revision: u64) -> Self {
+impl<R> core::fmt::Debug for ElementSet<R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ElementSet")
+            .field("len", &self.elements.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R> Clone for ElementSet<R> {
+    fn clone(&self) -> Self {
+        Self {
+            elements: self.elements.clone(),
+            by_id: self.by_id.clone(),
+        }
+    }
+}
+
+impl<R> Default for ElementSet<R> {
+    fn default() -> Self {
+        Self {
+            elements: Vec::new(),
+            by_id: BTreeMap::new(),
+        }
+    }
+}
+
+impl<R> ElementSet<R> {
+    pub(crate) fn new(elements: Vec<ElementRef<R>>) -> Self {
         let by_id = elements
             .iter()
             .enumerate()
@@ -514,7 +646,7 @@ impl ElementSet {
     }
 
     /// Iterates over resolved elements.
-    pub fn iter(&self) -> impl Iterator<Item = &ElementRef> {
+    pub fn iter(&self) -> impl Iterator<Item = &ElementRef<R>> {
         self.elements.iter()
     }
 
@@ -536,8 +668,8 @@ impl ElementSet {
     }
 }
 
-impl Index<usize> for ElementSet {
-    type Output = ElementRef;
+impl<R> Index<usize> for ElementSet<R> {
+    type Output = ElementRef<R>;
 
     fn index(&self, index: usize) -> &Self::Output {
         self.elements.get(index).unwrap_or_else(|| {
@@ -549,8 +681,8 @@ impl Index<usize> for ElementSet {
     }
 }
 
-impl Index<NodeId> for ElementSet {
-    type Output = ElementRef;
+impl<R> Index<NodeId> for ElementSet<R> {
+    type Output = ElementRef<R>;
 
     fn index(&self, index: NodeId) -> &Self::Output {
         let Some(position) = self.by_id.get(&index) else {
@@ -566,18 +698,18 @@ impl Index<NodeId> for ElementSet {
 #[derive(Debug, Clone)]
 pub struct QueryScope {
     relation: ScopeRelation,
-    handle: ElementRef,
+    handle: ElementAnchor,
 }
 
 impl QueryScope {
-    const fn descendants(handle: ElementRef) -> Self {
+    const fn descendants(handle: ElementAnchor) -> Self {
         Self {
             relation: ScopeRelation::Descendants,
             handle,
         }
     }
 
-    const fn children(handle: ElementRef) -> Self {
+    const fn children(handle: ElementAnchor) -> Self {
         Self {
             relation: ScopeRelation::Children,
             handle,
@@ -588,7 +720,7 @@ impl QueryScope {
         self.relation
     }
 
-    pub(crate) const fn handle(&self) -> &ElementRef {
+    pub(crate) const fn handle(&self) -> &ElementAnchor {
         &self.handle
     }
 

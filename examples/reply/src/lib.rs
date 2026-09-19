@@ -23,14 +23,16 @@ use waterui::widget::avatar;
 use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
 
+use hydrolysis::Style as _;
 use hydrolysis_m3::color::{
     self, InverseOnSurface, OnSurface, OnSurfaceVariant, Outline, SecondaryContainer,
     SurfaceBright, SurfaceContainer, SurfaceContainerHigh, SurfaceContainerLowest, SurfaceVariant,
 };
 use hydrolysis_m3::navigation_rail::NavigationRailLayout;
 use hydrolysis_m3::{
-    Argb, MaterialColorMode, MaterialColorScheme, MaterialColorSchemes, MaterialColorSource,
-    MaterialRoleColor, fab, icon_button, material_badge, navigation_rail, navigation_rail_item,
+    Argb, Material3, MaterialColorMode, MaterialColorScheme, MaterialColorSchemes,
+    MaterialColorSource, MaterialRoleColor, fab, icon_button, material_badge, navigation_rail,
+    navigation_rail_item,
 };
 use mdi::dots_vertical;
 use mdi::email_outline;
@@ -138,10 +140,10 @@ impl<V: View> View for ReplyTheme<V> {
     fn body(self, env: &Environment) -> impl View {
         let mut scoped = Environment::new().layered_on(env);
         let scheme = reply_scheme();
-        hydrolysis_m3::install_with_colors(&mut scoped, scheme);
-        // The app env carries a `MaterialColorSchemes` pair from
-        // `install_defaults`, which role resolution consults before the
-        // singular scheme — shadow it or the sample renders baseline colors.
+        Material3::with_colors(scheme).install_tokens(&mut scoped);
+        // The app env carries a `MaterialColorSchemes` pair from the
+        // app-level `Material3` install, which role resolution consults before
+        // the singular scheme — shadow it or the sample renders baseline colors.
         scoped.insert(MaterialColorSchemes::new(
             MaterialColorSource::default(),
             scheme,

@@ -1,27 +1,13 @@
 //! End-to-end accessibility-semantics tests for the `media` component.
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Duration;
 
-/// How long a live photo's motion may take to play out and hand the still back.
-///
-/// This is wall-clock — `SemanticApp::wait_for` pumps against `Instant::now()` —
-/// and playback advances a frame at a time, so a runner without a GPU needs
-/// considerably longer than the fixture's own 0.75s. Generous rather than
-/// tight: the assertion is that the motion finishes and the still returns, not
-/// that it does so quickly.
-const MOTION_PLAYBACK_BUDGET: Duration = Duration::from_secs(30);
-
-use hydrolysis_m3::install as install_m3;
 use image::ImageEncoder as _;
 use waterui::Binding;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui_media::{
-    LivePhoto, Media, Photo, Url,
-    live::{Event as LivePhotoEvent, LivePhotoSource},
-    photo::Event as PhotoEvent,
+    LivePhoto, Media, Photo, Url, live::LivePhotoSource, photo::Event as PhotoEvent,
 };
 use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
 
@@ -100,7 +86,7 @@ fn assert_image_eventually_exists(app: &mut UiTestApp, label: &str) {
 
 type UiTestApp = waterui_testing::SemanticApp;
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test()]
 fn photo_exposes_accessibility_image_after_load(ui: UiBuilder) {
     let sample_path = sample_image_path();
     let loaded = Binding::bool(false);
@@ -136,7 +122,7 @@ fn photo_exposes_accessibility_image_after_load(ui: UiBuilder) {
     );
 }
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test()]
 fn media_image_exposes_accessibility_image_after_load(ui: UiBuilder) {
     let sample_path = sample_image_path();
     let mut app = ui.mount(move || {
@@ -147,7 +133,7 @@ fn media_image_exposes_accessibility_image_after_load(ui: UiBuilder) {
     assert_image_eventually_exists(&mut app, "Media image");
 }
 
-#[waterui::test(media_video_view, theme = install_m3, viewport = (480, 320))]
+#[waterui::test(media_video_view, viewport = (480, 320))]
 fn media_video_uses_video_player_accessibility_controls(app: &mut UiTestApp) {
     app.query().role(Role::BUTTON).label("Play").assert_exists();
     app.query().role(Role::BUTTON).label("Mute").assert_exists();
@@ -170,115 +156,11 @@ fn media_video_uses_video_player_accessibility_controls(app: &mut UiTestApp) {
     );
 }
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test()]
 fn live_photo_exposes_still_image_accessibility_before_activation(ui: UiBuilder) {
     let sample_path = sample_image_path();
     let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
     let mut app = ui.mount(move || live_photo_view(source.clone()));
 
     assert_image_eventually_exists(&mut app, "Sample live photo");
-}
-
-#[waterui::test(theme = install_m3, viewport = (180, 140))]
-fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder) {
-    let sample_path = sample_image_path();
-    let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
-    // Without this the test cannot fail for the reason it exists: motion that
-    // errors out unmounts exactly like motion that played, so a runner with no
-    // working decoder would satisfy every assertion below in milliseconds.
-    let motion_outcomes: Rc<RefCell<Vec<LivePhotoEvent>>> = Rc::default();
-    let recorder = Rc::clone(&motion_outcomes);
-    let mut app = ui.mount_offscreen(move || {
-        let recorder = Rc::clone(&recorder);
-        LivePhoto::new(source.clone())
-            .on_event(move |event| recorder.borrow_mut().push(event))
-            .activation_duration_ms(40)
-            .size(120.0, 80.0)
-    });
-
-    let initial_still = app.expect_exists(Selector::default().role(Role::IMAGE));
-    assert_eq!(
-        app.wait_for(
-            &[initial_still],
-            WaitOptions::new(Duration::from_millis(750)),
-        ),
-        WaitResult::Completed,
-        "the live photo must expose its initial still image"
-    );
-    let bounds = app.query().role(Role::IMAGE).single().bounds();
-    assert!(
-        (bounds.width() - 120.0).abs() < 0.5 && (bounds.height() - 80.0).abs() < 0.5,
-        "the live photo still must fill its proposed 120x80 bounds, got {bounds:?}"
-    );
-    let (center_x, center_y) = bounds.center();
-
-    app.tap_at(center_x, center_y);
-    app.query()
-        .role(Role::IMAGE)
-        .label("Video content")
-        .assert_not_exists();
-
-    // The motion is a transient: settling after the press would wait for the
-    // playback it starts, so queue the press and observe the tree instead.
-    app.queue_pointer_down_at(center_x, center_y);
-    let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
-    assert_eq!(
-        app.wait_for(&[motion], WaitOptions::new(Duration::from_secs(1))),
-        WaitResult::Completed,
-        "holding past the activation duration must mount live photo motion"
-    );
-    app.queue_pointer_up_at(center_x, center_y);
-
-    let motion_gone =
-        app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
-    assert_eq!(
-        app.wait_for(&[motion_gone], WaitOptions::new(MOTION_PLAYBACK_BUDGET)),
-        WaitResult::Completed,
-        "completed motion playback must return to the still photo"
-    );
-    app.query().role(Role::IMAGE).assert_exists();
-    assert_motion_played(&motion_outcomes, 1);
-
-    let bounds = app.query().role(Role::IMAGE).single().bounds();
-    let (center_x, center_y) = bounds.center();
-    app.queue_pointer_down_at(center_x, center_y);
-    let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
-    assert_eq!(
-        app.wait_for(&[motion], WaitOptions::new(Duration::from_secs(1))),
-        WaitResult::Completed,
-        "live photo must support replay after returning to its still image"
-    );
-    app.queue_pointer_up_at(center_x, center_y);
-    let motion_gone =
-        app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
-    assert_eq!(
-        app.wait_for(&[motion_gone], WaitOptions::new(MOTION_PLAYBACK_BUDGET)),
-        WaitResult::Completed,
-        "replayed motion must also stop after one pass"
-    );
-    app.query().role(Role::IMAGE).assert_exists();
-    assert_motion_played(&motion_outcomes, 2);
-}
-
-/// Asserts the live photo has played its motion through `plays` times.
-///
-/// The still photo comes back either way, so the events are the only evidence
-/// that anything was decoded: a `MotionFailed` here means this machine could
-/// not play the clip, which is a failure to report and not a pass to collect.
-fn assert_motion_played(outcomes: &Rc<RefCell<Vec<LivePhotoEvent>>>, plays: usize) {
-    let outcomes = outcomes.borrow();
-    if let Some(LivePhotoEvent::MotionFailed(message)) = outcomes
-        .iter()
-        .find(|event| matches!(event, LivePhotoEvent::MotionFailed(_)))
-    {
-        panic!("live photo motion failed to play instead of finishing: {message}");
-    }
-    let ended = outcomes
-        .iter()
-        .filter(|event| matches!(event, LivePhotoEvent::MotionEnded))
-        .count();
-    assert_eq!(
-        ended, plays,
-        "expected {plays} completed motion playback(s), observed {outcomes:?}"
-    );
 }

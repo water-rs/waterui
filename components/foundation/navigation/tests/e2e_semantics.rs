@@ -237,7 +237,7 @@ fn tabs_with_stacks_view() -> impl View {
     )
 }
 
-#[waterui::test(tabs_with_stacks_view, theme = hydrolysis_m3::install)]
+#[waterui::test(tabs_with_stacks_view)]
 fn tab_scoped_stack_pushes_without_disturbing_other_tabs(app: &mut SemanticApp) {
     app.query()
         .role(Role::BUTTON)
@@ -265,7 +265,7 @@ fn tab_scoped_stack_pushes_without_disturbing_other_tabs(app: &mut SemanticApp) 
         .assert_exists();
 }
 
-#[waterui::test(tabs_view, theme = hydrolysis_m3::install)]
+#[waterui::test(tabs_view)]
 fn tabs_tap_switches_selection_and_content(app: &mut SemanticApp) {
     app.query().role(Role::TAB_LIST).assert_exists();
     app.query()
@@ -299,7 +299,7 @@ fn tabs_tap_switches_selection_and_content(app: &mut SemanticApp) {
         .assert_exists();
 }
 
-#[waterui::test(stack_view, theme = hydrolysis_m3::install)]
+#[waterui::test(stack_view)]
 fn navigation_link_push_and_back_pop_update_content(app: &mut SemanticApp) {
     app.query()
         .role(Role::BUTTON)
@@ -321,7 +321,7 @@ fn navigation_link_push_and_back_pop_update_content(app: &mut SemanticApp) {
     );
 }
 
-#[waterui::test(path_stack_nested_value_link_view, theme = hydrolysis_m3::install)]
+#[waterui::test(path_stack_nested_value_link_view)]
 fn path_stack_keeps_value_links_active_inside_destination(app: &mut SemanticApp) {
     app.query().role(Role::BUTTON).label("Open First").tap();
     app.query()
@@ -342,7 +342,7 @@ fn path_stack_keeps_value_links_active_inside_destination(app: &mut SemanticApp)
     );
 }
 
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test()]
 fn native_back_updates_the_explicit_navigation_path(ui: UiBuilder) {
     let path = NavigationPath::<TestRoute>::new();
     let mounted_path = path.clone();
@@ -363,7 +363,7 @@ fn native_back_updates_the_explicit_navigation_path(ui: UiBuilder) {
 
 /// A destination-building link inside a path-backed stack owns its own entry:
 /// it must push and pop without ever consuming a route.
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test()]
 fn a_builder_link_in_a_path_stack_pops_without_touching_the_path(ui: UiBuilder) {
     let path = NavigationPath::<TestRoute>::new();
     let mounted_path = path.clone();
@@ -392,7 +392,7 @@ fn a_builder_link_in_a_path_stack_pops_without_touching_the_path(ui: UiBuilder) 
 
 /// With a builder entry stacked on top of a route, Back must unwind them in
 /// order: the builder entry first, then the route underneath it.
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test()]
 fn a_builder_link_above_a_route_unwinds_in_order(ui: UiBuilder) {
     let path = NavigationPath::<TestRoute>::new();
     let mounted_path = path.clone();
@@ -443,7 +443,7 @@ fn a_builder_link_above_a_route_unwinds_in_order(ui: UiBuilder) {
     assert!(path.snapshot().is_empty());
 }
 
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test()]
 fn explicit_path_root_keeps_native_chrome_and_lifecycle(ui: UiBuilder) {
     let appeared = Rc::new(Cell::new(0));
     let disappeared = Rc::new(Cell::new(0));
@@ -477,7 +477,7 @@ fn explicit_path_root_keeps_native_chrome_and_lifecycle(ui: UiBuilder) {
     app.query().label("Path Root").assert_exists();
 }
 
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test()]
 fn restored_path_and_atomic_multi_pop_have_exact_lifecycle(ui: UiBuilder) {
     let path = NavigationPath::from_iter([TestRoute::First, TestRoute::Second]);
     let mounted_path = path.clone();
@@ -527,7 +527,7 @@ fn restored_path_and_atomic_multi_pop_have_exact_lifecycle(ui: UiBuilder) {
     assert_eq!(destination_popped.get(), 2);
 }
 
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test()]
 fn denied_pop_reports_attempt_and_keeps_destination_active(ui: UiBuilder) {
     let attempts = Rc::new(Cell::new(0));
     let mounted_attempts = Rc::clone(&attempts);
@@ -543,7 +543,7 @@ fn denied_pop_reports_attempt_and_keeps_destination_active(ui: UiBuilder) {
         .assert_exists();
 }
 
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test()]
 fn destination_lifecycle_distinguishes_disappear_from_completed_pop(ui: UiBuilder) {
     let appeared = Rc::new(Cell::new(0));
     let disappeared = Rc::new(Cell::new(0));
@@ -569,7 +569,7 @@ fn destination_lifecycle_distinguishes_disappear_from_completed_pop(ui: UiBuilde
     assert_eq!(popped.get(), 1);
 }
 
-#[waterui::test(split_view, theme = hydrolysis_m3::install, viewport = (1000, 844))]
+#[waterui::test(split_view, viewport = (1000, 844))]
 fn split_view_selection_switches_placeholder_to_detail(app: &mut SemanticApp) {
     app.query()
         .role(Role::BUTTON)

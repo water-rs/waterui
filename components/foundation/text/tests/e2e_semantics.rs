@@ -1,11 +1,10 @@
-//! End-to-end visual-rendering tests for the `text` component.
+//! End-to-end semantic tests for the `text` component.
 
-use hydrolysis_m3::{MaterialColorScheme, install, install_with_colors};
+use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;
 use waterui::text::{code, styled, text};
-use waterui::{Environment, ViewExt as _};
-use waterui_testing::{OffscreenApp, Role, SemanticApp};
+use waterui_testing::{Role, SemanticApp};
 
 fn plain_text_view() -> impl waterui::View {
     text("Visible content")
@@ -47,25 +46,11 @@ fn code_block() -> impl waterui::View {
     code("rust", include_str!("fixtures/code_sample.rs")).padding_with(16.0)
 }
 
-/// The Material 3 baseline dark scheme, so a code block has to read every
-/// colour from the environment to stay legible.
-fn dark_theme(env: &mut Environment) {
-    install_with_colors(env, MaterialColorScheme::baseline_dark());
-}
-
-fn assert_code_block_semantics(app: &mut OffscreenApp) {
+/// The semantic half of the code-block captures: a `Code` widget names its
+/// language and publishes its copy affordance, neither of which needs a
+/// rendered frame to be true.
+#[waterui::test(code_block)]
+fn a_code_block_publishes_its_language_and_copy_action(app: &mut SemanticApp) {
     app.query().role(Role::LABEL).label("Rust").assert_exists();
     app.query().role(Role::LABEL).label("Copy").assert_exists();
-}
-
-#[waterui::test(code_block, theme = install, viewport = (480, 300), offscreen)]
-fn a_code_block_draws_from_the_light_theme(app: &mut OffscreenApp) {
-    assert_code_block_semantics(app);
-    let _ = app.capture_snapshot("text", "code_block", "light");
-}
-
-#[waterui::test(code_block, theme = dark_theme, viewport = (480, 300), offscreen)]
-fn a_code_block_draws_from_the_dark_theme(app: &mut OffscreenApp) {
-    assert_code_block_semantics(app);
-    let _ = app.capture_snapshot("text", "code_block", "dark");
 }
