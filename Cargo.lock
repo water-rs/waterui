@@ -10865,6 +10865,7 @@ dependencies = [
  "sysinfo",
  "vello",
  "waterui",
+ "waterui-backend-core",
  "waterui-canvas",
  "waterui-core",
  "waterui-layout",

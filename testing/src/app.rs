@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use accesskit::{
@@ -6,6 +7,7 @@ use accesskit::{
 };
 use hydrolysis::{HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style};
 use waterui::app::App;
+use waterui::{Plugin, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
 
@@ -26,8 +28,12 @@ use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoStyle;
 
-/// The style state of a [`UiBuilder`] whose mounts render through
-/// `hydrolysis`'s [`Style`]-driven headless runtime.
+/// The style state of a [`UiBuilder`] that carries a `hydrolysis` [`Style`].
+///
+/// The styled builder's mounts stay semantic — `mount` runs the same
+/// GPU-free [`SemanticRuntime`], only with the style's tokens installed into
+/// the mounted view's environment — while `mount_offscreen` and the `perf`
+/// entry points hand the style to the rendered headless runtime.
 #[derive(Clone, Debug)]
 pub struct Styled<S: Style> {
     pub(crate) style: S,
@@ -101,14 +107,15 @@ pub enum RuntimeFlavor {
 /// Runtime test host and configuration.
 ///
 /// `S` is the builder's style state: [`NoStyle`] for the semantic builder
-/// `ui()` returns — it mounts the GPU-free [`SemanticRuntime`] only — or
-/// [`Styled<S>`] once [`UiBuilder::theme`] carries a style, which also unlocks
-/// [`Self::mount_offscreen`] and the performance entry points on the rendered
+/// `ui()` returns, or [`Styled<S>`] once [`UiBuilder::theme`] carries a
+/// style. Both states mount the GPU-free [`SemanticRuntime`] — the styled
+/// builder's `mount` additionally applies `Style::install_tokens` to the
+/// mounted view's environment — while `mount_offscreen` and the performance
+/// entry points exist only on the styled builder and run the rendered
 /// [`HeadlessRuntime`].
 ///
-/// Framework tokens are installed by the runtimes themselves, so the builder
-/// installs none: `mount` ignores the style — the semantic runtime has no
-/// `Style` — while `mount_offscreen` hands it to `HeadlessRuntime`.
+/// Framework tokens are installed by the runtimes themselves; the builder's
+/// environment carries only what the test installs into it.
 #[derive(Clone)]
 pub struct UiBuilder<S = NoStyle> {
     env: Environment,
@@ -155,10 +162,11 @@ impl UiBuilder<NoStyle> {
 
     /// Carries a `hydrolysis` style into the builder.
     ///
-    /// The returned `UiBuilder<Styled<S>>` keeps [`UiBuilder::mount`] for the
-    /// semantic runtime — which ignores the style — and unlocks
-    /// `mount_offscreen`, `perf` and `perf_with`, which mount the rendered
-    /// runtime constructed with `style`.
+    /// The returned `UiBuilder<Styled<S>>` keeps `mount` on the semantic
+    /// runtime — still semantic, but with the style's tokens installed into
+    /// the mounted view's environment — and unlocks `mount_offscreen`,
+    /// `perf` and `perf_with`, which mount the rendered runtime constructed
+    /// with `style`.
     #[must_use]
     pub fn theme<S: Style>(self, style: S) -> UiBuilder<Styled<S>> {
         UiBuilder {
@@ -171,13 +179,49 @@ impl UiBuilder<NoStyle> {
             scale_factor: self.scale_factor,
         }
     }
+
+    /// Mounts a no-arg view builder on the semantic runtime.
+    ///
+    /// The semantic pipeline carries no style: the accessibility tree is a
+    /// product of the view tree and the widgets' semantics, so the returned
+    /// [`SemanticApp`] answers role, label, value, description, state,
+    /// structure and focus queries and dispatches accessibility actions —
+    /// taps, focus, text entry, increment/decrement, scroll, expand/collapse
+    /// and key events — without a style package. The mounted view's
+    /// environment resolves only the framework default tokens the runtime
+    /// installs; a view whose body reads a style package's tokens mounts
+    /// through [`UiBuilder::theme`] instead. Geometry, pointer gestures and
+    /// capture live on the styled builder's [`UiBuilder::mount_offscreen`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initial Hydrolysis semantic pass does not produce an
+    /// accessibility tree.
+    pub fn mount<V, F>(self, view_fn: F) -> SemanticApp
+    where
+        V: View + 'static,
+        F: Fn() -> V + 'static,
+    {
+        let env = self.mount_env();
+        let content = AnyViewBuilder::new(move || AnyView::new(view_fn()));
+        let runtime = match self.flavor {
+            RuntimeFlavor::Test => {
+                SemanticRuntime::new_for_tests(env, content, self.width, self.height)
+            }
+            RuntimeFlavor::Application => {
+                SemanticRuntime::new(env, content, self.width, self.height)
+            }
+        };
+        SemanticApp::new(runtime, (self.width, self.height))
+    }
 }
 
 impl<S> UiBuilder<S> {
     /// Overrides the environment used by the mounted app.
     ///
-    /// The configured style's tokens are still installed by the runtime on
-    /// top at mount time.
+    /// The runtime still installs its framework tokens on top at mount time
+    /// — and a styled builder's `mount` applies the style's tokens above
+    /// them.
     #[must_use]
     pub fn environment(mut self, env: Environment) -> Self {
         self.env = env;
@@ -244,16 +288,39 @@ impl<S> UiBuilder<S> {
         waterui::realization::install_video(&mut env);
         env
     }
+}
 
-    /// Mounts a no-arg view builder on the semantic runtime.
+/// Applies a style's environment tokens to a mounted view's environment
+/// scope.
+///
+/// [`SemanticRuntime`] installs the framework default tokens into an
+/// environment layered on top of the one it is constructed with, so tokens
+/// written into the builder environment beforehand would lose to the
+/// defaults on every slot they carry. Scoping the install to the mounted
+/// view reproduces the rendered runtime's ordering — framework defaults
+/// first, then [`Style::install_tokens`] — on the environment the view tree
+/// actually resolves.
+struct StyleTokens<S: Style>(Rc<S>);
+
+impl<S: Style> Plugin for StyleTokens<S> {
+    fn install(self, env: &mut Environment) {
+        self.0.install_tokens(env);
+    }
+}
+
+impl<S: Style> UiBuilder<Styled<S>> {
+    /// Mounts a no-arg view builder on the semantic runtime with the
+    /// builder's style tokens installed over the framework defaults.
     ///
-    /// The semantic pipeline carries no style: the accessibility tree is a
-    /// product of the view tree and the widgets' semantics, so the returned
-    /// [`SemanticApp`] answers role, label, value, description, state,
-    /// structure and focus queries and dispatches accessibility actions —
-    /// taps, focus, text entry, increment/decrement, scroll, expand/collapse
-    /// and key events — without a style package. Geometry, pointer gestures
-    /// and capture live on the styled builder's [`UiBuilder::mount_offscreen`].
+    /// The mount is still semantic — the runtime is [`SemanticRuntime`] and
+    /// the style is never handed to it, so there is no widget theme,
+    /// geometry, pointer gestures or capture (those stay on
+    /// [`UiBuilder::mount_offscreen`]). What the style contributes is its
+    /// [`Style::install_tokens`] step, applied to the mounted view's
+    /// environment after the runtime's framework defaults — the ordering the
+    /// rendered runtime uses — so components whose bodies resolve their
+    /// style package's tokens from the environment see them in a semantic
+    /// test.
     ///
     /// # Panics
     ///
@@ -265,7 +332,10 @@ impl<S> UiBuilder<S> {
         F: Fn() -> V + 'static,
     {
         let env = self.mount_env();
-        let content = AnyViewBuilder::new(move || AnyView::new(view_fn()));
+        let style = Rc::new(self.style.style);
+        let content = AnyViewBuilder::new(move || {
+            AnyView::new(view_fn().install(StyleTokens(Rc::clone(&style))))
+        });
         let runtime = match self.flavor {
             RuntimeFlavor::Test => {
                 SemanticRuntime::new_for_tests(env, content, self.width, self.height)
@@ -276,9 +346,7 @@ impl<S> UiBuilder<S> {
         };
         SemanticApp::new(runtime, (self.width, self.height))
     }
-}
 
-impl<S: Style> UiBuilder<Styled<S>> {
     /// Mounts a no-arg view builder on the rendered runtime and returns the
     /// offscreen session, constructed with the builder's style.
     ///

@@ -28,6 +28,7 @@ serde_json.workspace = true
 [dev-dependencies]
 async-io = "2.6"
 bitflags.workspace = true
+waterui-backend-core = { workspace = true, features = ["widgets"] }
 waterui-canvas.workspace = true
 waterui-layout.workspace = true
 

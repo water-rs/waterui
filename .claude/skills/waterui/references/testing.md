@@ -65,7 +65,7 @@ Add the dev-dependencies:
 ```toml
 [dev-dependencies]
 waterui-testing = "…"
-hydrolysis-m3 = "…"     # rendered tests only — a semantic test needs none
+hydrolysis-m3 = "…"     # styled mounts only — a style-free semantic test needs none
 ```
 
 The default mount is the *semantic* runtime: a GPU-free pipeline whose accessibility
@@ -106,6 +106,8 @@ example `hydrolysis_m3::Material3::defaults()`), `viewport = (w, h)` sizes the w
 and the bare `offscreen` flag mounts the rendered runtime and switches the parameter
 to `&mut OffscreenApp`. `offscreen` and `#[waterui::bench]` require `theme =` — the
 rendered runtime is styled by construction; without `theme =` the test is semantic.
+`ui().theme(style).mount(..)` is still semantic; it adds the style's tokens for
+components whose bodies read them.
 The macro expands to a plain `#[test]`, so do not also write `#[test]`, and the
 function must take exactly one parameter and return `()`. A styled manual mount names
 the style in its parameter type: `ui: UiBuilder<Styled<hydrolysis_m3::Material3>>`.
