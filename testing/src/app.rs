@@ -202,17 +202,7 @@ impl UiBuilder<NoStyle> {
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
-        let env = self.mount_env();
-        let content = AnyViewBuilder::new(move || AnyView::new(view_fn()));
-        let runtime = match self.flavor {
-            RuntimeFlavor::Test => {
-                SemanticRuntime::new_for_tests(env, content, self.width, self.height)
-            }
-            RuntimeFlavor::Application => {
-                SemanticRuntime::new(env, content, self.width, self.height)
-            }
-        };
-        SemanticApp::new(runtime, (self.width, self.height))
+        self.mount_semantic(AnyViewBuilder::new(move || AnyView::new(view_fn())))
     }
 }
 
@@ -288,6 +278,22 @@ impl<S> UiBuilder<S> {
         waterui::realization::install_video(&mut env);
         env
     }
+
+    /// Mounts `content` on the semantic runtime — the construction shared by
+    /// both builders' `mount`, whose difference is only how the view builder
+    /// is assembled.
+    fn mount_semantic(self, content: AnyViewBuilder<AnyView>) -> SemanticApp {
+        let env = self.mount_env();
+        let runtime = match self.flavor {
+            RuntimeFlavor::Test => {
+                SemanticRuntime::new_for_tests(env, content, self.width, self.height)
+            }
+            RuntimeFlavor::Application => {
+                SemanticRuntime::new(env, content, self.width, self.height)
+            }
+        };
+        SemanticApp::new(runtime, (self.width, self.height))
+    }
 }
 
 /// Applies a style's environment tokens to a mounted view's environment
@@ -309,6 +315,32 @@ impl<S: Style> Plugin for StyleTokens<S> {
 }
 
 impl<S: Style> UiBuilder<Styled<S>> {
+    /// Splits the style out of the builder, leaving a `UiBuilder<NoStyle>`
+    /// with the same environment, viewport, and runtime configuration.
+    fn untheme(self) -> (UiBuilder<NoStyle>, S) {
+        let Self {
+            env,
+            width,
+            height,
+            style: Styled { style },
+            perf_config,
+            flavor,
+            scale_factor,
+        } = self;
+        (
+            UiBuilder {
+                env,
+                width,
+                height,
+                style: NoStyle,
+                perf_config,
+                flavor,
+                scale_factor,
+            },
+            style,
+        )
+    }
+
     /// Mounts a no-arg view builder on the semantic runtime with the
     /// builder's style tokens installed over the framework defaults.
     ///
@@ -331,20 +363,11 @@ impl<S: Style> UiBuilder<Styled<S>> {
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
-        let env = self.mount_env();
-        let style = Rc::new(self.style.style);
-        let content = AnyViewBuilder::new(move || {
+        let (builder, style) = self.untheme();
+        let style = Rc::new(style);
+        builder.mount_semantic(AnyViewBuilder::new(move || {
             AnyView::new(view_fn().install(StyleTokens(Rc::clone(&style))))
-        });
-        let runtime = match self.flavor {
-            RuntimeFlavor::Test => {
-                SemanticRuntime::new_for_tests(env, content, self.width, self.height)
-            }
-            RuntimeFlavor::Application => {
-                SemanticRuntime::new(env, content, self.width, self.height)
-            }
-        };
-        SemanticApp::new(runtime, (self.width, self.height))
+        }))
     }
 
     /// Mounts a no-arg view builder on the rendered runtime and returns the
