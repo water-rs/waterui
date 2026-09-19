@@ -10495,7 +10495,6 @@ dependencies = [
  "waterui-controls",
  "waterui-icons-lucide",
  "waterui-inspector-protocol",
- "waterui-testing",
 ]
 
 [[package]]
@@ -10627,10 +10626,7 @@ dependencies = [
  "nami",
  "suiteki",
  "waterkit-location",
- "waterui",
  "waterui-core",
- "waterui-testing",
- "waterui-url",
 ]
 
 [[package]]
@@ -10868,7 +10864,6 @@ dependencies = [
  "waterui-backend-core",
  "waterui-canvas",
  "waterui-core",
- "waterui-layout",
  "waterui-preview-protocol",
  "wgpu",
 ]
