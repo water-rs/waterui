@@ -42,7 +42,8 @@
 //! ```
 //!
 //! A rendered test names its style with `theme =`, and a whole [`App`]
-//! mounts through [`mount_app`]:
+//! mounts through [`mount_app`] — or `ui().theme(style).mount_app(app)` when
+//! the session needs its own viewport, runtime flavor or scale factor:
 //!
 //! ```ignore
 //! #[waterui::test(login_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]

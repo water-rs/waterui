@@ -744,6 +744,34 @@ fn styled_semantic_mount_installs_style_tokens_over_framework_defaults() {
     assert_ne!(styled_label, unstyled_label);
 }
 
+/// `UiBuilder<Styled<S>>::mount_app` honours the builder's viewport and scale
+/// factor over the window's declared frame: the full-window content reports
+/// `320x240` logical points — not the `800x600` `Window::new` declares — and
+/// the scale factor stays a capture concern, so bounds read back in logical
+/// points.
+#[test]
+fn styled_builder_mount_app_mounts_at_the_builder_viewport() {
+    let app = waterui::app::App::new(|| text("app content").body(), waterui::Environment::new());
+    let mut app = ui()
+        .theme(token_probe::TokenProbeStyle)
+        .viewport(320, 240)
+        .scale_factor(2.0)
+        .mount_app(app);
+    let bounds = app.query().role(Role::LABEL).single().bounds();
+    assert_eq!(bounds, NodeBounds::new(0.0, 0.0, 320.0, 240.0));
+}
+
+/// The free `mount_app(app, style)` convenience is the builder form with the
+/// viewport sized from the window's declared frame — `Window::new`'s default
+/// `800x600` here, not the builder's `390x844` default.
+#[test]
+fn free_mount_app_mounts_at_the_window_frame() {
+    let app = waterui::app::App::new(|| text("app content").body(), waterui::Environment::new());
+    let mut app = mount_app(app, token_probe::TokenProbeStyle);
+    let bounds = app.query().role(Role::LABEL).single().bounds();
+    assert_eq!(bounds, NodeBounds::new(0.0, 0.0, 800.0, 600.0));
+}
+
 #[test]
 fn a11y_identifier_flows_from_modifier_to_selector() {
     let mut app = ui().mount(|| {
