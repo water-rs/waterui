@@ -27,8 +27,6 @@ use core::fmt;
 use core::time::Duration;
 #[cfg(feature = "gpu")]
 use num_traits::ToPrimitive;
-#[cfg(feature = "gpu")]
-use std::time::Instant;
 
 #[cfg(feature = "gpu")]
 use nami::Signal as _;
@@ -1180,7 +1178,7 @@ struct MorphShapeRenderer {
     animation: MorphAnimation,
     progress: Option<Computed<f32>>,
     progress_guard: Option<BoxWatcherGuard>,
-    start_time: Instant,
+    start: Option<Duration>,
     pipeline: Option<wgpu::RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
@@ -1213,7 +1211,7 @@ impl MorphShapeRenderer {
             animation,
             progress,
             progress_guard: None,
-            start_time: Instant::now(),
+            start: None,
             pipeline: None,
             uniform_buffer: None,
             bind_group: None,
@@ -1304,7 +1302,7 @@ impl GpuView for MorphShapeRenderer {
         self.uniform_buffer = Some(uniform_buffer);
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
-        self.start_time = Instant::now();
+        self.start = None;
         core::future::ready(())
     }
 
@@ -1327,12 +1325,17 @@ impl GpuView for MorphShapeRenderer {
             .as_ref()
             .expect("MorphShape render called before setup");
 
+        // The frame clock is supplied by the backend, so it is monotonic on
+        // every target — `std::time::Instant` does not exist on wasm32 — and
+        // deterministic under preview/offscreen pumping.
+        let start = *self.start.get_or_insert_with(|| frame.elapsed());
+        let age = frame.elapsed().saturating_sub(start);
         let progress = if let Some(signal) = &self.progress {
             let value = signal.get();
             assert!(value.is_finite(), "MorphShape progress must be finite");
             value.clamp(0.0, 1.0)
         } else {
-            self.animation.sample(self.start_time.elapsed())
+            self.animation.sample(age)
         };
 
         let fill_color = self.fill_color.get();
@@ -1390,8 +1393,8 @@ impl GpuView for MorphShapeRenderer {
         frame.queue.submit(core::iter::once(encoder.finish()));
 
         // Request continuous redraw while animation is active
-        let animation_active = self.progress.is_none()
-            && (self.animation.repeat || self.start_time.elapsed() < self.animation.duration);
+        let animation_active =
+            self.progress.is_none() && (self.animation.repeat || age < self.animation.duration);
         if animation_active {
             frame.request_redraw();
         }
