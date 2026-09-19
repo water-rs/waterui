@@ -34,6 +34,10 @@ mod macros;
 #[cfg(feature = "android-jni")]
 pub mod jni;
 
+/// Logcat output for `tracing` records. The formatter is exercised by tests
+/// on every platform, so the module compiles under `cfg(test)` off Android.
+#[cfg(any(test, target_os = "android"))]
+mod android_log;
 mod bridge;
 mod drawing;
 mod events;
@@ -353,7 +357,7 @@ fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>) {
         .with(env_filter(
             "wgpu_core=error,wgpu_hal=error,naga=error,jni=error",
         ))
-        .with(tracing_android::layer("WaterUI").expect("Failed to create Android log layer"))
+        .with(android_log::AndroidLogLayer::new("WaterUI"))
         .with(inspector)
         .init();
 
