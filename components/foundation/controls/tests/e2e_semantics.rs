@@ -568,4 +568,3 @@ fn disabled_button_ignores_action(ui: UiBuilder) {
     );
     assert_eq!(count.get(), 0, "disabled-button: action must not run");
 }
-
