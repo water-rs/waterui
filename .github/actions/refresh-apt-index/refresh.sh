@@ -11,5 +11,6 @@ else
   exit 1
 fi
 sudo apt-get update \
+  -o Acquire::Retries=10 \
   -o Dir::Etc::SourceList="$list" \
   -o Dir::Etc::SourceParts=/dev/null

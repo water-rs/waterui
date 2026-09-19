@@ -9,6 +9,13 @@ permissions:
   issues: write
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  # cargo/rustup retry network failures three times by default; ten
+  # matches the budget install-action sets for its own downloads.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -22,9 +29,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-edit
-        uses: taiki-e/install-action@v2
+        uses: ./.github/actions/install-tool
         with:
-          tool: cargo-edit
+          tool: cargo-edit@0.13.13
+          path: |
+            ~/.cargo/bin/cargo-add*
+            ~/.cargo/bin/cargo-rm*
+            ~/.cargo/bin/cargo-set-version*
+            ~/.cargo/bin/cargo-upgrade*
 
       - name: Check Rust dependencies
         run: |
