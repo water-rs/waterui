@@ -4,8 +4,8 @@ use core::ffi::c_void;
 use core::fmt;
 use nami::{Signal, SignalExt};
 use waterui_layout::{
-    HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
-    SubviewPlacement, VerticalAlignment, ViewDimensions,
+    HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size, Spacer, StretchAxis,
+    SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
     container::{FixedContainer, LazyContainer},
     measure_layout,
     scroll::Axis,
@@ -13,8 +13,8 @@ use waterui_layout::{
     with_memoized_children,
 };
 
+use crate::views::WuiAnyViews;
 use crate::{IntoFFI, IntoRust, WuiAnyView, array::WuiArray};
-use crate::{WuiTypeId, views::WuiAnyViews};
 
 opaque!(WuiLayout, Box<dyn Layout>, layout);
 
@@ -34,11 +34,28 @@ impl fmt::Debug for WuiFixedContainer {
     }
 }
 
-/// Returns the type ID for Spacer views as a 128-bit value.
-/// `Spacer` is a raw view that stretches to fill available space.
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_spacer_id() -> WuiTypeId {
-    WuiTypeId::of::<waterui::component::spacer::Spacer>()
+/// C ABI mirror of [`Spacer`], a flexible space that expands to fill
+/// available space on the enclosing stack's main axis.
+///
+/// `min_length` is the floor the stack keeps under compression: per
+/// `docs/layout-spec.md` §5/§6, a hosted spacer answers its minimum length on
+/// the stack's main axis and zero on the cross axis, whatever the proposal.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiSpacer {
+    /// The length this spacer never shrinks below on the stack's main axis.
+    pub min_length: f32,
+}
+
+ffi_view!(Spacer, WuiSpacer, spacer);
+
+impl IntoFFI for Spacer {
+    type FFI = WuiSpacer;
+    fn into_ffi(self) -> Self::FFI {
+        WuiSpacer {
+            min_length: self.min_length(),
+        }
+    }
 }
 
 ffi_view!(FixedContainer, WuiFixedContainer, fixed_container);
@@ -899,6 +916,25 @@ mod tests {
             unsafe { drop(metadata.content.into_rust()) };
             assert_eq!(drops.get(), 1);
         }
+    }
+
+    #[cfg(feature = "c-api")]
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "min_length is copied verbatim across FFI with no intervening arithmetic, so exact equality is the correct assertion"
+    )]
+    fn spacer_crosses_ffi_with_its_minimum_length() {
+        use crate::waterui_view_id;
+        use waterui_core::{AnyView, Native};
+
+        let view = AnyView::new(Native::new(Spacer::new(40.0))).into_ffi();
+        // SAFETY: `view` is the live owning handle created above.
+        let view_id = unsafe { waterui_view_id(view) };
+        assert_eq!(view_id, waterui_spacer_id());
+        // SAFETY: the handle contains a `Native<Spacer>` and is consumed once.
+        let spacer = unsafe { waterui_force_as_spacer(view) };
+        assert_eq!(spacer.min_length, 40.0);
     }
 
     #[test]
