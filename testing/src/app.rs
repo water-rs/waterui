@@ -32,8 +32,8 @@ pub struct NoStyle;
 ///
 /// The styled builder's mounts stay semantic — `mount` runs the same
 /// GPU-free [`SemanticRuntime`], only with the style's tokens installed into
-/// the mounted view's environment — while `mount_offscreen` and the `perf`
-/// entry points hand the style to the rendered headless runtime.
+/// the mounted view's environment — while `mount_offscreen`, `mount_app` and
+/// the `perf` entry points hand the style to the rendered headless runtime.
 #[derive(Clone, Debug)]
 pub struct Styled<S: Style> {
     pub(crate) style: S,
@@ -54,13 +54,16 @@ pub fn ui() -> UiBuilder {
 /// Mounts a whole [`App`] on the rendered runtime and returns the offscreen
 /// session, taking `style` the way `hydrolysis::run(app, style)` does.
 ///
-/// The session runs the app's own [`Environment`] exactly as [`App::new`]
-/// configured it — the app's installed realizations included — so no builder
-/// environment or viewport applies: the mounted window takes its declared
-/// frame's size. Only the main window's content is mounted: the headless
-/// runtime hosts a single window, so the app's menu bar and any additional
-/// windows are not mounted. Popup windows the app opens at runtime (context
-/// menus, pickers) are still merged into the accessibility tree by Hydrolysis.
+/// The session mounts at the window's declared frame on the default builder
+/// configuration — [`RuntimeFlavor::Test`] and scale factor 1. When the
+/// session needs its own viewport, runtime flavor or scale factor, mount
+/// through the styled builder instead:
+/// `ui().theme(style).viewport(w, h).mount_app(app)`.
+///
+/// Only the main window's content is mounted: the headless runtime hosts a
+/// single window, so the app's menu bar and any additional windows are not
+/// mounted. Popup windows the app opens at runtime (context menus, pickers)
+/// are still merged into the accessibility tree by Hydrolysis.
 ///
 /// # Panics
 ///
@@ -68,20 +71,13 @@ pub fn ui() -> UiBuilder {
 /// offscreen frame does not produce an accessibility tree.
 #[must_use]
 pub fn mount_app(app: App, style: impl Style) -> OffscreenApp {
-    let (windows, _menu_bar, env) = app.into_parts();
-    let window = windows
-        .into_iter()
-        .next()
-        .expect("App::into_parts yields the main window first");
-    let size = *window.frame.get().size();
-    let width = frame_points_as_u32(size.width);
-    let height = frame_points_as_u32(size.height);
-    OffscreenApp {
-        app: SemanticApp::new(
-            HeadlessRuntime::new(env, window.content, width, height, style),
-            (width, height),
-        ),
-    }
+    let size = *app.main_window().frame.get().size();
+    ui().theme(style)
+        .viewport(
+            frame_points_as_u32(size.width),
+            frame_points_as_u32(size.height),
+        )
+        .mount_app(app)
 }
 
 /// Converts a window's declared frame extent — positive logical points —
@@ -110,9 +106,9 @@ pub enum RuntimeFlavor {
 /// `ui()` returns, or [`Styled<S>`] once [`UiBuilder::theme`] carries a
 /// style. Both states mount the GPU-free [`SemanticRuntime`] — the styled
 /// builder's `mount` additionally applies `Style::install_tokens` to the
-/// mounted view's environment — while `mount_offscreen` and the performance
-/// entry points exist only on the styled builder and run the rendered
-/// [`HeadlessRuntime`].
+/// mounted view's environment — while `mount_offscreen`, `mount_app` and the
+/// performance entry points exist only on the styled builder and run the
+/// rendered [`HeadlessRuntime`].
 ///
 /// Framework tokens are installed by the runtimes themselves; the builder's
 /// environment carries only what the test installs into it.
@@ -165,8 +161,8 @@ impl UiBuilder<NoStyle> {
     /// The returned `UiBuilder<Styled<S>>` keeps `mount` on the semantic
     /// runtime — still semantic, but with the style's tokens installed into
     /// the mounted view's environment — and unlocks `mount_offscreen`,
-    /// `perf` and `perf_with`, which mount the rendered runtime constructed
-    /// with `style`.
+    /// `mount_app`, `perf` and `perf_with`, which mount the rendered runtime
+    /// constructed with `style`.
     #[must_use]
     pub fn theme<S: Style>(self, style: S) -> UiBuilder<Styled<S>> {
         UiBuilder {
@@ -383,13 +379,58 @@ impl<S: Style> UiBuilder<Styled<S>> {
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
+        let env = self.mount_env();
+        self.mount_rendered(env, AnyViewBuilder::new(move || AnyView::new(view_fn())))
+    }
+
+    /// Mounts a whole [`App`] on the rendered runtime and returns the
+    /// offscreen session, constructed with the builder's style.
+    ///
+    /// This is the application path: the session runs the app's own
+    /// [`Environment`] — the composition root [`App::new`] configured,
+    /// realizations included — layered over the builder's, so the values the
+    /// app carries win while what the test installed still applies
+    /// underneath. The builder's [`Self::viewport`], [`Self::runtime`] and
+    /// [`Self::scale_factor`] apply; [`mount_app`](crate::mount_app) is this
+    /// method with the viewport sized from the window's declared frame.
+    ///
+    /// Only the main window's content is mounted: the headless runtime hosts
+    /// a single window, so the app's menu bar and any additional windows are
+    /// not mounted. Popup windows the app opens at runtime (context menus,
+    /// pickers) are still merged into the accessibility tree by Hydrolysis.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the app declares no window, if [`UiBuilder::scale_factor`]
+    /// was configured with a non-finite or non-positive value, or if the
+    /// initial Hydrolysis offscreen frame does not produce an accessibility
+    /// tree.
+    #[must_use]
+    pub fn mount_app(self, app: App) -> OffscreenApp {
+        let (windows, _menu_bar, app_env) = app.into_parts();
+        let window = windows
+            .into_iter()
+            .next()
+            .expect("App::into_parts yields the main window first");
+        // The app's environment is the composition root, so it layers over
+        // the builder's — what the test installed applies underneath it.
+        let mut env = app_env.layered_on(&self.env);
+        // As on `mount_env`, Hydrolysis owns no platform media bridge, so the
+        // self-drawn video realization applies even where `App::new`'s
+        // `realization::install` skipped it.
+        waterui::realization::install_video(&mut env);
+        self.mount_rendered(env, window.content)
+    }
+
+    /// Mounts `content` on the rendered runtime — the construction shared by
+    /// `mount_offscreen` and `mount_app`, which differ only in where the
+    /// environment and the view builder come from.
+    fn mount_rendered(self, env: Environment, content: AnyViewBuilder<AnyView>) -> OffscreenApp {
         assert!(
             self.scale_factor.is_finite() && self.scale_factor > 0.0,
             "waterui-testing scale_factor must be finite and greater than zero, got {}",
             self.scale_factor
         );
-        let env = self.mount_env();
-        let content = AnyViewBuilder::new(move || AnyView::new(view_fn()));
         let runtime = match self.flavor {
             RuntimeFlavor::Test => HeadlessRuntime::new_for_tests(
                 env,

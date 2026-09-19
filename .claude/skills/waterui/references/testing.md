@@ -231,6 +231,11 @@ shot.save_png("/tmp/my_view.png").expect("snapshot must be writable");
 thresholds, bbox approximations, dominant-color checks, and similar proxies do not verify
 appearance and should not be written.
 
+A whole `App` mounts through `waterui_testing::mount_app(app, style)`, which sizes the
+session from the window's declared frame; a host that owns the viewport and DPI — `water
+mcp` is one — uses the builder form `ui().theme(style).viewport(w,
+h).runtime(RuntimeFlavor::Application).scale_factor(dpi).mount_app(app)` instead.
+
 ## `#[waterui::bench]` and `water bench`
 
 Frame benchmarks live next to the tests and use the same dev-dependencies. Each mounts
