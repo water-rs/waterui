@@ -36,7 +36,7 @@ use waterui_graphics::RedrawHandle;
 use waterui_graphics::filter_view::{
     AppliedFilter, EffectContext, EffectFrameClock, EffectInput, EffectOutput, WgslModuleCache,
 };
-use waterui_graphics::shared_context::{GpuRuntime, reclaim_device};
+use waterui_graphics::shared_context::GpuRuntime;
 
 use crate::{IntoFFI, WuiAnyView};
 
@@ -1173,7 +1173,10 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
 
         // Present
         output.present();
-        reclaim_device(&gpu.device);
+        // Queue order retires this marker only after the frame's real work
+        // and the present, so resolving it records this generation as having
+        // presented — the signal the rebuild budget reads after a device loss.
+        gpu.note_presented_submission(gpu.queue.submit([]));
 
         needs_redraw
     })
@@ -1299,7 +1302,6 @@ pub unsafe extern "C" fn waterui_applied_filter_render_to_metal_texture(
     let submission = gpu.queue.submit([]);
     let fence =
         super::gpu_surface::WuiGpuCaptureFence::new(gpu.submission_completion_driver(), submission);
-    reclaim_device(&gpu.device);
     Box::into_raw(Box::new(fence))
 }
 

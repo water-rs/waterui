@@ -36,7 +36,7 @@ use {
 };
 
 use waterui_graphics::RedrawHandle;
-use waterui_graphics::shared_context::{GpuRuntime, reclaim_device};
+use waterui_graphics::shared_context::GpuRuntime;
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 use waterui_graphics::view_effect::ViewEffectContext;
 use waterui_graphics::view_effect::{
@@ -1132,7 +1132,10 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
             "waterui_view_effect_render",
         );
         output.present();
-        reclaim_device(&gpu.device);
+        // Queue order retires this marker only after the frame's real work
+        // and the present, so resolving it records this generation as having
+        // presented — the signal the rebuild budget reads after a device loss.
+        gpu.note_presented_submission(gpu.queue.submit([]));
 
         needs_redraw
     })
@@ -1313,9 +1316,6 @@ pub unsafe extern "C" fn waterui_view_effect_render_to_metal_texture(
     let submission = gpu.queue.submit([]);
     let fence =
         super::gpu_surface::WuiGpuCaptureFence::new(gpu.submission_completion_driver(), submission);
-    // A frame loop that only submits never returns the resources wgpu retains
-    // for a submission, so every presented frame would leak a little (#370).
-    reclaim_device(&gpu.device);
     Box::into_raw(Box::new(fence))
 }
 
