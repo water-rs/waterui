@@ -221,15 +221,15 @@ waterui-mcp-protocol = { version = "0.5.0", path = "components/devtools/mcp/prot
 # `cargo publish` keeps (a patch entry would go unused and warn on every cargo
 # command). The release commit that drops the patch table below drops the
 # `git` halves too.
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "06c5eadf10f657d8e742b79cab59b44c02dce439", version = "0.2.0" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "b170b35bee0ef815ebc8dc559a2bbc4d96562e34", version = "0.2.0" }
 # `waterui-winui` is unpublished and Windows-only; the `water` CLI reads this
 # entry to scaffold a generated launcher crate pinned to the same revision.
-waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "61d8e81839c9b869eeab60ab11c65628720554e0", version = "0.1.0" }
+waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "3601e745aa51a070a71df1aa98bb7faa6b3895a9", version = "0.1.0" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.0", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.0", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.0", default-features = false }
-waterui-dew = { git = "https://github.com/water-rs/dew", rev = "753bd9ded82922655c9b8e26d31894cbca987e2e", version = "0.3.0" }
+waterui-dew = { git = "https://github.com/water-rs/dew", rev = "96713f93d4ee8cf7125a4905a5d5b5677997b37a", version = "0.3.0" }
 waterui = { version = "0.5.0", path = "." }
 waterui-icons-codegen = { version = "0.5.0", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
@@ -477,17 +477,17 @@ strip = true       # Strip symbols
 # satellite's adopted `dev` revision — the commit that declares that version
 # and builds against this tree. Publishing ignores this table; the release
 # commit that follows the foundation publish drops these entries.
-waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "0a7efbf3b0f37de18f4e9da678f445d0b63bb28d" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "fb4a1a1de3bae3b9da60cb475cb3a10e161e4525" }
-waterui-chart = { git = "https://github.com/water-rs/chart", rev = "b5ec25f94728d65755de959e01800d2b54326b89" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "646d2eb1c7dda8c78283fd168e726fb260a84e65" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "fa83ba7be6feb932d15cd37f14810ab79653f4aa" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "9bd736b9ecaef4b902b8a55680d214b385e4a186" }
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "2272a62b4bcd7b3d1deb3ba03ba8a88ff927616a" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "e208a44b995883cfda7053f2cf12894e9f1a4ba9" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "67357344da0c6c24c218d1ccf478116354a4f0d6" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "b899c035a890c531b1489eefca4a7968de1d2a84" }
-waterui-math = { git = "https://github.com/water-rs/math", rev = "ffa8e42e4f04ffd2396bf0466eae46a2b9e00c53" }
+waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "ae6589d67ef1869e55ac6bd14978302d4bc598f8" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "7141640f35d0976e9522595b3905c514e6b3d378" }
+waterui-chart = { git = "https://github.com/water-rs/chart", rev = "e6a4382db4d33e02162398e911137d4f6c48cd24" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "eec70aa5d0028d13e62a209848ebb5963ee94b06" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "3a047f339f761162064391f2618d22bdc267edf5" }
+waterui-particle = { git = "https://github.com/water-rs/particle", rev = "cc338ec4250ef7300e8125bfd5cde665dc38613e" }
+waterui-svg = { git = "https://github.com/water-rs/svg", rev = "274cc650de51061c03009ea50b0feb65d55601d1" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "9ed3abb6378eec26fd8c442c35cb18905b018795" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "1c943a9b555f9567595ef3dd6877f7e0d37ba1da" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "26945db156f8e21a20c06d6d5fdcef3027273ace" }
+waterui-math = { git = "https://github.com/water-rs/math", rev = "f1078b62d88c2d9652d191e89da290b862cad640" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
