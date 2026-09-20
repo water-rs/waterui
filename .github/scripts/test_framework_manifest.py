@@ -7,6 +7,7 @@ tables for the same tree — the certification contract holds them to
 agreement.
 """
 
+import copy
 from pathlib import Path
 import tomllib
 
@@ -34,41 +35,69 @@ def test_every_git_pinned_scaffold_package_pins_an_immutable_revision():
             ), f"workspace.dependencies.{name} must pin a full commit hash"
 
 
-def test_stable_withholds_git_pinned_packages_from_the_scaffold_table():
+def requirement_version(dependency):
+    return dependency if isinstance(dependency, str) else dependency["version"]
+
+
+def with_git_pin(framework, name):
+    """`framework` with scaffold package `name` pinned to a git revision — the
+    shape a not-yet-published package has between releases."""
+    pinned = copy.deepcopy(framework)
+    pinned["workspace"]["dependencies"][name] = {
+        "version": requirement_version(WORKSPACE[name]),
+        "git": f"https://github.com/water-rs/{name}",
+        "rev": "0123456789abcdef0123456789abcdef01234567",
+    }
+    return pinned
+
+
+def test_stable_scaffolds_every_released_package_by_version():
     scaffold, experimental = framework_manifest.channel_scaffold(FRAMEWORK, "stable")
 
-    # `waterui-winui` is unpublished — the package this split exists for.
-    assert "waterui-winui" in SCAFFOLD_PACKAGES
-    assert git_pinned("waterui-winui")
-
     for name in SCAFFOLD_PACKAGES:
-        if not git_pinned(name):
-            assert scaffold[f"{name}-version"] == (
-                WORKSPACE[name]
-                if isinstance(WORKSPACE[name], str)
-                else WORKSPACE[name]["version"]
-            )
+        if git_pinned(name):
             continue
-        assert not any(key.startswith(f"{name}-") for key in scaffold), (
-            f"stable must not scaffold git-pinned {name}"
-        )
-        assert experimental[name] == {
-            "version": WORKSPACE[name]["version"],
-            "git": WORKSPACE[name]["git"],
-            "rev": WORKSPACE[name]["rev"],
-        }
+        assert scaffold[f"{name}-version"] == requirement_version(WORKSPACE[name])
+        assert name not in experimental
 
     # Backend coordinates are not scaffold packages: they stay in the table.
     assert "apple-backend-url" in scaffold
     assert "android-backend-revision" in scaffold
 
 
-def test_nightly_carries_git_pinned_packages_in_the_scaffold_table():
-    scaffold, experimental = framework_manifest.channel_scaffold(FRAMEWORK, "nightly")
+def test_stable_withholds_git_pinned_packages_from_the_scaffold_table():
+    # Whichever package is between releases, the split derives from the
+    # dependency's shape alone, so a synthetic pin exercises it on every tree.
+    name = SCAFFOLD_PACKAGES[-1]
+    pinned = with_git_pin(FRAMEWORK, name)
+    dependency = pinned["workspace"]["dependencies"][name]
 
-    for name in SCAFFOLD_PACKAGES:
-        assert f"{name}-version" in scaffold
-        if git_pinned(name):
-            assert scaffold[f"{name}-git"] == WORKSPACE[name]["git"]
-            assert scaffold[f"{name}-rev"] == WORKSPACE[name]["rev"]
+    scaffold, experimental = framework_manifest.channel_scaffold(pinned, "stable")
+
+    assert not any(key.startswith(f"{name}-") for key in scaffold), (
+        f"stable must not scaffold git-pinned {name}"
+    )
+    assert experimental == {
+        name: {
+            "version": dependency["version"],
+            "git": dependency["git"],
+            "rev": dependency["rev"],
+        }
+    }
+    for other in SCAFFOLD_PACKAGES:
+        if other != name and not git_pinned(other):
+            assert scaffold[f"{other}-version"] == requirement_version(WORKSPACE[other])
+
+
+def test_nightly_carries_git_pinned_packages_in_the_scaffold_table():
+    name = SCAFFOLD_PACKAGES[-1]
+    pinned = with_git_pin(FRAMEWORK, name)
+    dependency = pinned["workspace"]["dependencies"][name]
+
+    scaffold, experimental = framework_manifest.channel_scaffold(pinned, "nightly")
+
+    for other in SCAFFOLD_PACKAGES:
+        assert f"{other}-version" in scaffold
+    assert scaffold[f"{name}-git"] == dependency["git"]
+    assert scaffold[f"{name}-rev"] == dependency["rev"]
     assert experimental == {}
