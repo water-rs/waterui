@@ -3635,7 +3635,8 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/hydrolysis?rev=1c943a9b555f9567595ef3dd6877f7e0d37ba1da#1c943a9b555f9567595ef3dd6877f7e0d37ba1da"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b59e8f7d1c4f361c740c94c1d08022411fffa384f73d61d0dfecd93f7ae701d"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3680,7 +3681,8 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=26945db156f8e21a20c06d6d5fdcef3027273ace#26945db156f8e21a20c06d6d5fdcef3027273ace"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd8bd29ba2deae30400bcc4af69d7e0f167aba99451332dba77eb988549797c5"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -10101,7 +10103,8 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?rev=ae6589d67ef1869e55ac6bd14978302d4bc598f8#ae6589d67ef1869e55ac6bd14978302d4bc598f8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84546e62189eb3ff390390d6c2af20ef92c9afb49c4898a312fb5e0b243fffde"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -10183,7 +10186,8 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/canvas?rev=7141640f35d0976e9522595b3905c514e6b3d378#7141640f35d0976e9522595b3905c514e6b3d378"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c838cd24f33f71227755c769c9aacf3bd614952d6ac533369eed96533bd69df"
 dependencies = [
  "image",
  "kurbo",
@@ -10197,7 +10201,8 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?rev=e6a4382db4d33e02162398e911137d4f6c48cd24#e6a4382db4d33e02162398e911137d4f6c48cd24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd2eb56230c01482ec1142c61381a2ff9eb62d2066522c07923b880399fdbd09"
 dependencies = [
  "bytemuck",
  "nami",
@@ -10468,7 +10473,8 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?rev=eec70aa5d0028d13e62a209848ebb5963ee94b06#eec70aa5d0028d13e62a209848ebb5963ee94b06"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e84f2a881f3c90380b44ee7211326f3a1af58ae6d66c65900ecf6a652c5f190"
 dependencies = [
  "half",
  "image",
@@ -10632,7 +10638,8 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=3a047f339f761162064391f2618d22bdc267edf5#3a047f339f761162064391f2618d22bdc267edf5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c657878495954c53993ae1ad1ecd7f2adfef9c807ae140e568052a49eb3dd74"
 dependencies = [
  "blocking",
  "bytemuck",
@@ -10671,7 +10678,8 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?rev=f1078b62d88c2d9652d191e89da290b862cad640#f1078b62d88c2d9652d191e89da290b862cad640"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a75aa759ac9fde7f839022a02ab2579da9b5bf18a04b65a224786eb3772bcf22"
 dependencies = [
  "kurbo",
  "mathcat",
@@ -10768,7 +10776,8 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?rev=cc338ec4250ef7300e8125bfd5cde665dc38613e#cc338ec4250ef7300e8125bfd5cde665dc38613e"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1aad7e2d163d15de9e7c145932476642104c41694623accc5546a98ecbdf241"
 dependencies = [
  "bytemuck",
  "encase",
@@ -10834,7 +10843,8 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?rev=274cc650de51061c03009ea50b0feb65d55601d1#274cc650de51061c03009ea50b0feb65d55601d1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c634f1f71f1ff3820c205885566faec45a0477e16a60a5a5b800615a17724654"
 dependencies = [
  "kurbo",
  "peniko",
@@ -10927,7 +10937,8 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=9ed3abb6378eec26fd8c442c35cb18905b018795#9ed3abb6378eec26fd8c442c35cb18905b018795"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7beb17a4495929b54a44d7f95e426d525220ff73ce10793e35cfcd1fb5c5e3c8"
 dependencies = [
  "async-channel",
  "executor-core",

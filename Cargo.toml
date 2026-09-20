@@ -215,21 +215,16 @@ waterui-inspector-protocol = { version = "0.5.0", path = "components/devtools/in
 waterui-inspector-app = { version = "0.5.0", path = "components/devtools/inspector/app" }
 waterui-preview-protocol = { version = "0.5.0", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.0", path = "components/devtools/mcp/protocol" }
-# Nothing in this workspace links the GTK or Dew backends: the `water` CLI reads
-# these two entries to scaffold a launcher crate, so until the 0.5.0 wave is on
-# crates.io they carry the adopted `dev` revision as well as the version
-# `cargo publish` keeps (a patch entry would go unused and warn on every cargo
-# command). The release commit that drops the patch table below drops the
-# `git` halves too.
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "b170b35bee0ef815ebc8dc559a2bbc4d96562e34", version = "0.2.0" }
-# `waterui-winui` is unpublished and Windows-only; the `water` CLI reads this
-# entry to scaffold a generated launcher crate pinned to the same revision.
-waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "3601e745aa51a070a71df1aa98bb7faa6b3895a9", version = "0.1.0" }
+# Nothing in this workspace links the GTK, WinUI or Dew backends: the `water`
+# CLI reads these entries to scaffold a launcher crate against the published
+# versions.
+waterui-gtk = "0.2.0"
+waterui-winui = "0.1.0"
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.0", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.0", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.0", default-features = false }
-waterui-dew = { git = "https://github.com/water-rs/dew", rev = "96713f93d4ee8cf7125a4905a5d5b5677997b37a", version = "0.3.0" }
+waterui-dew = "0.3.0"
 waterui = { version = "0.5.0", path = "." }
 waterui-icons-codegen = { version = "0.5.0", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
@@ -471,23 +466,6 @@ strip = true       # Strip symbols
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
-# The 0.5.0 satellite wave (#1014). Every extracted crate this tree consumes
-# re-releases against the 0.5.0 foundation; the requirements above name those
-# next versions, and until they are on crates.io each resolves to the
-# satellite's adopted `dev` revision — the commit that declares that version
-# and builds against this tree. Publishing ignores this table; the release
-# commit that follows the foundation publish drops these entries.
-waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "ae6589d67ef1869e55ac6bd14978302d4bc598f8" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "7141640f35d0976e9522595b3905c514e6b3d378" }
-waterui-chart = { git = "https://github.com/water-rs/chart", rev = "e6a4382db4d33e02162398e911137d4f6c48cd24" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "eec70aa5d0028d13e62a209848ebb5963ee94b06" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "3a047f339f761162064391f2618d22bdc267edf5" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "cc338ec4250ef7300e8125bfd5cde665dc38613e" }
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "274cc650de51061c03009ea50b0feb65d55601d1" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "9ed3abb6378eec26fd8c442c35cb18905b018795" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "1c943a9b555f9567595ef3dd6877f7e0d37ba1da" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "26945db156f8e21a20c06d6d5fdcef3027273ace" }
-waterui-math = { git = "https://github.com/water-rs/math", rev = "f1078b62d88c2d9652d191e89da290b862cad640" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
