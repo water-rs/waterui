@@ -4,6 +4,41 @@ All notable changes to `waterui-testing` are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/waterui-testing-v0.4.1...waterui-testing-v0.5.0) - 2026-09-20
+
+### Added
+
+- *(testing)* styled builder mount_app honours viewport, flavor and scale factor
+- *(testing)* a styled builder's semantic mount installs the style's tokens
+- *(testing)* [**breaking**] split the test harness into a semantic pipeline and a styled rendered pipeline
+- [**breaking**] #[state] marks owned types as extractors over .state()
+- *(mcp)* close the testing-surface parity gaps
+- *(a11y)* add the Dialog accessibility role ([#653](https://github.com/water-rs/waterui/pull/653))
+
+### Fixed
+
+- *(deps)* keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))
+- *(testing)* wait for in-flight work while settling; queue presses for transients
+- *(testing)* stop settling on live producers and hold the clock while pacing
+- *(preview)* wait for parked local work before a one-shot render
+- *(testing)* settle waits on tasks parked on wall-clock I/O
+- *(map)* install the GPU map realization in the semantics e2e
+- *(testing)* install the self-drawn video realization on every host
+- *(testing)* make Query must_use so a builder chain cannot be a no-op
+
+### Other
+
+- drop dev-dependencies orphaned by the test moves; restore a trailing newline
+- *(testing)* one semantic mount path behind both builders
+- Revert "fix(deps): keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))" ([#1129](https://github.com/water-rs/waterui/pull/1129))
+- *(testing)* pass the device-loss handle in the scene-view render test
+- *(snapshot)* hand hydrolysis the offscreen surface's device-loss handle
+- isolate layout unit tests from rendering backends ([#966](https://github.com/water-rs/waterui/pull/966))
+- step through animations on the virtual frame clock
+- Merge pull request #695 from water-rs/agent/focus-tests-687
+- serve a mounted OffscreenApp to an agent over MCP ([#692](https://github.com/water-rs/waterui/pull/692))
+- mount a whole App on the application runtime ([#683](https://github.com/water-rs/waterui/pull/683))
+
 ## [0.4.1](https://github.com/water-rs/waterui/compare/waterui-testing-v0.4.0...waterui-testing-v0.4.1) - 2026-09-11
 
 ### Other
