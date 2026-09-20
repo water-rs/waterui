@@ -7,6 +7,166 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/v0.4.1...v0.5.0) - 2026-09-20
+
+### Added
+
+- *(testing)* styled builder mount_app honours viewport, flavor and scale factor
+- *(testing)* a styled builder's semantic mount installs the style's tokens
+- *(testing)* [**breaking**] split the test harness into a semantic pipeline and a styled rendered pipeline
+- *(ffi)* carry a Spacer's minimum length across the C ABI ([#1092](https://github.com/water-rs/waterui/pull/1092))
+- *(graphics)* DeviceLoss::observe wires a host-owned device
+- *(graphics)* [**breaking**] hand every GpuView a DeviceLoss handle
+- *(layout)* [**breaking**] negotiate placement against the resolved bounds on both axes
+- *(layout)* [**breaking**] propose the resolved cross extent at placement and freeze the contract
+- [**breaking**] on_change takes an EventHandler with State extractors
+- *(scaffold)* declare waterui-winui for CLI backend resolution ([#985](https://github.com/water-rs/waterui/pull/985))
+- *(layout)* [**breaking**] retain negotiated proposals through placement
+- *(ffi)* export the Badge component surface ([#927](https://github.com/water-rs/waterui/pull/927))
+- *(backend-core)* [**breaking**] add a shadow primitive to DrawContext ([#655](https://github.com/water-rs/waterui/pull/655))
+- *(a11y)* [**breaking**] add a value channel to accessibility nodes
+
+### Fixed
+
+- *(gpu)* register a completion marker for every presented frame
+- *(accordion)* publish the header as a single activatable button
+- *(deps)* keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))
+- *(ffi)* format Android log events as message then key=value fields ([#1119](https://github.com/water-rs/waterui/pull/1119))
+- *(graphics)* cap GPU runtime recreation at consecutive unproductive losses ([#1117](https://github.com/water-rs/waterui/pull/1117))
+- *(gpu)* derive GpuView animation clocks from GpuFrame::elapsed ([#1113](https://github.com/water-rs/waterui/pull/1113))
+- *(locale)* schedule regional refresh without a native thread on wasm ([#1111](https://github.com/water-rs/waterui/pull/1111))
+- *(layout)* report the child's floor on a min-size query in a max-only frame
+- *(when)* resolve plain bool conditions statically
+- *(reminders)* pad the detail title and captions in WaterUI's edge order
+- *(text)* [**breaking**] a size override drops the previous face's typography metrics
+- *(text)* map markdown headings to the descending platform type scale
+- clear the wasm32 and Windows nightly lint failures
+- *(testing)* wait for in-flight work while settling; queue presses for transients
+- *(testing)* stop settling on live producers and hold the clock while pacing
+- *(examples)* keep flow_markdown's control rows inside a phone width
+- *(browser-cef)* derive the page request context from the browser host ([#1005](https://github.com/water-rs/waterui/pull/1005))
+- *(skill)* align skill doc snippets with waterui_lints idioms ([#1004](https://github.com/water-rs/waterui/pull/1004))
+- *(examples)* adopt idiomatic handlers, text!, and imports per waterui_lints ([#1003](https://github.com/water-rs/waterui/pull/1003))
+- *(examples)* detach bounce task and watch display signal ([#1002](https://github.com/water-rs/waterui/pull/1002))
+- *(clippy)* scope install() const expectation to Apple targets ([#987](https://github.com/water-rs/waterui/pull/987))
+- negotiate constrained frame regions and finite stack offers
+- *(deps)* integrate proposal-aware chart and renderer revisions
+- preserve maximum-size probes across the layout ABI ([#963](https://github.com/water-rs/waterui/pull/963))
+- declare stretch_axis on composite views before body resolution ([#952](https://github.com/water-rs/waterui/pull/952))
+- *(cef)* wait for request-context initialization before creating a browser ([#949](https://github.com/water-rs/waterui/pull/949))
+- bump the Apple backend pin to 0.3.0-dev.2
+- *(graphics)* recover GPU surfaces when the driver loses the device ([#914](https://github.com/water-rs/waterui/pull/914))
+- *(graphics)* strip wgpu debug flags on Android emulators
+
+### Other
+
+- *(android)* pin the backend at b8477fe so scaffolds resolve on JitPack
+- update chacha20 to 0.10.2, the yanked 0.10.1 warned on every cargo package
+- rustfmt
+- pin hydrolysis 67357344 and hydrolysis-m3 b899c035 (dev)
+- drop dev-dependencies orphaned by the test moves; restore a trailing newline
+- pin hydrolysis a919016b (hydrolysis#63)
+- *(testing)* one semantic mount path behind both builders
+- pin hydrolysis 4ca96beb (hydrolysis#63)
+- *(skill)* state the runtime theme-token contract
+- restore the semantic coverage the harness migration dropped
+- Revert "fix(deps): keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))" ([#1129](https://github.com/water-rs/waterui/pull/1129))
+- pin the 0.5.0 satellite wave at its dev heads ([#1105](https://github.com/water-rs/waterui/pull/1105))
+- cache tool binaries so a CDN outage cannot kill a leg ([#1121](https://github.com/water-rs/waterui/pull/1121))
+- Merge pull request #1093 from water-rs/fix/remove-spacer-layout
+- Merge pull request #1088 from water-rs/fix/spacer-min-length
+- Merge pull request #1109 from water-rs/fix/wasm-asset-exports
+- pin the satellites that adopted the device-loss handle
+- *(testing)* pass the device-loss handle in the scene-view render test
+- *(snapshot)* hand hydrolysis the offscreen surface's device-loss handle
+- Merge pull request #1102 from water-rs/fix/frame-min-query-floor
+- *(layout)* name the min-size query test without the typo
+- Merge pull request #1100 from water-rs/fix/when-static-condition
+- pin waterui-gtk at the theme-colour fix
+- pin waterui-math at its merged adoption head
+- name the 0.5.0 satellite wave at its adopted revisions
+- upgrade action-gh-release to 3.0.3 for the certify upload
+- *(agents)* record the water-rs CI capacity and the parallelism rule
+- consume waterkit 0.1.4
+- stop the nightly matrix from repeating feature-independent work
+- consume waterkit 0.1.3 ([#1072](https://github.com/water-rs/waterui/pull/1072))
+- let the PR source gate accept release-plz release branches ([#1069](https://github.com/water-rs/waterui/pull/1069))
+- describe how a local Apple backend checkout is selected
+- Merge pull request #1063 from water-rs/feat/layout-freeze
+- let setup-linux-deps refresh the apt index when consumed from another repository
+- Merge pull request #1037 from water-rs/build/name-the-0-5-0-satellite-wave
+- Merge pull request #1036 from water-rs/fix/divider-hairline
+- Merge pull request #1034 from water-rs/fix/nightly-live-photo
+- Merge pull request #1029 from water-rs/fix/155-wpe-jpegxl
+- Merge pull request #1028 from water-rs/fix/948-error-token
+- Merge pull request #1026 from water-rs/feat/state-macro
+- Merge pull request #1027 from water-rs/fix/155-wpe-runtime-build
+- *(browser-wpe)* build the WPE runtime with gcc-12 on ubuntu-22.04
+- Merge remote-tracking branch 'origin/dev' into feat/alignment-tokens
+- Merge remote-tracking branch 'origin/dev' into feat/alignment-tokens
+- Merge pull request #1006 from water-rs/feat/view-muted
+- Merge pull request #1023 from water-rs/fix/flow-markdown-phone-rows
+- Merge pull request #1019 from water-rs/chore/wpe-dead-real-engine
+- publish from the main push, not the CI workflow_run
+- Merge pull request #1018 from water-rs/fix/assets-macros-io-error
+- Merge pull request #1017 from water-rs/fix/nightly-map-e2e
+- Merge pull request #900 from water-rs/fix/cef-windows-bootstrap
+- Merge pull request #945 from water-rs/fix/release-panic-unwind
+- Merge pull request #1016 from water-rs/ci/release-plz-mcp-group
+- *(release)* put waterui-mcp in the waterui version group
+- Merge pull request #997 from water-rs/feat/on-change-event-handler
+- pin waterui-gtk to the merged text Foreground token fix
+- Merge pull request #990 from water-rs/codex/mesh-gradient-wgsl-abi
+- pin waterui-gtk to the merged GL loader ownership fix
+- Merge branch 'dev' into codex/layout-ecosystem-combination
+- Merge pull request #975 from water-rs/codex/layout-allocation-budget
+- *(layout)* inline private stack distribution buffers
+- *(layout)* inline scratch storage for small child sets
+- Merge branch 'feat/proposal-aware-placement' into codex/layout-conformance
+- isolate layout unit tests from rendering backends ([#966](https://github.com/water-rs/waterui/pull/966))
+- bump assets-planner to 0.2.0 and preview-protocol to 0.1.2 ([#962](https://github.com/water-rs/waterui/pull/962))
+- publish waterui-assets-core and waterui-mcp-protocol ([#956](https://github.com/water-rs/waterui/pull/956))
+- declare android-backend-revision instead of the backends/android gitlink ([#943](https://github.com/water-rs/waterui/pull/943))
+- consume waterkit from crates.io instead of the kit gitlink ([#942](https://github.com/water-rs/waterui/pull/942))
+- Merge pull request #941 from water-rs/chore/drop-nami-gitlink
+- Merge pull request #936 from water-rs/ci/android-ffi-clippy-only
+- restore the nightly full matrix and gate releases on its certification
+- drop the Test Report job from the pull-request gate
+- pin apple-backend 0.3.0-dev.3 ([#930](https://github.com/water-rs/waterui/pull/930))
+- Merge pull request #919 from water-rs/fix/segmented-state-layer-position
+- move the water CLI to water-rs/cli
+- *(deps)* repin hydrolysis-m3 patch to the corner-radius dev tip
+- Merge pull request #884 from water-rs/feat/include-bundle-symbols
+- Merge pull request #888 from water-rs/fix/hydrolysis-pin-first-frame
+- *(agents)* forbid force-pushes without the user's authorization
+- *(agents)* consume unreleased split-repository changes by git rev, never by asking for a release
+- Merge pull request #746 from water-rs/test/edge-examples
+- Merge pull request #816 from water-rs/feat/webview-asset-origin
+- Merge pull request #815 from water-rs/feat/preview-symbol-discovery
+- pin waterui-gtk to the gtk-backend dev revision
+- Merge pull request #789 from water-rs/fix/libcxx-needed-only
+- *(agents)* file framework gaps found while building examples as issues
+- Merge pull request #782 from water-rs/refactor/cli-typed-errors
+- bump aither to 0.4.1 for MCP image content ([#767](https://github.com/water-rs/waterui/pull/767))
+- Merge pull request #772 from water-rs/docs/log-macro-import
+- patch extracted crates' git-source waterui deps onto the resolved framework ([#761](https://github.com/water-rs/waterui/pull/761))
+- *(agents)* remove the autonomous-agent review gate ([#769](https://github.com/water-rs/waterui/pull/769))
+- retire the monorepo nightly ([#756](https://github.com/water-rs/waterui/pull/756))
+- move examples/image to water-rs/image ([#762](https://github.com/water-rs/waterui/pull/762))
+- water mcp serves a preview tool that returns PNG image content ([#704](https://github.com/water-rs/waterui/pull/704))
+- Merge pull request #739 from water-rs/refactor/cli-futures-util
+- *(cli)* depend on futures-util instead of the futures facade
+- *(backends)* extract waterui-gtk to water-rs/gtk-backend ([#646](https://github.com/water-rs/waterui/pull/646))
+- choose MCP or skill + CLI for agent-facing surfaces by statefulness ([#676](https://github.com/water-rs/waterui/pull/676))
+- reorder suiteki imports ahead of waterui_*
+- merge dev into refactor/suiteki-switch
+- [**breaking**] replace waterui-str with the extracted suiteki crate
+- Merge pull request #636 from water-rs/refactor/extract-math
+- *(release)* resolve and build the to-be-published set before publishing
+- Merge pull request #591 from water-rs/agent/version-boundary-gate
+- *(agents)* record the version-boundary rule and release cadence
+- block breaking merges to main without the release label
+
 ## [0.4.1](https://github.com/water-rs/waterui/compare/v0.4.0...v0.4.1) - 2026-09-11
 
 ### Added

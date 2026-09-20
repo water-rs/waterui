@@ -7,14 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0](https://github.com/water-rs/waterui/compare/preview-protocol-v0.1.2...preview-protocol-v0.5.0) - 2026-09-20
+## [0.5.0](https://github.com/water-rs/waterui/compare/mcp-protocol-v0.1.0...mcp-protocol-v0.5.0) - 2026-09-20
 
 ### Other
 
 - release v0.5.0
-
-## [0.1.1](https://github.com/water-rs/waterui/compare/preview-protocol-v0.1.0...preview-protocol-v0.1.1) - 2026-09-11
-
-### Other
-
-- update Cargo.toml dependencies

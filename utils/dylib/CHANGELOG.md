@@ -4,6 +4,12 @@ All notable changes to `waterui-dylib` are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/waterui-dylib-v0.4.1...waterui-dylib-v0.5.0) - 2026-09-20
+
+### Other
+
+- move the water CLI to water-rs/cli
+
 ## [0.4.0](https://github.com/water-rs/waterui/compare/waterui-dylib-v0.3.0...waterui-dylib-v0.4.0) - 2026-09-11
 
 ### Added
