@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/form-v0.3.2...form-v0.5.0) - 2026-09-20
+
+### Added
+
+- *(testing)* [**breaking**] split the test harness into a semantic pipeline and a styled rendered pipeline
+
+### Fixed
+
+- *(deps)* keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))
+- declare stretch_axis on composite views before body resolution ([#952](https://github.com/water-rs/waterui/pull/952))
+
+### Other
+
+- Revert "fix(deps): keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))" ([#1129](https://github.com/water-rs/waterui/pull/1129))
+- *(picker)* backtick the framework names
+- *(picker)* state that Radio renders inline on iOS
+- merge main (0.4.1 release commits) back into dev
+- *(deps)* move the requirements the extraction left behind ([#557](https://github.com/water-rs/waterui/pull/557))
+
 ## [0.3.2](https://github.com/water-rs/waterui/compare/form-v0.3.1...form-v0.3.2) - 2026-09-11
 
 ### Other

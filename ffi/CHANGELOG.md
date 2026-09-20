@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/ffi-v0.3.2...ffi-v0.5.0) - 2026-09-20
+
+### Added
+
+- *(ffi)* carry a Spacer's minimum length across the C ABI ([#1092](https://github.com/water-rs/waterui/pull/1092))
+- *(graphics)* [**breaking**] hand every GpuView a DeviceLoss handle
+- *(theme)* add the Error and ErrorForeground colour slots
+- *(layout)* [**breaking**] retain negotiated proposals through placement
+- *(ffi)* export the Badge component surface ([#927](https://github.com/water-rs/waterui/pull/927))
+- *(ffi)* mirror tracing to stderr on Apple when WATERUI_LOG is set
+- *(style)* carry the shadow caster's corner radius in Shadow
+- *(ffi)* gate media/webview/gpu/map surfaces behind resolved capabilities
+- *(background)* add Glass, a Liquid Glass background kind
+- *(a11y)* add the Dialog accessibility role ([#653](https://github.com/water-rs/waterui/pull/653))
+- *(a11y)* [**breaking**] add a value channel to accessibility nodes
+- *(text)* add a monospaced font design as a semantic slot
+
+### Fixed
+
+- *(gpu)* register a completion marker for every presented frame
+- *(ffi)* format Android log events as message then key=value fields ([#1119](https://github.com/water-rs/waterui/pull/1119))
+- *(ffi)* raise the recursion limit for the GPU runtime's Send obligation
+- preserve maximum-size probes across the layout ABI ([#963](https://github.com/water-rs/waterui/pull/963))
+- *(graphics)* recover GPU surfaces when the driver loses the device ([#914](https://github.com/water-rs/waterui/pull/914))
+- *(ffi)* name the GPU device-loss cause in surface acquire failures
+- *(ffi)* qualify IntoFFI/IntoRust/WuiAnyView in jni bridge
+- *(ffi)* close the ABI feature matrix
+- *(ffi)* ungate drag-drop metadata macros so Android JNI exports exist
+- *(ffi)* scope the ViewEffect swapchain resize to its one caller
+- *(ffi)* give ViewEffect a host-texture path on Apple
+- *(ffi)* let an Apple GpuSurface present without a swapchain ([#572](https://github.com/water-rs/waterui/pull/572))
+- *(ffi)* present a filter's output where every capture path can read it ([#571](https://github.com/water-rs/waterui/pull/571))
+
+### Other
+
+- declare android-backend-revision instead of the backends/android gitlink ([#943](https://github.com/water-rs/waterui/pull/943))
+- *(layout)* [**breaking**] drop the SafeAreaInsets contract
+- *(android)* pin the backend to the safe-area container rule and drop the dead insets setter
+- carry line_height/letter_spacing through WuiResolvedFont and the Android font signal
+- Merge pull request #816 from water-rs/feat/webview-asset-origin
+- rustfmt
+- Merge origin/dev into chore/decouple-apple-backend
+- Decouple the Apple backend: drop the backends/apple submodule
+- Merge pull request #800 from water-rs/feat/tabs-search-role
+- Merge pull request #837 from water-rs/fix/dragdrop-jni-gate
+- Merge pull request #819 from water-rs/fix/android-drag-drop-jni
+- Merge pull request #775 from water-rs/feat/glass-background
+- reorder suiteki imports ahead of waterui_*
+- merge dev into refactor/suiteki-switch
+- [**breaking**] replace waterui-str with the extracted suiteki crate
+- Merge pull request #635 from water-rs/feat/a11y-value-channel-457
+- *(graphics)* fuse a filter with the filter it encloses
+
 ## [0.3.2](https://github.com/water-rs/waterui/compare/ffi-v0.3.1...ffi-v0.3.2) - 2026-09-11
 
 ### Other
