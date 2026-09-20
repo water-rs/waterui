@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/macros-v0.3.1...macros-v0.5.0) - 2026-09-20
+
+### Added
+
+- *(testing)* [**breaking**] split the test harness into a semantic pipeline and a styled rendered pipeline
+- [**breaking**] #[state] marks owned types as extractors over .state()
+
+### Fixed
+
+- *(deps)* keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))
+- *(preview)* gate waterui_preview_* exports on debug_assertions
+- *(cli)* install the app's translation catalog at every generated boundary
+- *(macros)* reject empty, positional and raw-identifier text! placeholders
+
+### Other
+
+- Revert "fix(deps): keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))" ([#1129](https://github.com/water-rs/waterui/pull/1129))
+- stop the nightly matrix from repeating feature-independent work
+- move the water CLI to water-rs/cli
+- Merge pull request #770 from water-rs/fix/text-macro-placeholders
+- merge main (0.4.1 release commits) back into dev
+- *(deps)* move the requirements the extraction left behind ([#557](https://github.com/water-rs/waterui/pull/557))
+
 ## [0.3.1](https://github.com/water-rs/waterui/compare/macros-v0.3.0...macros-v0.3.1) - 2026-09-11
 
 ### Other
