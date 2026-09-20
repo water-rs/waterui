@@ -50,7 +50,7 @@ use {
 use waterui_graphics::gpu_surface::{
     GestureState, GpuContext, GpuFrame, GpuSurface, PointerState, RedrawHandle,
 };
-use waterui_graphics::shared_context::{GpuRuntime, GpuSubmissionCompletionDriver, reclaim_device};
+use waterui_graphics::shared_context::{GpuRuntime, GpuSubmissionCompletionDriver};
 
 use waterui_core::Str;
 
@@ -1182,7 +1182,10 @@ fn render_frame_body(
     let needs_redraw = frame.was_redraw_requested() || state.redraw_handle.take_dirty();
 
     output.present();
-    reclaim_device(&gpu.device);
+    // Queue order retires this marker only after the frame's real work and
+    // the present, so resolving it is what records this generation as having
+    // presented — the signal the rebuild budget reads after a device loss.
+    gpu.note_presented_submission(gpu.queue.submit([]));
 
     needs_redraw
 }
@@ -1349,11 +1352,6 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
         state.runtime.context().submission_completion_driver(),
         submission,
     );
-    // A frame loop that only submits never returns the resources wgpu retains for
-    // a submission, so every presented frame would leak a little (#370). The
-    // swapchain path reclaimed after `present`; this one reclaims after the fence
-    // is taken, which is the same point in the frame.
-    reclaim_device(&state.runtime.context().device);
     Box::into_raw(Box::new(fence))
 }
 

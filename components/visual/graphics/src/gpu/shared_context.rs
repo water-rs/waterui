@@ -483,6 +483,26 @@ impl SharedGpuContext {
     pub fn mark_frame_presented_for_testing(&self) {
         self.frame_presented.store(true, Ordering::Relaxed);
     }
+
+    /// Marks this device generation as having presented a frame.
+    ///
+    /// `submission` must be ordered after the presented frame's real work on
+    /// this context's queue — the marker a frame owner submits with
+    /// `queue.submit([])` right after `present`, or the fence submission an
+    /// external-capture path already made — so its retirement proves a
+    /// presented frame's GPU work finished. Registering it with the
+    /// completion driver is what makes [`Self::frame_presented`] observe the
+    /// present: the driver's successful wait is the one success signal a
+    /// device reports, and a generation [`GpuRuntime`] later finds lost is
+    /// recoverable only when it reached this point.
+    ///
+    /// The same wait also releases the deferred-destruction bookkeeping the
+    /// frame left behind, so a frame owner that registers every presented
+    /// frame here no longer calls [`reclaim_device`].
+    pub fn note_presented_submission(&self, submission: wgpu::SubmissionIndex) {
+        self.submission_completion_driver
+            .on_complete(submission, || {});
+    }
 }
 
 #[cfg_attr(
@@ -1135,6 +1155,54 @@ mod tests {
         assert!(
             result.is_err(),
             "the streak must restart at the presented frame, not accumulate across it"
+        );
+    }
+
+    /// The marker a swapchain path registers after `present` is what makes a
+    /// generation count as productive: once the completion driver resolves
+    /// it, a later loss restarts the unproductive streak instead of counting
+    /// toward the cap.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_presented_frame_marker_marks_the_generation_productive() {
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("rebuild-budget test requires a working GPU runtime");
+        let context = runtime.context();
+
+        context.note_presented_submission(context.queue.submit([]));
+
+        // The driver resolves waits serially on its own thread, so the
+        // completion of a later submission proves the marker's wait — and its
+        // `frame_presented` store — already ran.
+        let (resolved, wait) = std::sync::mpsc::channel();
+        context
+            .submission_completion_driver()
+            .on_complete(context.queue.submit([]), move || {
+                resolved.send(()).expect("the test is still waiting");
+            });
+        wait.recv().expect("the completion driver is running");
+
+        assert!(context.frame_presented());
+
+        context.mark_device_lost_for_testing("simulated device loss");
+        let _ = runtime.context();
+
+        // The productive generation cleared the streak, so a full budget of
+        // stillborn devices rebuilds before the cap surfaces again.
+        for _ in 0..MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS {
+            runtime
+                .context()
+                .mark_device_lost_for_testing("simulated device loss");
+            let _ = runtime.context();
+        }
+        runtime
+            .context()
+            .mark_device_lost_for_testing("simulated device loss");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.context()));
+
+        assert!(
+            result.is_err(),
+            "the registered presented frame must have restarted the unproductive streak"
         );
     }
 
